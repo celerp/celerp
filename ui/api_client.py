@@ -3867,6 +3867,21 @@ async def company_backup_send_handoff(token: str, payload: dict) -> dict:
     return _raise(response).json()
 
 
+async def company_backup_handoffs(token: str) -> dict:
+    """Activity for the authenticated company's copies."""
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            response = await c.get("/company-backups/handoffs")
+    return _raise(response).json()
+
+
+async def company_backup_revoke_handoff(token: str, copy_id: str) -> dict:
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            response = await c.post(f"/company-backups/handoffs/{copy_id}/revoke")
+    return _raise(response).json()
+
+
 async def company_backup_staged(token: str | None, upload_token: str, mode: str | None = None) -> dict:
     """The preview of a backup already uploaded, checked again."""
     async with _local_error_mapping():

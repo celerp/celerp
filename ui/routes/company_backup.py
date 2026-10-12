@@ -74,6 +74,7 @@ from ui.routes.migrations import (
 
 DOWNLOAD = "/company-backup/download"
 SEND = "/settings/company-handoff"
+HANDOFFS = "/settings/company-handoffs"
 BACKUP_TAB = "/settings/general?tab=backup"
 _TITLE = "company_backup.restore_title"
 _OWNER_ONLY = "company_backup.owner_only"
@@ -746,6 +747,55 @@ async def _done(request: Request, mode: WizardMode):
     return resp
 
 
+def _handoff_status(item: dict) -> str:
+    if item["status"] in ("revoked", "expired"):
+        return t("company_backup.handoff_status_" + item["status"])
+    if item["company_opened"]:
+        return t("company_backup.handoff_status_company_opened")
+    if item["downloaded"]:
+        return t("company_backup.handoff_status_downloaded")
+    if item["opened"]:
+        return t("company_backup.handoff_status_opened")
+    return t("company_backup.handoff_status_" + (
+        "sent" if item["status"] in ("sent", "imported") else "pending"))
+
+
+async def _handoffs_page(request: Request, *, error: str | None = None):
+    if (denied := await _gate(request, SETTINGS)) is not None:
+        return denied
+    try:
+        rows = (await api.company_backup_handoffs(get_token(request)))["items"]
+    except (APIError, KeyError, TypeError):
+        return wizard_page(request, auth_header(t("company_backup.handoffs_title")),
+                           flash(t("company_backup.handoffs_unavailable")), back_link(BACKUP_TAB),
+                           title="company_backup.handoffs_title")
+    entries = [Tr(
+        Td(_handoff_status(item)),
+        Td(item["expires_at"][:10]),
+        Td(Form(Button(t("btn.revoke"), type="submit", cls="btn btn--secondary btn--sm"),
+                method="post", action=f"{HANDOFFS}/{item['id']}/revoke"))
+        if item["status"] not in ("expired", "revoked", "imported") else Td(""),
+    ) for item in rows]
+    return wizard_page(
+        request, auth_header(t("company_backup.handoffs_title")),
+        flash(error) if error else "",
+        Table(Tbody(*entries), cls="data-table") if entries else P(t("company_backup.handoffs_empty")),
+        A(t("company_backup.send_title"), href=SEND, cls="btn btn--primary"),
+        back_link(BACKUP_TAB), title="company_backup.handoffs_title")
+
+
+async def _revoke_handoff(request: Request):
+    if (denied := await _gate(request, SETTINGS)) is not None:
+        return denied
+    try:
+        copy_id = uuid.UUID(request.path_params["copy_id"])
+        await api.company_backup_revoke_handoff(get_token(request), str(copy_id))
+    except (APIError, ValueError) as exc:
+        message = _message(exc) if isinstance(exc, APIError) else t("company_backup.handoffs_unavailable")
+        return await _handoffs_page(request, error=message)
+    return RedirectResponse(HANDOFFS, status_code=303)
+
+
 async def _send_page(request: Request, *, error: str | None = None, values: dict | None = None,
                      status_code: int = 200):
     if (denied := await _gate(request, SETTINGS)) is not None:
@@ -775,6 +825,7 @@ async def _send_page(request: Request, *, error: str | None = None, values: dict
             Button(t("company_backup.send_title"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action=SEND, cls="auth-form",
         ),
+        A(t("company_backup.handoffs_title"), href=HANDOFFS, cls="auth-link"),
         back_link(BACKUP_TAB), status_code=status_code,
         title="company_backup.send_title",
     )
@@ -804,6 +855,7 @@ async def _send_handoff(request: Request):
         Div(Label(t("company_backup.sent_link_label"), For="company_handoff_link", cls="form-label"),
             Input(type="text", id="company_handoff_link", value=sent["link"], readonly=True,
                   cls="form-input"), cls="form-group"),
+        A(t("company_backup.handoffs_title"), href=HANDOFFS, cls="auth-link"),
         back_link(BACKUP_TAB), title="company_backup.sent_title",
     )
 
@@ -816,6 +868,8 @@ def company_backup_routes(app) -> None:
     app.get(DOWNLOAD)(_download)
     app.get(SEND)(_send_page)
     app.post(SEND)(_send_handoff)
+    app.get(HANDOFFS)(_handoffs_page)
+    app.post(HANDOFFS + "/{copy_id}/revoke")(_revoke_handoff)
     for mode in (SETTINGS, NEW_COMPANY, BOOTSTRAP, START_COMPANY):
         for method, suffix, handler in (("get", "", _start), ("post", "/read", _read),
                                         ("post", "/restore", _restore), ("get", "/done", _done)):

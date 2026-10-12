@@ -133,6 +133,56 @@ async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(u
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
 
+@router.get("/handoffs")
+async def company_handoffs(ctx: AuthContext = Depends(user_owner)):
+    """Only this company's owner can see its handoff activity."""
+    from celerp.services.company_handoff_sender import HandoffSendError, _cloud
+    try:
+        answer = await _cloud("GET", "/handoffs", params={"company_id": str(ctx.company_id)})
+    except HandoffSendError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    rows = answer.get("items")
+    if not isinstance(rows, list) or len(rows) > 100:
+        raise HTTPException(status_code=502, detail="Handoff activity is unavailable")
+    safe = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("company_id") != str(ctx.company_id):
+            raise HTTPException(status_code=502, detail="Handoff activity is unavailable")
+        try:
+            copy_id = uuid.UUID(row["id"])
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(status_code=502, detail="Handoff activity is unavailable") from None
+        status = row.get("status")
+        if status not in ("pending", "ready", "sent", "imported", "expired", "revoked"):
+            raise HTTPException(status_code=502, detail="Handoff activity is unavailable")
+        safe.append({"id": str(copy_id), "status": status,
+                     "opened": row.get("opened") is True,
+                     "downloaded": row.get("downloaded") is True,
+                     "company_opened": row.get("company_opened") is True,
+                     "expires_at": str(row.get("expires_at") or "")})
+    return {"items": safe}
+
+
+@router.post("/handoffs/{copy_id}/revoke")
+async def revoke_company_handoff(copy_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)):
+    """Prevent a company owner from managing another company's copy."""
+    from celerp.services.company_handoff_sender import HandoffSendError, _cloud
+    try:
+        answer = await _cloud("GET", "/handoffs", params={"company_id": str(ctx.company_id)})
+        rows = answer.get("items")
+        if not isinstance(rows, list) or len(rows) > 100 or any(
+            not isinstance(row, dict) or row.get("company_id") != str(ctx.company_id)
+            for row in rows
+        ):
+            raise HTTPException(status_code=502, detail="Handoff activity is unavailable")
+        if not any(row.get("id") == str(copy_id) for row in rows):
+            raise HTTPException(status_code=404, detail="Company copy not found")
+        await _cloud("POST", f"/handoffs/{copy_id}/revoke")
+    except HandoffSendError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return {"revoked": True}
+
+
 # ── Restore ──────────────────────────────────────────────────────────────────
 
 def _stage(owner: str, token: str) -> Path:

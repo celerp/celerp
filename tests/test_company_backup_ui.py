@@ -754,3 +754,34 @@ async def test_company_handoff_send_form_retries_original_operation(ui, real_eng
     assert sent.status_code == 200 and "Company copy sent" in _page(sent)
     assert [call[1]["operation_id"] for call in calls] == [initial["operation_id"]] * 2
     assert all(call[1]["key"] == initial["key"] for call in calls)
+
+
+async def test_company_handoff_activity_revoke_and_navigation(ui, real_engine, monkeypatch):
+    from ui.routes import company_backup as route
+    from ui import api_client as api
+
+    _, _, tok = await _setup(real_engine, name="Company handoff list")
+    ui.cookies.set("celerp_token", tok)
+    copy_id = str(uuid.uuid4())
+    calls = []
+
+    async def list_activity(token):
+        assert token == tok
+        return {"items": [{"id": copy_id, "status": "sent", "opened": True,
+                           "downloaded": False, "company_opened": False,
+                           "expires_at": "2026-10-25T00:00:00+00:00"}]}
+
+    async def revoke(token, which):
+        calls.append((token, which))
+        return {"revoked": True}
+
+    monkeypatch.setattr(api, "company_backup_handoffs", list_activity)
+    monkeypatch.setattr(api, "company_backup_revoke_handoff", revoke)
+    sent = await ui.get(route.SEND)
+    assert sent.status_code == 200 and route.HANDOFFS in _page(sent)
+    listed = await ui.get(route.HANDOFFS)
+    assert listed.status_code == 200 and "Opened" in _page(listed)
+    assert f"{route.HANDOFFS}/{copy_id}/revoke" in _page(listed)
+    revoked = await ui.post(f"{route.HANDOFFS}/{copy_id}/revoke")
+    assert revoked.status_code == 303 and revoked.headers["location"] == route.HANDOFFS
+    assert calls == [(tok, copy_id)]
