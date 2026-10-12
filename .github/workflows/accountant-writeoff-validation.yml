@@ -41,13 +41,13 @@ jobs:
           from pathlib import Path
           p = Path("tests/test_writeoff_cost_restatement.py")
           s = p.read_text()
-          s = s.replace("import uuid\\n", "import uuid\\nfrom types import SimpleNamespace\\n")
+          s = s.replace("import uuid\n", "import uuid\nfrom types import SimpleNamespace\n")
           a = "    return list((await session.execute("
           b = "    rows = (await session.execute("
           assert s.count(a) == 1
           s = s.replace(a, b)
           a = "    ).order_by(Projection.entity_id))).scalars())"
-          b = ("    ).order_by(Projection.entity_id))).scalars().all()\\n"
+          b = ("    ).order_by(Projection.entity_id))).scalars().all()\n"
                "    return [SimpleNamespace(entity_id=row.entity_id, state=dict(row.state)) for row in rows]")
           assert s.count(a) == 1
           p.write_text(s.replace(a, b))
