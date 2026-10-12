@@ -51,16 +51,16 @@ jobs:
           marker = '    assert found.returncode == 1, found.stdout or found.stderr'
           assert s.count(marker) == 1
           check = '''    legacy = subprocess.run(
-        ["git", "grep", "-n", "-I", "-F", "handoff_id", "--", ".",
-         ":(exclude)tests", ":(exclude,glob)**/migrations/**"],
-        cwd=REPO_ROOT, capture_output=True, text=True)
-    allowed = {
-        "celerp/gateway/state.py", "celerp/main.py",
-        "celerp/routers/health.py", "celerp/services/cloud_entitlement.py",
-    }
-    paths = {line.split(":", 1)[0] for line in legacy.stdout.splitlines()}
-    assert paths <= allowed, paths - allowed
-'''
+                  ["git", "grep", "-n", "-I", "-F", "handoff_id", "--", ".",
+                   ":(exclude)tests", ":(exclude,glob)**/migrations/**"],
+                  cwd=REPO_ROOT, capture_output=True, text=True)
+              allowed = {
+                  "celerp/gateway/state.py", "celerp/main.py",
+                  "celerp/routers/health.py", "celerp/services/cloud_entitlement.py",
+              }
+              paths = {line.split(":", 1)[0] for line in legacy.stdout.splitlines()}
+              assert paths <= allowed, paths - allowed
+          '''
           s = s.replace(marker, marker + '\n' + check)
           p.write_text(s)
           PY
