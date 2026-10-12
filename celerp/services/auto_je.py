@@ -3300,6 +3300,28 @@ async def set_aside(session, company_id, lots) -> dict[str, dict[str, float]]:
     return out
 
 
+async def other_invoices_naming(session, company_id, doc_id: str, lot_ids) -> dict[str, list[dict]]:
+    """Per lot of ``lot_ids``, the open invoices other than ``doc_id`` whose lines name it
+    (_open_invoices): ``[{doc_id, doc_number, qty}]``, by invoice number. Whatever cost, if
+    any, they hold it at: an invoice that names a lot cannot ship it once it is gone."""
+    ids = {str(i) for i in lot_ids if i}
+    if not ids:
+        return {}
+    out: dict[str, list[dict]] = {}
+    for other, state in (await _open_invoices(session, company_id, exclude=doc_id, lots=ids)).items():
+        number = str(state.get("doc_number") or state.get("ref_id") or other)
+        named: dict[str, float] = {}
+        for li in state.get("line_items") or []:
+            lot = str(line_item_id(li) or "")
+            if lot in ids:
+                named[lot] = named.get(lot, 0.0) + float(li.get("quantity") or 0)
+        for lot, qty in named.items():
+            out.setdefault(lot, []).append({"doc_id": other, "doc_number": number, "qty": qty})
+    for docs in out.values():
+        docs.sort(key=lambda d: (d["doc_number"], d["doc_id"]))
+    return out
+
+
 async def _doc_number_of(session, company_id, doc_id: str) -> str:
     doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
     state = (doc.state if doc is not None else None) or {}
@@ -3506,7 +3528,8 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
     Cr cost of goods sold for the other, at the cost that invoice set them aside at.
     Inventory is not touched: it gave the goods up once, when they were set aside. The
     other invoice holds that many fewer units (recognized_cogs) and is costed for them
-    when it ships. Returns the moves for the notice: {sku, lot_id, doc_id, doc_number}."""
+    when it ships. Returns the invoices the goods were taken from, for the notice:
+    {sku, lot_id, doc_id, doc_number}."""
     if not moving:
         return []
     cogs_code = await resolve(session, company_id, R.COGS)

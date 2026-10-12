@@ -2278,6 +2278,34 @@ async def _refuse_unfillable_invoice_lines(session, company_id, entity_id: str, 
                 "Ship or void that invoice first, or invoice other stock.", sku=sku, docs=numbers))
 
 
+async def _shared_lots(session, company_id, entity_id: str, state: dict) -> list[dict]:
+    """The lots in stock this invoice's lines name that other open invoices name too
+    (auto_je.other_invoices_naming), more than the lot holds for all of them:
+    ``[{sku, lot_id, docs: [invoice numbers]}]``. Only one of them can ship such a lot.
+    Enough units for every invoice is nothing to tell."""
+    want: dict[str, float] = {}
+    for li in state.get("line_items") or []:
+        lot = str(line_item_id(li) or "")
+        if lot:
+            want[lot] = want.get(lot, 0.0) + float(li.get("quantity") or 0)
+    others = await auto_je.other_invoices_naming(session, company_id, entity_id, want)
+    if not others:
+        return []
+    rows = {r.entity_id: r.state or {} for r in (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(sorted(others))))).scalars().all()}
+    out: list[dict] = []
+    for lot_id, qty in want.items():
+        lot = rows.get(lot_id)
+        if (lot_id not in others or lot is None
+                or str(lot.get("status") or "").lower() not in ("available", "reserved")
+                or is_non_stock_line(lot.get("inventory_type"), lot.get("sell_by"))):
+            continue
+        if qty + sum(d["qty"] for d in others[lot_id]) > float(lot.get("quantity") or 0) + 1e-9:
+            out.append({"sku": lot.get("sku") or lot_id, "lot_id": lot_id,
+                        "docs": [d["doc_number"] for d in others[lot_id]]})
+    return out
+
+
 # Documents whose finalize posts the bill entry, each line to its own account when it names one.
 _BILL_POSTED = frozenset({"purchase_order", "bill"})
 
@@ -2311,6 +2339,9 @@ async def finalize_document(
         await _refuse_unsellable_lots(session, company_id, entity_id, row.state)
         await _refuse_unfillable_invoice_lines(session, company_id, entity_id, row.state,
                                                (_company.settings or {}) if _company else {})
+        shared_lots = await _shared_lots(session, company_id, entity_id, row.state)
+    else:
+        shared_lots = []
 
     # Snapshot scalar values early — avoids ORM lazy-load issues after multiple flush() calls.
     _initial_doc_state = dict(row.state)
@@ -2422,7 +2453,7 @@ async def finalize_document(
                                  f"cn-{entry.id}", "doc.finalized")
     if commit:
         await session.commit()
-    return {"event_id": entry.id}
+    return {"event_id": entry.id, "shared_lots": shared_lots}
 
 
 @router.post("/{entity_id}/finalize")
@@ -9695,16 +9726,25 @@ async def _fulfill_lines_impl(
     # while the lots still hold what this shipment takes, before any carve.
     _fulfill_tag = f"fulfill-{int(state.get('fulfill_cycle') or 0)}:l" + "-".join(
         str(i) for i in sorted({idx for idx, _proj, _take, _full in shipments}))
-    cost_moved: list[dict] = []
+    taken_from: list[dict] = []
     if doc_type == "invoice" and shipments and await auto_je.recognized_cogs(session, cid, entity_id) is not None:
         taken: dict[str, float] = {}
         for _idx, proj, take, _full in shipments:
             taken[proj.entity_id] = taken.get(proj.entity_id, 0.0) + take
         moving = await auto_je.moved_costs(session, cid, doc_id=entity_id, cycle_tag=_fulfill_tag, taken=taken)
-        cost_moved = await auto_je.create_for_cost_moves(
+        taken_from = await auto_je.create_for_cost_moves(
             session, company_id=cid, user_id=uid, doc_id=entity_id,
             doc_number=state.get("doc_number") or state.get("ref_id") or entity_id,
             cycle_tag=_fulfill_tag, moving=moving, ts=fulfillment_date)
+    if doc_type == "invoice":
+        # A lot shipped whole is gone for every other invoice naming it, including one that
+        # held none of it at a cost: name those too.
+        whole = {proj.entity_id: proj for _idx, proj, _take, full in shipments if full}
+        told = {(m["lot_id"], m["doc_id"]) for m in taken_from}
+        for lot_id, docs in (await auto_je.other_invoices_naming(session, cid, entity_id, whole)).items():
+            taken_from += [{"sku": whole[lot_id].state.get("sku") or lot_id, "lot_id": lot_id,
+                            "doc_id": d["doc_id"], "doc_number": d["doc_number"]}
+                           for d in docs if (lot_id, d["doc_id"]) not in told]
 
     # A part of a lot ships as its own lot carved off first; a line whose bound lot is
     # carved names the carved part from then on.
@@ -9817,7 +9857,7 @@ async def _fulfill_lines_impl(
 
     if commit:
         await session.commit()
-    return {"fulfillment_status": doc_fulfillment_status, "fulfilled": shipped, "cost_moved": cost_moved}
+    return {"fulfillment_status": doc_fulfillment_status, "fulfilled": shipped, "taken_from": taken_from}
 
 
 async def _line_action(session, company_id, user, owner: Projection, action: str,

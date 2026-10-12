@@ -586,8 +586,8 @@ def test_shipping_goods_another_invoice_set_aside_shows_a_lasting_notice(page, u
 
     page.wait_for_selector(".toast-container .toast--info", timeout=8000)
     toast = page.locator(".toast-container .toast--info").first.inner_text()
-    assert f"Lot {sku} was set aside for invoice {first_number}." in toast, toast
-    assert f"Invoice {first_number} will be costed when it ships." in toast, toast
+    assert f"Lot {sku} was on invoice {first_number}, which can no longer ship it." in toast, toast
+    assert f"Invoice {first_number} is costed when it ships other stock." in toast, toast
     page.wait_for_timeout(7000)  # longer than a passing notice stays
     assert page.locator(".toast-container .toast--info").count() == 1
     assert api.get(f"/items/{item_id}").json()["status"] == "sold"

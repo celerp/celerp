@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """A store order that ships goods another invoice had set aside takes their cost from
 that invoice, as shipping them by hand does, and leaves a notice saying whose goods they
-were and that the invoice is costed when it ships. Nobody is at the screen when a store
+were and that the invoice can no longer ship them. Nobody is at the screen when a store
 order completes, so the notice stays in the notification list until it is read."""
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ async def test_a_store_order_shipping_goods_set_aside_for_an_invoice_says_so(con
     assert held not in shipped and sum(shipped.values()) == 40.0
 
     [notice] = [n for n in await _notices(session, auth) if (n.i18n or {}).get("body") == MOVED]
-    assert sku in notice.body and number in notice.body and "costed when it ships" in notice.body
+    assert sku in notice.body and number in notice.body and "can no longer ship it" in notice.body
     assert notice.i18n["params"] == {"sku": sku, "doc": number}
     assert notice.action_url == f"/docs/{held}"
     assert notice.priority == "high"

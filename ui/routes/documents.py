@@ -3219,7 +3219,15 @@ celerpUpdateBulkAlloc();
             form = await request.form()
             op_key = submitted_operation_key(form)
             if action == "finalize":
-                await api.finalize_doc(token, entity_id)
+                answer = await api.finalize_doc(token, entity_id)
+                # A lot another invoice names too: only one of them can ship it. Say so in a
+                # notice that stays on the document page until it is closed.
+                shared = (answer.get("shared_lots") or []) if isinstance(answer, dict) else []
+                if shared:
+                    notice = " ".join(t("documents.lot_on_other_invoice", sku=s.get("sku") or s.get("lot_id"),
+                                        docs=", ".join(s.get("docs") or [])) for s in shared)
+                    return _R("", status_code=204, headers={**toast_header(notice, "info", persist=True),
+                                                            "HX-Redirect": f"/docs/{entity_id}"})
             elif action == "send":
                 sent_to = str(form.get("sent_to", "")).strip()
                 if not sent_to:
@@ -3952,9 +3960,9 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(error_message(e))
-        # Goods another invoice had set aside: say whose, and that it is costed when it
-        # ships, in a notice that stays until it is closed.
-        moved = (answer.get("cost_moved") or []) if isinstance(answer, dict) else []
+        # Goods another invoice named: say whose, and that it can no longer ship them, in a
+        # notice that stays until it is closed.
+        moved = (answer.get("taken_from") or []) if isinstance(answer, dict) else []
         if moved:
             notice = " ".join(t("documents.cost_moved_with_goods", sku=m.get("sku") or m.get("lot_id"),
                                 doc=m.get("doc_number") or m.get("doc_id")) for m in moved)
