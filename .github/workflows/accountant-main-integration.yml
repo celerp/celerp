@@ -1,50 +1,22 @@
-name: Accountant main integration validation
+name: Validate accountant PR head
 on:
   push:
     branches: [accountant-main-integration-20261012]
 permissions:
-  contents: write
+  contents: read
   actions: write
 jobs:
-  merge-test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  dispatch:
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Merge exact reviewed heads
-        run: |
-          git config user.name 'Noah Severs'
-          git config user.email '118095044+ngsevers@users.noreply.github.com'
-          git switch --detach b3f03c956d304b165ee0e65520a545f82c2c510f
-          git merge --no-commit --no-ff 15d387ffbf102dd1640ec99aa5b676cb71052041 || {
-            test "$(git diff --name-only --diff-filter=U)" = 'electron/package.json' || exit 1
-            git show :2:electron/package.json > electron/package.json
-            python -c 'import json,pathlib; p=pathlib.Path("electron/package.json"); s=p.read_text(); a="      \"app-main.js\","; assert s.count(a)==1; s=s.replace(a,a+chr(10)+"      \"api-wait.js\","); j=json.loads(s); assert "api-wait.js" in j["build"]["files"] and "handoff-protocol.js" in j["build"]["files"]; p.write_text(s)'
-            git add electron/package.json
-            test -z "$(git diff --name-only --diff-filter=U)"
-          }
-          git diff --check
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Test desktop startup paths
-        run: |
-          cd electron
-          corepack enable
-          corepack prepare pnpm@9.0.0 --activate
-          pnpm install --frozen-lockfile --ignore-scripts
-          pnpm exec jest --runInBand --forceExit tests/handoff-protocol.test.js tests/compatibility.test.js tests/api-wait.test.js
-      - name: Publish verified integration merge
+      - name: Check exact PR head and launch normal validation
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git commit -m 'Integrate current startup changes'
-          target=refs/heads/accountant-company-handoff-20261011
-          actual="$(git ls-remote origin "$target" | cut -f1)"
-          test "$actual" = 'b3f03c956d304b165ee0e65520a545f82c2c510f' || { echo 'PR moved'; exit 1; }
-          current_main="$(git ls-remote origin refs/heads/main | cut -f1)"
-          test "$current_main" = '15d387ffbf102dd1640ec99aa5b676cb71052041' || { echo 'Base moved'; exit 1; }
-          git push origin "HEAD:$target"
-          gh workflow run ci.yml --ref accountant-company-handoff-20261011
+          target=accountant-company-handoff-20261011
+          expected=eb6881ca6d4fee827bcee6a921e207ed2fe7a19b
+          current="$(gh api repos/celerp/celerp/git/ref/heads/$target --jq '.object.sha')"
+          test "$current" = "$expected" || { echo 'PR head moved, refusing stale validation'; exit 1; }
+          gh workflow run ci.yml --ref "$target"
+          gh workflow run build.yml --ref "$target"
