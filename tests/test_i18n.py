@@ -929,3 +929,39 @@ def test_no_catalog_carries_the_unused_revert_fulfillment_button():
          ":!tests", ":!ui/locales"],
         cwd=root, capture_output=True, text=True).stdout.split()
     assert not readers, f"code still reads btn.revert_fulfillment: {readers}"
+
+
+# Words that were wrong in the catalog: "Costumbre" (a habit) for a custom document,
+# "Pago récord" (a record-breaking payment), a "travel aboard a ship" for Ship to, a
+# literal "core" for the main item details, a doctor for the document column, and the
+# Spanish "disposed" status reading the same as "deleted".
+_KNOWN_FIXES = [
+    ("es", "doc.custom", "Personalizado…"),
+    ("es", "btn.record_payment", "Registrar pago"),
+    ("es", "page.ship_to", "Envíe a"),
+    ("es", "inventory.core_details", "Datos principales"),
+    ("es", "enum.item_status.disposed", "Dado de baja"),
+    ("id", "doc.custom", "Kustom…"),
+    ("vi", "doc.custom", "Tùy chỉnh…"),
+    ("vi", "inventory.core_details", "Chi tiết chính"),
+    ("pt", "inventory.core_details", "Detalhes principais"),
+    ("ja", "inventory.core_details", "基本情報"),
+    ("ar", "page.ship_to", "الشحن إلى"),
+    ("th", "th.doc", "เอกสาร #"),
+]
+
+
+@pytest.mark.parametrize("lang,key,value", _KNOWN_FIXES)
+def test_known_mistranslations_are_gone(lang, key, value):
+    assert _load_locale(lang)[key] == value
+
+
+@pytest.mark.parametrize("lang", sorted(p.stem for p in Path(_LOCALES_DIR).glob("*.json")))
+def test_item_status_labels_are_distinct_per_locale(lang):
+    """Each item status reads differently from every other in the status filter and the
+    badge, so a disposed item never looks deleted."""
+    by_value: dict[str, list[str]] = {}
+    for key, value in _load_locale(lang).items():
+        if key.startswith("enum.item_status."):
+            by_value.setdefault(value, []).append(key)
+    assert not {v: ks for v, ks in by_value.items() if len(ks) > 1}

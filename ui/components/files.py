@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from fasthtml.common import *
 
-from ui.components.attrs import hx_vals, esc_attr
+from ui.components.attrs import hx_vals
 from ui.i18n import t
 
 # Single source of truth for tag slugs - drives both UI and i18n keys
@@ -388,7 +388,7 @@ def files_section(
                     hx_delete=f"{file_action_base}/{fid}",
                     hx_target=f"#files-section-{sid}",
                     hx_swap="outerHTML",
-                    hx_confirm=f"{t('action.delete_file')}: {esc_attr(fname)}?",
+                    hx_confirm=t("files.confirm_delete", name=fname),
                     cls="btn btn--ghost btn--xs",
                     title=t("action.delete_file"),
                 ) if not no_delete else Span(),

@@ -142,3 +142,39 @@ def test_an_untyped_document_is_named_with_a_noun_in_french():
     """The fallback label names the thing ("Document"), never the verb "Documenter"."""
     i18n.set_lang("fr")
     assert detail_from_entry({"doc_number": "F-1"}, "doc.created") == "Document F-1"
+
+
+def _surfaced_event_types() -> set[str]:
+    """Every registered event type a history feed can show: the core catalog plus the
+    manufacturing module's run events, less the internal records and file events."""
+    import celerp_manufacturing.run_events  # noqa: F401  registers the module's types
+    from celerp.events.schemas import EVENT_SCHEMA_MAP
+    from ui.components.activity import _SYSTEM_EVENT_TYPES, _is_file_event
+    return {et for et in EVENT_SCHEMA_MAP
+            if et not in _SYSTEM_EVENT_TYPES and not _is_file_event(et)}
+
+
+def test_every_surfaced_event_type_has_a_label_in_every_locale():
+    """Red statement: list, note, reopen, return and manufacturing events had no label and
+    showed as title-cased English ("List Created", "Doc Reopened") in every language."""
+    import json
+    from pathlib import Path
+    from ui.components.activity import _EVENT_TYPES
+    missing = sorted(_surfaced_event_types() - set(_EVENT_TYPES))
+    assert not missing, missing
+    for path in sorted(Path("ui/locales").glob("*.json")):
+        catalog = json.loads(path.read_text())
+        unlabelled = [et for et in _EVENT_TYPES if not catalog.get(f"event.{et}")]
+        assert not unlabelled, (path.name, unlabelled)
+
+
+def test_line_kind_and_document_type_words_are_translated():
+    """Red statement: a purchase line's kind and a new document's type were printed as
+    title-cased English ("Expense", "Purchase Order") whatever the language."""
+    from ui.components.activity import _line_item_type
+    i18n.set_lang("es")
+    i18n._cached_load.cache_clear()
+    assert _line_item_type({"receive_as": "expense", "sku": "X"}) == "Gasto"
+    assert _line_item_type({"receive_as": "asset"}) == "Activo"
+    detail = detail_from_entry({"doc_type": "purchase_order", "doc_number": "PO-1"}, "doc.created")
+    assert "Purchase Order" not in detail and "PO-1" in detail

@@ -26,7 +26,7 @@ from celerp.services.units import (
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.security import not_permitted_redirect
-from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
+from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
@@ -181,7 +181,7 @@ def _measure_weight_field(val, unit, *, locked: bool, show: bool, avail=None):
         Input(type="number", value=("" if val is None else str(val)), step="any",
               data_name="weight", disabled=bool(locked), onblur="celerpAutoSave()",
               cls="cell-input cell-input--measure"),
-        Span(unit or "", cls="unit-label js-weight-unit", title=_title),
+        Span(display_unit(unit), cls="unit-label js-weight-unit", title=_title),
         cls="measure-weight", style=("" if show else "display:none"),
     )
 
@@ -222,12 +222,8 @@ def _enrich_line_meta(line_items: list[dict], item_meta: dict | None,
         item_meta_map[eid] = item_measure_meta(item, unit_map)
         if item.get("status"):
             item_status_map[eid] = item["status"]
-            _sdoc = str(item.get("status_doc_id") or "")
-            if _sdoc:
-                item_status_doc_map[eid] = (
-                    _sdoc,
-                    str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
-                )
+            if _sdoc := _status_doc(item):
+                item_status_doc_map[eid] = _sdoc
     if ident_mode != "sku":
         # Lines saved before barcodes were stamped: fill from the catalog item.
         for _li in line_items:
@@ -256,6 +252,12 @@ def _receive_kind_select(li: dict | None) -> FT:
     )
 
 
+def _status_doc(item: dict) -> tuple[str, str] | None:
+    """The document behind an item's status as (id, number), or None when either is missing."""
+    doc_id, doc_number = str(item.get("status_doc_id") or ""), str(item.get("status_doc_number") or "")
+    return (doc_id, doc_number) if doc_id and doc_number else None
+
+
 def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
     """Inventory item -> line-item picker payload, shared by both catalog
     autocomplete endpoints (lookup-by-SKU and typeahead search)."""
@@ -265,6 +267,7 @@ def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
         "description": item.get("name") or item.get("description") or "",
         "unit_price": unit_price,
         "sell_by": meta["sell_by"] or None,
+        "sell_by_label": display_unit(meta["sell_by"]) if meta["sell_by"] else None,
         "quantity": meta["quantity"] or 0,
         "hs_code": item.get("hs_code") or None,
         "country_of_origin": item.get("country_of_origin") or None,
@@ -279,6 +282,7 @@ def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
         "receive_as": default_receive_as(item.get("inventory_type"), meta["sell_by"]),
         "weight": meta["weight"],
         "weight_unit": meta["weight_unit"],
+        "weight_unit_label": display_unit(meta["weight_unit"]) if meta["weight_unit"] else None,
         "pieces": meta["pieces"],
         "qty_is_weight": meta["qty_is_weight"],
         "qty_is_pieces": meta["qty_is_pieces"],
@@ -840,13 +844,13 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
         if status_val == "reserved" and held is not None and abs(held[0] - held[1]) > 1e-9:
             key = "documents.status_reserved_over" if held[0] > held[1] else "documents.status_reserved_part"
             label = t(key, held=f"{held[0]:g}", qty=f"{held[1]:g}")
-        if status_doc and status_doc[0]:
+        if status_doc:
             doc_id, doc_number = status_doc
             badge_el = Span(
                 A(label, href=f"/inventory/{eid}", title=t("documents.view_in_catalog"), cls="badge__doc-link")
                 if eid else label,
                 ": ",
-                A(doc_number or doc_id.removeprefix("doc:"), href=f"/docs/{doc_id}",
+                A(doc_number, href=doc_href(doc_id),
                   title=t("documents.view_reserving_document"), cls="badge__doc-link"),
                 cls=f"badge {badge_cls}",
             )
@@ -1038,7 +1042,7 @@ def _line_number_field(unit_label: str, **attrs) -> FT:
     """A number field of a line action row, with the unit it is counted in after it."""
     return Span(
         Input(type="number", onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}", **attrs),
-        Span(unit_label, cls="meta-value meta-value--muted unit-label") if unit_label else None,
+        Span(display_unit(unit_label), cls="meta-value meta-value--muted unit-label") if unit_label else None,
         cls="li-qty-field",
     )
 
@@ -2571,12 +2575,8 @@ celerpUpdateBulkAlloc();
                         continue
                     if item.get("status"):
                         item_status_map[eid] = item["status"]
-                        _sdoc = str(item.get("status_doc_id") or "")
-                        if _sdoc:
-                            item_status_doc_map[eid] = (
-                                _sdoc,
-                                str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
-                            )
+                        if _sdoc := _status_doc(item):
+                            item_status_doc_map[eid] = _sdoc
                     if _need_meta:
                         item_meta_map[eid] = item_measure_meta(item, _unit_map)
                 if _ident_mode != "sku":
@@ -6221,8 +6221,8 @@ def _return_lot_picker(li: dict, i: int, unit_map: dict, meta: dict) -> FT | Non
     rows = []
     for j, lot in enumerate(lots):
         key, qty = f"lot_{i}_{j}", float(lot.get("quantity") or 0)
-        facts = [f"{t('documents.return_lot_free')}: {qty:g} {unit}".strip(),
-                 f"{t('th.weight')}: {measure(lot.get('weight'), lot.get('weight_unit') or '')}",
+        facts = [f"{t('documents.return_lot_free')}: {qty:g} {display_unit(unit)}".strip(),
+                 f"{t('th.weight')}: {measure(lot.get('weight'), display_unit(lot.get('weight_unit')))}",
                  f"{t('inventory.th_pieces')}: {measure(lot.get('pieces'))}"]
         rows.append(Div(
             Label(Input(type="checkbox", name=key, value=lot["item_id"], cls="return-lot-pick", disabled=True,
@@ -6430,7 +6430,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                         style="display:none",
                         hx_post=f"/docs/{entity_id}/fulfill-lines",
                         hx_swap="none",
-                        hx_confirm=f"{_fulfill_label}?",
+                        hx_confirm=t("documents.confirm_ship_goods"),
                         hx_disabled_elt="find button[type=submit]",
                         onsubmit="return submitLiBulkAction(this)",
                     )
@@ -7448,7 +7448,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                                       data_name="country_of_origin", oninput="celerpFieldEdited(this)",
                                       onblur="celerpAutoSave()", cls="cell-input cell-input--xs"),
                               cls="col-origin"))
-            _unit_span = Span(li.get("unit", "") or "", data_name="unit",
+            _unit_span = Span(display_unit(li.get("unit")), data_name="unit", **{"data-unit": li.get("unit") or ""},
                               cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
             if pol["counting"]:
                 # Static qty once counting (the system figure is On hand) — no input on a locked line.
@@ -7585,7 +7585,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cells.append(Td(Input(type="text", value="", data_name="country_of_origin",
                                       oninput="celerpFieldEdited(this)", onblur="celerpAutoSave()",
                                       cls="cell-input cell-input--xs"), cls="col-origin"))
-            _e_unit_span = Span("", data_name="unit", cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
+            _e_unit_span = Span("", data_name="unit", **{"data-unit": ""}, cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
             _e_qty_input = Input(type="number", value="1", step="any", data_name="quantity",
                                  **{"data-qty-measure": ""},
                                  oninput="celerpFieldEdited(this); celerpSyncQtyMeasure(this)",
@@ -8256,7 +8256,7 @@ function celerpFillRow(row, data) {{
     if (hsCodeEl && data.hs_code) hsCodeEl.value = data.hs_code;
     if (cooEl && data.country_of_origin) cooEl.value = data.country_of_origin;
     if (priceEl && data.unit_price != null) priceEl.value = data.unit_price;
-    if (unitEl && data.sell_by) unitEl.textContent = data.sell_by;
+    if (unitEl && data.sell_by) {{ unitEl.dataset.unit = data.sell_by; unitEl.textContent = data.sell_by_label || data.sell_by; }}
     if (entityIdEl) entityIdEl.value = data.entity_id || '';
     if (allowSplitEl) allowSplitEl.value = data.allow_splitting ? '1' : '';
     if (itemQtyEl && data.quantity) itemQtyEl.value = data.quantity;
@@ -8319,7 +8319,7 @@ function celerpFillRow(row, data) {{
     if (weightEl) {{ weightEl.disabled = !data.allow_splitting; weightEl.value = (data.weight == null) ? '' : data.weight; }}
     const wuEl = row.querySelector('.js-weight-unit');
     if (wuEl) {{
-        wuEl.textContent = data.weight_unit || (data.qty_is_weight ? (data.sell_by || '') : '');
+        wuEl.textContent = data.weight_unit_label || (data.qty_is_weight ? (data.sell_by_label || '') : '');
         wuEl.title = (data.weight != null) ? ('max: ' + data.weight + ' ' + wuEl.textContent) : '';
     }}
     const pcsUnitEl = row.querySelector('.measure-pcs .unit-label');
@@ -8944,7 +8944,7 @@ function _celerpCollectLines() {{
         const desc = row.querySelector('[data-name="description"]')?.value;
         const sku = row.querySelector('[data-name="sku"]')?.value;
         const qty = _celerpReadQuantity(row);
-        const unitEl = row.querySelector('[data-name="unit"]'); const unit = unitEl ? (unitEl.value || unitEl.textContent || '').trim() : '';
+        const unitEl = row.querySelector('[data-name="unit"]'); const unit = unitEl ? (unitEl.value || unitEl.dataset.unit || '').trim() : '';
         const price = parseFloat(row.querySelector('[data-name="unit_price"]')?.value || 0);
         const discPct = parseFloat(row.querySelector('[data-name="discount_pct"]')?.value || 0);
         const rate = _celerpTaxRate(row);
@@ -9690,7 +9690,7 @@ async function celerpCsvImport(input, entityId) {{
                     cls="li-return-qty", style="display:none;",
                     title=t("documents.memo_return_prompt", qty=f"{_out_qty:g}"))
             cells.extend([
-                Td(qty_label(li), _return_qty, cls="col-qty"),
+                Td(qty_label({**li, "unit": display_unit(li.get("unit") or li.get("sell_by"))}), _return_qty, cls="col-qty"),
                 Td(fmt_rate(li.get("unit_price"), currency), cls="cell--number col-unit-price"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "--", cls="col-disc"),
                 Td(format_value(_line_tax_rate(li) or None), cls="col-tax"),

@@ -12482,7 +12482,8 @@ async def write_off_stock(
             session, company_id=company_id, entity_id=disposed_eid, entity_type="item",
             event_type="item.written_off",
             data={"account": account, "qty": qty_out, "unit_cost": unit_cost, "cost_total": to_stored_float(value),
-                  "reason": l.get("comment") or None, "source_list_id": entity_id},
+                  "reason": l.get("comment") or None, "source_list_id": entity_id,
+                  "doc_number": row.state.get("ref_id") or None},
             actor_id=user.id, location_id=None, source="writeoff", idempotency_key=str(uuid.uuid4()),
             metadata_={"writeoff_id": entity_id},
         )

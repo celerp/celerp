@@ -100,3 +100,22 @@ def test_workflow_js_data_attr_translates():
 def test_duration_helper_translates():
     # module string with interpolation reaches output at render time.
     assert _fmt_minutes(90) == "XX 1H 30M"
+
+
+def test_written_off_badge_shows_number_and_links_to_list():
+    """Red statement: a written-off lot's badge printed the list's raw id ("list:...") and
+    linked to /docs/, where lists do not live."""
+    from ui.routes.inventory import _inventory_cell_renderers
+    schema = [{"key": "status", "type": "status", "options": [], "editable": False}]
+    render = _inventory_cell_renderers(schema)["status"]
+    html = to_xml(render("item:1", {"status": "disposed", "status_doc_id": "list:wo1",
+                                    "status_doc_number": "WO-0007"}))
+    assert 'href="/lists/list:wo1"' in html and ">WO-0007</a>" in html
+    bare = to_xml(render("item:1", {"status": "disposed", "status_doc_id": "list:wo1"}))
+    assert "list:wo1" not in bare and "<a" not in bare
+
+
+def test_doc_href_routes_lists_and_documents():
+    from ui.components.table import doc_href
+    assert doc_href("list:wo1") == "/lists/list:wo1"
+    assert doc_href("doc:INV-1") == "/docs/doc:INV-1"

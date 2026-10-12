@@ -235,6 +235,7 @@ class ItemWrittenOff(BaseModel):
     cost_total: float
     reason: str | None = None
     source_list_id: str | None = None
+    doc_number: str | None = None
 
 
 class ItemReturnedToSupplier(BaseModel):

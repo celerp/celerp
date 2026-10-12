@@ -40,3 +40,13 @@ async def test_a_write_off_with_cost_posts_its_value(session, client, auth):
     [je] = await _writeoff_entries(session, auth, wo)
     lines = {(e["account"], float(e["debit"] or 0), float(e["credit"] or 0)) for e in je["entries"]}
     assert lines == {("6950", 40.0, 0.0), (account, 0.0, 40.0)}
+
+
+async def test_a_written_off_lot_names_its_write_off_list(session, client, auth):
+    """Red statement: the write-off event carried no number, so the lot's badge had none."""
+    lot = await _available(client, auth, 0.0)
+    wo = await _write_off(client, auth, lot, 1)
+    ref = (await _state(session, auth, wo))["ref_id"]
+    assert ref
+    state = await _state(session, auth, lot)
+    assert (state["status_doc_id"], state["status_doc_number"]) == (wo, ref)

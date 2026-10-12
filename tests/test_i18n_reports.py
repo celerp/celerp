@@ -44,6 +44,7 @@ _XX = {
     "reports.no_expiring": "XX_NO_EXPIRING",
     "reports.related_settings": "XX_RELATED",
     "filter.custom": "XX_CUSTOM",
+    "filter.this_month": "XX_THIS_MONTH",
 }
 
 
@@ -130,3 +131,39 @@ def test_date_filter_bar_settings_gear_translates():
     html = to_xml(_date_filter_bar("/reports/ar-aging", "", "", "this_fy",
                                    settings_link="/settings/contacts?tab=payment-terms", lang="xx"))
     assert "XX_RELATED" in html
+
+
+def test_date_presets_follow_request_language_when_lang_omitted():
+    """Red statement: lang defaulted to "en", so a caller that left it out got English."""
+    labels = dict(_date_presets())
+    assert labels["this_month"] == "XX_THIS_MONTH"
+    assert "XX_THIS_MONTH" in to_xml(_date_filter_bar("/reports/pnl", "", "", "this_fy"))
+
+
+@pytest.mark.parametrize("path", [
+    "/accounting", "/reports/pnl", "/reports/trial-balance", "/reports/general-ledger",
+    "/reports/cash-flow", "/reports/extended-journal", "/reports/ledger/1000", "/reports/statement",
+])
+async def test_every_date_filter_bar_caller_renders_request_language(path):
+    """Red statement: the journal and the financial report pages built their period
+    buttons without a language, so they read "This month" in every language."""
+    import inspect
+    from unittest.mock import AsyncMock, patch
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui import api_client
+    from ui.app import app as ui_app
+    stubs = [patch.object(api_client, name, new=AsyncMock(return_value={}))
+             for name, _ in inspect.getmembers(api_client, inspect.iscoroutinefunction)]
+    for stub in stubs:
+        stub.start()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
+                               cookies={"celerp_token": make_test_token(), "celerp_lang": "xx"}) as c:
+            r = await c.get(path)
+    finally:
+        for stub in stubs:
+            stub.stop()
+    assert r.status_code == 200
+    assert "XX_THIS_MONTH" in r.text
+    assert "This month" not in r.text

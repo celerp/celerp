@@ -101,3 +101,63 @@ def test_payment_js_config_value_translates():
     # object built with t() at render, never spliced as English source.
     html = to_xml(_payment_section(_CREDIT_NOTE, bank_accounts=_BANKS))
     assert "XX_SELECTINV" in html
+
+
+def _es():
+    i18n.set_lang("es")
+
+
+def test_fulfill_confirm_has_opening_question_mark_in_es():
+    """Red statement: the confirm was built as the button label plus "?", so Spanish read
+    "Marcar como enviado?" with no opening mark."""
+    import re
+    from ui.routes.documents import _li_bulk_toolbar
+    _es()
+    html = to_xml(_li_bulk_toolbar("doc:1", False, show_fulfill=True))
+    confirm = re.search(r'id="li-bulk-fulfill-btn"[^>]*hx-confirm="([^"]*)"', html) \
+        or re.search(r'hx-confirm="([^"]*)"[^>]*id="li-bulk-fulfill-btn"', html)
+    assert confirm, html
+    assert confirm.group(1).startswith("¿") and confirm.group(1).endswith("?")
+
+
+def test_file_delete_confirm_is_a_catalog_sentence():
+    """Red statement: the confirm was "Eliminar archivo: name?", a label glued to a name."""
+    from ui.components.files import files_section
+    _es()
+    html = to_xml(files_section("doc", "doc:1", [{"id": "f1", "filename": "plano.pdf",
+                                                  "size": 10, "uploaded_at": "2026-01-01"}]))
+    assert "¿Eliminar el archivo plano.pdf?" in html
+
+
+def test_document_line_unit_displays_translated_and_saves_stored_value():
+    """Red statement: the unit cell showed the stored name ("piece"), and the save script
+    read the cell's text, so translating the text would have saved the translation."""
+    from ui.routes.documents import _doc_detail
+    _es()
+    doc = {"id": "doc:u1", "entity_id": "doc:u1", "doc_type": "invoice", "status": "draft",
+           "line_items": [{"sku": "U-1", "description": "Ring", "quantity": 3, "unit": "piece",
+                           "unit_price": 10}]}
+    html = to_xml(_doc_detail(doc))
+    assert 'data-unit="piece"' in html
+    assert '>unidad</span>' in html
+    assert "unitEl.dataset.unit" in html
+    assert "unitEl.textContent || ''" not in html
+
+
+def test_picker_payload_carries_unit_label():
+    """Red statement: the picker sent only the stored sell_by, so a picked line showed it raw."""
+    from ui.routes.documents import _picker_item
+    _es()
+    out = _picker_item({"sku": "C-1", "name": "Stone", "sell_by": "carat", "weight": 2,
+                        "weight_unit": "carat"}, 5, {})
+    assert out["sell_by"] == "carat" and out["sell_by_label"] == "quilate"
+    assert out["weight_unit_label"] == "quilate"
+
+
+def test_line_action_rows_show_the_unit_in_the_users_language():
+    """Red statement: Receive and Return rows printed the stored unit name next to the
+    quantity field."""
+    from ui.routes.documents import _receive_rows
+    _es()
+    html = to_xml(_receive_rows([{"sku": "R-1", "quantity": 2, "unit": "piece", "line_id": "l1"}], {}))
+    assert ">unidad</span>" in html and ">piece</span>" not in html

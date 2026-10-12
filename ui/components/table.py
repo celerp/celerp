@@ -57,6 +57,12 @@ def display_unit(name, fallback: str | None = None) -> str:
     return fallback if fallback is not None else raw
 
 
+def doc_href(doc_id) -> str:
+    """The page of a document or list, from its id."""
+    did = str(doc_id or "")
+    return f"/lists/{did}" if did.startswith("list:") else f"/docs/{did}"
+
+
 # Default column widths for fixed-layout tables.
 # Keys are schema field keys; "_attr_default" applies to any column not listed here.
 _DEFAULT_COL_WIDTHS: dict[str, str] = {
@@ -1141,7 +1147,7 @@ def _display_val(value, cell_type: str, currency: str | None = None,
         label = display_enum(s, domain) if s else ""
         if s and status_doc:
             doc_id, doc_number = status_doc
-            return Span(label, ": ", A(doc_number, href=f"/docs/{doc_id}", cls="badge__doc-link"), cls=badge_cls)
+            return Span(label, ": ", A(doc_number, href=doc_href(doc_id), cls="badge__doc-link"), cls=badge_cls)
         return Span(label or EMPTY, cls=badge_cls)
     if cell_type == "money":
         try:

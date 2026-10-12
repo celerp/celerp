@@ -212,7 +212,7 @@ def setup_routes(app):
 # View components
 # ---------------------------------------------------------------------------
 
-def _date_presets(lang: str = "en") -> list[tuple[str, str]]:
+def _date_presets(lang: str | None = None) -> list[tuple[str, str]]:
     return [
         ("this_month", t("filter.this_month", lang)),
         ("last_3m", t("filter.last_3m", lang)),
@@ -273,7 +273,7 @@ def _parse_dates(request: Request, fiscal_year_start: str = "01-01") -> tuple[st
 
 
 def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset: str,
-                     settings_link: str = "", extra_params: str = "", lang: str = "en") -> FT:
+                     settings_link: str = "", extra_params: str = "", lang: str | None = None) -> FT:
     preset_links = []
     for key, label in _date_presets(lang):
         if key == "custom":

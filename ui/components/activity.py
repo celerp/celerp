@@ -16,8 +16,9 @@ from decimal import Decimal, InvalidOperation
 from fasthtml.common import *
 from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA, cost_columns
 from celerp.services.pricing import PRICE_LISTS_FALLBACK
-from ui.i18n import t, get_lang, category_label, field_label, price_list_label
-from ui.components.table import EMPTY, fmt_money, fmt_rate
+from celerp.services.units import line_receive_kind
+from ui.i18n import t, get_lang, category_label, doc_type_label, field_label, price_list_label
+from ui.components.table import EMPTY, display_enum, fmt_money, fmt_rate
 from ui.components.deleted_items import deleted_label
 
 # Known ledger event types. The label for each is resolved at render time via
@@ -49,6 +50,25 @@ _EVENT_TYPES: tuple[str, ...] = (
     "crm.deal.lost", "crm.deal.deleted", "crm.deal.reopened",
     "memo.created", "memo.returned",
     "scan.checked_in", "scan.checked_out",
+    "acc.period.closed", "acc.period.reopened", "acc.reconciliation.reopened", "doc.closed",
+    "doc.linked", "doc.note_added", "doc.note_removed", "doc.note_updated", "doc.patched",
+    "doc.pushed", "doc.receive_undone", "doc.renumbered", "doc.reopened", "doc.return_received",
+    "doc.return_undone", "doc.shared_import", "doc.unvoided", "item.cost_adjusted",
+    "item.landed_cost.allocated", "item.patched", "item.recipe.set", "item.returned_to_supplier",
+    "item.snapshot", "item.workflow.set", "item.written_off", "list.closed", "list.created",
+    "list.finalized", "list.note_added", "list.note_removed", "list.note_updated", "list.patched",
+    "list.reopened", "list.reverted", "list.updated", "list.voided", "mfg.operation.recorded",
+    "mfg.order.cancelled", "mfg.order.completed", "mfg.order.created", "mfg.order.issued",
+    "mfg.order.on_hold", "mfg.order.received", "mfg.order.resumed", "mfg.order.scheduled",
+    "mfg.order.started", "mfg.order.returned", "mfg.order.receipt_undone", "mfg.order.reopened",
+    "mfg.order.wip_reconciled", "mfg.order.output_repaired", "mp.listing.created",
+    "mp.listing.published", "mp.listing.unpublished", "mp.listing.updated", "mp.order.cancelled",
+    "mp.order.fulfilled", "mp.order.received", "received_doc.booked", "received_doc.draft_updated",
+    "received_doc.imported", "received_doc.reconciled", "received_doc.revised",
+    "shop.sync.disabled", "shop.sync.enabled", "sub.cancelled", "sub.created", "sub.expired",
+    "sub.generated", "sub.paused", "sub.resumed", "sub.updated", "sys.api_key.created",
+    "sys.api_key.revoked", "sys.backup.created", "sys.company.created", "sys.user.created",
+    "sys.user.deactivated",
 )
 EVENT_TYPE_LABELS: dict[str, str] = {et: f"event.{et}" for et in _EVENT_TYPES}
 
@@ -210,9 +230,8 @@ def _line_item_type(li: dict) -> str:
     has no catalog access, so a service catalog item on an invoice reads as 'Stock'."""
     if not isinstance(li, dict):
         return t("activity.non_stock")
-    ra = li.get("receive_as")
-    if ra:
-        return str(ra).replace("_", " ").strip().capitalize()
+    if li.get("receive_as"):
+        return t(f"doc.{line_receive_kind(li)}")
     if li.get("sku") or li.get("item_id") or li.get("entity_id"):
         return t("activity.stock")
     return t("activity.non_stock")
@@ -223,6 +242,9 @@ _SYSTEM_EVENT_TYPES = frozenset({
     "acc.journal_entry.created",
     "acc.journal_entry.posted",
     "acc.journal_entry.voided",
+    "payment_batch.recorded",
+    "line_action.recorded",
+    "sys.migration.applied",
 })
 
 # metadata_.reason values that mark an event as a mechanical side-effect of a
@@ -385,7 +407,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None,
     doc_ref = data.get("doc_number") or data.get("ref_id") or data.get("ref") or ""
     if event_type == "doc.created":
         doc_type = data.get("doc_type", "")
-        label = doc_type.replace("_", " ").title() if doc_type else t("activity.document")
+        label = doc_type_label(doc_type) if doc_type else t("activity.document")
         return f"{label} {doc_ref}" if doc_ref else label
     if event_type == "doc.finalized":
         return doc_ref or ""
@@ -950,7 +972,7 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None,
     if etype == "item.status.set" and data.get("source_doc_id"):
         status = str(data.get("new_status") or "")
         verb = {"sold": t("event.item.fulfilled"), "memo_out": t("activity.consigned")}.get(
-            status, (status.replace("_", " ").title() or t("field.status")))
+            status, display_enum(status, "item_status") or t("field.status"))
         content = Span(f"{verb} ", _doc_link(data.get("source_doc_id"), data.get("doc_number")))
         return [(content, "", "")]
 

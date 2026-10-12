@@ -20039,14 +20039,18 @@ class TestStatusBadgeReservingDoc:
         assert "badge--reserved" in html
         assert 'href="/inventory/item:r1"' in html
 
-    def test_status_badge_doc_number_falls_back_to_doc_id(self):
+    def test_status_badge_without_doc_number_shows_no_raw_id(self):
+        """A causing document with no number gives no doc link: the badge never shows
+        a raw document id in place of a number."""
         from fasthtml.common import to_xml
-        from ui.routes.documents import _item_status_badge_cell
+        from ui.routes.documents import _item_status_badge_cell, _status_doc
 
+        assert _status_doc({"status_doc_id": "doc:owner-1", "status_doc_number": ""}) is None
+        assert _status_doc({"status_doc_id": "doc:owner-1", "status_doc_number": "SO-7"}) == ("doc:owner-1", "SO-7")
         html = to_xml(_item_status_badge_cell(
-            "reserved", "item:r1", status_doc=("doc:owner-1", "")))
-        assert 'href="/docs/doc:owner-1"' in html
-        assert ">owner-1</a>" in html
+            "reserved", "item:r1", status_doc=_status_doc({"status_doc_id": "doc:owner-1"})))
+        assert "owner-1" not in html
+        assert 'href="/inventory/item:r1"' in html
 
 
 def test_doc_page_status_shows_reserving_doc_number():

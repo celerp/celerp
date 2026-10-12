@@ -557,7 +557,8 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # links back to the source write-off list, where the reason and destination account
         # are single-sourced (DRY); nothing about them is copied onto the item row.
         current["status"] = "disposed"
-        _stamp_status_doc(current, {"source_doc_id": data.get("source_list_id")})
+        _stamp_status_doc(current, {"source_doc_id": data.get("source_list_id"),
+                                    "doc_number": data.get("doc_number")})
     elif event_type == "item.returned_to_supplier":
         # Back with the supplier: the lot leaves stock, its badge links to the document the
         # goods came in on, and consigned goods stop being held on consignment.
