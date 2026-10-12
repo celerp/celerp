@@ -1246,3 +1246,91 @@ async def test_a_stripe_payment_the_released_version_recorded_is_the_companys_to
     assert "held_by" not in (await _doc_state(client, tok, eid))["payments"][0]
     r = await _remove_payment(client, tok, eid, "void")
     assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_actual_online_fees_post_once_and_refund_as_separate_cash_movements(
+        client, session, payments_on):
+    import hashlib
+    import uuid
+    from decimal import Decimal
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_payment, receive_fees
+
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    payment = {"company_id": cid, "entity_id": eid, "reference": "pi_fee_1",
+               "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+               "context": dict(BOOKS), "managed": True}
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_fee_1",
+            "total_minor": 520, "processor_minor": 270,
+            "platform_minor": 250, "other_minor": 0}
+    event = {"company_id": cid, "entity_id": eid, "reference": "pi_fee_1",
+             "fees": fees, "occurred_at": PAID.isoformat()}
+    assert await receive_fees(event) is False
+    assert await receive_payment(payment)
+    assert await receive_fees(event)
+    assert await receive_fees(event)
+    token = hashlib.sha256(b"txn_fee_1").hexdigest()[:24]
+    journal = await session.get(
+        Projection, (uuid.UUID(cid), f"je:auto:{eid}:online-fees:{token}"),
+        populate_existing=True,
+    )
+    assert journal is not None and journal.state["status"] == "posted"
+    lines = journal.state["entries"]
+    debit = sum(Decimal(str(v.get("debit") or 0)) for v in lines)
+    credit = sum(Decimal(str(v.get("credit") or 0)) for v in lines)
+    assert debit == credit == Decimal("5.2")
+    assert sum(Decimal(str(v.get("debit") or 0)) for v in lines
+               if v["account"] != "1111") == Decimal("5.2")
+    assert sum(Decimal(str(v.get("credit") or 0)) for v in lines
+               if v["account"] == "1111") == Decimal("5.2")
+    assert (await _doc_state(client, tok, eid))["amount_outstanding"] == 0
+
+    reversed_fees = {**fees, "transaction_id": "txn_fee_refund",
+                     "total_minor": -100, "processor_minor": 0,
+                     "platform_minor": -100}
+    assert await receive_fees({**event, "fees": reversed_fees})
+    refund_token = hashlib.sha256(b"txn_fee_refund").hexdigest()[:24]
+    refund_je = await session.get(
+        Projection, (uuid.UUID(cid), f"je:auto:{eid}:online-fees:{refund_token}"),
+        populate_existing=True,
+    )
+    assert refund_je is not None and refund_je.state["status"] == "posted"
+    assert sum(Decimal(str(v.get("debit") or 0)) for v in refund_je.state["entries"]
+               if v["account"] == "1111") == Decimal("1")
+    with pytest.raises(ValueError, match="other details"):
+        await receive_fees({**event, "fees": {**fees, "total_minor": 521, "other_minor": 1}})
+
+
+@pytest.mark.asyncio
+async def test_online_fee_contract_rejects_inconsistent_and_wrong_company(
+        client, session, payments_on):
+    import uuid
+    from celerp.services.payments import receive_payment, receive_fees
+    from celerp.models.projections import Projection
+
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    assert await receive_payment({
+        "company_id": cid, "entity_id": eid, "reference": "pi_fee_guard",
+        "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+        "context": dict(BOOKS), "managed": True})
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_guard",
+            "total_minor": 10, "processor_minor": 10, "platform_minor": 0,
+            "other_minor": 0}
+    event = {"company_id": cid, "entity_id": eid, "reference": "pi_fee_guard",
+             "fees": fees, "occurred_at": PAID.isoformat()}
+    for changes in (
+        {"fees": {**fees, "total_minor": 11}},
+        {"fees": {**fees, "platform_minor": True}},
+        {"fees": {**fees, "total_minor": 0.1}},
+        {"fees": {**fees, "currency": "eur"}},
+        {"reference": "pi_not_a_payment"},
+        {"company_id": str(uuid.uuid4())},
+        {"occurred_at": "2026-10-12"},
+    ):
+        assert await receive_fees({**event, **changes}) is False
+    assert await receive_fees(event) is True
