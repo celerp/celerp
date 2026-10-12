@@ -1,0 +1,54 @@
+name: Accountant write-off validation
+on:
+  push:
+    branches: [accountant-writeoff-validation-20261012]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+      ALLOW_INSECURE_JWT: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply candidate patch
+        run: |
+          cat .github/writeoff-part-1.b64 .github/writeoff-part-2.b64 | tr -d ' \n' | base64 -d | gzip -dc > /tmp/writeoff.patch
+          git switch --detach 814d8f9983698890e4a88ace3fa543781143eeae
+          git apply --check /tmp/writeoff.patch
+          git apply --index /tmp/writeoff.patch
+          git diff --cached --check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          pip install uv
+          uv pip install --system -e ".[dev]" -c constraints.txt
+      - name: Regenerate canonical module lock
+        run: |
+          python scripts/gen_first_party_lock.py
+          git add default_modules/first_party.lock.json
+          git diff --cached --check
+      - name: Test write-off correction and neighbors
+        run: |
+          pytest -q tests/test_writeoff_cost_restatement.py tests/test_posting_roles_kept_stock.py tests/test_cost_restatement.py tests/test_writeoff_zero_cost.py --tb=short --no-cov -x
