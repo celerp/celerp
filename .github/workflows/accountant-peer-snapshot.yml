@@ -1,0 +1,21 @@
+name: Accountant peer source snapshot
+on:
+  push:
+    branches: [accountant-peer-validation-20261012]
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ca0fb3df2273794c13589488ac1a3f346cfc0b88
+      - name: Capture reviewed source tree
+        run: git archive --format=tar.gz --output=/tmp/peer-reviewed-source.tar.gz ca0fb3df2273794c13589488ac1a3f346cfc0b88
+      - uses: actions/upload-artifact@v4
+        with:
+          name: peer-reviewed-source
+          path: /tmp/peer-reviewed-source.tar.gz
+          retention-days: 1
