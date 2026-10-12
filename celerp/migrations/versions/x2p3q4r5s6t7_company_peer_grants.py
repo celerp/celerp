@@ -48,6 +48,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # This is a durable identity ledger. An older release cannot preserve the
+    # mappings or revoke active grants, so refuse a destructive downgrade.
+    conn = op.get_bind()
+    for table in ("company_peer_identities", "company_peer_grants"):
+        if conn.execute(sa.text(f"SELECT EXISTS (SELECT 1 FROM {table})")).scalar():
+            raise RuntimeError("Cannot downgrade while company integrations exist")
     op.drop_index("ix_company_peer_identities_company", table_name="company_peer_identities")
     op.drop_table("company_peer_identities")
     op.drop_index("ix_company_peer_grants_company_id", table_name="company_peer_grants")

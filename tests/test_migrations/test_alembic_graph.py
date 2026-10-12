@@ -92,6 +92,50 @@ def test_this_release_runs_in_order_after_the_last_release():
     assert list(reversed(walked)) == [RELEASE_HEAD, *RELEASE_CHAIN]
 
 
+@pytest.mark.parametrize("table", ["company_peer_grants", "company_peer_identities"])
+def test_peer_downgrade_preserves_persisted_records(table):
+    with throwaway_db("peer_rollback") as (_, sync_url):
+        upgrade_to(sync_url, head_rev())
+        eng = create_engine(sync_url)
+        company_id = str(uuid.uuid4())
+        try:
+            with eng.begin() as conn:
+                conn.execute(text(
+                    "INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                    "VALUES (:id, 'Peer', 'peer', '{}', true, now())"),
+                    {"id": company_id})
+                if table == "company_peer_grants":
+                    conn.execute(text(
+                        "INSERT INTO company_peer_grants "
+                        "(id, company_id, source_company_id, token_hash, label, scopes, "
+                        "created_at, expires_at) VALUES "
+                        "(:id, :company, :source, :digest, 'Firm', '[\"contacts\"]', "
+                        "now(), now() + interval '1 day')"), {
+                            "id": str(uuid.uuid4()), "company": company_id,
+                            "source": str(uuid.uuid4()), "digest": "a" * 64,
+                        })
+                else:
+                    conn.execute(text(
+                        "INSERT INTO company_peer_identities "
+                        "(id, company_id, source_company_id, entity_type, source_entity_id, "
+                        "source_key_hash, target_entity_id, last_revision) "
+                        "VALUES (:id, :company, :source, 'contact', 'old', :digest, 'contact:new', 1)"), {
+                            "id": str(uuid.uuid4()), "company": company_id,
+                            "source": str(uuid.uuid4()), "digest": "b" * 64,
+                        })
+        finally:
+            eng.dispose()
+        with pytest.raises(RuntimeError, match="Cannot downgrade while company integrations exist"):
+            _downgrade_to(sync_url, "w1n2o3p4q5r6")
+        eng = create_engine(sync_url)
+        try:
+            with eng.connect() as conn:
+                assert conn.execute(text(f"SELECT count(*) FROM {table}")).scalar_one() == 1
+                assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == head_rev()
+        finally:
+            eng.dispose()
+
+
 def _without_instance_meta(schema: dict[str, set]) -> dict[str, set]:
     return {kind: {row for row in rows if not (isinstance(row, tuple) and row[0] == "instance_meta")}
             for kind, rows in schema.items()}
