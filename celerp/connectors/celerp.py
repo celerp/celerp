@@ -39,16 +39,19 @@ def _target_url(ctx: ConnectorContext) -> str:
     return raw.rstrip("/") + "/company-peers/contacts"
 
 
-async def _read_page(company_id: uuid.UUID, after: str) -> list[tuple[str, int, dict]]:
+async def _read_page(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
     from celerp.db import get_session_ctx
     async with get_session_ctx() as session:
-        rows = (await session.execute(select(
+        query = select(
             Projection.entity_id, Projection.version, Projection.state,
         ).where(
             Projection.company_id == company_id,
             Projection.entity_type == "contact",
             Projection.entity_id > after,
-        ).order_by(Projection.entity_id).limit(_PAGE))).all()
+        )
+        if since is not None:
+            query = query.where(Projection.updated_at >= since)
+        rows = (await session.execute(query.order_by(Projection.entity_id).limit(_PAGE))).all()
     return [(str(entity_id), int(version), dict(state or {})) for entity_id, version, state in rows]
 
 
@@ -74,10 +77,12 @@ class CelerpConnector(ConnectorBase):
         if not isinstance(ctx.access_token, str) or not ctx.access_token.startswith("cp1."):
             raise ValueError("No scoped receiving credential is connected")
         company_id = uuid.UUID(ctx.company_id)
+        from celerp.connectors.sync_runner import _last_success_watermark
+        since = await _last_success_watermark(ctx.company_id, self.name, "contacts_out")
         after = ""
         async with RateLimitedClient(public_only=True) as client:
             while True:
-                page = await _read_page(company_id, after)
+                page = await _read_page(company_id, after, since)
                 if not page:
                     break
                 for entity_id, revision, state in page:

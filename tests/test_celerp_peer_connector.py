@@ -37,8 +37,9 @@ async def test_versioned_contact_outbound_and_retry_reporting(monkeypatch):
     company = str(uuid.uuid4())
     first = [("contact:a", 3, {"name": "A", "contact_type": "vendor", "private_note": "not sent"}),
              ("contact:b", 2, {"name": "B"})]
-    async def read_page(company_id, after):
+    async def read_page(company_id, after, since):
         assert str(company_id) == company
+        assert since is None
         return first if not after else []
     class Client:
         def __init__(self, **kwargs):
@@ -50,6 +51,10 @@ async def test_versioned_contact_outbound_and_retry_reporting(monkeypatch):
             sent.append(kwargs)
             return SimpleNamespace(status_code=200 if len(sent) == 1 else 409,
                                    json=lambda: {"status": "updated"})
+    from celerp.connectors import sync_runner
+    async def no_prior_sync(*args):
+        return None
+    monkeypatch.setattr(sync_runner, "_last_success_watermark", no_prior_sync)
     monkeypatch.setattr(peer, "_read_page", read_page)
     monkeypatch.setattr(peer, "RateLimitedClient", Client)
     connector = peer.CelerpConnector()
@@ -74,3 +79,26 @@ def test_peer_credential_form_uses_key_and_https_origin():
     for url in ("", "http://accountant.example.com", "https://accountant.example.com/path",
                 "https://accountant.example.com?x=1", "https://user@accountant.example.com"):
         assert _store_url_error(url, "celerp") is not None
+
+
+@pytest.mark.asyncio
+async def test_contact_sync_resumes_from_last_successful_run(monkeypatch):
+    from datetime import datetime, timezone
+    from celerp.connectors import sync_runner
+
+    watermark = datetime(2026, 10, 12, tzinfo=timezone.utc)
+    seen = []
+    async def last_success(company_id, connector, entity):
+        assert connector == "celerp" and entity == "contacts_out"
+        return watermark
+    async def read_page(company_id, after, since):
+        seen.append((str(company_id), after, since))
+        return []
+    monkeypatch.setattr(sync_runner, "_last_success_watermark", last_success)
+    monkeypatch.setattr(peer, "_read_page", read_page)
+    result = await peer.CelerpConnector().sync_contacts_out(ConnectorContext(
+        company_id=str(uuid.uuid4()), store_handle="https://peer.example",
+        access_token="cp1.secret",
+    ))
+    assert result.ok
+    assert len(seen) == 1 and seen[0][1:] == ("", watermark)
