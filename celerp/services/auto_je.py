@@ -1010,6 +1010,7 @@ async def create_for_online_fees(
     import json
     from celerp.events.engine import find_event_by_idempotency
     from celerp.services.business_time import business_date_at
+    from celerp.services.posting_dates import correction_day
     from celerp.models.company import Company
 
     # The provider identifies each settled fee adjustment independently. The same
@@ -1065,7 +1066,8 @@ async def create_for_online_fees(
                         "debit": amount if converted < 0 else 0.0,
                         "credit": amount if converted > 0 else 0.0})
     company = await session.get(Company, company_id)
-    day = business_date_at(occurred_at, ((company.settings if company else None) or {}).get("timezone"))
+    original_day = business_date_at(occurred_at, ((company.settings if company else None) or {}).get("timezone"))
+    day = await correction_day(session, company_id, original_day) or original_day
     await _emit_auto_posted_je(
         session, company_id=company_id, user_id=user_id,
         je_id=f"je:auto:{doc_id}:online-fees:{token}",

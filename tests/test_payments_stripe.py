@@ -1334,3 +1334,40 @@ async def test_online_fee_contract_rejects_inconsistent_and_wrong_company(
     ):
         assert await receive_fees({**event, **changes}) is False
     assert await receive_fees(event) is True
+
+
+
+@pytest.mark.asyncio
+async def test_delayed_actual_fees_post_in_open_period_without_backdating(client, session, payments_on):
+    import hashlib
+    import uuid
+    from datetime import date
+    from celerp.models.company import Company
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_payment, receive_fees
+
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    assert await receive_payment({
+        "company_id": cid, "entity_id": eid, "reference": "pi_fee_late",
+        "amount_minor": 107000, "currency": "usd",
+        "paid_at": PAID.isoformat(), "context": dict(BOOKS), "managed": True})
+    company = await session.get(Company, uuid.UUID(cid))
+    company.settings = {**company.settings, "lock_date": "2026-09-30"}
+    await session.commit()
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_fee_late",
+            "total_minor": 100, "processor_minor": 100,
+            "platform_minor": 0, "other_minor": 0}
+    assert await receive_fees({
+        "company_id": cid, "entity_id": eid, "reference": "pi_fee_late",
+        "fees": fees, "occurred_at": PAID.isoformat()})
+    token = hashlib.sha256(b"txn_fee_late").hexdigest()[:24]
+    row = await session.get(
+        Projection, (uuid.UUID(cid), f"je:auto:{eid}:online-fees:{token}"),
+        populate_existing=True)
+    assert row is not None and row.state["status"] == "posted"
+    assert date.fromisoformat(str(row.state["ts"])[:10]) > date(2026, 9, 30)
+    assert await receive_fees({
+        "company_id": cid, "entity_id": eid, "reference": "pi_fee_late",
+        "fees": fees, "occurred_at": PAID.isoformat()})
