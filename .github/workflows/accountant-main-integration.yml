@@ -19,9 +19,11 @@ jobs:
           git config user.email '118095044+ngsevers@users.noreply.github.com'
           git switch --detach b3f03c956d304b165ee0e65520a545f82c2c510f
           git merge --no-commit --no-ff 15d387ffbf102dd1640ec99aa5b676cb71052041 || {
-            git status --short
-            git diff --name-only --diff-filter=U
-            exit 1
+            test "$(git diff --name-only --diff-filter=U)" = 'electron/package.json' || exit 1
+            git show :2:electron/package.json > electron/package.json
+            python -c 'import json,pathlib; p=pathlib.Path("electron/package.json"); s=p.read_text(); a="      \"app-main.js\","; assert s.count(a)==1; s=s.replace(a,a+"\\n      \"api-wait.js\","); j=json.loads(s); assert "api-wait.js" in j["build"]["files"] and "handoff-protocol.js" in j["build"]["files"]; p.write_text(s)'
+            git add electron/package.json
+            test -z "$(git diff --name-only --diff-filter=U)"
           }
           git diff --check
       - uses: actions/setup-node@v4
