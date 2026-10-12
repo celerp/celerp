@@ -35,17 +35,18 @@ async def test_issue_verify_and_revoke(db):
     source = uuid.uuid4()
     async with factory() as s:
         grant, key = await issue(s, company_id=target, source_company_id=source,
-                                 label="Client books", scopes=frozenset({"invoices", "contacts"}), now=AT)
+                                 label="Client books", scopes=frozenset({"contacts"}), now=AT)
         gid = grant.id
         await s.commit()
         assert key not in repr(grant)
         assert key not in str(grant.__dict__)
         assert _parse(key)[:2] == (target, gid)
     async with factory() as s:
-        assert (await authenticate(s, key, source_company_id=source, scope="invoices", now=AT)).id == gid
+        assert (await authenticate(s, key, source_company_id=source, scope="contacts", now=AT)).id == gid
         for invalid in [
                 {"source_company_id": uuid.uuid4(), "scope": "invoices", "now": AT},
                 {"source_company_id": source, "scope": "payments", "now": AT},
+                {"source_company_id": source, "scope": "invoices", "now": AT},
                 {"source_company_id": source, "scope": "invoices", "now": AT + timedelta(days=30)},
                 {"source_company_id": source, "scope": "manage_users", "now": AT}]:
             with pytest.raises(HTTPException):
@@ -90,3 +91,16 @@ async def test_active_grant_capacity_and_scope_validation(db):
             await issue(s, company_id=target, source_company_id=uuid.uuid4(),
                         label="A", scopes=frozenset({"administration"}), now=AT)
         await s.rollback()
+
+
+def test_unimplemented_peer_operations_cannot_be_pre_authorized():
+    from pydantic import ValidationError
+    from celerp.routers.company_peers import GrantRequest
+
+    assert SCOPES == frozenset({"contacts"})
+    target = uuid.uuid4()
+    common = {"source_company_id": target, "label": "Reviewed contact-only access"}
+    assert GrantRequest(**common, scopes={"contacts"}).scopes == {"contacts"}
+    for dormant in ("items", "invoices", "payments", "inventory", "attachments"):
+        with pytest.raises(ValidationError):
+            GrantRequest(**common, scopes={dormant})
