@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import hashlib
-import io
 import json
 import logging
 import tarfile
@@ -29,14 +28,21 @@ from pathlib import Path
 import httpx
 
 from celerp.config import settings
-from celerp.services.backup import BackupResult, _parse_key, decrypt, dump_database, encrypt
+from celerp.services.backup import (
+    _CHUNK,
+    ENC_OVERHEAD,
+    BackupResult,
+    _parse_key,
+    add_bytes_member,
+    add_file_member,
+    decrypt_file,
+    disk_full_as_error,
+    dump_database,
+    encrypt_chunks,
+)
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
-
-_CHUNK = 1024 * 1024  # 1 MiB read window for streaming hashes
-# Each AES-256-GCM blob carries a 12-byte nonce + 16-byte tag over the plaintext.
-_ENC_OVERHEAD = 28
 
 
 def _members() -> list[tuple[str, Path]]:
@@ -78,28 +84,46 @@ async def _missing(client: httpx.AsyncClient, hashes: set[str]) -> set[str]:
     return set(r.json()["missing"])
 
 
-async def _put_blob(client: httpx.AsyncClient, blob_hash: str, plaintext: bytes, key: bytes) -> int:
-    """Encrypt and upload one blob via a presigned PUT. Returns stored (encrypted) size."""
+async def _put_blob(client: httpx.AsyncClient, blob_hash: str, path: Path, key: bytes) -> int:
+    """Encrypt the file at *path* and upload it via a presigned PUT, a chunk at a time.
+    Returns stored (encrypted) size."""
     r = await client.post(f"/repo/blob/{blob_hash}/upload-url")
     r.raise_for_status()
-    encrypted = await asyncio.to_thread(encrypt, plaintext, key)
-    async with httpx.AsyncClient(timeout=300) as s3:
-        put = await s3.put(r.json()["url"], content=encrypted)
-        put.raise_for_status()
-    return len(encrypted)
+    size = path.stat().st_size + ENC_OVERHEAD
+    chunks = encrypt_chunks(path, key)
+
+    async def body():
+        while (data := await asyncio.to_thread(next, chunks, None)) is not None:
+            yield data
+
+    try:
+        async with httpx.AsyncClient(timeout=300) as s3:
+            # A presigned PUT needs the length up front; the body is streamed to it.
+            put = await s3.put(r.json()["url"], content=body(), headers={"Content-Length": str(size)})
+            put.raise_for_status()
+    finally:
+        chunks.close()
+    return size
 
 
-async def _get_blob(client: httpx.AsyncClient, blob_hash: str, key: bytes) -> bytes:
-    """Download, decrypt and integrity-check one blob against its content hash."""
+async def _get_blob(client: httpx.AsyncClient, blob_hash: str, key: bytes, dest: Path) -> None:
+    """Download one blob, decrypt it to *dest* and check it against its content hash, a
+    chunk at a time. A damaged blob removes *dest* and raises."""
     r = await client.get(f"/repo/blob/{blob_hash}/download-url")
     r.raise_for_status()
-    async with httpx.AsyncClient(timeout=300) as s3:
-        dl = await s3.get(r.json()["url"])
-        dl.raise_for_status()
-    plaintext = await asyncio.to_thread(decrypt, dl.content, key)
-    if hashlib.sha256(plaintext).hexdigest() != blob_hash:
+    encrypted = dest.with_name(f"{dest.name}.enc")
+    try:
+        async with httpx.AsyncClient(timeout=300) as s3, s3.stream("GET", r.json()["url"]) as dl:
+            dl.raise_for_status()
+            with encrypted.open("wb") as fh:
+                async for data in dl.aiter_bytes(_CHUNK):
+                    await asyncio.to_thread(fh.write, data)
+        digest = await asyncio.to_thread(decrypt_file, encrypted, dest, key)
+    finally:
+        encrypted.unlink(missing_ok=True)
+    if digest != blob_hash:
+        dest.unlink(missing_ok=True)
         raise RuntimeError(t("error.backup_damaged"))
-    return plaintext
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -119,46 +143,42 @@ async def run_snapshot(label: str | None = None) -> BackupResult:
 
         # Pause writes for the clean point; blocking work runs off the event loop so
         # reads stay served throughout.
-        with writes_paused():
+        with writes_paused(), disk_full_as_error(), tempfile.TemporaryDirectory() as work:
             # Hash every member first (streamed) so we only ever upload what's missing.
-            dump = await asyncio.to_thread(dump_database, settings.database_url)
-            db_hash = hashlib.sha256(dump).hexdigest()
+            dump = Path(work) / "database.dump"
+            await asyncio.to_thread(dump_database, settings.database_url, dump)
+            db_hash, _ = await asyncio.to_thread(_hash_file, dump)
             files = []  # manifest entries
-            by_hash: dict[str, tuple[str, Path] | None] = {db_hash: None}  # None ⇒ db dump
+            by_hash: dict[str, Path] = {db_hash: dump}
             for arcname, path in _members():
                 fhash, size = await asyncio.to_thread(_hash_file, path)
                 files.append({"path": arcname, "hash": fhash, "size": size})
-                by_hash.setdefault(fhash, (arcname, path))
+                by_hash.setdefault(fhash, path)
 
             manifest = {"meta": await backup_export.archive_meta(), "db_dump": db_hash, "files": files}
-            manifest_bytes = json.dumps(manifest, indent=2).encode()
-            manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+            manifest_path = Path(work) / "manifest.json"
+            manifest_path.write_bytes(json.dumps(manifest, indent=2).encode())
+            manifest_hash, _ = _hash_file(manifest_path)
+            by_hash[manifest_hash] = manifest_path
 
-            referenced = set(by_hash) | {manifest_hash}
             uploaded = 0
             async with _relay() as client:
-                missing = await _missing(client, referenced)
+                missing = await _missing(client, set(by_hash))
                 sizes: dict[str, int] = {}
                 for h in missing:
-                    if h == manifest_hash:
-                        plaintext = manifest_bytes
-                    elif h == db_hash:
-                        plaintext = dump
-                    else:
-                        plaintext = await asyncio.to_thread(by_hash[h][1].read_bytes)  # type: ignore[index]
-                    sizes[h] = await _put_blob(client, h, plaintext, key)
+                    sizes[h] = await _put_blob(client, h, by_hash[h], key)
                     uploaded += sizes[h]
 
                 # size matters only for newly-uploaded blobs (quota); the relay keeps
                 # the stored size for blobs it already has, so 1 is a harmless placeholder.
-                blobs = [{"hash": h, "size": sizes.get(h, 1)} for h in referenced]
+                blobs = [{"hash": h, "size": sizes.get(h, 1)} for h in by_hash]
                 r = await client.post(
                     "/repo/snapshot",
                     json={"manifest_hash": manifest_hash, "blobs": blobs, "label": label},
                 )
                 r.raise_for_status()
 
-        log.info("Snapshot committed: %d blobs referenced, %d bytes uploaded", len(referenced), uploaded)
+        log.info("Snapshot committed: %d blobs referenced, %d bytes uploaded", len(by_hash), uploaded)
         return BackupResult(ok=True, size_bytes=uploaded)
     except Exception as exc:  # never raise — surfaced in result
         return BackupResult(ok=False, size_bytes=0, error=str(exc))
@@ -182,26 +202,25 @@ async def reassemble_snapshot(snapshot_id: str) -> Path:
         if snap is None:
             raise RuntimeError(t("error.backup_snapshot_missing"))
 
-        manifest = json.loads(await _get_blob(client, snap["manifest_hash"], key))
-
         tmp = tempfile.NamedTemporaryFile(suffix=".celerp-backup", delete=False)
         tmp.close()
-        with tarfile.open(tmp.name, "w:gz") as tar:
-            dump = await _get_blob(client, manifest["db_dump"], key)
-            info = tarfile.TarInfo(name="database.dump")
-            info.size = len(dump)
-            tar.addfile(info, io.BytesIO(dump))
+        try:
+            with disk_full_as_error(), tempfile.TemporaryDirectory() as work:
+                blob = Path(work) / "blob"
+                await _get_blob(client, snap["manifest_hash"], key, blob)
+                manifest = json.loads(blob.read_bytes())
+                with tarfile.open(tmp.name, "w:gz") as tar:
+                    await _get_blob(client, manifest["db_dump"], key, blob)
+                    add_file_member(tar, "database.dump", blob)
 
-            meta_bytes = json.dumps(manifest["meta"], indent=2).encode()
-            info = tarfile.TarInfo(name="meta.json")
-            info.size = len(meta_bytes)
-            tar.addfile(info, io.BytesIO(meta_bytes))
+                    add_bytes_member(tar, "meta.json", json.dumps(manifest["meta"], indent=2).encode())
 
-            for entry in manifest["files"]:
-                data = await _get_blob(client, entry["hash"], key)
-                info = tarfile.TarInfo(name=entry["path"])
-                info.size = len(data)
-                tar.addfile(info, io.BytesIO(data))
+                    for entry in manifest["files"]:
+                        await _get_blob(client, entry["hash"], key, blob)
+                        add_file_member(tar, entry["path"], blob)
+        except BaseException:
+            Path(tmp.name).unlink(missing_ok=True)
+            raise
 
     return Path(tmp.name)
 

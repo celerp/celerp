@@ -2407,6 +2407,7 @@
   "error.backup_timed_out": "ምትኬው ከ5 ደቂቃ በላይ ስለወሰደ ቆሟል። Celerpን የሚጠቀሙ ሰዎች ሲያንሱ እንደገና ይሞክሩ፤ መከሰቱን ከቀጠለ በGitHub Issues ወይም Discussions ይጠይቁ።",
   "error.restore_timed_out": "መመለሱ ከ{seconds} ሰከንድ በላይ ስለወሰደ ቆሟል። እንደገና ይሞክሩ፤ መከሰቱን ከቀጠለ በGitHub Issues ወይም Discussions ይጠይቁ።",
   "error.backup_failed_detail": "ምትኬ መፍጠር አልተቻለም። እንደገና ይሞክሩ፤ መከሰቱን ከቀጠለ በGitHub Issues ወይም Discussions ይጠይቁ። (ለድጋፍ ዝርዝር: {detail})",
+  "error.backup_disk_full": "በዚህ ኮምፒውተር ዲስክ ላይ በቂ ነፃ ቦታ ስለሌለ ምትኬው ሊሠራ አልቻለም። የተወሰነ ቦታ ያስለቅቁና እንደገና ይሞክሩ።",
   "error.restore_failed_detail": "ምትኬውን መመለስ አልተቻለም። እንደገና ይሞክሩ፤ መከሰቱን ከቀጠለ በGitHub Issues ወይም Discussions ይጠይቁ። (ለድጋፍ ዝርዝር: {detail})",
   "error.backup_key_invalid": "የምትኬ ማመስጠሪያ ቁልፉ በትክክል ስላልተዘጋጀ ምትኬዎች ጠፍተዋል። Celerpን የጫነውን ሰው የቁልፉን ቅንብር እንዲያስተካክል ይጠይቁ።",
   "error.backup_damaged": "የዚህ የደመና ምትኬ ክፍል ስለተበላሸ መመለስ አይቻልም። ቀደም ያለ ምትኬ ይምረጡ ወይም በGitHub Issues ወይም Discussions ይጠይቁ።",

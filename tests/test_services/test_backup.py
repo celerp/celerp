@@ -5,8 +5,9 @@
 
 Covers:
   - _parse_key: valid key, bad base64, wrong length
-  - encrypt / decrypt round-trip
-  - dump_database: success, pg_dump not found, exit code failure, timeout
+  - streamed AES-256-GCM: same wire format as one-shot AESGCM, both directions
+  - dump_database: writes its file atomically; not found, exit code failure, timeout and
+    disk full leave no partial file and keep the previous dump
   - restore_database_file: success + failure
   - _find_pg_tool resolution order
 """
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import errno
 import os
 import secrets
 import subprocess
@@ -25,11 +27,10 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import pytest
 
 from celerp.gateway.state import relay_http_url
+from celerp.services import backup as backup_mod
 from celerp.services.backup import (
     _parse_key,
-    decrypt,
     dump_database,
-    encrypt,
     restore_database_file,
 )
 
@@ -59,69 +60,134 @@ def test_parse_key_wrong_length():
         _parse_key(short)
 
 
-# ── encrypt / decrypt ─────────────────────────────────────────────────────────
+# ── streamed encrypt / decrypt ────────────────────────────────────────────────
 
-def test_encrypt_decrypt_roundtrip():
+_SIZES = [0, 1, 15, 16, 17, 1000, 4096, 4097, 3 * 4096]
+
+
+@pytest.mark.parametrize("size", _SIZES)
+def test_streamed_encrypt_matches_aesgcm_oracle(tmp_path, size):
+    """Red statement: encrypt_chunks and decrypt_file did not exist. The streamed blob is
+    nonce + ciphertext + tag exactly as AESGCM writes it, so blobs already in the cloud
+    still restore and new ones restore on older versions."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     raw, _ = _make_key()
-    plaintext = b"hello world pg_dump output"
-    blob = encrypt(plaintext, raw)
-    assert blob != plaintext
-    assert decrypt(blob, raw) == plaintext
+    plain = secrets.token_bytes(size)
+    src = tmp_path / "plain"
+    src.write_bytes(plain)
+    blob = b"".join(backup_mod.encrypt_chunks(src, raw, chunk=4096))
+    assert len(blob) == size + 28
+    assert AESGCM(raw).decrypt(blob[:12], blob[12:], None) == plain
+
+    nonce = secrets.token_bytes(12)
+    (tmp_path / "blob").write_bytes(nonce + AESGCM(raw).encrypt(nonce, plain, None))
+    digest = backup_mod.decrypt_file(tmp_path / "blob", tmp_path / "out", raw, chunk=4096)
+    assert (tmp_path / "out").read_bytes() == plain
+    import hashlib
+    assert digest == hashlib.sha256(plain).hexdigest()
 
 
-def test_decrypt_blob_too_short():
+def test_encrypt_produces_unique_nonces(tmp_path):
     raw, _ = _make_key()
-    with pytest.raises(ValueError, match="too short"):
-        decrypt(b"\x00" * 5, raw)
+    src = tmp_path / "plain"
+    src.write_bytes(b"same plaintext")
+    assert b"".join(backup_mod.encrypt_chunks(src, raw)) != b"".join(backup_mod.encrypt_chunks(src, raw))
 
 
-def test_encrypt_produces_unique_nonces():
+@pytest.mark.parametrize("damage", ["tag", "short", "key"])
+def test_decrypt_file_bad_blob_deletes_output(tmp_path, damage):
+    """A damaged or too-short blob, or the wrong key, raises the damaged-backup message
+    and leaves no half-decrypted file behind."""
     raw, _ = _make_key()
-    plaintext = b"same plaintext"
-    blob1 = encrypt(plaintext, raw)
-    blob2 = encrypt(plaintext, raw)
-    assert blob1 != blob2
+    src = tmp_path / "plain"
+    src.write_bytes(b"x" * 10000)
+    blob = bytearray(b"".join(backup_mod.encrypt_chunks(src, raw, chunk=4096)))
+    if damage == "tag":
+        blob[-1] ^= 1
+    elif damage == "short":
+        blob = blob[:20]
+    else:
+        raw = _make_key()[0]
+    (tmp_path / "blob").write_bytes(bytes(blob))
+    with pytest.raises(RuntimeError, match="damaged"):
+        backup_mod.decrypt_file(tmp_path / "blob", tmp_path / "out", raw, chunk=4096)
+    assert not (tmp_path / "out").exists()
 
 
 # ── dump_database ─────────────────────────────────────────────────────────────
 
-def test_dump_database_success(monkeypatch):
-    fake_dump = b"PGDUMP_CUSTOM_FORMAT_DATA"
-
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, returncode=0, stdout=fake_dump, stderr=b"")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    result = dump_database("postgresql+asyncpg://u:p@localhost/db")
-    assert result == fake_dump
+_URL = "postgresql+asyncpg://u:p@localhost/db"
 
 
-def test_dump_database_not_found(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        raise FileNotFoundError("pg_dump")
+def _writes_partial(body: bytes, returncode: int = 0, stderr: bytes = b"", exc=None):
+    """A pg_dump runner that writes its --file (relative to cwd), then exits or raises."""
+    calls = []
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    with pytest.raises(RuntimeError, match="database tool is missing"):
-        dump_database("postgresql+asyncpg://u:p@localhost/db")
+    def run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        name = next(a.split("=", 1)[1] for a in cmd if a.startswith("--file="))
+        (Path(kwargs["cwd"]) / name).write_bytes(body)
+        if exc is not None:
+            raise exc
+        return subprocess.CompletedProcess(cmd, returncode=returncode, stdout=b"", stderr=stderr)
+    return run, calls
 
 
-def test_dump_database_nonzero_exit(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, returncode=1, stdout=b"", stderr=b"connection refused")
+def test_dump_database_writes_file_and_replaces_atomically(tmp_path):
+    """Red statement: dump_database returned the whole dump as bytes from stdout. It now
+    writes a .partial next to the destination (relative name, cwd set, as the restore
+    tools are run) and renames it over the destination only when pg_dump succeeded."""
+    dest = tmp_path / "database.dump"
+    dest.write_bytes(b"OLD")
+    run, calls = _writes_partial(b"NEW")
+    assert dump_database(_URL, dest, runner=run) is None
+    assert dest.read_bytes() == b"NEW"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["database.dump"]
+    cmd, kwargs = calls[0]
+    assert "--file=database.dump.partial" in cmd and kwargs["cwd"] == tmp_path
+    assert cmd[-1] == "postgresql://u:p@localhost/db"
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+
+def test_dump_nonzero_exit_leaves_no_partial_and_keeps_previous_dump(tmp_path):
+    dest = tmp_path / "database.dump"
+    dest.write_bytes(b"OLD")
+    run, _ = _writes_partial(b"HALF", returncode=1, stderr=b"connection refused")
     with pytest.raises(RuntimeError, match=r"couldn't be made.*connection refused"):
-        dump_database("postgresql+asyncpg://u:p@localhost/db")
+        dump_database(_URL, dest, runner=run)
+    assert dest.read_bytes() == b"OLD"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["database.dump"]
 
 
-def test_dump_database_timeout(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        raise subprocess.TimeoutExpired(cmd, timeout=300)
+@pytest.mark.parametrize("exc, message", [
+    (subprocess.TimeoutExpired(["pg_dump"], timeout=300), "longer than 5 minutes"),
+    (FileNotFoundError("pg_dump"), "database tool is missing"),
+])
+def test_dump_timeout_and_missing_tool_clean_up(tmp_path, exc, message):
+    dest = tmp_path / "database.dump"
+    run, _ = _writes_partial(b"HALF", exc=exc)
+    with pytest.raises(RuntimeError, match=message):
+        dump_database(_URL, dest, runner=run)
+    assert list(tmp_path.iterdir()) == []
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    with pytest.raises(RuntimeError, match="longer than 5 minutes"):
-        dump_database("postgresql+asyncpg://u:p@localhost/db")
 
+def test_dump_disk_full_leaves_no_partial(tmp_path):
+    """Red statement: there was no file to clean up and a full disk surfaced as a raw
+    OSError. It now removes the partial and says the disk is full."""
+    dest = tmp_path / "database.dump"
+    run, _ = _writes_partial(b"HALF", exc=OSError(errno.ENOSPC, "No space left on device"))
+    with pytest.raises(RuntimeError, match="not enough free disk space"):
+        dump_database(_URL, dest, runner=run)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_dump_database_not_found_before_running(monkeypatch, tmp_path):
+    """No pg_dump on this computer: the runner is never called, nothing is written."""
+    def missing(name):
+        raise FileNotFoundError(name)
+    monkeypatch.setattr(backup_mod, "_find_pg_tool", missing)
+    with pytest.raises(RuntimeError, match="database tool is missing"):
+        dump_database(_URL, tmp_path / "database.dump", runner=lambda *a, **k: pytest.fail("ran"))
+    assert list(tmp_path.iterdir()) == []
 
 # ── relay_http_url ────────────────────────────────────────────────────────────
 
@@ -342,43 +408,46 @@ class TestFindPgTool:
         assert result == str(b1 / "pg_dump")
 
 
+_FILE_WRITING_PG_DUMP = """#!/bin/sh
+for a; do case "$a" in --file=*) echo {text} > "${{a#--file=}}";; esac; done
+"""
+
+
 class TestDumpDatabaseUsesResolvedPath:
     """dump_database must resolve pg_dump via _find_pg_tool, not bare PATH lookup."""
 
     def test_finds_pg_dump_via_candidate_dir_on_macos(self, monkeypatch, tmp_path):
         """When pg_dump is only in a candidate dir (not in PATH), dump_database finds it."""
         import sys as _sys
-        from celerp.services import backup as backup_mod
         monkeypatch.setattr(_sys, "platform", "darwin")
 
         bin_dir = tmp_path / "fake_pg"
         bin_dir.mkdir()
         pg_dump = bin_dir / "pg_dump"
-        pg_dump.write_text("#!/bin/sh\necho FAKE_DUMP\n")
+        pg_dump.write_text(_FILE_WRITING_PG_DUMP.format(text="FAKE_DUMP"))
         pg_dump.chmod(0o755)
 
         monkeypatch.setattr(backup_mod, "_PG_CANDIDATE_DIRS", [bin_dir])
         monkeypatch.setenv("PATH", "")
 
-        result = dump_database("postgresql+asyncpg://u:p@localhost/db")
-        assert b"FAKE_DUMP" in result
+        dump_database(_URL, tmp_path / "database.dump")
+        assert b"FAKE_DUMP" in (tmp_path / "database.dump").read_bytes()
 
     def test_finds_pg_dump_via_path_on_linux(self, monkeypatch, tmp_path):
         """On Linux, pg_dump is found via PATH (shutil.which) — no candidate probing."""
         import sys as _sys
-        from celerp.services import backup as backup_mod
         monkeypatch.setattr(_sys, "platform", "linux")
 
         bin_dir = tmp_path / "fake_pg"
         bin_dir.mkdir()
         pg_dump = bin_dir / "pg_dump"
-        pg_dump.write_text("#!/bin/sh\necho FAKE_LINUX_DUMP\n")
+        pg_dump.write_text(_FILE_WRITING_PG_DUMP.format(text="FAKE_LINUX_DUMP"))
         pg_dump.chmod(0o755)
 
         monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
 
-        result = dump_database("postgresql+asyncpg://u:p@localhost/db")
-        assert b"FAKE_LINUX_DUMP" in result
+        dump_database(_URL, tmp_path / "database.dump")
+        assert b"FAKE_LINUX_DUMP" in (tmp_path / "database.dump").read_bytes()
 
 
 @pytest.mark.usefixtures("_no_scope")

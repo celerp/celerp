@@ -3335,6 +3335,7 @@
   "error.backup_timed_out": "O backup demorou mais de 5 minutos e foi interrompido. Tente novamente quando menos pessoas estiverem usando o Celerp; se continuar acontecendo, pergunte no GitHub Issues ou Discussions.",
   "error.restore_timed_out": "A restauração demorou mais de {seconds} segundos e foi interrompida. Tente novamente; se continuar acontecendo, pergunte no GitHub Issues ou Discussions.",
   "error.backup_failed_detail": "Não foi possível fazer o backup. Tente novamente; se continuar acontecendo, pergunte no GitHub Issues ou Discussions. (Detalhes para o suporte: {detail})",
+  "error.backup_disk_full": "Não foi possível fazer o backup porque não há espaço livre suficiente no disco deste computador. Libere espaço e tente novamente.",
   "error.restore_failed_detail": "Não foi possível restaurar o backup. Tente novamente; se continuar acontecendo, pergunte no GitHub Issues ou Discussions. (Detalhes para o suporte: {detail})",
   "error.backup_key_invalid": "Os backups estão desligados porque a chave de criptografia dos backups está configurada de forma errada. Peça a quem instalou o Celerp para corrigir essa configuração.",
   "error.backup_damaged": "Parte deste backup na nuvem está danificada e não pode ser restaurada. Escolha um backup anterior ou pergunte no GitHub Issues ou Discussions.",

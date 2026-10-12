@@ -3335,6 +3335,7 @@
   "error.backup_timed_out": "استغرق النسخ الاحتياطي أكثر من 5 دقائق فتم إيقافه. حاول مرة أخرى عندما يقل عدد مستخدمي Celerp؛ وإذا تكرر ذلك، فاسأل في GitHub Issues أو Discussions.",
   "error.restore_timed_out": "استغرقت الاستعادة أكثر من {seconds} ثانية فتم إيقافها. حاول مرة أخرى؛ وإذا تكرر ذلك، فاسأل في GitHub Issues أو Discussions.",
   "error.backup_failed_detail": "تعذّر إنشاء النسخة الاحتياطية. حاول مرة أخرى؛ وإذا تكرر ذلك، فاسأل في GitHub Issues أو Discussions. (تفاصيل للدعم: {detail})",
+  "error.backup_disk_full": "تعذّر إنشاء النسخة الاحتياطية لعدم وجود مساحة خالية كافية على قرص هذا الكمبيوتر. أفرغ بعض المساحة ثم حاول مرة أخرى.",
   "error.restore_failed_detail": "تعذّرت استعادة النسخة الاحتياطية. حاول مرة أخرى؛ وإذا تكرر ذلك، فاسأل في GitHub Issues أو Discussions. (تفاصيل للدعم: {detail})",
   "error.backup_key_invalid": "النسخ الاحتياطي متوقف لأن مفتاح تشفير النسخ الاحتياطية مضبوط بشكل خاطئ. اطلب ممن ثبّت Celerp تصحيح إعداد المفتاح.",
   "error.backup_damaged": "جزء من هذه النسخة الاحتياطية السحابية تالف، لذا لا يمكن استعادتها. اختر نسخة أقدم، أو اسأل في GitHub Issues أو Discussions.",

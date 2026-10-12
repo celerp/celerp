@@ -3335,6 +3335,7 @@
   "error.backup_timed_out": "バックアップに 5 分以上かかったため停止しました。Celerp を使っている人が少ないときにもう一度お試しください。繰り返し起きる場合は、GitHub Issues または Discussions でお問い合わせください。",
   "error.restore_timed_out": "復元に {seconds} 秒以上かかったため停止しました。もう一度お試しください。繰り返し起きる場合は、GitHub Issues または Discussions でお問い合わせください。",
   "error.backup_failed_detail": "バックアップを作成できませんでした。もう一度お試しください。繰り返し起きる場合は、GitHub Issues または Discussions でお問い合わせください。（サポート向けの詳細: {detail}）",
+  "error.backup_disk_full": "このコンピューターのディスクの空き容量が足りないため、バックアップを作成できませんでした。空き容量を増やしてから、もう一度お試しください。",
   "error.restore_failed_detail": "バックアップを復元できませんでした。もう一度お試しください。繰り返し起きる場合は、GitHub Issues または Discussions でお問い合わせください。（サポート向けの詳細: {detail}）",
   "error.backup_key_invalid": "バックアップの暗号化キーの設定が正しくないため、バックアップは無効になっています。Celerp をインストールした人にキーの設定を直してもらってください。",
   "error.backup_damaged": "このクラウドバックアップの一部が破損しているため、復元できません。以前のバックアップを選ぶか、GitHub Issues または Discussions でお問い合わせください。",

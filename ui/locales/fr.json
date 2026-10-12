@@ -3336,6 +3336,7 @@
   "error.backup_timed_out": "La sauvegarde a duré plus de 5 minutes et a été arrêtée. Réessayez quand moins de personnes utilisent Celerp ; si cela continue, posez la question dans GitHub Issues ou Discussions.",
   "error.restore_timed_out": "La restauration a duré plus de {seconds} secondes et a été arrêtée. Réessayez ; si cela continue, posez la question dans GitHub Issues ou Discussions.",
   "error.backup_failed_detail": "La sauvegarde n'a pas pu être créée. Réessayez ; si cela continue, posez la question dans GitHub Issues ou Discussions. (Détails pour l'assistance : {detail})",
+  "error.backup_disk_full": "La sauvegarde n'a pas pu être faite car l'espace disque libre est insuffisant sur cet ordinateur. Libérez de l'espace et réessayez.",
   "error.restore_failed_detail": "La sauvegarde n'a pas pu être restaurée. Réessayez ; si cela continue, posez la question dans GitHub Issues ou Discussions. (Détails pour l'assistance : {detail})",
   "error.backup_key_invalid": "Les sauvegardes sont désactivées, car la clé de chiffrement des sauvegardes est mal configurée. Demandez à la personne qui a installé Celerp de corriger ce réglage.",
   "error.backup_damaged": "Une partie de cette sauvegarde cloud est endommagée et ne peut pas être restaurée. Choisissez une sauvegarde plus ancienne ou posez la question dans GitHub Issues ou Discussions.",

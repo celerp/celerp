@@ -828,10 +828,7 @@ class SupervisorSteps(Steps):
             self._backup.check_free_space(dump_path())
 
     def dump(self, path: Path) -> None:
-        data = self._backup.dump_database(self.db_url, runner=_bound_run)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
+        self._backup.dump_database(self.db_url, path, runner=_bound_run)
         os.chmod(path, 0o600)
         self._backup.check_free_space(path)
         self._backup.check_backup_dump(path, self.db_url, "this database")

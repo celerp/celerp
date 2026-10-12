@@ -578,7 +578,7 @@ def test_a_restore_keeps_the_fence_while_psql_runs(scratch, tmp_path, monkeypatc
             seen["newer"] = _run(NEWER, "migrate", url, tmp_path / "new", wait=2)
         return sp.CompletedProcess(command, 0, b"", b"")
 
-    (tmp_path / "dump").write_bytes(dump_database(url))
+    dump_database(url, tmp_path / "dump")
     held = compatibility.Fence.join(sync_url(url))
     try:
         restore_database_file(tmp_path / "dump", url, runner=runner)

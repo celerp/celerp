@@ -331,10 +331,18 @@ jobs:
           from cryptography.hazmat.primitives.asymmetric import ec
           from jose import jwt
 
-          from celerp.services.backup import decrypt, encrypt
+          import tempfile
+          from pathlib import Path
+
+          from celerp.services.backup import decrypt_file, encrypt_chunks
 
           key = b"x" * 32
-          assert decrypt(encrypt(b"intel-crypto-smoke", key), key) == b"intel-crypto-smoke"
+          with tempfile.TemporaryDirectory() as tmp:
+              plain, blob, back = (Path(tmp) / n for n in ("plain", "blob", "back"))
+              plain.write_bytes(b"intel-crypto-smoke")
+              blob.write_bytes(b"".join(encrypt_chunks(plain, key)))
+              decrypt_file(blob, back, key)
+              assert back.read_bytes() == b"intel-crypto-smoke"
 
           token = jwt.encode({"sub": "test"}, "test-secret", algorithm="HS256")
           assert jwt.decode(token, "test-secret", algorithms=["HS256"])["sub"] == "test"

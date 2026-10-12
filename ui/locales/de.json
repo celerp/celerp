@@ -3336,6 +3336,7 @@
   "error.backup_timed_out": "Die Sicherung hat länger als 5 Minuten gedauert und wurde abgebrochen. Versuchen Sie es erneut, wenn weniger Personen Celerp nutzen; wenn das weiter passiert, fragen Sie in GitHub Issues oder Discussions.",
   "error.restore_timed_out": "Die Wiederherstellung hat länger als {seconds} Sekunden gedauert und wurde abgebrochen. Versuchen Sie es erneut; wenn das weiter passiert, fragen Sie in GitHub Issues oder Discussions.",
   "error.backup_failed_detail": "Die Sicherung konnte nicht erstellt werden. Versuchen Sie es erneut; wenn das weiter passiert, fragen Sie in GitHub Issues oder Discussions. (Details für den Support: {detail})",
+  "error.backup_disk_full": "Die Sicherung konnte nicht erstellt werden, weil auf diesem Computer nicht genug freier Speicherplatz ist. Geben Sie Speicherplatz frei und versuchen Sie es erneut.",
   "error.restore_failed_detail": "Die Sicherung konnte nicht wiederhergestellt werden. Versuchen Sie es erneut; wenn das weiter passiert, fragen Sie in GitHub Issues oder Discussions. (Details für den Support: {detail})",
   "error.backup_key_invalid": "Sicherungen sind ausgeschaltet, weil der Verschlüsselungsschlüssel für Sicherungen falsch eingerichtet ist. Bitten Sie die Person, die Celerp installiert hat, die Schlüsseleinstellung zu korrigieren.",
   "error.backup_damaged": "Ein Teil dieser Cloud-Sicherung ist beschädigt und kann nicht wiederhergestellt werden. Wählen Sie eine ältere Sicherung oder fragen Sie in GitHub Issues oder Discussions.",

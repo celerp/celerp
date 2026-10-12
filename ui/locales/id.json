@@ -3335,6 +3335,7 @@
   "error.backup_timed_out": "Pencadangan memakan waktu lebih dari 5 menit dan dihentikan. Coba lagi saat lebih sedikit orang memakai Celerp; jika masih terjadi, tanyakan di GitHub Issues atau Discussions.",
   "error.restore_timed_out": "Pemulihan memakan waktu lebih dari {seconds} detik dan dihentikan. Coba lagi; jika masih terjadi, tanyakan di GitHub Issues atau Discussions.",
   "error.backup_failed_detail": "Cadangan tidak bisa dibuat. Coba lagi; jika masih terjadi, tanyakan di GitHub Issues atau Discussions. (Detail untuk dukungan: {detail})",
+  "error.backup_disk_full": "Cadangan tidak dapat dibuat karena ruang disk kosong di komputer ini tidak cukup. Kosongkan sebagian ruang lalu coba lagi.",
   "error.restore_failed_detail": "Cadangan tidak bisa dipulihkan. Coba lagi; jika masih terjadi, tanyakan di GitHub Issues atau Discussions. (Detail untuk dukungan: {detail})",
   "error.backup_key_invalid": "Pencadangan dimatikan karena kunci enkripsi cadangan salah diatur. Minta orang yang memasang Celerp untuk memperbaiki pengaturan kunci tersebut.",
   "error.backup_damaged": "Sebagian cadangan cloud ini rusak sehingga tidak bisa dipulihkan. Pilih cadangan yang lebih lama, atau tanyakan di GitHub Issues atau Discussions.",

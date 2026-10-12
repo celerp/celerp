@@ -3335,6 +3335,7 @@
   "error.backup_timed_out": "La copia de seguridad tardó más de 5 minutos y se detuvo. Inténtalo de nuevo cuando menos personas estén usando Celerp; si sigue pasando, pregunta en GitHub Issues o Discussions.",
   "error.restore_timed_out": "La restauración tardó más de {seconds} segundos y se detuvo. Inténtalo de nuevo; si sigue pasando, pregunta en GitHub Issues o Discussions.",
   "error.backup_failed_detail": "No se pudo hacer la copia de seguridad. Inténtalo de nuevo; si sigue pasando, pregunta en GitHub Issues o Discussions. (Detalles para soporte: {detail})",
+  "error.backup_disk_full": "No se pudo hacer la copia de seguridad porque no hay suficiente espacio libre en el disco de este equipo. Libere espacio e inténtelo de nuevo.",
   "error.restore_failed_detail": "No se pudo restaurar la copia de seguridad. Inténtalo de nuevo; si sigue pasando, pregunta en GitHub Issues o Discussions. (Detalles para soporte: {detail})",
   "error.backup_key_invalid": "Las copias de seguridad están desactivadas porque la clave de cifrado de copias está mal configurada. Pide a quien instaló Celerp que corrija ese ajuste.",
   "error.backup_damaged": "Parte de esta copia en la nube está dañada y no se puede restaurar. Elige una copia anterior o pregunta en GitHub Issues o Discussions.",

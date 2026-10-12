@@ -2426,6 +2426,7 @@
   "error.backup_timed_out": "The backup took longer than 5 minutes and was stopped. Try again when fewer people are using Celerp; if it keeps happening, ask on GitHub Issues or Discussions.",
   "error.restore_timed_out": "The restore took longer than {seconds} seconds and was stopped. Try again; if it keeps happening, ask on GitHub Issues or Discussions.",
   "error.backup_failed_detail": "The backup couldn't be made. Try again; if it keeps happening, ask on GitHub Issues or Discussions. (Details for support: {detail})",
+  "error.backup_disk_full": "The backup couldn't be made because there is not enough free disk space on this computer. Free up some space and try again.",
   "error.restore_failed_detail": "The backup couldn't be restored. Try again; if it keeps happening, ask on GitHub Issues or Discussions. (Details for support: {detail})",
   "error.backup_key_invalid": "Backups are switched off because the backup encryption key is set up wrong. Ask whoever installed Celerp to fix the backup key setting.",
   "error.backup_damaged": "Part of this cloud backup is damaged, so it can't be restored. Choose an earlier backup, or ask on GitHub Issues or Discussions.",

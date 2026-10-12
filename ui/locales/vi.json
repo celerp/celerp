@@ -3335,6 +3335,7 @@
   "error.backup_timed_out": "Việc sao lưu mất hơn 5 phút nên đã bị dừng. Hãy thử lại khi ít người dùng Celerp hơn; nếu vẫn xảy ra, hãy hỏi trên GitHub Issues hoặc Discussions.",
   "error.restore_timed_out": "Việc khôi phục mất hơn {seconds} giây nên đã bị dừng. Hãy thử lại; nếu vẫn xảy ra, hãy hỏi trên GitHub Issues hoặc Discussions.",
   "error.backup_failed_detail": "Không tạo được bản sao lưu. Hãy thử lại; nếu vẫn xảy ra, hãy hỏi trên GitHub Issues hoặc Discussions. (Chi tiết cho bộ phận hỗ trợ: {detail})",
+  "error.backup_disk_full": "Không thể tạo bản sao lưu vì máy tính này không còn đủ dung lượng đĩa trống. Hãy giải phóng dung lượng rồi thử lại.",
   "error.restore_failed_detail": "Không khôi phục được bản sao lưu. Hãy thử lại; nếu vẫn xảy ra, hãy hỏi trên GitHub Issues hoặc Discussions. (Chi tiết cho bộ phận hỗ trợ: {detail})",
   "error.backup_key_invalid": "Tính năng sao lưu đang tắt vì khóa mã hóa sao lưu được thiết lập sai. Hãy nhờ người đã cài Celerp sửa thiết lập khóa này.",
   "error.backup_damaged": "Một phần bản sao lưu đám mây này bị hỏng nên không khôi phục được. Hãy chọn bản sao lưu cũ hơn, hoặc hỏi trên GitHub Issues hoặc Discussions.",

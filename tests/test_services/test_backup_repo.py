@@ -85,19 +85,20 @@ def fake_repo(monkeypatch, tmp_path):
     async def fake_missing(client, hashes):
         return {h for h in hashes if h not in store}
 
-    async def fake_put(client, blob_hash, plaintext, key):
-        store[blob_hash] = plaintext
+    async def fake_put(client, blob_hash, path, key):
+        store[blob_hash] = path.read_bytes()
         put_calls.append(blob_hash)
-        return len(plaintext)
+        return len(store[blob_hash])
 
-    async def fake_get(client, blob_hash, key):
-        return store[blob_hash]
+    async def fake_get(client, blob_hash, key, dest):
+        dest.write_bytes(store[blob_hash])
 
     monkeypatch.setattr(backup_repo, "_relay", lambda: _FakeClient(store, snapshots))
     monkeypatch.setattr(backup_repo, "_missing", fake_missing)
     monkeypatch.setattr(backup_repo, "_put_blob", fake_put)
     monkeypatch.setattr(backup_repo, "_get_blob", fake_get)
-    monkeypatch.setattr(backup_repo, "dump_database", lambda url: b"PGDUMP-CUSTOM-FORMAT")
+    monkeypatch.setattr(backup_repo, "dump_database",
+                        lambda url, dest: dest.write_bytes(b"PGDUMP-CUSTOM-FORMAT"))
 
     async def fake_meta():
         return {"celerp_version": running_version(), "pg_version": "16", "created_at": "2026-06-25T00:00:00Z",
