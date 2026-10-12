@@ -3374,6 +3374,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   background: var(--c-blue-light); border: 1px solid var(--c-blue-border); border-radius: 6px;
   font-size: 13px; color: var(--c-text); line-height: 1.45; width: 100%; box-sizing: border-box; }
 .info-banner-icon { flex: none; }
+.info-banner-close { margin-left: auto; flex: none; }
 
 /* ── Demand Planning board: coverage-status badges + Excel-style column filters ── */
 .badge--peg-covered { background: var(--c-green); color: #fff; border: 1px solid var(--c-green-dark); }

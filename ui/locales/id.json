@@ -4353,6 +4353,7 @@
   "dashboard.getting_started_documents": "Dokumen",
   "dashboard.getting_started_where": "Impor selalu ada di bagian atas halaman.",
   "dashboard.finish_setup": "Selesaikan penyiapan: pilih jenis bisnis Anda",
+  "dashboard.finish_setup_owner_only": "Hanya pemilik perusahaan yang dapat menutup ini.",
   "dashboard.getting_started_forever": "Jangan tampilkan lagi",
   "dashboard.demo_note": "Item bertanda [DEMO] adalah contoh dan ikut dihitung dalam angka ini. Impor produk pertama Anda menghapusnya, kecuali Anda telah mengubahnya.",
   "dashboard.remove_demo_items": "Hapus item demo",

@@ -4353,6 +4353,7 @@
   "dashboard.getting_started_documents": "เอกสาร",
   "dashboard.getting_started_where": "ปุ่มนำเข้าอยู่ด้านบนของหน้าเสมอ",
   "dashboard.finish_setup": "ตั้งค่าให้เสร็จ: เลือกประเภทธุรกิจ",
+  "dashboard.finish_setup_owner_only": "เฉพาะเจ้าของบริษัทเท่านั้นที่ปิดสิ่งนี้ได้",
   "dashboard.getting_started_forever": "ไม่ต้องแสดงอีก",
   "dashboard.demo_note": "รายการที่มีเครื่องหมาย [DEMO] เป็นตัวอย่างและรวมอยู่ในตัวเลขเหล่านี้ การนำเข้าสินค้าครั้งแรกจะลบรายการเหล่านี้ เว้นแต่คุณได้แก้ไขแล้ว",
   "dashboard.remove_demo_items": "ลบรายการตัวอย่าง",

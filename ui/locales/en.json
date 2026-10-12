@@ -4353,6 +4353,7 @@
   "dashboard.getting_started_documents": "Documents",
   "dashboard.getting_started_where": "Import is always at the top of the page.",
   "dashboard.finish_setup": "Finish setup: choose your business type",
+  "dashboard.finish_setup_owner_only": "Only the company owner can close this.",
   "dashboard.getting_started_forever": "Don't show this again",
   "dashboard.demo_note": "Items marked [DEMO] are samples and are counted in these figures. Your first product import removes them unless you have changed them.",
   "dashboard.remove_demo_items": "Remove demo items",

@@ -808,6 +808,24 @@ def setup_routes(app):
             return star_supporter_card()
         return ""
 
+    @app.post("/dashboard/finish-setup/dismiss")
+    async def dismiss_finish_setup(request: Request):
+        """Close the "Finish setup" banner for this company. Only the role that sees it
+        (manage_company_lifecycle) may close it. Undo is not offered: the banner only
+        points at the business type, which stays one click away in Settings > General."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            company = await api.get_company(token)
+            if not _role_has_permission(company.get("settings") or {}, _get_role(request),
+                                        "manage_company_lifecycle"):
+                return Div(t("dashboard.finish_setup_owner_only"), cls="error-banner", id="finish-setup-banner")
+            await api.patch_company(token, {"finish_setup_dismissed": True})
+        except APIError as e:
+            return Div(e.detail, cls="error-banner", id="finish-setup-banner")
+        return ""
+
     @app.get("/history")
     async def history_page(request: Request):
         token = _token(request)
@@ -986,11 +1004,16 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
 
 def _finish_setup_banner(company: dict, settings: dict, role: str) -> FT | str:
     """A company left without a business type (setup stopped after the account was
-    made) points the one person who can set it at the retry page."""
-    if has_business_type(company) or not _role_has_permission(settings, role, "manage_company_lifecycle"):
+    made) points the one person who can set it at the retry page, until they close it."""
+    if (has_business_type(company) or settings.get("finish_setup_dismissed")
+            or not _role_has_permission(settings, role, "manage_company_lifecycle")):
         return ""
     return Div(Span("ℹ️", cls="info-banner-icon"),
                A(t("dashboard.finish_setup"), href="/setup/company"),
+               Button("×", type="button", cls="getting-started-dismiss info-banner-close",
+                      title=t("settings.dismiss"), aria_label=t("settings.dismiss"),
+                      hx_post="/dashboard/finish-setup/dismiss",
+                      hx_target="#finish-setup-banner", hx_swap="outerHTML"),
                cls="info-banner", id="finish-setup-banner")
 
 

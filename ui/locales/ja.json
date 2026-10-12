@@ -4353,6 +4353,7 @@
   "dashboard.getting_started_documents": "書類",
   "dashboard.getting_started_where": "インポートは常にページの上部にあります。",
   "dashboard.finish_setup": "設定を完了してください: 業種を選択",
+  "dashboard.finish_setup_owner_only": "これを閉じられるのは会社のオーナーだけです。",
   "dashboard.getting_started_forever": "今後表示しない",
   "dashboard.demo_note": "[DEMO] の付いた品目はサンプルで、これらの数値に含まれています。最初の商品インポートで削除されます（変更したものは残ります）。",
   "dashboard.remove_demo_items": "デモ品目を削除",

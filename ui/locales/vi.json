@@ -4353,6 +4353,7 @@
   "dashboard.getting_started_documents": "Chứng từ",
   "dashboard.getting_started_where": "Nút Nhập luôn ở phía trên cùng của trang.",
   "dashboard.finish_setup": "Hoàn tất thiết lập: chọn loại hình kinh doanh",
+  "dashboard.finish_setup_owner_only": "Chỉ chủ sở hữu công ty mới có thể đóng mục này.",
   "dashboard.getting_started_forever": "Không hiển thị lại",
   "dashboard.demo_note": "Các mục có đánh dấu [DEMO] là mẫu và được tính trong các số liệu này. Lần nhập sản phẩm đầu tiên sẽ xóa chúng, trừ khi bạn đã thay đổi chúng.",
   "dashboard.remove_demo_items": "Xóa các mục demo",

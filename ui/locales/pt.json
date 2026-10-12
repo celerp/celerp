@@ -4353,6 +4353,7 @@
   "dashboard.getting_started_documents": "Documentos",
   "dashboard.getting_started_where": "Importar fica sempre no topo da página.",
   "dashboard.finish_setup": "Conclua a configuração: escolha seu tipo de negócio",
+  "dashboard.finish_setup_owner_only": "Somente o proprietário da empresa pode fechar isto.",
   "dashboard.getting_started_forever": "Não mostrar novamente",
   "dashboard.demo_note": "Itens marcados [DEMO] são exemplos e estão incluídos nestes números. Sua primeira importação de produtos os remove, a menos que você os tenha alterado.",
   "dashboard.remove_demo_items": "Remover itens de demonstração",
