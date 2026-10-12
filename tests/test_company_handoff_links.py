@@ -14,7 +14,7 @@ def test_email_and_desktop_link_round_trip():
     key = bytes(range(32))
     email = handoff_page_link(hid, key)
     parsed = parse_handoff_link(email)
-    assert parsed.handoff_id == hid
+    assert parsed.copy_id == hid
     assert parsed.secret == key
     assert parsed.proof_hash == hashlib.sha256(key).hexdigest()
     assert key.hex() not in repr(parsed)

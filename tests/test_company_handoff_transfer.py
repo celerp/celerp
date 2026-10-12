@@ -13,9 +13,9 @@ from celerp.services.company_handoff_links import handoff_page_link
 from celerp.services import company_handoff_transfer as transfer
 
 
-def _run_with_remote(monkeypatch, handoff_id, content: bytes, *, grant_url=None, status=200,
+def _run_with_remote(monkeypatch, copy_id, content: bytes, *, grant_url=None, status=200,
                      content_length=None, download_status=200):
-    url = grant_url or f"https://sfo2.digitaloceanspaces.com/example-copies/handoffs/{handoff_id.hex}.bin?sig=synthetic"
+    url = grant_url or f"https://sfo2.digitaloceanspaces.com/example-copies/handoffs/{copy_id.hex}.bin?sig=synthetic"
     requests = []
 
     def server(request: httpx.Request) -> httpx.Response:

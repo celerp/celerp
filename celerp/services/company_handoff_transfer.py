@@ -19,7 +19,7 @@ class HandoffDownloadError(Exception):
     """The copy could not be retrieved or authenticated; nothing is imported."""
 
 
-def _validated_object_url(value: object, handoff_id) -> str:
+def _validated_object_url(value: object, copy_id) -> str:
     """Accept only the expected ciphertext on the supported object host."""
     if not isinstance(value, str) or len(value) > 4096:
         raise HandoffDownloadError("The company copy is unavailable")
@@ -32,7 +32,7 @@ def _validated_object_url(value: object, handoff_id) -> str:
     if (url.scheme != "https" or not host or
             not (host == "digitaloceanspaces.com" or host.endswith(".digitaloceanspaces.com")) or
             port is not None or url.username or url.password or url.fragment or
-            not url.path.endswith(f"/handoffs/{handoff_id.hex}.bin")):
+            not url.path.endswith(f"/handoffs/{copy_id.hex}.bin")):
         raise HandoffDownloadError("The company copy is unavailable")
     return value
 
@@ -51,13 +51,13 @@ async def download_company_handoff(link: str, destination: Path) -> None:
             async with httpx.AsyncClient(follow_redirects=False,
                                          timeout=httpx.Timeout(120, connect=10)) as client:
                 response = await client.post(
-                    f"https://relay.celerp.com/handoffs/{parsed.handoff_id}/fetch",
+                    f"https://relay.celerp.com/handoffs/{parsed.copy_id}/fetch",
                     json={"proof": parsed.proof_hash},
                 )
                 if response.status_code != 200:
                     raise HandoffDownloadError("This company copy is not available for import")
                 try:
-                    url = _validated_object_url(response.json().get("download_url"), parsed.handoff_id)
+                    url = _validated_object_url(response.json().get("download_url"), parsed.copy_id)
                 except (ValueError, AttributeError):
                     raise HandoffDownloadError("The company copy is unavailable") from None
                 fd, name = tempfile.mkstemp(prefix=".celerp-handoff-", suffix=".encrypted", dir=root)

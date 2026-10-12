@@ -34,6 +34,13 @@ cookies scoped to the entry point's base path.
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+from cryptography.exceptions import InvalidTag
+
+from celerp.services.company_handoff_links import parse_handoff_link
+from celerp.services.company_handoff_transfer import HandoffDownloadError, download_company_handoff
+
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -185,7 +192,13 @@ async def _upload_page(request: Request, mode: WizardMode, error: str | None = N
         Form(
             Div(
                 Label(t("company_backup.file_label"), For="file", cls="form-label"),
-                Input(type="file", id="file", name="file", required=True, accept=".celerp-company",
+                Input(type="file", id="file", name="file", accept=".celerp-company",
+                      cls="form-input"),
+                cls="form-group",
+            ),
+            Div(
+                Label(t("company_backup.handoff_link_label"), For="handoff_link", cls="form-label"),
+                Input(type="text", id="handoff_link", name="handoff_link", autocomplete="off",
                       cls="form-input"),
                 cls="form-group",
             ),
@@ -392,17 +405,36 @@ async def _read(request: Request, mode: WizardMode):
     form = await request.form()
     email, password = _sign_in(form)
     upload = form.get("file")
-    if not getattr(upload, "filename", ""):
-        return await _upload_page(request, mode, t("migration.choose_file"), email=email)
-    try:
+    link = str(form.get("handoff_link", "")).strip()
+    has_file = bool(getattr(upload, "filename", ""))
+    if has_file == bool(link):
+        return await _upload_page(request, mode, t("company_backup.choose_file_or_link"), email=email)
+
+    async def stage(filename, content):
         if mode is START_COMPANY:
-            summary = await api.company_backup_start_read(email, password, upload.filename, upload.file)
-        else:
-            summary = await api.company_backup_read(api_token(request, mode), upload.filename, upload.file,
-                                                    setup_code=_setup_code(form), mode=_mode_key(mode))
-    except APIError as e:
-        return await _upload_page(request, mode, _file_error(upload.filename, e), status_code=_status(e),
-                                  email=email)
+            return await api.company_backup_start_read(email, password, filename, content)
+        return await api.company_backup_read(api_token(request, mode), filename, content,
+                                             setup_code=_setup_code(form), mode=_mode_key(mode))
+
+    if link:
+        try:
+            # Nothing is imported until the existing preview and restore steps succeed.
+            parse_handoff_link(link)
+            with tempfile.TemporaryDirectory(prefix="celerp-handoff-") as folder:
+                backup = Path(folder) / "incoming.celerp-company"
+                await download_company_handoff(link, backup)
+                with backup.open("rb") as content:
+                    summary = await stage(backup.name, content)
+        except (HandoffDownloadError, ValueError, InvalidTag):
+            return await _upload_page(request, mode, t("company_backup.handoff_unavailable"), email=email)
+        except APIError as e:
+            return await _upload_page(request, mode, _file_error("", e), status_code=_status(e), email=email)
+    else:
+        try:
+            summary = await stage(upload.filename, upload.file)
+        except APIError as e:
+            return await _upload_page(request, mode, _file_error(upload.filename, e),
+                                      status_code=_status(e), email=email)
     return _with_cookie(await _preview_page(request, mode, _preview_of(summary), values={"email": email}), mode,
                         request, summary["upload_token"])
 

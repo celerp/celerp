@@ -16,7 +16,7 @@ _HTTPS_HOST = "relay.celerp.com"
 
 @dataclass(frozen=True)
 class CompanyHandoffLink:
-    handoff_id: uuid.UUID
+    copy_id: uuid.UUID
     secret: bytes = field(repr=False)
 
     @property
@@ -43,10 +43,10 @@ def parse_handoff_link(value: str) -> CompanyHandoffLink:
     else:
         raise ValueError("Invalid company handoff link")
     try:
-        handoff_id = uuid.UUID(raw_id)
+        copy_id = uuid.UUID(raw_id)
     except (ValueError, AttributeError):
         raise ValueError("Invalid company handoff link") from None
-    if str(handoff_id) != raw_id or not _FRAGMENT.fullmatch(parsed.fragment):
+    if str(copy_id) != raw_id or not _FRAGMENT.fullmatch(parsed.fragment):
         raise ValueError("Invalid company handoff link")
     try:
         secret = base64.urlsafe_b64decode(parsed.fragment + "=")
@@ -54,12 +54,12 @@ def parse_handoff_link(value: str) -> CompanyHandoffLink:
         raise ValueError("Invalid company handoff link") from None
     if len(secret) != 32 or base64.urlsafe_b64encode(secret).decode().rstrip("=") != parsed.fragment:
         raise ValueError("Invalid company handoff link")
-    return CompanyHandoffLink(handoff_id, secret)
+    return CompanyHandoffLink(copy_id, secret)
 
 
-def handoff_page_link(handoff_id: uuid.UUID, secret: bytes) -> str:
+def handoff_page_link(copy_id: uuid.UUID, secret: bytes) -> str:
     """Construct an emailed link with the decryption key only in its fragment."""
     if not isinstance(secret, bytes) or len(secret) != 32:
         raise ValueError("Invalid company handoff key")
     fragment = base64.urlsafe_b64encode(secret).decode().rstrip("=")
-    return f"https://{_HTTPS_HOST}/handoffs/{handoff_id}/open#{fragment}"
+    return f"https://{_HTTPS_HOST}/handoffs/{copy_id}/open#{fragment}"
