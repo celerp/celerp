@@ -1118,6 +1118,29 @@ async def test_soa_agrees_with_ar_aging(client):
 
 
 @pytest.mark.asyncio
+async def test_soa_agrees_with_ar_aging_with_open_credit_note(client):
+    """An issued credit note the customer has not used yet lowers what they owe on the
+    aging report exactly as it does on their statement."""
+    tok = await _reg(client)
+    contact = await _contact(client, tok)
+    inv = await _invoice(client, tok, total=200.0, contact_id=contact, issue_date="2026-01-05")
+    assert (await client.post(f"/docs/{inv}/finalize", headers=_h(tok))).status_code == 200
+    r = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "credit_note", "contact_id": contact, "issue_date": "2026-01-10",
+        "line_items": [{"name": "Goodwill", "quantity": 1, "unit_price": 50.0, "line_total": 50.0}],
+        "subtotal": 50.0, "tax": 0.0, "total": 50.0})
+    assert r.status_code == 200, r.text
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=_h(tok))).status_code == 200
+
+    soa = (await client.get(f"/accounting/soa/{contact}", headers=_h(tok))).json()
+    aging = (await client.get("/reports/ar-aging", headers=_h(tok))).json()
+    (mine,) = [c for c in aging["lines"] if c["customer_id"] == contact]
+    assert abs(soa["closing_balance"] - 150.0) < 0.01
+    assert abs(mine["total"] - soa["closing_balance"]) < 0.01
+
+
+@pytest.mark.asyncio
 async def test_soa_dual_role_contact_nets(client):
     """A contact that is both customer and supplier: their bill offsets the
     invoice in the running balance instead of stacking in one direction."""

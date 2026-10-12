@@ -52,6 +52,13 @@ AWAITING_PAYMENT_STATUSES: dict[str, frozenset[str]] = {
                                  "partial_returned", "returned"}),
 }
 
+# Per-doc-type statuses in which an issued credit note (to a customer) or supplier credit note
+# (from a supplier) still has a balance to apply or refund: an open credit.
+OPEN_CREDIT_STATUSES: dict[str, frozenset[str]] = {
+    "credit_note": _RECEIVABLE_AWAITING,
+    "debit_note": _RECEIVABLE_AWAITING,
+}
+
 # Per-doc-type statuses in which a past due date means the document is overdue: an invoice
 # or bill still awaiting payment, a memo with goods still out, a consignment still holding
 # goods. Draft, void, paid, closed, converted and fully returned documents never are.
@@ -103,6 +110,12 @@ def is_owed(state: dict) -> bool:
 def is_awaiting_payment(doc_type: str | None, status: str | None) -> bool:
     """Whether a document of ``doc_type`` in ``status`` is issued and still awaits payment."""
     return status in AWAITING_PAYMENT_STATUSES.get(doc_type, ())
+
+
+def is_open_credit(state: dict) -> bool:
+    """Whether a document is an issued credit note or supplier credit note with a balance
+    still to apply or refund (``OPEN_CREDIT_STATUSES``, ``is_owed``)."""
+    return state.get("status") in OPEN_CREDIT_STATUSES.get(state.get("doc_type"), ()) and is_owed(state)
 
 
 def awaiting_status_param(doc_type: str) -> str:

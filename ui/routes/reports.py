@@ -66,8 +66,7 @@ async def _page_or_fragment(request: Request, *content, title: str, nav_active: 
 
 def setup_routes(app):
 
-    @app.get("/reports/ar-aging")
-    async def ar_aging(request: Request):
+    async def _aging_page(request: Request, label: str, fetch, path: str, title_key: str):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -75,40 +74,30 @@ def setup_routes(app):
         date_from, date_to, preset = _parse_dates(request, fy)
         sort = request.query_params.get("sort", "outstanding")
         sort_dir = request.query_params.get("dir", "desc")
+        header = page_header(t(title_key), A(t("label.back"), href="/reports", cls="btn btn--secondary"))
         try:
-            data = await api.get_ar_aging(token, params={"date_from": date_from, "date_to": date_to} if date_from else None)
+            data = await fetch(token, params={"date_from": date_from, "date_to": date_to} if date_from else None)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
+            if e.status == 403:
+                return await _page_or_fragment(request, header, Div(t("perm.page_no_access"), cls="error-banner"),
+                                               title=page_title(title_key), nav_active="reports")
             data = {"lines": [], "buckets": {}}
         content = [
-            page_header(t("page.ar_aging"), A(t("label.back"), href="/reports", cls="btn btn--secondary")),
-            _date_filter_bar("/reports/ar-aging", date_from, date_to, preset, settings_link=PAYMENT_TERMS_URL, lang=get_lang(request)),
-            _aging_view(data, "AR", sort=sort, sort_dir=sort_dir, currency=currency),
+            header,
+            _date_filter_bar(path, date_from, date_to, preset, settings_link=PAYMENT_TERMS_URL, lang=get_lang(request)),
+            _aging_view(data, label, sort=sort, sort_dir=sort_dir, currency=currency),
         ]
-        return await _page_or_fragment(request, *content, title=page_title("page.ar_aging"), nav_active="reports")
+        return await _page_or_fragment(request, *content, title=page_title(title_key), nav_active="reports")
+
+    @app.get("/reports/ar-aging")
+    async def ar_aging(request: Request):
+        return await _aging_page(request, "AR", api.get_ar_aging, "/reports/ar-aging", "page.ar_aging")
 
     @app.get("/reports/ap-aging")
     async def ap_aging(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        fy, currency, _ = await _get_fiscal_and_currency(token)
-        date_from, date_to, preset = _parse_dates(request, fy)
-        sort = request.query_params.get("sort", "outstanding")
-        sort_dir = request.query_params.get("dir", "desc")
-        try:
-            data = await api.get_ap_aging(token, params={"date_from": date_from, "date_to": date_to} if date_from else None)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            data = {"lines": [], "buckets": {}}
-        content = [
-            page_header(t("page.ap_aging"), A(t("label.back"), href="/reports", cls="btn btn--secondary")),
-            _date_filter_bar("/reports/ap-aging", date_from, date_to, preset, settings_link=PAYMENT_TERMS_URL, lang=get_lang(request)),
-            _aging_view(data, "AP", sort=sort, sort_dir=sort_dir, currency=currency),
-        ]
-        return await _page_or_fragment(request, *content, title=page_title("page.ap_aging"), nav_active="reports")
+        return await _aging_page(request, "AP", api.get_ap_aging, "/reports/ap-aging", "page.ap_aging")
 
     @app.get("/reports/sales")
     async def sales_report(request: Request):
@@ -382,7 +371,8 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
     def _row(l: dict) -> FT:
         cid = _get_contact_id(l)
         name = _get_contact(l)
-        contact_cell = Td(A(name, href=f"/crm/contacts/{cid}", cls="link") if cid and cid not in ("unlinked", "Unlinked", "unknown") else name)
+        linked = bool(cid) and cid not in ("unlinked", "Unlinked", "unknown")
+        contact_cell = Td(A(name, href=f"/crm/contacts/{cid}", cls="link") if linked else name)
 
         # Build doc list drilldown links using due_date ranges.
         # as_of is today's date from the API response.
@@ -393,8 +383,13 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
         def _bucket_link(amount, due_from_val: str | None, due_to_val: str | None) -> FT:
             if not float(amount or 0):
                 return Td(fmt_money(amount, currency), cls="cell--number")
+            if float(amount) < 0:
+                # A credit: the party's statement shows the credit note and what it settled.
+                cell = A(fmt_money(amount, currency), href=f"/reports/statement?account=c:{cid}", cls="drilldown-link") if linked \
+                    else fmt_money(amount, currency)
+                return Td(cell, cls="cell--number")
             params = f"doc_type={doc_type_param}&{status_param}"
-            if cid and cid not in ("unlinked", "Unlinked", "unknown"):
+            if linked:
                 params += f"&contact_id={cid}"
             if due_from_val:
                 params += f"&due_from={due_from_val}"
@@ -421,7 +416,7 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
 
     bucket_totals = Div(
         *[
-            Span(f"{k}: {fmt_money(float(v), currency)}", cls=f"val-chip {'val-chip--alert' if k not in ('current',) else ''}")
+            Span(f"{t('reports.aging_current') if k == 'current' else k}: {fmt_money(float(v), currency)}", cls=f"val-chip {'val-chip--alert' if k not in ('current',) else ''}")
             for k, v in (buckets.items() if isinstance(buckets, dict) else [])
         ],
         cls="valuation-bar",

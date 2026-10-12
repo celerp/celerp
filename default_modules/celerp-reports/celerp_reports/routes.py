@@ -15,7 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.doc_balance import canonical_doc_type, doc_value, is_awaiting_payment, is_owed, outstanding_balance, today_iso
+from celerp.services.doc_balance import (
+    canonical_doc_type, doc_value, is_awaiting_payment, is_open_credit, is_owed, outstanding_balance, today_iso,
+)
 from celerp.services.permissions import require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -30,10 +32,13 @@ def _parse_d(val: str | None) -> Decimal:
         return Decimal(0)
 
 
-def _aged_balance(state: dict, doc_types: tuple[str, ...]) -> Decimal | None:
-    """What a document of one of ``doc_types`` awaiting payment still owes, or None when it is not
-    aged: another type, not awaiting payment, or settled."""
+def _aged_balance(state: dict, doc_types: tuple[str, ...], credit_types: tuple[str, ...]) -> Decimal | None:
+    """What a document of one of ``doc_types`` awaiting payment still owes, or, negative, what an
+    open credit of one of ``credit_types`` still has to apply or refund. None when it is not
+    aged: another type, not issued, or settled."""
     doc_type = canonical_doc_type(state.get("doc_type", state.get("type", "")))
+    if doc_type in credit_types:
+        return -outstanding_balance(state) if is_open_credit({**state, "doc_type": doc_type}) else None
     if doc_type not in doc_types or not is_awaiting_payment(doc_type, state.get("status")) or not is_owed(state):
         return None
     return outstanding_balance(state)
@@ -63,157 +68,76 @@ def _in_range(ts: str | None, date_from: str | None, date_to: str | None) -> boo
 
 
 # ---------------------------------------------------------------------------
-# AR aging (moved from docs router for co-location)
+# AR and AP aging
 # ---------------------------------------------------------------------------
+
+_BUCKETS = (("current", "current"), ("d30", "1-30"), ("d60", "31-60"), ("d90", "61-90"), ("d90plus", "90+"))
+
+
+def _bucket(days_overdue: int) -> str:
+    if days_overdue <= 0:
+        return "current"
+    return next((key for key, limit in (("d30", 30), ("d60", 60), ("d90", 90)) if days_overdue <= limit), "d90plus")
+
+
+async def _aging(session: AsyncSession, company_id: uuid.UUID, *, party: str, debit_types: tuple[str, ...],
+                 credit_types: tuple[str, ...], due_fallback: str, unlinked: tuple[str, str]) -> dict:
+    """Aging buckets per ``party`` (customer or supplier): what each document of ``debit_types``
+    still owes, by days past its due date (``due_fallback`` when it has none), less what each
+    open credit of ``credit_types`` has left, by days since it was issued. ``unlinked`` is the
+    (id, name) of documents that name no party."""
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
+
+    today = date.fromisoformat(today_iso())
+    buckets: dict[str, dict[str, Decimal]] = defaultdict(lambda: {key: Decimal(0) for key, _ in _BUCKETS})
+    names: dict[str, str] = {}
+
+    for row in rows:
+        state = row.state
+        amount = _aged_balance(state, debit_types, credit_types)
+        if amount is None:
+            continue
+        party_id = state.get("contact_id") or state.get(f"{party}_id") or unlinked[0]
+        names[party_id] = state.get("contact_name") or state.get(f"{party}_name") or unlinked[1]
+        dated = doc_value(state, "issue_date") if amount < 0 else (doc_value(state, "due_date") or state.get(due_fallback))
+        try:
+            since = date.fromisoformat(str(dated or today.isoformat())[:10])
+        except ValueError:
+            since = today
+        buckets[party_id][_bucket((today - since).days)] += amount
+
+    lines = [{
+        f"{party}_id": pid,
+        f"{party}_name": names.get(pid, pid),
+        **{key: float(b[key]) for key, _ in _BUCKETS},
+        "total": float(sum(b.values())),
+    } for pid, b in sorted(buckets.items(), key=lambda x: names.get(x[0], x[0]))]
+    totals = {label: float(sum(b[key] for b in buckets.values())) for key, label in _BUCKETS}
+    return {"as_of": today.isoformat(), "lines": lines, "buckets": totals}
+
 
 @router.get("/ar-aging")
 async def ar_aging(
     company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Accounts receivable aging buckets per customer."""
-    rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "doc",
-            )
-        )
-    ).scalars().all()
+    """Accounts receivable aging buckets per customer: open invoices less open credit notes."""
+    return await _aging(session, company_id, party="customer", debit_types=("invoice",),
+                        credit_types=("credit_note",), due_fallback="date", unlinked=("unlinked", "Unlinked Invoices"))
 
-    today = date.fromisoformat(today_iso())
-
-    # customer_id -> {current, d30, d60, d90, d90plus}
-    buckets: dict[str, dict[str, Decimal]] = defaultdict(lambda: {
-        "current": Decimal(0), "d30": Decimal(0), "d60": Decimal(0),
-        "d90": Decimal(0), "d90plus": Decimal(0),
-    })
-    names: dict[str, str] = {}
-
-    for row in rows:
-        state = row.state
-        outstanding = _aged_balance(state, ("invoice",))
-        if outstanding is None:
-            continue
-
-        customer_id = state.get("contact_id") or state.get("customer_id") or "unlinked"
-        names[customer_id] = state.get("contact_name") or state.get("customer_name") or "Unlinked Invoices"
-
-        due_date_str = doc_value(state, "due_date") or state.get("date") or today.isoformat()
-        try:
-            due = date.fromisoformat(due_date_str[:10])
-        except ValueError:
-            due = today
-        days_overdue = (today - due).days
-
-        b = buckets[customer_id]
-        if days_overdue <= 0:
-            b["current"] += outstanding
-        elif days_overdue <= 30:
-            b["d30"] += outstanding
-        elif days_overdue <= 60:
-            b["d60"] += outstanding
-        elif days_overdue <= 90:
-            b["d90"] += outstanding
-        else:
-            b["d90plus"] += outstanding
-
-    lines = []
-    for cid, b in sorted(buckets.items(), key=lambda x: names.get(x[0], x[0])):
-        total = sum(b.values())
-        lines.append({
-            "customer_id": cid,
-            "customer_name": names.get(cid, cid),
-            "current": float(b["current"]),
-            "d30": float(b["d30"]),
-            "d60": float(b["d60"]),
-            "d90": float(b["d90"]),
-            "d90plus": float(b["d90plus"]),
-            "total": float(total),
-        })
-
-    # Aggregate bucket totals for chart display
-    agg_buckets = {"current": 0.0, "1-30": 0.0, "31-60": 0.0, "61-90": 0.0, "90+": 0.0}
-    for b in buckets.values():
-        agg_buckets["current"] += float(b["current"])
-        agg_buckets["1-30"] += float(b["d30"])
-        agg_buckets["31-60"] += float(b["d60"])
-        agg_buckets["61-90"] += float(b["d90"])
-        agg_buckets["90+"] += float(b["d90plus"])
-
-    return {"as_of": today.isoformat(), "lines": lines, "buckets": agg_buckets}
-
-
-# ---------------------------------------------------------------------------
-# AP aging
-# ---------------------------------------------------------------------------
 
 @router.get("/ap-aging")
 async def ap_aging(
     company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("view_financial_reports"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Accounts payable aging buckets per supplier (from purchase orders)."""
-    rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "doc",
-            )
-        )
-    ).scalars().all()
-
-    today = date.fromisoformat(today_iso())
-
-    buckets: dict[str, dict[str, Decimal]] = defaultdict(lambda: {
-        "current": Decimal(0), "d30": Decimal(0), "d60": Decimal(0),
-        "d90": Decimal(0), "d90plus": Decimal(0),
-    })
-    names: dict[str, str] = {}
-
-    for row in rows:
-        state = row.state
-        outstanding = _aged_balance(state, ("purchase_order", "bill"))
-        if outstanding is None:
-            continue
-
-        supplier_id = state.get("contact_id") or state.get("supplier_id") or "Unlinked"
-        names[supplier_id] = state.get("contact_name") or state.get("supplier_name") or supplier_id
-
-        due_date_str = doc_value(state, "due_date") or state.get("expected_delivery") or today.isoformat()
-        try:
-            due = date.fromisoformat(due_date_str[:10])
-        except ValueError:
-            due = today
-        days_overdue = (today - due).days
-
-        b = buckets[supplier_id]
-        if days_overdue <= 0:
-            b["current"] += outstanding
-        elif days_overdue <= 30:
-            b["d30"] += outstanding
-        elif days_overdue <= 60:
-            b["d60"] += outstanding
-        elif days_overdue <= 90:
-            b["d90"] += outstanding
-        else:
-            b["d90plus"] += outstanding
-
-    lines = []
-    for sid, b in sorted(buckets.items(), key=lambda x: names.get(x[0], x[0])):
-        total = sum(b.values())
-        lines.append({
-            "supplier_id": sid,
-            "supplier_name": names.get(sid, sid),
-            "current": float(b["current"]),
-            "d30": float(b["d30"]),
-            "d60": float(b["d60"]),
-            "d90": float(b["d90"]),
-            "d90plus": float(b["d90plus"]),
-            "total": float(total),
-        })
-
-    return {"as_of": today.isoformat(), "lines": lines}
+    """Accounts payable aging buckets per supplier: open bills and purchase orders less open
+    supplier credit notes."""
+    return await _aging(session, company_id, party="supplier", debit_types=("purchase_order", "bill"),
+                        credit_types=("debit_note",), due_fallback="expected_delivery", unlinked=("Unlinked", "Unlinked"))
 
 
 # ---------------------------------------------------------------------------
