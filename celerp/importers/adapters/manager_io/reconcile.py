@@ -115,9 +115,8 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
                       if a.control == "receivable"), ZERO)
     ap_control = sum((balances.get(a.key, ZERO) for a in book.accounts.values()
                       if a.control == "payable"), ZERO)
-    add(M.AR_DOCUMENT_RESIDUAL, "", base, ar_control - open_ar, "Receivables outside open documents")
-    add(M.AP_DOCUMENT_RESIDUAL, "", base, ap_control + open_ap,
-        "Payables outside open documents")
+    add(M.AR_DOCUMENT_RESIDUAL, "", base, ar_control - open_ar)
+    add(M.AP_DOCUMENT_RESIDUAL, "", base, ap_control + open_ap)
     for key, contact in sorted(book.contacts.items()):
         customer = contact.source_type == "Customer"
         add(M.AR_BY_CUSTOMER if customer else M.AP_BY_SUPPLIER, key, base, party[key], contact.name, not customer)
