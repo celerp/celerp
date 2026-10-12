@@ -35,26 +35,22 @@ jobs:
           git apply --check /tmp/writeoff.patch
           git apply --index /tmp/writeoff.patch
           git diff --cached --check
-      - name: Keep ORM states stable in test snapshots
+      - name: Use durable journal state snapshots in tests
         run: |
           python - <<'PY'
           from pathlib import Path
           p = Path("tests/test_writeoff_cost_restatement.py")
           s = p.read_text()
-          s = s.replace("import uuid\n", "import uuid\nfrom types import SimpleNamespace\n")
-          old = '''    return list((await session.execute(select(Projection).where(
-        Projection.company_id == auth["company_id"],
-        Projection.entity_type == "journal_entry",
-        Projection.entity_id.like(prefix + "%"),
-    ).order_by(Projection.entity_id))).scalars())'''
-          new = '''    rows = (await session.execute(select(Projection).where(
-        Projection.company_id == auth["company_id"],
-        Projection.entity_type == "journal_entry",
-        Projection.entity_id.like(prefix + "%"),
-    ).order_by(Projection.entity_id))).scalars().all()
-    return [SimpleNamespace(entity_id=row.entity_id, state=dict(row.state)) for row in rows]'''
-          assert s.count(old) == 1
-          p.write_text(s.replace(old, new))
+          s = s.replace("import uuid\\n", "import uuid\\nfrom types import SimpleNamespace\\n")
+          a = "    return list((await session.execute("
+          b = "    rows = (await session.execute("
+          assert s.count(a) == 1
+          s = s.replace(a, b)
+          a = "    ).order_by(Projection.entity_id))).scalars())"
+          b = ("    ).order_by(Projection.entity_id))).scalars().all()\\n"
+               "    return [SimpleNamespace(entity_id=row.entity_id, state=dict(row.state)) for row in rows]")
+          assert s.count(a) == 1
+          p.write_text(s.replace(a, b))
           PY
       - uses: actions/setup-python@v5
         with:
