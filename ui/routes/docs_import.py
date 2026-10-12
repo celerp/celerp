@@ -829,6 +829,10 @@ def setup_routes(app):
         errors = [*refused, *(result.get("errors", []) or [])]
 
         await discard_import_csv(token, form, {**result, "errors": errors})
+        # Documents the opening balances hold post nothing, so the only way to know the
+        # opening journal agrees with them is the check; offer it where they were imported.
+        opening = created + updated > 0 and any(
+            r["data"].get("import_treatment") == "opening_balances" for r in records)
         return import_result_panel(
             created=created,
             skipped=skipped,
@@ -838,4 +842,6 @@ def setup_routes(app):
             back_href="/docs",
             import_more_href="/docs/import",
             has_mapping=True,
+            extra=P(A(t("docs_import.check_opening"), href="/reports/opening-tie-out",
+                      cls="drilldown-link"), cls="mt-md") if opening else "",
         )

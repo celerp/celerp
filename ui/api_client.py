@@ -1695,6 +1695,11 @@ async def get_trial_balance(token: str, params: dict | None = None) -> dict:
         return _raise(await c.get("/accounting/trial-balance", params=params or {})).json()
 
 
+async def get_opening_tie_out(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/opening-tie-out")).json()
+
+
 async def get_pnl(token: str, params: dict | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/pnl", params=params or {})).json()

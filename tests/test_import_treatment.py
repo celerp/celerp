@@ -334,3 +334,16 @@ async def test_an_invoice_the_opening_balances_hold_posts_nothing(client, sessio
     assert await _doc_jes(session, auth, rec["entity_id"]) == {}
     st = await _state(session, auth, rec["entity_id"])
     assert (st.get("import_treatment"), float(st.get("amount_outstanding") or 0)) == ("opening_balances", 40.0)
+
+
+async def test_part_paid_opening_bill_cannot_be_voided(client, session, auth):
+    """The reversal of an opening bill's carriage reverses its whole payable. A part-paid
+    one never reaches it: a document with payments is not voided until they are."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    rec = _rec({**_snapshot(lot, "bill", 5, 0, paid=20.0), "status": "partial"}, "opening_balances")
+    assert (await _post(client, auth, rec, False)).status_code == 200
+    n = await _events(session, auth)
+    r = await client.post(f"/docs/{rec['entity_id']}/void", headers=auth["headers"], json={})
+    assert r.status_code == 409, r.text
+    assert await _events(session, auth) == n
+    assert (await _state(session, auth, rec["entity_id"]))["status"] == "partial"

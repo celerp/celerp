@@ -1,0 +1,98 @@
+<div id="main-content" class="main-content">
+  <div class="page-header">
+    <h1 class="page-title">Opening balance check</h1>
+    <div class="page-actions"></div>
+  </div>
+  <div>
+    <div id="report-nav" class="flex-row flex-wrap gap-sm mb-md">
+<span class="cell--muted">Accounting Reports:</span><a href="/reports/pnl?to=2025-12-31" class="drilldown-link">P&amp;L</a><a href="/reports/balance-sheet?as_of=2025-12-31" class="drilldown-link">Balance Sheet</a><a href="/reports/cash-flow?to=2025-12-31" class="drilldown-link">Cash Flow</a><a href="/reports/trial-balance?to=2025-12-31" class="drilldown-link">Trial Balance</a><a href="/reports/general-ledger?to=2025-12-31" class="drilldown-link">General Ledger</a><a href="/accounting?to=2025-12-31" class="drilldown-link">Journal</a><a href="/reports/extended-journal?to=2025-12-31" class="drilldown-link">Extended Journal</a><a href="/reports/statement?to=2025-12-31" class="drilldown-link">Statement of Account</a><span class="report-nav-current">Opening balance check</span>    </div>
+    <div class="flex-row mt-md mb-md">
+      <div class="page-actions flex-row gap-sm ml-auto">
+<a href="/reports/export/opening-tie-out/csv" class="btn btn--ghost btn--icon" title="Export CSV"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg></a><a href="/reports/print/opening-tie-out" target="_blank" class="btn btn--ghost btn--icon" title="Print"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg></a>      </div>
+    </div>
+    <div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Check</th>
+            <th>As of</th>
+            <th class="cell--number">Opening balances</th>
+            <th class="cell--number">Imported documents</th>
+            <th class="cell--number">Difference</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+<a href="#tie-out-goods" class="drilldown-link">Goods billed, not yet received</a>            </td>
+            <td>2025-12-31</td>
+            <td class="cell--number">฿0.00</td>
+            <td class="cell--number">฿0.00</td>
+            <td class="cell--number">฿0.00</td>
+            <td>
+<span class="badge badge--active">Matches</span>            </td>
+          </tr>
+          <tr>
+            <td>
+<a href="#tie-out-payables" class="drilldown-link">Payables</a>            </td>
+            <td>2025-12-31</td>
+            <td class="cell--number">฿0.00</td>
+            <td class="cell--number">฿0.00</td>
+            <td class="cell--number">฿0.00</td>
+            <td>
+<span class="badge badge--active">Matches</span>            </td>
+          </tr>
+          <tr>
+            <td>
+<a href="#tie-out-receivables" class="drilldown-link">Receivables</a>            </td>
+            <td>2025-12-31</td>
+            <td class="cell--number">฿0.00</td>
+            <td class="cell--number">฿50.00</td>
+            <td class="cell--number">฿-50.00</td>
+            <td>
+<span class="badge badge--alert">Differs</span>            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="cell--muted mt-sm">Opening balances for payables and receivables are the whole account on the opening balance date, including parties with no imported documents. Documents brought in by a migration are not listed.</p>
+      <div id="tie-out-goods" class="mt-lg">
+        <h3>Goods billed, not yet received</h3>
+        <p class="empty-state">No documents imported as already in the opening balances.</p>
+      </div>
+      <div id="tie-out-payables" class="mt-lg">
+        <h3>Payables</h3>
+        <p class="empty-state">No documents imported as already in the opening balances.</p>
+      </div>
+      <div id="tie-out-receivables" class="mt-lg">
+        <h3>Receivables</h3>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Doc #</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Currency</th>
+              <th class="cell--number">Amount</th>
+              <th class="cell--number">Amount in THB</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>2025-11-20</td>
+              <td>
+<a href="/docs/doc:<uuid>" class="drilldown-link">OB-1</a>              </td>
+              <td>Invoice</td>
+              <td>
+<span class="badge badge--final">Final</span>              </td>
+              <td>THB</td>
+              <td class="cell--number">฿50.00</td>
+              <td class="cell--number">฿50.00</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>

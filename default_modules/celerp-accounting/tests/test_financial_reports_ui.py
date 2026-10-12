@@ -136,12 +136,22 @@ _EXTENDED_JOURNAL = {
     ],
 }
 
+_TIE_OUT = {
+    "as_of": "2025-12-31", "base_currency": "THB",
+    "checks": [{"key": "receivables", "label_key": "opening_tie_out.receivables",
+                "ledger": 60.0, "expected": 60.0, "difference": 0.0, "tolerance": 0.0,
+                "matches": True, "by_account": None, "by_currency": {"THB": 60.0},
+                "documents": [{"doc_id": "doc:1", "doc_type": "invoice", "number": "INV-0001",
+                               "date": "2025-12-01", "currency": "THB", "amount": 60.0,
+                               "base_amount": 60.0, "status": "final"}]}],
+}
+
 _DEFAULTS = {
     "get_company": _COMPANY, "list_contacts": _CONTACTS, "get_chart": _CHART,
     "get_soa": _SOA, "get_ledger": _LEDGER, "get_pnl": _PNL, "get_balance_sheet": _BS,
     "get_trial_balance": _TB, "get_general_ledger": _GL, "get_cash_flow": _CASH_FLOW,
     "get_ar_aging": _AGING, "get_ap_aging": _AGING, "get_journal": _JOURNAL,
-    "get_extended_journal": _EXTENDED_JOURNAL,
+    "get_extended_journal": _EXTENDED_JOURNAL, "get_opening_tie_out": _TIE_OUT,
 }
 
 

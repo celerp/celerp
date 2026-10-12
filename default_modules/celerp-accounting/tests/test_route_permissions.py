@@ -30,6 +30,7 @@ EXPECTED: dict[tuple[str, str], str | frozenset[str]] = {
     ("GET", "/balance-sheet"): READ,
     ("GET", "/soa/{contact_id}"): READ,
     ("GET", "/cash-flow"): READ,
+    ("GET", "/opening-tie-out"): READ,
     ("POST", "/import/batch"): frozenset({WRITE, "import_export_data"}),
     ("POST", "/accounts/import/batch"): frozenset({WRITE, "import_export_data"}),
     ("POST", "/accounts/import/preview"): frozenset({WRITE, "import_export_data"}),

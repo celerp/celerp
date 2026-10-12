@@ -168,7 +168,7 @@ async def test_a_voided_locked_credit_note_reverses_on_its_customer(client):
     customer = await _contact(client, tok, "Returner", "customer")
     doc = await _finalized(client, tok, "credit_note", customer, 60.0)
     await _lock(client, tok)
-    assert await _aging(client, tok, AR, customer) == 0, "AR aging ages invoices, not credit notes"
+    assert await _aging(client, tok, AR, customer) == -60.0, "an open credit note lowers what is owed"
     await _void(client, tok, doc)
     await _tb(client, tok)
     await _assert_party_reconciles(client, tok, AR, doc, customer, 60.0)

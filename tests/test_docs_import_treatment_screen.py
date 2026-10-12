@@ -106,6 +106,26 @@ async def test_the_chosen_treatment_travels_with_the_document(client, session, a
     assert doc.get("import_treatment") == "opening_balances", doc
 
 
+@pytest.mark.parametrize("treatment, linked", [("opening_balances", True), ("record_now", False)])
+async def test_docs_import_result_links_tie_out_for_opening_documents(client, auth, monkeypatch, treatment, linked):
+    """After importing documents the opening balances hold, the result offers the check
+    of those balances against them; a file recorded now has nothing to check."""
+    from ui.routes import docs_import
+
+    async def _batch(_tok, path, records, upsert=False):
+        return (await client.post(path, headers=auth["headers"], json={"records": records,
+                                                                       "upsert": upsert})).json()
+
+    routes = _screen(monkeypatch, {"id": str(auth["company_id"])})
+    monkeypatch.setattr(docs_import.api, "batch_import", _batch)
+    monkeypatch.setattr(docs_import.api, "numbered_ids", _numbered_via(client, auth["headers"]))
+    number = f"TL-{uuid.uuid4().hex[:6]}"
+    csv_text = f"doc_type,doc_number,date,status,total\ninvoice,{number},2026-01-15,sent,100\n"
+    form = await _staged_form("tok", csv_text, **{f"treatment:invoice:{number}": treatment})
+    html = to_xml(await routes["/docs/import/confirm"](form))
+    assert ('href="/reports/opening-tie-out"' in html) is linked, html
+
+
 async def test_revalidating_keeps_the_treatment_the_user_chose(monkeypatch):
     """B-OLD is switched to Record it now and B-NEW left at --, a cell fixed and the file
     revalidated: both choices survive the re-render instead of going back to the prefill."""

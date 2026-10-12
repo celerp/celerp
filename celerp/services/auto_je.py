@@ -2072,14 +2072,20 @@ async def imported_document(session, company_id, doc_id: str) -> ImportedDocumen
 
 async def _carriage_entries(session, company_id, imported: ImportedDocument) -> list[dict]:
     """What the opening balances hold for an imported document, as the entry its bill
-    would book. For a bill, its whole entry, except that goods it had already received are
-    in opening stock, held by their lots: what is owed for them is held against retained
-    earnings, never in transit. For a purchase order, each line's share received when it
-    was imported. A purchase order's receipts book only the goods, so its tax and shipping
-    are not in the opening balances; its bill books them when it is converted."""
-    snapshot = imported.snapshot
+    would book (_bill_carriage_parts, without the source lines)."""
+    return [e for e, _ in await _bill_carriage_parts(session, company_id, imported.doc_id, imported.snapshot)]
+
+
+async def _bill_carriage_parts(session, company_id, doc_id: str, snapshot: dict) -> list[tuple[dict, int | None]]:
+    """Each line of what the opening balances hold for an imported document, with the
+    index of the document line it comes from (None for tax, shipping, retained earnings
+    and payables). For a bill, its whole entry, except that goods it had already received
+    are in opening stock, held by their lots: what is owed for them is held against
+    retained earnings, never in transit. For a purchase order, each line's share received
+    when it was imported. A purchase order's receipts book only the goods, so its tax and
+    shipping are not in the opening balances; its bill books them when it is converted."""
     base_currency = await company_currency(session, company_id)
-    built = await _bill_entries(session, company_id, imported.doc_id, snapshot, base_currency)
+    built = await _bill_entries(session, company_id, doc_id, snapshot, base_currency)
     if built is None:
         return []
     entries, sources, debits = built
@@ -2097,7 +2103,7 @@ async def _carriage_entries(session, company_id, imported: ImportedDocument) -> 
         return min(received.get(source, _Dec(0)) / ordered, _Dec(1)) if ordered > 0 else _Dec(0)
 
     if snapshot.get("doc_type") == "bill":
-        held: list[dict] = []
+        held: list[tuple[dict, int | None]] = []
         in_stock = _Dec(0)
         for e, s, d in zip(entries, sources, debits):
             stock = s is not None and bill_line_kind(lines[s]) == "stock"
@@ -2106,22 +2112,83 @@ async def _carriage_entries(session, company_id, imported: ImportedDocument) -> 
                 in_stock += amount
                 e = {**e, "debit": to_stored_float(d - amount)}
             if to_decimal(e["debit"]):
-                held.append(e)
+                held.append((e, s))
         if in_stock:
-            held.append(_line(await resolve(session, company_id, R.RETAINED_EARNINGS), R.RETAINED_EARNINGS,
-                              debit=to_stored_float(in_stock)))
-        return [*held, entries[-1]]
+            held.append((_line(await resolve(session, company_id, R.RETAINED_EARNINGS), R.RETAINED_EARNINGS,
+                               debit=to_stored_float(in_stock)), None))
+        return [*held, (entries[-1], None)]
     carried = []
     for e, s, d in zip(entries, sources, debits):
         if s is None:
             continue
         amount = round_money(d * received_fraction(s), base_currency)
         if amount:
-            carried.append({**e, "debit": to_stored_float(amount)})
+            carried.append(({**e, "debit": to_stored_float(amount)}, s))
     if not carried:
         return []
-    total = sum((to_decimal(e["debit"]) for e in carried), _Dec(0))
-    return [*carried, {**entries[-1], "credit": to_stored_float(total)}]
+    total = sum((to_decimal(e["debit"]) for e, _ in carried), _Dec(0))
+    return [*carried, ({**entries[-1], "credit": to_stored_float(total)}, None)]
+
+
+@dataclass(frozen=True)
+class OpeningHeld:
+    """A document imported as already in the opening balances, as its import snapshot
+    says it stood at cutover. Amounts in base currency are rounded once per document, as a
+    posting would round them. goods_by_account: for a bill, the goods it billed and had
+    not received, per goods account. payable: what the opening holds owed on a purchase
+    document (a bill's outstanding; an order's goods received). receivable: an invoice's
+    outstanding, a credit note's as a negative. base_amount is that payable or receivable;
+    amount is the same in the document's currency, None for a foreign-currency order,
+    whose received share is only ever booked in base."""
+    doc_id: str
+    doc_type: str
+    doc_number: str
+    date: str
+    currency: str
+    amount: _Dec | None
+    base_amount: _Dec
+    goods_by_account: dict[str, _Dec]
+
+
+async def opening_held_documents(session, company_id) -> list[OpeningHeld]:
+    """Every document imported with the treatment "opening_balances", from its import
+    snapshot. Later payments and voids do not change it: at cutover the opening held it."""
+    from celerp.models.ledger import LedgerEntry
+
+    base = await company_currency(session, company_id)
+    created = (await session.execute(_select(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == "doc.created",
+        LedgerEntry.metadata_[IMPORT_TREATMENT].as_string() == "opening_balances",
+    ).order_by(LedgerEntry.id))).scalars().all()
+    out: list[OpeningHeld] = []
+    for row in created:
+        snapshot = row.data or {}
+        kind = imported_issue_kind(snapshot)
+        if not (row.metadata_ or {}).get(IMPORTED_SNAPSHOT) or kind is None:
+            continue
+        currency = str(snapshot.get("currency") or base).upper()
+        rate = require_doc_rate(snapshot, base)
+        goods: dict[str, _Dec] = {}
+        if kind == "purchase_order":
+            parts = await _bill_carriage_parts(session, company_id, row.entity_id, snapshot)
+            base_amount = to_decimal(parts[-1][0]["credit"]) if parts else _Dec(0)
+            amount = base_amount if currency == base else None
+        else:
+            amount = round_money(snapshot.get("amount_outstanding") or 0, currency)
+            base_amount = to_decimal(to_base(amount, rate, base))
+            if kind == "credit_note":
+                amount, base_amount = -amount, -base_amount
+        if kind == "bill":
+            lines = snapshot.get("line_items") or []
+            for e, s in await _bill_carriage_parts(session, company_id, row.entity_id, snapshot):
+                if s is not None and bill_line_kind(lines[s]) == "stock":
+                    goods[e["account"]] = goods.get(e["account"], _Dec(0)) + to_decimal(e["debit"])
+        out.append(OpeningHeld(
+            doc_id=row.entity_id, doc_type=kind, doc_number=str(snapshot.get("doc_number") or ""),
+            date=str(snapshot.get("issue_date") or snapshot.get("date") or "")[:10], currency=currency,
+            amount=amount, base_amount=base_amount, goods_by_account=goods,
+        ))
+    return out
 
 
 async def imported_carriage(session, company_id, doc_id: str) -> list[dict]:
