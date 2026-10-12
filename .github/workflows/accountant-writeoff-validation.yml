@@ -35,6 +35,30 @@ jobs:
           git apply --check /tmp/writeoff.patch
           git apply --index /tmp/writeoff.patch
           git diff --cached --check
+      - name: Keep ORM states stable in test snapshots
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("tests/test_writeoff_cost_restatement.py")
+          s = p.read_text()
+          s = s.replace("import uuid\n", "import uuid\nfrom types import SimpleNamespace\n")
+          old = '''    return list((await session.execute(select(Projection).where(
+              Projection.company_id == auth["company_id"],
+              Projection.entity_type == "journal_entry",
+              Projection.entity_id.like(prefix + "%"),
+          ).order_by(Projection.entity_id))).scalars())'''
+          # Match the checked-in candidate's exact four-line query, without patching other files.
+          old = old.replace("              ", "        ")
+          new = '''    rows = (await session.execute(select(Projection).where(
+                  Projection.company_id == auth["company_id"],
+                  Projection.entity_type == "journal_entry",
+                  Projection.entity_id.like(prefix + "%"),
+              ).order_by(Projection.entity_id))).scalars().all()
+              return [SimpleNamespace(entity_id=row.entity_id, state=dict(row.state)) for row in rows]'''
+          new = new.replace("                  ", "        ").replace("              ", "    ")
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new))
+          PY
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
