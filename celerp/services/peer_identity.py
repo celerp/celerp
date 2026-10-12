@@ -118,6 +118,9 @@ async def receive_contact(session: AsyncSession, *, grant, source_entity_id: str
         target_entity_id = await peer_identity(session, target_company=company_id,
                                               source_company=source_company, entity_type="contact",
                                               source_entity_id=source_entity_id)
+        target = await session.get(Projection, (company_id, target_entity_id))
+        if target is None or (target.state or {}).get("is_self"):
+            raise HTTPException(403, "Company-owned contacts cannot be updated by an integration")
     else:
         target_entity_id = new_target_identity(source_company, "contact", source_entity_id)
         existing = await session.get(Projection, (company_id, target_entity_id))

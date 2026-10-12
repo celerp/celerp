@@ -53,3 +53,44 @@ async def test_restored_contact_identity_reuses_new_local_record():
                                     entity_type="contact", source_entity_id=old)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_receiver_does_not_mutate_company_owned_contact():
+    from types import SimpleNamespace
+    from celerp.services.peer_identity import receive_contact
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Company.__table__.create)
+        await conn.run_sync(Projection.__table__.create)
+        await conn.run_sync(CompanyPeerIdentity.__table__.create)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    target, source = uuid.uuid4(), uuid.uuid4()
+    original_id = "contact:owned-source"
+    restored_id = "contact:" + str(uuid.uuid4())
+    try:
+        async with sessions() as session:
+            session.add(Company(id=target, name="Accountant", slug="accountant", settings={}))
+            session.add(Projection(
+                company_id=target, entity_id=restored_id, entity_type="contact",
+                state={"name": "Owner legal identity", "is_self": True},
+                version=4, updated_at=datetime(2026, 10, 12, tzinfo=timezone.utc),
+            ))
+            await session.commit()
+        async with sessions() as session:
+            await seed_restored_identities(
+                session, target_company=target, source_company=source,
+                id_map={original_id: restored_id},
+            )
+            grant = SimpleNamespace(company_id=target, source_company_id=source)
+            with pytest.raises(HTTPException) as error:
+                await receive_contact(
+                    session, grant=grant, source_entity_id=original_id,
+                    source_revision=5, data={"name": "Peer-controlled name"},
+                )
+            assert error.value.status_code == 403
+            owner = await session.get(Projection, (target, restored_id))
+            assert owner.state["name"] == "Owner legal identity"
+    finally:
+        await engine.dispose()
