@@ -43,7 +43,7 @@ from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBAC
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from celerp.importers.tabular import known_headers
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
-from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, refusal_text
+from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, refusal_text, doc_type_label
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
 from celerp_inventory.services import (
@@ -7185,7 +7185,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
     demand_rows = [
         Tr(
             Td(A(d.get("doc_number") or d.get("doc_id"), href=doc_href(d.get("doc_id")), cls="table-link")),
-            Td((d.get("doc_type") or "").replace("_", " ").title()),
+            Td(doc_type_label(d.get("doc_type") or "")),
             Td(d.get("contact_name") or EMPTY),
             Td(f"{float(d.get('quantity', 0)):g}", cls="cell--number"),
             Td(d.get("due") or EMPTY, cls="cell--center"),

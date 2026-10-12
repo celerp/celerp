@@ -67,14 +67,14 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, VENDOR_DOC_TYPES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, VENDOR_DOC_TYPES, CREDIT_APPLICATION_METHODS
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance, today_iso
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
 from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
 from celerp.schemas.numbers import FiniteFloat
-from ui.i18n import t
+from ui.i18n import doc_type_label, t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -1571,7 +1571,7 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
                 lines[i] = {**lines[i], "out_quantity": qty}
         doc["line_items"] = lines
     doc["line_holds"] = await _line_holds(session, company_id, entity_id)
-    returnable = doc.get("status") in SUPPLIER_RETURN_STATUSES
+    returnable = doc.get("status") in SUPPLIER_RETURN_STATUSES.get(doc.get("doc_type"), ())
     if doc.get("doc_type") in ("bill", "consignment_in", "purchase_order") and (
             returnable or doc.get("returned_items")):
         # How much of each line can still go back to the supplier, in stock units, and from
@@ -1699,6 +1699,7 @@ async def create_doc(
         original_total = float(inv.state.get("total", 0) or 0)
         if payload.total > original_total + 1e-9:
             raise HTTPException(status_code=409, detail=t("documents.err_credit_over_invoice"))
+    bill = await supplier_credit_original(session, company_id, payload.model_dump(), for_update=True)
     require_currency_code(payload.currency)
 
     _assert_date_order(payload.model_dump(exclude_none=True))
@@ -1744,6 +1745,12 @@ async def create_doc(
         chosen |= {"currency", "price_list"}
         data.update(credit_note_currency(inv.state, company.settings.get("currency", "USD"),
                                          data.get("currency"), data.get("conversion_rate")))
+    if bill is not None:
+        # A supplier credit note is in its bill's currency, at the bill's rate.
+        chosen |= {"currency"}
+        data["currency"] = bill.state.get("currency")
+        if bill.state.get("conversion_rate") is not None:
+            data.setdefault("conversion_rate", bill.state["conversion_rate"])
     # Canonicalize the historical `terms` alias at the API boundary so every
     # newly-created document stores one customer-facing terms field.
     data.pop("terms", None)
@@ -2112,7 +2119,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     if sent_to:
         from celerp_docs.doc_email import compose_doc_email
         doc_number = row.state.get("ref_id") or entity_id.split(":")[-1][:8].upper()
-        doc_type = row.state.get("doc_type", "document").replace("_", " ").title()
+        doc_type = doc_type_label(row.state.get("doc_type", "document"))
         contact_name = row.state.get("contact_name") or "there"
         company_row = await session.get(Company, company_id)
         sender_name = company_row.name if company_row else "Your supplier"
@@ -2356,6 +2363,15 @@ async def finalize_document(
     # Locked, so the invoice's currency is checked as its last writer left it.
     _cn_invoice = await credit_note_original(session, company_id, _initial_doc_state, for_update=True)
     _cn_invoice_state = dict(_cn_invoice.state) if _cn_invoice is not None else None
+    _scn_bill = await supplier_credit_original(session, company_id, _initial_doc_state, for_update=True)
+    if doc_type == "debit_note" and any(
+            auto_je.bill_line_kind(li) == "stock" for li in _initial_doc_state.get("line_items") or []):
+        # Goods sent back leave stock through the bill's return, which takes them off their
+        # lots at cost; a note issued by hand only adjusts a price or a charge.
+        raise HTTPException(status_code=409, detail=refusal(
+            "debit_note.stock_line",
+            "Goods on this line are in stock. Use Return items on the bill so they leave stock; a supplier "
+            "credit note adjusts a price or a charge only."))
 
     # Invoices: assign real INV number on finalize, preserving PF ref.
     # On re-finalize (after revert-to-draft) the doc already holds the INV ref
@@ -2451,6 +2467,19 @@ async def finalize_document(
         await auto_je.create_for_credit_note_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency)
         await _settle_moved_cost(session, company_id, _user_id, entity_id, _initial_doc_state,
                                  f"cn-{entry.id}", "doc.finalized")
+    elif doc_type == "debit_note":
+        await auto_je.create_for_debit_note_finalized(session, company_id=company_id, user_id=_user_id,
+                                                      doc_id=entity_id, doc=_initial_doc_state,
+                                                      base_currency=_base_currency)
+        if _scn_bill is not None:
+            # A note against a bill settles it at once, as far as the bill still owes: the
+            # same paired application a user makes by hand.
+            amount = min(to_decimal(_initial_doc_state.get("total") or 0), _payable_balance(_scn_bill.state))
+            if amount > 0:
+                await apply_credit_note(
+                    session, company_id, entity_id, _scn_bill.entity_id, to_stored_float(amount),
+                    payment_date=_initial_doc_state.get("issue_date"), actor_id=_user_id, source="api",
+                    idempotency_key=_step_key(str(entry.id), "apply"))
     if commit:
         await session.commit()
     return {"event_id": entry.id, "shared_lots": shared_lots}
@@ -2483,6 +2512,8 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     _reject_if_closed(row.state, "void it")
     if row.state.get("doc_type") == "credit_note":
         await refuse_on_void_invoice(session, company_id, row.state)
+    if row.state.get("doc_type") == "debit_note":
+        await _refuse_void_under_supplier_credit(session, company_id, row.state)
     await _refuse_undo_under_credit_note(session, company_id, row.state, entity_id, "void")
     current_status = row.state.get("status")
     if current_status in ("paid", "partial") and not settled_by_credit_only(row.state):
@@ -2521,6 +2552,8 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
             "This bill cannot be voided: the purchase order it was made from booked its receipt, and voiding "
             "the bill would leave that entry standing. To cancel the bill, revert it to draft."))
 
+    if row.state.get("doc_type") == "debit_note" and row.state.get("source_return"):
+        await _undo_supplier_return(session, company_id, user.id, entity_id, row.state)
     event_data = payload.model_dump(exclude_none=True)
     event_data["pre_void_status"] = current_status
     # Reverse the recognition JEs before the doc goes void, symmetric with unvoid's
@@ -2744,11 +2777,38 @@ async def credit_note_original(session, company_id, data: dict, *, for_update: b
     return row
 
 
+async def supplier_credit_original(session, company_id, data: dict, *, for_update: bool = False) -> Projection | None:
+    """The bill or purchase order a supplier credit note is issued against: an issued one of
+    this company, from the same supplier and in the same currency, or the note is refused
+    (409) on create and finalize. None when the document is not a supplier credit note or
+    names no bill."""
+    if data.get("doc_type") != "debit_note" or not data.get("original_doc_id"):
+        return None
+    original = str(data["original_doc_id"])
+    if for_update:
+        row = (await lock_projections(session, company_id, [original])).get(original)
+    else:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": original})
+    state = (row.state if row is not None and row.entity_type == "doc" else None) or {}
+    number = str(state.get("doc_number") or state.get("ref_id") or original.removeprefix("doc:"))
+    if (state.get("doc_type") not in _NOTE_APPLICATIONS["debit_note"].targets
+            or state.get("status") in (None, "draft", "void")
+            or (data.get("contact_id") or "") != (state.get("contact_id") or "")
+            or (data.get("currency") or state.get("currency")) != state.get("currency")):
+        raise HTTPException(status_code=409, detail=refusal(
+            "debit_note.original_mismatch",
+            f"A supplier credit note is issued against an issued bill or purchase order from the same supplier, "
+            f"in the same currency. {number} is not one: choose another bill, or leave the bill empty.",
+            document=number))
+    return row
+
+
 async def refuse_on_void_invoice(session, company_id, cn: dict) -> None:
     """A credit note reverses part of its invoice's sale. Once that invoice is void the
     sale no longer exists, so nothing is refunded, applied or restored against the
-    credit note (409)."""
-    original = str(cn.get("original_doc_id") or "")
+    credit note (409). A supplier credit note's bill is never voided while the note is
+    issued (_refuse_undo_under_credit_note), so it has no such case."""
+    original = str(cn.get("original_doc_id") or "") if cn.get("doc_type") == "credit_note" else ""
     invoice = await session.get(Projection, {"company_id": company_id, "entity_id": original}) if original else None
     if invoice is None or (invoice.state or {}).get("status") != "void":
         return
@@ -2761,20 +2821,22 @@ async def refuse_on_void_invoice(session, company_id, cn: dict) -> None:
         credit_note=number, invoice=inv_number))
 
 
-async def _issued_credit_note_rows(session, company_id, invoice_id: str) -> list[Projection]:
-    """The issued (not draft, not void) credit notes against an invoice."""
+async def _issued_credit_note_rows(session, company_id, invoice_id: str,
+                                   note_type: str = "credit_note") -> list[Projection]:
+    """The issued (not draft, not void) credit notes against an invoice, or with ``note_type``
+    debit_note the supplier credit notes against a bill or purchase order."""
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "doc",
-        Projection.state["doc_type"].as_string() == "credit_note",
+        Projection.state["doc_type"].as_string() == note_type,
         Projection.state["original_doc_id"].as_string() == invoice_id,
     ).order_by(Projection.entity_id))).scalars().all()
     return [r for r in rows if (r.state or {}).get("status") not in (None, "draft", "void")]
 
 
-async def issued_credit_notes(session, company_id, invoice_id: str) -> list[str]:
-    """The numbers of the issued credit notes against an invoice."""
+async def issued_credit_notes(session, company_id, invoice_id: str, note_type: str = "credit_note") -> list[str]:
+    """The numbers of the issued notes of ``note_type`` against a document."""
     return sorted(str(r.state.get("doc_number") or r.state.get("ref_id") or r.entity_id)
-                  for r in await _issued_credit_note_rows(session, company_id, invoice_id))
+                  for r in await _issued_credit_note_rows(session, company_id, invoice_id, note_type))
 
 
 def imported_settlement_free(data: dict) -> dict:
@@ -2921,17 +2983,27 @@ async def settle_imported_credit(session, company_id, user_id, entity_id: str, d
 
 
 async def _refuse_undo_under_credit_note(session, company_id, state: dict, invoice_id: str, action: str) -> None:
-    """An invoice is undone only after the credit notes issued against it, as its payments are."""
-    if state.get("doc_type") != "invoice":
+    """An invoice is undone only after the credit notes issued against it, as its payments are,
+    and a bill or purchase order only after the supplier credit notes issued against it."""
+    doc_type = state.get("doc_type")
+    if doc_type not in ("invoice", *_NOTE_APPLICATIONS["debit_note"].targets):
         return
-    numbers = await issued_credit_notes(session, company_id, invoice_id)
-    if numbers:
-        listed = ", ".join(numbers)
+    supplier = doc_type != "invoice"
+    numbers = await issued_credit_notes(session, company_id, invoice_id,
+                                        "debit_note" if supplier else "credit_note")
+    if not numbers:
+        return
+    listed = ", ".join(numbers)
+    undone = "voided" if action == "void" else "reverted to draft"
+    if supplier:
         raise HTTPException(status_code=409, detail=refusal(
-            f"docs.{action}_under_credit_note",
-            f"This invoice cannot be {'voided' if action == 'void' else 'reverted to draft'}: credit notes "
-            f"{listed} are issued against it. Void those credit notes first, then try again.",
-            numbers=listed))
+            f"docs.{action}_under_supplier_credit_note",
+            f"This document cannot be {undone}: supplier credit notes {listed} are issued against it. "
+            f"Void those supplier credit notes first, then try again.", numbers=listed))
+    raise HTTPException(status_code=409, detail=refusal(
+        f"docs.{action}_under_credit_note",
+        f"This invoice cannot be {undone}: credit notes {listed} are issued against it. Void those "
+        f"credit notes first, then try again.", numbers=listed))
 
 
 @router.post("/{entity_id}/close")
@@ -3029,6 +3101,14 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         return done
     state = row.state
     previous_status = state.get("status")
+    await _refuse_undo_under_credit_note(session, company_id, state, entity_id, "revert")
+    # A note a return raised holds the return's credit, so a draft of it could be edited or
+    # deleted while the bill stays settled by it. Voiding it takes the return back instead.
+    if state.get("doc_type") == "debit_note" and state.get("source_return"):
+        raise HTTPException(status_code=409, detail=refusal(
+            "debit_note.revert_return",
+            "This supplier credit note was raised by a return, so it cannot go back to draft. To undo "
+            "the return, void the credit note: the goods go back into stock and the bill owes them again."))
     # Inbound docs (bill, consignment_in) can also revert from received/fulfilled statuses.
     _doc_type = state.get("doc_type", "")
     _is_inbound = _doc_type in INBOUND_DOC_TYPES
@@ -3060,7 +3140,6 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         to_order = on_order is True
     if to_order or emptied:
         _REVERTABLE = _REVERTABLE | {"partial_returned", "returned"}
-    await _refuse_undo_under_credit_note(session, company_id, state, entity_id, "revert")
     if previous_status not in _REVERTABLE and not settled_by_credit_only(state):
         raise HTTPException(status_code=409, detail=t("documents.err_revert_status"))
     if float(state.get("amount_paid", 0) or 0) != 0:
@@ -3225,6 +3304,15 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
             f"Convert the memo again to bill them.", memo=number))
     if state.get("doc_type") == "credit_note":
         await refuse_on_void_invoice(session, company_id, state)
+    if state.get("doc_type") == "debit_note":
+        # Voiding a note a return raised took the return back, so the goods are in stock and
+        # the bill owes them again: there is no credit left to restore.
+        if state.get("source_return"):
+            raise HTTPException(status_code=409, detail=refusal(
+                "debit_note.unvoid_return",
+                "This supplier credit note was raised by a return, and voiding it took the return back: the "
+                "goods are in stock again. To send them back, use Return items on the bill."))
+        await supplier_credit_original(session, company_id, state, for_update=True)
 
     # Restored in a savepoint, so a refusal that can only be read off the restored books
     # leaves nothing behind.
@@ -3726,7 +3814,7 @@ async def apply_payment_refund(session, company_id, entity_id: str, row: Project
     if row.state.get("doc_type") == "credit_note":
         await refuse_on_void_invoice(session, company_id, row.state)
     currency = str(row.state.get("currency") or "USD").upper()
-    if payment.get("method") in ("credit_note", "applied"):
+    if payment.get("method") in CREDIT_APPLICATION_METHODS:
         raise HTTPException(
             status_code=422,
             detail=t("documents.err_refund_credit_application"),
@@ -3876,8 +3964,8 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     # The payment's own books, so the reversal is its mirror; read before anything is
     # written, so a payment whose books cannot be told is refused whole.
     books = None
-    if payment.get("method") not in ("credit_note", "applied"):
-        books = (await imported_payment_books(session, company_id, entity_id, row, payment)
+    if payment.get("method") not in CREDIT_APPLICATION_METHODS:
+        books =(await imported_payment_books(session, company_id, entity_id, row, payment)
                  or await posted_books(session, company_id, entity_id, row, payment))
 
     entry = await emit_event(
@@ -3905,8 +3993,13 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
         # Credit-note settlement: void the paired payment on the other doc,
         # then void this application's AR transfer entry. No bank reversal is
         # ever posted - no cash moved.
-        _cn_id = payment.get("source_doc_id") if payment.get("method") == "credit_note" else entity_id
-        _inv_id = entity_id if payment.get("method") == "credit_note" else payment.get("target_doc_id")
+        _target_side = payment.get("method") != "applied"
+        _cn_id = payment.get("source_doc_id") if _target_side else entity_id
+        _inv_id = entity_id if _target_side else payment.get("target_doc_id")
+        _note_kind = (
+            "dn" if payment.get("method") == "supplier_credit"
+            or (not _target_side and row.state.get("doc_type") == "debit_note") else "cn"
+        )
         # The application's identity is the CN-side payment index (the value
         # create_for_cn_application was keyed with).
         _app_idx = payload.payment_index if payment.get("method") == "applied" else None
@@ -3956,7 +4049,7 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                 # Applications of this CN to this invoice still active after
                 # this void (governs whether the legacy shared entry may be
                 # voided).
-                _cn_side = paired_payments if payment.get("method") == "credit_note" else payments
+                _cn_side = paired_payments if _target_side else payments
                 _remaining_active = sum(
                     1 for p in _cn_side
                     if p.get("status") == "active" and p.get("method") == "applied"
@@ -3971,11 +4064,11 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
         _cnapply_row = None
         _cnapply_id = None
         if _app_idx is not None:
-            _cand = f"je:auto:{_inv_id}:cnapply:{_cn_id}:{_app_idx}"
+            _cand = f"je:auto:{_inv_id}:{_note_kind}apply:{_cn_id}:{_app_idx}"
             _row_c = await session.get(Projection, {"company_id": company_id, "entity_id": _cand})
             if _row_c is not None and _row_c.state.get("status") == "posted":
                 _cnapply_row, _cnapply_id = _row_c, _cand
-        if _cnapply_row is None and _remaining_active == 0:
+        if _cnapply_row is None and _remaining_active == 0 and _note_kind == "cn":
             _cand = f"je:auto:{_inv_id}:cnapply:{_cn_id}"
             _row_c = await session.get(Projection, {"company_id": company_id, "entity_id": _cand})
             if _row_c is not None and _row_c.state.get("status") == "posted":
@@ -3987,7 +4080,8 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                 data=_je_void(f"Credit note application voided on {_inv_id}", _cnapply_row.state),
                 actor_id=user.id, location_id=None, source="auto_je",
                 idempotency_key=f"{_cnapply_id}:void:{payload.payment_index}",
-                metadata_={"trigger": "cn.application.voided", "doc_id": _inv_id, "cn_id": _cn_id},
+                metadata_={"trigger": f"{_note_kind}.application.voided", "doc_id": _inv_id,
+                           f"{_note_kind}_id": _cn_id},
             )
         if _app_idx is not None:
             await auto_je.void_credit_note_payment_rate(session, company_id=company_id, user_id=user.id,
@@ -4050,7 +4144,7 @@ async def delete_payment(
             status_code=409,
             detail=t("documents.err_payment_partly_refunded"),
         )
-    if payment.get("method") in ("credit_note", "applied"):
+    if payment.get("method") in CREDIT_APPLICATION_METHODS:
         # A credit-note settlement is a pair with an AR transfer entry, not a
         # cash payment; deleting one side would strand the other and its
         # entry. Voiding unwinds the whole application cleanly.
@@ -4187,12 +4281,46 @@ class ApplyToInvoiceBody(BaseModel):
     _real_date = field_validator("date")(_calendar_date)
 
 
+@dataclass(frozen=True)
+class _NoteApplication:
+    """How one kind of credit note is applied: the documents it settles, the payment method
+    the settled side records, the entry it posts, and the refusals worded for its parties."""
+    targets: tuple[str, ...]
+    target_method: str
+    kind: str  # "cn" or "dn": the application's JE id and idempotency keys
+    post: Callable
+    finalize_first: str
+    wrong_target: str
+    target_not_payable: str
+    contact_mismatch: str
+    currency_mismatch: str
+    over_credit: str
+    over_target: str
+
+
+_NOTE_APPLICATIONS: dict[str, _NoteApplication] = {
+    "credit_note": _NoteApplication(
+        ("invoice",), "credit_note", "cn", auto_je.create_for_cn_application,
+        "documents.err_credit_note_finalize_apply", "documents.err_apply_target_invoice",
+        "documents.err_apply_invoice_not_payable", "documents.err_apply_contact_mismatch",
+        "documents.err_apply_currency_mismatch", "documents.err_apply_over_credit",
+        "documents.err_apply_over_invoice"),
+    "debit_note": _NoteApplication(
+        ("bill", "purchase_order"), "supplier_credit", "dn", auto_je.create_for_dn_application,
+        "documents.err_supplier_credit_finalize_apply", "documents.err_apply_target_bill",
+        "documents.err_apply_bill_not_payable", "documents.err_apply_supplier_mismatch",
+        "documents.err_apply_bill_currency_mismatch", "documents.err_apply_over_supplier_credit",
+        "documents.err_apply_over_bill"),
+}
+
+
 async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: str, amount: float, *,
                             payment_date: str | None, actor_id, source: str, idempotency_key: str,
                             request: str | None = None):
-    """Apply an issued credit note to an invoice of the same contact: a paired
-    doc.payment.received on each side and the AR-to-AR entry. Shared by the apply
-    route and the migration sink; the caller commits.
+    """Apply an issued credit note to a document of the same contact: a customer credit
+    note to an invoice (AR to AR), a supplier credit note to a bill or purchase order (AP
+    to AP), each as a paired doc.payment.received on both sides and the entry between
+    them. Shared by the apply routes, finalize and the migration sink; the caller commits.
 
     A replayed idempotency key returns the recorded application, marked was_deduped,
     without writing anything; with ``request`` the replay must also carry the same
@@ -4215,40 +4343,38 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
         replay.was_deduped = True
         return replay
     cn = cn_row.state
-    if cn.get("doc_type") != "credit_note":
+    how = _NOTE_APPLICATIONS.get(cn.get("doc_type"))
+    if how is None:
         raise HTTPException(status_code=409, detail=t("documents.err_only_credit_note_apply"))
     if cn.get("status") in ("draft", "void"):
-        raise HTTPException(status_code=409, detail=t("documents.err_credit_note_finalize_apply"))
+        raise HTTPException(status_code=409, detail=t(how.finalize_first))
     await refuse_on_void_invoice(session, company_id, cn)
 
     inv = inv_row.state
-    if inv.get("doc_type") != "invoice":
-        raise HTTPException(status_code=409, detail=t("documents.err_apply_target_invoice"))
+    if inv.get("doc_type") not in how.targets:
+        raise HTTPException(status_code=409, detail=t(how.wrong_target))
     if inv.get("status") in ("draft", "void"):
-        raise HTTPException(status_code=409, detail=t("documents.err_apply_invoice_not_payable"))
+        raise HTTPException(status_code=409, detail=t(how.target_not_payable))
 
     # Validate same contact
     cn_contact = cn.get("contact_id")
     inv_contact = inv.get("contact_id")
     if cn_contact and inv_contact and cn_contact != inv_contact:
-        raise HTTPException(status_code=422, detail=t("documents.err_apply_contact_mismatch"))
+        raise HTTPException(status_code=422, detail=t(how.contact_mismatch))
 
     cn_currency = str(cn.get("currency") or "USD").upper()
     inv_currency = str(inv.get("currency") or "USD").upper()
     if cn_currency != inv_currency:
-        raise HTTPException(
-            status_code=422,
-            detail=t("documents.err_apply_currency_mismatch"),
-        )
+        raise HTTPException(status_code=422, detail=t(how.currency_mismatch))
     amount_d = round_money(amount, cn_currency)
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail=t("documents.err_amount_positive"))
     cn_outstanding = _payable_balance(cn)
     inv_outstanding = _payable_balance(inv)
     if amount_d > cn_outstanding:
-        raise HTTPException(status_code=409, detail=t("documents.err_apply_over_credit"))
+        raise HTTPException(status_code=409, detail=t(how.over_credit))
     if amount_d > inv_outstanding:
-        raise HTTPException(status_code=409, detail=t("documents.err_apply_over_invoice"))
+        raise HTTPException(status_code=409, detail=t(how.over_target))
     amount = to_stored_float(amount_d)
 
     _cn_company = await session.get(Company, company_id)
@@ -4262,14 +4388,15 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
     inv_pay_index = await _alloc_payment_index(session, company_id, inv.get("payments", []))
     payment_idx = await _alloc_payment_index(
         session, company_id, cn_row.state.get("payments", []),
-        key_doc_id=target_doc_id, key_type=f"cn.applied:cn_apply_{entity_id}")
+        key_doc_id=target_doc_id, key_type=f"{how.kind}.applied:{how.kind}_apply_{entity_id}")
 
-    # Emit paired events: payment on invoice (credit_note method), payment on CN (applied method)
+    # Emit paired events: payment on the settled document (its target method), payment on
+    # the note (applied method)
     await emit_event(
         session, company_id=company_id, entity_id=target_doc_id, entity_type="doc",
         event_type="doc.payment.received",
         data={
-            "amount": amount, "method": "credit_note",
+            "amount": amount, "method": how.target_method,
             "source_doc_id": entity_id, "payment_date": payment_date,
             "currency": cn.get("currency", "USD"),
             "index": inv_pay_index,
@@ -4294,9 +4421,9 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
         actor_id=actor_id, location_id=None, source=source,
         idempotency_key=idempotency_key, metadata_={"request": request} if request is not None else {},
     )
-    await auto_je.create_for_cn_application(
+    await how.post(
         session, company_id=company_id, user_id=actor_id,
-        doc_id=target_doc_id, cn_id=entity_id, amount=amount,
+        doc_id=target_doc_id, note_id=entity_id, amount=amount,
         payment_index=payment_idx, payment_date=payment_date,
         base_currency=_cn_base_currency,
         conversion_rate=_cn_rate,
@@ -4307,6 +4434,18 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
 @router.post("/{entity_id}/apply-to-invoice")
 async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     key, digest = _operation("apply-credit-note", entity_id, payload)
+    entry = await apply_credit_note(
+        session, company_id, entity_id, payload.target_doc_id, payload.amount,
+        payment_date=payload.date, actor_id=user.id, source="api", idempotency_key=key, request=digest,
+    )
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+@router.post("/{entity_id}/apply-to-bill")
+async def apply_supplier_credit_to_bill(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Apply a supplier credit note to a bill or purchase order of the same supplier."""
+    key, digest = _operation("apply-supplier-credit", entity_id, payload)
     entry = await apply_credit_note(
         session, company_id, entity_id, payload.target_doc_id, payload.amount,
         payment_date=payload.date, actor_id=user.id, source="api", idempotency_key=key, request=digest,
@@ -4342,7 +4481,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
                                    entity_id=entity_id, digest=digest)) is not None:
         return done
     cn = row.state
-    if cn.get("doc_type") != "credit_note":
+    if cn.get("doc_type") not in _NOTE_APPLICATIONS:
         raise HTTPException(status_code=409, detail=t("documents.err_only_credit_note_refund"))
     if cn.get("status") in ("draft", "void"):
         raise HTTPException(status_code=409, detail=t("documents.err_credit_note_finalize_refund"))
@@ -4379,11 +4518,12 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=key, metadata_={"request": digest},
     )
-    # JE: debit AR, credit bank
+    # JE: a customer refund debits AR and credits bank; a supplier's refund debits bank
+    # and credits AP
     await auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
         amount=amount, payment_index=payment_index,
-        bank_account_code=bank_code, doc_type="credit_note",
+        bank_account_code=bank_code, doc_type=cn["doc_type"],
         payment_date=payment_date,
         base_currency=_refund_base_currency,
         # A refund is issued at the rate the credit note itself carries, and
@@ -6425,17 +6565,19 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, 
 async def return_consignment_items(entity_id: str, payload: ReturnBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("fulfill_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Send received goods back to the supplier, named either by lot (``items``) or by document
     line (``lines``, a stock quantity per line, taken from that line's lots on the server)."""
-    # A return takes goods off the lots it reads, so it waits for any receipt or cost
-    # change in flight and reads what that one committed.
+    # The company first: a return on a paid document numbers the supplier credit note it raises.
+    # Then the document: a return takes goods off the lots it reads, so it waits for any receipt
+    # or cost change in flight and reads what that one committed.
+    company = await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("return-items", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.items_returned",
-                                   entity_id=entity_id, digest=digest)) is not None:
+                                   entity_id=entity_id, digest=digest, with_event_id=True)) is not None:
         return done
     doc_type = row.state.get("doc_type")
     if doc_type not in ("consignment_in", "bill", "purchase_order"):
         raise HTTPException(status_code=409, detail=t("documents.err_return_wrong_type"))
-    if row.state.get("status") not in SUPPLIER_RETURN_STATUSES:
+    if row.state.get("status") not in SUPPLIER_RETURN_STATUSES[doc_type]:
         status = row.state.get("status") or ""
         raise HTTPException(status_code=409, detail=refusal(
             "docs.return_not_open",
@@ -6597,9 +6739,12 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         share: float | None = None
         landed_part: dict[str, float] | None = None
         root = root_of[it.item_id]
+        # The return's key and the lot's status before it let voiding the supplier credit note
+        # the return raises put the goods back as they were.
         returned.append({**it.model_dump(), **({"source_line_id": source_line_id} if source_line_id else {}),
                          **({"source_line_index": line_index} if line_index is not None else {}),
-                         **({"received_lot_id": root} if root != it.item_id else {})})
+                         **({"received_lot_id": root} if root != it.item_id else {}),
+                         "return_key": key, "lot_status": item.state.get("status") or "available"})
         gone_extra: dict[str, Decimal] = {}  # pool -> landed cost taken off the lot's lineage for these goods
         if owned:
             # Goods go back at what the document charged for them: the units it added to a lot
@@ -6763,6 +6908,11 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         # charged for its goods, less what earlier returns took.
         payable_credit = to_stored_float(
             settles[0] - to_decimal(row.state.get("returned_credit") or 0) if settles else payable)
+    # What the return takes off beyond what the document still owes was already paid: the
+    # supplier owes it back, on a supplier credit note the return raises. The return's own
+    # entry already moved accounts payable, so the note books nothing.
+    credit = await _supplier_credit_for_return(session, company, user.id, entity_id, row.state, key,
+                                               payable_credit) if payable_credit else None
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.items_returned",
@@ -6771,13 +6921,108 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             "returned_by": str(user.id),
             "notes": payload.notes,
             **({"payable_credit": payable_credit} if payable_credit else {}),
+            **({"supplier_credit": credit[1], "supplier_credit_doc_id": credit[0]} if credit else {}),
             "all_returned": all_returned,
         },
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=key, metadata_={"request": digest},
+        idempotency_key=key,
+        metadata_={"request": digest, **({"result": {"supplier_credit_doc_id": credit[0],
+                                                     "supplier_credit_doc_number": credit[2]}} if credit else {})},
     )
     await session.commit()
-    return {"event_id": entry.id}
+    return {"event_id": entry.id, **({"supplier_credit_doc_id": credit[0],
+                                      "supplier_credit_doc_number": credit[2]} if credit else {})}
+
+
+async def _supplier_credit_for_return(session, company, user_id, doc_id: str, state: dict, key: str,
+                                      payable_credit: float) -> tuple[str, float, str] | None:
+    """Raise the supplier credit note for what a return takes off a document beyond what it still
+    owes, issued at once against it. -> (note id, amount, note number), or None when the
+    document owes at least what the return took off."""
+    currency = str(state.get("currency") or "USD").upper()
+    amount = round_money(to_decimal(payable_credit) - _payable_balance(state), currency)
+    if amount <= 0:
+        return None
+    number = next_doc_ref(company, "debit_note")
+    note_id = f"doc:{number}"
+    bill_number = str(state.get("doc_number") or state.get("ref_id") or doc_id)
+    total = to_stored_float(amount)
+    await emit_event(
+        session, company_id=company.id, entity_id=note_id, entity_type="doc", event_type="doc.created",
+        data={
+            "doc_type": "debit_note", "ref_id": number,
+            "contact_id": state.get("contact_id"), "contact_name": state.get("contact_name"),
+            "currency": state.get("currency"),
+            **({"conversion_rate": state["conversion_rate"]} if state.get("conversion_rate") is not None else {}),
+            "original_doc_id": doc_id, "source_return": key,
+            "issue_date": business_date_of(None, (company.settings or {}).get("timezone")),
+            "line_items": [{"name": f"Goods returned on {bill_number}", "quantity": 1,
+                            "unit_price": total, "line_total": total}],
+            "subtotal": total, "tax": 0.0, "total": total,
+            "status": "final", "finalized": True, "amount_paid": 0.0, "amount_outstanding": total,
+        },
+        actor_id=user_id, location_id=None, source="api",
+        idempotency_key=_step_key(key, "supplier-credit"), metadata_={"source_doc": doc_id},
+    )
+    return note_id, total, number
+
+
+async def _refuse_void_under_supplier_credit(session, company_id, note: dict) -> None:
+    """A supplier credit note is voided only once nothing stands on it: what it was applied to
+    a bill is unapplied and what the supplier refunded on it is voided first."""
+    live = [p for p in note.get("payments") or [] if p.get("status", "active") == "active"
+            and p.get("method") in ("applied", "refund")]
+    if not live:
+        return
+    targets = {p["target_doc_id"] for p in live if p.get("method") == "applied" and p.get("target_doc_id")}
+    rows = await _get_docs_for_update(session, company_id, targets) if targets else {}
+    bills = ", ".join(sorted(str(r.state.get("doc_number") or r.state.get("ref_id") or eid)
+                             for eid, r in rows.items())) or "--"
+    refunds = ", ".join(f"{float(p.get('amount') or 0):,.2f} on {p.get('payment_date') or '--'}"
+                        for p in live if p.get("method") == "refund") or "--"
+    raise HTTPException(status_code=409, detail=refusal(
+        "docs.void_under_supplier_credit",
+        f"This supplier credit note is still applied to bills {bills} and refunded {refunds}. Unapply it "
+        f"from each bill and void each refund on it first, then void it.", bills=bills, refunds=refunds))
+
+
+async def _undo_supplier_return(session, company_id, user_id, note_id: str, note: dict) -> None:
+    """Voiding the supplier credit note a return raised undoes that return: its entries are
+    reversed, the goods are back on their lots as they were before it, and the document
+    holds them again and owes what it did. Each step is keyed to the return and the note,
+    so a retry repeats none of them."""
+    key = str(note["source_return"])
+    doc_id = str(note.get("original_doc_id") or "")
+    await _get_doc(session, company_id, doc_id, for_update=True)
+    returned = await find_event_by_idempotency(session, company_id, key)
+    if returned is None or returned.entity_id != doc_id or returned.event_type != "doc.items_returned":
+        raise HTTPException(status_code=409, detail=refusal(
+            "debit_note.return_missing",
+            "The return this supplier credit note was raised for cannot be found, so voiding it cannot "
+            "put the goods back. Void the goods with a stock adjustment instead."))
+    data = returned.data or {}
+    await auto_je.void_supplier_return(session, company_id=company_id, user_id=user_id, doc_id=doc_id,
+                                       return_key=key, note_id=note_id)
+    items = [x for x in data.get("items") or [] if x.get("return_key") == key]
+    lots = {x.get("returned_lot_id") or x["item_id"]: x.get("lot_status") or "available" for x in items}
+    await lock_projections(session, company_id, lots)
+    for lot, restored in lots.items():
+        await emit_event(
+            session, company_id=company_id, entity_id=lot, entity_type="item",
+            event_type="item.supplier_return_undone",
+            data={"source_doc_id": doc_id, "restored_status": restored},
+            actor_id=user_id, location_id=None, source="api",
+            idempotency_key=_step_key(key, "undo", note_id, lot), metadata_={"source_return": doc_id},
+        )
+    await emit_event(
+        session, company_id=company_id, entity_id=doc_id, entity_type="doc",
+        event_type="doc.supplier_return_undone",
+        data={"return_key": key, "supplier_credit_doc_id": note_id,
+              "payable_credit": float(data.get("payable_credit") or 0),
+              "supplier_credit": float(data.get("supplier_credit") or 0)},
+        actor_id=user_id, location_id=None, source="api",
+        idempotency_key=_step_key(key, "undo", note_id), metadata_={"source_doc": note_id},
+    )
 
 
 class ShipmentFromDocsBody(BaseModel):

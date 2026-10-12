@@ -508,7 +508,7 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
             doc_num = d.get("doc_number") or doc_id
             rows.append(Tr(
                 Td(A(format_value(doc_num), href=f"/docs/{doc_id}", cls="table-link")),
-                Td(format_value((d.get("doc_type") or "").replace("_", " ").title(), "badge")),
+                Td(format_value(d.get("doc_type"), "badge", domain="doc_type")),
                 Td(format_value(str(d.get("issue_date") or "")[:10] or None)),
                 Td(format_value(d.get("total_amount"), "money"), cls="cell--number"),
                 Td(format_value(d.get("status"), "badge", domain="doc_status")),

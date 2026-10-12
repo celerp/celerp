@@ -48,11 +48,21 @@ RECEIVABLE_STATUSES: dict[str, frozenset[str]] = {
     "purchase_order": _RECEIVING_STATUSES | {"draft"},
 }
 
-# Statuses a purchase document sends goods back to its supplier in (POST /return-items): once
-# goods have come in on it, and until all of them have gone back.
-SUPPLIER_RETURN_STATUSES: frozenset[str] = frozenset({
-    "received", "partially_received", "partial_returned", "awaiting_payment",
-})
+# Statuses each document type sends goods back to its supplier in (POST /return-items): once
+# goods have come in on it, and until all of them have gone back. A bill or purchase order
+# paid in part or in full returns goods too: what was paid for them becomes a supplier credit.
+_RETURN_OPEN = frozenset({"received", "partially_received", "partial_returned", "awaiting_payment"})
+SUPPLIER_RETURN_STATUSES: dict[str, frozenset[str]] = {
+    "consignment_in": _RETURN_OPEN,
+    "bill": _RETURN_OPEN | {"partial", "paid"},
+    "purchase_order": _RETURN_OPEN | {"partial", "paid"},
+}
+
+# The payment methods that record a credit note applied to a document rather than money:
+# the receiving side names its source (an invoice's "credit_note", a bill's
+# "supplier_credit") and the note's own side is "applied". A pair moves no cash, so it is
+# never refunded or deleted, only voided as a pair.
+CREDIT_APPLICATION_METHODS: frozenset[str] = frozenset({"credit_note", "applied", "supplier_credit"})
 
 # Doc types that are subscription templates (not fulfillable, not part of normal doc counters).
 # These are recurring template docs - they should never show a fulfill button.
@@ -68,7 +78,8 @@ SALES_PRICED_DOC_TYPES: frozenset[str] = frozenset({
 
 # Purchase-side document types: their contact is a vendor (vendor or both), every
 # other document's contact is a customer (customer or both).
-VENDOR_DOC_TYPES: frozenset[str] = frozenset({"purchase_order", "bill", "consignment_in", "subscription_po"})
+VENDOR_DOC_TYPES: frozenset[str] = frozenset({"purchase_order", "bill", "consignment_in", "subscription_po",
+                                              "debit_note"})
 
 # Older records named their counterparty customer_id/customer_name (transfers: receiver).
 # Writes take them as the contact fields, and replay folds stored ones the same way.
@@ -84,7 +95,7 @@ LEGACY_CONTACT_FIELDS: dict[str, str] = {
 LIFECYCLE_OWNED_FIELDS: frozenset[str] = frozenset({
     "status", "finalized", "amount_paid", "amount_outstanding", "payments", "credited",
     "sent_to", "sent_via", "finalized_at", "sent_at", "issued_at", "accepted_at",
-    "received_items", "received_item_ids", "returned_items", "returned_credit", "return_received_items",
+    "received_items", "received_item_ids", "returned_items", "returned_credit", "supplier_credit", "return_received_items",
     "fulfilled_items", "fulfillment_status", "fulfilled_at", "fulfilled_by", "fulfill_cycle",
     "converted_to", "converted_to_type", "source_po_ref", "source_proforma_ref", "source_memo_id", "linked",
     "result", "close_reason", "void_reason", "revert_count", "files",

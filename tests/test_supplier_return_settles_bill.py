@@ -7,7 +7,9 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import select
 
+from celerp.models.projections import Projection
 from stock_books import assert_settled
 from test_cost_restatement import _set_cost, _state
 from test_lot_value_boundary import GAIN, SHRINKAGE, _role
@@ -153,3 +155,109 @@ async def test_part_of_restated_goods_goes_back_at_the_bill_price(client, sessio
         await _owes(client, session, auth, doc, owed)
         assert await _account_net(session, auth["company_id"], gain) == kept
         await assert_settled(client, session, auth)
+
+
+async def _pay(client, auth, doc: str, amount: float):
+    r = await client.post(f"/docs/{doc}/payment", headers=auth["headers"],
+                          json={"amount": amount, "payment_date": "2026-03-02", "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+
+async def supplier_credits(session, auth, doc: str) -> list[dict]:
+    """The supplier credit notes raised against ``doc``, each state with its ``id``."""
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string() == "debit_note",
+        Projection.state["original_doc_id"].as_string() == doc,
+    ))).scalars().all()
+    return [{**r.state, "id": r.entity_id} for r in rows]
+
+
+async def journal(session, auth, prefix: str) -> dict[str, dict]:
+    """The posted journal entries whose id starts with ``prefix``."""
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry",
+        Projection.entity_id.startswith(prefix)))).scalars().all()
+    return {r.entity_id: r.state for r in rows if r.state.get("status") == "posted"}
+
+
+async def paid_bill_returned(client, session, auth, *, paid: float = 140.0, qty: float = 10,
+                             finalize_first: bool = True) -> tuple[str, str]:
+    """A bill of 10 at 14 received into one parcel, ``paid`` paid, then ``qty`` sent back.
+    -> (bill, parcel)."""
+    doc, parcel = await _received_bill(client, session, auth, finalize_first=finalize_first)
+    await _pay(client, auth, doc, paid)
+    r = await _return(client, auth, doc, parcel, qty)
+    assert r.status_code == 200, r.text
+    return doc, parcel
+
+
+async def test_return_on_part_paid_bill_reduces_owed_first(client, session, auth):
+    """Goods sent back on a part-paid bill take what they cost off what is still owed; while
+    the bill owes more than that, no supplier credit is raised."""
+    doc, _parcel = await paid_bill_returned(client, session, auth, paid=60.0, qty=2)
+    bill = await _state(session, auth, doc)
+    assert bill["amount_outstanding"] == 52.0
+    assert await supplier_credits(session, auth, doc) == []
+    assert await _account_net(session, auth["company_id"], "2110") == -52.0
+    assert await _aged(client, auth) == 52.0
+    await assert_settled(client, session, auth)
+
+
+async def test_return_on_paid_bill_creates_supplier_credit_for_paid_part(client, session, auth):
+    doc, _parcel = await paid_bill_returned(client, session, auth)
+    bill = await _state(session, auth, doc)
+    assert (bill["amount_outstanding"], bill["status"]) == (0.0, "returned")
+    [note] = await supplier_credits(session, auth, doc)
+    assert (note["total"], note["amount_outstanding"], note["status"]) == (140.0, 140.0, "final")
+    assert (note["contact_id"], note["currency"]) == (bill["contact_id"], bill["currency"])
+    assert note["ref_id"].startswith("SCN")
+    # The supplier owes the company what it was paid for goods it took back.
+    assert await _account_net(session, auth["company_id"], "2110") == 140.0
+    await assert_settled(client, session, auth)
+
+
+async def test_return_beyond_owed_splits_owed_and_credit(client, session, auth):
+    doc, _parcel = await paid_bill_returned(client, session, auth, paid=100.0, qty=5)
+    assert (await _state(session, auth, doc))["amount_outstanding"] == 0.0
+    [note] = await supplier_credits(session, auth, doc)
+    assert (note["total"], note["amount_outstanding"]) == (30.0, 30.0)
+    assert await _account_net(session, auth["company_id"], "2110") == 30.0
+    assert await _aged(client, auth) == -30.0
+
+
+async def test_return_created_supplier_credit_posts_no_second_je(client, session, auth):
+    """The return's own entry already moved accounts payable; the note it raises books nothing."""
+    doc, _parcel = await paid_bill_returned(client, session, auth)
+    [note] = await supplier_credits(session, auth, doc)
+    assert await journal(session, auth, f"je:auto:{note['id']}:") == {}
+    [entry] = (await journal(session, auth, f"je:auto:{doc}:rtn:")).values()
+    assert sum(e.get("debit") or 0 for e in entry["entries"] if e["account"] == "2110") == 140.0
+
+
+async def test_replayed_return_creates_one_supplier_credit(client, session, auth):
+    doc, parcel = await _received_bill(client, session, auth, finalize_first=True)
+    await _pay(client, auth, doc, 140.0)
+    for _ in range(2):
+        r = await _return(client, auth, doc, parcel, 10, key="return-once")
+        assert r.status_code == 200, r.text
+    assert len(await supplier_credits(session, auth, doc)) == 1
+    assert len(await journal(session, auth, f"je:auto:{doc}:rtn:")) == 1
+    assert await _account_net(session, auth["company_id"], "2110") == 140.0
+
+
+async def test_return_on_paid_po_creates_supplier_credit(client, session, auth):
+    """A purchase order paid before it became a bill follows the bill's rule."""
+    doc, _parcel = await paid_bill_returned(client, session, auth, finalize_first=False)
+    [note] = await supplier_credits(session, auth, doc)
+    assert note["total"] == 140.0
+    assert await _account_net(session, auth["company_id"], "2110") == 140.0
+    await assert_settled(client, session, auth)
+
+
+async def test_ap_aging_open_supplier_credit_is_negative(client, session, auth):
+    await paid_bill_returned(client, session, auth)
+    assert await _aged(client, auth) == -140.0
+    assert await _aged(client, auth) == -(await _account_net(session, auth["company_id"], "2110"))

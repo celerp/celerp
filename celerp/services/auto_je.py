@@ -659,6 +659,39 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
     )
 
 
+async def create_for_debit_note_finalized(session, *, company_id, user_id, doc_id: str, doc: dict,
+                                          base_currency: str = "USD") -> None:
+    """Post a supplier credit note issued in Celerp: what a bill with the same lines books,
+    the other way round (Dr accounts payable, Cr each line's expense account and the input
+    tax), with the payable on the account its bill recognized it on. A note a return raised
+    posts nothing here: the return's own entries already took it off the payable."""
+    built = await _bill_entries(session, company_id, doc_id, doc, base_currency)
+    if built is None:
+        return
+    settings = await current_settings(session, company_id)
+    original = str(doc.get("original_doc_id") or "")
+    ap = await party_origin(session, company_id, original, R.PAYABLE, settings) if original else None
+    entries = []
+    for e in built[0]:
+        swapped = {**e, "debit": e.get("credit", 0.0), "credit": e.get("debit", 0.0)}
+        if ap and line_has_role(settings, e, R.PAYABLE):
+            swapped = _origin_line(settings, ap, R.PAYABLE, debit=swapped["debit"])
+        entries.append(swapped)
+    cycle_suffix, je_type_key = _finalize_cycle(doc, "debit_note")
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:{cycle_suffix}",
+        idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
+        idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
+        memo=f"Auto JE for supplier credit note {doc_id} finalized",
+        ts=doc.get("finalized_at") or doc.get("issue_date"),
+        entries=entries,
+        metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
+    )
+
+
 async def release_credit_note_open(session, *, company_id, user_id, doc_id: str, doc: dict, amount,
                                    base_currency: str = "USD") -> None:
     """Take back the part of a credit note's issue entry its open balance holds, once its
@@ -866,8 +899,9 @@ _PURCHASE_TYPES = ("bill", "purchase_order")
 
 
 def _control_role(doc_type: str) -> AccountRole:
-    """The party control role a document's balance sits in."""
-    return R.PAYABLE if doc_type in _PURCHASE_TYPES else R.RECEIVABLE
+    """The party control role a document's balance sits in: a supplier credit note's is
+    accounts payable, as its bill's is."""
+    return R.PAYABLE if doc_type in _PURCHASE_TYPES or doc_type == "debit_note" else R.RECEIVABLE
 
 
 async def party_origin(session, company_id, doc_id: str, role, settings: dict | None = None) -> str | None:
@@ -875,7 +909,9 @@ async def party_origin(session, company_id, doc_id: str, role, settings: dict | 
     off its own recognition entry: the line that snapshots the role, or, for an entry
     from before snapshots, the line whose account served the role then, else the line
     the source system named the party on. None when the document recognized no
-    balance. More than one account is reported, never guessed."""
+    balance. More than one account is reported, never guessed. A supplier credit note a
+    return raised posts nothing of its own: the return took it off its bill's payable, so
+    its balance sits where the bill's does."""
     if settings is None:
         settings = await current_settings(session, company_id)
     rows = [row for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
@@ -891,6 +927,11 @@ async def party_origin(session, company_id, doc_id: str, role, settings: dict | 
         codes |= found
     if len(codes) > 1:
         raise AmbiguousOriginError(str(role), f"Document {doc_id}", codes)
+    if not codes and role == R.PAYABLE:
+        note = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+        state = (note.state if note is not None else None) or {}
+        if state.get("doc_type") == "debit_note" and state.get("original_doc_id"):
+            return await party_origin(session, company_id, str(state["original_doc_id"]), role, settings)
     return next(iter(codes), None)
 
 
@@ -1093,7 +1134,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
     )
 
 
-async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float) -> None:
+async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float) -> None:
     """Create JE for credit note application: AR-to-AR transfer.
 
     The invoice's receivable is credited on the account the invoice recognized it on,
@@ -1105,31 +1146,56 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
     base_currency: company base currency for JE conversion.
     conversion_rate: doc-to-base-currency rate (1.0 for base currency docs).
     """
+    await _create_for_note_application(
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id, note_id=note_id, amount=amount,
+        payment_index=payment_index, payment_date=payment_date, base_currency=base_currency,
+        conversion_rate=conversion_rate, role=R.RECEIVABLE, kind="cn", label="credit note",
+    )
+
+
+async def create_for_dn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float) -> None:
+    """Create JE for a supplier credit note applied to a bill: AP-to-AP transfer, the
+    bill's payable debited and the note's credited, each on the account it sits on."""
+    await _create_for_note_application(
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id, note_id=note_id, amount=amount,
+        payment_index=payment_index, payment_date=payment_date, base_currency=base_currency,
+        conversion_rate=conversion_rate, role=R.PAYABLE, kind="dn", label="supplier credit note",
+    )
+
+
+async def _create_for_note_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int, payment_date: str | None, base_currency: str, conversion_rate: float, role, kind: str, label: str) -> None:
+    """One credit note applied to one document: the document's control balance cleared
+    against the note's, on the accounts each recognized it on. A receivable is credited
+    on the document's side, a payable debited."""
     rate = checked_exchange_rate(conversion_rate)
     base_amount = to_base(float(amount), rate, base_currency)
-    app_key = f"cn_apply_{cn_id}:{payment_index}"
+    app_key = f"{kind}_apply_{note_id}:{payment_index}"
     settings = await current_settings(session, company_id)
-    invoice_ar = await party_origin(session, company_id, doc_id, R.RECEIVABLE, settings)
-    if invoice_ar is None:
-        invoice_ar = (await resolve_many(session, company_id, [R.RECEIVABLE]))[R.RECEIVABLE]
-    cn_ar = await party_origin(session, company_id, cn_id, R.RECEIVABLE, settings) or invoice_ar
+    doc_account = await party_origin(session, company_id, doc_id, role, settings)
+    if doc_account is None:
+        doc_account = (await resolve_many(session, company_id, [role]))[role]
+    note_account = await party_origin(session, company_id, note_id, role, settings) or doc_account
+    if role == R.RECEIVABLE:
+        doc_side, note_side = {"credit": base_amount}, {"debit": base_amount}
+    else:
+        doc_side, note_side = {"debit": base_amount}, {"credit": base_amount}
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        # Entity id carries the application's index: the same credit note can
-        # be applied to the same invoice more than once, and each application
-        # must be a distinct entry so voiding one never erases another.
-        je_id=f"je:auto:{doc_id}:cnapply:{cn_id}:{payment_index}",
-        idem_create=je_idempotency_key(doc_id, f"cn.applied:{app_key}", "c"),
-        idem_posted=je_idempotency_key(doc_id, f"cn.applied:{app_key}", "p"),
-        memo=f"Auto JE for credit note {cn_id} applied to {doc_id}",
+        # Entity id carries the application's index: the same note can be applied to
+        # the same document more than once, and each application must be a distinct
+        # entry so voiding one never erases another.
+        je_id=f"je:auto:{doc_id}:{kind}apply:{note_id}:{payment_index}",
+        idem_create=je_idempotency_key(doc_id, f"{kind}.applied:{app_key}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"{kind}.applied:{app_key}", "p"),
+        memo=f"Auto JE for {label} {note_id} applied to {doc_id}",
         ts=payment_date,
         entries=[
-            _origin_line(settings, invoice_ar, R.RECEIVABLE, credit=base_amount),
-            _origin_line(settings, cn_ar, R.RECEIVABLE, debit=base_amount),
+            _origin_line(settings, doc_account, role, **doc_side),
+            _origin_line(settings, note_account, role, **note_side),
         ],
-        metadata_={"trigger": "cn.applied", "doc_id": doc_id, "cn_id": cn_id},
+        metadata_={"trigger": f"{kind}.applied", "doc_id": doc_id, f"{kind}_id": note_id},
     )
 
 
@@ -2331,6 +2397,19 @@ async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id
         metadata_={"trigger": trigger, "doc_id": doc_id},
     )
     return True
+
+
+async def void_supplier_return(session, *, company_id, user_id, doc_id: str, return_key: str,
+                               note_id: str) -> None:
+    """Reverse the entries one return to the supplier posted on a document (the goods, their
+    corrected cost and their landed cost), when the supplier credit note it raised is voided.
+    An entry already void is skipped, so a retry reverses nothing twice."""
+    for kind in ("rtn", "rtn-value", "landed-rtn"):
+        je_id = f"je:auto:{doc_id}:{kind}:{return_key}"
+        await _void_je_if_posted(
+            session, company_id=company_id, user_id=user_id, doc_id=doc_id, je_id=je_id,
+            idem_key=f"{je_id}:void:{note_id}", reason=f"Reversed: supplier credit note {note_id} voided",
+            trigger="doc.supplier_return_undone")
 
 
 # The JE families that carry a doc's recognized economics: finalize (fin, and

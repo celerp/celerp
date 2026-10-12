@@ -55,6 +55,7 @@ _EVENT_TYPES: tuple[str, ...] = (
     "doc.pushed", "doc.receive_undone", "doc.renumbered", "doc.reopened", "doc.return_received",
     "doc.return_undone", "doc.shared_import", "doc.unvoided", "item.cost_adjusted",
     "item.landed_cost.allocated", "item.patched", "item.recipe.set", "item.returned_to_supplier",
+    "item.supplier_return_undone", "doc.supplier_return_undone",
     "item.snapshot", "item.workflow.set", "item.written_off", "list.closed", "list.created",
     "list.finalized", "list.note_added", "list.note_removed", "list.note_updated", "list.patched",
     "list.reopened", "list.reverted", "list.updated", "list.voided", "mfg.operation.recorded",

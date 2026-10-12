@@ -25,7 +25,9 @@ def test_event_type_values() -> None:
     assert EventType.DOC_PAYMENT_REFUND_REVERSED == "doc.payment.refund_reversed"
     assert EventType.DOC_PAYMENT_STRIPE_RELEASED == "doc.payment.stripe_released"
     assert EventType.ACC_RECONCILIATION_REOPENED == "acc.reconciliation.reopened"
-    assert len(EventType) == 118
+    assert EventType.ITEM_SUPPLIER_RETURN_UNDONE == "item.supplier_return_undone"
+    assert EventType.DOC_SUPPLIER_RETURN_UNDONE == "doc.supplier_return_undone"
+    assert len(EventType) == 120
 
 
 def test_log_level_default_is_info() -> None:

@@ -696,6 +696,7 @@ def _unexpanded_note(data: dict) -> FT | None:
 _SOA_KIND_KEYS = {
     "invoice": "label.invoice",
     "credit_note": "doc.credit_note",
+    "debit_note": "doc.debit_note",
     "bill": "label.vendor_bill",
     "purchase_order": "label.purchase_order",
     "payment": "acct.soa_kind_payment",

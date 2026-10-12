@@ -350,6 +350,19 @@ async def test_goods_still_held_go_back_to_the_consignor(client, session, auth):
     await _settled(client, session, auth)
 
 
+async def test_consignment_in_return_statuses_unchanged(client, session, auth):
+    """A consignment that has sent everything back takes no further return."""
+    consignment, lot = await _consign(client, session, auth)
+    r = await client.post(f"/docs/{consignment}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lot, "quantity_returned": 2}]})
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, consignment))["status"] == "returned"
+    r = await client.post(f"/docs/{consignment}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lot, "quantity_returned": 1}]})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "docs.return_not_open"
+
+
 async def _customer_return(client, session, auth, doc: str, lot: str, qty: float) -> str:
     """Credit ``qty`` of ``lot`` sold on ``doc`` and receive the goods back; return the lot they came back as."""
     sku = (await _state(session, auth, lot))["sku"]

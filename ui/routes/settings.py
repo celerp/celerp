@@ -3378,6 +3378,7 @@ _TC_DOC_TYPES_SALES = [
 ]
 _TC_DOC_TYPES_PURCHASING = [
     ("purchase_order", "settings.doc_type_purchase_order"), ("bill", "settings.doc_type_bill"),
+    ("debit_note", "settings.doc_type_debit_note"),
     ("consignment_in", "settings.doc_type_consignment_in"),
 ]
 _TC_DOC_TYPES_ALL = _TC_DOC_TYPES_SALES + _TC_DOC_TYPES_PURCHASING

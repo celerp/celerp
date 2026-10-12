@@ -566,6 +566,10 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         _stamp_status_doc(current, {"source_doc_id": data.get("source_doc_id")})
         if "consignment_flag" in data:
             current["consignment_flag"] = data["consignment_flag"]
+    elif event_type == "item.supplier_return_undone":
+        # The supplier credit note for the return was voided: the goods are back in stock.
+        current["status"] = data["restored_status"]
+        _stamp_status_doc(current, {})
     elif event_type == "item.split":
         # Parent stays available with reduced qty (qty reduction via item.quantity.adjusted)
         current["children"] = data.get("child_ids", [])

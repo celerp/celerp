@@ -34,13 +34,12 @@ _XX = {
     "documents.history": "XX_HISTORY",
     "documents.no_activity_recorded": "XX_NOACT",
     "documents.applied_to": "XX_APPLIEDTO",
-    "documents.select_invoice_option": "XX_SELECTINV",
+    "documents.outstanding_label": "XX_OUTSTANDING",
 }
 
 
 # A credit note with an outstanding balance and one applied payment, so
-# _payment_section renders both its history table header and the invoice-picker
-# script.
+# _payment_section renders both its history table header and the invoice picker.
 _CREDIT_NOTE = {
     "entity_id": "doc:1",
     "id": "doc:1",
@@ -96,11 +95,14 @@ def test_payment_history_table_header_translates():
     assert "XX_APPLIEDTO" in html
 
 
-def test_payment_js_config_value_translates():
-    # R2: strings baked into inline JS are handed over as a json.dumps config
-    # object built with t() at render, never spliced as English source.
-    html = to_xml(_payment_section(_CREDIT_NOTE, bank_accounts=_BANKS))
-    assert "XX_SELECTINV" in html
+def test_note_target_picker_label_translates():
+    # The invoice picker is rendered on the server from the contact's open
+    # invoices, so each option label goes through t() like the rest of the page.
+    invoice = {"entity_id": "doc:9", "doc_type": "invoice", "status": "awaiting_payment",
+               "contact_id": None, "currency": "USD", "total": 8, "amount_outstanding": 8,
+               "ref_id": "INV-9"}
+    html = to_xml(_payment_section(_CREDIT_NOTE, bank_accounts=_BANKS, targets=[invoice]))
+    assert "INV-9 - XX_OUTSTANDING" in html
 
 
 def _es():

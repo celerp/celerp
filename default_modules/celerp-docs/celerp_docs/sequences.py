@@ -15,6 +15,7 @@ _PREFIX_BY_DOC_TYPE = {
     "quotation": "QUO",
     "shipping_doc": "SHIP",
     "credit_note": "CN",
+    "debit_note": "SCN",
     "bill": "BILL",
     "memo": "MEMO",
     "list": "LST",

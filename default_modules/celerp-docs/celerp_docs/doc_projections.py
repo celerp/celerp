@@ -74,11 +74,13 @@ def _credited(state: dict):
 def _payment_balances(state: dict, paid) -> tuple[Decimal, Decimal]:
     """Return document-currency paid and outstanding balances. Goods sent back to the supplier
     owe nothing: what their return took off accounts payable (``returned_credit``) comes off
-    the total the same as a payment, once. What an issued credit note settled between itself
-    and the invoice it credits (``credited``, CREDITED_DOC_TYPES) is owed by neither."""
+    the total the same as a payment, once. The part of it the bill had already paid moved to a
+    supplier credit note (``supplier_credit``), so it stays settled here and is owed on the
+    note instead. What an issued credit note settled between itself and the invoice it
+    credits (``credited``, CREDITED_DOC_TYPES) is owed by neither."""
     currency = str(state.get("currency") or "USD")
-    owed = round_money(to_decimal(state.get("total", 0) or 0) - to_decimal(state.get("returned_credit", 0) or 0),
-                       currency)
+    owed = round_money(to_decimal(state.get("total", 0) or 0) - to_decimal(state.get("returned_credit", 0) or 0)
+                       + to_decimal(state.get("supplier_credit", 0) or 0), currency)
     paid_d = round_money(max(Decimal(0), to_decimal(paid)), currency)
     credited = round_money(_credited(state), currency)
     outstanding = round_money(max(Decimal(0), owed - paid_d - credited), currency)
@@ -255,6 +257,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current.pop("received_item_ids", None)
             # Goods that went back went with the receipts: the revert reverses their returns too.
             current.pop("returned_items", None)
+            current.pop("supplier_credit", None)
             if current.pop("returned_credit", None):
                 _, outstanding = _payment_balances(current, current.get("amount_paid", 0))
                 current["amount_outstanding"] = to_stored_float(outstanding)
@@ -449,6 +452,9 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("payable_credit"):
             current["returned_credit"] = to_stored_float(
                 to_decimal(current.get("returned_credit", 0) or 0) + to_decimal(data["payable_credit"]))
+            if data.get("supplier_credit"):
+                current["supplier_credit"] = to_stored_float(
+                    to_decimal(current.get("supplier_credit", 0) or 0) + to_decimal(data["supplier_credit"]))
             _, outstanding = _payment_balances(current, current.get("amount_paid", 0))
             current["amount_outstanding"] = to_stored_float(outstanding)
 
@@ -463,6 +469,23 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
                 current["status"] = "returned"
             elif total_returned > 0:
                 current["status"] = "partial_returned"
+    elif event_type == "doc.supplier_return_undone":
+        # The supplier credit note one return raised was voided: that return is taken back
+        # whole, so its goods count as received again and what it took off the bill is owed.
+        key = data.get("return_key")
+        current["returned_items"] = [x for x in current.get("returned_items") or [] if x.get("return_key") != key]
+        for field, amount in (("returned_credit", data.get("payable_credit")),
+                              ("supplier_credit", data.get("supplier_credit"))):
+            if amount:
+                current[field] = to_stored_float(to_decimal(current.get(field, 0) or 0) - to_decimal(amount))
+        paid, outstanding = _payment_balances(current, current.get("amount_paid", 0))
+        current["amount_outstanding"] = to_stored_float(outstanding)
+        if current["returned_items"]:
+            current["status"] = "partial_returned"
+        elif paid > 0:
+            current["status"] = payment_status(current, paid, outstanding)
+        else:
+            current["status"] = _receipt_status(current)
     elif event_type == "doc.return_received":
         # Customer return on a credit note: track what came back (status unchanged - CN stays final/paid)
         items = data.get("items", [])
