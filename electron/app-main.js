@@ -172,6 +172,7 @@ const formerUiPorts = new Set();
 
 const { watchForRestart, classifyNavigation, fullRelaunch } = require("./restart");
 const { createShutdown } = require("./shutdown");
+const { waitForApi, rebuildProgress } = require("./api-wait");
 // Stops the servers and then the database, once; every way the app exits waits for it.
 const lifecycle = createShutdown({
   children: () => [apiProcess, uiProcess],
@@ -207,18 +208,23 @@ function getFreePort() {
   });
 }
 
+/** Whether a local TCP port accepts a connection right now. */
+function portOpen(port) {
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ port, host: "127.0.0.1" });
+    sock.once("connect", () => { sock.destroy(); resolve(true); });
+    sock.once("error", () => { sock.destroy(); resolve(false); });
+  });
+}
+
 /** Poll until a TCP port accepts connections (max `attempts` × `intervalMs`). */
 function waitForPort(port, attempts = 60, intervalMs = 500) {
   return new Promise((resolve, reject) => {
     let tries = 0;
-    const check = () => {
-      const sock = net.createConnection({ port, host: "127.0.0.1" });
-      sock.once("connect", () => { sock.destroy(); resolve(); });
-      sock.once("error", () => {
-        sock.destroy();
-        if (++tries >= attempts) reject(new Error(`Port ${port} never opened`));
-        else setTimeout(check, intervalMs);
-      });
+    const check = async () => {
+      if (await portOpen(port)) resolve();
+      else if (++tries >= attempts) reject(new Error(`Port ${port} never opened`));
+      else setTimeout(check, intervalMs);
     };
     check();
   });
@@ -532,26 +538,43 @@ function startApi(dbUrl, cfg) {
       CELERP_PG_BIN_DIR: pgBinDir(),
       ...resolveStorageEnv(cfg),
     };
-    apiProcess = spawn(
+    const proc = spawn(
       pythonBin(),
       serverArgs("celerp.main:app", apiPort),
       { cwd: APP_DIR, env, stdio: "pipe" }
     );
+    apiProcess = proc;
     const apiLog = openProcessLog("api.log");
     const logFile = path.join(LOG_DIR, "api.log");
     let stderr = "";
-    apiProcess.stderr.on("data", (d) => { stderr += d.toString(); apiLog?.write(d); });
-    apiProcess.stdout.on("data", (d) => {
+    let exited = false;
+    let rebuilding = false;
+    const showProgress = (s) => {
+      const p = rebuildProgress(s);
+      if (!p) return;
+      rebuilding = true;
+      setLoadingStatus(`Updating your data after the update: ${p.done.toLocaleString()} of ${p.total.toLocaleString()} entries`);
+    };
+    proc.stderr.on("data", (d) => { const s = d.toString(); stderr += s; apiLog?.write(d); showProgress(s); });
+    proc.stdout.on("data", (d) => {
       const s = d.toString();
       stderr += s; apiLog?.write(d);
+      showProgress(s);
       consumeRelayStateFromLog(s);  // C4: hold/release the sleep blocker on relay state changes
     });
-    apiProcess.on("error", reject);
-    apiProcess.on("exit", (code) => {
+    proc.on("error", reject);
+    proc.on("exit", (code) => {
+      exited = true;
       if (code !== 0 && code !== null) reject(new Error(`API process exited (code ${code}). Full log: ${logFile}\n${stderr.slice(-3000)}`));
     });
-    waitForPort(apiPort).then(resolve).catch(() =>
-      reject(new Error(`API port ${apiPort} never opened. Full log: ${logFile}\n${stderr.slice(-3000)}`))
+    waitForApi({
+      isOpen: () => portOpen(apiPort),
+      hasExited: () => exited,
+      onSlow: () => {
+        if (!rebuilding) setLoadingStatus("Still starting. The first start after an update can take a few minutes for a large company.");
+      },
+    }).then(resolve).catch((e) =>
+      reject(new Error(`${e.message} (port ${apiPort}). Full log: ${logFile}\n${stderr.slice(-3000)}`))
     );
   });
 }
