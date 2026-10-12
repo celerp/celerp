@@ -172,7 +172,7 @@ const formerUiPorts = new Set();
 
 const { watchForRestart, classifyNavigation, fullRelaunch } = require("./restart");
 const { createShutdown } = require("./shutdown");
-const { waitForApi, rebuildProgress } = require("./api-wait");
+const { waitForApi, rebuildProgress, lineSplitter } = require("./api-wait");
 // Stops the servers and then the database, once; every way the app exits waits for it.
 const lifecycle = createShutdown({
   children: () => [apiProcess, uiProcess],
@@ -548,18 +548,20 @@ function startApi(dbUrl, cfg) {
     const logFile = path.join(LOG_DIR, "api.log");
     let stderr = "";
     let exited = false;
-    let rebuilding = false;
-    const showProgress = (s) => {
-      const p = rebuildProgress(s);
+    let progressAt = 0;
+    const showProgress = (line) => {
+      const p = rebuildProgress(line);
       if (!p) return;
-      rebuilding = true;
+      progressAt = Date.now();
       setLoadingStatus(`Updating your data after the update: ${p.done.toLocaleString()} of ${p.total.toLocaleString()} entries`);
     };
-    proc.stderr.on("data", (d) => { const s = d.toString(); stderr += s; apiLog?.write(d); showProgress(s); });
+    const stderrLines = lineSplitter(showProgress);
+    const stdoutLines = lineSplitter(showProgress);
+    proc.stderr.on("data", (d) => { const s = d.toString(); stderr += s; apiLog?.write(d); stderrLines(s); });
     proc.stdout.on("data", (d) => {
       const s = d.toString();
       stderr += s; apiLog?.write(d);
-      showProgress(s);
+      stdoutLines(s);
       consumeRelayStateFromLog(s);  // C4: hold/release the sleep blocker on relay state changes
     });
     proc.on("error", reject);
@@ -570,8 +572,9 @@ function startApi(dbUrl, cfg) {
     waitForApi({
       isOpen: () => portOpen(apiPort),
       hasExited: () => exited,
+      lastProgressAt: () => progressAt,
       onSlow: () => {
-        if (!rebuilding) setLoadingStatus("Still starting. The first start after an update can take a few minutes for a large company.");
+        if (!progressAt) setLoadingStatus("Still starting. The first start after an update can take a few minutes for a large company.");
       },
     }).then(resolve).catch((e) =>
       reject(new Error(`${e.message} (port ${apiPort}). Full log: ${logFile}\n${stderr.slice(-3000)}`))

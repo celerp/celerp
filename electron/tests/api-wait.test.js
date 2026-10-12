@@ -3,42 +3,97 @@
 //
 // The first start after an update can rebuild every record before the API listens,
 // which takes minutes on a large company. The app keeps waiting while the API is
-// alive and shows the rebuild's progress, instead of closing after 30 seconds.
+// alive and making progress, and shows that progress, instead of closing after
+// 30 seconds.
 "use strict";
 
-const { waitForApi, rebuildProgress } = require("../api-wait");
+const { waitForApi, rebuildProgress, lineSplitter } = require("../api-wait");
 
-const fast = { intervalMs: 1, slowAfterMs: 5 };
+const MIN = 60 * 1000;
 
-test("keeps waiting well past 30 seconds' worth of checks while the API is alive", async () => {
-  let checks = 0;
-  await expect(waitForApi({ ...fast, isOpen: async () => ++checks > 200, hasExited: () => false }))
-    .resolves.toBeUndefined();
-  expect(checks).toBeGreaterThan(60);
+beforeEach(() => jest.useFakeTimers());
+afterEach(() => jest.useRealTimers());
+
+/** Start a wait and record how it ended, so the clock can run before it settles. */
+function track(opts) {
+  const result = { state: "waiting" };
+  waitForApi(opts).then(
+    () => { result.state = "open"; },
+    (e) => { result.state = "rejected"; result.error = e.message; },
+  );
+  return result;
+}
+
+test("a live API that opens after 45 seconds is still waited for", async () => {
+  const opensAt = Date.now() + 45 * 1000;
+  const r = track({ isOpen: async () => Date.now() >= opensAt, hasExited: () => false });
+  await jest.advanceTimersByTimeAsync(31 * 1000);
+  expect(r.state).toBe("waiting");
+  await jest.advanceTimersByTimeAsync(15 * 1000);
+  expect(r.state).toBe("open");
+});
+
+test("a rebuild that keeps reporting progress is never cut off, however long it runs", async () => {
+  let progressAt = 0;
+  const r = track({ isOpen: async () => false, hasExited: () => false, lastProgressAt: () => progressAt });
+  for (let minute = 0; minute < 120; minute++) {
+    progressAt = Date.now();
+    await jest.advanceTimersByTimeAsync(MIN);
+  }
+  expect(r.state).toBe("waiting");
+});
+
+test("an API that goes quiet gives up once the quiet limit passes since its last progress", async () => {
+  let progressAt = 0;
+  const r = track({ isOpen: async () => false, hasExited: () => false, lastProgressAt: () => progressAt });
+  await jest.advanceTimersByTimeAsync(20 * MIN);
+  progressAt = Date.now();
+  await jest.advanceTimersByTimeAsync(29 * MIN);
+  expect(r.state).toBe("waiting");
+  await jest.advanceTimersByTimeAsync(2 * MIN);
+  expect(r.state).toBe("rejected");
+  expect(r.error).toMatch("made no progress for 30 minutes");
 });
 
 test("stops waiting as soon as the API process has exited", async () => {
-  let checks = 0;
-  await expect(waitForApi({ ...fast, isOpen: async () => false, hasExited: () => ++checks > 3 }))
-    .rejects.toThrow("stopped before it was ready");
-  expect(checks).toBeLessThan(10);
+  let exited = false;
+  const r = track({ isOpen: async () => false, hasExited: () => exited });
+  await jest.advanceTimersByTimeAsync(5 * 1000);
+  exited = true;
+  await jest.advanceTimersByTimeAsync(1000);
+  expect(r.state).toBe("rejected");
+  expect(r.error).toMatch("stopped before it was ready");
 });
 
-test("gives up at the upper limit when the API never opens", async () => {
-  await expect(waitForApi({ ...fast, maxMs: 30, isOpen: async () => false, hasExited: () => false }))
-    .rejects.toThrow("did not start");
-});
-
-test("tells the user it is still starting once the wait is long", async () => {
+test("tells the user it is still starting once, after 30 seconds", async () => {
   const onSlow = jest.fn();
-  let checks = 0;
-  await waitForApi({ ...fast, onSlow, isOpen: async () => ++checks > 50, hasExited: () => false });
+  track({ isOpen: async () => false, hasExited: () => false, onSlow });
+  await jest.advanceTimersByTimeAsync(29 * 1000);
+  expect(onSlow).not.toHaveBeenCalled();
+  await jest.advanceTimersByTimeAsync(5 * MIN);
   expect(onSlow).toHaveBeenCalledTimes(1);
 });
 
-test("reads the rebuild progress the API logs, last line wins", () => {
-  const chunk = "INFO:celerp.projections.engine:Rebuilding records: 0 of 250000 ledger entries\n" +
-    "INFO:celerp.projections.engine:Rebuilding records: 40000 of 250000 ledger entries\n";
-  expect(rebuildProgress(chunk)).toEqual({ done: 40000, total: 250000 });
-  expect(rebuildProgress("INFO:celerp.modules.loader:Module 'x': API routes registered\n")).toBeNull();
+test("reads the rebuild progress the API logs", () => {
+  expect(rebuildProgress("INFO:celerp.projections.engine:Rebuilding records: 40000 of 250000 ledger entries"))
+    .toEqual({ done: 40000, total: 250000 });
+  expect(rebuildProgress("INFO:celerp.modules.loader:Module 'x': API routes registered")).toBeNull();
+});
+
+test("a progress line split across two output chunks is still read whole", () => {
+  const seen = [];
+  const feed = lineSplitter((line) => { const p = rebuildProgress(line); if (p) seen.push(p); });
+  feed("INFO:celerp.projections.engine:Rebuilding records: 4");
+  feed("0000 of 250000 ledger entries\r\nINFO:other\nINFO:celerp.projections.engine:Rebuilding ");
+  feed("records: 41000 of 250000 ledger entries\n");
+  expect(seen).toEqual([{ done: 40000, total: 250000 }, { done: 41000, total: 250000 }]);
+});
+
+test("a stream that never ends a line keeps only a bounded tail", () => {
+  const lines = [];
+  const feed = lineSplitter((line) => lines.push(line));
+  for (let i = 0; i < 100; i++) feed("x".repeat(10000));
+  feed("\n");
+  expect(lines).toHaveLength(1);
+  expect(lines[0].length).toBeLessThanOrEqual(64 * 1024);
 });
