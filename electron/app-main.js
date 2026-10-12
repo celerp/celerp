@@ -172,7 +172,7 @@ const formerUiPorts = new Set();
 
 const { watchForRestart, classifyNavigation, fullRelaunch } = require("./restart");
 const { createShutdown } = require("./shutdown");
-const { waitForApi, rebuildProgress, lineSplitter } = require("./api-wait");
+const { waitForApi, rebuildProgress, lineSplitter, outputTail } = require("./api-wait");
 // Stops the servers and then the database, once; every way the app exits waits for it.
 const lifecycle = createShutdown({
   children: () => [apiProcess, uiProcess],
@@ -546,7 +546,7 @@ function startApi(dbUrl, cfg) {
     apiProcess = proc;
     const apiLog = openProcessLog("api.log");
     const logFile = path.join(LOG_DIR, "api.log");
-    let stderr = "";
+    const output = outputTail();
     let exited = false;
     let progressAt = 0;
     const showProgress = (line) => {
@@ -557,17 +557,17 @@ function startApi(dbUrl, cfg) {
     };
     const stderrLines = lineSplitter(showProgress);
     const stdoutLines = lineSplitter(showProgress);
-    proc.stderr.on("data", (d) => { const s = d.toString(); stderr += s; apiLog?.write(d); stderrLines(s); });
+    proc.stderr.on("data", (d) => { const s = d.toString(); output.add(s); apiLog?.write(d); stderrLines(s); });
     proc.stdout.on("data", (d) => {
       const s = d.toString();
-      stderr += s; apiLog?.write(d);
+      output.add(s); apiLog?.write(d);
       stdoutLines(s);
       consumeRelayStateFromLog(s);  // C4: hold/release the sleep blocker on relay state changes
     });
     proc.on("error", reject);
     proc.on("exit", (code) => {
       exited = true;
-      if (code !== 0 && code !== null) reject(new Error(`API process exited (code ${code}). Full log: ${logFile}\n${stderr.slice(-3000)}`));
+      if (code !== 0 && code !== null) reject(new Error(`API process exited (code ${code}). Full log: ${logFile}\n${output.text()}`));
     });
     waitForApi({
       isOpen: () => portOpen(apiPort),
@@ -577,7 +577,7 @@ function startApi(dbUrl, cfg) {
         if (!progressAt) setLoadingStatus("Still starting. The first start after an update can take a few minutes for a large company.");
       },
     }).then(resolve).catch((e) =>
-      reject(new Error(`${e.message} (port ${apiPort}). Full log: ${logFile}\n${stderr.slice(-3000)}`))
+      reject(new Error(`${e.message} (port ${apiPort}). Full log: ${logFile}\n${output.text()}`))
     );
   });
 }
@@ -623,15 +623,15 @@ function startUi(dbUrl, cfg) {
     );
     const uiLog = openProcessLog("ui.log");
     const logFile = path.join(LOG_DIR, "ui.log");
-    let stderr = "";
-    uiProcess.stderr.on("data", (d) => { stderr += d.toString(); uiLog?.write(d); });
-    uiProcess.stdout.on("data", (d) => { stderr += d.toString(); uiLog?.write(d); });
+    const output = outputTail();
+    uiProcess.stderr.on("data", (d) => { output.add(d.toString()); uiLog?.write(d); });
+    uiProcess.stdout.on("data", (d) => { output.add(d.toString()); uiLog?.write(d); });
     uiProcess.on("error", reject);
     uiProcess.on("exit", (code) => {
-      if (code !== 0 && code !== null) reject(new Error(`UI process exited (code ${code}). Full log: ${logFile}\n${stderr.slice(-3000)}`));
+      if (code !== 0 && code !== null) reject(new Error(`UI process exited (code ${code}). Full log: ${logFile}\n${output.text()}`));
     });
     waitForPort(uiPort).then(resolve).catch(() =>
-      reject(new Error(`UI port ${uiPort} never opened. Full log: ${logFile}\n${stderr.slice(-3000)}`))
+      reject(new Error(`UI port ${uiPort} never opened. Full log: ${logFile}\n${output.text()}`))
     );
   });
 }

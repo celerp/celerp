@@ -7,7 +7,7 @@
 // 30 seconds.
 "use strict";
 
-const { waitForApi, rebuildProgress, lineSplitter } = require("../api-wait");
+const { waitForApi, rebuildProgress, lineSplitter, outputTail } = require("../api-wait");
 
 const MIN = 60 * 1000;
 
@@ -96,4 +96,14 @@ test("a stream that never ends a line keeps only a bounded tail", () => {
   feed("\n");
   expect(lines).toHaveLength(1);
   expect(lines[0].length).toBeLessThanOrEqual(64 * 1024);
+});
+
+test("only the end of a server's output is kept for its startup error", () => {
+  const output = outputTail(10);
+  output.add("0123456789");
+  output.add("abcde");
+  expect(output.text()).toBe("56789abcde");
+  const big = outputTail();
+  for (let i = 0; i < 1000; i++) big.add("y".repeat(1000));
+  expect(big.text()).toHaveLength(3000);
 });

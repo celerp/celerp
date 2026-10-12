@@ -64,4 +64,14 @@ function waitForApi({ isOpen, hasExited, lastProgressAt = () => 0, intervalMs = 
   });
 }
 
-module.exports = { waitForApi, rebuildProgress, lineSplitter };
+/**
+ * The last `max` characters of a server's output, for the error shown when it fails
+ * to start. Bounded because a server writes for as long as it runs; its log file
+ * keeps everything.
+ */
+function outputTail(max = 3000) {
+  let text = "";
+  return { add: (s) => { text = (text + s).slice(-max); }, text: () => text };
+}
+
+module.exports = { waitForApi, rebuildProgress, lineSplitter, outputTail };
