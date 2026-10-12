@@ -94,3 +94,49 @@ async def test_receiver_does_not_mutate_company_owned_contact():
             assert owner.state["name"] == "Owner legal identity"
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_peer_contact_clears_optional_value_without_changing_regular_imports(monkeypatch):
+    from types import SimpleNamespace
+    from celerp_contacts import services as contacts
+
+    contact = SimpleNamespace(
+        entity_id="contact:existing", state={"name": "Client", "email": "old@example.test"},
+    )
+    class Rows:
+        def scalars(self):
+            return self
+        def all(self):
+            return [contact]
+    class Session:
+        async def execute(self, query):
+            return Rows()
+    async def no_prior_event(*args, **kwargs):
+        return None
+
+    changes = []
+    async def record_change(*args, **kwargs):
+        changes.append(kwargs["data"]["fields_changed"])
+        return SimpleNamespace()
+
+    monkeypatch.setattr(contacts, "find_event_by_idempotency", no_prior_event)
+    monkeypatch.setattr(contacts, "emit_event", record_change)
+    record = contacts.CRMImportRecord(
+        entity_id=contact.entity_id, event_type="crm.contact.created",
+        data={"name": "Client", "email": None},
+        source="connector", idempotency_key="test:clear",
+    )
+    session = Session()
+    existing_behavior = await contacts.import_contact_records(
+        session, uuid.uuid4(), None, [record], match_identity=False,
+    )
+    assert existing_behavior.records[0].status == "skipped"
+    assert not changes
+
+    peer_behavior = await contacts.import_contact_records(
+        session, uuid.uuid4(), None, [record], match_identity=False,
+        allow_null_updates=True,
+    )
+    assert peer_behavior.records[0].status == "updated"
+    assert changes == [{"email": {"old": "old@example.test", "new": None}}]

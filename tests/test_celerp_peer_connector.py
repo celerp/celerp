@@ -60,7 +60,10 @@ async def test_versioned_contact_outbound_and_retry_reporting(monkeypatch):
     assert result.attention == [{"id": "contact:b", "label": "contact:b",
                                  "reason": "Receiving installation needs attention"}]
     assert sent[0]["json"]["source_revision"] == 3
-    assert sent[0]["json"]["data"] == {"name": "A", "contact_type": "vendor"}
+    assert sent[0]["json"]["data"]["name"] == "A"
+    assert sent[0]["json"]["data"]["contact_type"] == "vendor"
+    assert sent[0]["json"]["data"]["email"] is None
+    assert "private_note" not in sent[0]["json"]["data"]
     assert sent[0]["headers"]["Authorization"] == "Peer cp1.secret"
 
 

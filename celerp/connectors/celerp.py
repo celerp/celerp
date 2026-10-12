@@ -94,7 +94,7 @@ class CelerpConnector(ConnectorBase):
                         result.attention.append({"id": entity_id, "label": entity_id,
                                                  "reason": "Deleted contact needs review"})
                         continue
-                    data = {key: state[key] for key in _FIELDS if key in state and state[key] is not None}
+                    data = {key: state.get(key) for key in _FIELDS}
                     if not isinstance(data.get("name"), str) or not data["name"].strip():
                         result.errors.append("Contact name unavailable")
                         result.attention.append({"id": entity_id, "label": entity_id,

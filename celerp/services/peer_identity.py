@@ -132,7 +132,7 @@ async def receive_contact(session: AsyncSession, *, grant, source_entity_id: str
     async with session.begin_nested():
         results = await import_contact_records(
             session, company_id=company_id, actor_id=None,
-            records=[record], match_identity=False)
+            records=[record], match_identity=False, allow_null_updates=True)
         result = results.records[0]
         if result.status not in ("created", "updated", "skipped"):
             raise HTTPException(409, "Contact update was not accepted")

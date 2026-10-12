@@ -107,6 +107,6 @@ async def receive_peer_contact(body: PeerContactUpdate,
         session, key, source_company_id=body.source_company_id, scope="contacts")
     result = await receive_contact(
         session, grant=grant, source_entity_id=body.source_entity_id,
-        source_revision=body.source_revision, data=body.data.model_dump(exclude_none=True))
+        source_revision=body.source_revision, data=body.data.model_dump())
     await session.commit()
     return {"status": result}
