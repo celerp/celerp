@@ -414,21 +414,24 @@ async def _read(request: Request, mode: WizardMode):
     if has_file == bool(link):
         return await _upload_page(request, mode, t("company_backup.choose_file_or_link"), email=email)
 
-    async def stage(filename, content):
+    async def stage(filename, content, handoff=None):
         if mode is START_COMPANY:
-            return await api.company_backup_start_read(email, password, filename, content)
+            return await api.company_backup_start_read(email, password, filename, content,
+                                                       **({"handoff": handoff} if handoff else {}))
         return await api.company_backup_read(api_token(request, mode), filename, content,
-                                             setup_code=_setup_code(form), mode=_mode_key(mode))
+                                             setup_code=_setup_code(form), mode=_mode_key(mode),
+                                             **({"handoff": handoff} if handoff else {}))
 
     if link:
         try:
             # Nothing is imported until the existing preview and restore steps succeed.
-            parse_handoff_link(link)
+            validated = parse_handoff_link(link)
             with tempfile.TemporaryDirectory(prefix="celerp-handoff-") as folder:
                 backup = Path(folder) / "incoming.celerp-company"
                 await download_company_handoff(link, backup)
                 with backup.open("rb") as content:
-                    summary = await stage(backup.name, content)
+                    summary = await stage(backup.name, content,
+                                          handoff=(str(validated.copy_id), validated.proof_hash))
         except (HandoffDownloadError, ValueError, InvalidTag):
             return await _upload_page(request, mode, t("company_backup.handoff_unavailable"), email=email)
         except APIError as e:

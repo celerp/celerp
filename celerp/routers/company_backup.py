@@ -171,7 +171,8 @@ async def _preview(session: AsyncSession, stage: Path, token: str, mode: str, us
 
 
 async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str = _BOOTSTRAP,
-                user_id=None, current_company_id=None) -> dict:
+                user_id=None, current_company_id=None, handoff_copy_id: str | None = None,
+                handoff_proof: str | None = None) -> dict:
     """Stage an uploaded backup privately and return its preview with the upload token."""
     await asyncio.to_thread(files.purge_expired_uploads)
     token = secrets.token_hex(16)
@@ -182,7 +183,13 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str =
                                     mode=mode, file_name=file.filename)
         except files.UploadTooLarge:
             raise cb.BackupError(413, t(cb.TOO_LARGE_UPLOAD)) from None
-        return await _preview(session, stage, token, mode, user_id, current_company_id)
+        preview = await _preview(session, stage, token, mode, user_id, current_company_id)
+        if handoff_copy_id or handoff_proof:
+            try:
+                files.bind_handoff(stage, handoff_copy_id, handoff_proof)
+            except (TypeError, ValueError):
+                raise cb.BackupError(422, "Invalid company handoff") from None
+        return preview
     except BaseException:
         files.discard_stage(stage)
         raise
@@ -265,9 +272,11 @@ class RestoreIn(UploadIn):
 
 @router.post("/read")
 async def read_backup(file: UploadFile = File(...), mode: RestoreMode = Form("settings"),
+                      handoff_copy_id: str | None = Form(None), handoff_proof: str | None = Form(None),
                       ctx: AuthContext = Depends(user_owner), session: AsyncSession = Depends(get_session)):
     try:
-        return await _read(file, str(ctx.user.id), session, mode, ctx.user.id, ctx.company_id)
+        return await _read(file, str(ctx.user.id), session, mode, ctx.user.id, ctx.company_id,
+                           handoff_copy_id, handoff_proof)
     except cb.BackupError as exc:
         return _error(exc)
 
@@ -320,6 +329,8 @@ async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_own
         except cb.BackupError as exc:
             return _error(exc, stage)
         files.finish_stage(stage, result.company_id)
+    from celerp.services.company_handoff_receipts import report_completed_handoff
+    await report_completed_handoff(stage)
     return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
                                                     expected_snonce=ctx.snonce))
 
@@ -360,10 +371,12 @@ async def _first_run(session: AsyncSession, x_setup_code: str | None) -> None:
 @router.post("/bootstrap/read")
 @limiter.limit("5/minute")
 async def bootstrap_read(request: Request, file: UploadFile = File(...),
+                         handoff_copy_id: str | None = Form(None), handoff_proof: str | None = Form(None),
                          session: AsyncSession = Depends(get_session), x_setup_code: str | None = Header(None)):
     await _first_run(session, x_setup_code)
     try:
-        return await _read(file, _BOOTSTRAP, session)
+        return await _read(file, _BOOTSTRAP, session, handoff_copy_id=handoff_copy_id,
+                           handoff_proof=handoff_proof)
     except cb.BackupError as exc:
         return _error(exc)
 
@@ -427,6 +440,8 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
         result = await cb.reopen_restored(files.restored_company(stage), owner_account=account)
         if result is None:
             raise HTTPException(status_code=409, detail=t("company_backup.upload_expired"))
+        from celerp.services.company_handoff_receipts import report_completed_handoff
+        await report_completed_handoff(stage)
         return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                               expected_snonce=None))
     try:
@@ -435,6 +450,8 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
+    from celerp.services.company_handoff_receipts import report_completed_handoff
+    await report_completed_handoff(stage)
     response = _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                               expected_snonce=None))
     if required:
@@ -448,10 +465,12 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
 @router.post("/start-company/read")
 @limiter.limit("5/minute")
 async def start_company_read(request: Request, file: UploadFile = File(...), email: str = Form(...),
-                             password: str = Form(...), session: AsyncSession = Depends(get_session)):
+                             password: str = Form(...), handoff_copy_id: str | None = Form(None),
+                             handoff_proof: str | None = Form(None), session: AsyncSession = Depends(get_session)):
     user = await companyless_login(session, email, password)
     try:
-        return await _read(file, str(user.id), session, _START_COMPANY, user.id)
+        return await _read(file, str(user.id), session, _START_COMPANY, user.id,
+                           handoff_copy_id=handoff_copy_id, handoff_proof=handoff_proof)
     except cb.BackupError as exc:
         return _error(exc)
 
@@ -481,5 +500,7 @@ async def start_company_restore(request: Request, payload: StartCompanyRestoreIn
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
+    from celerp.services.company_handoff_receipts import report_completed_handoff
+    await report_completed_handoff(stage)
     return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                           expected_snonce=None))
