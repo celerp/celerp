@@ -1238,6 +1238,8 @@ async def _complete_page(request: Request, run: dict):
         ) if totals else "",
         pack,
         open_company,
+        A(t("company_backup.send_title"), href=f"{open_href}?next=/settings/company-handoff",
+          cls="btn btn--secondary btn--full mt-sm"),
         A(t("company_backup.download"), href=f"/company-backup/download?from_run={run_id}",
           cls="btn btn--secondary btn--full mt-sm"),
         A(t("migration.move_another"), href=f"{COMPANY.base}?from_run={run_id}",

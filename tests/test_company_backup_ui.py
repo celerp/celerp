@@ -785,3 +785,18 @@ async def test_company_handoff_activity_revoke_and_navigation(ui, real_engine, m
     revoked = await ui.post(f"{route.HANDOFFS}/{copy_id}/revoke")
     assert revoked.status_code == 303 and revoked.headers["location"] == route.HANDOFFS
     assert calls == [(tok, copy_id)]
+
+
+async def test_switch_to_migrated_company_before_send(ui, real_engine):
+    user, first, access = await _setup(real_engine, name="First books")
+    second = await company(real_engine, user, "Migrated books", "migration-switch-target")
+    ui.cookies.set("celerp_token", access)
+    action = await ui.get(f"/switch-company/{second}?next=/settings/company-handoff")
+    assert action.status_code == 302
+    assert action.headers["location"] == "/settings/company-handoff"
+    assert _claims(_cookie(action, "celerp_token"))["company_id"] == str(second)
+    # Never make company switching a general-purpose redirect endpoint.
+    other = await ui.get(f"/switch-company/{first}?next=https://bad.example")
+    assert other.status_code == 302 and other.headers["location"] == "/"
+    encoded = await ui.get(f"/switch-company/{first}?next=%2F%2Fevil.example")
+    assert encoded.status_code == 302 and encoded.headers["location"] == "/"
