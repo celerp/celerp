@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -50,10 +51,19 @@ async def download_company_handoff(link: str, destination: Path) -> None:
         async with asyncio.timeout(900):
             async with httpx.AsyncClient(follow_redirects=False,
                                          timeout=httpx.Timeout(120, connect=10)) as client:
-                response = await client.post(
-                    f"https://relay.celerp.com/handoffs/{parsed.copy_id}/fetch",
-                    json={"proof": parsed.proof_hash},
-                )
+                grant_id = str(uuid.uuid4())
+                for attempt in range(2):
+                    try:
+                        response = await client.post(
+                            f"https://relay.celerp.com/handoffs/{parsed.copy_id}/fetch",
+                            json={"proof": parsed.proof_hash, "operation_id": grant_id},
+                        )
+                    except httpx.TransportError:
+                        if attempt:
+                            raise
+                        continue
+                    if response.status_code not in (502, 503, 504) or attempt:
+                        break
                 if response.status_code != 200:
                     raise HandoffDownloadError("This company copy is not available for import")
                 try:

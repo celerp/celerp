@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 """An untrusted handoff cannot introduce a second restore path or partial file."""
 import asyncio
+import json
 import uuid
 
 import httpx
@@ -96,3 +97,61 @@ def test_expired_handoff_does_not_create_local_copy(tmp_path, monkeypatch):
         asyncio.run(transfer.download_company_handoff(handoff_page_link(hid, secret), tmp_path / "target"))
     assert len(calls) == 1
     assert not list(tmp_path.glob(".celerp-handoff-*"))
+
+
+def test_lost_grant_response_reuses_same_operation(tmp_path, monkeypatch):
+    hid, secret = uuid.uuid4(), bytes(range(32))
+    original = tmp_path / "source"
+    original.write_bytes(b"financial backup" * 600)
+    encrypted = tmp_path / "encrypted"
+    encrypt_file(original, encrypted, secret)
+    calls = []
+    signed = (f"https://sfo2.digitaloceanspaces.com/example-copies/"
+              f"handoffs/{hid.hex}.bin?sig=test")
+
+    def remote(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            calls.append(json.loads(request.content))
+            if len(calls) == 1:
+                raise httpx.ReadError("response lost after grant was created")
+            return httpx.Response(200, json={"download_url": signed})
+        assert request.method == "GET" and str(request.url) == signed
+        return httpx.Response(200, content=encrypted.read_bytes())
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(transfer.httpx, "AsyncClient", lambda **kw: real(
+        transport=httpx.MockTransport(remote), **kw))
+    restored = tmp_path / "restored"
+    asyncio.run(transfer.download_company_handoff(handoff_page_link(hid, secret), restored))
+    assert restored.read_bytes() == original.read_bytes()
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert uuid.UUID(calls[0]["operation_id"])
+    assert calls[0]["proof"] == transfer.parse_handoff_link(
+        handoff_page_link(hid, secret)).proof_hash
+    assert not list(tmp_path.glob(".celerp-handoff-*"))
+
+
+def test_transient_service_error_reuses_grant_operation(tmp_path, monkeypatch):
+    hid, secret = uuid.uuid4(), bytes(range(32))
+    source = tmp_path / "original"
+    source.write_bytes(b"file" * 100)
+    ciphertext = tmp_path / "cipher"
+    encrypt_file(source, ciphertext, secret)
+    requests = []
+    target_url = f"https://sfo2.digitaloceanspaces.com/x/handoffs/{hid.hex}.bin?sig=test"
+
+    def remote(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            requests.append(json.loads(request.content))
+            return (httpx.Response(503) if len(requests) == 1 else
+                    httpx.Response(200, json={"download_url": target_url}))
+        return httpx.Response(200, content=ciphertext.read_bytes())
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(transfer.httpx, "AsyncClient", lambda **kw: real(
+        transport=httpx.MockTransport(remote), **kw))
+    out = tmp_path / "restored"
+    asyncio.run(transfer.download_company_handoff(handoff_page_link(hid, secret), out))
+    assert out.read_bytes() == source.read_bytes()
+    assert requests[0] == requests[1]
