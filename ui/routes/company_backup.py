@@ -35,6 +35,9 @@ cookies scoped to the entry point's base path.
 from __future__ import annotations
 
 import tempfile
+import secrets
+import uuid
+import base64
 from pathlib import Path
 from cryptography.exceptions import InvalidTag
 
@@ -70,6 +73,7 @@ from ui.routes.migrations import (
 )
 
 DOWNLOAD = "/company-backup/download"
+SEND = "/settings/company-handoff"
 BACKUP_TAB = "/settings/general?tab=backup"
 _TITLE = "company_backup.restore_title"
 _OWNER_ONLY = "company_backup.owner_only"
@@ -739,12 +743,76 @@ async def _done(request: Request, mode: WizardMode):
     return resp
 
 
+async def _send_page(request: Request, *, error: str | None = None, values: dict | None = None,
+                     status_code: int = 200):
+    if (denied := await _gate(request, SETTINGS)) is not None:
+        return denied
+    values = values or {}
+    operation = values.get("operation_id") or str(uuid.uuid4())
+    secret = values.get("key") or base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
+    return wizard_page(
+        request,
+        auth_header(t("company_backup.send_title")),
+        flash(error) if error else "",
+        Form(
+            Input(type="hidden", name="operation_id", value=operation),
+            Input(type="hidden", name="key", value=secret),
+            Div(Label(t("company_backup.firm_label"), For="firm_name", cls="form-label"),
+                Input(type="text", id="firm_name", name="firm_name", value=values.get("firm_name", ""),
+                      required=True, maxlength="160", cls="form-input"), cls="form-group"),
+            Div(Label(t("company_backup.recipient_label"), For="recipient", cls="form-label"),
+                Input(type="email", id="recipient", name="recipient", value=values.get("recipient", ""),
+                      required=True, maxlength="320", cls="form-input"), cls="form-group"),
+            Div(Label(t("company_backup.reply_label"), For="reply_to", cls="form-label"),
+                Input(type="email", id="reply_to", name="reply_to", value=values.get("reply_to", ""),
+                      required=True, maxlength="320", cls="form-input"), cls="form-group"),
+            Div(Label(t("company_backup.note_label"), For="note", cls="form-label"),
+                Textarea(values.get("note", ""), id="note", name="note", maxlength="1500",
+                         cls="form-input"), cls="form-group"),
+            Button(t("company_backup.send_title"), type="submit", cls="btn btn--primary btn--full"),
+            method="post", action=SEND, cls="auth-form",
+        ),
+        back_link(BACKUP_TAB), status_code=status_code,
+        title="company_backup.send_title",
+    )
+
+
+async def _send_handoff(request: Request):
+    if (denied := await _gate(request, SETTINGS)) is not None:
+        return denied
+    form = await request.form()
+    keys = ("operation_id", "key", "firm_name", "recipient", "reply_to", "note")
+    values = {k: str(form.get(k, "")).strip() for k in keys}
+    try:
+        operation = uuid.UUID(values["operation_id"])
+        if str(operation) != values["operation_id"] or len(values["key"]) != 43:
+            raise ValueError
+    except ValueError:
+        return await _send_page(request, error=t("company_backup.send_invalid"))
+    try:
+        sent = await api.company_backup_send_handoff(get_token(request), values)
+    except APIError as exc:
+        # Retain the same operation and secret for ambiguous delivery retries.
+        return await _send_page(request, error=_message(exc), values=values, status_code=_status(exc))
+    return wizard_page(
+        request,
+        auth_header(t("company_backup.sent_title")),
+        P(t("company_backup.sent_notice"), cls="flash flash--success"),
+        Div(Label(t("company_backup.sent_link_label"), For="company_handoff_link", cls="form-label"),
+            Input(type="text", id="company_handoff_link", value=sent["link"], readonly=True,
+                  cls="form-input"), cls="form-group"),
+        back_link(BACKUP_TAB), title="company_backup.sent_title",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
 def company_backup_routes(app) -> None:
     app.get(DOWNLOAD)(_download)
+    app.get(SEND)(_send_page)
+    app.post(SEND)(_send_handoff)
     for mode in (SETTINGS, NEW_COMPANY, BOOTSTRAP, START_COMPANY):
         for method, suffix, handler in (("get", "", _start), ("post", "/read", _read),
                                         ("post", "/restore", _restore), ("get", "/done", _done)):

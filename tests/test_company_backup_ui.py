@@ -721,3 +721,36 @@ async def test_invalid_handoff_link_is_not_downloaded(ui, real_engine, monkeypat
     assert r.status_code == 200
     assert "Check the link or request a new copy" in _page(r)
     assert await _company_ids(real_engine) == before
+
+
+async def test_company_handoff_send_form_retries_original_operation(ui, real_engine, monkeypatch):
+    from ui.routes.company_backup import SEND
+    from ui import api_client as api
+    from celerp.services.company_handoff_links import handoff_page_link
+
+    _, _, tok = await _setup(real_engine)
+    ui.cookies.set("celerp_token", tok)
+    r = await ui.get(SEND)
+    assert r.status_code == 200, r.text
+    initial = _hidden(_page(r))
+    assert len(initial["key"]) == 43
+    payload = {**initial, "firm_name": "Example Accounting", "recipient": "client@example.com",
+               "reply_to": "firm@example.com", "note": "Your books"}
+    calls = []
+
+    async def send(token, body):
+        calls.append((token, body))
+        if len(calls) == 1:
+            raise api.APIError(502, "Delivery not confirmed")
+        secret = base64.urlsafe_b64decode(body["key"] + "=")
+        return {"id": str(uuid.uuid4()), "link": handoff_page_link(uuid.uuid4(), secret)}
+
+    monkeypatch.setattr(api, "company_backup_send_handoff", send)
+    refused = await ui.post(SEND, data=payload)
+    assert refused.status_code == 502
+    assert _hidden(_page(refused))["key"] == initial["key"]
+    assert _hidden(_page(refused))["operation_id"] == initial["operation_id"]
+    sent = await ui.post(SEND, data=payload)
+    assert sent.status_code == 200 and "Company copy sent" in _page(sent)
+    assert [call[1]["operation_id"] for call in calls] == [initial["operation_id"]] * 2
+    assert all(call[1]["key"] == initial["key"] for call in calls)
