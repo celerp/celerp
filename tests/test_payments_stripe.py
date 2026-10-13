@@ -1342,7 +1342,7 @@ async def test_delayed_actual_fees_post_in_open_period_without_backdating(client
     import hashlib
     import uuid
     from datetime import date
-    from celerp.models.company import Company
+    from celerp.services.company_lock import locked_company
     from celerp.models.projections import Projection
     from celerp.services.payments import receive_payment, receive_fees
 
@@ -1353,7 +1353,7 @@ async def test_delayed_actual_fees_post_in_open_period_without_backdating(client
         "company_id": cid, "entity_id": eid, "reference": "pi_fee_late",
         "amount_minor": 107000, "currency": "usd",
         "paid_at": PAID.isoformat(), "context": dict(BOOKS), "managed": True})
-    company = await session.get(Company, uuid.UUID(cid))
+    company = await locked_company(session, uuid.UUID(cid))
     company.settings = {**company.settings, "lock_date": "2026-09-30"}
     await session.commit()
     fees = {"version": 1, "currency": "usd", "transaction_id": "txn_fee_late",
