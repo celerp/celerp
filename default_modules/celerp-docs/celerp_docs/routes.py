@@ -6953,9 +6953,6 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         # charged for its goods, less what earlier returns took.
         payable_credit = to_stored_float(
             settles[0] - to_decimal(row.state.get("returned_credit") or 0) if settles else payable)
-    # What the return takes off beyond what the document still owes was already paid: the
-    # supplier owes it back, on a supplier credit note the return raises. The return's own
-    # entry already moved accounts payable, so the note books nothing.
     credit = await _supplier_credit_for_return(session, company, user.id, entity_id, row.state, key,
                                                payable_credit) if payable_credit else None
     entry = await emit_event(
@@ -12830,6 +12827,19 @@ async def undo_write_off(
             l.pop("adjusted", None)
             l.pop("disposed_entity_id", None)
             l.pop("disposed_qty", None)
+    # Corrections recorded after the disposal belong to this write-off cycle.
+    # Undo them with the original entry in this same transaction, leaving the
+    # restored lots on the books at their current corrected costs.
+    adjustment_ids = (await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+        Projection.entity_id.like(f"je:auto:{entity_id}:cost:%:writeoff_cost:0"),
+    ).order_by(Projection.entity_id))).scalars().all()
+    for adjustment_id in adjustment_ids:
+        derived_id = adjustment_id.removeprefix("je:auto:").removesuffix(":writeoff_cost:0")
+        await auto_je.void_for_list_adjustment(
+            session, company_id=company_id, user_id=user.id,
+            list_id=derived_id, kind="writeoff_cost")
     await auto_je.void_for_list_adjustment(session, company_id=company_id, user_id=user.id,
                                            list_id=entity_id, kind="writeoff", cycle=cycle)
     await _emit_list(session, company_id, entity_id, "list.reopened", {"line_items": lines}, user)

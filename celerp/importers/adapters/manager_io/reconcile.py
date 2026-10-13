@@ -94,6 +94,29 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
             add(CONTROL_MEASURES[account.control], key, base, balance, label, credit)
         if account.control == "bank":
             add(M.BANK_CASH, key, book.currency_code(account.currency), balance, label, credit)
+    # The portion of a control balance not represented by currently open documents
+    # is a legitimate source opening/journal amount. Verify that residual as well as
+    # the control itself: together they prove open-document totals reconcile without
+    # rejecting source books that intentionally carry separate opening adjustments.
+    open_ar = ZERO
+    open_ap = ZERO
+    for key in ledger.documents:
+        doc = book.documents[key]
+        outstanding = ledger.states[key].amount_outstanding
+        if doc.doc_type == "invoice":
+            open_ar += outstanding
+        elif doc.doc_type == "credit_note":
+            open_ar -= outstanding
+        elif doc.doc_type == "bill":
+            open_ap += outstanding
+        elif doc.doc_type == "debit_note":
+            open_ap -= outstanding
+    ar_control = sum((balances.get(a.key, ZERO) for a in book.accounts.values()
+                      if a.control == "receivable"), ZERO)
+    ap_control = sum((balances.get(a.key, ZERO) for a in book.accounts.values()
+                      if a.control == "payable"), ZERO)
+    add(M.AR_DOCUMENT_RESIDUAL, "", base, ar_control - open_ar)
+    add(M.AP_DOCUMENT_RESIDUAL, "", base, ap_control + open_ap)
     for key, contact in sorted(book.contacts.items()):
         customer = contact.source_type == "Customer"
         add(M.AR_BY_CUSTOMER if customer else M.AP_BY_SUPPLIER, key, base, party[key], contact.name, not customer)

@@ -64,6 +64,24 @@ async def test_a_return_reduces_what_the_bill_owes_by_the_payable_it_clears(clie
 
 
 @pytest.mark.asyncio
+async def test_supplier_return_after_partial_bill_payment(client, session, auth):
+    doc, parcel_id = await _received_bill(client, session, auth, finalize_first=True)
+    paid = await client.post(
+        f"/docs/{doc}/payment", headers=auth["headers"],
+        json={"amount": 20.0, "payment_date": "2026-03-02", "bank_account": "1111"},
+    )
+    assert paid.status_code == 200, paid.text
+    assert (await _state(session, auth, doc))["status"] == "partial"
+
+    returned = await _return(client, auth, doc, parcel_id, 4)
+    assert returned.status_code == 200, returned.text
+    assert (await _state(session, auth, doc))["amount_outstanding"] == 64.0
+    assert await _account_net(session, auth["company_id"], "2110") == -64.0
+    assert await _aged(client, auth) == 64.0
+    await assert_settled(client, session, auth)
+
+
+@pytest.mark.asyncio
 async def test_a_payment_cannot_exceed_what_the_bill_owes_after_a_return(client, session, auth):
     doc, parcel_id = await _received_bill(client, session, auth, finalize_first=True)
     r = await _return(client, auth, doc, parcel_id, 4)

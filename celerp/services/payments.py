@@ -291,6 +291,81 @@ async def receive_payment(payload: dict) -> bool:
     return True
 
 
+async def receive_fees(payload: dict) -> bool:
+    """Record actual online-fee transactions on the books holding their gross receipt.
+
+    A fee delivered before its payment is left pending, not silently lost.
+    """
+    from datetime import timezone
+    from celerp.events.engine import find_event_by_idempotency
+    from celerp.models.projections import Projection
+    from celerp.services.company_lock import hold_company
+    from celerp.services import auto_je
+
+    if not isinstance(payload, dict):
+        return False
+    reference = payload.get("reference")
+    doc_id = payload.get("entity_id")
+    origin = payload.get("company_id")
+    fees = payload.get("fees")
+    if (not isinstance(reference, str) or not reference or len(reference) > 255
+            or not isinstance(doc_id, str) or not doc_id or len(doc_id) > 512
+            or not isinstance(origin, str) or not _company(origin)
+            or not isinstance(fees, dict) or fees.get("version") != 1):
+        return False
+    tx = fees.get("transaction_id")
+    currency = fees.get("currency")
+    names = ("processor_minor", "platform_minor", "other_minor", "total_minor")
+    if (not isinstance(tx, str) or not 1 <= len(tx) <= 128
+            or not tx.isascii() or not all(c.isalnum() or c in "_-" for c in tx)
+            or not isinstance(currency, str) or len(currency) != 3
+            or not currency.isascii() or not currency.isalpha()
+            or any(type(fees.get(key)) is not int or abs(fees[key]) > 10**14 for key in names)
+            or sum(fees[key] for key in names[:3]) != fees["total_minor"]):
+        return False
+    try:
+        when = datetime.fromisoformat(str(payload.get("occurred_at")))
+    except (ValueError, TypeError):
+        return False
+    if when.utcoffset() is None:
+        return False
+    home = None
+    async with _own_session() as session:
+        home = await _recorded_on(session, reference)
+        cid, target_doc = home if home is not None else (_company(origin), doc_id)
+        if cid is None or not await hold_company(session, cid):
+            return False
+        row = (await session.execute(select(Projection).where(
+            Projection.company_id == cid,
+            Projection.entity_id == target_doc,
+            Projection.entity_type == "doc",
+        ).with_for_update())).scalar_one_or_none()
+        if row is None:
+            return False
+        payment = next((p for p in (row.state or {}).get("payments", [])
+                        if p.get("reference") == reference and p.get("method") == "stripe"
+                        and p.get("status") != "deleted"), None)
+        if payment is None:
+            return False
+        books = payment.get("books") or {}
+        settled_currency = str(payment.get("currency") or (row.state or {}).get("currency") or "").lower()
+        base_currency = str(books.get("base_currency") or "").lower()
+        if currency.lower() not in (settled_currency, base_currency):
+            return False
+        if not (isinstance(books, dict) and books.get("base_currency")
+                and payment.get("bank_account") and payment.get("conversion_rate")):
+            return False
+        from celerp_docs.routes_payments import _company_owner_id
+        actor = await _company_owner_id(session, cid)
+        await auto_je.create_for_online_fees(
+            session, company_id=cid, user_id=actor, doc_id=target_doc,
+            reference=reference, payment=payment, fees=fees,
+            occurred_at=when.astimezone(timezone.utc),
+        )
+        await session.commit()
+    return True
+
+
 class _Moved(Exception):
     """A person recorded the unmatched payment on an invoice while it was being
     delivered; delivered again, it goes there."""
