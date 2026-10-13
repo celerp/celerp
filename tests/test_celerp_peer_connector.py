@@ -15,8 +15,8 @@ from celerp.connectors import celerp as peer
 
 def test_celerp_is_outbound_only_and_registered():
     connector = get("celerp")
-    assert supported_outbound(connector) == ["products_out", "contacts_out"]
-    assert sync_plan(connector, SyncDirection.OUTBOUND) == ["products_out", "contacts_out"]
+    assert supported_outbound(connector) == ["products_out", "contacts_out", "documents_out"]
+    assert sync_plan(connector, SyncDirection.OUTBOUND) == ["products_out", "contacts_out", "documents_out"]
     assert sync_plan(connector, SyncDirection.INBOUND) == []
 
 
@@ -178,3 +178,48 @@ async def test_shared_peer_delivery_marks_failed_product_without_losing_source_r
     assert result.errors == ["Product delivery incomplete"]
     assert seen[0]["source_revision"] == 9
     assert seen[0]["source_entity_id"] == "item:a"
+
+
+
+@pytest.mark.asyncio
+async def test_draft_document_outbound_filters_private_and_excluded_fields(monkeypatch):
+    from celerp.connectors import sync_runner
+
+    company = str(uuid.uuid4())
+    seen = []
+    async def watermark(company_id, connector, entity):
+        assert (company_id, connector, entity) == (company, "celerp", "documents_out")
+        return None
+    async def docs(company_id, after, since):
+        if after:
+            return []
+        return [
+            ("doc:new", 3, {"doc_type": "invoice", "status": "draft", "ref_id": "DRAFT-12",
+                            "line_items": [{"name": "Service", "quantity": 1, "unit_price": 100}],
+                            "internal_audit": "must-not-be-sent"}),
+            ("doc:skip", 2, {"doc_type": "invoice", "status": "draft",
+                             "accounting_sync_excluded": True}),
+            ("doc:issued", 6, {"doc_type": "invoice", "status": "sent", "ref_id": "INV-7"}),
+        ]
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs == {"public_only": True}
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def post(self, url, **kwargs):
+            assert url == "https://peer.example/company-peers/documents"
+            seen.append(kwargs["json"])
+            return SimpleNamespace(status_code=200,
+                                   json=lambda: {"status": "skipped" if kwargs["json"]["source_entity_id"] == "doc:issued" else "created"})
+    monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
+    monkeypatch.setattr(peer, "_read_documents", docs)
+    monkeypatch.setattr(peer, "RateLimitedClient", Client)
+    result = await peer.CelerpConnector().sync_documents_out(ConnectorContext(
+        company_id=company, store_handle="https://peer.example", access_token="cp1.secret"))
+    assert result.ok and result.created == 1 and result.skipped == 2
+    assert [item["source_entity_id"] for item in seen] == ["doc:new", "doc:issued"]
+    assert "internal_audit" not in seen[0]["data"]
+    assert seen[0]["data"]["status"] == "draft"
+    assert seen[1]["data"]["status"] == "sent"

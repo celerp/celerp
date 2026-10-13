@@ -36,7 +36,7 @@ def _target_url(ctx: ConnectorContext, entity: str = "contacts") -> str:
         valid = False
     if not valid:
         raise ValueError("The receiving Celerp address is invalid")
-    if entity not in ("contacts", "products"):
+    if entity not in ("contacts", "products", "documents"):
         raise ValueError("Unsupported peer entity")
     return raw.rstrip("/") + "/company-peers/" + entity
 
@@ -65,6 +65,10 @@ async def _read_products(company_id: uuid.UUID, after: str, since=None) -> list[
     return await _read_projection_page(company_id, after, since, "item")
 
 
+async def _read_documents(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
+    return await _read_projection_page(company_id, after, since, "doc")
+
+
 
 class CelerpConnector(ConnectorBase):
     name = "celerp"
@@ -85,9 +89,10 @@ class CelerpConnector(ConnectorBase):
         """Shared incremental delivery; entity-specific data never bypasses validation."""
         from celerp.connectors.sync_runner import _last_success_watermark
 
-        if kind not in ("contacts", "products"):
+        if kind not in ("contacts", "products", "documents"):
             raise ValueError("Unsupported peer entity")
-        entity = SyncEntity.CONTACTS if kind == "contacts" else SyncEntity.PRODUCTS
+        entity = {"contacts": SyncEntity.CONTACTS, "products": SyncEntity.PRODUCTS,
+                  "documents": SyncEntity.DOCUMENTS}[kind]
         result = SyncResult(entity=entity, direction=SyncDirection.OUTBOUND,
                             errors=[], attention=[])
         target = _target_url(ctx, kind)
@@ -95,9 +100,10 @@ class CelerpConnector(ConnectorBase):
             raise ValueError("No scoped receiving credential is connected")
         company_id = uuid.UUID(ctx.company_id)
         since = await _last_success_watermark(ctx.company_id, self.name, kind + "_out")
-        fields = _FIELDS if kind == "contacts" else (
-            "name", "sku", "description", "sell_by", "category",
-            "barcode", "retail_price", "wholesale_price")
+        fields = (_FIELDS if kind == "contacts" else
+                  ("name", "sku", "description", "sell_by", "category",
+                   "barcode", "retail_price", "wholesale_price") if kind == "products"
+                  else None)
         after = ""
         async with RateLimitedClient(public_only=True) as client:
             while True:
@@ -105,7 +111,8 @@ class CelerpConnector(ConnectorBase):
                 if not page:
                     break
                 for entity_id, revision, state in page:
-                    label = "Contact" if kind == "contacts" else "Product"
+                    label = {"contacts": "Contact", "products": "Product",
+                             "documents": "Document"}[kind]
                     reason = None
                     if type(revision) is not int or revision < 1:
                         reason = "Contact version unavailable" if kind == "contacts" else "Product state needs review"
@@ -114,8 +121,16 @@ class CelerpConnector(ConnectorBase):
                         continue
                     elif state.get("deleted") or state.get("merged_into"):
                         reason = "Deleted contact needs review" if kind == "contacts" else "Product state needs review"
-                    data = {key: state.get(key) for key in fields}
-                    if reason is None and (not isinstance(data.get("name"), str) or not data["name"].strip()):
+                    if kind == "documents":
+                        from celerp.services.peer_documents import _FIELDS as doc_fields
+                        data = {key: state[key] for key in doc_fields if key in state}
+                        if state.get("accounting_sync_excluded"):
+                            result.skipped += 1
+                            continue
+                        data.setdefault("status", "draft")
+                    else:
+                        data = {key: state.get(key) for key in fields}
+                    if reason is None and kind != "documents" and (not isinstance(data.get("name"), str) or not data["name"].strip()):
                         reason = "Contact name unavailable" if kind == "contacts" else "Product name missing"
                     if reason is not None:
                         result.errors.append(reason)
@@ -153,3 +168,6 @@ class CelerpConnector(ConnectorBase):
 
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
         return await self._send_outbound(ctx, "products", _read_products)
+
+    async def sync_documents_out(self, ctx: ConnectorContext) -> SyncResult:
+        return await self._send_outbound(ctx, "documents", _read_documents)

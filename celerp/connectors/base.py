@@ -36,6 +36,7 @@ class SyncEntity(str, Enum):
     CONTACTS = "contacts"
     INVENTORY = "inventory"
     INVOICES = "invoices"
+    DOCUMENTS = "documents"
 
 
 class ConnectorCategory(str, Enum):
@@ -52,7 +53,7 @@ class SyncFrequency(str, Enum):
 # Entity classification for direction filtering. Inbound entities are pulled from
 # the platform; the *_out entities are pushed from Celerp to the platform.
 _INBOUND_ENTITIES = {"products", "orders", "contacts", "inventory"}
-_OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out", "contacts_out"}
+_OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out", "contacts_out", "documents_out"}
 
 
 def entity_allowed(entity: str, direction: SyncDirection) -> bool:
