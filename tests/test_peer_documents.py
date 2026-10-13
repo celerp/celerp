@@ -16,7 +16,10 @@ def _grant():
 
 class _Session:
     async def get(self, model, identifier):
-        return SimpleNamespace(is_active=True, is_migration_staged=False, settings={})
+        from celerp.models.company import Company
+        if model is Company:
+            return SimpleNamespace(is_active=True, is_migration_staged=False, settings={})
+        return None
 
     async def execute(self, query):
         return SimpleNamespace(first=lambda: SimpleNamespace(id=uuid.uuid4(), role="owner"))
@@ -64,7 +67,7 @@ async def test_draft_document_uses_existing_importer_and_maps_dependencies(monke
 
 
 @pytest.mark.asyncio
-async def test_issued_document_requires_lifecycle_unless_restored_revision_is_unchanged(monkeypatch):
+async def test_issued_document_reuses_importer_and_preserves_revision_replay(monkeypatch):
     source = {"doc_type": "invoice", "status": "final", "ref_id": "INV-3"}
     async def claim(*args, **kwargs):
         return SimpleNamespace(replay=True)
@@ -72,14 +75,24 @@ async def test_issued_document_requires_lifecycle_unless_restored_revision_is_un
     assert await documents.receive_draft_document(
         _Session(), grant=_grant(), source_entity_id="doc:a",
         source_revision=4, data=source) == "skipped"
+    from celerp_docs import import_service
+    imports = []
+    commits = []
     async def changed(*args, **kwargs):
-        return SimpleNamespace(replay=False)
+        return SimpleNamespace(replay=False, target_id="doc:target")
+    async def imported(session, company_id, user, role, settings, records, **kwargs):
+        imports.append(records[0].data.copy())
+        return SimpleNamespace(records=[SimpleNamespace(status="created")])
+    async def commit(*args, **kwargs):
+        commits.append(kwargs["source_revision"])
     monkeypatch.setattr(documents, "claim_peer_revision", changed)
-    with pytest.raises(HTTPException) as rejected:
-        await documents.receive_draft_document(
-            _Session(), grant=_grant(), source_entity_id="doc:a",
-            source_revision=5, data=source)
-    assert rejected.value.status_code == 409
+    monkeypatch.setattr(import_service, "import_doc_records", imported)
+    monkeypatch.setattr(documents, "commit_peer_revision", commit)
+    assert await documents.receive_draft_document(
+        _Session(), grant=_grant(), source_entity_id="doc:a",
+        source_revision=5, data=source) == "created"
+    assert imports[0]["status"] == "final" and commits == [5]
+    assert "payments" not in imports[0]
 
 
 @pytest.mark.asyncio
@@ -116,3 +129,81 @@ async def test_missing_reference_is_not_accepted_as_success(monkeypatch):
             data={"doc_type": "invoice", "status": "draft",
                   "contact_id": "contact:missing"})
     assert err.value.status_code == 409
+
+
+
+@pytest.mark.asyncio
+async def test_issued_bill_uses_canonical_record_now_without_synthesized_payment(monkeypatch):
+    from celerp_docs import import_service
+
+    calls = []
+    async def claim(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target")
+    async def imported(session, company_id, user, role, settings, records, **kwargs):
+        calls.append(records[0].data)
+        return SimpleNamespace(records=[SimpleNamespace(status="created")])
+    async def commit(*args, **kwargs):
+        return None
+    monkeypatch.setattr(documents, "claim_peer_revision", claim)
+    monkeypatch.setattr(import_service, "import_doc_records", imported)
+    monkeypatch.setattr(documents, "commit_peer_revision", commit)
+    payload = {"doc_type": "bill", "status": "partial", "ref_id": "BILL-42",
+               "currency": "USD", "line_items": [{"name": "Service", "quantity": 1,
+                                                   "unit_price": 50}]}
+    assert await documents.receive_draft_document(
+        _Session(), grant=_grant(), source_entity_id="doc:bill",
+        source_revision=8, data=payload) == "created"
+    assert calls[0]["status"] == "final"
+    assert calls[0]["import_treatment"] == "record_now"
+    assert "payments" not in calls[0] and "received_items" not in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_issued_transition_finalizes_existing_draft_using_canonical_service(monkeypatch):
+    from celerp_docs import import_service, routes
+    from celerp.models.projections import Projection
+    class HasDraft(_Session):
+        async def get(self, model, identifier):
+            if model is Projection:
+                return SimpleNamespace(state={"status": "draft"})
+            return await super().get(model, identifier)
+
+    async def claim(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target")
+    async def imported(*args, **kwargs):
+        (record,) = args[5]
+        assert record.data["status"] == "draft"
+        return SimpleNamespace(records=[SimpleNamespace(status="updated")])
+    events = []
+    async def finalize(entity_id, company_id, user, session, *, commit):
+        events.append((entity_id, commit))
+    async def commit(*args, **kwargs):
+        events.append(("revision", kwargs["source_revision"]))
+    monkeypatch.setattr(documents, "claim_peer_revision", claim)
+    monkeypatch.setattr(import_service, "import_doc_records", imported)
+    monkeypatch.setattr(routes, "finalize_document", finalize)
+    monkeypatch.setattr(documents, "commit_peer_revision", commit)
+    assert await documents.receive_draft_document(
+        HasDraft(), grant=_grant(), source_entity_id="doc:invoice",
+        source_revision=3, data={"doc_type": "invoice", "status": "sent",
+                                 "ref_id": "INV-10", "line_items": [
+                                     {"name": "Service", "quantity": 1,
+                                      "unit_price": 25}]}) == "updated"
+    assert events == [("doc:target", False), ("revision", 3)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,kind", [
+    ("void", "invoice"), ("closed", "invoice"), ("final", "credit_note"),
+    ("received", "bill"), ("paid", "memo"),
+])
+async def test_unsafe_lifecycle_stays_deferred(monkeypatch, status, kind):
+    async def claim(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target")
+    monkeypatch.setattr(documents, "claim_peer_revision", claim)
+    with pytest.raises(HTTPException) as e:
+        await documents.receive_draft_document(
+            _Session(), grant=_grant(), source_entity_id="doc:source",
+            source_revision=6,
+            data={"doc_type": kind, "status": status})
+    assert e.value.status_code == 409

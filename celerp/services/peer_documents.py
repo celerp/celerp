@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Apply peer draft documents through the canonical document importer."""
+"""Apply peer documents through the canonical import and lifecycle services."""
 from __future__ import annotations
 
 import hashlib
@@ -46,7 +46,7 @@ async def receive_draft_document(
     """Create or edit a draft without bypassing canonical status and money checks."""
     from celerp_docs.doc_constants import LIFECYCLE_OWNED_FIELDS
     from celerp_docs.import_service import import_doc_records
-    from celerp_docs.routes import DocImportRecord
+    from celerp_docs.routes import DocImportRecord, finalize_document
     from celerp_docs.sequences import require_doc_type
 
     if not isinstance(data, dict):
@@ -68,11 +68,19 @@ async def receive_draft_document(
         data=data)
     if claim.replay:
         return "skipped"
-    if data.get("status", "draft") != "draft":
-        raise HTTPException(409, "Issued documents require a lifecycle operation")
+    source_status = data.get("status", "draft")
+    if source_status not in (
+        "draft", "final", "sent", "partial", "paid", "awaiting_payment",
+    ):
+        raise HTTPException(409, "Document lifecycle requires reconciliation")
+    if source_status != "draft" and data["doc_type"] not in ("invoice", "bill"):
+        raise HTTPException(409, "Unsupported issued-document type")
 
     incoming = dict(data)
-    incoming["status"] = "draft"
+    # Settlement and stock movement belong to separate domain operations.
+    incoming["status"] = "draft" if source_status == "draft" else "final"
+    if source_status != "draft" and data["doc_type"] == "bill":
+        incoming["import_treatment"] = "record_now"
     source_contact = incoming.get("contact_id")
     if source_contact:
         if not isinstance(source_contact, str):
@@ -110,6 +118,16 @@ async def receive_draft_document(
         data=incoming, source="connector",
         idempotency_key=f"peer:doc:{grant.source_company_id}:{key}",
     )
+    from celerp.models.projections import Projection
+    target = await session.get(Projection, (grant.company_id, claim.target_id))
+    target_status = (target.state or {}).get("status") if target is not None else None
+    if source_status == "draft" and target_status not in (None, "draft"):
+        raise HTTPException(409, "Previously issued document requires reconciliation")
+    if source_status != "draft" and target_status == "draft":
+        # Update its draft fields before the canonical finalization posts the books.
+        incoming["status"] = "draft"
+        incoming.pop("import_treatment", None)
+        record.data = incoming
     outcome = await import_doc_records(
         session, grant.company_id, SimpleNamespace(id=member.id), member.role,
         dict(company.settings or {}), [record], upsert=True, post_ledger=True)
@@ -117,6 +135,9 @@ async def receive_draft_document(
         "created", "updated", "skipped",
     ):
         raise HTTPException(409, "Receiving document needs review")
+    if source_status != "draft" and target_status == "draft":
+        await finalize_document(claim.target_id, str(grant.company_id),
+                                SimpleNamespace(id=member.id), session, commit=False)
     await commit_peer_revision(
         session, grant=grant, claim=claim, entity_type="doc",
         source_entity_id=source_entity_id, source_revision=source_revision)
