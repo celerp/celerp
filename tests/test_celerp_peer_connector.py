@@ -15,8 +15,8 @@ from celerp.connectors import celerp as peer
 
 def test_celerp_is_outbound_only_and_registered():
     connector = get("celerp")
-    assert supported_outbound(connector) == ["products_out", "contacts_out", "documents_out"]
-    assert sync_plan(connector, SyncDirection.OUTBOUND) == ["products_out", "contacts_out", "documents_out"]
+    assert supported_outbound(connector) == ["products_out", "contacts_out", "documents_out", "attachments_out"]
+    assert sync_plan(connector, SyncDirection.OUTBOUND) == ["products_out", "contacts_out", "documents_out", "attachments_out"]
     assert sync_plan(connector, SyncDirection.INBOUND) == []
 
 

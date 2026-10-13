@@ -111,7 +111,7 @@ async def test_document_receiver_refuses_unapproved_fields_before_claim(monkeypa
             _Session(), grant=_grant(), source_entity_id="doc:a",
             source_revision=1, data={"doc_type": "invoice", "status": "draft",
                                      field: value})
-    assert rejected.value.status_code == 422
+    assert rejected.value.status_code == (409 if field == "amount_paid" else 422)
 
 
 @pytest.mark.asyncio

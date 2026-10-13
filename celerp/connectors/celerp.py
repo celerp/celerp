@@ -36,7 +36,7 @@ def _target_url(ctx: ConnectorContext, entity: str = "contacts") -> str:
         valid = False
     if not valid:
         raise ValueError("The receiving Celerp address is invalid")
-    if entity not in ("contacts", "products", "documents"):
+    if entity not in ("contacts", "products", "documents", "attachments"):
         raise ValueError("Unsupported peer entity")
     return raw.rstrip("/") + "/company-peers/" + entity
 
@@ -212,3 +212,7 @@ class CelerpConnector(ConnectorBase):
 
     async def sync_documents_out(self, ctx: ConnectorContext) -> SyncResult:
         return await self._send_outbound(ctx, "documents", _read_documents)
+
+    async def sync_attachments_out(self, ctx: ConnectorContext) -> SyncResult:
+        from celerp.services.peer_attachment_sync import sync_document_attachments
+        return await sync_document_attachments(self, ctx)
