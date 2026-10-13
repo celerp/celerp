@@ -73,26 +73,32 @@ def validate_source_payments(data: dict) -> list[tuple[int, dict]]:
         if not parsed.payment_date or parsed.amount <= 0 or parsed.currency.upper() != currency:
             raise HTTPException(409, "Source payment cannot be reconciled")
         out.append((idx, parsed.model_dump(exclude_none=True)))
-    if "amount_paid" in data:
-        try:
-            source_paid = round_money(data["amount_paid"], currency)
-        except (ValueError, ArithmeticError, TypeError) as exc:
-            raise HTTPException(422, "Invalid source paid balance") from exc
-        if source_paid != 0 and not out:
-            raise HTTPException(409, "Paid amount has no source receipt")
     if source_status in ("draft", "void") and out:
         raise HTTPException(409, "Unissued document has source payments")
     if source_status in ("paid", "partial") and not out:
         raise HTTPException(409, "Settled source document has no transferable payments")
-    if source_status in ("paid", "partial"):
-        if "amount_paid" not in data:
+    if "amount_paid" not in data:
+        if out or source_status in ("paid", "partial"):
             raise HTTPException(409, "Source paid balance unavailable")
-        refunded_by_index = {p["index"]: round_money(p.get("refunded") or 0, currency)
-                             for p in incoming}
+    else:
+        try:
+            source_paid = round_money(data["amount_paid"], currency)
+        except (ValueError, ArithmeticError, TypeError) as exc:
+            raise HTTPException(422, "Invalid source paid balance") from exc
+        refunded_by_index = {
+            p["index"]: round_money(p.get("refunded") or 0, currency)
+            for p in incoming
+        }
         total = sum((to_decimal(p["amount"]) - refunded_by_index[i]
                      for i, p in out), Decimal(0))
-        if round_money(total, currency) != round_money(data["amount_paid"], currency):
+        if round_money(total, currency) != source_paid:
             raise HTTPException(409, "Source paid balance requires reconciliation")
+        # A fully refunded receipt may remain in history after the paper returns
+        # to an unpaid state. A positive settled balance may not.
+        if source_status not in ("paid", "partial") and total != 0:
+            raise HTTPException(409, "Source status conflicts with booked receipts")
+        if source_status in ("paid", "partial") and source_paid <= 0:
+            raise HTTPException(409, "Settled status has no outstanding receipt")
     return out
 
 

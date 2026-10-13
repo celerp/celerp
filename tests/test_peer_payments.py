@@ -214,3 +214,27 @@ def test_refund_history_fails_closed_on_unmatched_or_duplicate_reversal(events):
     from celerp.services.peer_payments import validate_source_refunds
     with pytest.raises(HTTPException):
         validate_source_refunds({"currency": "USD", "payment_events": events})
+
+
+
+def test_peer_financial_status_must_match_net_source_receipts():
+    receipt = _source_payment()
+    base = {"currency": "USD", "status": "final", "payments": [receipt],
+            "amount_paid": 200}
+    with pytest.raises(HTTPException, match="status conflicts"):
+        validate_source_payments(base)
+    with pytest.raises(HTTPException, match="paid balance requires reconciliation"):
+        validate_source_payments({**base, "amount_paid": 0})
+    with pytest.raises(HTTPException, match="paid balance unavailable"):
+        validate_source_payments({k: v for k, v in base.items() if k != "amount_paid"})
+    with pytest.raises(HTTPException, match="no outstanding receipt"):
+        validate_source_payments({**base, "status": "partial", "amount_paid": 0,
+                                  "payments": [{**receipt, "refunded": 200}],
+                                  "payment_events": [{"event_id": 1}]})
+
+    fully_refunded = {**base, "amount_paid": 0,
+                      "payments": [{**receipt, "refunded": 200}],
+                      "payment_events": [{"event_id": 1}]}
+    assert validate_source_payments(fully_refunded)[0][1]["amount"] == 200
+    assert validate_source_payments({
+        "currency": "USD", "status": "final", "payments": [], "amount_paid": 0}) == []
