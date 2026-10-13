@@ -659,6 +659,17 @@ async def _get_docs_for_update(session: AsyncSession, company_id, entity_ids) ->
     return {eid: r for eid, r in rows.items() if r.entity_type == "doc"}
 
 
+async def _get_doc_with_link(session: AsyncSession, company_id, entity_id: str,
+                             linked_id: str | None) -> Projection:
+    """Lock related documents in canonical order before changing either one."""
+    if not linked_id or linked_id == entity_id:
+        return await _get_doc(session, company_id, entity_id, for_update=True)
+    rows = await _get_docs_for_update(session, company_id, {entity_id, linked_id})
+    if entity_id not in rows or linked_id not in rows:
+        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
+    return rows[entity_id]
+
+
 def _reject_if_closed(state: dict, action: str) -> None:
     """Guard a mutation against a closed memo. A closed memo is settled paperwork:
     payment reversals (refund / void / delete) recompute its status through their
@@ -2498,7 +2509,13 @@ async def finalize_doc(
 
 @router.post("/{entity_id}/void")
 async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    preview = await _get_doc(session, company_id, entity_id)
+    linked = (str(preview.state.get("original_doc_id") or "")
+              if preview.state.get("doc_type") == "debit_note" and preview.state.get("source_return") else "")
+    row = await _get_doc_with_link(session, company_id, entity_id, linked)
+    if row.state.get("doc_type") == "debit_note" and row.state.get("source_return") and (
+            not linked or row.state.get("original_doc_id") != linked):
+        raise HTTPException(status_code=409, detail=t("documents.err_already_submitted"))
     key, digest = _operation("void", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.voided",
                                    entity_id=entity_id, digest=digest)) is not None:
@@ -3941,7 +3958,17 @@ class VoidPaymentBody(BaseModel):
 
 @router.post("/{entity_id}/void-payment")
 async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    preview = await _get_doc(session, company_id, entity_id)
+    candidate = next((p for p in preview.state.get("payments", [])
+                      if p.get("index") == payload.payment_index), None)
+    linked = (str(candidate.get("source_doc_id") or candidate.get("target_doc_id") or "")
+              if candidate and candidate.get("method") in CREDIT_APPLICATION_METHODS else "")
+    row = await _get_doc_with_link(session, company_id, entity_id, linked)
+    current = next((p for p in row.state.get("payments", [])
+                    if p.get("index") == payload.payment_index), None)
+    if current and current.get("method") in CREDIT_APPLICATION_METHODS and (
+            not linked or (current.get("source_doc_id") or current.get("target_doc_id")) != linked):
+        raise HTTPException(status_code=409, detail=t("documents.err_already_submitted"))
     key, digest = _operation("void-payment", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.voided",
                                    entity_id=entity_id, digest=digest)) is not None:
@@ -4359,7 +4386,7 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
     # Validate same contact
     cn_contact = cn.get("contact_id")
     inv_contact = inv.get("contact_id")
-    if cn_contact and inv_contact and cn_contact != inv_contact:
+    if not cn_contact or not inv_contact or cn_contact != inv_contact:
         raise HTTPException(status_code=422, detail=t(how.contact_mismatch))
 
     cn_currency = str(cn.get("currency") or "USD").upper()
@@ -4381,7 +4408,7 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
     payment_date = payment_date or business_date_of(None, (_cn_company.settings or {}).get("timezone") if _cn_company else None)
     _cn_base_currency = (_cn_company.settings.get("currency", "USD") if _cn_company else "USD")
     _cn_rate = float(_require_doc_rate_http(cn, _cn_base_currency))
-    _require_doc_rate_http(inv, _cn_base_currency)
+    _target_rate = float(_require_doc_rate_http(inv, _cn_base_currency))
 
     # Both sides get allocated indices so their identity fields never
     # collide with skip-allocated payments on either doc.
@@ -4426,7 +4453,7 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
         doc_id=target_doc_id, note_id=entity_id, amount=amount,
         payment_index=payment_idx, payment_date=payment_date,
         base_currency=_cn_base_currency,
-        conversion_rate=_cn_rate,
+        conversion_rate=_cn_rate, target_rate=_target_rate,
     )
     return entry
 
@@ -6975,7 +7002,9 @@ async def _refuse_void_under_supplier_credit(session, company_id, note: dict) ->
     if not live:
         return
     targets = {p["target_doc_id"] for p in live if p.get("method") == "applied" and p.get("target_doc_id")}
-    rows = await _get_docs_for_update(session, company_id, targets) if targets else {}
+    rows = {r.entity_id: r for r in (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(targets),
+        Projection.entity_type == "doc"))).scalars().all()} if targets else {}
     bills = ", ".join(sorted(str(r.state.get("doc_number") or r.state.get("ref_id") or eid)
                              for eid, r in rows.items())) or "--"
     refunds = ", ".join(f"{float(p.get('amount') or 0):,.2f} on {p.get('payment_date') or '--'}"

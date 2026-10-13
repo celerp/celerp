@@ -2493,12 +2493,10 @@ celerpUpdateBulkAlloc();
         # The contact's documents a credit note can be applied to; _payment_section keeps the open ones.
         note_targets: list[dict] = []
         if doc_type in _NOTE_TARGETS and doc.get("contact_id") and doc.get("status") not in ("draft", "void"):
-            for target_type in _NOTE_TARGETS[doc_type]["targets"]:
-                try:
-                    note_targets += (await api.list_docs(token, {
-                        "contact_id": doc["contact_id"], "doc_type": target_type, "limit": 500})).get("items", [])
-                except APIError:
-                    pass
+            try:
+                note_targets = await _credit_target_options(token, doc)
+            except APIError:
+                note_targets = []
         # Fetch notes for doc (first-class entities)
         doc_notes: list[dict] = []
         try:
@@ -2613,6 +2611,25 @@ celerpUpdateBulkAlloc();
             nav_active=_doc_nav_key(doc_type),
             request=request,
         )
+
+    @app.get("/docs/{entity_id}/credit-target-options")
+    async def credit_target_options_route(request: Request, entity_id: str, q: str = ""):
+        token = _token(request)
+        if not token:
+            return Div(t("error.session_expired"), cls="combobox-option combobox-option--empty")
+        try:
+            note = await api.get_doc(token, entity_id)
+            choices = _note_target_options(note, await _credit_target_options(token, note, q))
+        except APIError as exc:
+            return Div(error_message(exc), cls="combobox-option combobox-option--empty")
+        currency = str(note.get("currency") or "USD")
+        remaining = round_money(outstanding_balance(note) or 0, currency)
+        options = [Div(label, cls="combobox-option", data_value=eid,
+                       data_amount=f"{min(owed, remaining):.{currency_dp(currency)}f}")
+                   for eid, label, owed in choices]
+        if not options:
+            options = [Div(t("msg.no_results"), cls="combobox-option combobox-option--empty")]
+        return Div(*options)
 
     @app.get("/docs/{entity_id}/field/{field}/display")
     async def doc_field_display(request: Request, entity_id: str, field: str):
@@ -5606,6 +5623,30 @@ _NOTE_TARGETS: dict[str, dict] = {
 }
 
 
+async def _credit_target_options(token: str, note: dict, q: str = "", limit: int = 30) -> list[dict]:
+    """Find eligible applications through the paginated document-list API, not a capped
+    page of the supplier's history. Search can reach older open documents."""
+    if not note.get("contact_id") or note.get("doc_type") not in _NOTE_TARGETS:
+        return []
+    found: list[dict] = []
+    for kind in _NOTE_TARGETS[note["doc_type"]]["targets"]:
+        offset = 0
+        while len(found) < limit:
+            params = {"contact_id": note["contact_id"], "doc_type": kind,
+                      "status_in": awaiting_status_param(kind), "limit": 50, "offset": offset}
+            if q.strip():
+                params["q"] = q.strip()
+            response = await api.list_docs(token, params)
+            items = response.get("items") or []
+            eligible_ids = {eid for eid, _, _ in _note_target_options(note, items)}
+            found.extend(item for item in items if (item.get("id") or item.get("entity_id")) in eligible_ids
+                         and len(found) < limit)
+            offset += len(items)
+            if not items or offset >= int(response.get("total", offset)):
+                break
+    return found
+
+
 def _note_target_options(doc: dict, candidates: list[dict]) -> list[tuple[str, str, Decimal]]:
     """The documents a credit note can settle: same contact, same currency, issued and
     still owing, as (id, "number - outstanding", outstanding) picker options."""
@@ -5815,7 +5856,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                     Form(
                         Div(
                             Div(Label(t(note["target_label"]), cls="form-label"),
-                                searchable_select("target_doc_id", [(oid, label) for oid, label, _owed in options]),
+                                searchable_select("target_doc_id", [(oid, label) for oid, label, _owed in options],
+                                                  search_url=f"/docs/{entity_id}/credit-target-options"),
                                 cls="form-group"),
                             Div(Label(t("label.amount"), cls="form-label"),
                                 Input(type="number", name="amount", value=money_value,
@@ -5831,6 +5873,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                         cls="form-card",
                         data_fill=_json.dumps(fill),
                         onchange="if(event.target.name==='target_doc_id'){var v=JSON.parse(this.dataset.fill)[event.target.value];"
+                                 "if(!v){var el=Array.from(this.querySelectorAll('.combobox-option')).find("
+                                 "x=>x.dataset.value===event.target.value);v=el&&el.dataset.amount;}"
                                  "if(v)this.elements.amount.value=v;}",
                     ),
                     cls="payment-form-section",

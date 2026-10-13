@@ -1134,7 +1134,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
     )
 
 
-async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float) -> None:
+async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float, target_rate: float) -> None:
     """Create JE for credit note application: AR-to-AR transfer.
 
     The invoice's receivable is credited on the account the invoice recognized it on,
@@ -1144,31 +1144,32 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
 
     payment_index disambiguates repeated applications (void + re-apply) to the same CN-invoice pair.
     base_currency: company base currency for JE conversion.
-    conversion_rate: doc-to-base-currency rate (1.0 for base currency docs).
+    conversion_rate: the note's recognition rate; target_rate: the invoice's rate.
+    The control balances clear at their own rates, with any difference booked as FX.
     """
     await _create_for_note_application(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id, note_id=note_id, amount=amount,
         payment_index=payment_index, payment_date=payment_date, base_currency=base_currency,
-        conversion_rate=conversion_rate, role=R.RECEIVABLE, kind="cn", label="credit note",
+        conversion_rate=conversion_rate, target_rate=target_rate, role=R.RECEIVABLE, kind="cn", label="credit note",
     )
 
 
-async def create_for_dn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float) -> None:
+async def create_for_dn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float, target_rate: float) -> None:
     """Create JE for a supplier credit note applied to a bill: AP-to-AP transfer, the
     bill's payable debited and the note's credited, each on the account it sits on."""
     await _create_for_note_application(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id, note_id=note_id, amount=amount,
         payment_index=payment_index, payment_date=payment_date, base_currency=base_currency,
-        conversion_rate=conversion_rate, role=R.PAYABLE, kind="dn", label="supplier credit note",
+        conversion_rate=conversion_rate, target_rate=target_rate, role=R.PAYABLE, kind="dn", label="supplier credit note",
     )
 
 
-async def _create_for_note_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int, payment_date: str | None, base_currency: str, conversion_rate: float, role, kind: str, label: str) -> None:
+async def _create_for_note_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int, payment_date: str | None, base_currency: str, conversion_rate: float, target_rate: float, role, kind: str, label: str) -> None:
     """One credit note applied to one document: the document's control balance cleared
     against the note's, on the accounts each recognized it on. A receivable is credited
     on the document's side, a payable debited."""
-    rate = checked_exchange_rate(conversion_rate)
-    base_amount = to_base(float(amount), rate, base_currency)
+    note_amount = to_base(float(amount), checked_exchange_rate(conversion_rate), base_currency)
+    target_amount = to_base(float(amount), checked_exchange_rate(target_rate), base_currency)
     app_key = f"{kind}_apply_{note_id}:{payment_index}"
     settings = await current_settings(session, company_id)
     doc_account = await party_origin(session, company_id, doc_id, role, settings)
@@ -1176,9 +1177,9 @@ async def _create_for_note_application(session, *, company_id, user_id, doc_id: 
         doc_account = (await resolve_many(session, company_id, [role]))[role]
     note_account = await party_origin(session, company_id, note_id, role, settings) or doc_account
     if role == R.RECEIVABLE:
-        doc_side, note_side = {"credit": base_amount}, {"debit": base_amount}
+        doc_side, note_side = {"credit": target_amount}, {"debit": note_amount}
     else:
-        doc_side, note_side = {"debit": base_amount}, {"credit": base_amount}
+        doc_side, note_side = {"debit": target_amount}, {"credit": note_amount}
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -1191,10 +1192,10 @@ async def _create_for_note_application(session, *, company_id, user_id, doc_id: 
         idem_posted=je_idempotency_key(doc_id, f"{kind}.applied:{app_key}", "p"),
         memo=f"Auto JE for {label} {note_id} applied to {doc_id}",
         ts=payment_date,
-        entries=[
+        entries=await _with_fx_difference(session, company_id, [
             _origin_line(settings, doc_account, role, **doc_side),
             _origin_line(settings, note_account, role, **note_side),
-        ],
+        ]),
         metadata_={"trigger": f"{kind}.applied", "doc_id": doc_id, f"{kind}_id": note_id},
     )
 

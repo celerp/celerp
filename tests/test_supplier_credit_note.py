@@ -385,3 +385,76 @@ async def test_return_on_paid_bill_names_the_supplier_credit_in_a_notice(client,
     toast = json.loads(resp.headers["HX-Trigger"])["celerpToast"]
     assert note["ref_id"] in toast["message"]
     assert toast.get("persist") is True
+
+
+@pytest.mark.parametrize(
+    ("credit_rate", "bill_rate", "fx_role", "fx_net"),
+    [(1.1, 1.2, "fx_gain", -10.0), (1.2, 1.1, "fx_loss", 10.0)],
+)
+async def test_supplier_credit_application_clears_each_rate_and_reverses_fx(
+    client, session, auth, credit_rate, bill_rate, fx_role, fx_net,
+):
+    """An application settles AP at the note and bill's respective issue rates."""
+    note = await _doc(client, auth, "debit_note", [_charge(100.0)],
+                      currency="EUR", conversion_rate=credit_rate)
+    await _finalize(client, auth, note)
+    bill = await _bill(client, auth, 100.0, currency="EUR", conversion_rate=bill_rate)
+    response = await _apply(client, auth, note, bill, 100.0)
+    assert response.status_code == 200, response.text
+    assert (await _state(session, auth, bill))["amount_outstanding"] == 0.0
+    assert (await _state(session, auth, note))["amount_outstanding"] == 0.0
+    assert round(await _account_net(session, auth["company_id"], AP), 2) == 0.0
+    fx = await _role(session, auth, fx_role)
+    assert round(await _account_net(session, auth["company_id"], fx), 2) == fx_net
+    # Voiding the paired application restores the exact original entries, including FX.
+    credit = await _state(session, auth, note)
+    response = await _post(client, auth, note, "void-payment",
+                           {"payment_index": _index(credit, "applied")})
+    assert response.status_code == 200, response.text
+    assert round(await _account_net(session, auth["company_id"], fx), 2) == 0.0
+    assert round(await _account_net(session, auth["company_id"], AP), 2) == round(
+        100.0 * (credit_rate - bill_rate), 2)
+
+
+async def test_supplier_credit_rejects_unlinked_contact_on_either_side(client, session, auth):
+    note = await _doc(client, auth, "debit_note", [_charge(40.0)])
+    await _finalize(client, auth, note)
+    unlinked = await _bill(client, auth, 50.0, contact_id=None)
+    response = await _apply(client, auth, note, unlinked, 10.0)
+    assert response.status_code == 422, response.text
+    no_supplier_note = await _doc(client, auth, "debit_note", [_charge(20.0)], contact_id=None)
+    await _finalize(client, auth, no_supplier_note)
+    linked = await _bill(client, auth, 50.0)
+    response = await _apply(client, auth, no_supplier_note, linked, 10.0)
+    assert response.status_code == 422, response.text
+    assert (await _state(session, auth, unlinked))["amount_outstanding"] == 50.0
+    assert (await _state(session, auth, linked))["amount_outstanding"] == 50.0
+
+
+async def test_credit_target_lookup_reaches_older_open_bills(monkeypatch):
+    """An eligible document beyond 500 newer, foreign-currency bills is searchable."""
+    from ui.routes import documents
+
+    calls = []
+    async def fake_list_docs(_token, params):
+        calls.append((params["doc_type"], params["offset"]))
+        if params["doc_type"] != "bill":
+            return {"items": [], "total": 0}
+        start = params["offset"]
+        if start >= 501:
+            return {"items": [], "total": 501}
+        end = min(start + params["limit"], 501)
+        rows = [
+            {"id": f"doc:{i}", "doc_type": "bill", "contact_id": "supplier:1",
+             "currency": "USD" if i == 500 else "EUR", "status": "final",
+             "amount_outstanding": 25.0, "ref_id": f"B-{i}"}
+            for i in range(start, end)
+        ]
+        return {"items": rows, "total": 501}
+
+    monkeypatch.setattr(documents.api, "list_docs", fake_list_docs)
+    note = {"doc_type": "debit_note", "contact_id": "supplier:1", "currency": "USD"}
+    candidates = await documents._credit_target_options("token", note)
+    assert [x["id"] for x in candidates] == ["doc:500"]
+    assert ("bill", 500) in calls
+    assert all(kind != "bill" or offset <= 500 for kind, offset in calls)
