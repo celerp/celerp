@@ -24,7 +24,7 @@ _FIELDS = frozenset({
     "line_items", "currency", "conversion_rate", "issue_date", "due_date",
     "payment_terms", "notes", "reference", "doc_taxes", "discount",
     "shipping", "subtotal", "total", "tax", "terms_text", "customer_note",
-    "purchase_kind", "discount_type", "payments", "amount_paid",
+    "purchase_kind", "discount_type", "payments", "amount_paid", "payment_events",
 })
 _SOURCE_ITEM_KEYS = ("item_id", "entity_id")
 
@@ -62,7 +62,10 @@ async def receive_draft_document(
         require_doc_type(data["doc_type"])
     except (ValueError, TypeError):
         raise HTTPException(422, "Unsupported document type") from None
-    from celerp.services.peer_payments import validate_source_payments, apply_source_payments
+    from celerp.services.peer_payments import (
+        validate_source_payments, validate_source_refunds, apply_source_payments,
+    )
+    refunds = validate_source_refunds(data)
     payments = validate_source_payments(data)
     claim = await claim_peer_revision(
         session, grant=grant, entity_type="doc",
@@ -81,6 +84,7 @@ async def receive_draft_document(
     incoming = dict(data)
     incoming.pop("payments", None)
     incoming.pop("amount_paid", None)
+    incoming.pop("payment_events", None)
     # Settlement and stock movement belong to separate domain operations.
     incoming["status"] = "draft" if source_status == "draft" else "final"
     if source_status != "draft" and data["doc_type"] == "bill":
@@ -145,7 +149,9 @@ async def receive_draft_document(
     await apply_source_payments(
         session, grant=grant, source_entity_id=source_entity_id,
         target_doc_id=claim.target_id, payments=payments,
-        actor_id=member.id, source_status=source_status)
+        actor_id=member.id, source_status=source_status, refunds=refunds,
+        expected_refunded={p["index"]: p.get("refunded") or 0
+                           for p in data.get("payments") or []})
     await commit_peer_revision(
         session, grant=grant, claim=claim, entity_type="doc",
         source_entity_id=source_entity_id, source_revision=source_revision)

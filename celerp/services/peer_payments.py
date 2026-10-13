@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import date
 from decimal import Decimal
 
 from fastapi import HTTPException
@@ -28,7 +29,7 @@ def _same_payment(target: dict, source: dict, currency: str) -> bool:
     return (money_equal and target.get("status", "active") == "active"
             and all((target.get(k) or None) == (source.get(k) or None)
                     for k in ("payment_date", "bank_account", "reference", "method", "currency"))
-            and to_decimal(target.get("refunded") or 0) == 0)
+            and to_decimal(target.get("refunded") or 0) >= 0)
 
 
 def validate_source_payments(data: dict) -> list[tuple[int, dict]]:
@@ -53,8 +54,12 @@ def validate_source_payments(data: dict) -> list[tuple[int, dict]]:
             refunded = round_money(payment.get("refunded") or 0, currency)
         except (ValueError, ArithmeticError, TypeError) as exc:
             raise HTTPException(422, "Invalid source refund") from exc
-        if payment.get("status", "active") != "active" or refunded != 0:
+        if payment.get("status", "active") != "active":
             raise HTTPException(409, "Reversed source payments require reconciliation")
+        if refunded < 0 or refunded > round_money(payment.get("amount") or 0, currency):
+            raise HTTPException(409, "Source payment refund is inconsistent")
+        if refunded and not data.get("payment_events"):
+            raise HTTPException(409, "Refund history required for booked payments")
         if not payment.get("bank_account"):
             raise HTTPException(409, "Source payment has no deposit account")
         fields = ("amount", "payment_date", "currency", "method", "reference",
@@ -68,6 +73,13 @@ def validate_source_payments(data: dict) -> list[tuple[int, dict]]:
         if not parsed.payment_date or parsed.amount <= 0 or parsed.currency.upper() != currency:
             raise HTTPException(409, "Source payment cannot be reconciled")
         out.append((idx, parsed.model_dump(exclude_none=True)))
+    if "amount_paid" in data:
+        try:
+            source_paid = round_money(data["amount_paid"], currency)
+        except (ValueError, ArithmeticError, TypeError) as exc:
+            raise HTTPException(422, "Invalid source paid balance") from exc
+        if source_paid != 0 and not out:
+            raise HTTPException(409, "Paid amount has no source receipt")
     if source_status in ("draft", "void") and out:
         raise HTTPException(409, "Unissued document has source payments")
     if source_status in ("paid", "partial") and not out:
@@ -75,15 +87,49 @@ def validate_source_payments(data: dict) -> list[tuple[int, dict]]:
     if source_status in ("paid", "partial"):
         if "amount_paid" not in data:
             raise HTTPException(409, "Source paid balance unavailable")
-        total = sum((to_decimal(p["amount"]) for _, p in out), Decimal(0))
+        refunded_by_index = {p["index"]: round_money(p.get("refunded") or 0, currency)
+                             for p in incoming}
+        total = sum((to_decimal(p["amount"]) - refunded_by_index[i]
+                     for i, p in out), Decimal(0))
         if round_money(total, currency) != round_money(data["amount_paid"], currency):
             raise HTTPException(409, "Source paid balance requires reconciliation")
     return out
 
 
+def validate_source_refunds(data: dict) -> list[dict]:
+    events = data.get("payment_events") or []
+    if not isinstance(events, list) or len(events) > 1000:
+        raise HTTPException(422, "Invalid source refund events")
+    previous_id = 0
+    result = []
+    for record in events:
+        if not isinstance(record, dict) or set(record) != {
+                "event_id", "payment_index", "refund_number", "amount", "refund_date"}:
+            raise HTTPException(422, "Invalid source refund event")
+        eid = record.get("event_id")
+        index = record.get("payment_index")
+        number = record.get("refund_number")
+        if (type(eid) is not int or eid <= previous_id
+                or type(index) is not int or index < 0
+                or type(number) is not int or number < 0):
+            raise HTTPException(422, "Invalid source refund identity")
+        try:
+            day = date.fromisoformat(record["refund_date"])
+            amount = round_money(record["amount"], data.get("currency") or "USD")
+        except (ValueError, TypeError, ArithmeticError) as exc:
+            raise HTTPException(422, "Invalid source refund amount or date") from exc
+        if amount <= 0 or day.isoformat() != record["refund_date"]:
+            raise HTTPException(422, "Invalid source refund amount or date")
+        previous_id = eid
+        result.append(record)
+    return result
+
+
 async def apply_source_payments(
     session, *, grant, source_entity_id: str, target_doc_id: str,
     payments: list[tuple[int, dict]], actor_id, source_status: str,
+    refunds: list[dict] | None = None,
+    expected_refunded: dict[int, object] | None = None,
 ) -> None:
     """Record cash with normal document locks, accounts, rates, journals and replay keys."""
     from celerp_docs.routes import apply_doc_payment
@@ -113,6 +159,24 @@ async def apply_source_payments(
             session, str(grant.company_id), target_doc_id, dict(payload),
             source="connector", actor_id=actor_id, idempotency_key=key,
             request=digest, commit=False)
+    if refunds:
+        from celerp.services.peer_refunds import replay_source_refunds
+        await replay_source_refunds(
+            session, grant=grant, source_doc_id=source_entity_id,
+            target_doc_id=target_doc_id, refunds=refunds, actor_id=actor_id)
+    if expected_refunded:
+        for index, expected in expected_refunded.items():
+            receipt_key = _payment_key(grant.source_company_id, source_entity_id, index)
+            receipt = await find_event_by_idempotency(session, grant.company_id, receipt_key)
+            dest_index = receipt.data["index"] if receipt is not None else index
+            target = await session.get(
+                Projection, (grant.company_id, target_doc_id), populate_existing=True)
+            actual = next((p for p in (target.state or {}).get("payments", [])
+                           if p.get("index") == dest_index), None) if target else None
+            if actual is None or round_money(
+                    actual.get("refunded") or 0, target.state.get("currency") or "USD"
+            ) != round_money(expected, target.state.get("currency") or "USD"):
+                raise HTTPException(409, "Source refund balance requires reconciliation")
     if source_status in ("partial", "paid"):
         row = await session.get(
             Projection, (grant.company_id, target_doc_id), populate_existing=True)

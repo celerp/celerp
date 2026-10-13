@@ -66,7 +66,48 @@ async def _read_products(company_id: uuid.UUID, after: str, since=None) -> list[
 
 
 async def _read_documents(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
-    return await _read_projection_page(company_id, after, since, "doc")
+    """Attach source refund entries, preserving their original order and accounting dates."""
+    from celerp.db import get_session_ctx
+    from celerp.models.ledger import LedgerEntry
+
+    async with get_session_ctx() as session:
+        query = select(Projection.entity_id, Projection.version, Projection.state).where(
+            Projection.company_id == company_id, Projection.entity_type == "doc",
+            Projection.entity_id > after,
+        )
+        if since is not None:
+            query = query.where(Projection.updated_at >= since)
+        rows = (await session.execute(
+            query.order_by(Projection.entity_id).limit(_PAGE))).all()
+        out = [(str(eid), int(version), dict(state or {}))
+               for eid, version, state in rows]
+        with_refunds = [
+            entity_id for entity_id, _, state in out
+            if any((p.get("refund_count") or p.get("refunded"))
+                   for p in (state.get("payments") or []) if isinstance(p, dict))
+        ]
+        if not with_refunds:
+            return out
+        refunds = (await session.execute(select(
+            LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.data,
+        ).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id.in_(with_refunds),
+            LedgerEntry.event_type == "doc.payment.refunded",
+        ).order_by(LedgerEntry.id).limit(1001))).all()
+        if len(refunds) > 1000:
+            raise ValueError("Source refund history exceeds the per-run reconciliation limit")
+        by_doc: dict[str, list[dict]] = {}
+        for event_id, entity_id, data in refunds:
+            by_doc.setdefault(str(entity_id), []).append({
+                "event_id": event_id,
+                "payment_index": (data or {}).get("payment_index"),
+                "refund_number": (data or {}).get("refund_number"),
+                "amount": (data or {}).get("amount"),
+                "refund_date": (data or {}).get("refund_date"),
+            })
+        return [(eid, revision, {**state, "payment_events": by_doc.get(eid, [])})
+                for eid, revision, state in out]
 
 
 
