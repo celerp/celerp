@@ -5532,5 +5532,6 @@
   "debit_note.return_missing": "The return this supplier credit note was raised for cannot be found, so voiding it cannot put the goods back. Void the goods with a stock adjustment instead.",
   "docs.void_under_supplier_credit": "This supplier credit note is still applied to bills {bills} and refunded {refunds}. Unapply it from each bill and void each refund on it first, then void it.",
   "docs.void_under_supplier_credit_note": "This document cannot be voided: supplier credit notes {numbers} are issued against it. Void those supplier credit notes first, then try again.",
-  "docs.revert_under_supplier_credit_note": "This document cannot be reverted to draft: supplier credit notes {numbers} are issued against it. Void those supplier credit notes first, then try again."
+  "docs.revert_under_supplier_credit_note": "This document cannot be reverted to draft: supplier credit notes {numbers} are issued against it. Void those supplier credit notes first, then try again.",
+  "docs.contact_credit_fixed": "This document has an issued or applied credit note. Unapply its credits and void or revert the linked note before changing the contact."
 }

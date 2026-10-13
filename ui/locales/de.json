@@ -5532,5 +5532,6 @@
   "debit_note.return_missing": "Die Rücksendung, für die diese Lieferantengutschrift erstellt wurde, ist nicht auffindbar, daher kann die Stornierung die Waren nicht zurückbuchen. Buchen Sie die Waren stattdessen mit einer Bestandskorrektur.",
   "docs.void_under_supplier_credit": "Diese Lieferantengutschrift ist noch auf die Rechnungen {bills} angewendet und erstattet {refunds}. Heben Sie sie zuerst bei jeder Rechnung auf und stornieren Sie jede Erstattung, dann stornieren Sie sie.",
   "docs.void_under_supplier_credit_note": "Dieses Dokument kann nicht storniert werden: Die Lieferantengutschriften {numbers} sind darauf ausgestellt. Stornieren Sie zuerst diese Lieferantengutschriften und versuchen Sie es dann erneut.",
-  "docs.revert_under_supplier_credit_note": "Dieses Dokument kann nicht in den Entwurf zurückgesetzt werden: Die Lieferantengutschriften {numbers} sind darauf ausgestellt. Stornieren Sie zuerst diese Lieferantengutschriften und versuchen Sie es dann erneut."
+  "docs.revert_under_supplier_credit_note": "Dieses Dokument kann nicht in den Entwurf zurückgesetzt werden: Die Lieferantengutschriften {numbers} sind darauf ausgestellt. Stornieren Sie zuerst diese Lieferantengutschriften und versuchen Sie es dann erneut.",
+  "docs.contact_credit_fixed": "Für dieses Dokument gibt es eine ausgestellte oder angewendete Gutschrift. Heben Sie die Verrechnungen auf und stornieren Sie die verknüpfte Gutschrift oder setzen Sie sie auf Entwurf zurück, bevor Sie den Kontakt ändern."
 }

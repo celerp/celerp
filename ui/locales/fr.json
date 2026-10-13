@@ -5532,5 +5532,6 @@
   "debit_note.return_missing": "Le retour à l'origine de cet avoir fournisseur est introuvable, donc l'annuler ne peut pas remettre les marchandises en stock. Faites plutôt un ajustement de stock.",
   "docs.void_under_supplier_credit": "Cet avoir fournisseur est encore appliqué aux factures {bills} et remboursé {refunds}. Retirez-le de chaque facture et annulez chaque remboursement d'abord, puis annulez-le.",
   "docs.void_under_supplier_credit_note": "Ce document ne peut pas être annulé : les avoirs fournisseur {numbers} sont émis sur lui. Annulez d'abord ces avoirs fournisseur, puis réessayez.",
-  "docs.revert_under_supplier_credit_note": "Ce document ne peut pas repasser en brouillon : les avoirs fournisseur {numbers} sont émis sur lui. Annulez d'abord ces avoirs fournisseur, puis réessayez."
+  "docs.revert_under_supplier_credit_note": "Ce document ne peut pas repasser en brouillon : les avoirs fournisseur {numbers} sont émis sur lui. Annulez d'abord ces avoirs fournisseur, puis réessayez.",
+  "docs.contact_credit_fixed": "Ce document possède un avoir émis ou imputé. Annulez les imputations, puis annulez l’avoir lié ou remettez-le en brouillon avant de modifier le contact."
 }

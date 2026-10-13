@@ -5532,5 +5532,6 @@
   "debit_note.return_missing": "Não foi possível encontrar a devolução que originou esta nota de crédito de fornecedor, por isso anulá-la não pode repor as mercadorias. Use antes um ajuste de stock.",
   "docs.void_under_supplier_credit": "Esta nota de crédito de fornecedor ainda está aplicada às faturas {bills} e reembolsada {refunds}. Retire-a de cada fatura e anule cada reembolso primeiro e depois anule-a.",
   "docs.void_under_supplier_credit_note": "Este documento não pode ser anulado: as notas de crédito de fornecedor {numbers} foram emitidas sobre ele. Anule primeiro essas notas de crédito de fornecedor e tente novamente.",
-  "docs.revert_under_supplier_credit_note": "Este documento não pode voltar a rascunho: as notas de crédito de fornecedor {numbers} foram emitidas sobre ele. Anule primeiro essas notas de crédito de fornecedor e tente novamente."
+  "docs.revert_under_supplier_credit_note": "Este documento não pode voltar a rascunho: as notas de crédito de fornecedor {numbers} foram emitidas sobre ele. Anule primeiro essas notas de crédito de fornecedor e tente novamente.",
+  "docs.contact_credit_fixed": "Este documento tem uma nota de crédito emitida ou aplicada. Anule as aplicações do crédito e anule a nota vinculada ou devolva-a a rascunho antes de alterar o contato."
 }
