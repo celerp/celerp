@@ -4400,7 +4400,10 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
     # Validate same contact
     cn_contact = cn.get("contact_id")
     inv_contact = inv.get("contact_id")
-    if not cn_contact or not inv_contact or cn_contact != inv_contact:
+    # Customer credits without a named contact remain supported for legacy and
+    # general adjustments. Supplier credits require a known, matching supplier.
+    if (how.kind == "dn" and (not cn_contact or not inv_contact or cn_contact != inv_contact)
+            or how.kind == "cn" and cn_contact and inv_contact and cn_contact != inv_contact):
         raise HTTPException(status_code=422, detail=t(how.contact_mismatch))
 
     cn_currency = str(cn.get("currency") or "USD").upper()

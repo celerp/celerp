@@ -277,7 +277,7 @@ async def test_decrypt_source_truncated_during_read_fails_closed(tmp_path, monke
     def changed_stat(path, *args, **kwargs):
         result = real_stat(path, *args, **kwargs)
         if path == encrypted:
-            return SimpleNamespace(st_size=result.st_size + 8)
+            return SimpleNamespace(st_size=result.st_size + 17)
         return result
 
     with monkeypatch.context() as patcher:
