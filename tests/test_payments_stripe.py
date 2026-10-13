@@ -1371,3 +1371,47 @@ async def test_delayed_actual_fees_post_in_open_period_without_backdating(client
     assert await receive_fees({
         "company_id": cid, "entity_id": eid, "reference": "pi_fee_late",
         "fees": fees, "occurred_at": PAID.isoformat()})
+
+
+
+@pytest.mark.asyncio
+async def test_provider_base_currency_fees_are_not_converted_twice(client, session, payments_on):
+    import uuid
+    from decimal import Decimal
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_payment, receive_fees
+
+    tok = await _register(client)
+    created = await client.post("/docs", json={
+        "doc_type": "invoice", "contact_name": "Buyer",
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100}],
+        "total": 100, "currency": "EUR", "conversion_rate": 1.2,
+    }, headers=_h(tok))
+    assert created.status_code == 200, created.text
+    eid = created.json()["id"]
+    issued = await client.post(f"/docs/{eid}/finalize", headers=_h(tok))
+    assert issued.status_code == 200, issued.text
+    cid = _company_id(tok)
+    assert await receive_payment({
+        "company_id": cid, "entity_id": eid, "reference": "pi_fx_fee",
+        "amount_minor": 10000, "currency": "eur", "paid_at": PAID.isoformat(),
+        "context": {**BOOKS, "rate": "1.2"}, "managed": True,
+    })
+    fees = {"version": 1, "transaction_id": "txn_fee_usd_base", "currency": "usd",
+            "total_minor": 320, "processor_minor": 120, "platform_minor": 200,
+            "other_minor": 0}
+    report = {"company_id": cid, "entity_id": eid, "reference": "pi_fx_fee",
+              "fees": fees, "occurred_at": PAID.isoformat()}
+    assert await receive_fees(report)
+    assert await receive_fees(report)
+    from hashlib import sha256
+    token = sha256(b"txn_fee_usd_base").hexdigest()[:24]
+    journal = await session.get(
+        Projection, (uuid.UUID(cid), f"je:auto:{eid}:online-fees:{token}"),
+        populate_existing=True)
+    assert journal and journal.state["status"] == "posted"
+    entries = journal.state["entries"]
+    debit = sum(Decimal(str(e.get("debit") or 0)) for e in entries)
+    credit = sum(Decimal(str(e.get("credit") or 0)) for e in entries)
+    assert debit == credit == Decimal("3.2")
+    assert await receive_fees({**report, "fees": {**fees, "currency": "gbp"}}) is False

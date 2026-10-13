@@ -1038,7 +1038,14 @@ async def create_for_online_fees(
     bank = payment["bank_account"]
     base = payment["books"]["base_currency"].upper()
     await books_currency_still(session, company_id, base)
-    rate = checked_exchange_rate(payment["conversion_rate"])
+    fee_currency = fees["currency"].upper()
+    paid_currency = str(payment.get("currency") or "").upper()
+    if fee_currency == base:
+        rate = _Dec(1)
+    elif fee_currency == paid_currency:
+        rate = checked_exchange_rate(payment["conversion_rate"])
+    else:
+        raise ValueError("Provider fee currency cannot be converted from recorded payment books")
     expense = await resolve(session, company_id, R.GENERAL_EXPENSE)
     parts = (("processor", "processor_minor"), ("platform", "platform_minor"),
              ("other", "other_minor"))

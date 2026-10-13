@@ -347,9 +347,11 @@ async def receive_fees(payload: dict) -> bool:
                         and p.get("status") != "deleted"), None)
         if payment is None:
             return False
-        if str(payment.get("currency") or (row.state or {}).get("currency") or "").lower() != currency.lower():
-            return False
         books = payment.get("books") or {}
+        settled_currency = str(payment.get("currency") or (row.state or {}).get("currency") or "").lower()
+        base_currency = str(books.get("base_currency") or "").lower()
+        if currency.lower() not in (settled_currency, base_currency):
+            return False
         if not (isinstance(books, dict) and books.get("base_currency")
                 and payment.get("bank_account") and payment.get("conversion_rate")):
             return False
