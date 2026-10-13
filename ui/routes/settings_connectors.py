@@ -878,6 +878,8 @@ def _connector_card(
             if config is not None else None
         )
         action_area = Div(
+            *([P(t("accountant_access.connector_source_help", lang), cls="settings-hint")]
+              if cid == "celerp" else []),
             Form(
                 Input(name="store_url", placeholder="https://accountant.example.com" if cid == "celerp" else "https://mystore.com",
                       cls="input input--sm", style="flex:1;min-width:200px;"),
@@ -1122,6 +1124,7 @@ def setup_routes(app):
                   cls="btn btn--secondary btn--sm"),
             ),
             P(t("accountant_access.description", lang)),
+            P(t("accountant_access.direction_warning", lang), cls="settings-hint"),
             P(t("accountant_access.source_help", lang)),
             Form(
                 Label(t("accountant_access.client_id", lang)),
