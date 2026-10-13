@@ -239,6 +239,31 @@ async def test_legacy_import_api_install_owner_only(real_client, real_engine, tm
     run.assert_not_called()
 
 
+async def test_export_disk_full_shows_plain_message(real_client, real_engine, tmp_path, monkeypatch):
+    """A disk that fills while the export archive is written refuses with a plain message
+    and leaves no half-written archive behind."""
+    import errno
+    import tempfile
+    from celerp.services import backup
+
+    def dump(url, dest=None, **_):
+        if dest is not None:
+            dest.write_bytes(b"dump")
+        return b"dump"
+
+    def full(*_a, **_k):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(backup, "dump_database", dump)
+    monkeypatch.setattr(tarfile.TarFile, "addfile", full)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    _, _, tok = await _install_owner(real_engine)
+    r = await real_client.get("/backup/export", headers=auth(tok))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == t("error.backup_disk_full", "en")
+    assert not list(tmp_path.glob("*.celerp-backup"))
+
+
 async def test_system_recovery_continue_install_owner_only(ui, real_client, real_engine, tmp_path, monkeypatch):
     """Continuing a recovery, by import, cloud restore or restoring without a safety copy, is
     refused for anyone but the installation owner."""
@@ -385,7 +410,7 @@ async def test_cloud_snapshot_relay_payload_unchanged(tmp_path, monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", _client)
     monkeypatch.setattr(backup_repo, "_relay", _relay)
-    monkeypatch.setattr(backup_repo, "dump_database", lambda url: dump)
+    monkeypatch.setattr(backup_repo, "dump_database", lambda url, dest: dest.write_bytes(dump))
     monkeypatch.setattr("celerp.services.backup_export.archive_meta", _meta)
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "backup_encryption_key", _key())

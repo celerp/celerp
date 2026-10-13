@@ -228,6 +228,7 @@ _DOC_TYPE_LABEL_KEYS = {
     "purchase_order": "settings.doc_type_purchase_order",
     "quotation": "settings_sales.doc_type_quotation",
     "credit_note": "settings.doc_type_credit_note",
+    "debit_note": "settings.doc_type_debit_note",
     "bill": "settings.doc_type_bill",
     "memo": "th.memo",
     "shipping_doc": "settings_sales.doc_type_shipping_doc",

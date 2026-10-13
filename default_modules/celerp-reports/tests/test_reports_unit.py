@@ -204,3 +204,65 @@ def test_aging_drilldown_unlinked_contact_no_contact_id():
     html = str(_aging_view(data, "AR"))
     assert "contact_id=unlinked" not in html
     assert "doc_type=invoice" in html
+
+
+# ---------------------------------------------------------------------------
+# Open credits in aging: an open credit note lowers what its customer owes
+# ---------------------------------------------------------------------------
+
+def _days_ago(n: int) -> str:
+    return (date.today() - timedelta(days=n)).isoformat()
+
+
+def _invoice_state(total: float, outstanding: float, status: str, due_days_ago: int, contact: str = "c1") -> dict:
+    return {"doc_type": "invoice", "status": status, "contact_id": contact, "contact_name": "Customer",
+            "total": total, "amount_outstanding": outstanding, "due_date": _days_ago(due_days_ago),
+            "issue_date": _days_ago(due_days_ago + 30)}
+
+
+def _credit_state(total: float, outstanding: float, status: str, issued_days_ago: int, contact: str = "c1", **extra) -> dict:
+    return {"doc_type": "credit_note", "status": status, "contact_id": contact, "contact_name": "Customer",
+            "total": total, "amount_outstanding": outstanding, "issue_date": _days_ago(issued_days_ago),
+            "due_date": _days_ago(400), **extra}
+
+
+async def _ar(rows) -> dict:
+    return await reports.ar_aging(company_id=uuid.uuid4(), session=_FakeSession(
+        [_proj(f"doc:{i}", "doc", s) for i, s in enumerate(rows)]))
+
+
+@pytest.mark.asyncio
+async def test_ar_aging_open_credit_note_is_negative_in_its_issue_date_bucket():
+    # Issued 45 days ago: the credit sits in 31-60 (by issue date, not its due date).
+    ar = await _ar([_credit_state(50.0, 50.0, "final", 45)])
+    (line,) = ar["lines"]
+    assert line["customer_id"] == "c1"
+    assert line["d60"] == -50.0 and line["total"] == -50.0
+    assert line["d90plus"] == 0.0
+    assert ar["buckets"]["31-60"] == -50.0
+
+
+@pytest.mark.asyncio
+async def test_ar_aging_credit_note_partly_applied_shows_remainder():
+    ar = await _ar([_invoice_state(100.0, 100.0, "final", 10),
+                    _credit_state(100.0, 40.0, "partial", 0, credited=60.0)])
+    (line,) = ar["lines"]
+    assert line["d30"] == 100.0 and line["current"] == -40.0
+    assert line["total"] == 60.0
+
+
+@pytest.mark.asyncio
+async def test_ar_aging_credit_note_from_invoice_settles_and_leaves_remainder():
+    # A 100 credit note against a 70 invoice: the invoice is settled, 30 stays on the note.
+    ar = await _ar([{**_invoice_state(70.0, 0.0, "paid", 5), "credited": 70.0},
+                    _credit_state(100.0, 30.0, "partial", 0, credited=70.0)])
+    (line,) = ar["lines"]
+    assert line["total"] == -30.0 and line["current"] == -30.0
+
+
+@pytest.mark.asyncio
+async def test_ar_aging_excludes_closed_and_void_credit_notes():
+    ar = await _ar([_credit_state(50.0, 0.0, "paid", 3), _credit_state(50.0, 50.0, "void", 3),
+                    _credit_state(50.0, 50.0, "draft", 3), _invoice_state(20.0, 20.0, "final", -5)])
+    (line,) = ar["lines"]
+    assert line["total"] == 20.0 and line["current"] == 20.0

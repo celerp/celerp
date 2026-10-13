@@ -535,3 +535,18 @@ def test_unscoped_range_filtering_unchanged():
     assert query_match_reasons(_item(name="Bolt", sku="B7", quantity=7), "5-10") == [("quantity", "7")]
     assert query_match_reasons(_item(name="Bolt", sku="B20", quantity=20), "5-10") is None
     assert query_match_reasons(_item(name="Bolt", sku="10-5", quantity=20), "10-5") == [("sku", "10-5")]
+
+
+def test_is_core_item_key_covers_every_derived_key_flatten_item_adds():
+    """flatten_item adds derived keys to every item. Each one that is not an attribute
+    value must be a core key, or search and facets would treat it as user data."""
+    from celerp_inventory.projections import is_core_item_key
+    from celerp_inventory.routes import flatten_item
+    state = {"sku": "S-1", "name": "Ring", "quantity": 2, "cost_total": 10,
+             "files": [{"id": "f1", "mime": "image/png", "type": "image"}],
+             "attributes": {"grade": "A"}}
+    flat = flatten_item(state, "item:1")
+    added = set(flat) - set(state) - set(state["attributes"])
+    numeric = {"qty_each", "cost_price"}
+    assert added, flat
+    assert [k for k in added - numeric if not is_core_item_key(k)] == []

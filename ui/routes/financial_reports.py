@@ -22,7 +22,9 @@ from starlette.responses import HTMLResponse, RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
-from ui.components.table import empty_state_cta, fmt_money, searchable_select
+from ui.components.table import (
+    display_enum, empty_mark, empty_state_cta, fmt_money, format_value, searchable_select,
+)
 from ui.components.journal import (
     journal_bulk_toolbar, journal_csv_rows, journal_export_name, journal_filter_bar,
     journal_filter_qs, journal_filter_words, journal_filters, journal_print_subtitle,
@@ -51,6 +53,7 @@ _FINANCIAL_CARDS: list[tuple[str, str]] = [
     ("journal", "rpt.journal_desc"),
     ("extended-journal", "rpt.extended_journal_desc"),
     ("statement", "rpt.statement_desc"),
+    ("opening-tie-out", "rpt.opening_tie_out_desc"),
 ]
 
 # Report key -> (page path, print path, csv path, title key). One table so a report's
@@ -75,6 +78,8 @@ REPORTS: dict[str, tuple[str, str, str, str]] = {
                          "/reports/export/extended-journal/csv", "acct.tab_extended_journal"),
     "statement": ("/reports/statement", "/reports/print/statement",
                   "/reports/export/statement/csv", "acct.soa_title"),
+    "opening-tie-out": ("/reports/opening-tie-out", "/reports/print/opening-tie-out",
+                        "/reports/export/opening-tie-out/csv", "rpt.opening_tie_out"),
 }
 
 # Old /accounting?tab=<name> -> the report key it became. Bookmarks and emailed
@@ -126,7 +131,7 @@ def report_nav(current_key: str, d_from: str, d_to: str) -> FT:
     trial balance raises a question the ledger answers, and the answer belongs two
     clicks away, not back through the index. The page being read names itself
     without linking, because a link to where the reader already is has nothing to
-    do; pass "" for `current_key` on a page that is not one of the eight.
+    do; pass "" for `current_key` on a page that is not one of them.
 
     The order is the order the /reports index lists them in, read from the same
     list, so the two never drift apart. It is page furniture rather than part of a
@@ -284,7 +289,8 @@ def _option_notice(message: str) -> str:
 
 
 # Reports a ledger drilldown can arrive from, via the "src" query param.
-LEDGER_ORIGINS = frozenset({"pnl", "balance-sheet", "trial-balance", "general-ledger"})
+LEDGER_ORIGINS = frozenset({"pnl", "balance-sheet", "trial-balance", "general-ledger",
+                            "opening-tie-out"})
 
 
 def _ledger_context(request: Request, fy: str) -> tuple[str, str, str, str]:
@@ -352,6 +358,90 @@ def _trial_balance_table(tb: dict, currency: str | None = None, date_from: str =
 def _trial_balance_summary(tb: dict, currency: str | None = None) -> FT:
     return totals_chips(tb.get("total_debit", 0), tb.get("total_credit", 0),
                         tb.get("balanced", True), currency)
+
+
+def _tie_out_result(check: dict) -> FT:
+    if check.get("matches"):
+        return Span(t("opening_tie_out.matches"), cls="badge badge--active")
+    return Span(t("opening_tie_out.differs"), cls="badge badge--alert")
+
+
+def _tie_out_view(data: dict, currency: str | None = None) -> FT:
+    """The opening balance check: what the ledger holds on the opening balance date
+    against what the documents imported as already in it say it should. Read only, by
+    design: a difference is for the accountant to explain or correct with a journal
+    entry, so nothing here edits the books."""
+    as_of = data.get("as_of")
+    if not as_of:
+        return P(A(t("opening_tie_out.no_date"), href="/settings/general?tab=company",
+                   cls="drilldown-link"), cls="empty-state")
+    checks = data.get("checks", [])
+    num = "cell--number"
+    head = Thead(Tr(Th(t("opening_tie_out.col_check")), Th(t("opening_tie_out.col_as_of")),
+                    Th(t("opening_tie_out.col_ledger"), cls=num),
+                    Th(t("opening_tie_out.col_expected"), cls=num),
+                    Th(t("opening_tie_out.col_difference"), cls=num), Th(t("th.result"))))
+    rows = []
+    for c in checks:
+        rows.append(Tr(
+            Td(A(t(c["label_key"]), href=f"#tie-out-{c['key']}", cls="drilldown-link")), Td(as_of),
+            Td(fmt_money(c["ledger"], currency), cls=num), Td(fmt_money(c["expected"], currency), cls=num),
+            Td(fmt_money(c["difference"], currency), cls=num), Td(_tie_out_result(c)),
+        ))
+        for a in c.get("by_account") or []:
+            rows.append(Tr(
+                Td(A(a["account"], href=_drill_ledger_href(a["account"], "opening-tie-out", "", as_of),
+                     cls="drilldown-link"), cls="cell--mono"), Td(as_of),
+                Td(fmt_money(a["ledger"], currency), cls=num), Td(fmt_money(a["expected"], currency), cls=num),
+                Td(fmt_money(a["difference"], currency), cls=num), Td(empty_mark()),
+            ))
+    summary = Table(head, Tbody(*rows), cls="data-table")
+
+    def _documents(c: dict) -> FT:
+        docs = c.get("documents", [])
+        if not docs:
+            body = P(t("opening_tie_out.no_documents"), cls="empty-state")
+        else:
+            body = Table(
+                Thead(Tr(Th(t("th.date")), Th(t("th.doc")), Th(t("th.type")), Th(t("th.status")),
+                         Th(t("th.currency")), Th(t("label.amount"), cls=num),
+                         Th(t("opening_tie_out.col_base_amount", currency=currency or ""), cls=num))),
+                Tbody(*[Tr(
+                    Td(d.get("date") or empty_mark()),
+                    Td(A(d.get("number") or d["doc_id"], href=f"/docs/{d['doc_id']}", cls="drilldown-link")),
+                    Td(display_enum(d.get("doc_type"), "doc_type")),
+                    Td(format_value(d.get("status"), "badge", domain="doc_status")),
+                    Td(d.get("currency") or empty_mark()),
+                    Td(empty_mark() if d.get("amount") is None else fmt_money(d["amount"], d.get("currency")),
+                       cls=num),
+                    Td(fmt_money(d["base_amount"], currency), cls=num),
+                ) for d in docs]),
+                cls="data-table",
+            )
+        return Div(H3(t(c["label_key"])), body, id=f"tie-out-{c['key']}", cls="mt-lg")
+
+    return Div(summary, P(t("opening_tie_out.control_note"), cls="cell--muted mt-sm"),
+               *[_documents(c) for c in checks])
+
+
+def _tie_out_csv_rows(data: dict, currency: str | None) -> list[list]:
+    rows = [["Check", "Account", "As of", "Opening balances", "Imported documents", "Difference", "Result"]]
+    as_of = data.get("as_of") or ""
+    for c in data.get("checks", []):
+        rows.append([c["key"], "", as_of, csv_amount(c["ledger"], currency), csv_amount(c["expected"], currency),
+                     csv_amount(c["difference"], currency), "matches" if c["matches"] else "differs"])
+        rows += [[c["key"], a["account"], as_of, csv_amount(a["ledger"], currency),
+                  csv_amount(a["expected"], currency), csv_amount(a["difference"], currency), ""]
+                 for a in c.get("by_account") or []]
+    rows.append([])
+    rows.append(["Check", "Date", "Document", "Type", "Status", "Currency", "Amount", "Base amount"])
+    for c in data.get("checks", []):
+        rows += [[c["key"], d.get("date") or "", d.get("number") or "", d.get("doc_type") or "",
+                  d.get("status") or "", d.get("currency") or "",
+                  "" if d.get("amount") is None else csv_amount(d["amount"], d.get("currency")),
+                  csv_amount(d["base_amount"], currency)]
+                 for d in c.get("documents", [])]
+    return rows
 
 
 def _ledger_rows(data: dict) -> list[dict]:
@@ -606,6 +696,7 @@ def _unexpanded_note(data: dict) -> FT | None:
 _SOA_KIND_KEYS = {
     "invoice": "label.invoice",
     "credit_note": "doc.credit_note",
+    "debit_note": "doc.debit_note",
     "bill": "label.vendor_bill",
     "purchase_order": "label.purchase_order",
     "payment": "acct.soa_kind_payment",
@@ -911,6 +1002,27 @@ def setup_routes(app):
             content = _error_content(e)
         return await _page(request, page_header(t("acct.tab_trial_balance", get_lang(request))),
                            content, title=page_title("acct.tab_trial_balance"))
+
+    @app.get("/reports/opening-tie-out")
+    async def opening_tie_out_report(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            company = await api.get_company(token)
+            data = await api.get_opening_tie_out(token)
+            as_of = data.get("as_of") or ""
+            content = Div(
+                report_nav("opening-tie-out", "", as_of),
+                Div(_bars("opening-tie-out", {}), cls="flex-row mt-md mb-md") if as_of else "",
+                _tie_out_view(data, company.get("currency")),
+            )
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            content = _error_content(e)
+        return await _page(request, page_header(t("rpt.opening_tie_out", get_lang(request))),
+                           content, title=page_title("rpt.opening_tie_out"))
 
     @app.get("/reports/general-ledger")
     async def general_ledger_report(request: Request):
@@ -1276,6 +1388,21 @@ def setup_routes(app):
         return print_shell(company, t("acct.tab_trial_balance"),
                            period_subtitle(d_from, d_to), body)
 
+    @app.get("/reports/print/opening-tie-out")
+    async def opening_tie_out_print(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            company = await api.get_company(token)
+            data = await api.get_opening_tie_out(token)
+        except APIError as e:
+            return plain_error_response(e)
+        as_of = data.get("as_of") or ""
+        return print_shell(company, t("rpt.opening_tie_out"),
+                           f"{t('opening_tie_out.col_as_of')}: {as_of}" if as_of else "",
+                           _tie_out_view(data, company.get("currency")))
+
     @app.get("/reports/print/general-ledger")
     async def general_ledger_print(request: Request):
         token = _token(request)
@@ -1368,6 +1495,19 @@ def setup_routes(app):
         rows.append(["", "TOTAL", "", csv_amount(data.get("total_debit", 0), currency),
                      csv_amount(data.get("total_credit", 0), currency), ""])
         return csv_response(rows, f"trial_balance_{fname_date(d_from)}_{fname_date(d_to)}.csv")
+
+    @app.get("/reports/export/opening-tie-out/csv")
+    async def opening_tie_out_csv(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            currency = (await api.get_company(token)).get("currency")
+            data = await api.get_opening_tie_out(token)
+        except APIError as e:
+            return plain_error_response(e)
+        return csv_response(_tie_out_csv_rows(data, currency),
+                            f"opening_balance_check_{fname_date(data.get('as_of') or '')}.csv")
 
     @app.get("/reports/export/general-ledger/csv")
     async def general_ledger_csv(request: Request):

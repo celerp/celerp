@@ -329,3 +329,45 @@ def test_dashboard_routes_load_before_the_inventory_module():
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                        cwd=Path(__file__).resolve().parents[1], timeout=60)
     assert r.returncode == 0, r.stderr[-2000:]
+
+
+# ── Finish-setup banner close ──────────────────────────────────────────────────
+
+async def test_finish_setup_banner_has_a_close_button(ui):
+    html = await _dashboard(ui, vertical="")
+    assert 'hx-post="/dashboard/finish-setup/dismiss"' in html
+    assert 'hx-target="#finish-setup-banner"' in html
+
+
+async def test_dismissing_finish_setup_saves_the_flag_and_hides_the_banner(ui):
+    with _Dash(vertical="") as dash:
+        r = await ui.post("/dashboard/finish-setup/dismiss", cookies=authed_cookies(role="owner"))
+    assert r.status_code == 200
+    dash.patch_company.assert_awaited_once()
+    assert dash.patch_company.await_args.args[1] == {"finish_setup_dismissed": True}
+    assert 'id="finish-setup-banner"' not in r.text
+    # Saved per company: the company that closed it no longer shows it, another still does.
+    assert "Finish setup" not in await _dashboard(ui, vertical="", settings={"finish_setup_dismissed": True})
+    assert "Finish setup" in await _dashboard(ui, vertical="", company_id="c2")
+
+
+async def test_finish_setup_dismiss_refused_for_non_owner(ui):
+    with _Dash(vertical="") as dash:
+        r = await ui.post("/dashboard/finish-setup/dismiss", cookies=authed_cookies(role="admin"))
+    assert r.status_code == 200
+    dash.patch_company.assert_not_awaited()
+    assert 'class="error-banner"' in r.text and 'id="finish-setup-banner"' in r.text
+
+
+async def test_finish_setup_dismiss_api_failure_keeps_the_banner(ui):
+    from ui.api_client import APIError
+    with _Dash(vertical="") as dash:
+        dash.patch_company.side_effect = APIError(500, "Could not save")
+        r = await ui.post("/dashboard/finish-setup/dismiss", cookies=authed_cookies(role="owner"))
+    assert 'class="error-banner"' in r.text and 'id="finish-setup-banner"' in r.text
+    assert "Could not save" in r.text
+
+
+async def test_finish_setup_dismiss_needs_a_session(ui):
+    r = await ui.post("/dashboard/finish-setup/dismiss")
+    assert r.status_code == 302 and r.headers["location"] == "/login"

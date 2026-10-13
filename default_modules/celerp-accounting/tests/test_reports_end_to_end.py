@@ -102,6 +102,22 @@ async def _seed(client) -> tuple[str, str]:
         "idempotency_token": uuid.uuid4().hex})
     assert r.status_code == 200, r.text
 
+    # An invoice imported as already in the opening balances posts nothing, so it
+    # changes no other report; it gives the opening balance check a document to show.
+    r = await client.patch("/companies/me/books", headers=_h(tok),
+                           json={"opening_balance_date": "2025-12-31"})
+    assert r.status_code == 200, r.text
+    r = await client.post("/docs/import", headers=_h(tok), json={
+        "entity_id": f"doc:{uuid.uuid4()}", "event_type": "doc.created", "source": "test",
+        "idempotency_key": uuid.uuid4().hex,
+        "data": {"doc_type": "invoice", "doc_number": "OB-1", "contact_id": contact,
+                 "status": "final", "issue_date": "2025-11-20", "currency": "THB",
+                 "total": 50.0, "amount_outstanding": 50.0, "amount_paid": 0.0,
+                 "line_items": [{"name": "Widget", "quantity": 1, "unit_price": 50.0,
+                                 "line_total": 50.0}],
+                 "import_treatment": "opening_balances"}})
+    assert r.status_code == 200, r.text
+
     return tok, contact
 
 

@@ -525,7 +525,7 @@ class _Recovery:
 
         self.started, self.release = threading.Event(), threading.Event()
         self.seen: list[list[str]] = []
-        dump.write_bytes(dump_database(url))
+        dump_database(url, dump)
 
         def runner(command, **kwargs):
             if Path(command[0]).stem != "psql":

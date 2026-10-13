@@ -82,3 +82,12 @@ def test_split_child_does_not_inherit_hold_stamp():
     child = lot_fields({"sku": "P", "status": "reserved", "status_doc_id": "doc:INV-1",
                         "status_doc_number": "INV-1", "status_line_entity_id": LINE})
     assert not {"status_doc_id", "status_doc_number", "status_line_entity_id"} & set(child)
+
+
+def test_written_off_item_stamps_list_number():
+    """Red statement: the write-off stamped only the list id, so the badge had no number."""
+    st = _apply({"status": "available", "quantity": 1}, "item.written_off",
+                {"account": "6950", "qty": 1, "unit_cost": 0, "cost_total": 0,
+                 "source_list_id": "list:wo1", "doc_number": "WO-0007"})
+    assert st["status"] == "disposed"
+    assert (st["status_doc_id"], st["status_doc_number"]) == ("list:wo1", "WO-0007")

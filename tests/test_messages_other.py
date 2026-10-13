@@ -169,20 +169,20 @@ def _fail(exc):
     (FileNotFoundError(), "error.backup_tool_missing"),
     (subprocess.TimeoutExpired("pg_dump", 300), "error.backup_timed_out"),
 ])
-def test_backup_failures_say_what_to_do(exc, key, monkeypatch):
+def test_backup_failures_say_what_to_do(exc, key, monkeypatch, tmp_path):
     from celerp.services import backup
     monkeypatch.setattr(backup, "_find_pg_tool", lambda n: n)
     with pytest.raises(RuntimeError) as ei:
-        backup.dump_database("postgresql://x/y", runner=_fail(exc))
+        backup.dump_database("postgresql://x/y", tmp_path / "x.dump", runner=_fail(exc))
     assert str(ei.value) == t(key, "en")
 
 
-def test_failed_backup_keeps_details_for_support(monkeypatch):
+def test_failed_backup_keeps_details_for_support(monkeypatch, tmp_path):
     from celerp.services import backup
     monkeypatch.setattr(backup, "_find_pg_tool", lambda n: n)
     done = subprocess.CompletedProcess([], 1, b"", b"disk full")
     with pytest.raises(RuntimeError) as ei:
-        backup.dump_database("postgresql://x/y", runner=lambda *a, **k: done)
+        backup.dump_database("postgresql://x/y", tmp_path / "x.dump", runner=lambda *a, **k: done)
     assert str(ei.value) == t("error.backup_failed_detail", "en", detail="disk full")
 
 

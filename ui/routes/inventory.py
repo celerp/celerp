@@ -28,7 +28,7 @@ from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
-from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit
+from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
 from ui.security import not_permitted_redirect
@@ -43,7 +43,7 @@ from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBAC
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from celerp.importers.tabular import known_headers
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
-from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, refusal_text
+from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, refusal_text, doc_type_label
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
 from celerp_inventory.services import (
@@ -1100,6 +1100,8 @@ def _inventory_table(
         ),
         hidden_fields=set(_PAIRED_TABLE.values()),
     )
+    if str(p.get("q") or "").strip():
+        table_args["match_labels"] = {f["key"]: field_label(f) for f in eff_schema}
     return eff_schema, visible_cols, table_args
 
 
@@ -3142,7 +3144,7 @@ function celerpPrintLabel(entityId, templateId) {
             # sold value included), falling back to the item itself outside any scope.
             scoped = await api.list_items(token, {
                 "skus": item.get("sku", ""), "limit": 50,
-                **{k: p[k] for k in ("status", "on_memo_to", "consigned_from") if p.get(k)}})
+                **{k: p[k] for k in ("q", "status", "on_memo_to", "consigned_from") if p.get(k)}})
         except APIError as e:
             return Response(str(e.detail), status_code=500)
         row = next((r for r in scoped.get("items", []) if r.get("id") == entity_id), None) \
@@ -5730,12 +5732,12 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
         _status_def = next(f for f in schema if f["key"] == "status")
         def _status_renderer(entity_id: str, row: dict, _f=_status_def) -> FT:
             doc_id = str(row.get("status_doc_id") or "")
-            doc_num = str(row.get("status_doc_number") or "") or doc_id.removeprefix("doc:")
+            doc_num = str(row.get("status_doc_number") or "")
             return display_cell(
                 entity_id=entity_id, field="status", value=row.get("status", ""),
                 cell_type=_f.get("type", "status"), options=_f.get("options"),
                 editable=_f.get("editable", True),
-                status_doc=(doc_id, doc_num) if doc_id else None, domain="item_status",
+                status_doc=(doc_id, doc_num) if doc_id and doc_num else None, domain="item_status",
             )
         renderers["status"] = _status_renderer
 
@@ -6018,12 +6020,13 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     var allThs = Array.from(thead_tr.querySelectorAll('th[data-key]'));
     table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
       var cells = Array.from(tr.children);
-      var checkboxTd = cells[0];
-      var actionsTd = cells[cells.length - 1];
+      var checkboxTd = tr.querySelector('.col-checkbox');
+      var matchTd = tr.querySelector('.col-match');
+      var actionsTd = tr.querySelector('.col-actions');
       var dataCells = allThs.map(function(th) {{
         return cells.find(function(td) {{ return td.dataset.col === th.dataset.key; }});
       }}).filter(Boolean);
-      [checkboxTd].concat(dataCells).concat([actionsTd]).forEach(function(td) {{
+      [checkboxTd, matchTd].concat(dataCells).concat([actionsTd]).forEach(function(td) {{
         if (td) tr.appendChild(td);
       }});
     }});
@@ -7179,14 +7182,10 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
     runs = hub.get("runs", []) or []
     flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
 
-    def _doc_url(d: dict) -> str:
-        did = str(d.get("doc_id", ""))
-        return f"/lists/{did}" if did.startswith("list:") else f"/docs/{did}"
-
     demand_rows = [
         Tr(
-            Td(A(d.get("doc_number") or d.get("doc_id"), href=_doc_url(d), cls="table-link")),
-            Td((d.get("doc_type") or "").replace("_", " ").title()),
+            Td(A(d.get("doc_number") or d.get("doc_id"), href=doc_href(d.get("doc_id")), cls="table-link")),
+            Td(doc_type_label(d.get("doc_type") or "")),
             Td(d.get("contact_name") or EMPTY),
             Td(f"{float(d.get('quantity', 0)):g}", cls="cell--number"),
             Td(d.get("due") or EMPTY, cls="cell--center"),
@@ -7247,8 +7246,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
     def _wo_source_cell(run: dict) -> FT:
         src_id, src_no = run.get("source_doc_id"), run.get("source_doc_number")
         if src_id and src_no:
-            href = f"/lists/{src_id}" if str(src_id).startswith("list:") else f"/docs/{src_id}"
-            return A(src_no, href=href, cls="table-link")
+            return A(src_no, href=doc_href(src_id), cls="table-link")
         return Span(t("inventory.to_stock"), cls="hint")  # no linked order = made to stock
 
     def _wo_row(run: dict) -> FT:

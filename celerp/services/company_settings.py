@@ -38,6 +38,7 @@ OWNERS: dict[str, str] = {
     "inventory_method": COMPANY_SETTINGS,
     "line_item_identifier": COMPANY_SETTINGS,
     "getting_started_dismissed": COMPANY_SETTINGS,
+    "finish_setup_dismissed": COMPANY_SETTINGS,
     "dashboard": COMPANY_SETTINGS,
     # Manufacturing preferences (automatic work orders, issue before complete).
     "manufacturing": COMPANY_SETTINGS,

@@ -519,10 +519,10 @@ async def hold_missing_woocommerce_order(company_id: str, order_id: str) -> dict
     return entry
 
 
-async def _notify_cost_moved(session, company_id, moved: list[dict]) -> None:
-    """A store order shipped goods another invoice had set aside: say whose and that the
-    invoice is costed when it ships, in the words the Ship action shows, as a notice that
-    stays until read, since nobody is at the screen when a store order completes."""
+async def _notify_goods_taken(session, company_id, moved: list[dict]) -> None:
+    """A store order shipped goods another invoice named: say whose and that the invoice
+    can no longer ship them, in the words the Ship action shows, as a notice that stays
+    until read, since nobody is at the screen when a store order completes."""
     from celerp.notifications import service as notif_service
     from ui.i18n import t
 
@@ -1084,7 +1084,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             changed = changed or bool(moved["reserved"] or moved["released"])
         elif wc_status == "completed" and fulfill_lines:
             shipped = await _fulfill_lines_impl(entity_id, fulfill_lines, cid, actor, session, commit=False)
-            await _notify_cost_moved(session, cid, shipped["cost_moved"])
+            await _notify_goods_taken(session, cid, shipped["taken_from"])
             changed = True
 
         if wc_status in stock_release_statuses:

@@ -59,7 +59,8 @@ def recovery(page, ui_server, api, tmp_path, monkeypatch):
 
     url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
     names = _company_names(url)
-    dump = backup.dump_database(settings.database_url)
+    backup.dump_database(settings.database_url, tmp_path / "database.dump")
+    dump = (tmp_path / "database.dump").read_bytes()
     _rename_companies(url, _RENAMED)
 
     async def _no_export():

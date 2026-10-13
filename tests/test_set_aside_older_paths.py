@@ -165,6 +165,20 @@ async def test_an_invoice_cannot_claim_units_an_older_invoice_without_a_snapshot
     await assert_settled(client, session, auth)
 
 
+
+async def test_finalize_notice_names_an_uncosted_holder(client, session, auth):
+    """B, finalized before cost snapshots, names L; A names L too and is filled from the
+    free sibling M. Red statement: A's finalize said nothing about B."""
+    sku = f"OLD-{uuid.uuid4().hex[:4]}"
+    L = await _lot(client, auth, sku, 1, 10.0)
+    await _lot(client, auth, sku, 1, 10.0)
+    b = await _invoice(client, auth, [(L, sku, 1)])
+    await _strip_snapshot(session, auth, b)
+    a = await _invoice(client, auth, [(L, sku, 1)], finalize=False)
+    f = await client.post(f"/docs/{a}/finalize", headers=auth["headers"])
+    assert f.status_code == 200, f.text
+    assert f.json()["shared_lots"] == [{"sku": sku, "lot_id": L, "docs": [await _doc_number(session, auth, b)]}]
+
 # Taking a lot out of stock by changing its type
 
 

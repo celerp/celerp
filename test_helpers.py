@@ -419,3 +419,24 @@ def invoices_booking_one_lot_twice():
 
     with patch("celerp_docs.routes._refuse_unfillable_invoice_lines", _unchecked):
         yield
+
+
+async def ui_get(headers: dict, path: str):
+    """GET a UI page as the user whose API ``headers`` are given, the UI talking to the real
+    API in process (the ``client`` fixture's database and transaction)."""
+    from unittest.mock import patch
+
+    from httpx import ASGITransport, AsyncClient
+
+    from celerp.main import app
+    from ui.app import app as ui_app
+
+    def _bridged(tok, timeout=10.0):
+        return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           headers={"Authorization": f"Bearer {tok}"}, follow_redirects=True)
+
+    token = headers["Authorization"].removeprefix("Bearer ")
+    with patch("ui.api_client._client", _bridged):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
+                               cookies={"celerp_token": token}) as ui:
+            return await ui.get(path)

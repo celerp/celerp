@@ -99,7 +99,7 @@ async def test_goods_one_invoice_set_aside_and_another_shipped_move_their_cost(c
     await _expect(client, session, auth, shipped=0, set_aside=cost_k + cost_l + cost_m, received=received)
 
     shipped = await _ship(client, auth, b, L)
-    assert shipped["cost_moved"] == [{"sku": sku, "lot_id": L, "doc_id": a,
+    assert shipped["taken_from"] == [{"sku": sku, "lot_id": L, "doc_id": a,
                                       "doc_number": await _doc_number(session, auth, a)}]
     [move] = await _cost_moves(session, auth)
     assert sorted((e["account"], e["debit"], e["credit"]) for e in move["entries"]) == [
@@ -280,7 +280,7 @@ async def test_consigned_goods_set_aside_and_shipped_elsewhere_are_owed_once(cli
     b = await _invoice(client, auth, [(lot, sku, 2)])
     assert await _codes(session, auth, "2115", COGS) == {"2115": -8.0, COGS: 8.0}
     shipped = await _ship(client, auth, b, lot)
-    assert [m["doc_id"] for m in shipped["cost_moved"]] == [a]
+    assert [m["doc_id"] for m in shipped["taken_from"]] == [a]
     assert await _owed(client, auth, consignor) == 8.0
     assert await _codes(session, auth, "2115", COGS) == {"2115": -8.0, COGS: 8.0}
     await assert_settled(client, session, auth)
@@ -290,9 +290,91 @@ async def test_consigned_goods_set_aside_and_shipped_elsewhere_are_owed_once(cli
     await assert_settled(client, session, auth)
 
 
-async def test_shipping_tells_the_user_whose_goods_it_took():
+async def _finalize(client, auth, doc: str) -> dict:
+    r = await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_finalizing_onto_goods_another_invoice_holds_says_so(client, session, auth):
+    """Red statement: the finalize answer was only the event id, so nothing told the user
+    the lot was already on another invoice."""
+    sku, (L,) = await _lots(client, auth, 10.0)
+    a = await _invoice(client, auth, [(L, sku, 1)])
+    b = await _invoice(client, auth, [(L, sku, 1)], finalize=False)
+    body = await _finalize(client, auth, b)
+    assert body["shared_lots"] == [{"sku": sku, "lot_id": L, "docs": [await _doc_number(session, auth, a)]}]
+
+
+async def test_finalizing_with_room_for_both_invoices_says_nothing(client, session, auth):
+    sku = f"CFG-{uuid.uuid4().hex[:6]}"
+    L = await _lot(client, auth, sku, 3, 30.0)
+    await _invoice(client, auth, [(L, sku, 1)])
+    b = await _invoice(client, auth, [(L, sku, 1)], finalize=False)
+    assert (await _finalize(client, auth, b))["shared_lots"] == []
+
+
+async def _ui_finalize(answer: dict):
+    from unittest.mock import AsyncMock, patch
+
+    from httpx import ASGITransport, AsyncClient
+
+    from test_helpers import authed_cookies
+    from ui.app import app as ui_app
+
+    with patch("ui.api_client.finalize_doc", new=AsyncMock(return_value=answer)):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
+            return await ui.post("/docs/doc:B/action/finalize", data={}, cookies=authed_cookies())
+
+
+async def test_the_finalize_notice_is_shown_on_the_redirect():
+    """Red statement: the finalize action answered with a bare redirect, no notice."""
+    import json
+
+    from ui.i18n import t
+
+    shared = [{"sku": "LOT-1", "lot_id": "item:1", "docs": ["INV-A", "INV-C"]}]
+    r = await _ui_finalize({"event_id": "e1", "shared_lots": shared})
+    assert r.status_code == 204, r.text
+    assert r.headers["HX-Redirect"] == "/docs/doc:B"
+    toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
+    assert toast == {"message": t("documents.lot_on_other_invoice", sku="LOT-1", docs="INV-A, INV-C"),
+                     "type": "info", "persist": True}
+    assert "INV-A, INV-C" in toast["message"] and "LOT-1" in toast["message"]
+
+
+async def test_finalize_without_shared_lots_shows_no_toast():
+    r = await _ui_finalize({"event_id": "e1", "shared_lots": []})
+    assert r.status_code == 204, r.text
+    assert r.headers["HX-Redirect"] == "/docs/doc:B"
+    assert "HX-Trigger" not in r.headers
+
+
+async def test_shipping_names_an_invoice_that_held_none_of_the_goods_it_loses(client, session, auth):
+    """Red statement: B names the lot but holds none of it at a cost (A set it aside
+    first), so the ship answer listed nobody though B can no longer ship it."""
+    sku, (L,) = await _lots(client, auth, 10.0)
+    a = await _invoice(client, auth, [(L, sku, 1)])
+    b = await _invoice(client, auth, [(L, sku, 1)])
+    shipped = await _ship(client, auth, a, L)
+    assert shipped["taken_from"] == [{"sku": sku, "lot_id": L, "doc_id": b,
+                                      "doc_number": await _doc_number(session, auth, b)}]
+    assert await _cost_moves(session, auth) == []
+    await assert_settled(client, session, auth)
+
+
+async def test_shipping_a_part_of_a_lot_names_no_other_invoice(client, session, auth):
+    sku = f"CFG-{uuid.uuid4().hex[:6]}"
+    L = await _lot(client, auth, sku, 3, 30.0)
+    a = await _invoice(client, auth, [(L, sku, 1)])
+    await _invoice(client, auth, [(L, sku, 1)])
+    assert (await _ship(client, auth, a, L))["taken_from"] == []
+
+
+async def test_the_ship_notice_says_the_other_invoice_cannot_ship_it():
     """The shipping page shows a notice that stays until it is closed, naming the lot and
-    the invoice that will be costed when it ships."""
+    the invoice that can no longer ship it. Red statement: the old sentence only said the
+    lot was set aside for the other invoice."""
     import json
     from unittest.mock import AsyncMock, patch
 
@@ -303,7 +385,7 @@ async def test_shipping_tells_the_user_whose_goods_it_took():
     from ui.i18n import t
 
     moved = [{"sku": "LOT-1", "lot_id": "item:1", "doc_id": "doc:A", "doc_number": "INV-A"}]
-    answer = {"fulfillment_status": "fulfilled", "fulfilled": ["item:1"], "cost_moved": moved}
+    answer = {"fulfillment_status": "fulfilled", "fulfilled": ["item:1"], "taken_from": moved}
     with patch("ui.api_client.fulfill_lines", new=AsyncMock(return_value=answer)):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
             r = await ui.post("/docs/doc:B/fulfill-lines", data={"selected": ["item:1"], "idempotency_key": "page-key-1"},
@@ -313,10 +395,11 @@ async def test_shipping_tells_the_user_whose_goods_it_took():
     toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
     assert toast == {"message": t("documents.cost_moved_with_goods", sku="LOT-1", doc="INV-A"),
                      "type": "info", "persist": True}
-    assert toast["message"] == "Lot LOT-1 was set aside for invoice INV-A. Invoice INV-A will be costed when it ships."
+    assert toast["message"] == ("Lot LOT-1 was on invoice INV-A, which can no longer ship it. "
+                                "Invoice INV-A is costed when it ships other stock.")
 
 
-def test_the_notice_is_translated_in_every_language():
+def test_the_new_notice_keys_exist_in_every_language():
     import json
     from pathlib import Path
 
@@ -324,8 +407,11 @@ def test_the_notice_is_translated_in_every_language():
     files = sorted(locales.glob("*.json"))
     assert len(files) == 12
     for path in files:
-        text = json.loads(path.read_text())["documents.cost_moved_with_goods"]
+        catalog = json.loads(path.read_text())
+        text = catalog["documents.cost_moved_with_goods"]
         assert "{sku}" in text and "{doc}" in text, path.name
+        text = catalog["documents.lot_on_other_invoice"]
+        assert "{sku}" in text and "{docs}" in text, path.name
 
 
 def test_a_notice_sent_with_a_redirect_is_shown_on_the_next_page():

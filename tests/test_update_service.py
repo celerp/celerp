@@ -409,6 +409,40 @@ def test_verification_children_get_side_effect_free_startup_env(monkeypatch):
     assert {port for _, port in seen}.isdisjoint({8000, 8080})
 
 
+def test_update_dump_failure_keeps_previous_pre_update_dump(tmp_path, monkeypatch):
+    """pg_dump writes the safety dump itself; one that fails part way leaves the previous
+    pre-update dump as it was and no partial file, and a good one is private (0600)."""
+    import sys
+
+    from celerp.services import backup
+    tool = tmp_path / "pg_dump"
+    tool.write_text(f"""#!{sys.executable}
+import os, sys
+dest = next(a[len("--file="):] for a in sys.argv[1:] if a.startswith("--file="))
+open(dest, "wb").write(b"HALF" if os.environ.get("FAIL_DUMP") else b"GOOD")
+sys.exit(1 if os.environ.get("FAIL_DUMP") else 0)
+""")
+    tool.chmod(0o755)
+    monkeypatch.setattr(backup, "_find_pg_tool", lambda name: str(tool))
+    monkeypatch.setattr(backup, "check_free_space", lambda path: None)
+    monkeypatch.setattr(backup, "check_backup_dump", lambda *args: None)
+    steps = update.SupervisorSteps(
+        {"server": {"api_port": 1, "ui_port": 2}, "database": {"url": "postgresql://u@h/db"},
+         "backup": {}},
+        lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
+    dump = tmp_path / "pre-update.dump"
+    dump.write_bytes(b"PREVIOUS")
+    monkeypatch.setenv("FAIL_DUMP", "1")
+    with pytest.raises(RuntimeError):
+        steps.dump(dump)
+    assert dump.read_bytes() == b"PREVIOUS"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["pg_dump", "pre-update.dump"]
+    monkeypatch.delenv("FAIL_DUMP")
+    steps.dump(dump)
+    assert dump.read_bytes() == b"GOOD"
+    assert dump.stat().st_mode & 0o777 == 0o600
+
+
 # ── Requests, window, blockers, availability ─────────────────────────────────
 
 

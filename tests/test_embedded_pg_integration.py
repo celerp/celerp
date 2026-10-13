@@ -340,7 +340,8 @@ def test_restore_returns_database_to_the_dump(config_dir, monkeypatch):
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE kept (v text)"))
         conn.execute(text("INSERT INTO kept VALUES ('before')"))
-    dump = backup.dump_database(uri)
+    dump_path = config_dir / "database.dump"
+    backup.dump_database(uri, dump_path)
 
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE added_later (id int)"))
@@ -348,8 +349,6 @@ def test_restore_returns_database_to_the_dump(config_dir, monkeypatch):
         conn.execute(text("INSERT INTO kept VALUES ('after', 1)"))
     engine.dispose()
 
-    dump_path = config_dir / "database.dump"
-    dump_path.write_bytes(dump)
     backup.restore_database_file(dump_path, uri)
 
     engine = create_engine(_sync(uri))

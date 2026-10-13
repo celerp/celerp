@@ -22,7 +22,7 @@ from ui.components.deleted_items import deleted_items, deleted_label
 from ui.components.posting_accounts import account_picker, distinct_name
 from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import (EMPTY, empty_mark, status_cards, empty_state_cta, format_value, search_bar,
-                                 bulk_toolbar, filter_th, display_enum, breadcrumbs, COLUMN_FILTER_JS)
+                                 bulk_toolbar, filter_th, display_enum, breadcrumbs, COLUMN_FILTER_JS, doc_href)
 from ui.config import get_token as _token
 from ui.i18n import reconcile_reason, refusal_text, t
 
@@ -140,8 +140,7 @@ def _order_row(order: dict, deleted: dict[str, dict], today: str = "") -> FT:
     )
     src_id, src_no = order.get("source_doc_id"), order.get("source_doc_number")
     if src_id and src_no:
-        src_href = f"/lists/{src_id}" if str(src_id).startswith("list:") else f"/docs/{src_id}"
-        src_cell = A(src_no, href=src_href, cls="table-link")
+        src_cell = A(src_no, href=doc_href(src_id), cls="table-link")
     else:
         src_cell = Span(t("manufacturing.to_stock"), cls="hint")
     return Tr(

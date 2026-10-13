@@ -659,6 +659,39 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
     )
 
 
+async def create_for_debit_note_finalized(session, *, company_id, user_id, doc_id: str, doc: dict,
+                                          base_currency: str = "USD") -> None:
+    """Post a supplier credit note issued in Celerp: what a bill with the same lines books,
+    the other way round (Dr accounts payable, Cr each line's expense account and the input
+    tax), with the payable on the account its bill recognized it on. A note a return raised
+    posts nothing here: the return's own entries already took it off the payable."""
+    built = await _bill_entries(session, company_id, doc_id, doc, base_currency)
+    if built is None:
+        return
+    settings = await current_settings(session, company_id)
+    original = str(doc.get("original_doc_id") or "")
+    ap = await party_origin(session, company_id, original, R.PAYABLE, settings) if original else None
+    entries = []
+    for e in built[0]:
+        swapped = {**e, "debit": e.get("credit", 0.0), "credit": e.get("debit", 0.0)}
+        if ap and line_has_role(settings, e, R.PAYABLE):
+            swapped = _origin_line(settings, ap, R.PAYABLE, debit=swapped["debit"])
+        entries.append(swapped)
+    cycle_suffix, je_type_key = _finalize_cycle(doc, "debit_note")
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:{cycle_suffix}",
+        idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
+        idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
+        memo=f"Auto JE for supplier credit note {doc_id} finalized",
+        ts=doc.get("finalized_at") or doc.get("issue_date"),
+        entries=entries,
+        metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
+    )
+
+
 async def release_credit_note_open(session, *, company_id, user_id, doc_id: str, doc: dict, amount,
                                    base_currency: str = "USD") -> None:
     """Take back the part of a credit note's issue entry its open balance holds, once its
@@ -866,8 +899,9 @@ _PURCHASE_TYPES = ("bill", "purchase_order")
 
 
 def _control_role(doc_type: str) -> AccountRole:
-    """The party control role a document's balance sits in."""
-    return R.PAYABLE if doc_type in _PURCHASE_TYPES else R.RECEIVABLE
+    """The party control role a document's balance sits in: a supplier credit note's is
+    accounts payable, as its bill's is."""
+    return R.PAYABLE if doc_type in _PURCHASE_TYPES or doc_type == "debit_note" else R.RECEIVABLE
 
 
 async def party_origin(session, company_id, doc_id: str, role, settings: dict | None = None) -> str | None:
@@ -875,7 +909,9 @@ async def party_origin(session, company_id, doc_id: str, role, settings: dict | 
     off its own recognition entry: the line that snapshots the role, or, for an entry
     from before snapshots, the line whose account served the role then, else the line
     the source system named the party on. None when the document recognized no
-    balance. More than one account is reported, never guessed."""
+    balance. More than one account is reported, never guessed. A supplier credit note a
+    return raised posts nothing of its own: the return took it off its bill's payable, so
+    its balance sits where the bill's does."""
     if settings is None:
         settings = await current_settings(session, company_id)
     rows = [row for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
@@ -891,6 +927,11 @@ async def party_origin(session, company_id, doc_id: str, role, settings: dict | 
         codes |= found
     if len(codes) > 1:
         raise AmbiguousOriginError(str(role), f"Document {doc_id}", codes)
+    if not codes and role == R.PAYABLE:
+        note = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+        state = (note.state if note is not None else None) or {}
+        if state.get("doc_type") == "debit_note" and state.get("original_doc_id"):
+            return await party_origin(session, company_id, str(state["original_doc_id"]), role, settings)
     return next(iter(codes), None)
 
 
@@ -1093,7 +1134,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
     )
 
 
-async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float) -> None:
+async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float, target_rate: float) -> None:
     """Create JE for credit note application: AR-to-AR transfer.
 
     The invoice's receivable is credited on the account the invoice recognized it on,
@@ -1103,33 +1144,59 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
 
     payment_index disambiguates repeated applications (void + re-apply) to the same CN-invoice pair.
     base_currency: company base currency for JE conversion.
-    conversion_rate: doc-to-base-currency rate (1.0 for base currency docs).
+    conversion_rate: the note's recognition rate; target_rate: the invoice's rate.
+    The control balances clear at their own rates, with any difference booked as FX.
     """
-    rate = checked_exchange_rate(conversion_rate)
-    base_amount = to_base(float(amount), rate, base_currency)
-    app_key = f"cn_apply_{cn_id}:{payment_index}"
+    await _create_for_note_application(
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id, note_id=note_id, amount=amount,
+        payment_index=payment_index, payment_date=payment_date, base_currency=base_currency,
+        conversion_rate=conversion_rate, target_rate=target_rate, role=R.RECEIVABLE, kind="cn", label="credit note",
+    )
+
+
+async def create_for_dn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float, target_rate: float) -> None:
+    """Create JE for a supplier credit note applied to a bill: AP-to-AP transfer, the
+    bill's payable debited and the note's credited, each on the account it sits on."""
+    await _create_for_note_application(
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id, note_id=note_id, amount=amount,
+        payment_index=payment_index, payment_date=payment_date, base_currency=base_currency,
+        conversion_rate=conversion_rate, target_rate=target_rate, role=R.PAYABLE, kind="dn", label="supplier credit note",
+    )
+
+
+async def _create_for_note_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int, payment_date: str | None, base_currency: str, conversion_rate: float, target_rate: float, role, kind: str, label: str) -> None:
+    """One credit note applied to one document: the document's control balance cleared
+    against the note's, on the accounts each recognized it on. A receivable is credited
+    on the document's side, a payable debited."""
+    note_amount = to_base(float(amount), checked_exchange_rate(conversion_rate), base_currency)
+    target_amount = to_base(float(amount), checked_exchange_rate(target_rate), base_currency)
+    app_key = f"{kind}_apply_{note_id}:{payment_index}"
     settings = await current_settings(session, company_id)
-    invoice_ar = await party_origin(session, company_id, doc_id, R.RECEIVABLE, settings)
-    if invoice_ar is None:
-        invoice_ar = (await resolve_many(session, company_id, [R.RECEIVABLE]))[R.RECEIVABLE]
-    cn_ar = await party_origin(session, company_id, cn_id, R.RECEIVABLE, settings) or invoice_ar
+    doc_account = await party_origin(session, company_id, doc_id, role, settings)
+    if doc_account is None:
+        doc_account = (await resolve_many(session, company_id, [role]))[role]
+    note_account = await party_origin(session, company_id, note_id, role, settings) or doc_account
+    if role == R.RECEIVABLE:
+        doc_side, note_side = {"credit": target_amount}, {"debit": note_amount}
+    else:
+        doc_side, note_side = {"debit": target_amount}, {"credit": note_amount}
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        # Entity id carries the application's index: the same credit note can
-        # be applied to the same invoice more than once, and each application
-        # must be a distinct entry so voiding one never erases another.
-        je_id=f"je:auto:{doc_id}:cnapply:{cn_id}:{payment_index}",
-        idem_create=je_idempotency_key(doc_id, f"cn.applied:{app_key}", "c"),
-        idem_posted=je_idempotency_key(doc_id, f"cn.applied:{app_key}", "p"),
-        memo=f"Auto JE for credit note {cn_id} applied to {doc_id}",
+        # Entity id carries the application's index: the same note can be applied to
+        # the same document more than once, and each application must be a distinct
+        # entry so voiding one never erases another.
+        je_id=f"je:auto:{doc_id}:{kind}apply:{note_id}:{payment_index}",
+        idem_create=je_idempotency_key(doc_id, f"{kind}.applied:{app_key}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"{kind}.applied:{app_key}", "p"),
+        memo=f"Auto JE for {label} {note_id} applied to {doc_id}",
         ts=payment_date,
-        entries=[
-            _origin_line(settings, invoice_ar, R.RECEIVABLE, credit=base_amount),
-            _origin_line(settings, cn_ar, R.RECEIVABLE, debit=base_amount),
-        ],
-        metadata_={"trigger": "cn.applied", "doc_id": doc_id, "cn_id": cn_id},
+        entries=await _with_fx_difference(session, company_id, [
+            _origin_line(settings, doc_account, role, **doc_side),
+            _origin_line(settings, note_account, role, **note_side),
+        ]),
+        metadata_={"trigger": f"{kind}.applied", "doc_id": doc_id, f"{kind}_id": note_id},
     )
 
 
@@ -2072,14 +2139,20 @@ async def imported_document(session, company_id, doc_id: str) -> ImportedDocumen
 
 async def _carriage_entries(session, company_id, imported: ImportedDocument) -> list[dict]:
     """What the opening balances hold for an imported document, as the entry its bill
-    would book. For a bill, its whole entry, except that goods it had already received are
-    in opening stock, held by their lots: what is owed for them is held against retained
-    earnings, never in transit. For a purchase order, each line's share received when it
-    was imported. A purchase order's receipts book only the goods, so its tax and shipping
-    are not in the opening balances; its bill books them when it is converted."""
-    snapshot = imported.snapshot
+    would book (_bill_carriage_parts, without the source lines)."""
+    return [e for e, _ in await _bill_carriage_parts(session, company_id, imported.doc_id, imported.snapshot)]
+
+
+async def _bill_carriage_parts(session, company_id, doc_id: str, snapshot: dict) -> list[tuple[dict, int | None]]:
+    """Each line of what the opening balances hold for an imported document, with the
+    index of the document line it comes from (None for tax, shipping, retained earnings
+    and payables). For a bill, its whole entry, except that goods it had already received
+    are in opening stock, held by their lots: what is owed for them is held against
+    retained earnings, never in transit. For a purchase order, each line's share received
+    when it was imported. A purchase order's receipts book only the goods, so its tax and
+    shipping are not in the opening balances; its bill books them when it is converted."""
     base_currency = await company_currency(session, company_id)
-    built = await _bill_entries(session, company_id, imported.doc_id, snapshot, base_currency)
+    built = await _bill_entries(session, company_id, doc_id, snapshot, base_currency)
     if built is None:
         return []
     entries, sources, debits = built
@@ -2097,7 +2170,7 @@ async def _carriage_entries(session, company_id, imported: ImportedDocument) -> 
         return min(received.get(source, _Dec(0)) / ordered, _Dec(1)) if ordered > 0 else _Dec(0)
 
     if snapshot.get("doc_type") == "bill":
-        held: list[dict] = []
+        held: list[tuple[dict, int | None]] = []
         in_stock = _Dec(0)
         for e, s, d in zip(entries, sources, debits):
             stock = s is not None and bill_line_kind(lines[s]) == "stock"
@@ -2106,22 +2179,83 @@ async def _carriage_entries(session, company_id, imported: ImportedDocument) -> 
                 in_stock += amount
                 e = {**e, "debit": to_stored_float(d - amount)}
             if to_decimal(e["debit"]):
-                held.append(e)
+                held.append((e, s))
         if in_stock:
-            held.append(_line(await resolve(session, company_id, R.RETAINED_EARNINGS), R.RETAINED_EARNINGS,
-                              debit=to_stored_float(in_stock)))
-        return [*held, entries[-1]]
+            held.append((_line(await resolve(session, company_id, R.RETAINED_EARNINGS), R.RETAINED_EARNINGS,
+                               debit=to_stored_float(in_stock)), None))
+        return [*held, (entries[-1], None)]
     carried = []
     for e, s, d in zip(entries, sources, debits):
         if s is None:
             continue
         amount = round_money(d * received_fraction(s), base_currency)
         if amount:
-            carried.append({**e, "debit": to_stored_float(amount)})
+            carried.append(({**e, "debit": to_stored_float(amount)}, s))
     if not carried:
         return []
-    total = sum((to_decimal(e["debit"]) for e in carried), _Dec(0))
-    return [*carried, {**entries[-1], "credit": to_stored_float(total)}]
+    total = sum((to_decimal(e["debit"]) for e, _ in carried), _Dec(0))
+    return [*carried, ({**entries[-1], "credit": to_stored_float(total)}, None)]
+
+
+@dataclass(frozen=True)
+class OpeningHeld:
+    """A document imported as already in the opening balances, as its import snapshot
+    says it stood at cutover. Amounts in base currency are rounded once per document, as a
+    posting would round them. goods_by_account: for a bill, the goods it billed and had
+    not received, per goods account. payable: what the opening holds owed on a purchase
+    document (a bill's outstanding; an order's goods received). receivable: an invoice's
+    outstanding, a credit note's as a negative. base_amount is that payable or receivable;
+    amount is the same in the document's currency, None for a foreign-currency order,
+    whose received share is only ever booked in base."""
+    doc_id: str
+    doc_type: str
+    doc_number: str
+    date: str
+    currency: str
+    amount: _Dec | None
+    base_amount: _Dec
+    goods_by_account: dict[str, _Dec]
+
+
+async def opening_held_documents(session, company_id) -> list[OpeningHeld]:
+    """Every document imported with the treatment "opening_balances", from its import
+    snapshot. Later payments and voids do not change it: at cutover the opening held it."""
+    from celerp.models.ledger import LedgerEntry
+
+    base = await company_currency(session, company_id)
+    created = (await session.execute(_select(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == "doc.created",
+        LedgerEntry.metadata_[IMPORT_TREATMENT].as_string() == "opening_balances",
+    ).order_by(LedgerEntry.id))).scalars().all()
+    out: list[OpeningHeld] = []
+    for row in created:
+        snapshot = row.data or {}
+        kind = imported_issue_kind(snapshot)
+        if not (row.metadata_ or {}).get(IMPORTED_SNAPSHOT) or kind is None:
+            continue
+        currency = str(snapshot.get("currency") or base).upper()
+        rate = require_doc_rate(snapshot, base)
+        goods: dict[str, _Dec] = {}
+        if kind == "purchase_order":
+            parts = await _bill_carriage_parts(session, company_id, row.entity_id, snapshot)
+            base_amount = to_decimal(parts[-1][0]["credit"]) if parts else _Dec(0)
+            amount = base_amount if currency == base else None
+        else:
+            amount = round_money(snapshot.get("amount_outstanding") or 0, currency)
+            base_amount = to_decimal(to_base(amount, rate, base))
+            if kind == "credit_note":
+                amount, base_amount = -amount, -base_amount
+        if kind == "bill":
+            lines = snapshot.get("line_items") or []
+            for e, s in await _bill_carriage_parts(session, company_id, row.entity_id, snapshot):
+                if s is not None and bill_line_kind(lines[s]) == "stock":
+                    goods[e["account"]] = goods.get(e["account"], _Dec(0)) + to_decimal(e["debit"])
+        out.append(OpeningHeld(
+            doc_id=row.entity_id, doc_type=kind, doc_number=str(snapshot.get("doc_number") or ""),
+            date=str(snapshot.get("issue_date") or snapshot.get("date") or "")[:10], currency=currency,
+            amount=amount, base_amount=base_amount, goods_by_account=goods,
+        ))
+    return out
 
 
 async def imported_carriage(session, company_id, doc_id: str) -> list[dict]:
@@ -2264,6 +2398,19 @@ async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id
         metadata_={"trigger": trigger, "doc_id": doc_id},
     )
     return True
+
+
+async def void_supplier_return(session, *, company_id, user_id, doc_id: str, return_key: str,
+                               note_id: str) -> None:
+    """Reverse the entries one return to the supplier posted on a document (the goods, their
+    corrected cost and their landed cost), when the supplier credit note it raised is voided.
+    An entry already void is skipped, so a retry reverses nothing twice."""
+    for kind in ("rtn", "rtn-value", "landed-rtn"):
+        je_id = f"je:auto:{doc_id}:{kind}:{return_key}"
+        await _void_je_if_posted(
+            session, company_id=company_id, user_id=user_id, doc_id=doc_id, je_id=je_id,
+            idem_key=f"{je_id}:void:{note_id}", reason=f"Reversed: supplier credit note {note_id} voided",
+            trigger="doc.supplier_return_undone")
 
 
 # The JE families that carry a doc's recognized economics: finalize (fin, and
@@ -3300,6 +3447,28 @@ async def set_aside(session, company_id, lots) -> dict[str, dict[str, float]]:
     return out
 
 
+async def other_invoices_naming(session, company_id, doc_id: str, lot_ids) -> dict[str, list[dict]]:
+    """Per lot of ``lot_ids``, the open invoices other than ``doc_id`` whose lines name it
+    (_open_invoices): ``[{doc_id, doc_number, qty}]``, by invoice number. Whatever cost, if
+    any, they hold it at: an invoice that names a lot cannot ship it once it is gone."""
+    ids = {str(i) for i in lot_ids if i}
+    if not ids:
+        return {}
+    out: dict[str, list[dict]] = {}
+    for other, state in (await _open_invoices(session, company_id, exclude=doc_id, lots=ids)).items():
+        number = str(state.get("doc_number") or state.get("ref_id") or other)
+        named: dict[str, float] = {}
+        for li in state.get("line_items") or []:
+            lot = str(line_item_id(li) or "")
+            if lot in ids:
+                named[lot] = named.get(lot, 0.0) + float(li.get("quantity") or 0)
+        for lot, qty in named.items():
+            out.setdefault(lot, []).append({"doc_id": other, "doc_number": number, "qty": qty})
+    for docs in out.values():
+        docs.sort(key=lambda d: (d["doc_number"], d["doc_id"]))
+    return out
+
+
 async def _doc_number_of(session, company_id, doc_id: str) -> str:
     doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
     state = (doc.state if doc is not None else None) or {}
@@ -3506,7 +3675,8 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
     Cr cost of goods sold for the other, at the cost that invoice set them aside at.
     Inventory is not touched: it gave the goods up once, when they were set aside. The
     other invoice holds that many fewer units (recognized_cogs) and is costed for them
-    when it ships. Returns the moves for the notice: {sku, lot_id, doc_id, doc_number}."""
+    when it ships. Returns the invoices the goods were taken from, for the notice:
+    {sku, lot_id, doc_id, doc_number}."""
     if not moving:
         return []
     cogs_code = await resolve(session, company_id, R.COGS)

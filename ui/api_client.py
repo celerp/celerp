@@ -1695,6 +1695,11 @@ async def get_trial_balance(token: str, params: dict | None = None) -> dict:
         return _raise(await c.get("/accounting/trial-balance", params=params or {})).json()
 
 
+async def get_opening_tie_out(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/opening-tie-out")).json()
+
+
 async def get_pnl(token: str, params: dict | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/pnl", params=params or {})).json()
@@ -2893,12 +2898,22 @@ async def delete_payment(token: str, entity_id: str, payment_index: int, delete_
         })).json()
 
 
-async def apply_credit_note(token: str, cn_id: str, target_doc_id: str, amount: float, date: str | None = None,
-                            idempotency_key: str | None = None) -> dict:
+async def _apply_note(token: str, path: str, target_doc_id: str, amount: float, date: str | None,
+                      idempotency_key: str | None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{cn_id}/apply-to-invoice", json={
+        return _raise(await c.post(path, json={
             "target_doc_id": target_doc_id, "amount": amount, "date": date, "idempotency_key": idempotency_key,
         })).json()
+
+
+async def apply_credit_note(token: str, cn_id: str, target_doc_id: str, amount: float, date: str | None = None,
+                            idempotency_key: str | None = None) -> dict:
+    return await _apply_note(token, f"/docs/{cn_id}/apply-to-invoice", target_doc_id, amount, date, idempotency_key)
+
+
+async def apply_supplier_credit(token: str, note_id: str, target_doc_id: str, amount: float, date: str | None = None,
+                                idempotency_key: str | None = None) -> dict:
+    return await _apply_note(token, f"/docs/{note_id}/apply-to-bill", target_doc_id, amount, date, idempotency_key)
 
 
 async def refund_credit_note(token: str, cn_id: str, amount: float, date: str | None = None,

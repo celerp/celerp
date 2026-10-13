@@ -476,7 +476,7 @@ def test_older_backup_restored_and_migrated_forward(scratch, tmp_path, monkeypat
     monkeypatch.setenv("DATABASE_URL", source)
     command.downgrade(build_alembic_config(), "-1")
     dump = tmp_path / "database.dump"
-    dump.write_bytes(backup.dump_database(source))
+    backup.dump_database(source, dump)
     target = scratch(None, None)
     engine = sa.create_engine(sync_url(target), poolclass=NullPool)
     with engine.begin() as conn:  # an empty database, as pg_restore --clean leaves one
@@ -698,7 +698,7 @@ def test_restored_backup_carries_its_record(scratch, tmp_path, monkeypatch):
 
     def restore(source: str) -> str:
         dump = tmp_path / f"{uuid.uuid4().hex}.dump"
-        dump.write_bytes(backup.dump_database(source))
+        backup.dump_database(source, dump)
         target = scratch(None, None)
         engine = sa.create_engine(sync_url(target), poolclass=NullPool)
         with engine.begin() as conn:

@@ -58,6 +58,68 @@ def test_ar_all_zero_buckets_is_treated_as_empty():
     assert 'id="chart-ar-aging"' not in xml
 
 
+def _ar_chart_js(xml: str) -> str:
+    start = xml.index("getElementById('chart-ar-aging')")
+    return xml[start:xml.index("chart-inventory-cat", start)]
+
+
+def test_ar_has_data_with_net_negative_bucket():
+    # Open credits make a bucket negative; the chart still shows, as bars from zero.
+    xml = to_xml(_charts_section(
+        {"charts": ["ar_aging"]}, {}, {"buckets": {"current": -40.0, "1-30": 0.0, "31-60": 0.0, "61-90": 0.0, "90+": 0.0}},
+        revenue_trend=[], currency="USD",
+    ))
+    assert 'id="chart-ar-aging"' in xml
+    assert "No outstanding receivables" not in xml
+    js = _ar_chart_js(xml)
+    assert "type: 'bar'" in js and "doughnut" not in xml
+    assert "beginAtZero: true" in js
+    assert "-40.0" in js
+
+
+def test_ar_chart_legend_is_translated():
+    from ui.i18n import _current_lang
+
+    buckets = {"current": 10.0, "1-30": 5.0, "31-60": 0.0, "61-90": 0.0, "90+": 0.0}
+    xml = to_xml(_charts_section({"charts": ["ar_aging"]}, {}, {"buckets": buckets}, revenue_trend=[], currency="USD"))
+    assert '["Current", "1-30", "31-60", "61-90", "90+"]' in _ar_chart_js(xml)
+    tok = _current_lang.set("de")
+    try:
+        de = to_xml(_charts_section({"charts": ["ar_aging"]}, {}, {"buckets": buckets}, revenue_trend=[], currency="USD"))
+    finally:
+        _current_lang.reset(tok)
+    assert '["Aktuell", "1-30"' in _ar_chart_js(de)
+
+
+def test_ar_chart_card_is_omitted_without_aging():
+    # None: the user may not see the aging report, so the card is not shown at all.
+    xml = to_xml(_charts_section({"charts": ["ar_aging", "inventory_cat"]}, {}, None, revenue_trend=[], currency="USD"))
+    assert 'id="chart-ar-aging"' not in xml
+    assert "No outstanding receivables" not in xml
+    assert "No inventory yet" in xml
+
+
+@pytest.mark.asyncio
+async def test_dashboard_hides_ar_chart_without_report_permission(client, session):
+    """A user whose role cannot view financial reports gets a dashboard without the AR
+    aging card; one who can sees it."""
+    from test_helpers import perm_setup, ui_get
+    from ui.i18n import t
+
+    ctx = await perm_setup(client, session)
+
+    async def _dash(headers) -> str:
+        r = await ui_get(headers, "/dashboard")
+        assert r.status_code == 200, r.text
+        return r.text
+
+    title = f'<h3 class="chart-title">{t("page.ar_aging")}</h3>'
+    assert title in await _dash(ctx["manager_h"])
+    staff = await _dash(ctx["operator_h"])
+    assert 'id="chart-ar-aging"' not in staff and title not in staff
+    assert t("page.charts") in staff
+
+
 def test_activity_footer_has_see_all_link():
     rows = [
         {"event_type": "item.created", "entity_type": "item", "entity_id": str(i),

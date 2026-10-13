@@ -997,11 +997,18 @@ class TestManagerRequiredReports:
         r = await client.get("/reports/purchases", headers=ctx["admin_h"])
         assert r.status_code == 200
 
-    async def test_staff_can_access_ar_aging(self, client, session):
-        """AR aging is operational data - staff-accessible."""
+    async def test_staff_without_report_permission_cannot_open_ar_aging(self, client, session):
+        """AR aging shows what each customer owes: a financial report."""
         ctx = await _setup(client, session)
         r = await client.get("/reports/ar-aging", headers=ctx["staff_h"])
-        assert r.status_code == 200
+        assert r.status_code == 403
+
+    @pytest.mark.parametrize("path", ["/reports/ar-aging", "/reports/ap-aging"])
+    async def test_aging_requires_view_financial_reports(self, client, session, path):
+        ctx = await _setup(client, session)
+        assert (await client.get(path, headers=ctx["operator_h"])).status_code == 403
+        assert (await client.get(path, headers=ctx["manager_h"])).status_code == 200
+        assert (await client.get(path, headers=ctx["admin_h"])).status_code == 200
 
     async def test_staff_can_access_expiring_items(self, client, session):
         """Expiring items report - operational, staff-accessible."""

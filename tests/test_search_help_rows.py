@@ -23,13 +23,22 @@ _NEW_KEYS = (
     "shell.search_help_not_found", "shell.search_help_not_found_result",
     "shell.search_help_example_scan_result",
     "inventory.search_not_found",
-    "inventory.search_exact_barcode", "inventory.search_exact_rfid_epc",
-    "inventory.search_exact_gtin", "inventory.search_exact_sku",
+    "inventory.search_matched", "inventory.search_contains",
+    "field.label.unit", "field.label.lot", "field.label.status_doc_number",
 )
 
 
 def _catalog(lang: str) -> dict:
     return json.loads((_LOCALES / f"{lang}.json").read_text(encoding="utf-8"))
+
+
+def test_search_exact_keys_removed_and_new_keys_in_every_catalog():
+    """Red statement: the row-title keys for exact hits were still in the catalogs; the
+    "?" icon's sentence replaced them."""
+    for path in sorted(_LOCALES.glob("*.json")):
+        stale = [k for k in json.loads(path.read_text(encoding="utf-8"))
+                 if k.startswith("inventory.search_exact_")]
+        assert not stale, f"{path.stem} still has {stale}"
 
 
 def test_every_new_key_in_all_twelve_catalogs():

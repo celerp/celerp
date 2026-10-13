@@ -235,6 +235,7 @@ class ItemWrittenOff(BaseModel):
     cost_total: float
     reason: str | None = None
     source_list_id: str | None = None
+    doc_number: str | None = None
 
 
 class ItemReturnedToSupplier(BaseModel):
@@ -244,6 +245,13 @@ class ItemReturnedToSupplier(BaseModel):
     qty: float
     # Present on consigned goods only: they stop being held on consignment.
     consignment_flag: str | None = None
+
+
+class ItemSupplierReturnUndone(BaseModel):
+    # The supplier credit note a return raised was voided: the goods that went back are in
+    # stock again, in the status they had before the return.
+    source_doc_id: str
+    restored_status: str
 
 
 class ItemSplit(BaseModel):
@@ -908,6 +916,15 @@ class DocReturnReceived(BaseModel):
     notes: str | None = None
 
 
+class DocSupplierReturnUndone(BaseModel):
+    """A return to the supplier undone by voiding the supplier credit note it raised: the
+    document holds the goods again and owes what the return took off it."""
+    return_key: str
+    supplier_credit_doc_id: str
+    payable_credit: float = 0.0
+    supplier_credit: float = 0.0
+
+
 class DocReturnUndone(BaseModel):
     undone_by: str
     undone_at: str = ""
@@ -1348,6 +1365,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.expired": ItemExpired,
     "item.written_off": ItemWrittenOff,
     "item.returned_to_supplier": ItemReturnedToSupplier,
+    "item.supplier_return_undone": ItemSupplierReturnUndone,
     "item.split": ItemSplit,
     "item.split_from": ItemSplitFrom,
     "item.transform": ItemTransform,
@@ -1447,6 +1465,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.items_returned": DocItemsReturned,
     "doc.return_received": DocReturnReceived,
     "doc.return_undone": DocReturnUndone,
+    "doc.supplier_return_undone": DocSupplierReturnUndone,
     "doc.receive_undone": DocReceiveUndone,
     "doc.fulfillment_reversed": DocFulfillmentReversed,
 

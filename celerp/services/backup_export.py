@@ -9,7 +9,6 @@ are rebuilt into the same format by ``backup_repo.reassemble_snapshot``.
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 import tarfile
@@ -48,26 +47,24 @@ def archive_members(dirs) -> list[tuple[str, Path]]:
     return out
 
 
-def _build_archive(dump: bytes, dirs: list[Path], meta: dict) -> Path:
-    """Build a .celerp-backup tar.gz archive. Returns path to temp file."""
+def _build_archive(dump: Path, dirs: list[Path], meta: dict) -> Path:
+    """Build a .celerp-backup tar.gz archive from the dump file at *dump*. Returns path to
+    temp file; a failure removes it."""
+    from celerp.services.backup import add_bytes_member, add_file_member, disk_full_as_error
+
     tmp = tempfile.NamedTemporaryFile(suffix=".celerp-backup", delete=False)
     tmp.close()
+    try:
+        with disk_full_as_error(), tarfile.open(tmp.name, "w:gz") as tar:
+            add_file_member(tar, "database.dump", dump)
 
-    with tarfile.open(tmp.name, "w:gz") as tar:
-        # database.dump
-        info = tarfile.TarInfo(name="database.dump")
-        info.size = len(dump)
-        tar.addfile(info, io.BytesIO(dump))
+            add_bytes_member(tar, "meta.json", json.dumps(meta, indent=2).encode())
 
-        # meta.json
-        meta_bytes = json.dumps(meta, indent=2).encode()
-        info = tarfile.TarInfo(name="meta.json")
-        info.size = len(meta_bytes)
-        tar.addfile(info, io.BytesIO(meta_bytes))
-
-        for arcname, path in archive_members(dirs):
-            tar.add(str(path), arcname=arcname)
-
+            for arcname, path in archive_members(dirs):
+                tar.add(str(path), arcname=arcname)
+    except BaseException:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
     return Path(tmp.name)
 
 
@@ -96,9 +93,11 @@ async def export_full() -> Path:
     from celerp.config import settings
     from celerp.services import backup
 
-    dump = await asyncio.to_thread(backup.dump_database, settings.database_url)
-    meta = await archive_meta()
-    return await asyncio.to_thread(_build_archive, dump, list(restore_roots().values()), meta)
+    with tempfile.TemporaryDirectory() as work:
+        dump = Path(work) / "database.dump"
+        await asyncio.to_thread(backup.dump_database, settings.database_url, dump)
+        meta = await archive_meta()
+        return await asyncio.to_thread(_build_archive, dump, list(restore_roots().values()), meta)
 
 
 async def archive_meta() -> dict:

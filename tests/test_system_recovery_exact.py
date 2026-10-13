@@ -164,9 +164,9 @@ class _Recovery:
         if real_database:
             return
 
-        def _dump(url):
+        def _dump(url, dest):
             self.record("safety_dump")
-            return SAFETY_DUMP
+            dest.write_bytes(SAFETY_DUMP)
 
         async def _restore(dump, url):
             self.record("pg_restore")
@@ -862,6 +862,40 @@ async def test_recovery_real_database_replaces_installation(tmp_path, monkeypatc
     assert names == {"Alpha Trading"}
     assert len(rec.safety_archives()) == 1
     assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 401
+
+
+async def test_streamed_export_round_trips_through_recovery(tmp_path, monkeypatch, code_config,
+                                                           real_engine):
+    """The export pg_dump writes to a file and the archive reads from it: its dump is the
+    custom format with a table of contents, it validates and restores, and the
+    attachments come back byte for byte."""
+    import subprocess
+
+    from celerp.services import backup, backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    attachment = rec.data / "static" / "attachments" / "scan.bin"
+    attachment.parent.mkdir(parents=True)
+    body = bytes(range(256)) * 300
+    attachment.write_bytes(body)
+    source = await backup_export.export_full()
+    try:
+        backup_import.validate_archive(source)
+        dump = tmp_path / "check.dump"
+        dump.write_bytes(_members(source)["database.dump"])
+        listing = subprocess.run([backup._find_pg_tool("pg_restore"), "-l", str(dump)],
+                                 capture_output=True, check=True).stdout
+        assert b"TABLE DATA public companies" in listing
+        attachment.write_bytes(b"changed")
+        await company(real_engine, user, "Beta Trading", "beta")
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+    assert result.ok is True, result.error
+    assert await _company_names(real_engine) == {"Alpha Trading"}
+    assert attachment.read_bytes() == body
 
 
 # ── A failed replacement is undone, or the installation stays closed ─────────
@@ -1951,7 +1985,7 @@ async def test_a_backup_from_a_sql_ascii_install_with_thai_text_is_restored(
         legacy.write_bytes(members["database.dump"])
         subprocess.run([backup._find_pg_tool("pg_restore"), "--no-owner", "-d",
                         url.render_as_string(hide_password=False), str(legacy)], check=True)
-        legacy.write_bytes(backup.dump_database(url.render_as_string(hide_password=False)))
+        backup.dump_database(url.render_as_string(hide_password=False), legacy)
         script = subprocess.run([backup._find_pg_tool("pg_restore"), "-f", "-", str(legacy)],
                                 capture_output=True, check=True).stdout
         assert b"SET client_encoding = 'SQL_ASCII';" in script and "บริษัท Exim".encode() in script
@@ -2286,7 +2320,7 @@ async def _restore_target(engine, tmp_path: Path) -> Path:
     await _execute(engine, "CREATE TABLE zz_source (company_id uuid REFERENCES companies(id))")
     await _execute(engine, "INSERT INTO zz_source SELECT id FROM companies")
     dump = tmp_path / "database.dump"
-    dump.write_bytes(await asyncio.to_thread(backup.dump_database, DATABASE_URL))
+    await asyncio.to_thread(backup.dump_database, DATABASE_URL, dump)
     await _execute(engine, "DROP TABLE zz_source")
     await company(engine, user, "Beta Trading", "beta")
     await _execute(engine, "CREATE TABLE zz_extra (company_id uuid REFERENCES companies(id))")
@@ -2398,7 +2432,8 @@ async def test_an_update_without_room_for_its_last_dump_is_refused_before_dumpin
     await asyncio.to_thread(steps.dump, dump)
     _free_space(monkeypatch, dump.stat().st_size * 10 + 2**30 - 1)
     dumps, data = [], dump.read_bytes()
-    monkeypatch.setattr(backup, "dump_database", lambda *args, **kwargs: dumps.append(args) or data)
+    monkeypatch.setattr(backup, "dump_database",
+                        lambda *args, **kwargs: dumps.append(args) or args[1].write_bytes(data))
     for _ in range(2):
         result, children = await asyncio.to_thread(update.run_update, "1.1.0", steps)
         assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())

@@ -48,20 +48,23 @@ async def test_paid_in_part_then_fully_returned_then_void(client, session, auth)
                                 "payment_date": (await _state(session, auth, doc))["issue_date"]})
     assert r.status_code == 200, r.text
     r = await _return(client, auth, doc, parcel, 10)
-    print("return", r.status_code, r.text[:400])
-    if r.status_code == 409:
-        return  # a return worth more than is still owed is refused: nothing to void
+    assert r.status_code == 200, r.text
+    note = r.json()["supplier_credit_doc_id"]
     st = await _state(session, auth, doc)
+    credit = await _state(session, auth, note)
     ap, _, _ = await _accts(session, auth)
-    print("after return", st["status"], st["amount_outstanding"], st.get("returned_credit"), ap)
-    assert round(ap, 2) == round(-st["amount_outstanding"], 2), (ap, st["amount_outstanding"])
+    # The bill is settled and the 50 already paid is now owed back on the credit note.
+    assert (st["status"], st["amount_outstanding"], credit["amount_outstanding"]) == ("returned", 0.0, 50.0)
+    assert round(ap, 2) == 50.0, ap
     r = await client.post(f"/docs/{doc}/void", headers=auth["headers"], json={})
-    print("void", r.status_code, r.text[:300])
-    if r.status_code == 200:
-        st = await _state(session, auth, doc)
-        ap, _, _ = await _accts(session, auth)
-        assert ap == 0.0, ap
-        await assert_settled(client, session, auth)
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "docs.void_under_supplier_credit_note", r.text
+    # Voiding the credit note undoes the return: the bill owes its 70 again.
+    r = await client.post(f"/docs/{note}/void", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    st = await _state(session, auth, doc)
+    assert st["amount_outstanding"] == 70.0 and (await _state(session, auth, parcel))["quantity"] == 10
+    assert round((await _accts(session, auth))[0], 2) == -70.0
+    await assert_settled(client, session, auth)
 
 
 async def test_mixed_case_restated_void_cycle(client, session, auth):

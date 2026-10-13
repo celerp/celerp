@@ -12,7 +12,10 @@ pytestmark = pytest.mark.browser
 SHOTS = Path("context/reviews/manufacturing")
 
 
-def test_manufacturing_settings_page(page, ui_server, api):
+def test_manufacturing_settings_page(page, ui_server, fresh_company):
+    # Turning on auto work orders changes what every later invoice finalize does, so this
+    # runs on its own company rather than leaving the shared one changed for other tests.
+    api = fresh_company
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
 

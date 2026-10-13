@@ -263,3 +263,16 @@ async def test_settings_import_is_not_a_settings_door(client, session):
     assert r.status_code == 200, r.text
     after = await _settings(session, cid)
     assert after.get("lock_date") == before.get("lock_date") is None
+
+
+async def test_finish_setup_dismissed_is_a_general_company_setting(client, session):
+    """Closing the "Finish setup" banner saves through the general settings door, and the
+    business type stays settable afterwards (closing hides a pointer, nothing else)."""
+    h, cid = await _owner(client)
+    r = await client.patch("/companies/me", headers=h, json={"settings": {"finish_setup_dismissed": True}})
+    assert r.status_code == 200, r.text
+    assert (await _settings(session, cid))["finish_setup_dismissed"] is True
+    r = await client.post("/companies/me/business-type", json={"vertical": "agricultural"}, headers=h)
+    assert r.status_code == 200, r.text
+    s = await _settings(session, cid)
+    assert s["vertical"] == "agricultural" and s["finish_setup_dismissed"] is True

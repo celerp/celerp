@@ -929,3 +929,77 @@ def test_no_catalog_carries_the_unused_revert_fulfillment_button():
          ":!tests", ":!ui/locales"],
         cwd=root, capture_output=True, text=True).stdout.split()
     assert not readers, f"code still reads btn.revert_fulfillment: {readers}"
+
+
+# Words that were wrong in the catalog: "Costumbre" (a habit) for a custom document,
+# "Pago récord" (a record-breaking payment), a "travel aboard a ship" for Ship to, a
+# literal "core" for the main item details, a doctor for the document column, and the
+# Spanish "disposed" status reading the same as "deleted".
+_KNOWN_FIXES = [
+    ("es", "doc.custom", "Personalizado…"),
+    ("es", "btn.record_payment", "Registrar pago"),
+    ("es", "page.ship_to", "Envíe a"),
+    ("es", "inventory.core_details", "Datos principales"),
+    ("es", "enum.item_status.disposed", "Dado de baja"),
+    ("id", "doc.custom", "Kustom…"),
+    ("vi", "doc.custom", "Tùy chỉnh…"),
+    ("vi", "inventory.core_details", "Chi tiết chính"),
+    ("pt", "inventory.core_details", "Detalhes principais"),
+    ("ja", "inventory.core_details", "基本情報"),
+    ("ar", "page.ship_to", "الشحن إلى"),
+    ("th", "th.doc", "เอกสาร #"),
+]
+
+
+@pytest.mark.parametrize("lang,key,value", _KNOWN_FIXES)
+def test_known_mistranslations_are_gone(lang, key, value):
+    assert _load_locale(lang)[key] == value
+
+
+@pytest.mark.parametrize("lang", sorted(p.stem for p in Path(_LOCALES_DIR).glob("*.json")))
+def test_item_status_labels_are_distinct_per_locale(lang):
+    """Each item status reads differently from every other in the status filter and the
+    badge, so a disposed item never looks deleted."""
+    by_value: dict[str, list[str]] = {}
+    for key, value in _load_locale(lang).items():
+        if key.startswith("enum.item_status."):
+            by_value.setdefault(value, []).append(key)
+    assert not {v: ks for v, ks in by_value.items() if len(ks) > 1}
+
+
+# Spanish addresses the user as usted. These words only exist in the informal tú
+# register; "se selecciona" / "se elige" are impersonal and stay allowed.
+_TU_FORMS = frozenset({
+    "tienes", "puedes", "tu", "tus", "haz", "elige", "selecciona", "inténtalo",
+    "necesitas", "quieres", "estás", "has", "puedas", "tengas", "contigo",
+    "tuyo", "tuya", "tuyos", "tuyas", "elegiste", "pulsa",
+})
+
+
+def _tu_forms(text: str) -> list[str]:
+    words = re.findall(r"\w+", re.sub(r"\{[^}]*\}", " ", text).lower())
+    return [w for i, w in enumerate(words)
+            if w in _TU_FORMS and not (i and words[i - 1] == "se")]
+
+
+def test_es_uses_usted_register():
+    root = Path(__file__).resolve().parents[1]
+    catalogs = [Path(_LOCALES_DIR) / "es.json",
+                *sorted(root.glob("default_modules/*/*/locales/es.json"))]
+    informal = {f"{p.parent.parent.name}:{k}": hits
+                for p in catalogs
+                for k, v in json.loads(p.read_text(encoding="utf-8")).items()
+                if (hits := _tu_forms(v))}
+    assert not informal, informal
+
+
+@pytest.mark.parametrize("lang", ["es", "pt"])
+def test_leading_count_stays_a_count(lang):
+    """"{n} invoices" is a number of invoices; "facturas de {n}" reads as invoices
+    belonging to {n}."""
+    en = json.loads((Path(_LOCALES_DIR) / "en.json").read_text(encoding="utf-8"))
+    tr = json.loads((Path(_LOCALES_DIR) / f"{lang}.json").read_text(encoding="utf-8"))
+    inverted = {k: tr[k] for k, v in en.items()
+                if (m := re.match(r"(\{\w+\}) ", v)) and k in tr
+                and re.search(rf"\bde {re.escape(m.group(1))}$", tr[k])}
+    assert not inverted, inverted

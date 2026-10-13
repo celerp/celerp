@@ -18,11 +18,6 @@
     },
     {
       "file": "ui/routes/documents.py",
-      "text": "CN {...}",
-      "reason": "document number code prefix (identifier, not prose)"
-    },
-    {
-      "file": "ui/routes/documents.py",
       "text": "bcc@example.com",
       "reason": "example email input value"
     },

@@ -2327,6 +2327,119 @@ async def balance_sheet(
     }
 
 
+# The opening balance tie-out's checks, in reading order, with the document types each
+# one reads. Goods are the goods a bill billed and had not received; a purchase order's
+# received goods are opening stock, so an order counts in payables only.
+_TIE_OUT_CHECKS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("goods", frozenset({"bill"})),
+    ("payables", frozenset({"bill", "purchase_order"})),
+    ("receivables", frozenset({"invoice", "credit_note"})),
+)
+
+
+def _tie_out_check(key: str, ledger: Decimal, documents: list[tuple], base: str,
+                   statuses: dict[str, str], by_account: list[dict] | None = None) -> dict:
+    """One row of the tie-out. documents: (OpeningHeld, amount in its currency or None,
+    amount in base) per document the check expects. The difference is ledger - expected,
+    matched within half a base minor unit per foreign-currency document (each conversion
+    rounds once), exactly for the rest."""
+    expected = sum((b for _, _, b in documents), Decimal(0))
+    difference = round_money(ledger - expected, base)
+    foreign = sum(1 for h, _, _ in documents if h.currency != base)
+    tolerance = Decimal(foreign) * Decimal("0.5") * Decimal(10) ** -currency_dp(base)
+    by_currency: dict[str, Decimal] = {}
+    for h, amount, _ in documents:
+        if amount is not None:
+            by_currency[h.currency] = by_currency.get(h.currency, Decimal(0)) + amount
+    return {
+        "key": key,
+        "label_key": f"opening_tie_out.{key}",
+        "ledger": to_stored_float(round_money(ledger, base)),
+        "expected": to_stored_float(round_money(expected, base)),
+        "difference": to_stored_float(difference),
+        "tolerance": to_stored_float(tolerance),
+        "matches": abs(difference) <= tolerance,
+        "by_account": by_account,
+        "by_currency": {cur: to_stored_float(v) for cur, v in sorted(by_currency.items())},
+        "documents": [{
+            "doc_id": h.doc_id, "doc_type": h.doc_type, "number": h.doc_number, "date": h.date,
+            "currency": h.currency, "amount": None if amount is None else to_stored_float(amount),
+            "base_amount": to_stored_float(b), "status": statuses.get(h.doc_id, ""),
+        } for h, amount, b in sorted(documents, key=lambda d: (d[0].date, d[0].doc_number), reverse=True)],
+    }
+
+
+@router.get("/opening-tie-out")
+async def opening_tie_out(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("view_financial_reports"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The documents imported as already in the opening balances against what the ledger
+    holds on the opening balance date. Read only: a difference is a fact to explain, never
+    corrected here.
+
+    The ledger side is the posted lines dated on or before the opening balance date (an
+    undated line counts, as in every report): per goods account a bill holds, and the whole
+    payables and receivables controls by the role each line was posted for, as the
+    statements read them. The documents side is each document's import snapshot, which is
+    what the file said was open at cutover. With no opening balance date there is nothing
+    to compare to, so no checks."""
+    from celerp.models.company import Company
+    from celerp.services.auto_je import opening_held_documents
+
+    company = await session.get(Company, company_id)
+    as_of = ((company.settings or {}) if company else {}).get("opening_balance_date") or None
+    base = await _base_currency(session, company_id)
+    if not as_of:
+        return {"as_of": None, "base_currency": base, "checks": []}
+    held = await opening_held_documents(session, company_id)
+    settings = await current_settings(session, company_id)
+    goods_accounts = {code for h in held for code in h.goods_by_account}
+    ledger_goods = {code: Decimal(0) for code in goods_accounts}
+    payable = receivable = Decimal(0)
+    for _je_id, state, ts in await _je_rows(session, company_id):
+        if ts and ts > as_of:
+            continue
+        for entry in state.get("entries", []):
+            amounts = _line_amounts(entry)
+            if amounts is None:
+                continue
+            net = amounts[0] - amounts[1]
+            if entry.get("account") in goods_accounts:
+                ledger_goods[entry["account"]] += net
+            roles = line_roles(settings, entry)
+            if AccountRole.PAYABLE.value in roles:
+                payable -= net
+            if AccountRole.RECEIVABLE.value in roles:
+                receivable += net
+
+    ids = sorted(h.doc_id for h in held)
+    statuses = {row.entity_id: str(row.state.get("status") or "") for row in (await session.execute(
+        select(Projection).where(Projection.company_id == company_id, Projection.entity_id.in_(ids))
+    )).scalars()} if ids else {}
+    of = {key: [h for h in held if h.doc_type in types] for key, types in _TIE_OUT_CHECKS}
+    expected_goods = {code: sum((h.goods_by_account.get(code, Decimal(0)) for h in of["goods"]), Decimal(0))
+                      for code in sorted(goods_accounts)}
+    by_account = [{
+        "account": code,
+        "ledger": to_stored_float(round_money(ledger_goods[code], base)),
+        "expected": to_stored_float(round_money(expected_goods[code], base)),
+        "difference": to_stored_float(round_money(ledger_goods[code] - expected_goods[code], base)),
+    } for code in sorted(goods_accounts)]
+    # Goods are only ever booked in base, so a goods document has no amount in its own currency.
+    goods = [(h, None, sum(h.goods_by_account.values(), Decimal(0))) for h in of["goods"] if h.goods_by_account]
+
+    def owed(key: str) -> list[tuple]:
+        return [(h, h.amount, h.base_amount) for h in of[key]]
+
+    return {"as_of": as_of, "base_currency": base, "checks": [
+        _tie_out_check("goods", sum(ledger_goods.values(), Decimal(0)), goods, base, statuses, by_account),
+        _tie_out_check("payables", payable, owed("payables"), base, statuses),
+        _tie_out_check("receivables", receivable, owed("receivables"), base, statuses),
+    ]}
+
+
 # The control accounts a party's balance lives on: receivable and payable. A
 # statement is the lines posted to them filtered to one party, which is what makes
 # the statements sum back to the balance sheet. A line is a control line by the role

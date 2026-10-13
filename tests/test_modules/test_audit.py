@@ -144,7 +144,7 @@ class TestBackupExportWritesEnabledModules:
         import celerp.services.backup as backup_mod
         import celerp.config as cfg_mod
         monkeypatch.setattr(be, "_build_archive", fake_build)
-        monkeypatch.setattr(backup_mod, "dump_database", lambda url: b"FAKE_DUMP")
+        monkeypatch.setattr(backup_mod, "dump_database", lambda url, dest: dest.write_bytes(b"FAKE_DUMP"))
         monkeypatch.setattr("celerp.modules.registry.load_set", fake_load_set)
         monkeypatch.setattr(cfg_mod, "read_config", lambda: {"company": {"name": "Test"}})
 

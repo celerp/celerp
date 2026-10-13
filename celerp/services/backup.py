@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Backup primitives — pg_dump/pg_restore and AES-256-GCM encrypt/decrypt.
+"""Backup primitives: pg_dump/pg_restore and streamed AES-256-GCM encrypt/decrypt.
 
 Encryption:
   - Key: 32-byte random, base64-encoded, stored in config.toml [cloud] section
@@ -15,17 +15,31 @@ cloud snapshot client (``backup_repo``).
 from __future__ import annotations
 
 import base64
+import errno
+import hashlib
+import io
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from celerp.config import settings
 from ui.i18n import t
 
 _NONCE_BYTES = 12
+_TAG_BYTES = 16
+# Each AES-256-GCM blob carries its nonce and tag around the ciphertext.
+ENC_OVERHEAD = _NONCE_BYTES + _TAG_BYTES
+_CHUNK = 1024 * 1024  # read window for streamed hashing and encryption
 
 # macOS fallback dirs for .app builds whose PATH is stripped to /usr/bin:/bin:/usr/sbin:/sbin.
 # shutil.which() is tried first (handles terminal launches, asdf, nix, mise, etc.).
@@ -135,49 +149,107 @@ def _parse_key(b64_key: str) -> bytes:
     return key
 
 
-def dump_database(database_url: str, *, runner=None) -> bytes:
-    """Run pg_dump against database_url and return raw dump bytes.
+def dump_database(database_url: str, dest: Path, *, runner=None) -> None:
+    """Run pg_dump against database_url, writing the dump to *dest*.
 
-    Raises RuntimeError if pg_dump fails or is not found.
+    pg_dump writes ``<dest>.partial`` (a relative name with cwd set, as the restore tools
+    are run) and it is renamed over *dest* only when pg_dump succeeded, so a failed dump
+    leaves no partial file and keeps a previous dump at *dest*. Raises RuntimeError with
+    the message to show.
     """
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
     runner = runner or subprocess.run
+    partial = dest.with_name(f"{dest.name}.partial")
     try:
-        pg_dump = _find_pg_tool("pg_dump")
-        result = runner(
-            [pg_dump, "--format=custom", "--no-password", pg_url],
-            capture_output=True,
-            timeout=300,
-        )
+        with disk_full_as_error():
+            pg_dump = _find_pg_tool("pg_dump")
+            result = runner(
+                [pg_dump, "--format=custom", "--no-password", f"--file={partial.name}", pg_url],
+                capture_output=True,
+                timeout=300,
+                cwd=dest.parent,
+            )
+            if result.returncode != 0:
+                stderr = result.stderr.decode(errors="replace").strip()
+                raise RuntimeError(t("error.backup_failed_detail", detail=stderr))
+            os.replace(partial, dest)
     except FileNotFoundError as exc:
         raise RuntimeError(t("error.backup_tool_missing")) from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(t("error.backup_timed_out")) from exc
-    if result.returncode != 0:
-        stderr = result.stderr.decode(errors="replace").strip()
-        raise RuntimeError(t("error.backup_failed_detail", detail=stderr))
-    return result.stdout
+    finally:
+        partial.unlink(missing_ok=True)
 
 
-def encrypt(plaintext: bytes, key: bytes) -> bytes:
-    """Encrypt plaintext with AES-256-GCM. Returns nonce + ciphertext+tag."""
-    import os
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+@contextmanager
+def disk_full_as_error():
+    """A full disk while a backup is written says so, instead of an OS error code."""
+    try:
+        yield
+    except OSError as exc:
+        if exc.errno != errno.ENOSPC:
+            raise
+        raise RuntimeError(t("error.backup_disk_full")) from exc
+
+
+def encrypt_chunks(path: Path, key: bytes, chunk: int = _CHUNK) -> Iterator[bytes]:
+    """Encrypt the file at *path* with AES-256-GCM, reading *chunk* bytes at a time.
+
+    Yields the nonce, the ciphertext in pieces, then the tag: the same bytes as a
+    one-shot ``AESGCM.encrypt`` prefixed with its nonce (``ENC_OVERHEAD`` more than the
+    file)."""
     nonce = os.urandom(_NONCE_BYTES)
-    aesgcm = AESGCM(key)
-    ciphertext = aesgcm.encrypt(nonce, plaintext, associated_data=None)
-    return nonce + ciphertext
+    encryptor = Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
+    yield nonce
+    with path.open("rb") as fh:
+        while data := fh.read(chunk):
+            yield encryptor.update(data)
+    yield encryptor.finalize() + encryptor.tag
 
 
-def decrypt(blob: bytes, key: bytes) -> bytes:
-    """Decrypt AES-256-GCM blob produced by encrypt(). Returns plaintext."""
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    if len(blob) < _NONCE_BYTES:
-        raise ValueError("Blob too short to contain nonce")
-    nonce = blob[:_NONCE_BYTES]
-    ciphertext = blob[_NONCE_BYTES:]
-    aesgcm = AESGCM(key)
-    return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
+def decrypt_file(src: Path, dst: Path, key: bytes, chunk: int = _CHUNK) -> str:
+    """Decrypt a blob written by ``encrypt_chunks`` from *src* to *dst*, *chunk* bytes at a
+    time. Returns the sha256 of the plaintext. A damaged blob or a wrong key removes
+    *dst* and raises RuntimeError."""
+    size = src.stat().st_size
+    if size < ENC_OVERHEAD:
+        raise RuntimeError(t("error.backup_damaged"))
+    digest = hashlib.sha256()
+    try:
+        with src.open("rb") as fin, dst.open("wb") as fout:
+            decryptor = Cipher(algorithms.AES(key), modes.GCM(fin.read(_NONCE_BYTES))).decryptor()
+            left = size - ENC_OVERHEAD
+            while left:
+                data = fin.read(min(chunk, left))
+                if not data:
+                    raise RuntimeError(t("error.backup_damaged"))
+                plain = decryptor.update(data)
+                left -= len(data)
+                digest.update(plain)
+                fout.write(plain)
+            decryptor.finalize_with_tag(fin.read(_TAG_BYTES))
+    except InvalidTag as exc:
+        dst.unlink(missing_ok=True)
+        raise RuntimeError(t("error.backup_damaged")) from exc
+    except BaseException:
+        dst.unlink(missing_ok=True)
+        raise
+    return digest.hexdigest()
+
+
+def add_bytes_member(tar: tarfile.TarFile, arcname: str, data: bytes) -> None:
+    """Add a small in-memory member (meta.json) to *tar*."""
+    info = tarfile.TarInfo(name=arcname)
+    info.size = len(data)
+    tar.addfile(info, io.BytesIO(data))
+
+
+def add_file_member(tar: tarfile.TarFile, arcname: str, path: Path) -> None:
+    """Add the file at *path* to *tar* as *arcname*, streamed from disk."""
+    info = tarfile.TarInfo(name=arcname)
+    info.size = path.stat().st_size
+    with path.open("rb") as fh:
+        tar.addfile(info, fh)
 
 
 # Celerp's own relations: the tables and sequences in public, except extension members.

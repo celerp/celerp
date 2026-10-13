@@ -8,6 +8,7 @@ import math
 import re
 import time
 import json as _json
+from decimal import Decimal
 from typing import NamedTuple
 
 from fasthtml.common import *
@@ -26,7 +27,7 @@ from celerp.services.units import (
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.security import not_permitted_redirect
-from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
+from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
@@ -181,7 +182,7 @@ def _measure_weight_field(val, unit, *, locked: bool, show: bool, avail=None):
         Input(type="number", value=("" if val is None else str(val)), step="any",
               data_name="weight", disabled=bool(locked), onblur="celerpAutoSave()",
               cls="cell-input cell-input--measure"),
-        Span(unit or "", cls="unit-label js-weight-unit", title=_title),
+        Span(display_unit(unit), cls="unit-label js-weight-unit", title=_title),
         cls="measure-weight", style=("" if show else "display:none"),
     )
 
@@ -222,12 +223,8 @@ def _enrich_line_meta(line_items: list[dict], item_meta: dict | None,
         item_meta_map[eid] = item_measure_meta(item, unit_map)
         if item.get("status"):
             item_status_map[eid] = item["status"]
-            _sdoc = str(item.get("status_doc_id") or "")
-            if _sdoc:
-                item_status_doc_map[eid] = (
-                    _sdoc,
-                    str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
-                )
+            if _sdoc := _status_doc(item):
+                item_status_doc_map[eid] = _sdoc
     if ident_mode != "sku":
         # Lines saved before barcodes were stamped: fill from the catalog item.
         for _li in line_items:
@@ -256,6 +253,12 @@ def _receive_kind_select(li: dict | None) -> FT:
     )
 
 
+def _status_doc(item: dict) -> tuple[str, str] | None:
+    """The document behind an item's status as (id, number), or None when either is missing."""
+    doc_id, doc_number = str(item.get("status_doc_id") or ""), str(item.get("status_doc_number") or "")
+    return (doc_id, doc_number) if doc_id and doc_number else None
+
+
 def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
     """Inventory item -> line-item picker payload, shared by both catalog
     autocomplete endpoints (lookup-by-SKU and typeahead search)."""
@@ -265,6 +268,7 @@ def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
         "description": item.get("name") or item.get("description") or "",
         "unit_price": unit_price,
         "sell_by": meta["sell_by"] or None,
+        "sell_by_label": display_unit(meta["sell_by"]) if meta["sell_by"] else None,
         "quantity": meta["quantity"] or 0,
         "hs_code": item.get("hs_code") or None,
         "country_of_origin": item.get("country_of_origin") or None,
@@ -279,6 +283,7 @@ def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
         "receive_as": default_receive_as(item.get("inventory_type"), meta["sell_by"]),
         "weight": meta["weight"],
         "weight_unit": meta["weight_unit"],
+        "weight_unit_label": display_unit(meta["weight_unit"]) if meta["weight_unit"] else None,
         "pieces": meta["pieces"],
         "qty_is_weight": meta["qty_is_weight"],
         "qty_is_pieces": meta["qty_is_pieces"],
@@ -427,7 +432,7 @@ def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kw
     return _shared_doc_files_section(entity_type, entity_id, files, **kwargs)
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
-from ui.i18n import category_label, get_lang, refusal_text, t
+from ui.i18n import category_label, doc_type_label, get_lang, refusal_text, t
 from ui.routes.reports import _date_filter_bar, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
@@ -840,13 +845,13 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
         if status_val == "reserved" and held is not None and abs(held[0] - held[1]) > 1e-9:
             key = "documents.status_reserved_over" if held[0] > held[1] else "documents.status_reserved_part"
             label = t(key, held=f"{held[0]:g}", qty=f"{held[1]:g}")
-        if status_doc and status_doc[0]:
+        if status_doc:
             doc_id, doc_number = status_doc
             badge_el = Span(
                 A(label, href=f"/inventory/{eid}", title=t("documents.view_in_catalog"), cls="badge__doc-link")
                 if eid else label,
                 ": ",
-                A(doc_number or doc_id.removeprefix("doc:"), href=f"/docs/{doc_id}",
+                A(doc_number, href=doc_href(doc_id),
                   title=t("documents.view_reserving_document"), cls="badge__doc-link"),
                 cls=f"badge {badge_cls}",
             )
@@ -907,6 +912,7 @@ _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "bill": "nav.vendor_bills",
     "receipt": "documents.page_receipts",
     "credit_note": "nav.credit_notes",
+    "debit_note": "nav.supplier_credit_notes",
     "memo": "nav.consignment_out",
     "consignment_in": "nav.consignment_in",
     "list": "nav.lists",
@@ -936,6 +942,7 @@ _DOC_TYPE_NEW_LABEL_KEYS: dict[str, str] = {
     "bill": "btn.new_bill",
     "receipt": "btn.new_receipt",
     "credit_note": "btn.new_credit_note",
+    "debit_note": "btn.new_supplier_credit_note",
     "memo": "btn.new_memo",
     "consignment_in": "btn.new_consignment_in",
     "list": "btn.new_list",
@@ -960,6 +967,7 @@ _DOC_TYPE_SINGULAR: dict[str, str] = {
     "bill": "label.vendor_bill",
     "receipt": "documents.doc_receipt",
     "credit_note": "doc.credit_note",
+    "debit_note": "doc.debit_note",
     "memo": "nav.consignment_out",
     "consignment_in": "nav.consignment_in",
     "list": "documents.doc_list",
@@ -978,6 +986,7 @@ _DOC_TYPE_NAV_KEY: dict[str, str] = {
     "bill": "vendor-bills",
     "consignment_in": "consignment-in",
     "credit_note": "credit-notes",
+    "debit_note": "supplier-credit-notes",
     "receipt": "receipts",
     "list": "lists",
     "production_order": "production-orders",
@@ -1038,7 +1047,7 @@ def _line_number_field(unit_label: str, **attrs) -> FT:
     """A number field of a line action row, with the unit it is counted in after it."""
     return Span(
         Input(type="number", onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}", **attrs),
-        Span(unit_label, cls="meta-value meta-value--muted unit-label") if unit_label else None,
+        Span(display_unit(unit_label), cls="meta-value meta-value--muted unit-label") if unit_label else None,
         cls="li-qty-field",
     )
 
@@ -2473,7 +2482,7 @@ celerpUpdateBulkAlloc();
             pass
         # Fetch bank accounts for payment section
         bank_accounts: list[dict] = []
-        if doc_type in ("invoice", "bill", "credit_note"):
+        if doc_type in ("invoice", "bill", "credit_note", "debit_note"):
             try:
                 ba_resp = await api.get_bank_accounts(token)
                 bank_accounts = ba_resp.get("items", []) if isinstance(ba_resp, dict) else ba_resp
@@ -2481,6 +2490,13 @@ celerpUpdateBulkAlloc();
                     bank_accounts = []
             except Exception:
                 pass
+        # The contact's documents a credit note can be applied to; _payment_section keeps the open ones.
+        note_targets: list[dict] = []
+        if doc_type in _NOTE_TARGETS and doc.get("contact_id") and doc.get("status") not in ("draft", "void"):
+            try:
+                note_targets = await _credit_target_options(token, doc)
+            except APIError:
+                note_targets = []
         # Fetch notes for doc (first-class entities)
         doc_notes: list[dict] = []
         try:
@@ -2571,12 +2587,8 @@ celerpUpdateBulkAlloc();
                         continue
                     if item.get("status"):
                         item_status_map[eid] = item["status"]
-                        _sdoc = str(item.get("status_doc_id") or "")
-                        if _sdoc:
-                            item_status_doc_map[eid] = (
-                                _sdoc,
-                                str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
-                            )
+                        if _sdoc := _status_doc(item):
+                            item_status_doc_map[eid] = _sdoc
                     if _need_meta:
                         item_meta_map[eid] = item_measure_meta(item, _unit_map)
                 if _ident_mode != "sku":
@@ -2594,11 +2606,30 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
         )
+
+    @app.get("/docs/{entity_id}/credit-target-options")
+    async def credit_target_options_route(request: Request, entity_id: str, q: str = ""):
+        token = _token(request)
+        if not token:
+            return Div(t("error.session_expired"), cls="combobox-option combobox-option--empty")
+        try:
+            note = await api.get_doc(token, entity_id)
+            choices = _note_target_options(note, await _credit_target_options(token, note, q))
+        except APIError as exc:
+            return Div(error_message(exc), cls="combobox-option combobox-option--empty")
+        currency = str(note.get("currency") or "USD")
+        remaining = round_money(outstanding_balance(note) or 0, currency)
+        options = [Div(label, cls="combobox-option", data_value=eid,
+                       data_amount=f"{min(owed, remaining):.{currency_dp(currency)}f}")
+                   for eid, label, owed in choices]
+        if not options:
+            options = [Div(t("msg.no_results"), cls="combobox-option combobox-option--empty")]
+        return Div(*options)
 
     @app.get("/docs/{entity_id}/field/{field}/display")
     async def doc_field_display(request: Request, entity_id: str, field: str):
@@ -3219,7 +3250,15 @@ celerpUpdateBulkAlloc();
             form = await request.form()
             op_key = submitted_operation_key(form)
             if action == "finalize":
-                await api.finalize_doc(token, entity_id)
+                answer = await api.finalize_doc(token, entity_id)
+                # A lot another invoice names too: only one of them can ship it. Say so in a
+                # notice that stays on the document page until it is closed.
+                shared = (answer.get("shared_lots") or []) if isinstance(answer, dict) else []
+                if shared:
+                    notice = " ".join(t("documents.lot_on_other_invoice", sku=s.get("sku") or s.get("lot_id"),
+                                        docs=", ".join(s.get("docs") or [])) for s in shared)
+                    return _R("", status_code=204, headers={**toast_header(notice, "info", persist=True),
+                                                            "HX-Redirect": f"/docs/{entity_id}"})
             elif action == "send":
                 sent_to = str(form.get("sent_to", "")).strip()
                 if not sent_to:
@@ -3277,6 +3316,20 @@ celerpUpdateBulkAlloc();
                 result = await api.create_doc(token, cn_payload)
                 cn_id = result.get("entity_id") or result.get("id", "")
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{cn_id}"})
+            elif action == "create-supplier-credit-note":
+                # A draft supplier credit note against this bill, for a price or charge the
+                # supplier gives back. Goods go back through Return items, so no lines are copied.
+                source = await api.get_doc(token, entity_id)
+                result = await api.create_doc(token, {
+                    "doc_type": "debit_note",
+                    "original_doc_id": entity_id,
+                    "contact_id": source.get("contact_id"),
+                    "currency": source.get("currency"),
+                    "conversion_rate": source.get("conversion_rate"),
+                    "line_items": [],
+                })
+                note_id = result.get("entity_id") or result.get("id", "")
+                return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{note_id}"})
             elif action == "create-shipment":
                 # One step from "sold it" to "ship it": a draft shipping document
                 # prefilled from this invoice/memo, ready to print as a Delivery
@@ -3413,8 +3466,8 @@ celerpUpdateBulkAlloc();
                 items.append({"item_id": str(form.get(key, "")).strip(), "quantity_returned": qty, **measures})
             if not lines and not items:
                 return _action_error(t("documents.return_nothing_selected"))
-            await api.return_goods(token, entity_id, {**({"items": items} if items else {"lines": lines}),
-                                                      **submitted_operation_key(form)})
+            result = await api.return_goods(token, entity_id, {**({"items": items} if items else {"lines": lines}),
+                                                               **submitted_operation_key(form)})
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3426,8 +3479,12 @@ celerpUpdateBulkAlloc();
             return _action_error(error_message(e))
         count = len({idx for idx, _, _ in picked_lots}) or len(lines)
         done = t(f"documents.return_done_{'one' if count == 1 else 'many'}", n=count)
+        # Goods already paid for come back as a supplier credit note: say so until it is read.
+        credit = (result or {}).get("supplier_credit_doc_number")
+        if credit:
+            done = f"{done} {t('documents.return_raised_supplier_credit', number=credit)}"
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
-                                                **toast_header(done, "info")})
+                                                **toast_header(done, "info", persist=bool(credit))})
 
     @app.delete("/docs/{entity_id}/receive")
     async def undo_receipt_route(request: Request, entity_id: str):
@@ -3511,8 +3568,7 @@ celerpUpdateBulkAlloc();
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
-    @app.post("/docs/{entity_id}/apply-credit")
-    async def apply_credit_route(request: Request, entity_id: str):
+    async def _apply_note(request: Request, entity_id: str, apply):
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
@@ -3522,12 +3578,20 @@ celerpUpdateBulkAlloc();
             target_doc_id = str(form.get("target_doc_id", "")).strip()
             amount = float(form.get("amount", 0))
             date = str(form.get("date", "")).strip() or None
-            await api.apply_credit_note(token, entity_id, target_doc_id, amount, date, **submitted_operation_key(form))
+            await apply(token, entity_id, target_doc_id, amount, date, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+
+    @app.post("/docs/{entity_id}/apply-credit")
+    async def apply_credit_route(request: Request, entity_id: str):
+        return await _apply_note(request, entity_id, api.apply_credit_note)
+
+    @app.post("/docs/{entity_id}/apply-supplier-credit")
+    async def apply_supplier_credit_route(request: Request, entity_id: str):
+        return await _apply_note(request, entity_id, api.apply_supplier_credit)
 
     @app.post("/docs/{entity_id}/refund-credit")
     async def refund_credit_route(request: Request, entity_id: str):
@@ -3787,35 +3851,6 @@ celerpUpdateBulkAlloc();
             request=request,
         )
 
-    @app.get("/docs/{entity_id}/open-invoices")
-    async def doc_open_invoices(request: Request, entity_id: str):
-        """HTMX endpoint: fetch open invoices for same contact (for credit note application picker)."""
-        from starlette.responses import JSONResponse
-        token = _token(request)
-        if not token:
-            return JSONResponse([], status_code=401)
-        try:
-            doc = await api.get_doc(token, entity_id)
-            contact_id = doc.get("contact_id")
-            if not contact_id:
-                return JSONResponse([])
-            resp = await api.list_docs(token, {"contact_id": contact_id, "doc_type": "invoice", "limit": 100})
-            invoices = resp.get("items", [])
-            # Filter to open invoices with outstanding > 0
-            open_inv = []
-            for inv in invoices:
-                outstanding = float(outstanding_balance(inv) or 0)
-                if inv.get("status") not in ("draft", "void", "paid") and outstanding > 0:
-                    open_inv.append({
-                        "id": inv.get("entity_id") or inv.get("id", ""),
-                        "doc_number": inv.get("doc_number") or inv.get("ref_id") or "",
-                        "outstanding": outstanding,
-                        "contact_name": inv.get("contact_name") or "",
-                    })
-            return JSONResponse(open_inv)
-        except Exception:
-            return JSONResponse([])
-
     def _share_panel(entity_id: str, status: dict) -> FT:
         """Share modal body. The document's stable link is always shown (dimmed
         while off) with a copy indicator; below it one control row: auto-revoke
@@ -3952,9 +3987,9 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(error_message(e))
-        # Goods another invoice had set aside: say whose, and that it is costed when it
-        # ships, in a notice that stays until it is closed.
-        moved = (answer.get("cost_moved") or []) if isinstance(answer, dict) else []
+        # Goods another invoice named: say whose, and that it can no longer ship them, in a
+        # notice that stays until it is closed.
+        moved = (answer.get("taken_from") or []) if isinstance(answer, dict) else []
         if moved:
             notice = " ".join(t("documents.cost_moved_with_goods", sku=m.get("sku") or m.get("lot_id"),
                                 doc=m.get("doc_number") or m.get("doc_id")) for m in moved)
@@ -5180,7 +5215,8 @@ def _doc_table(
         "consignment_in": ("label.no_consignment_in_yet", "btn.new_consignment_in"),
         "receipt": ("label.no_receipts_yet", "btn.new_receipt"),
         "credit_note": ("label.no_credit_notes_yet", "btn.new_credit_note"),
-        "list": ("label.no_lists_yet", "btn.new_list"),
+        "debit_note": ("label.no_supplier_credit_notes_yet", "btn.new_supplier_credit_note"),
+        "list":("label.no_lists_yet", "btn.new_list"),
         "production_order": ("label.no_documents_yet", "btn.new_production_order"),
     }
     if not docs:
@@ -5237,7 +5273,7 @@ def _doc_table(
         return Tr(
             *checkbox_td,
             Td(A(doc_number or EMPTY, href=f"/docs/{eid}", cls="table-link")),
-            Td(format_value(d.get("doc_type"), "badge")),
+            Td(format_value(d.get("doc_type"), "badge", domain="doc_type")),
             Td(format_value(contact)),
             Td(format_value(issue_date, "date")),
             *([Td(format_value(d.get("_updated_at"), "date"))] if is_drafts_view else [Td(format_value(due_date, "date"))]),
@@ -5574,31 +5610,94 @@ def _tc_dropdown(entity_id: str, doc: dict, tc_templates: list[dict], doc_type: 
     ]
 
 
-def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_operator: bool = True) -> FT:
-    """Shared payment/credit section for invoices, bills, and credit notes.
+# What a note settles, and the words for it: a customer credit note goes against
+# invoices and is refunded to the customer; a supplier credit note goes against bills
+# and purchase orders and is refunded by the supplier.
+_NOTE_TARGETS: dict[str, dict] = {
+    "credit_note": {"targets": ("invoice",), "apply_title": "page.apply_to_invoice",
+                    "target_label": "label.invoice", "apply_path": "apply-credit",
+                    "refund_title": "page.refund_to_customer"},
+    "debit_note": {"targets": ("bill", "purchase_order"), "apply_title": "page.apply_to_bill",
+                   "target_label": "label.vendor_bill", "apply_path": "apply-supplier-credit",
+                   "refund_title": "page.refund_from_supplier"},
+}
 
-    DRY: one function, different labels based on doc_type.
+
+async def _credit_target_options(token: str, note: dict, q: str = "", limit: int = 30) -> list[dict]:
+    """Find eligible applications through the paginated document-list API, not a capped
+    page of the supplier's history. Search can reach older open documents."""
+    if not note.get("contact_id") or note.get("doc_type") not in _NOTE_TARGETS:
+        return []
+    found: list[dict] = []
+    for kind in _NOTE_TARGETS[note["doc_type"]]["targets"]:
+        offset = 0
+        while len(found) < limit:
+            params = {"contact_id": note["contact_id"], "doc_type": kind,
+                      "status_in": awaiting_status_param(kind), "limit": 50, "offset": offset}
+            if q.strip():
+                params["q"] = q.strip()
+            response = await api.list_docs(token, params)
+            items = response.get("items") or []
+            eligible_ids = {eid for eid, _, _ in _note_target_options(note, items)}
+            found.extend(item for item in items if (item.get("id") or item.get("entity_id")) in eligible_ids
+                         and len(found) < limit)
+            offset += len(items)
+            if not items or offset >= int(response.get("total", offset)):
+                break
+    return found
+
+
+def _note_target_options(doc: dict, candidates: list[dict]) -> list[tuple[str, str, Decimal]]:
+    """The documents a credit note can settle: same contact, same currency, issued and
+    still owing, as (id, "number - outstanding", outstanding) picker options."""
+    how = _NOTE_TARGETS.get(doc.get("doc_type", ""))
+    if how is None:
+        return []
+    currency = str(doc.get("currency") or "USD").upper()
+    options = []
+    for cand in candidates:
+        owed = round_money(outstanding_balance(cand) or 0, currency)
+        if (cand.get("doc_type") in how["targets"]
+                and cand.get("contact_id") == doc.get("contact_id")
+                and str(cand.get("currency") or "USD").upper() == currency
+                and cand.get("status") not in ("draft", "void", "paid")
+                and owed > 0):
+            number = cand.get("ref_id") or cand.get("doc_number") or EMPTY
+            options.append((cand.get("entity_id") or cand.get("id") or "",
+                            f"{number} - {t('documents.outstanding_label')}{fmt_money(owed, currency)}",
+                            owed))
+    return options
+
+
+def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_operator: bool = True,
+                     targets: list[dict] | None = None) -> FT:
+    """Shared payment/credit section for invoices, bills, and customer and supplier credit notes.
+
+    DRY: one function, different labels based on doc_type. ``targets`` holds the contact's
+    documents a credit note may be applied to; the picker shows only those still open.
     Hidden for drafts, void docs, and non-payable doc types.
     """
+    from celerp_docs.doc_constants import CREDIT_APPLICATION_METHODS
     entity_id = doc.get("entity_id") or doc.get("id") or ""
     doc_type = doc.get("doc_type", "")
     status = doc.get("status", "draft")
     currency = doc.get("currency") or "USD"
 
     # Determine if this doc type should show payments
-    _PAYABLE_TYPES = ("invoice", "bill", "credit_note")
+    _PAYABLE_TYPES = ("invoice", "bill", "credit_note", "debit_note")
     if doc_type not in _PAYABLE_TYPES:
         return Span()
     if status in ("draft", "void"):
         return Span()
 
-    is_credit_note = doc_type == "credit_note"
+    note = _NOTE_TARGETS.get(doc_type)
+    is_credit_note = note is not None
     is_bill = doc_type == "bill"
 
     # Labels
     section_title = t("documents.credit_application") if is_credit_note else t("documents.payments")
     section_icon = "\U0001f4b3" if is_credit_note else "\U0001f4b0"
-    add_label = t("page.apply_to_invoice") if is_credit_note else (t("btn.record_payment") if is_bill else t("documents.receive_payment"))
+    add_label = t(note["apply_title"]) if is_credit_note else (t("btn.record_payment") if is_bill else t("documents.receive_payment"))
 
     # Deleted payments are tombstoned in the doc, not removed; only voided ones
     # stay visible (struck through).
@@ -5629,8 +5728,9 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         # For credit notes, show "Applied To" instead of bank
         if is_credit_note and p_target:
             link_col = Td(A(p_target.split(":")[-1][:12], href=f"/docs/{p_target}", cls="table-link"))
-        elif p_method == "credit_note" and p_source:
-            link_col = Td(A(f"CN {p_source.split(':')[-1][:12]}", href=f"/docs/{p_source}", cls="table-link"))
+        elif p_method in ("credit_note", "supplier_credit") and p_source:
+            _prefix = "CN" if p_method == "credit_note" else "SCN"
+            link_col = Td(A(f"{_prefix} {p_source.split(':')[-1][:12]}", href=f"/docs/{p_source}", cls="table-link"))
         else:
             link_col = Td(p_bank or EMPTY)
 
@@ -5657,7 +5757,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         elif not voided and is_operator:
             refund_form = ""
             p_left = round_money(p_amount, currency) - round_money(p.get("refunded") or 0, currency)
-            if p_method not in ("credit_note", "applied") and p_left > 0:
+            if p_method not in CREDIT_APPLICATION_METHODS and p_left > 0:
                 refund_form = Details(
                     Summary(t("btn.refund"), cls="btn btn--ghost btn--xs", title=t("documents.refund_this_payment")),
                     Form(
@@ -5746,35 +5846,42 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         _bank_opts = _bank_account_options(bank_accounts, default_code=bank_accounts[0].get("chart_account_code") if bank_accounts else None)
 
         if is_credit_note:
+            options = _note_target_options(doc, targets or [])
+            # Picking a document fills in the most this note can settle on it.
+            fill = {oid: f"{min(owed, outstanding_d):.{money_dp}f}" for oid, _label, owed in options}
             add_form = Div(
-                # Apply to Invoice form
+                # Apply to Invoice / Bill form
                 Div(
-                    H4(t("page.apply_to_invoice"), cls="form-subtitle"),
+                    H4(add_label, cls="form-subtitle"),
                     Form(
                         Div(
-                            Div(Label(t("label.invoice"), cls="form-label"),
-                                Select(
-                                    Option(t("doc.loading_invoices"), value=""),
-                                    name="target_doc_id", cls="form-input", id="cn-invoice-picker",
-                                ), cls="form-group"),
+                            Div(Label(t(note["target_label"]), cls="form-label"),
+                                searchable_select("target_doc_id", [(oid, label) for oid, label, _owed in options],
+                                                  search_url=f"/docs/{entity_id}/credit-target-options"),
+                                cls="form-group"),
                             Div(Label(t("label.amount"), cls="form-label"),
                                 Input(type="number", name="amount", value=money_value,
-                                      step=money_step, min="0", cls="form-input", id="cn-apply-amount"), cls="form-group"),
+                                      step=money_step, min="0", cls="form-input"), cls="form-group"),
                             Div(Label(t("th.date"), cls="form-label"),
                                 Input(type="date", name="date", value=today, cls="form-input"), cls="form-group"),
                             cls="form-row",
                         ),
                         operation_key_input(),
                         Button(t("btn.apply"), type="submit", cls="btn btn--primary btn--sm"),
-                        hx_post=f"/docs/{entity_id}/apply-credit",
+                        hx_post=f"/docs/{entity_id}/{note['apply_path']}",
                         hx_swap="none",
                         cls="form-card",
+                        data_fill=_json.dumps(fill),
+                        onchange="if(event.target.name==='target_doc_id'){var v=JSON.parse(this.dataset.fill)[event.target.value];"
+                                 "if(!v){var el=Array.from(this.querySelectorAll('.combobox-option')).find("
+                                 "x=>x.dataset.value===event.target.value);v=el&&el.dataset.amount;}"
+                                 "if(v)this.elements.amount.value=v;}",
                     ),
                     cls="payment-form-section",
                 ),
-                # Refund to Customer form
+                # Refund form: to the customer, or from the supplier
                 Div(
-                    H4(t("page.refund_to_customer"), cls="form-subtitle"),
+                    H4(t(note["refund_title"]), cls="form-subtitle"),
                     Form(
                         Div(
                             Div(Label(t("label.amount"), cls="form-label"),
@@ -5800,32 +5907,6 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                     ),
                     cls="payment-form-section",
                 ),
-                # JS to populate invoice picker
-                Script(f"""
-(function() {{
-    fetch('/docs/{entity_id}/open-invoices')
-        .then(r => r.json())
-        .then(invoices => {{
-            const sel = document.getElementById('cn-invoice-picker');
-            if (!sel) return;
-            sel.innerHTML = '<option value="">' + {_json.dumps(t("documents.select_invoice_option"))} + '</option>';
-            invoices.forEach(inv => {{
-                const opt = document.createElement('option');
-                opt.value = inv.id;
-                opt.textContent = inv.doc_number + ' - ' + inv.contact_name + ' - ' + {_json.dumps(t("documents.outstanding_label"))} + inv.outstanding.toFixed({money_dp});
-                sel.appendChild(opt);
-            }});
-            sel.addEventListener('change', function() {{
-                const inv = invoices.find(i => i.id === sel.value);
-                if (inv) {{
-                    const amtEl = document.getElementById('cn-apply-amount');
-                    if (amtEl) amtEl.value = Math.min({outstanding}, inv.outstanding).toFixed({money_dp});
-                }}
-            }});
-        }})
-        .catch(() => {{}});
-}})();
-"""),
             )
         else:
             # Standard payment form for invoices and bills
@@ -6213,8 +6294,8 @@ def _return_lot_picker(li: dict, i: int, unit_map: dict, meta: dict) -> FT | Non
     rows = []
     for j, lot in enumerate(lots):
         key, qty = f"lot_{i}_{j}", float(lot.get("quantity") or 0)
-        facts = [f"{t('documents.return_lot_free')}: {qty:g} {unit}".strip(),
-                 f"{t('th.weight')}: {measure(lot.get('weight'), lot.get('weight_unit') or '')}",
+        facts = [f"{t('documents.return_lot_free')}: {qty:g} {display_unit(unit)}".strip(),
+                 f"{t('th.weight')}: {measure(lot.get('weight'), display_unit(lot.get('weight_unit')))}",
                  f"{t('inventory.th_pieces')}: {measure(lot.get('pieces'))}"]
         rows.append(Div(
             Label(Input(type="checkbox", name=key, value=lot["item_id"], cls="return-lot-pick", disabled=True,
@@ -6422,7 +6503,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                         style="display:none",
                         hx_post=f"/docs/{entity_id}/fulfill-lines",
                         hx_swap="none",
-                        hx_confirm=f"{_fulfill_label}?",
+                        hx_confirm=t("documents.confirm_ship_goods"),
                         hx_disabled_elt="find button[type=submit]",
                         onsubmit="return submitLiBulkAction(this)",
                     )
@@ -6465,7 +6546,7 @@ def _line_tax_rate(li: dict) -> float:
 
 
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
-                connected_connectors: set[str] | None = None) -> FT:
+                connected_connectors: set[str] | None = None, note_targets: list | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -6606,6 +6687,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 hx_swap="none",
                 cls="btn btn--secondary btn--sm",
                 title=t("documents.tip_create_credit_note"),
+            )
+        )
+    if doc_type == "bill" and status not in ("draft", "void"):
+        action_btns_left.append(
+            Button(t("btn.create_supplier_credit_note"),
+                hx_post=f"/docs/{entity_id}/action/create-supplier-credit-note",
+                hx_swap="none",
+                cls="btn btn--secondary btn--sm",
+                title=t("documents.tip_create_supplier_credit_note"),
             )
         )
     if doc_type == "invoice" and status in ("sent", "final", "partial", "awaiting_payment"):
@@ -6756,6 +6846,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             "memo": t("documents.finalize_label_memo"),
             "consignment_in": t("documents.finalize_label_consignment_in"),
             "credit_note": t("documents.finalize_label_credit_note"),
+            "debit_note": t("documents.finalize_label_debit_note"),
             "receipt": t("documents.finalize_label_receipt"),
         }
         # Plain-language tooltip for the primary lifecycle action: "Issue"/"Finalize"
@@ -6766,6 +6857,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             "memo": t("documents.finalize_tip_memo"),
             "consignment_in": t("documents.finalize_tip_consignment_in"),
             "credit_note": t("documents.finalize_tip_credit_note"),
+            "debit_note": t("documents.finalize_tip_debit_note"),
             "receipt": t("documents.finalize_tip_receipt"),
         }
         finalize_label = _finalize_labels.get(doc_type, t("btn.finalize"))
@@ -6886,7 +6978,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             contact_email = doc.get("contact_email") or ""
             doc_number = doc.get("ref_id") or doc.get("doc_number") or ""
             company_name = doc.get("company_name") or t("documents.your_company")
-            _type_label_send = doc_type.replace("_", " ").title()
+            _type_label_send = doc_type_label(doc_type)
             default_subject = t("documents.email_subject", type=_type_label_send, number=doc_number, company=company_name) if doc_number else ""
             default_body = t("documents.email_body", type=_type_label_send, number=doc_number) if doc_number else ""
             modal_id = f"send-modal-{entity_id.replace(':', '-')}"
@@ -7440,7 +7532,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                                       data_name="country_of_origin", oninput="celerpFieldEdited(this)",
                                       onblur="celerpAutoSave()", cls="cell-input cell-input--xs"),
                               cls="col-origin"))
-            _unit_span = Span(li.get("unit", "") or "", data_name="unit",
+            _unit_span = Span(display_unit(li.get("unit")), data_name="unit", **{"data-unit": li.get("unit") or ""},
                               cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
             if pol["counting"]:
                 # Static qty once counting (the system figure is On hand) — no input on a locked line.
@@ -7577,7 +7669,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cells.append(Td(Input(type="text", value="", data_name="country_of_origin",
                                       oninput="celerpFieldEdited(this)", onblur="celerpAutoSave()",
                                       cls="cell-input cell-input--xs"), cls="col-origin"))
-            _e_unit_span = Span("", data_name="unit", cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
+            _e_unit_span = Span("", data_name="unit", **{"data-unit": ""}, cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
             _e_qty_input = Input(type="number", value="1", step="any", data_name="quantity",
                                  **{"data-qty-measure": ""},
                                  oninput="celerpFieldEdited(this); celerpSyncQtyMeasure(this)",
@@ -8248,7 +8340,7 @@ function celerpFillRow(row, data) {{
     if (hsCodeEl && data.hs_code) hsCodeEl.value = data.hs_code;
     if (cooEl && data.country_of_origin) cooEl.value = data.country_of_origin;
     if (priceEl && data.unit_price != null) priceEl.value = data.unit_price;
-    if (unitEl && data.sell_by) unitEl.textContent = data.sell_by;
+    if (unitEl && data.sell_by) {{ unitEl.dataset.unit = data.sell_by; unitEl.textContent = data.sell_by_label || data.sell_by; }}
     if (entityIdEl) entityIdEl.value = data.entity_id || '';
     if (allowSplitEl) allowSplitEl.value = data.allow_splitting ? '1' : '';
     if (itemQtyEl && data.quantity) itemQtyEl.value = data.quantity;
@@ -8311,7 +8403,7 @@ function celerpFillRow(row, data) {{
     if (weightEl) {{ weightEl.disabled = !data.allow_splitting; weightEl.value = (data.weight == null) ? '' : data.weight; }}
     const wuEl = row.querySelector('.js-weight-unit');
     if (wuEl) {{
-        wuEl.textContent = data.weight_unit || (data.qty_is_weight ? (data.sell_by || '') : '');
+        wuEl.textContent = data.weight_unit_label || (data.qty_is_weight ? (data.sell_by_label || '') : '');
         wuEl.title = (data.weight != null) ? ('max: ' + data.weight + ' ' + wuEl.textContent) : '';
     }}
     const pcsUnitEl = row.querySelector('.measure-pcs .unit-label');
@@ -8936,7 +9028,7 @@ function _celerpCollectLines() {{
         const desc = row.querySelector('[data-name="description"]')?.value;
         const sku = row.querySelector('[data-name="sku"]')?.value;
         const qty = _celerpReadQuantity(row);
-        const unitEl = row.querySelector('[data-name="unit"]'); const unit = unitEl ? (unitEl.value || unitEl.textContent || '').trim() : '';
+        const unitEl = row.querySelector('[data-name="unit"]'); const unit = unitEl ? (unitEl.value || unitEl.dataset.unit || '').trim() : '';
         const price = parseFloat(row.querySelector('[data-name="unit_price"]')?.value || 0);
         const discPct = parseFloat(row.querySelector('[data-name="discount_pct"]')?.value || 0);
         const rate = _celerpTaxRate(row);
@@ -9682,7 +9774,7 @@ async function celerpCsvImport(input, entityId) {{
                     cls="li-return-qty", style="display:none;",
                     title=t("documents.memo_return_prompt", qty=f"{_out_qty:g}"))
             cells.extend([
-                Td(qty_label(li), _return_qty, cls="col-qty"),
+                Td(qty_label({**li, "unit": display_unit(li.get("unit") or li.get("sell_by"))}), _return_qty, cls="col-qty"),
                 Td(fmt_rate(li.get("unit_price"), currency), cls="cell--number col-unit-price"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "--", cls="col-disc"),
                 Td(format_value(_line_tax_rate(li) or None), cls="col-tax"),
@@ -10073,6 +10165,7 @@ async function celerpCsvImport(input, entityId) {{
         "invoice": t("documents.party_bill_to"), "purchase_order": t("documents.party_vendor"), "quotation": t("documents.party_quote_to"),
         "memo": t("documents.party_receiver"), "credit_note": t("documents.party_issued_to"), "receipt": t("th.customer"),
         "list": t("th.customer"), "bill": t("documents.party_vendor"), "consignment_in": t("documents.party_vendor"),
+        "debit_note": t("documents.party_vendor"),
     }.get(doc_type, t("label.contact"))
 
     # Build contact detail rows - hide payment terms/outstanding for lists
@@ -10220,7 +10313,7 @@ async function celerpCsvImport(input, entityId) {{
             cls="doc-section doc-section--totals",
         ),
         # Payment section (invoices, bills, credit notes - not drafts/voids)
-        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay),
+        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay, targets=note_targets),
         # Terms & Conditions + Note to customer (2 columns). Both are customer-facing, so an
         # internal money-less doc (production order) hides them - it uses the Internal Notes
         # section below instead.
@@ -10420,7 +10513,8 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
-    if doc_type == "credit_note":
+    # A supplier credit note has the same lifecycle; it never holds goods, so it has no restock card.
+    if doc_type in ("credit_note", "debit_note"):
         draft_cnt       = _cbs.get("draft", 0)
         all_issued_cnt  = _sm.get("all_issued_count", 0)
         not_restocked_cnt = _sm.get("not_restocked_count", 0)
@@ -10441,6 +10535,8 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("documents.not_restocked", lang), "count": not_restocked_cnt, "total": None, "status": "not_restocked","color": "orange", "_url": f"{base_url}&not_restocked=1","_active_key": "not_restocked"},
             {"label": t("enum.doc_status.void", lang),           "count": void_cnt,          "total": None, "status": "void",         "color": "gray"},
         ]
+        if doc_type == "debit_note":
+            cards = [c for c in cards if c["status"] != "not_restocked"]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
     if doc_type == "bill":
@@ -10566,7 +10662,7 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
     if doc_type and doc_type != "invoice":
         count = summary.get(f"{doc_type}_count", summary.get("total_count", 0))
         return Div(
-            Span(t("documents.doc_type_count", type=doc_type.replace('_', ' ').title(), count=count), cls="val-chip"),
+            Span(t("documents.doc_type_count", type=doc_type_label(doc_type), count=count), cls="val-chip"),
             unvalued_chip,
             cls="valuation-bar",
         )

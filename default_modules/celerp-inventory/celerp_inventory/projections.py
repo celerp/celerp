@@ -70,6 +70,8 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     "parent_item_id", "manufacturing_order_id", "lot",
     # files / media
     "files", "attachments", "preview_image_id",
+    # derived on every read by flatten_item (the list photo); never searched or faceted
+    "thumbnail_file_id",
     # other structured internals
     "recipe", "workflow", "tax_codes",
 })
@@ -555,7 +557,8 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # links back to the source write-off list, where the reason and destination account
         # are single-sourced (DRY); nothing about them is copied onto the item row.
         current["status"] = "disposed"
-        _stamp_status_doc(current, {"source_doc_id": data.get("source_list_id")})
+        _stamp_status_doc(current, {"source_doc_id": data.get("source_list_id"),
+                                    "doc_number": data.get("doc_number")})
     elif event_type == "item.returned_to_supplier":
         # Back with the supplier: the lot leaves stock, its badge links to the document the
         # goods came in on, and consigned goods stop being held on consignment.
@@ -563,6 +566,10 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         _stamp_status_doc(current, {"source_doc_id": data.get("source_doc_id")})
         if "consignment_flag" in data:
             current["consignment_flag"] = data["consignment_flag"]
+    elif event_type == "item.supplier_return_undone":
+        # The supplier credit note for the return was voided: the goods are back in stock.
+        current["status"] = data["restored_status"]
+        _stamp_status_doc(current, {})
     elif event_type == "item.split":
         # Parent stays available with reduced qty (qty reduction via item.quantity.adjusted)
         current["children"] = data.get("child_ids", [])

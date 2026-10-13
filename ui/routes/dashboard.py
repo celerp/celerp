@@ -737,8 +737,9 @@ def setup_routes(app):
 
         try:
             ar_aging = await api.get_ar_aging(token)
-        except APIError:
-            ar_aging = {"buckets": {}}
+        except APIError as e:
+            # A role that cannot view financial reports gets no AR aging card at all.
+            ar_aging = None if e.status == 403 else {"buckets": {}}
 
         try:
             activities = await api.get_activity(token, limit=30)
@@ -806,6 +807,24 @@ def setup_routes(app):
         settings = company.get("settings") or {}
         if _role_has_permission(settings, _get_role(request), "manage_company_settings"):
             return star_supporter_card()
+        return ""
+
+    @app.post("/dashboard/finish-setup/dismiss")
+    async def dismiss_finish_setup(request: Request):
+        """Close the "Finish setup" banner for this company. Only the role that sees it
+        (manage_company_lifecycle) may close it. Undo is not offered: the banner only
+        points at the business type, which stays one click away in Settings > General."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            company = await api.get_company(token)
+            if not _role_has_permission(company.get("settings") or {}, _get_role(request),
+                                        "manage_company_lifecycle"):
+                return Div(t("dashboard.finish_setup_owner_only"), cls="error-banner", id="finish-setup-banner")
+            await api.patch_company(token, {"finish_setup_dismissed": True})
+        except APIError as e:
+            return Div(e.detail, cls="error-banner", id="finish-setup-banner")
         return ""
 
     @app.get("/history")
@@ -986,11 +1005,16 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
 
 def _finish_setup_banner(company: dict, settings: dict, role: str) -> FT | str:
     """A company left without a business type (setup stopped after the account was
-    made) points the one person who can set it at the retry page."""
-    if has_business_type(company) or not _role_has_permission(settings, role, "manage_company_lifecycle"):
+    made) points the one person who can set it at the retry page, until they close it."""
+    if (has_business_type(company) or settings.get("finish_setup_dismissed")
+            or not _role_has_permission(settings, role, "manage_company_lifecycle")):
         return ""
     return Div(Span("ℹ️", cls="info-banner-icon"),
                A(t("dashboard.finish_setup"), href="/setup/company"),
+               Button("×", type="button", cls="getting-started-dismiss info-banner-close",
+                      title=t("settings.dismiss"), aria_label=t("settings.dismiss"),
+                      hx_post="/dashboard/finish-setup/dismiss",
+                      hx_target="#finish-setup-banner", hx_swap="outerHTML"),
                cls="info-banner", id="finish-setup-banner")
 
 
@@ -1097,7 +1121,7 @@ def _chart_empty(title_key: str, sub_key: str, icon: str) -> FT:
     )
 
 
-def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
+def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
                     revenue_trend: list | None = None, currency: str | None = None,
                     category_names: dict | None = None) -> FT:
     import json
@@ -1110,9 +1134,10 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
     rev_data = json.dumps([float(p.get("total", 0) or 0) for p in revenue_trend]) if rev_has_data else "[]"
     cur_sym = _CUR_SYMBOLS.get((currency or "USD").upper(), "")
 
-    buckets = ar_aging.get("buckets", {})
-    ar_has_data = any(float(v or 0) > 0 for v in buckets.values())
-    ar_labels = json.dumps(list(buckets.keys())) if ar_has_data else "[]"
+    # Open credits are negative, so a bucket can net below zero: any non-zero bucket is data.
+    buckets = (ar_aging or {}).get("buckets", {})
+    ar_has_data = any(float(v or 0) != 0 for v in buckets.values())
+    ar_labels = json.dumps([t("reports.aging_current") if k == "current" else k for k in buckets]) if ar_has_data else "[]"
     ar_data = json.dumps([float(v) for v in buckets.values()]) if ar_has_data else "[]"
 
     # Category keys are schema slugs; chart them under the inventory tabs' display names.
@@ -1138,7 +1163,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
     )
 
     chart_cards = []
-    if "ar_aging" in show_charts:
+    if "ar_aging" in show_charts and ar_aging is not None:
         chart_cards.append(
             Div(
                 H3(t("page.ar_aging"), cls="chart-title"),
@@ -1200,9 +1225,16 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
       var arCtx = document.getElementById('chart-ar-aging');
       if (arCtx && {ar_labels}.length > 0) {{
         new Chart(arCtx, {{
-          type: 'doughnut',
+          type: 'bar',
           data: {{ labels: {ar_labels}, datasets: [{{ data: {ar_data}, backgroundColor: colors }}] }},
-          options: {{ responsive: true, plugins: {{ legend: {{ labels: {{ color: textColor }} }} }} }}
+          options: {{
+            responsive: true,
+            scales: {{
+              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return '{cur_sym}' + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
+              x: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }}
+            }},
+            plugins: {{ legend: {{ display: false }} }}
+          }}
         }});
       }}
 

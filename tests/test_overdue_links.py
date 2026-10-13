@@ -88,6 +88,21 @@ def test_overdue_statuses_are_awaiting_payment_statuses_for_money_types():
     assert AWAITING_PAYMENT_STATUSES["bill"] == set(_BILL_AWAITING.split(","))
 
 
+def test_open_credit_statuses_cover_both_note_types():
+    """An issued credit note (customer) or supplier credit note with a balance left is an
+    open credit; paid, draft and void ones are not, and neither is a document of another type."""
+    from celerp.services.doc_balance import OPEN_CREDIT_STATUSES, is_open_credit
+
+    assert set(OPEN_CREDIT_STATUSES) == {"credit_note", "debit_note"}
+    for doc_type in OPEN_CREDIT_STATUSES:
+        assert is_open_credit({"doc_type": doc_type, "status": "final", "total": 50})
+        assert is_open_credit({"doc_type": doc_type, "status": "partial", "total": 50, "amount_outstanding": 20})
+        for status in ("draft", "void", "paid"):
+            assert not is_open_credit({"doc_type": doc_type, "status": status, "total": 50}), (doc_type, status)
+        assert not is_open_credit({"doc_type": doc_type, "status": "final", "total": 50, "amount_outstanding": 0})
+    assert not is_open_credit({"doc_type": "invoice", "status": "final", "total": 50})
+
+
 @pytest.mark.parametrize("state, owed", [
     ({"total": 50}, 50),
     ({"total": 50, "amount_outstanding": None}, 50),

@@ -24,7 +24,9 @@ def test_build_archive_bundles_modules_and_excludes_bytecode(tmp_path):
     (modules / "mymod" / "code.py").write_text("X = 1")
     (modules / "mymod" / "__pycache__" / "code.cpython-312.pyc").write_bytes(b"junk")
 
-    archive = _build_archive(b"DUMP", [modules], {"celerp_version": "test"})
+    dump = tmp_path / "database.dump"
+    dump.write_bytes(b"DUMP")
+    archive = _build_archive(dump, [modules], {"celerp_version": "test"})
     try:
         with tarfile.open(archive) as tar:
             names = tar.getnames()
@@ -34,6 +36,26 @@ def test_build_archive_bundles_modules_and_excludes_bytecode(tmp_path):
     assert "modules/mymod/code.py" in names
     # Regenerable bytecode must not be bundled (bloat + stale across machines).
     assert not any("__pycache__" in n or n.endswith(".pyc") for n in names)
+
+
+def test_build_archive_failure_removes_temp_archive(tmp_path, monkeypatch):
+    """Red statement: the archive was a NamedTemporaryFile(delete=False) and a failure
+    while writing it left the half-built archive in the temp directory."""
+    import tempfile
+
+    from celerp.services import backup_export
+
+    def broken(dirs):
+        raise OSError("disk read failed")
+    monkeypatch.setattr(backup_export, "archive_members", broken)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    dump = tmp_path / "database.dump"
+    dump.write_bytes(b"DUMP")
+    with pytest.raises(OSError, match="disk read failed"):
+        backup_export._build_archive(dump, [tmp_path], {"celerp_version": "test"})
+    assert list(scratch.iterdir()) == []
 
 
 def _archive(path, members: list[tuple[str, bytes]]):
@@ -46,7 +68,9 @@ def _archive(path, members: list[tuple[str, bytes]]):
     meta = json.dumps({"celerp_version": __version__, "pg_version": "16",
                        "created_at": "2026-06-04T00:00:00Z", "company_name": "T"}).encode()
     with tarfile.open(path, mode="w:gz") as tar:
-        for name, body in [("database.dump", dump_database(settings.database_url)), ("meta.json", meta), *members]:
+        dump_database(settings.database_url, path.with_suffix(".dump"))
+        dump = path.with_suffix(".dump").read_bytes()
+        for name, body in [("database.dump", dump), ("meta.json", meta), *members]:
             info = tarfile.TarInfo(name)
             info.size = len(body)
             tar.addfile(info, io.BytesIO(body))
