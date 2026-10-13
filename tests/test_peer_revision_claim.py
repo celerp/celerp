@@ -90,3 +90,49 @@ async def test_claim_rejects_inactive_and_staged_company():
                 assert blocked.value.status_code == 403
     finally:
         await engine.dispose()
+
+
+
+@pytest.mark.asyncio
+async def test_first_financial_sync_rejects_populated_unrelated_company():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with engine.begin() as connection:
+            for table in (Company.__table__, Projection.__table__, CompanyPeerIdentity.__table__):
+                await connection.run_sync(table.create)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        target, source = uuid.uuid4(), uuid.uuid4()
+        original = "doc:existing"
+        grant = SimpleNamespace(company_id=target, source_company_id=source)
+        async with maker() as session:
+            session.add(Company(id=target, slug="original-books", name="Original Books",
+                                settings={}))
+            session.add(Projection(
+                company_id=target, entity_id=original, entity_type="doc",
+                state={"doc_type": "invoice", "status": "final", "total": 100},
+                version=1, updated_at=datetime.now(timezone.utc)))
+            await session.commit()
+            with pytest.raises(HTTPException) as unsafe:
+                await claim_peer_revision(
+                    session, grant=grant, entity_type="doc",
+                    source_entity_id="doc:incoming", source_revision=1,
+                    data={"doc_type": "invoice", "status": "draft"})
+            assert unsafe.value.status_code == 409
+            assert "already contains documents" in unsafe.value.detail
+            await session.rollback()
+
+            from celerp.services.peer_identity import _digest
+            session.add(CompanyPeerIdentity(
+                company_id=target, source_company_id=source,
+                entity_type="doc", source_entity_id=original,
+                source_key_hash=_digest(original), target_entity_id=original,
+                last_revision=1))
+            await session.commit()
+            allowed = await claim_peer_revision(
+                session, grant=grant, entity_type="doc",
+                source_entity_id="doc:new", source_revision=1,
+                data={"doc_type": "invoice", "status": "draft"})
+            assert not allowed.replay and allowed.mapping is None
+            assert allowed.target_id == new_target_identity(source, "doc", "doc:new")
+    finally:
+        await engine.dispose()

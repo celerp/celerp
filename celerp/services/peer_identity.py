@@ -132,6 +132,22 @@ async def claim_peer_revision(
                 raise HTTPException(409, "Source revision already used")
             return PeerRevisionClaim(mapping, target, source_key, digest, True)
         return PeerRevisionClaim(mapping, target, source_key, digest, False)
+    if entity_type == "doc":
+        existing_source = await session.scalar(select(CompanyPeerIdentity.id).where(
+            CompanyPeerIdentity.company_id == company_id,
+            CompanyPeerIdentity.source_company_id == source_company,
+            CompanyPeerIdentity.entity_type == "doc",
+        ).limit(1))
+        if existing_source is None:
+            existing_documents = await session.scalar(select(Projection.entity_id).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "doc",
+            ).limit(1))
+            if existing_documents is not None:
+                raise HTTPException(
+                    409, "Receiving company already contains documents. Use a new company "
+                         "or a company copy with source identities preserved before "
+                         "starting financial-document synchronization.")
     target = new_target_identity(source_company, entity_type, source_entity_id)
     if await session.get(Projection, (company_id, target)) is not None:
         raise HTTPException(409, "External identity conflicts with an existing record")
