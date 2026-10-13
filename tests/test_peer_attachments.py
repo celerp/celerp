@@ -108,7 +108,8 @@ async def test_attachment_sender_sends_only_company_file_with_proof(monkeypatch)
     monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
     monkeypatch.setattr(peer, "_read_projection_page", page)
     monkeypatch.setattr(outbound, "read_company_file", read)
-    monkeypatch.setattr(outbound, "RateLimitedClient", Client)
+    from celerp.connectors import http
+    monkeypatch.setattr(http, "RateLimitedClient", Client)
     ctx = ConnectorContext(company_id=str(cid), store_handle="https://firm.example",
                            access_token="cp1.test")
     result = await outbound.sync_document_attachments(peer.CelerpConnector(), ctx)

@@ -142,7 +142,7 @@ def test_refund_history_validates_identity_and_effective_balance():
 
 
 @pytest.mark.asyncio
-async def test_canonical_refund_reversal_replays_once_and_keeps_receivable_consistent(client, session):
+async def test_canonical_refund_reversal_replays_once_and_keeps_receivable_consistent(client, session, monkeypatch):
     from celerp.models.ledger import LedgerEntry
     from celerp.services.peer_refunds import replay_source_refunds
     from celerp.services.peer_payments import validate_source_refunds
@@ -182,7 +182,13 @@ async def test_canonical_refund_reversal_replays_once_and_keeps_receivable_consi
     assert [x.event_type for x in rows] == [
         "doc.payment.refunded", "doc.payment.refund_reversed"]
     assert rows[1].metadata_["request"]
+    from contextlib import asynccontextmanager
+    from celerp import db
     from celerp.connectors.celerp import _read_documents
+    @asynccontextmanager
+    async def test_session():
+        yield session
+    monkeypatch.setattr(db, "get_session_ctx", test_session)
     page = await _read_documents(company, "")
     copy = next(state for entity_id, _, state in page if entity_id == doc_id)
     assert [event.get("kind", "refunded") for event in copy["payment_events"]] == [
