@@ -6,12 +6,12 @@ from __future__ import annotations
 import hashlib
 import uuid
 
-from celerp.connectors.base import SyncDirection, SyncEntity, SyncResult
-from celerp.connectors.http import RateLimitedClient
 from celerp.services.attachments import MAX_FILE_BYTES, accepts_mime, read_company_file
 
 
-async def sync_document_attachments(connector, ctx) -> SyncResult:
+async def sync_document_attachments(connector, ctx):
+    from celerp.connectors.base import SyncDirection, SyncEntity, SyncResult
+    from celerp.connectors.http import RateLimitedClient
     from celerp.connectors.celerp import _PAGE, _read_projection_page, _target_url
     from celerp.connectors.sync_runner import _last_success_watermark
 
