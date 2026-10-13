@@ -138,3 +138,79 @@ def test_refund_history_validates_identity_and_effective_balance():
         validate_source_payments({
             "status": "partial", "currency": "USD", "amount_paid": 200,
             "payments": [payment], "payment_events": [event]})
+
+
+
+@pytest.mark.asyncio
+async def test_canonical_refund_reversal_replays_once_and_keeps_receivable_consistent(client, session):
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.peer_refunds import replay_source_refunds
+    from celerp.services.peer_payments import validate_source_refunds
+
+    tok = await _register(client)
+    doc_id, _ = await _payable_invoice(client, tok)
+    company = uuid.UUID(_company_id(tok))
+    grant = SimpleNamespace(company_id=company, source_company_id=uuid.uuid4())
+    actor = (await session.execute(select(UserCompany.user_id).where(
+        UserCompany.company_id == company, UserCompany.role == "owner"))).scalar_one()
+    payment = _source_payment()
+    parsed = validate_source_payments({
+        "status": "partial", "currency": "USD", "amount_paid": 200,
+        "payments": [payment]})
+    await apply_source_payments(
+        session, grant=grant, source_entity_id="doc:source-reversed",
+        target_doc_id=doc_id, payments=parsed, actor_id=actor, source_status="partial")
+    history = validate_source_refunds({"currency": "USD", "payment_events": [
+        {"kind": "refunded", "event_id": 110, "payment_index": 0,
+         "refund_number": 0, "amount": 50, "refund_date": "2026-10-12"},
+        {"kind": "reversed", "event_id": 111, "payment_index": 0,
+         "refund_number": 0, "amount": 50, "reversal_date": "2026-10-13"},
+    ]})
+    for _ in range(2):
+        await replay_source_refunds(
+            session, grant=grant, source_doc_id="doc:source-reversed",
+            target_doc_id=doc_id, refunds=history, actor_id=actor)
+        await session.commit()
+    state = (await client.get(f"/docs/{doc_id}", headers=_h(tok))).json()
+    assert state["amount_paid"] == 200
+    assert state["payments"][0]["refunded"] == 0
+    assert state["payments"][0]["refund_count"] == 1
+    rows = (await session.scalars(select(LedgerEntry).where(
+        LedgerEntry.company_id == company, LedgerEntry.entity_id == doc_id,
+        LedgerEntry.event_type.in_(("doc.payment.refunded", "doc.payment.refund_reversed")),
+    ))).all()
+    assert [x.event_type for x in rows] == [
+        "doc.payment.refunded", "doc.payment.refund_reversed"]
+    assert rows[1].metadata_["request"]
+    from celerp.connectors.celerp import _read_documents
+    page = await _read_documents(company, "")
+    copy = next(state for entity_id, _, state in page if entity_id == doc_id)
+    assert [event.get("kind", "refunded") for event in copy["payment_events"]] == [
+        "refunded", "reversed"]
+    assert copy["payment_events"][1]["reversal_date"] == "2026-10-13"
+    with pytest.raises(HTTPException) as reused:
+        await replay_source_refunds(
+            session, grant=grant, source_doc_id="doc:source-reversed",
+            target_doc_id=doc_id, refunds=[{**history[1], "reversal_date": "2026-10-14"}],
+            actor_id=actor)
+    assert reused.value.status_code == 409
+
+
+@pytest.mark.parametrize("events", [
+    [{"kind": "reversed", "event_id": 2, "payment_index": 0,
+      "refund_number": 0, "amount": 50, "reversal_date": "2026-10-13"}],
+    [{"kind": "refunded", "event_id": 1, "payment_index": 0,
+      "refund_number": 0, "amount": 50, "refund_date": "2026-10-12"},
+     {"kind": "reversed", "event_id": 2, "payment_index": 0,
+      "refund_number": 0, "amount": 40, "reversal_date": "2026-10-13"}],
+    [{"kind": "refunded", "event_id": 1, "payment_index": 0,
+      "refund_number": 0, "amount": 50, "refund_date": "2026-10-12"},
+     {"kind": "reversed", "event_id": 2, "payment_index": 0,
+      "refund_number": 0, "amount": 50, "reversal_date": "2026-10-13"},
+     {"kind": "reversed", "event_id": 3, "payment_index": 0,
+      "refund_number": 0, "amount": 50, "reversal_date": "2026-10-13"}],
+])
+def test_refund_history_fails_closed_on_unmatched_or_duplicate_reversal(events):
+    from celerp.services.peer_payments import validate_source_refunds
+    with pytest.raises(HTTPException):
+        validate_source_refunds({"currency": "USD", "payment_events": events})

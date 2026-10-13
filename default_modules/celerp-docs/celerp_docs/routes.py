@@ -3742,7 +3742,7 @@ async def apply_payment_refund(session, company_id, entity_id: str, row: Project
 
 async def reverse_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict,
                                  refund: dict, *, reversal_date: str, books: PaymentBooks, actor_id,
-                                 source: str, idempotency_key: str):
+                                 source: str, idempotency_key: str, metadata_: dict | None = None):
     """Undo *refund*, the data of a doc.payment.refunded event of *payment* on the locked
     document *row*, when the money it gave back came back: emit
     doc.payment.refund_reversed and post the lines that give *refund*'s amount back
@@ -3760,6 +3760,7 @@ async def reverse_payment_refund(session, company_id, entity_id: str, row: Proje
         data={"payment_index": index, "refund_number": number, "amount": refund["amount"],
               "refund_id": refund.get("refund_id"), "reversal_date": reversal_date},
         actor_id=actor_id, location_id=None, source=source, idempotency_key=idempotency_key,
+        metadata_=metadata_ or {},
     )
     if getattr(entry, "was_deduped", False):
         return entry

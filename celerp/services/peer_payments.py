@@ -97,14 +97,23 @@ def validate_source_payments(data: dict) -> list[tuple[int, dict]]:
 
 
 def validate_source_refunds(data: dict) -> list[dict]:
+    """Validate a complete, ordered refund/reversal history before writing books."""
     events = data.get("payment_events") or []
     if not isinstance(events, list) or len(events) > 1000:
         raise HTTPException(422, "Invalid source refund events")
     previous_id = 0
+    original: dict[tuple[int, int], Decimal] = {}
+    reversed_events: set[tuple[int, int]] = set()
     result = []
+    currency = data.get("currency") or "USD"
     for record in events:
-        if not isinstance(record, dict) or set(record) != {
-                "event_id", "payment_index", "refund_number", "amount", "refund_date"}:
+        if not isinstance(record, dict):
+            raise HTTPException(422, "Invalid source refund event")
+        kind = record.get("kind", "refunded")
+        common = {"event_id", "payment_index", "refund_number", "amount"}
+        when_key = "reversal_date" if kind == "reversed" else "refund_date"
+        if (kind not in ("refunded", "reversed")
+                or set(record) != (common | {when_key} | ({"kind"} if "kind" in record else set()))):
             raise HTTPException(422, "Invalid source refund event")
         eid = record.get("event_id")
         index = record.get("payment_index")
@@ -114,12 +123,22 @@ def validate_source_refunds(data: dict) -> list[dict]:
                 or type(number) is not int or number < 0):
             raise HTTPException(422, "Invalid source refund identity")
         try:
-            day = date.fromisoformat(record["refund_date"])
-            amount = round_money(record["amount"], data.get("currency") or "USD")
+            day = date.fromisoformat(record[when_key])
+            amount = round_money(record["amount"], currency)
         except (ValueError, TypeError, ArithmeticError) as exc:
             raise HTTPException(422, "Invalid source refund amount or date") from exc
-        if amount <= 0 or day.isoformat() != record["refund_date"]:
+        if amount <= 0 or day.isoformat() != record[when_key]:
             raise HTTPException(422, "Invalid source refund amount or date")
+        identity = (index, number)
+        if kind == "refunded":
+            if identity in original:
+                raise HTTPException(409, "Duplicate source refund identity")
+            original[identity] = amount
+        else:
+            if (identity not in original or identity in reversed_events
+                    or amount != original[identity]):
+                raise HTTPException(409, "Source refund reversal is inconsistent")
+            reversed_events.add(identity)
         previous_id = eid
         result.append(record)
     return result

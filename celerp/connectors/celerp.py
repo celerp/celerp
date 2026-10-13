@@ -89,22 +89,25 @@ async def _read_documents(company_id: uuid.UUID, after: str, since=None) -> list
         if not with_refunds:
             return out
         refunds = (await session.execute(select(
-            LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.data,
+            LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data,
         ).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_id.in_(with_refunds),
-            LedgerEntry.event_type == "doc.payment.refunded",
+            LedgerEntry.event_type.in_(("doc.payment.refunded", "doc.payment.refund_reversed")),
         ).order_by(LedgerEntry.id).limit(1001))).all()
         if len(refunds) > 1000:
             raise ValueError("Source refund history exceeds the per-run reconciliation limit")
         by_doc: dict[str, list[dict]] = {}
-        for event_id, entity_id, data in refunds:
+        for event_id, entity_id, event_type, data in refunds:
+            kind = "reversed" if event_type == "doc.payment.refund_reversed" else "refunded"
             by_doc.setdefault(str(entity_id), []).append({
+                **({"kind": "reversed"} if kind == "reversed" else {}),
                 "event_id": event_id,
                 "payment_index": (data or {}).get("payment_index"),
                 "refund_number": (data or {}).get("refund_number"),
                 "amount": (data or {}).get("amount"),
-                "refund_date": (data or {}).get("refund_date"),
+                **({"reversal_date": (data or {}).get("reversal_date")} if kind == "reversed"
+                   else {"refund_date": (data or {}).get("refund_date")}),
             })
         return [(eid, revision, {**state, "payment_events": by_doc.get(eid, [])})
                 for eid, revision, state in out]

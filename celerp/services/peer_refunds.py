@@ -25,18 +25,22 @@ async def replay_source_refunds(
     refunds: list[dict], actor_id,
 ) -> None:
     """Preserve source refund order, operation identity, account and actual date."""
-    from celerp_docs.routes import _get_doc, apply_payment_refund, posted_books
+    from celerp_docs.routes import _get_doc, apply_payment_refund, reverse_payment_refund, posted_books
     from celerp.services.peer_payments import _payment_key
 
     cid = grant.company_id
     history = (await session.scalars(select(LedgerEntry).where(
         LedgerEntry.company_id == cid,
         LedgerEntry.entity_id == target_doc_id,
-        LedgerEntry.event_type == "doc.payment.refunded",
+        LedgerEntry.event_type.in_(("doc.payment.refunded", "doc.payment.refund_reversed")),
     ).order_by(LedgerEntry.id))).all()
     existing = {
         (entry.data.get("payment_index"), entry.data.get("refund_number")): entry
-        for entry in history
+        for entry in history if entry.event_type == "doc.payment.refunded"
+    }
+    reversals = {
+        (entry.data.get("payment_index"), entry.data.get("refund_number")): entry
+        for entry in history if entry.event_type == "doc.payment.refund_reversed"
     }
     for source in refunds:
         source_index = source["payment_index"]
@@ -61,11 +65,35 @@ async def replay_source_refunds(
         key = "peer:refund:" + hashlib.sha256(raw.encode()).hexdigest()
         proof = _proof(source)
         prior = await find_event_by_idempotency(session, cid, key)
+        reversed_event = source.get("kind", "refunded") == "reversed"
+        expected_type = "doc.payment.refund_reversed" if reversed_event else "doc.payment.refunded"
         if prior is not None:
-            if (prior.event_type != "doc.payment.refunded"
+            if (prior.event_type != expected_type
                     or prior.entity_id != target_doc_id
                     or (prior.metadata_ or {}).get("request") != proof):
                 raise HTTPException(409, "Source refund operation identity was reused")
+            continue
+        if reversed_event:
+            earlier = existing.get((target_index, number))
+            if (earlier is None
+                    or round_money(earlier.data.get("amount"), currency) != amount):
+                raise HTTPException(409, "Source refund reversal has no matching booked refund")
+            prior_reversal = reversals.get((target_index, number))
+            if prior_reversal is not None:
+                if (round_money(prior_reversal.data.get("amount"), currency) != amount
+                        or prior_reversal.data.get("reversal_date") != source["reversal_date"]):
+                    raise HTTPException(409, "Restored refund reversal differs from source")
+                continue
+            if round_money(payment.get("refunded") or 0, currency) < amount:
+                raise HTTPException(409, "Source refund reversal exceeds refunded balance")
+            result = await reverse_payment_refund(
+                session, cid, target_doc_id, row, payment,
+                refund=earlier.data, reversal_date=source["reversal_date"],
+                books=await posted_books(session, cid, target_doc_id, row, payment),
+                actor_id=actor_id, source="connector", idempotency_key=key,
+                metadata_={"request": proof},
+            )
+            reversals[(target_index, number)] = result
             continue
 
         count = int(payment.get("refund_count") or 0)
