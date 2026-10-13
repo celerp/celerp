@@ -33,7 +33,7 @@
   "accountant_access.give_id": "Transmettez cet ID à votre comptable. L’entreprise destinataire en a besoin pour créer une clé pour cette entreprise.",
   "accountant_access.invalid": "Vérifiez l’ID de l’entreprise cliente et les autorisations choisies.",
   "accountant_access.issue": "Créer une clé d’entreprise",
-  "accountant_access.label": "Description",
+  "accountant_access.label": "Intitulé",
   "accountant_access.label_example": "Comptabilité du client",
   "accountant_access.lifetime": "Expiration de la clé (jours)",
   "accountant_access.manage": "Gérer l’accès des entreprises clientes",
