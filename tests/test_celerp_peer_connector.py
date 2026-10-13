@@ -148,3 +148,33 @@ def test_peer_product_payload_rejects_financial_movements_and_nonfinite_prices()
     for extra in ({"quantity": 8}, {"cost_total": 200}, {"retail_price": float("inf")}):
         with pytest.raises(ValidationError):
             ProductData.model_validate({"name": "Widget", **extra})
+
+
+@pytest.mark.asyncio
+async def test_shared_peer_delivery_marks_failed_product_without_losing_source_revision(monkeypatch):
+    from celerp.connectors import sync_runner
+
+    seen = []
+    company = str(uuid.uuid4())
+    async def last_success(company_id, connector, entity):
+        assert (company_id, connector, entity) == (company, "celerp", "products_out")
+        return None
+    async def read_products(company_id, after, since):
+        return [("item:a", 9, {"name": "Part", "sell_by": "piece"})] if not after else []
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs == {"public_only": True}
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def post(self, url, **kwargs):
+            seen.append(kwargs["json"])
+            return SimpleNamespace(status_code=503)
+    monkeypatch.setattr(sync_runner, "_last_success_watermark", last_success)
+    monkeypatch.setattr(peer, "_read_products", read_products)
+    monkeypatch.setattr(peer, "RateLimitedClient", Client)
+    result = await peer.CelerpConnector().sync_products_out(ConnectorContext(
+        company_id=company, store_handle="https://firm.example", access_token="cp1.token"))
+    assert not result.ok
+    assert result.errors == ["Product delivery incomplete"]
+    assert seen[0]["source_revision"] == 9
+    assert seen[0]["source_entity_id"] == "item:a"

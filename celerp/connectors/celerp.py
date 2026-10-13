@@ -81,97 +81,47 @@ class CelerpConnector(ConnectorBase):
     async def sync_orders(self, ctx: ConnectorContext, since=None) -> SyncResult:
         raise NotImplementedError("Inbound peer synchronization is not supported")
 
-    async def sync_contacts_out(self, ctx: ConnectorContext) -> SyncResult:
-        result = SyncResult(entity=SyncEntity.CONTACTS, direction=SyncDirection.OUTBOUND,
+    async def _send_outbound(self, ctx: ConnectorContext, kind: str, reader) -> SyncResult:
+        """Shared incremental delivery; entity-specific data never bypasses validation."""
+        from celerp.connectors.sync_runner import _last_success_watermark
+
+        if kind not in ("contacts", "products"):
+            raise ValueError("Unsupported peer entity")
+        entity = SyncEntity.CONTACTS if kind == "contacts" else SyncEntity.PRODUCTS
+        result = SyncResult(entity=entity, direction=SyncDirection.OUTBOUND,
                             errors=[], attention=[])
-        target = _target_url(ctx)
+        target = _target_url(ctx, kind)
         if not isinstance(ctx.access_token, str) or not ctx.access_token.startswith("cp1."):
             raise ValueError("No scoped receiving credential is connected")
         company_id = uuid.UUID(ctx.company_id)
-        from celerp.connectors.sync_runner import _last_success_watermark
-        since = await _last_success_watermark(ctx.company_id, self.name, "contacts_out")
+        since = await _last_success_watermark(ctx.company_id, self.name, kind + "_out")
+        fields = _FIELDS if kind == "contacts" else (
+            "name", "sku", "description", "sell_by", "category",
+            "barcode", "retail_price", "wholesale_price")
         after = ""
         async with RateLimitedClient(public_only=True) as client:
             while True:
-                page = await _read_page(company_id, after, since)
+                page = await reader(company_id, after, since)
                 if not page:
                     break
                 for entity_id, revision, state in page:
-                    if not isinstance(revision, int) or revision < 1:
-                        result.errors.append("Contact revision unavailable")
-                        result.attention.append({"id": entity_id, "label": entity_id,
-                                                 "reason": "Contact version unavailable"})
-                        continue
-                    if state.get("is_self"):
+                    label = "Contact" if kind == "contacts" else "Product"
+                    reason = None
+                    if type(revision) is not int or revision < 1:
+                        reason = "Contact version unavailable" if kind == "contacts" else "Product state needs review"
+                    elif kind == "contacts" and state.get("is_self"):
                         result.skipped += 1
                         continue
-                    if state.get("deleted") or state.get("merged_into"):
-                        result.errors.append("Deleted contact needs review")
-                        result.attention.append({"id": entity_id, "label": entity_id,
-                                                 "reason": "Deleted contact needs review"})
+                    elif state.get("deleted") or state.get("merged_into"):
+                        reason = "Deleted contact needs review" if kind == "contacts" else "Product state needs review"
+                    data = {key: state.get(key) for key in fields}
+                    if reason is None and (not isinstance(data.get("name"), str) or not data["name"].strip()):
+                        reason = "Contact name unavailable" if kind == "contacts" else "Product name missing"
+                    if reason is not None:
+                        result.errors.append(reason)
+                        result.attention.append({"id": entity_id, "label": entity_id, "reason": reason})
                         continue
-                    data = {key: state.get(key) for key in _FIELDS}
-                    if not isinstance(data.get("name"), str) or not data["name"].strip():
-                        result.errors.append("Contact name unavailable")
-                        result.attention.append({"id": entity_id, "label": entity_id,
-                                                 "reason": "Contact name unavailable"})
-                        continue
-                    try:
-                        response = await client.post(target, headers={
-                            "Authorization": "Peer " + ctx.access_token,
-                        }, json={"source_company_id": str(company_id),
-                                 "source_entity_id": entity_id,
-                                 "source_revision": revision,
-                                 "data": data})
-                        if response.status_code != 200:
-                            raise ValueError("Receiving installation refused contact update")
-                        status = response.json().get("status")
-                        if status not in ("created", "updated", "skipped"):
-                            raise ValueError("Receiving installation did not acknowledge contact update")
-                        result.record(status)
-                    except Exception:
-                        result.errors.append("Contact delivery incomplete")
-                        result.attention.append({"id": entity_id, "label": entity_id,
-                                                 "reason": "Receiving installation needs attention"})
-                after = page[-1][0]
-                if len(page) < _PAGE:
-                    break
-        return result
-
-
-    async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
-        """Push product definitions independently of stock counts and document movements."""
-        from celerp.connectors.sync_runner import _last_success_watermark
-
-        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND,
-                            errors=[], attention=[])
-        target = _target_url(ctx, "products")
-        if not isinstance(ctx.access_token, str) or not ctx.access_token.startswith("cp1."):
-            raise ValueError("No scoped receiving credential is connected")
-        company_id = uuid.UUID(ctx.company_id)
-        since = await _last_success_watermark(ctx.company_id, self.name, "products_out")
-        after = ""
-        product_fields = ("name", "sku", "description", "sell_by", "category",
-                          "barcode", "retail_price", "wholesale_price")
-        async with RateLimitedClient(public_only=True) as client:
-            while True:
-                page = await _read_products(company_id, after, since)
-                if not page:
-                    break
-                for entity_id, revision, state in page:
-                    if (type(revision) is not int or revision < 1
-                            or state.get("deleted") or state.get("merged_into")):
-                        result.errors.append("Product state needs review")
-                        result.attention.append({"id": entity_id, "label": entity_id,
-                                                 "reason": "Product state needs review"})
-                        continue
-                    data = {k: state.get(k) for k in product_fields}
-                    if not data.get("name"):
-                        result.errors.append("Product name missing")
-                        result.attention.append({"id": entity_id, "label": entity_id,
-                                                 "reason": "Product name missing"})
-                        continue
-                    if not data.get("sell_by"):
+                    if kind == "products" and not data.get("sell_by"):
                         data["sell_by"] = "piece"
                     try:
                         response = await client.post(target, headers={
@@ -182,16 +132,24 @@ class CelerpConnector(ConnectorBase):
                             "source_revision": revision, "data": data,
                         })
                         if response.status_code != 200:
-                            raise ValueError("Receiving installation refused product update")
+                            raise ValueError("Receiving installation refused update")
                         status = response.json().get("status")
                         if status not in ("created", "updated", "skipped"):
-                            raise ValueError("Receiving installation did not acknowledge product update")
+                            raise ValueError("Receiving installation did not acknowledge update")
                         result.record(status)
                     except Exception:
-                        result.errors.append("Product delivery incomplete")
-                        result.attention.append({"id": entity_id, "label": entity_id,
-                                                 "reason": "Receiving installation needs attention"})
+                        result.errors.append(label + " delivery incomplete")
+                        result.attention.append({
+                            "id": entity_id, "label": entity_id,
+                            "reason": "Receiving installation needs attention",
+                        })
                 after = page[-1][0]
                 if len(page) < _PAGE:
                     break
         return result
+
+    async def sync_contacts_out(self, ctx: ConnectorContext) -> SyncResult:
+        return await self._send_outbound(ctx, "contacts", _read_page)
+
+    async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
+        return await self._send_outbound(ctx, "products", _read_products)
