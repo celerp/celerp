@@ -200,7 +200,7 @@ async def test_issued_transition_finalizes_existing_draft_using_canonical_servic
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status,kind", [
     ("void", "invoice"), ("closed", "invoice"), ("final", "credit_note"),
-    ("received", "bill"), ("paid", "memo"),
+    ("received", "bill"), ("sent", "bill"), ("paid", "memo"),
 ])
 async def test_unsafe_lifecycle_stays_deferred(monkeypatch, status, kind):
     async def claim(*args, **kwargs):

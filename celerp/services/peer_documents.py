@@ -108,6 +108,8 @@ async def receive_draft_document(
         raise HTTPException(409, "Document lifecycle requires reconciliation")
     if source_status != "draft" and data["doc_type"] not in ("invoice", "bill"):
         raise HTTPException(409, "Unsupported issued-document type")
+    if source_status == "sent" and data["doc_type"] != "invoice":
+        raise HTTPException(409, "Only invoices support a sent document transition")
 
     incoming = dict(data)
     incoming.pop("payments", None)
