@@ -482,12 +482,12 @@ async def test_supplier_credit_identity_stays_fixed_after_issue_or_application(c
 
 async def test_void_return_credit_requires_fulfillment_permission(client, session, auth):
     """A role allowed to finalize but not return stock cannot restore returned goods."""
-    from celerp.models.company import Company
+    from celerp.services.company_lock import locked_company
     from test_helpers import invite_user
 
     doc, note = await _note(client, session, auth)
     operator = await invite_user(client, session, auth["headers"], "credit-stock@example.test", "operator")
-    company = await session.get(Company, auth["company_id"])
+    company = await locked_company(session, auth["company_id"])
     settings = dict(company.settings or {})
     grants = dict(settings.get("role_grants") or {})
     grants["fulfill_documents"] = ["manager", "admin", "owner"]
