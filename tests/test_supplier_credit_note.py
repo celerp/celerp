@@ -458,3 +458,23 @@ async def test_credit_target_lookup_reaches_older_open_bills(monkeypatch):
     assert [x["id"] for x in candidates] == ["doc:500"]
     assert ("bill", 500) in calls
     assert all(kind != "bill" or offset <= 500 for kind, offset in calls)
+
+
+
+async def test_supplier_credit_identity_stays_fixed_after_issue_or_application(client, session, auth):
+    """Reassigning either settled document cannot silently move a supplier's credit."""
+    original, note = await _note(client, session, auth)
+    later = await _bill(client, auth, 200.0)
+    response = await _apply(client, auth, note, later, 20.0)
+    assert response.status_code == 200, response.text
+    before = await _trial_balance(client, auth)
+
+    for doc_id in (original, note, later):
+        state = await _state(session, auth, doc_id)
+        response = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={
+            "fields_changed": {"contact_id": {"old": state.get("contact_id"), "new": "supplier:2"}}
+        })
+        assert response.status_code == 409, (doc_id, response.text)
+        assert _code(response) == "docs.contact_credit_fixed"
+        assert (await _state(session, auth, doc_id)).get("contact_id") == state.get("contact_id")
+    assert await _trial_balance(client, auth) == before

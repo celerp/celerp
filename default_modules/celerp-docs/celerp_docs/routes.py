@@ -1875,6 +1875,20 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         raise HTTPException(status_code=409, detail=t("documents.err_doc_changed"))
     if selecting and new_contact_id != (row.state.get("contact_id") or ""):
         await _refuse_fixed_consignor(session, company_id, entity_id, row.state)
+        state = row.state
+        note_type = "credit_note" if state.get("doc_type") == "invoice" else (
+            "debit_note" if state.get("doc_type") in ("bill", "purchase_order") else None)
+        has_issued_note = bool(await issued_credit_notes(session, company_id, entity_id, note_type)) if note_type else False
+        has_active_application = any(p.get("status", "active") == "active"
+                                     and p.get("method") in CREDIT_APPLICATION_METHODS
+                                     for p in state.get("payments") or [])
+        tied_note = (state.get("doc_type") in ("credit_note", "debit_note")
+                     and state.get("original_doc_id") and state.get("status") not in ("draft", "void"))
+        if has_issued_note or has_active_application or tied_note:
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.contact_credit_fixed",
+                "This document has an issued or applied credit note. Undo its credit applications and "
+                "void or revert the linked credit note before changing the contact."))
     if selecting:
         client_values = {k: (v or {}).get("new") for k, v in fields_changed.items()}
         selection = await _contact_selection_values(
