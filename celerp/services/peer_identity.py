@@ -194,6 +194,11 @@ async def receive_product(session: AsyncSession, *, grant, source_entity_id: str
             session, target_company=company_id, source_company=source_company,
             entity_type="item", source_entity_id=source_entity_id)
         event_type = "item.patched"
+        # Full snapshot changes must also clear optional fields that disappeared.
+        for field in ("sku", "description", "category", "barcode",
+                      "retail_price", "wholesale_price"):
+            if field in data and data[field] is None:
+                body[field] = None
     else:
         target_id = new_target_identity(source_company, "item", source_entity_id)
         if await session.get(Projection, (company_id, target_id)) is not None:

@@ -162,7 +162,7 @@ async def test_product_peer_uses_canonical_inventory_writer_and_stable_restore_i
         grant = SimpleNamespace(company_id=target, source_company_id=source)
         source_id = "item:source-widget"
         when = datetime(2026, 10, 12, tzinfo=timezone.utc)
-        with_name = {"name": "Widget", "sku": "A1", "sell_by": "piece"}
+        with_name = {"name": "Widget", "sku": "A1", "sell_by": "piece", "description": "Old"}
         changes = []
         async def canonical_writer(session, company_id, user, role, settings, body):
             assert company_id == target and user.id == owner_id and role == "owner"
@@ -206,11 +206,18 @@ async def test_product_peer_uses_canonical_inventory_writer_and_stable_restore_i
             await session.commit()
             row = await session.get(Projection, (target, new_target_identity(source, "item", source_id)))
             assert row is not None and row.state["name"] == "New Widget"
+            assert await receive_product(session, grant=grant, source_entity_id=source_id,
+                                         source_revision=3,
+                                         data={**with_name, "name": "New Widget",
+                                               "description": None, "sku": None}) == "updated"
+            await session.commit()
+            await session.refresh(row)
+            assert row.state["description"] is None and row.state["sku"] is None
             mapping = await session.scalar(select(CompanyPeerIdentity).where(
                 CompanyPeerIdentity.company_id == target,
                 CompanyPeerIdentity.source_company_id == source))
-            assert mapping.target_entity_id == row.entity_id and mapping.last_revision == 2
-            assert changes == ["item.created", "item.patched"]
+            assert mapping.target_entity_id == row.entity_id and mapping.last_revision == 3
+            assert changes == ["item.created", "item.patched", "item.patched"]
     finally:
         await engine.dispose()
 
@@ -251,3 +258,47 @@ async def test_peer_product_refuses_inactive_canonical_authority(blocked):
                 CompanyPeerIdentity.company_id == target)) is None
     finally:
         await engine.dispose()
+
+
+
+@pytest.mark.asyncio
+async def test_peer_product_real_importer_preserves_catalog_without_creating_stock(client, session):
+    from types import SimpleNamespace
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import User
+    from celerp.services.peer_identity import receive_product, new_target_identity
+
+    company_id, source, owner = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    session.add(Company(id=company_id, name="Product receiver",
+                        slug=f"receiver-{company_id.hex[:8]}", settings={}))
+    session.add(User(id=owner, email=f"peer-{owner.hex[:8]}@example.test", name="Owner"))
+    await session.flush()
+    session.add(UserCompany(company_id=company_id, user_id=owner,
+                            role="owner", is_active=True))
+    await session.commit()
+
+    grant = SimpleNamespace(company_id=company_id, source_company_id=source)
+    item = {"name": "Transferred catalog", "sku": f"PEER-{source.hex[:10]}",
+            "sell_by": "piece", "description": "First version"}
+    assert await receive_product(
+        session, grant=grant, source_entity_id="item:remote",
+        source_revision=1, data=item) == "created"
+    await session.commit()
+
+    target_id = new_target_identity(source, "item", "item:remote")
+    row = await session.get(Projection, (company_id, target_id), populate_existing=True)
+    assert row is not None and row.entity_type == "item"
+    assert row.state["name"] == item["name"]
+    assert not (row.state.get("quantity") or 0)
+    assert await receive_product(
+        session, grant=grant, source_entity_id="item:remote",
+        source_revision=1, data=item) == "skipped"
+    assert await receive_product(
+        session, grant=grant, source_entity_id="item:remote",
+        source_revision=2,
+        data={**item, "name": "Renamed in source", "description": None}) == "updated"
+    await session.commit()
+    await session.refresh(row)
+    assert row.state["name"] == "Renamed in source"
+    assert row.state.get("description") is None
+    assert not (row.state.get("quantity") or 0)
