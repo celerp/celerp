@@ -251,3 +251,84 @@ async def test_payment_posting_failure_prevents_revision_acknowledgement(monkeyp
                       "payment_date": "2026-10-12", "bank_account": "1111"}]})
     assert err.value.status_code == 409
     assert actions == ["document", "payment"]
+
+
+
+@pytest.mark.asyncio
+async def test_peer_void_uses_canonical_operation_without_committing_receiver_transaction(monkeypatch):
+    from celerp_docs import routes
+    from celerp.models.projections import Projection
+
+    grant = _grant()
+    events = []
+    class Issued(_Session):
+        async def get(self, model, identifier):
+            if model is Projection:
+                return SimpleNamespace(entity_type="doc", state={
+                    "doc_type": "invoice", "status": "final",
+                    "currency": "USD", "total": 125,
+                })
+            return await super().get(model, identifier)
+
+    async def claim(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target",
+                               mapping=SimpleNamespace(), source_key="key")
+    async def void_document(entity_id, body, company_id, user, session, *, commit):
+        events.append((entity_id, str(company_id), body.idempotency_key, commit))
+        assert user.id and body.reason == "Synchronized source void"
+    async def commit_revision(*args, **kwargs):
+        events.append(("revision", kwargs["source_revision"]))
+    monkeypatch.setattr(documents, "claim_peer_revision", claim)
+    monkeypatch.setattr(documents, "commit_peer_revision", commit_revision)
+    monkeypatch.setattr(routes, "void_document", void_document)
+    data = {"doc_type": "invoice", "status": "void", "total": 125,
+            "amount_paid": 0, "currency": "USD"}
+    assert await documents.receive_draft_document(
+        Issued(), grant=grant, source_entity_id="doc:source",
+        source_revision=7, data=data) == "updated"
+    assert events[0][0] == "doc:target" and events[0][-1] is False
+    assert events[1] == ("revision", 7)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_status,total", [
+    ("draft", 125), ("final", 180),
+])
+async def test_peer_void_refuses_unissued_or_changed_receivable(monkeypatch, target_status, total):
+    from celerp.models.projections import Projection
+
+    class Existing(_Session):
+        async def get(self, model, identifier):
+            if model is Projection:
+                return SimpleNamespace(entity_type="doc", state={
+                    "doc_type": "invoice", "status": target_status,
+                    "currency": "USD", "total": total,
+                })
+            return await super().get(model, identifier)
+    async def claim(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target",
+                               mapping=SimpleNamespace(), source_key="key")
+    monkeypatch.setattr(documents, "claim_peer_revision", claim)
+    with pytest.raises(HTTPException) as error:
+        await documents.receive_draft_document(
+            Existing(), grant=_grant(), source_entity_id="doc:source",
+            source_revision=3, data={"doc_type": "invoice", "status": "void",
+                                     "currency": "USD", "total": 125, "amount_paid": 0})
+    assert error.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_canonical_void_route_still_commits_standard_api_requests(monkeypatch):
+    from celerp_docs import routes
+    events = []
+    async def execute(entity_id, body, company_id, user, session, *, commit):
+        events.append((entity_id, commit))
+        return {"event_id": 42}
+    monkeypatch.setattr(routes, "void_document", execute)
+    result = await routes.void_doc(
+        "doc:test", routes.DocVoidBody(reason="User voided"),
+        company_id="company", user=SimpleNamespace(id=uuid.uuid4()),
+        session=_Session(),
+    )
+    assert result == {"event_id": 42}
+    assert events == [("doc:test", True)]

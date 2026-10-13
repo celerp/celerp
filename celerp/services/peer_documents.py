@@ -67,6 +67,8 @@ async def receive_draft_document(
     )
     refunds = validate_source_refunds(data)
     payments = validate_source_payments(data)
+    if data.get("status") == "void" and (data.get("payments") or data.get("payment_events")):
+        raise HTTPException(409, "Previously settled void requires payment reconciliation")
     claim = await claim_peer_revision(
         session, grant=grant, entity_type="doc",
         source_entity_id=source_entity_id, source_revision=source_revision,
@@ -75,7 +77,7 @@ async def receive_draft_document(
         return "skipped"
     source_status = data.get("status", "draft")
     if source_status not in (
-        "draft", "final", "sent", "partial", "paid", "awaiting_payment",
+        "draft", "final", "sent", "partial", "paid", "awaiting_payment", "void",
     ):
         raise HTTPException(409, "Document lifecycle requires reconciliation")
     if source_status != "draft" and data["doc_type"] not in ("invoice", "bill"):
@@ -129,6 +131,31 @@ async def receive_draft_document(
     from celerp.models.projections import Projection
     target = await session.get(Projection, (grant.company_id, claim.target_id))
     target_status = (target.state or {}).get("status") if target is not None else None
+    if source_status == "void":
+        from celerp.services.money import round_money
+        from celerp_docs.routes import DocVoidBody, void_document
+        if claim.mapping is None or target is None or target.entity_type != "doc":
+            raise HTTPException(409, "Source document must be synchronized before void")
+        state = target.state or {}
+        if state.get("doc_type") != data["doc_type"] or state.get("currency") != data.get("currency"):
+            raise HTTPException(409, "Receiving document does not match voided source")
+        currency = state.get("currency") or "USD"
+        if ("total" in data and round_money(data["total"], currency)
+                != round_money(state.get("total") or 0, currency)):
+            raise HTTPException(409, "Document total must be reconciled before void")
+        if target_status == "draft":
+            raise HTTPException(409, "Receiving document must be issued before void")
+        if target_status != "void":
+            await void_document(
+                claim.target_id,
+                DocVoidBody(reason="Synchronized source void", idempotency_key=(
+                    f"peer:doc-void:{grant.source_company_id}:{key}:{source_revision}")),
+                str(grant.company_id), SimpleNamespace(id=member.id), session, commit=False,
+            )
+        await commit_peer_revision(
+            session, grant=grant, claim=claim, entity_type="doc",
+            source_entity_id=source_entity_id, source_revision=source_revision)
+        return "skipped" if target_status == "void" else "updated"
     if source_status == "draft" and target_status not in (None, "draft"):
         raise HTTPException(409, "Previously issued document requires reconciliation")
     if source_status != "draft" and target_status == "draft":

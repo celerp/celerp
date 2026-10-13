@@ -2442,8 +2442,8 @@ async def finalize_doc(
     return await finalize_document(entity_id, company_id, user, session, commit=True)
 
 
-@router.post("/{entity_id}/void")
-async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, user,
+                        session: AsyncSession, *, commit: bool = True) -> dict:
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("void", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.voided",
@@ -2512,9 +2512,14 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
         idempotency_key=key, metadata_={"request": digest},
     )
     await _settle_moved_cost(session, company_id, user.id, entity_id, row.state, f"void-{entry.id}", "doc.voided")
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id}
 
+
+@router.post("/{entity_id}/void")
+async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await void_document(entity_id, payload, company_id, user, session, commit=True)
 
 async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: dict, tag: str, trigger: str) -> None:
     """Once an invoice stops standing (void, back to draft), settle any cost it still
