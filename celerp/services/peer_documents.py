@@ -134,7 +134,7 @@ async def receive_draft_document(
     if source_status == "void":
         from celerp.services.money import round_money
         from celerp_docs.routes import DocVoidBody, void_document
-        if claim.mapping is None or target is None or target.entity_type != "doc":
+        if target is None or target.entity_type != "doc" or claim.mapping is None:
             raise HTTPException(409, "Source document must be synchronized before void")
         state = target.state or {}
         if state.get("doc_type") != data["doc_type"] or state.get("currency") != data.get("currency"):
