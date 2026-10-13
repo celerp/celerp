@@ -64,16 +64,13 @@ class ActingMember:
 async def acting_member(context: SinkContext) -> ActingMember:
     """The migrating user as a member of the target company; a non-member cannot write."""
     session = context.session
-    role = (await session.execute(
-        select(UserCompany.role).where(
-            UserCompany.user_id == context.user_id, UserCompany.company_id == context.company_id,
-        )
-    )).scalar_one_or_none()
+    from celerp.services.auth import usable_company_link
+    link = await usable_company_link(session, context.user_id, context.company_id)
     user = await session.get(User, context.user_id)
     company = await session.get(Company, context.company_id)
-    if role is None or user is None or company is None:
+    if link is None or user is None or not user.is_active or company is None:
         raise PermissionError("The migrating user is not a member of the company.")
-    return ActingMember(user, role, dict(company.settings or {}))
+    return ActingMember(user, link.role, dict(company.settings or {}))
 
 
 async def mapped_targets(
