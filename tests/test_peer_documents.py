@@ -147,7 +147,7 @@ async def test_issued_bill_uses_canonical_record_now_without_synthesized_payment
     monkeypatch.setattr(documents, "claim_peer_revision", claim)
     monkeypatch.setattr(import_service, "import_doc_records", imported)
     monkeypatch.setattr(documents, "commit_peer_revision", commit)
-    payload = {"doc_type": "bill", "status": "partial", "ref_id": "BILL-42",
+    payload = {"doc_type": "bill", "status": "final", "ref_id": "BILL-42",
                "currency": "USD", "line_items": [{"name": "Service", "quantity": 1,
                                                    "unit_price": 50}]}
     assert await documents.receive_draft_document(
@@ -207,3 +207,47 @@ async def test_unsafe_lifecycle_stays_deferred(monkeypatch, status, kind):
             source_revision=6,
             data={"doc_type": kind, "status": status})
     assert e.value.status_code == 409
+
+
+
+@pytest.mark.asyncio
+async def test_paid_document_requires_payment_validation_before_revision_claim(monkeypatch):
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("Claimed before validating missing cash")
+    monkeypatch.setattr(documents, "claim_peer_revision", unexpected)
+    with pytest.raises(HTTPException) as err:
+        await documents.receive_draft_document(
+            _Session(), grant=_grant(), source_entity_id="doc:source",
+            source_revision=3, data={"doc_type": "invoice", "status": "paid",
+                                     "amount_paid": 30, "payments": []})
+    assert err.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_payment_posting_failure_prevents_revision_acknowledgement(monkeypatch):
+    from celerp_docs import import_service
+    from celerp.services import peer_payments
+    actions = []
+    async def claim(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target")
+    async def imported(*args, **kwargs):
+        assert "payments" not in args[5][0].data
+        actions.append("document")
+        return SimpleNamespace(records=[SimpleNamespace(status="created")])
+    async def payment(*args, **kwargs):
+        actions.append("payment")
+        raise HTTPException(409, "Account not ready")
+    async def commit(*args, **kwargs):
+        actions.append("revision")
+    monkeypatch.setattr(documents, "claim_peer_revision", claim)
+    monkeypatch.setattr(import_service, "import_doc_records", imported)
+    monkeypatch.setattr(peer_payments, "apply_source_payments", payment)
+    monkeypatch.setattr(documents, "commit_peer_revision", commit)
+    with pytest.raises(HTTPException) as err:
+        await documents.receive_draft_document(
+            _Session(), grant=_grant(), source_entity_id="doc:source", source_revision=3,
+            data={"doc_type": "invoice", "status": "paid", "amount_paid": 30,
+                  "total": 30, "payments": [{"index": 0, "amount": 30,
+                      "payment_date": "2026-10-12", "bank_account": "1111"}]})
+    assert err.value.status_code == 409
+    assert actions == ["document", "payment"]
