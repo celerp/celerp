@@ -259,3 +259,29 @@ async def test_reassemble_failure_removes_temp_archive(big_dump, object_store, m
     with pytest.raises(Exception):
         await backup_repo.reassemble_snapshot("snap-0")
     assert list(scratch.iterdir()) == []
+
+
+
+async def test_decrypt_source_truncated_during_read_fails_closed(tmp_path, monkeypatch):
+    """A source truncated after its size check must not leave the decrypt loop spinning."""
+    from types import SimpleNamespace
+
+    plain = tmp_path / "plain"
+    encrypted = tmp_path / "encrypted"
+    restored = tmp_path / "restored"
+    plain.write_bytes(b"abc")
+    key = b"x" * 32
+    encrypted.write_bytes(b"".join(backup.encrypt_chunks(plain, key)))
+    real_stat = Path.stat
+
+    def changed_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if path == encrypted:
+            return SimpleNamespace(st_size=result.st_size + 8)
+        return result
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(Path, "stat", changed_stat)
+        with pytest.raises(RuntimeError):
+            backup.decrypt_file(encrypted, restored, key, chunk=2)
+    assert not restored.exists()

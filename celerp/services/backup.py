@@ -220,8 +220,11 @@ def decrypt_file(src: Path, dst: Path, key: bytes, chunk: int = _CHUNK) -> str:
             decryptor = Cipher(algorithms.AES(key), modes.GCM(fin.read(_NONCE_BYTES))).decryptor()
             left = size - ENC_OVERHEAD
             while left:
-                plain = decryptor.update(fin.read(min(chunk, left)))
-                left -= len(plain)
+                data = fin.read(min(chunk, left))
+                if not data:
+                    raise RuntimeError(t("error.backup_damaged"))
+                plain = decryptor.update(data)
+                left -= len(data)
                 digest.update(plain)
                 fout.write(plain)
             decryptor.finalize_with_tag(fin.read(_TAG_BYTES))
