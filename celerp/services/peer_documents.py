@@ -30,6 +30,27 @@ _FIELDS = frozenset({
 _SOURCE_ITEM_KEYS = ("item_id", "entity_id")
 
 
+def requires_stock_movement(data: dict) -> bool:
+    """An issued document needing stock operations cannot be copied as a GL-only update."""
+    from celerp.services.units import is_non_stock_line
+
+    if (data.get("received_items") or data.get("received_item_ids")
+            or data.get("return_received_items")
+            or data.get("fulfillment_status") in ("fulfilled", "partial")):
+        return True
+    lines = data.get("line_items") or []
+    if not isinstance(lines, list):
+        return True
+    for line in lines:
+        if not isinstance(line, dict):
+            return True
+        if (line.get("item_id") or line.get("sku")
+                or str(line.get("entity_id") or "").startswith("item:")):
+            if not is_non_stock_line(line.get("inventory_type"), line.get("sell_by")):
+                return True
+    return False
+
+
 async def _map_identity(session, grant, entity_type: str, source_id: str) -> str:
     mapped = await peer_identity(
         session, target_company=grant.company_id,
@@ -68,6 +89,10 @@ async def receive_draft_document(
     )
     refunds = validate_source_refunds(data)
     payments = validate_source_payments(data)
+    if data.get("status", "draft") != "draft" and requires_stock_movement(data):
+        raise HTTPException(409, "Inventory-linked documents require the complete company copy "
+                                 "or direct shared access; their stock operations are not "
+                                 "included in accountant document synchronization")
     if data.get("status") == "void" and (data.get("payments") or data.get("payment_events")):
         raise HTTPException(409, "Previously settled void requires payment reconciliation")
     claim = await claim_peer_revision(

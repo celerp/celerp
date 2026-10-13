@@ -5457,7 +5457,7 @@
   "update.reason.migrate_failed": "the database update failed",
   "update.reason.unknown": "the update did not complete",
   "update.reason.verify_failed": "the new version did not start",
-  "accountant_access.documents": "Issued invoices and bills, recorded payments/refunds, and attachments (requires matching accounts; unsupported records need review)",
+  "accountant_access.documents": "Service invoices and expense bills, their payments/refunds, and attachments (stock documents require a company copy or shared access)",
   "accountant_access.connector_source_help": "This installation sends to the receiving company. Get its HTTPS address and a scoped key from the receiving company owner. Only use a new receiving company or a company copy restored from this source. Sync does not bring changes back or replace direct user access.",
   "accountant_access.direction_warning": "These grants permit inbound data from the named sending company only. They do not give that company general user access. Do not use two-way sync as a substitute for working in one shared ledger."
 }

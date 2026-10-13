@@ -223,3 +223,40 @@ async def test_draft_document_outbound_filters_private_and_excluded_fields(monke
     assert "internal_audit" not in seen[0]["data"]
     assert seen[0]["data"]["status"] == "draft"
     assert seen[1]["data"]["status"] == "sent"
+
+
+
+@pytest.mark.asyncio
+async def test_issued_stock_document_is_reviewed_not_silently_accounted(monkeypatch):
+    from celerp.connectors import sync_runner
+
+    cid = str(uuid.uuid4())
+    sent = []
+    async def watermark(*args):
+        return None
+    async def page(company_id, after, since):
+        return [
+            ("doc:stock", 9, {"doc_type": "invoice", "status": "final",
+                              "line_items": [{"name": "Widget", "sku": "W1",
+                                             "quantity": 1, "unit_price": 100}]}),
+            ("doc:service", 4, {"doc_type": "invoice", "status": "final",
+                                "line_items": [{"name": "Advice",
+                                               "quantity": 1, "unit_price": 100}]}),
+        ] if not after else []
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs == {"public_only": True}
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def post(self, url, **kwargs):
+            sent.append(kwargs["json"]["source_entity_id"])
+            return SimpleNamespace(status_code=200, json=lambda: {"status": "created"})
+    monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
+    monkeypatch.setattr(peer, "_read_documents", page)
+    monkeypatch.setattr(peer, "RateLimitedClient", Client)
+    result = await peer.CelerpConnector().sync_documents_out(ConnectorContext(
+        company_id=cid, store_handle="https://firm.example", access_token="cp1.secret"))
+    assert sent == ["doc:service"]
+    assert not result.ok and result.created == 1
+    assert result.attention[0]["id"] == "doc:stock"
+    assert "Inventory-linked" in result.errors[0]

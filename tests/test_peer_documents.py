@@ -354,3 +354,32 @@ async def test_peer_document_line_uses_canonical_boundary_validation(monkeypatch
                   "line_items": [line], "currency": "USD"},
         )
     assert exc.value.status_code == 422
+
+
+
+@pytest.mark.parametrize(("line", "expected"), [
+    ({"name": "Consulting", "quantity": 1, "unit_price": 200}, False),
+    ({"name": "Service", "item_id": "item:service", "inventory_type": "service",
+      "quantity": 1, "unit_price": 200}, False),
+    ({"name": "Stock", "item_id": "item:stock", "quantity": 1, "unit_price": 200}, True),
+    ({"name": "Stock", "sku": "SKU-1", "quantity": 1, "unit_price": 200}, True),
+])
+def test_issued_stock_documents_require_canonical_stock_operations(line, expected):
+    assert documents.requires_stock_movement({"line_items": [line]}) is expected
+
+
+@pytest.mark.asyncio
+async def test_stock_invoice_refused_before_any_document_revision_claim(monkeypatch):
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("A stock document must not reach the importer")
+    monkeypatch.setattr(documents, "claim_peer_revision", forbidden)
+    with pytest.raises(HTTPException) as exc:
+        await documents.receive_draft_document(
+            _Session(), grant=_grant(), source_entity_id="doc:stock",
+            source_revision=1,
+            data={"doc_type": "invoice", "status": "final",
+                  "line_items": [{"name": "Widget", "sku": "STOCK",
+                                  "quantity": 1, "unit_price": 50}],
+                  "currency": "USD"})
+    assert exc.value.status_code == 409
+    assert "Inventory-linked" in exc.value.detail

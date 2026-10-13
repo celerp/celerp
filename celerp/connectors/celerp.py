@@ -172,6 +172,9 @@ class CelerpConnector(ConnectorBase):
                             result.skipped += 1
                             continue
                         data.setdefault("status", "draft")
+                        from celerp.services.peer_documents import requires_stock_movement
+                        if state.get("status", "draft") != "draft" and requires_stock_movement(state):
+                            reason = "Inventory-linked document requires full copy or shared access"
                     else:
                         data = {key: state.get(key) for key in fields}
                     if reason is None and kind != "documents" and (not isinstance(data.get("name"), str) or not data["name"].strip()):
