@@ -36,6 +36,8 @@ class SyncEntity(str, Enum):
     CONTACTS = "contacts"
     INVENTORY = "inventory"
     INVOICES = "invoices"
+    DOCUMENTS = "documents"
+    ATTACHMENTS = "attachments"
 
 
 class ConnectorCategory(str, Enum):
@@ -52,7 +54,7 @@ class SyncFrequency(str, Enum):
 # Entity classification for direction filtering. Inbound entities are pulled from
 # the platform; the *_out entities are pushed from Celerp to the platform.
 _INBOUND_ENTITIES = {"products", "orders", "contacts", "inventory"}
-_OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out"}
+_OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out", "contacts_out", "documents_out", "attachments_out"}
 
 
 def entity_allowed(entity: str, direction: SyncDirection) -> bool:
@@ -157,6 +159,10 @@ class ConnectorBase(ABC):
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull customers/vendors from platform -> Celerp CRM. Override if supported."""
         raise NotImplementedError(f"{self.name} does not support contact sync")
+
+    async def sync_contacts_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Send company contacts to an approved external recipient."""
+        raise NotImplementedError(f"{self.name} does not support outbound contact sync")
 
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
         """Push Celerp items -> platform. Override if supported."""

@@ -671,6 +671,7 @@ async def attach_file(
     document_tag: str | None = None,
     is_hero: bool | None = None,
     description: str | None = None,
+    metadata_: dict | None = None,
 ):
     """Attach a stored file (``meta`` from store_file) to one contact, document or item.
 
@@ -702,7 +703,7 @@ async def attach_file(
             location_id=None,
             source=source,
             idempotency_key=idempotency_key or str(uuid.uuid4()),
-            metadata_={},
+            metadata_=metadata_ or {},
         )
 
 

@@ -4102,12 +4102,13 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
 
 def _company_backup_section() -> FT:
     """What a company backup holds, said once, then download and restore."""
-    from ui.routes.company_backup import DOWNLOAD, SETTINGS
+    from ui.routes.company_backup import DOWNLOAD, SETTINGS, SEND
     return Div(
         P(t("company_backup.contents"), cls="settings-hint"),
         Div(
             A(t("company_backup.download"), href=DOWNLOAD, cls="btn btn--primary btn--sm"),
             A(t("company_backup.restore_title"), href=SETTINGS.base, cls="btn btn--secondary btn--sm"),
+            A(t("company_backup.send_title"), href=SEND, cls="btn btn--secondary btn--sm"),
             cls="flex-row gap-sm flex-wrap",
         ),
     )

@@ -46,7 +46,7 @@ from celerp.held_back import (
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from ui.i18n import I18nMiddleware, t
 
-from celerp.routers import auth, companies, company_backup, ledger, migrations
+from celerp.routers import auth, companies, company_backup, company_peers, ledger, migrations
 from celerp.routers import health, notifications, system, events as events_router_mod
 from celerp.routers import stars as stars_router_mod
 from celerp.importers.sinks import register_sink
@@ -122,11 +122,13 @@ async def _try_auto_activate() -> None:
                 f"{relay_base}/auth/checkin",
                 activate_payload(iid, first_boot=_FIRST_BOOT, boot_id=_BOOT_ID))
             return
+        from celerp.services.company_handoff_receipts import retry_completed_handoffs
+        await retry_completed_handoffs()
         r = await relay_post_with_retry(
             f"{relay_base}/auth/activate",
             activate_payload(
                 iid, first_boot=_FIRST_BOOT, activation_verifier=verifier,
-                boot_id=_BOOT_ID))
+                boot_id=_BOOT_ID, include_handoff=True))
 
         if r is None or r.status_code != 200:
             return
@@ -141,7 +143,8 @@ async def _try_auto_activate() -> None:
             tos_version=data.get("tos_version"),
             backup_encryption_key=data.get("backup_encryption_key"),
             tier=data.get("tier"), status=data.get("status"),
-            expected_verifier=verifier if verifier else None)
+            expected_verifier=verifier if verifier else None,
+            acknowledged_handoff_id=data.get("acknowledged_handoff_id"))
         _log.info("Recovered cloud relay activation (instance_id=%s)", iid)
     except Exception as exc:
         logging.getLogger(__name__).debug(
@@ -791,6 +794,7 @@ app.include_router(events_router_mod.router)
 app.include_router(search_router_mod.router, tags=["search"])
 app.include_router(migrations.router)
 app.include_router(company_backup.router)
+app.include_router(company_peers.router)
 register_sink(CORE_SINK)
 
 # Backup router — always registered; individual endpoints gate on cloud connection.

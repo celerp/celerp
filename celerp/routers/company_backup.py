@@ -16,6 +16,8 @@ restores one through the start-company routes with its email and password.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
 import secrets
 import uuid
@@ -24,7 +26,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
@@ -96,6 +98,91 @@ async def download_backup(run_id: uuid.UUID | None = None, ctx: AuthContext = De
                         background=BackgroundTask(dest.unlink, missing_ok=True))
 
 
+class SendCompanyHandoff(BaseModel):
+    operation_id: uuid.UUID
+    key: str = Field(min_length=43, max_length=43)
+    firm_name: str = Field(min_length=1, max_length=160)
+    recipient: str = Field(min_length=3, max_length=320)
+    reply_to: str = Field(min_length=3, max_length=320)
+    note: str = Field(default="", max_length=1500)
+
+
+@router.post("/send-handoff")
+async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(user_owner),
+                       session: AsyncSession = Depends(get_session)):
+    from celerp.services.company_handoff_sender import HandoffSendError, send_company_backup
+    try:
+        secret = base64.urlsafe_b64decode(payload.key + "=")
+    except (ValueError, binascii.Error):
+        raise HTTPException(status_code=422, detail="Invalid handoff key") from None
+    if (len(secret) != 32 or
+            base64.urlsafe_b64encode(secret).decode().rstrip("=") != payload.key):
+        raise HTTPException(status_code=422, detail="Invalid handoff key")
+    await session.rollback()  # snapshot uses its own consistent transaction
+    async def export(destination: Path):
+        await cb.export_company_snapshot(ctx.company_id, destination)
+    try:
+        return await send_company_backup(
+            export=export, company_id=ctx.company_id, operation_id=payload.operation_id,
+            secret=secret, firm_name=payload.firm_name,
+            recipient=payload.recipient, reply_to=payload.reply_to, note=payload.note,
+        )
+    except cb.BackupError as exc:
+        return _error(exc)
+    except HandoffSendError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+
+
+@router.get("/handoffs")
+async def company_handoffs(ctx: AuthContext = Depends(user_owner)):
+    """Only this company's owner can see its handoff activity."""
+    from celerp.services.company_handoff_sender import HandoffSendError, _cloud
+    try:
+        answer = await _cloud("GET", "/handoffs", params={"company_id": str(ctx.company_id)})
+    except HandoffSendError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    rows = answer.get("items")
+    if not isinstance(rows, list) or len(rows) > 100:
+        raise HTTPException(status_code=502, detail="Handoff activity is unavailable")
+    safe = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("company_id") != str(ctx.company_id):
+            raise HTTPException(status_code=502, detail="Handoff activity is unavailable")
+        try:
+            copy_id = uuid.UUID(row["id"])
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(status_code=502, detail="Handoff activity is unavailable") from None
+        status = row.get("status")
+        if status not in ("pending", "ready", "sent", "imported", "expired", "revoked"):
+            raise HTTPException(status_code=502, detail="Handoff activity is unavailable")
+        safe.append({"id": str(copy_id), "status": status,
+                     "opened": row.get("opened") is True,
+                     "downloaded": row.get("downloaded") is True,
+                     "company_opened": row.get("company_opened") is True,
+                     "expires_at": str(row.get("expires_at") or "")})
+    return {"items": safe}
+
+
+@router.post("/handoffs/{copy_id}/revoke")
+async def revoke_company_handoff(copy_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)):
+    """Prevent a company owner from managing another company's copy."""
+    from celerp.services.company_handoff_sender import HandoffSendError, _cloud
+    try:
+        answer = await _cloud("GET", "/handoffs", params={"company_id": str(ctx.company_id)})
+        rows = answer.get("items")
+        if not isinstance(rows, list) or len(rows) > 100 or any(
+            not isinstance(row, dict) or row.get("company_id") != str(ctx.company_id)
+            for row in rows
+        ):
+            raise HTTPException(status_code=502, detail="Handoff activity is unavailable")
+        if not any(row.get("id") == str(copy_id) for row in rows):
+            raise HTTPException(status_code=404, detail="Company copy not found")
+        await _cloud("POST", f"/handoffs/{copy_id}/revoke")
+    except HandoffSendError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return {"revoked": True}
+
+
 # ── Restore ──────────────────────────────────────────────────────────────────
 
 def _stage(owner: str, token: str) -> Path:
@@ -134,7 +221,8 @@ async def _preview(session: AsyncSession, stage: Path, token: str, mode: str, us
 
 
 async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str = _BOOTSTRAP,
-                user_id=None, current_company_id=None) -> dict:
+                user_id=None, current_company_id=None, handoff_copy_id: str | None = None,
+                handoff_proof: str | None = None) -> dict:
     """Stage an uploaded backup privately and return its preview with the upload token."""
     await asyncio.to_thread(files.purge_expired_uploads)
     token = secrets.token_hex(16)
@@ -145,7 +233,13 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str =
                                     mode=mode, file_name=file.filename)
         except files.UploadTooLarge:
             raise cb.BackupError(413, t(cb.TOO_LARGE_UPLOAD)) from None
-        return await _preview(session, stage, token, mode, user_id, current_company_id)
+        preview = await _preview(session, stage, token, mode, user_id, current_company_id)
+        if handoff_copy_id or handoff_proof:
+            try:
+                files.bind_handoff(stage, handoff_copy_id, handoff_proof)
+            except (TypeError, ValueError):
+                raise cb.BackupError(422, "Invalid company handoff") from None
+        return preview
     except BaseException:
         files.discard_stage(stage)
         raise
@@ -228,9 +322,11 @@ class RestoreIn(UploadIn):
 
 @router.post("/read")
 async def read_backup(file: UploadFile = File(...), mode: RestoreMode = Form("settings"),
+                      handoff_copy_id: str | None = Form(None), handoff_proof: str | None = Form(None),
                       ctx: AuthContext = Depends(user_owner), session: AsyncSession = Depends(get_session)):
     try:
-        return await _read(file, str(ctx.user.id), session, mode, ctx.user.id, ctx.company_id)
+        return await _read(file, str(ctx.user.id), session, mode, ctx.user.id, ctx.company_id,
+                           handoff_copy_id, handoff_proof)
     except cb.BackupError as exc:
         return _error(exc)
 
@@ -279,10 +375,13 @@ async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_own
             result = await cb.restore_company(stage, mode=payload.mode, user_id=ctx.user.id,
                                               current_company_id=ctx.company_id,
                                               plan_fingerprint=payload.plan_fingerprint,
-                                              company_name=payload.company_name)
+                                              company_name=payload.company_name,
+                                              retain_peer_identities=files._receipt(stage) is not None)
         except cb.BackupError as exc:
             return _error(exc, stage)
         files.finish_stage(stage, result.company_id)
+    from celerp.services.company_handoff_receipts import report_completed_handoff
+    await report_completed_handoff(stage)
     return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
                                                     expected_snonce=ctx.snonce))
 
@@ -323,10 +422,12 @@ async def _first_run(session: AsyncSession, x_setup_code: str | None) -> None:
 @router.post("/bootstrap/read")
 @limiter.limit("5/minute")
 async def bootstrap_read(request: Request, file: UploadFile = File(...),
+                         handoff_copy_id: str | None = Form(None), handoff_proof: str | None = Form(None),
                          session: AsyncSession = Depends(get_session), x_setup_code: str | None = Header(None)):
     await _first_run(session, x_setup_code)
     try:
-        return await _read(file, _BOOTSTRAP, session)
+        return await _read(file, _BOOTSTRAP, session, handoff_copy_id=handoff_copy_id,
+                           handoff_proof=handoff_proof)
     except cb.BackupError as exc:
         return _error(exc)
 
@@ -390,14 +491,19 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
         result = await cb.reopen_restored(files.restored_company(stage), owner_account=account)
         if result is None:
             raise HTTPException(status_code=409, detail=t("company_backup.upload_expired"))
+        from celerp.services.company_handoff_receipts import report_completed_handoff
+        await report_completed_handoff(stage)
         return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                               expected_snonce=None))
     try:
         result = await cb.restore_company(stage, mode="bootstrap", owner_account=account,
-                                          company_name=payload.company_name)
+                                          company_name=payload.company_name,
+                                          retain_peer_identities=files._receipt(stage) is not None)
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
+    from celerp.services.company_handoff_receipts import report_completed_handoff
+    await report_completed_handoff(stage)
     response = _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                               expected_snonce=None))
     if required:
@@ -411,10 +517,12 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
 @router.post("/start-company/read")
 @limiter.limit("5/minute")
 async def start_company_read(request: Request, file: UploadFile = File(...), email: str = Form(...),
-                             password: str = Form(...), session: AsyncSession = Depends(get_session)):
+                             password: str = Form(...), handoff_copy_id: str | None = Form(None),
+                             handoff_proof: str | None = Form(None), session: AsyncSession = Depends(get_session)):
     user = await companyless_login(session, email, password)
     try:
-        return await _read(file, str(user.id), session, _START_COMPANY, user.id)
+        return await _read(file, str(user.id), session, _START_COMPANY, user.id,
+                           handoff_copy_id=handoff_copy_id, handoff_proof=handoff_proof)
     except cb.BackupError as exc:
         return _error(exc)
 
@@ -440,9 +548,12 @@ async def start_company_restore(request: Request, payload: StartCompanyRestoreIn
     try:
         result = await cb.restore_company(stage, mode=_START_COMPANY, user_id=user.id,
                                           plan_fingerprint=payload.plan_fingerprint,
-                                          company_name=payload.company_name)
+                                          company_name=payload.company_name,
+                                          retain_peer_identities=files._receipt(stage) is not None)
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
+    from celerp.services.company_handoff_receipts import report_completed_handoff
+    await report_completed_handoff(stage)
     return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                           expected_snonce=None))

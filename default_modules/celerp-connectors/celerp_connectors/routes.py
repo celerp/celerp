@@ -284,6 +284,38 @@ async def store_credentials(
         except Exception as exc:
             return {"ok": False, "error": "store_unreachable", "detail": str(exc)}
 
+    elif connector_name == "celerp":
+        import json
+        from urllib.parse import urlsplit
+        from celerp.services.outbound_url import validate_public_base_url, fetch_public_bytes
+        try:
+            parsed = urlsplit(store_url)
+            if (not store_url or parsed.scheme != "https" or not parsed.hostname
+                    or parsed.port not in (None, 443) or parsed.path not in ("", "/")
+                    or parsed.username is not None or parsed.password is not None
+                    or parsed.query or parsed.fragment or payload.consumer_secret):
+                return {"ok": False, "error": "store_unreachable",
+                        "detail": "Enter the receiving installation's HTTPS address and company key."}
+            store_url = await validate_public_base_url(
+                store_url, reject_query=True, reject_fragment=True)
+            response = await fetch_public_bytes(
+                f"{store_url}/company-peers/verify",
+                max_bytes=4096, timeout=10.0,
+                headers={"Authorization": "Peer " + payload.consumer_key},
+                params={"source_company_id": str(company_id)},
+            )
+            if response.status_code != 200:
+                return {"ok": False, "error": "store_rejected",
+                        "detail": "The receiving installation rejected this company key."}
+            info = json.loads(response.content)
+            if (not isinstance(info, dict) or "contacts" not in info.get("scopes", [])
+                    or not info.get("company_id")):
+                return {"ok": False, "error": "store_rejected",
+                        "detail": "The receiving company did not confirm contact access."}
+        except Exception:
+            return {"ok": False, "error": "store_unreachable",
+                    "detail": "The receiving Celerp installation could not be verified."}
+
     from celerp.connectors.base import ConnectorCategory, ConnectorContext, SyncFrequency
     from celerp.connectors.ownership import (
         ConnectorOwnershipError,
@@ -321,7 +353,8 @@ async def store_credentials(
 
     store_ctx = ConnectorContext(
         company_id=str(company_id),
-        access_token=f"{payload.consumer_key}:{payload.consumer_secret}",
+        access_token=(payload.consumer_key if connector_name == "celerp"
+                      else f"{payload.consumer_key}:{payload.consumer_secret}"),
         store_handle=store_url or None,
     )
     # The store is checked against the company's records, and its old product

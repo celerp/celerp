@@ -20,6 +20,7 @@ const fs = require("fs");
 const childProcess = require("child_process");
 const { execFileSync } = childProcess;
 const net = require("net");
+const { parseHandoffUrl, handoffFromArgs, handoffRestorePath } = require("./handoff-protocol");
 let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-only
 
 // ── Asar path fix for embedded-postgres ─────────────────────────────────────
@@ -166,6 +167,49 @@ let apiProcess = null;
 let uiProcess = null;
 let apiPort = null;
 let uiPort = null;
+let pendingHandoffUrl = handoffFromArgs(process.argv);
+let handoffPageRequested = false;
+
+function acceptHandoffUrl(value) {
+  const parsed = parseHandoffUrl(value);
+  if (!parsed) return;
+  pendingHandoffUrl = parsed;
+  handoffPageRequested = false;
+  showPendingHandoff();
+}
+
+function showPendingHandoff() {
+  if (!pendingHandoffUrl || !mainWindow || !uiPort || mainWindow.isDestroyed()) return;
+  const origin = "http://127.0.0.1:" + uiPort;
+  let page;
+  try { page = new URL(mainWindow.webContents.getURL()); } catch { return; }
+  if (page.origin !== origin) return;
+  const target = handoffRestorePath(page.pathname);
+  if (!target) {
+    // Hold the link through login without sending its secret in a URL or log.
+    handoffPageRequested = false;
+    return;
+  }
+  if (page.pathname !== target) {
+    if (!handoffPageRequested) {
+      handoffPageRequested = true;
+      mainWindow.loadURL(origin + target);
+    }
+    return;
+  }
+  const link = pendingHandoffUrl;
+  const script = "(function () {"
+    + "if (location.origin !== " + JSON.stringify(origin) + ") return false;"
+    + "const field = document.querySelector('[name=handoff_link]');"
+    + "if (!field) return false;"
+    + "field.value = " + JSON.stringify(link) + ";"
+    + "field.dispatchEvent(new Event('input', { bubbles: true }));"
+    + "field.focus(); return true;"
+    + "})()";
+  mainWindow.webContents.executeJavaScript(script).then((shown) => {
+    if (shown && pendingHandoffUrl === link) pendingHandoffUrl = null;
+  }).catch(() => {});
+}
 // UI ports used earlier in this session. A restart re-allocates uiPort; navigations
 // still pointing at an old port are stale self-references, not external links.
 const formerUiPorts = new Set();
@@ -1051,6 +1095,7 @@ function createWindow() {
   // calls — both onclick handlers and htmx hx-confirm attributes — show a real
   // native dialog via the contextBridge IPC.
   mainWindow.webContents.on("did-finish-load", () => {
+    showPendingHandoff();
     mainWindow.webContents.executeJavaScript(`
       (function () {
         if (window.__ceConfirmPatched) return;
@@ -1204,7 +1249,8 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    acceptHandoffUrl(handoffFromArgs(argv));
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
@@ -1213,9 +1259,18 @@ if (!gotLock) {
   });
 }
 
+// macOS passes application links through open-url, including before ready.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  acceptHandoffUrl(url);
+});
+
 // ── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  if (app.isPackaged && typeof app.setAsDefaultProtocolClient === "function") {
+    app.setAsDefaultProtocolClient("celerp");
+  }
   // ── macOS DMG guard ───────────────────────────────────────────────────────
   // Detect if the user launched Celerp directly from a mounted disk image
   // instead of installing it to /Applications first. The app bundle will be
