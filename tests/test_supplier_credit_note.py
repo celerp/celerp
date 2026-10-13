@@ -478,3 +478,31 @@ async def test_supplier_credit_identity_stays_fixed_after_issue_or_application(c
         assert _code(response) == "docs.contact_credit_fixed"
         assert (await _state(session, auth, doc_id)).get("contact_id") == state.get("contact_id")
     assert await _trial_balance(client, auth) == before
+
+
+async def test_void_return_credit_requires_fulfillment_permission(client, session, auth):
+    """A role allowed to finalize but not return stock cannot restore returned goods."""
+    from celerp.models.company import Company
+    from test_helpers import invite_user
+
+    doc, note = await _note(client, session, auth)
+    operator = await invite_user(client, session, auth["headers"], "credit-stock@example.test", "operator")
+    company = await session.get(Company, auth["company_id"])
+    settings = dict(company.settings or {})
+    grants = dict(settings.get("role_grants") or {})
+    grants["fulfill_documents"] = ["manager", "admin", "owner"]
+    settings["role_grants"] = grants
+    company.settings = settings
+    await session.commit()
+
+    before = await _trial_balance(client, auth)
+    denied = await client.post(f"/docs/{note}/void",
+                               headers={"Authorization": f"Bearer {operator}"}, json={})
+    assert denied.status_code == 403, denied.text
+    assert (await _state(session, auth, note))["status"] == "final"
+    assert (await _state(session, auth, doc))["status"] == "returned"
+    assert await _trial_balance(client, auth) == before
+
+    allowed = await _post(client, auth, note, "void")
+    assert allowed.status_code == 200, allowed.text
+    await assert_settled(client, session, auth)

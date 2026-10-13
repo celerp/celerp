@@ -2522,7 +2522,7 @@ async def finalize_doc(
 
 
 @router.post("/{entity_id}/void")
-async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     preview = await _get_doc(session, company_id, entity_id)
     linked = (str(preview.state.get("original_doc_id") or "")
               if preview.state.get("doc_type") == "debit_note" and preview.state.get("source_return") else "")
@@ -2584,6 +2584,7 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
             "the bill would leave that entry standing. To cancel the bill, revert it to draft."))
 
     if row.state.get("doc_type") == "debit_note" and row.state.get("source_return"):
+        assert_role_permission(settings, role, "fulfill_documents")
         await _undo_supplier_return(session, company_id, user.id, entity_id, row.state)
     event_data = payload.model_dump(exclude_none=True)
     event_data["pre_void_status"] = current_status
