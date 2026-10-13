@@ -8,6 +8,7 @@ import json
 from types import SimpleNamespace
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,7 +47,7 @@ async def receive_draft_document(
     """Create or edit a draft without bypassing canonical status and money checks."""
     from celerp_docs.doc_constants import LIFECYCLE_OWNED_FIELDS
     from celerp_docs.import_service import import_doc_records
-    from celerp_docs.routes import DocImportRecord, finalize_document
+    from celerp_docs.routes import DocImportRecord, LineItem, _reject_line_attributes, finalize_document
     from celerp_docs.sequences import require_doc_type
 
     if not isinstance(data, dict):
@@ -107,8 +108,13 @@ async def receive_draft_document(
                     raise HTTPException(422, "Invalid item reference")
                 if key == "item_id" or moved[key].startswith("item:"):
                     moved[key] = await _map_identity(session, grant, "item", moved[key])
+        try:
+            LineItem.model_validate(moved)
+        except ValidationError as exc:
+            raise HTTPException(422, "Invalid document line") from exc
         mapped_lines.append(moved)
     if "line_items" in incoming:
+        _reject_line_attributes(mapped_lines)
         incoming["line_items"] = mapped_lines
 
     company = await session.get(Company, grant.company_id)

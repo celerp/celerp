@@ -332,3 +332,25 @@ async def test_canonical_void_route_still_commits_standard_api_requests(monkeypa
     )
     assert result == {"event_id": 42}
     assert events == [("doc:test", True)]
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("line", [
+    {"name": "Bad quantity", "quantity": float("nan"), "unit_price": 5},
+    {"name": "Forged lot", "quantity": 1, "unit_price": 5,
+     "attributes": {"reserved_quantity": 99}},
+    {"name": "Bad price", "quantity": 1, "unit_price": float("inf")},
+])
+async def test_peer_document_line_uses_canonical_boundary_validation(monkeypatch, line):
+    async def claim(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:receiving")
+    monkeypatch.setattr(documents, "claim_peer_revision", claim)
+    with pytest.raises(HTTPException) as exc:
+        await documents.receive_draft_document(
+            _Session(), grant=_grant(), source_entity_id="doc:unsafe-line",
+            source_revision=1,
+            data={"doc_type": "invoice", "status": "draft",
+                  "line_items": [line], "currency": "USD"},
+        )
+    assert exc.value.status_code == 422
