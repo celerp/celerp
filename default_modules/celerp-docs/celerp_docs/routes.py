@@ -2073,8 +2073,9 @@ def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: st
     asyncio.create_task(_run())
 
 
-@router.post("/{entity_id}/send")
-async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def mark_doc_sent(session: AsyncSession, company_id, entity_id: str, user,
+                        payload: DocSendBody, *, source: str = "api"):
+    """Canonical sent transition, caller owns commit and any email side effect."""
     # Lock the doc row so the closed-check below is race-safe against a concurrent
     # close: without it, send and close both read a non-closed memo unlocked and
     # both commit, letting doc.sent silently un-close the memo the close settled.
@@ -2082,7 +2083,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     key, digest = _operation("send", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.sent",
                                    entity_id=entity_id, digest=digest)) is not None:
-        return done
+        return row, None, done
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail=t("documents.err_send_void"))
     if row.state.get("status") == "closed":
@@ -2095,9 +2096,19 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
         raise HTTPException(status_code=409, detail=t("documents.err_send_type"))
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.sent",
-        data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
+        data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source=source,
         idempotency_key=key, metadata_={"request": digest},
     )
+
+    return row, entry, None
+
+
+@router.post("/{entity_id}/send")
+async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    row, entry, prior = await mark_doc_sent(session, company_id, entity_id, user, payload)
+    if prior is not None:
+        return prior
+    doc_type = row.state.get("doc_type", "")
 
     sent_to = payload.sent_to
     view_url = pay_url = None

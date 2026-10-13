@@ -204,6 +204,14 @@ async def receive_draft_document(
     if source_status != "draft" and target_status == "draft":
         await finalize_document(claim.target_id, str(grant.company_id),
                                 SimpleNamespace(id=member.id), session, commit=False)
+    if source_status == "sent" and target_status != "sent":
+        from celerp_docs.routes import DocSendBody, mark_doc_sent
+        sent_key = f"peer:doc-sent:{grant.source_company_id}:{key}:{source_revision}"
+        await mark_doc_sent(
+            session, str(grant.company_id), claim.target_id,
+            SimpleNamespace(id=member.id),
+            DocSendBody(idempotency_key=sent_key), source="connector",
+        )
     await apply_source_payments(
         session, grant=grant, source_entity_id=source_entity_id,
         target_doc_id=claim.target_id, payments=payments,

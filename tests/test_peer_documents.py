@@ -182,6 +182,11 @@ async def test_issued_transition_finalizes_existing_draft_using_canonical_servic
     monkeypatch.setattr(documents, "claim_peer_revision", claim)
     monkeypatch.setattr(import_service, "import_doc_records", imported)
     monkeypatch.setattr(routes, "finalize_document", finalize)
+    async def marked_sent(session, company_id, entity_id, user, payload, *, source):
+        assert source == "connector" and payload.sent_to is None
+        assert payload.idempotency_key.startswith("peer:doc-sent:")
+        events.append(("sent", entity_id))
+    monkeypatch.setattr(routes, "mark_doc_sent", marked_sent)
     monkeypatch.setattr(documents, "commit_peer_revision", commit)
     assert await documents.receive_draft_document(
         HasDraft(), grant=_grant(), source_entity_id="doc:invoice",
@@ -189,7 +194,7 @@ async def test_issued_transition_finalizes_existing_draft_using_canonical_servic
                                  "ref_id": "INV-10", "line_items": [
                                      {"name": "Service", "quantity": 1,
                                       "unit_price": 25}]}) == "updated"
-    assert events == [("doc:target", False), ("revision", 3)]
+    assert events == [("doc:target", False), ("sent", "doc:target"), ("revision", 3)]
 
 
 @pytest.mark.asyncio
