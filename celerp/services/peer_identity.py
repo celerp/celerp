@@ -200,12 +200,14 @@ async def receive_product(session: AsyncSession, *, grant, source_entity_id: str
             raise HTTPException(409, "External product identity conflicts with existing record")
         event_type = "item.created"
     company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(404, "Company unavailable")
+    if company is None or not company.is_active or company.is_migration_staged:
+        raise HTTPException(403, "Company unavailable")
     member = (await session.execute(select(User.id, UserCompany.role).join(
         UserCompany, UserCompany.user_id == User.id).where(
         UserCompany.company_id == company_id,
         UserCompany.role == "owner",
+        UserCompany.is_active.is_(True),
+        User.is_active.is_(True),
     ).order_by(User.id).limit(1))).first()
     if member is None:
         raise HTTPException(403, "Company owner unavailable")

@@ -213,3 +213,41 @@ async def test_product_peer_uses_canonical_inventory_writer_and_stable_restore_i
             assert changes == ["item.created", "item.patched"]
     finally:
         await engine.dispose()
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked", ("inactive_company", "staged_company", "inactive_owner", "inactive_membership"))
+async def test_peer_product_refuses_inactive_canonical_authority(blocked):
+    from types import SimpleNamespace
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import User
+    from celerp.services.peer_identity import receive_product
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    target, source, owner = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    try:
+        async with engine.begin() as connection:
+            for table in (Company.__table__, User.__table__, UserCompany.__table__,
+                          Projection.__table__, CompanyPeerIdentity.__table__):
+                await connection.run_sync(table.create)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        async with sessions() as session:
+            session.add(Company(id=target, slug="firm", name="Firm", settings={},
+                                is_active=blocked != "inactive_company",
+                                is_migration_staged=blocked == "staged_company"))
+            session.add(User(id=owner, email="owner@example.test", name="Owner",
+                             is_active=blocked != "inactive_owner"))
+            session.add(UserCompany(user_id=owner, company_id=target, role="owner",
+                                    is_active=blocked != "inactive_membership"))
+            await session.commit()
+            with pytest.raises(HTTPException) as exc:
+                await receive_product(
+                    session, grant=SimpleNamespace(company_id=target, source_company_id=source),
+                    source_entity_id="item:source", source_revision=1,
+                    data={"name": "Widget", "sell_by": "piece"})
+            assert exc.value.status_code == 403
+            assert await session.scalar(select(CompanyPeerIdentity).where(
+                CompanyPeerIdentity.company_id == target)) is None
+    finally:
+        await engine.dispose()
