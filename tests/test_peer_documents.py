@@ -388,3 +388,39 @@ async def test_stock_invoice_refused_before_any_document_revision_claim(monkeypa
                   "currency": "USD"})
     assert exc.value.status_code == 409
     assert "Inventory-linked" in exc.value.detail
+
+
+
+@pytest.mark.asyncio
+async def test_canonical_sent_transition_can_participate_in_peer_transaction(monkeypatch):
+    from celerp_docs import routes
+    row = SimpleNamespace(state={
+        "doc_type": "invoice", "status": "final",
+        "line_items": [{"name": "Service", "quantity": 1, "unit_price": 10}],
+    })
+    class Session:
+        async def commit(self):
+            raise AssertionError("sending state during peer sync must not commit")
+    emitted = []
+    async def current(*args, **kwargs):
+        assert kwargs.get("for_update") is True
+        return row
+    async def prior(*args, **kwargs):
+        return None
+    async def event(*args, **kwargs):
+        emitted.append(kwargs)
+        return SimpleNamespace(id=93)
+    monkeypatch.setattr(routes, "_get_doc", current)
+    monkeypatch.setattr(routes, "_earlier_run", prior)
+    monkeypatch.setattr(routes, "emit_event", event)
+    session = Session()
+    payload = routes.DocSendBody(idempotency_key="source:invoice:sent:3")
+    locked, entry, done = await routes.mark_doc_sent(
+        session, str(uuid.uuid4()), "doc:recipient", SimpleNamespace(id=uuid.uuid4()),
+        payload, source="connector",
+    )
+    assert locked is row and entry.id == 93 and done is None
+    assert emitted[0]["source"] == "connector"
+    assert emitted[0]["event_type"] == "doc.sent"
+    assert emitted[0]["data"].get("sent_to") is None
+    assert emitted[0]["idempotency_key"] == "source:invoice:sent:3"
