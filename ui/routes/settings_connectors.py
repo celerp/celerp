@@ -1137,6 +1137,8 @@ def setup_routes(app):
                                 checked=True), t("accountant_access.contacts", lang)),
                     Label(Input(type="checkbox", name="scopes", value="products",
                                 checked=True), t("accountant_access.products", lang)),
+                    Label(Input(type="checkbox", name="scopes", value="documents"),
+                          t("accountant_access.documents", lang)),
                 ),
                 Label(t("accountant_access.lifetime", lang)),
                 Select(
@@ -1190,7 +1192,7 @@ def setup_routes(app):
             lifetime = int(form.get("lifetime_days") or "30")
             scopes = sorted(set(str(scope) for scope in form.getlist("scopes")))
             if not (1 <= len(label) <= 128 and 1 <= lifetime <= 90
-                    and "contacts" in scopes and set(scopes) <= {"contacts", "products"}):
+                    and scopes and set(scopes) <= {"contacts", "products", "documents"}):
                 raise ValueError("Invalid grant selection")
         except (ValueError, TypeError):
             return Span(t("accountant_access.invalid", lang),

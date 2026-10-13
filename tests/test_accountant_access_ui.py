@@ -14,7 +14,7 @@ from ui.routes import settings_connectors as routes
 
 class FormData(dict):
     def getlist(self, name):
-        return ["contacts", "products"] if name == "scopes" else []
+        return list(self.get("scopes", ["contacts", "products"])) if name == "scopes" else []
 
 
 class Request:
@@ -98,3 +98,43 @@ async def test_revoke_refreshes_access_list(monkeypatch):
     assert response.status_code == 204
     assert response.headers["hx-refresh"] == "true"
     assert revoked == [("test-token", id_)]
+
+
+
+@pytest.mark.asyncio
+async def test_documents_scope_can_be_granted_without_contact_permission(monkeypatch):
+    _authenticated(monkeypatch)
+    seen = []
+    async def create(token, body):
+        seen.append(body)
+        return {"credential": "cp1.ONE-TIME-TEST-KEY"}
+    monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
+    issue = _endpoints()["/settings/accountant-access/grants"]
+    source = str(uuid.uuid4())
+    response = await issue(Request({
+        "source_company_id": source,
+        "label": "Finance documents only",
+        "lifetime_days": "14",
+        "scopes": ["documents"],
+    }))
+    assert response.status_code == 200
+    assert seen == [{"source_company_id": source, "label": "Finance documents only",
+                     "scopes": ["documents"], "lifetime_days": 14}]
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
+async def test_accountant_grant_rejects_unapproved_or_empty_scope(monkeypatch):
+    _authenticated(monkeypatch)
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Invalid grant must not call the API")
+    monkeypatch.setattr(api_client, "issue_accountant_peer_grant", forbidden)
+    issue = _endpoints()["/settings/accountant-access/grants"]
+    source = str(uuid.uuid4())
+    for scopes in ([], ["attachments"], ["contacts", "manage_users"]):
+        response = await issue(Request({
+            "source_company_id": source, "label": "Test", "lifetime_days": "14",
+            "scopes": scopes,
+        }))
+        from fasthtml.common import to_xml
+        assert "Check the client company ID" in to_xml(response)
