@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 import json
 import uuid
 
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company_peer import CompanyPeerIdentity
 from celerp.models.projections import Projection
+from celerp.services.company_lock import locked_company
 
 ENTITY_TYPES = frozenset({"contact", "item", "doc"})
 BATCH = 500
@@ -81,6 +83,78 @@ def new_target_identity(source_company: uuid.UUID, entity_type: str, source_enti
     return f"{entity_type}:{target}"
 
 
+@dataclass(frozen=True)
+class PeerRevisionClaim:
+    mapping: CompanyPeerIdentity | None
+    target_id: str
+    source_key: str
+    digest: str
+    replay: bool
+
+
+async def claim_peer_revision(
+    session: AsyncSession, *, grant, entity_type: str,
+    source_entity_id: str, source_revision: int, data: dict,
+) -> PeerRevisionClaim:
+    """Serialize a source revision and verify its mapped target before acknowledging replay."""
+    if (entity_type not in ENTITY_TYPES or type(source_revision) is not int
+            or not 1 <= source_revision <= 2**63 - 1
+            or not isinstance(source_entity_id, str)
+            or not 1 <= len(source_entity_id) <= 512):
+        raise HTTPException(422, "Invalid source revision")
+    company_id, source_company = grant.company_id, grant.source_company_id
+    company = await locked_company(session, company_id)
+    if company is None or not company.is_active or company.is_migration_staged:
+        raise HTTPException(403, "Company unavailable")
+    source_key = _digest(source_entity_id)
+    digest = hashlib.sha256(json.dumps(
+        data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    mapping = await session.scalar(select(CompanyPeerIdentity).where(
+        CompanyPeerIdentity.company_id == company_id,
+        CompanyPeerIdentity.source_company_id == source_company,
+        CompanyPeerIdentity.entity_type == entity_type,
+        CompanyPeerIdentity.source_key_hash == source_key,
+    ).with_for_update())
+    if mapping is not None:
+        if mapping.source_entity_id != source_entity_id:
+            raise HTTPException(409, "External identity conflict")
+        target = await peer_identity(
+            session, target_company=company_id, source_company=source_company,
+            entity_type=entity_type, source_entity_id=source_entity_id)
+        if entity_type == "contact":
+            row = await session.get(Projection, (company_id, target))
+            if (row.state or {}).get("is_self"):
+                raise HTTPException(403, "Company-owned contacts cannot be updated by an integration")
+        if source_revision < mapping.last_revision:
+            return PeerRevisionClaim(mapping, target, source_key, digest, True)
+        if source_revision == mapping.last_revision:
+            if mapping.last_payload_hash and mapping.last_payload_hash != digest:
+                raise HTTPException(409, "Source revision already used")
+            return PeerRevisionClaim(mapping, target, source_key, digest, True)
+        return PeerRevisionClaim(mapping, target, source_key, digest, False)
+    target = new_target_identity(source_company, entity_type, source_entity_id)
+    if await session.get(Projection, (company_id, target)) is not None:
+        raise HTTPException(409, "External identity conflicts with an existing record")
+    return PeerRevisionClaim(None, target, source_key, digest, False)
+
+
+async def commit_peer_revision(
+    session: AsyncSession, *, grant, claim: PeerRevisionClaim,
+    entity_type: str, source_entity_id: str, source_revision: int,
+) -> None:
+    """Persist source revision in the same transaction as its canonical domain write."""
+    if claim.mapping is None:
+        session.add(CompanyPeerIdentity(
+            company_id=grant.company_id, source_company_id=grant.source_company_id,
+            entity_type=entity_type, source_entity_id=source_entity_id,
+            source_key_hash=claim.source_key, target_entity_id=claim.target_id,
+            last_revision=source_revision, last_payload_hash=claim.digest))
+    else:
+        claim.mapping.last_revision = source_revision
+        claim.mapping.last_payload_hash = claim.digest
+    await session.flush()
+
+
 async def receive_contact(session: AsyncSession, *, grant, source_entity_id: str,
                           source_revision: int, data: dict) -> str:
     """Write one contact through the canonical contact importer in this transaction."""
@@ -96,36 +170,13 @@ async def receive_contact(session: AsyncSession, *, grant, source_entity_id: str
         raise HTTPException(422, "Invalid contact name")
     require_currency_code(data.get("currency"))
     require_phone(data.get("phone"))
+    claim = await claim_peer_revision(
+        session, grant=grant, entity_type="contact",
+        source_entity_id=source_entity_id, source_revision=source_revision, data=data)
+    if claim.replay:
+        return "skipped"
     company_id, source_company = grant.company_id, grant.source_company_id
-    digest = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":"),
-                                                  ensure_ascii=False).encode()).hexdigest()
-    source_key = _digest(source_entity_id)
-    mapping = await session.scalar(select(CompanyPeerIdentity).where(
-        CompanyPeerIdentity.company_id == company_id,
-        CompanyPeerIdentity.source_company_id == source_company,
-        CompanyPeerIdentity.entity_type == "contact",
-        CompanyPeerIdentity.source_key_hash == source_key,
-    ))
-    if mapping is not None:
-        if mapping.source_entity_id != source_entity_id:
-            raise HTTPException(409, "External contact identity conflict")
-        if source_revision < mapping.last_revision:
-            return "skipped"
-        if source_revision == mapping.last_revision:
-            if mapping.last_payload_hash and mapping.last_payload_hash != digest:
-                raise HTTPException(409, "Contact revision already used")
-            return "skipped"
-        target_entity_id = await peer_identity(session, target_company=company_id,
-                                              source_company=source_company, entity_type="contact",
-                                              source_entity_id=source_entity_id)
-        target = await session.get(Projection, (company_id, target_entity_id))
-        if target is None or (target.state or {}).get("is_self"):
-            raise HTTPException(403, "Company-owned contacts cannot be updated by an integration")
-    else:
-        target_entity_id = new_target_identity(source_company, "contact", source_entity_id)
-        existing = await session.get(Projection, (company_id, target_entity_id))
-        if existing is not None:
-            raise HTTPException(409, "External contact identity conflicts with an existing record")
+    source_key, target_entity_id = claim.source_key, claim.target_id
     record = CRMImportRecord(
         entity_id=target_entity_id, event_type="crm.contact.created", data=data,
         source="connector", idempotency_key=f"peer:contact:{source_company}:{source_key}")
@@ -136,17 +187,9 @@ async def receive_contact(session: AsyncSession, *, grant, source_entity_id: str
         result = results.records[0]
         if result.status not in ("created", "updated", "skipped"):
             raise HTTPException(409, "Contact update was not accepted")
-    if mapping is None:
-        mapping = CompanyPeerIdentity(
-            company_id=company_id, source_company_id=source_company, entity_type="contact",
-            source_entity_id=source_entity_id, source_key_hash=source_key,
-            target_entity_id=target_entity_id, last_revision=source_revision,
-            last_payload_hash=digest)
-        session.add(mapping)
-    else:
-        mapping.last_revision = source_revision
-        mapping.last_payload_hash = digest
-    await session.flush()
+    await commit_peer_revision(
+        session, grant=grant, claim=claim, entity_type="contact",
+        source_entity_id=source_entity_id, source_revision=source_revision)
     return result.status
 
 
@@ -171,39 +214,19 @@ async def receive_product(session: AsyncSession, *, grant, source_entity_id: str
     if set(data) - allowed:
         raise HTTPException(422, "Unsupported product fields")
     body = {key: value for key, value in data.items() if value is not None}
-    digest = hashlib.sha256(json.dumps(
-        data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    claim = await claim_peer_revision(
+        session, grant=grant, entity_type="item",
+        source_entity_id=source_entity_id, source_revision=source_revision, data=data)
+    if claim.replay:
+        return "skipped"
     company_id, source_company = grant.company_id, grant.source_company_id
-    key = _digest(source_entity_id)
-    mapping = await session.scalar(select(CompanyPeerIdentity).where(
-        CompanyPeerIdentity.company_id == company_id,
-        CompanyPeerIdentity.source_company_id == source_company,
-        CompanyPeerIdentity.entity_type == "item",
-        CompanyPeerIdentity.source_key_hash == key,
-    ).with_for_update())
-    if mapping is not None:
-        if mapping.source_entity_id != source_entity_id:
-            raise HTTPException(409, "External product identity conflict")
-        if source_revision < mapping.last_revision:
-            return "skipped"
-        if source_revision == mapping.last_revision:
-            if mapping.last_payload_hash and mapping.last_payload_hash != digest:
-                raise HTTPException(409, "Product revision already used")
-            return "skipped"
-        target_id = await peer_identity(
-            session, target_company=company_id, source_company=source_company,
-            entity_type="item", source_entity_id=source_entity_id)
-        event_type = "item.patched"
-        # Full snapshot changes must also clear optional fields that disappeared.
+    target_id, key = claim.target_id, claim.source_key
+    event_type = "item.patched" if claim.mapping is not None else "item.created"
+    if claim.mapping is not None:
         for field in ("sku", "description", "category", "barcode",
                       "retail_price", "wholesale_price"):
             if field in data and data[field] is None:
                 body[field] = None
-    else:
-        target_id = new_target_identity(source_company, "item", source_entity_id)
-        if await session.get(Projection, (company_id, target_id)) is not None:
-            raise HTTPException(409, "External product identity conflicts with existing record")
-        event_type = "item.created"
     company = await session.get(Company, company_id)
     if company is None or not company.is_active or company.is_migration_staged:
         raise HTTPException(403, "Company unavailable")
@@ -228,15 +251,7 @@ async def receive_product(session: AsyncSession, *, grant, source_entity_id: str
         result = outcome.records[0]
         if result.status not in ("created", "updated", "skipped"):
             raise HTTPException(409, "Product update was not accepted")
-    if mapping is None:
-        mapping = CompanyPeerIdentity(
-            company_id=company_id, source_company_id=source_company,
-            entity_type="item", source_entity_id=source_entity_id,
-            source_key_hash=key, target_entity_id=target_id,
-            last_revision=source_revision, last_payload_hash=digest)
-        session.add(mapping)
-    else:
-        mapping.last_revision = source_revision
-        mapping.last_payload_hash = digest
-    await session.flush()
+    await commit_peer_revision(
+        session, grant=grant, claim=claim, entity_type="item",
+        source_entity_id=source_entity_id, source_revision=source_revision)
     return result.status
