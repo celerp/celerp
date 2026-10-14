@@ -12216,7 +12216,8 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     before the caller took the row lock. A line must pass the shared quantity rule and the caller's
     own writer rules (`admit`, returning a (reason, label) refusal or None). A code any rule
     refuses is reported and skipped, never aborting the run."""
-    from celerp_inventory.services import duplicate_barcode_detail, resolve_items_by_codes
+    from celerp_inventory.projections import held_elsewhere
+    from celerp_inventory.services import HIDDEN_STATUSES, duplicate_barcode_detail, resolve_items_by_codes
 
     resolved = await resolve_items_by_codes(session, company_id, codes)
     unit_map = await _get_unit_map(session, company_id)
@@ -12228,17 +12229,22 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     pools: dict[str, tuple[set[str], float]] = {}
 
     async def product_pool(lot: Projection) -> tuple[set[str], float]:
-        """The splittable lots a product code would draw on and what they hold together, read once
-        per product as its own scan would bind them (one lot standing for all). A product that is
-        not one splittable pool has no cap beyond each line's own."""
+        """Every lot of the lot's product this record may draw on (in use, stocked, not held for
+        another record; pieces that may not be split included) and what they hold together, read
+        once per product. Lines on the product code's representative and on each lot's own code all
+        draw on this one stock."""
         sku = str(lot.state.get("sku") or "")
         if sku not in pools:
             res = (await resolve_items_by_codes(session, company_id, [sku])).get(sku) if sku else None
-            rep, quantity, _, _ = ((None, 0, None, None) if res is None or not res.matches or res.kind != "sku"
-                                   else _scan_lot(sku, res, sb, settings, state, entity_id))
-            pools[sku] = (({m.entity_id for m in res.matches if splitting_allowed(m.state or {})}, float(quantity or 0))
-                          if rep is not None and not _whole_piece(rep.state) else (set(), float("inf")))
-        return pools[sku]
+            stock = [m for m in (res.matches if res is not None else [])
+                     if (m.state or {}).get("sku") == sku and is_stock_type(m.state or {})
+                     and str((m.state or {}).get("status") or "").lower() not in HIDDEN_STATUSES | {"draft"}
+                     and not held_elsewhere(m.state or {}, entity_id, None, state.get("source_memo_id"))]
+            pools[sku] = ({m.entity_id for m in stock}, sum(float((m.state or {}).get("quantity") or 0) for m in stock))
+        ids, available = pools[sku]
+        if lot.entity_id in ids:
+            return ids, available
+        return ids | {lot.entity_id}, available + float(lot.state.get("quantity") or 0)
     for code in codes:
         res = resolved.get(code)
         if res is not None and res.duplicate_physical:
@@ -12298,7 +12304,10 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
                     _scan_failure(failed, results, code, "invalid_quantity", exc.detail)
                     continue
             placed = lines[:idx] + [line] + lines[idx + 1:] if not whole and idx is not None else lines + [line]
-            if sb.unstocked == "refuse" and stocked and not whole:
+            if admit is not None and (refused := admit(lot, placed)) is not None:
+                _scan_failure(failed, results, code, *refused)  # the specific reason before the cap
+                continue
+            if sb.unstocked == "refuse" and stocked:
                 # The line never takes more than its lot stands for, and every line drawing on the
                 # product's stock together never takes more than the product has.
                 taken, available = line["quantity"], float(on_hand or 0)
@@ -12310,9 +12319,6 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
                     _scan_failure(failed, results, code, "insufficient_stock",
                                   f"{sku}: insufficient stock - {taken:g} on {noun}, available {available:g}")
                     continue
-            if admit is not None and (refused := admit(lot, placed)) is not None:
-                _scan_failure(failed, results, code, *refused)
-                continue
             if not whole and idx is not None:
                 lines[idx] = line
             elif sb.finalized == "count":
