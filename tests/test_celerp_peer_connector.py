@@ -283,7 +283,7 @@ async def test_stock_audit_does_not_require_contact_or_product_name(monkeypatch)
         assert str(company_id) == source
         return [("list:count-1", 2, {
             "location_id": "location:a", "location_name": "Warehouse",
-            "location_type": "warehouse",
+            "location_type": "warehouse", "source_closed_event_id": 21,
             "counts": [{"item_id": "item:a", "counted_qty": 4}],
         })] if not after else []
     class Client:

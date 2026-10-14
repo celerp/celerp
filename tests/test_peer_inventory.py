@@ -228,10 +228,18 @@ async def test_late_older_stock_count_cannot_reverse_newer_canonical_audit(clien
 
 
 @pytest.mark.asyncio
-async def test_completed_stock_audits_page_in_posted_order_not_document_id(client, session):
+async def test_completed_stock_audits_page_in_posted_order_not_document_id(client, session, monkeypatch):
     from datetime import datetime, timezone
     from celerp.models.ledger import LedgerEntry
     from celerp.connectors.celerp import _read_audits
+    from contextlib import asynccontextmanager
+    import celerp.db as db
+
+    @asynccontextmanager
+    async def shared_session():
+        yield session
+
+    monkeypatch.setattr(db, "get_session_ctx", shared_session)
 
     token = await _register(client)
     company_id = uuid.UUID(_company_id(token))

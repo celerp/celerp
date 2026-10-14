@@ -185,7 +185,7 @@ _CARVERS = {
     (f"{_INV}/services.py", "adjust_item_quantity"): "value_boundary",
     (f"{_INV}/routes.py", "split_item"): "lot_to_lot",
     (f"{_INV}/routes.py", "split_off_child"): "lot_to_lot",
-    (_DOCS, "adjust_audit"): "value_moved",
+    (_DOCS, "adjust_audit_record"): "value_moved",
     ("default_modules/celerp-manufacturing/celerp_manufacturing/movements.py", "_issue"): "value_moved",
 }
 

@@ -2603,7 +2603,7 @@ async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, u
 
     if row.state.get("doc_type") == "debit_note" and row.state.get("source_return"):
         if role is None or settings is None:
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
+            raise HTTPException(status_code=403, detail=t("acct.not_authorized"))
         assert_role_permission(settings, role, "fulfill_documents")
         await _undo_supplier_return(session, company_id, user.id, entity_id, row.state)
     event_data = payload.model_dump(exclude_none=True)
