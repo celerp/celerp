@@ -17393,7 +17393,7 @@ class TestDraftStatusColumn:
             "discount": 0, "tax": 0, "subtotal": 100, "total": 100,
             "line_items": [
                 # Scan-added list lines carry the item's id in item_id only (see
-                # _scan_line_from_item); editable-UI lines set entity_id to the same item id.
+                # _scan_line); editable-UI lines set entity_id to the same item id.
                 {"item_id": "item:q1", "sku": "Q-A", "name": "Widget",
                  "description": "Widget", "quantity": 1, "unit_price": 100, "line_total": 100},
             ],
