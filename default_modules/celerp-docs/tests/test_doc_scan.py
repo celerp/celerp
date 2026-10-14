@@ -619,6 +619,42 @@ async def test_selling_scan_caps_every_line_of_a_product_at_its_on_hand(client, 
     assert sum(float(line["quantity"]) for line in await _lines(client, t, doc)) == 20.0
 
 
+@pytest.mark.parametrize("doc_type", [d for d in SALES_SIDE if d != "credit_note"])
+async def test_selling_scan_cap_counts_a_lot_made_whole_after_the_product_line(client, doc_type):
+    """A lot switched to may-not-split after a product line already holds the product's whole
+    on-hand still draws on the same stock: its scan is refused, not added on top."""
+    t = await _register(client)
+    older_bc, newer_bc = _codes()
+    await _item(client, t, "POOL", qty=15, allow_splitting=True, barcode=older_bc)
+    newer = await _item(client, t, "POOL", qty=5, allow_splitting=True, barcode=newer_bc)
+    doc = await _doc(client, t, doc_type)
+    assert (await _scan(client, t, doc, ",".join(["POOL"] * 20))).json()["scanned"] == 20
+
+    r = await client.patch(f"/items/{newer}", headers=_h(t),
+                           json={"fields_changed": {"allow_splitting": {"new": False}}})
+    assert r.status_code == 200, r.text
+    body = (await _scan(client, t, doc, newer_bc)).json()
+    assert body["scanned"] == 0 and _reasons(body) == {newer_bc: "insufficient_stock"}, body
+    assert body["failed"][0]["label"] == "POOL: insufficient stock - 25 on this document, available 20"
+    assert sum(float(line["quantity"]) for line in await _lines(client, t, doc)) == 20.0
+
+
+async def test_selling_scan_names_the_holder_of_a_reserved_lot_before_the_product_cap(client):
+    """A lot reserved on another document is refused naming that document, even when the product's
+    free stock is already on this one: the specific reason wins over the stock cap."""
+    t = await _register(client)
+    older_bc, newer_bc = _codes()
+    await _item(client, t, "POOL", qty=15, allow_splitting=True, barcode=older_bc)
+    newer = await _item(client, t, "POOL", qty=5, allow_splitting=True, barcode=newer_bc)
+    holder_number = (await _get(client, t, await reserve_item(client, _h(t), newer)))["ref_id"]
+    doc = await _doc(client, t)
+
+    assert (await _scan(client, t, doc, ",".join(["POOL"] * 15))).json()["scanned"] == 15
+    body = (await _scan(client, t, doc, newer_bc)).json()
+    assert body["scanned"] == 0 and _reasons(body) == {newer_bc: "unavailable"}, body
+    assert holder_number in body["failed"][0]["label"]
+
+
 async def test_repeat_refusal_names_the_line_already_holding_the_piece(client):
     """A repeat reported as already on the document names that line, so the page highlights it."""
     t = await _register(client)
