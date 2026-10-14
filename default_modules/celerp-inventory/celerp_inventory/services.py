@@ -27,6 +27,7 @@ from celerp.importers.results import ImportOutcome
 from celerp.importers.schema import IMPORT_ITEM_STATUSES
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
+    normalize_rfid_epc,
     validate_barcode,
     validate_gtin,
     validate_rfid_epc,
@@ -44,7 +45,7 @@ from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import allocate_pro_rata, round_basis, to_decimal
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
-from celerp.services.lot_origin import book_lot_value, is_deleted, recognize_opening_lots, self_booked
+from celerp.services.lot_origin import DELETED, book_lot_value, is_deleted, recognize_opening_lots, self_booked
 from celerp.importers.tabular import SYSTEM_SKIP_COLS, CsvImportSpec, cell_error_code, finite_float
 from celerp.services.item_erasure import erased_from_connector
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
@@ -4082,3 +4083,184 @@ async def commit_import_batch(
         user.id, batch_id)
     await session.commit()
     return BatchImportResult(**outcome.route_counts(cap_rejections=False), batch_id=batch_id)
+
+
+# Statuses hidden from the default inventory view. Users must explicitly request them.
+HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired", "disposed", DELETED})
+
+# Identifier precedence, best first: the physical codes (barcode and RFID EPC share one
+# namespace), then GTIN, then SKU. The code resolver walks it to decide what a scanned
+# code means and search walks it to rank exact hits, so both follow one rule.
+IDENTIFIER_TIERS: tuple[tuple[str, ...], ...] = (("barcode", "rfid_epc"), ("gtin",), ("sku",))
+
+
+class ResolveResult:
+    """Result of resolving a scanned/typed code to item(s).
+
+    ``kind`` is one of: "barcode" or "rfid_epc" (each matched a unique physical-lot
+    identifier), "gtin" or "sku" (each matched a product identifier, which may map to
+    N physical lots), or "none". ``matches`` is the list of matching item Projections
+    (0, 1, or - for a product identifier - N). ``ambiguous`` is True only when a
+    product identifier matched more than one lot: the caller must disambiguate (scan a
+    physical code or pick a lot), never silently pick one.
+    """
+    __slots__ = ("kind", "matches")
+
+    # A physical identifier resolves to exactly one physical lot; a product identifier
+    # (gtin/sku) may legitimately map to many lots.
+    _PHYSICAL_KINDS = frozenset({"barcode", "rfid_epc"})
+    _PRODUCT_KINDS = frozenset({"gtin", "sku"})
+
+    def __init__(self, kind: str, matches: list):
+        self.kind = kind
+        self.matches = matches
+
+    @property
+    def ambiguous(self) -> bool:
+        return self.kind in self._PRODUCT_KINDS and len(self.matches) > 1
+
+    @property
+    def duplicate_physical(self) -> bool:
+        """True when a code resolves to more than one distinct physical item. Barcode and
+        RFID EPC are ONE physical namespace, so this covers both a single field matching
+        two lots (legacy rows written before a per-company unique index) AND a value held
+        as one item's barcode and another item's rfid_epc (a cross-field collision no
+        single-field index catches). Distinct from ``ambiguous`` (the product-identifier
+        concept): a duplicate physical code must be reported, never silently resolved to
+        one lot."""
+        return self.kind in self._PHYSICAL_KINDS and len(self.matches) > 1
+
+    @property
+    def one(self):
+        """The single match, or None when there are zero or (ambiguously) many."""
+        return self.matches[0] if len(self.matches) == 1 else None
+
+
+def _resolve_from_candidates(matches: dict[str, list]) -> "ResolveResult":
+    """Choose a ResolveResult from the per-field candidate lists (keyed by identifier
+    field), walking IDENTIFIER_TIERS in order. Barcode and RFID EPC are one tier, the
+    shared physical namespace: a code matching EITHER field is a physical match, gathered
+    BEFORE any product identifier is considered. Each tier's union is deduped by
+    ``entity_id`` (a single item carrying both a barcode and an EPC is ONE item, not a
+    duplicate). If the physical union spans more than one distinct item the resolver
+    fails closed (``duplicate_physical`` True, ``one`` None), never silently picking one;
+    a single physical item resolves (kind "barcode" when a barcode matched, else
+    "rfid_epc"). Only with NO physical match do the product identifiers resolve - gtin
+    then sku - each to its N lots. Shared by both the single and the batch resolver so
+    they disambiguate identically."""
+    for tier in IDENTIFIER_TIERS:
+        found: dict = {}
+        for field in tier:
+            for r in matches.get(field, []):
+                found.setdefault(r.entity_id, r)
+        if found:
+            kind = next(field for field in tier if matches.get(field))
+            return ResolveResult(kind, list(found.values()))
+    return ResolveResult("none", [])
+
+
+def duplicate_barcode_detail(code: str) -> str:
+    """The single operator-facing message for a physical code that resolves to more than
+    one lot, shared by every scan surface so the wording is sourced in one place."""
+    return f"{code}: more than one inventory item has this physical code"
+
+
+# Statuses whose items are retained for history but are no longer a current physical
+# lot, so they must not participate in operational resolution. A `merged` source keeps
+# its original barcode AND sku (item.source_deactivated sets status only), so an
+# unfiltered candidate set counts it as live: by barcode it falsely trips
+# `duplicate_physical`, and by sku (a numeric sku may equal a barcode) it re-enters
+# resolution through the fallback. Scope is `merged` ONLY: reserved/memo_out/sold/
+# archived/expired must still resolve. PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES is
+# applied to every identifier candidate set, in both resolvers, and shared with
+# Doctor's physical-code conflict report.
+
+
+async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> ResolveResult:
+    """Canonical code -> item(s) resolver. A physical identifier (barcode, RFID EPC) wins
+    and resolves to one lot; a product identifier (GTIN, SKU) may resolve to N.
+
+    This is the single disambiguation rule shared by every scan/lookup surface so they
+    behave identically. Physical identifiers (barcode + RFID EPC) share one namespace and
+    are gathered together before the product identifiers (GTIN, SKU) are considered: a
+    value held as one item's barcode and another's rfid_epc spans two physical items and
+    fails closed rather than resolving barcode-first. An RFID reader emitting an EPC feeds
+    this same path as a barcode scanner; the EPC is normalized (trimmed + upper-cased)
+    before compare so a scan resolves regardless of the reader's case. A physical code
+    matching more than one distinct item is reported via ``duplicate_physical``
+    (fail-closed), never silently resolved to one.
+    """
+    code = (code or "").strip()
+    if not code:
+        return ResolveResult("none", [])
+    epc_code = normalize_rfid_epc(code)
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+
+    def _live(r) -> bool:
+        return str((r.state or {}).get("status") or "").lower() not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
+
+    def _by(key, wanted):
+        return [r for r in rows if str((r.state or {}).get(key) or "") == wanted and _live(r)]
+
+    return _resolve_from_candidates({
+        "barcode": _by("barcode", code),
+        "rfid_epc": _by("rfid_epc", epc_code),
+        "gtin": _by("gtin", code),
+        "sku": _by("sku", code),
+    })
+
+
+async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> dict[str, "ResolveResult"]:
+    """Batch form of :func:`resolve_item_by_code`: resolve many codes against ONE inventory load.
+
+    A per-code caller (a 200-code scan run) would otherwise load every item projection once per
+    code. This loads them once, indexes by every identifier, and returns one ResolveResult per
+    distinct code - the SAME shared-namespace disambiguation rule as the single-code path
+    (physical barcode + RFID EPC gathered before product GTIN/SKU, fail-closed on a cross-field
+    or multi-lot physical collision), so callers behave identically. EPC is indexed and looked
+    up in its normalized (upper-cased) form.
+    """
+    wanted = {(c or "").strip() for c in codes if (c or "").strip()}
+    if not wanted:
+        return {}
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    by_barcode: dict[str, list] = {}
+    by_rfid_epc: dict[str, list] = {}
+    by_gtin: dict[str, list] = {}
+    by_sku: dict[str, list] = {}
+    for r in rows:
+        st = r.state or {}
+        if str(st.get("status") or "").lower() in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
+            continue
+        bc = str(st.get("barcode") or "")
+        epc = str(st.get("rfid_epc") or "")
+        gtin = str(st.get("gtin") or "")
+        sku = str(st.get("sku") or "")
+        if bc:
+            by_barcode.setdefault(bc, []).append(r)
+        if epc:
+            by_rfid_epc.setdefault(epc, []).append(r)
+        if gtin:
+            by_gtin.setdefault(gtin, []).append(r)
+        if sku:
+            by_sku.setdefault(sku, []).append(r)
+    out: dict[str, ResolveResult] = {}
+    for code in wanted:
+        epc_code = normalize_rfid_epc(code)
+        out[code] = _resolve_from_candidates({
+            "barcode": by_barcode.get(code, []),
+            "rfid_epc": by_rfid_epc.get(epc_code, []),
+            "gtin": by_gtin.get(code, []),
+            "sku": by_sku.get(code, []),
+        })
+    return out

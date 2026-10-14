@@ -284,7 +284,7 @@ async def test_import_records_duplicate_barcodes_and_edit_resolves_them(session)
     given; the resolver reports the duplicate instead of picking one, and moving one lot
     to a fresh barcode through a normal edit resolves the lookup."""
     from celerp.events.engine import emit_event
-    from celerp_inventory.routes import resolve_item_by_code
+    from celerp_inventory.services import resolve_item_by_code
 
     company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
     rows = [

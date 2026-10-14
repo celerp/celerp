@@ -90,7 +90,7 @@ async def test_reprice_updates_exact_catalog_lines_and_preserves_manual_lines(cl
             "line_total": 180,
         },
         {
-            # Same SKU deliberately: no item id means manual/free-text, not a catalog lookup.
+            # Same SKU deliberately: no item id means manual/free-text, not an inventory item.
             "sku": "SAME-SKU", "description": "Manual",
             "quantity": 1, "unit_price": 777, "line_total": 777,
         },
