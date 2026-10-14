@@ -4605,14 +4605,14 @@ async def set_period_lock(
 ) -> dict:
     """Lock the books through ``lock_date``, or unlock them. Older stock a lock held back
     is placed at once when the lock no longer covers today; placing never fails the
-    lock change (place_older_stock)."""
-    from celerp.services.lot_origin import place_older_stock
+    lock change (place_after_lock_change)."""
+    from celerp.services.lot_origin import place_after_lock_change
 
     company = await locked_company(session, company_id)
     if payload.lock_date:
         _require_iso_date(payload.lock_date, t("migration.lock_date"))
     write_period_lock(company, payload.lock_date, user.id)
-    await place_older_stock(session, company_id)
+    await place_after_lock_change(session, company_id)
     company = await locked_company(session, company_id)  # placing rolled back expires the row
     settings = company.settings
     await session.commit()

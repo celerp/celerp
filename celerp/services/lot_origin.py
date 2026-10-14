@@ -610,6 +610,18 @@ async def place_for_posting_account(session: AsyncSession, company_id) -> bool:
     return await place_older_stock(session, company_id)
 
 
+async def place_after_lock_change(session: AsyncSession, company_id) -> bool:
+    """The period lock was just changed: once it no longer covers today the notice
+    asking to move it is withdrawn, whatever placing then does (_notify_locked repeats
+    it while it still covers today), and the stock is placed (place_older_stock)."""
+    from celerp.notifications import service as notification_service
+
+    tz = (await current_settings(session, company_id)).get("timezone")
+    if await period_open(session, company_id, business_date_of(None, tz)):
+        await notification_service.mark_done(session, company_id, PERIOD_LOCK_PATH)
+    return await place_older_stock(session, company_id)
+
+
 async def period_open(session: AsyncSession, company_id, day: str) -> bool:
     from celerp.events.engine import _check_period_lock
 

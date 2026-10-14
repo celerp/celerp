@@ -379,6 +379,18 @@ async def test_moving_the_period_lock_before_today_places_held_stock_at_once(ses
     assert len(await _notices(session, auth, _PLACED)) == 1
 
 
+async def test_a_lock_moved_before_today_withdraws_its_notice_even_when_placing_fails(session, client, auth):
+    lots = await _older_company(session, client, auth, [30.0], short=10.0)
+    await _settings(session, auth, lock_date=_today())
+    await _startup(session)
+    assert len(await _lock_notices(session, auth)) == 1
+    with patch("celerp.services.lot_origin.post_opening_stock_delta", AsyncMock(side_effect=RuntimeError("boom"))):
+        await _lock_through(client, auth, _days_from_today(-1))
+    assert await _accounts(session, auth, lots) == [None]
+    assert await _lock_notices(session, auth) == []
+    assert len(await _notices(session, auth, i18n.t("notice.older_stock_failed.title", "en"))) == 1
+
+
 async def test_a_placement_that_fails_keeps_the_posting_account_change_and_tells_the_company(
         session, client, auth):
     lots = await _waiting_for_purchased(session, client, auth, short=10.0)
