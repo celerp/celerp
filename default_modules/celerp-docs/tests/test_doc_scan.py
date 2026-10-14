@@ -387,7 +387,11 @@ async def test_doc_scan_resubmit_replays(client):
     again = await _scan(client, t, doc, "RP", run_key="run-1")
     assert first.status_code == again.status_code == 200
     assert again.json()["duplicate"] is True and again.json()["scanned"] == 1
-    assert _ids(await _lines(client, t, doc)) == [item]
+    lines = await _lines(client, t, doc)
+    assert _ids(lines) == [item]
+    # The replay names the lines the run touched, so a retried run keeps them highlighted.
+    assert [r["line_id"] for r in again.json()["results"]] == [lines[0]["line_id"]]
+    assert again.json()["results"] == first.json()["results"]
 
 
 async def test_doc_scan_reused_key_conflicts(client):
@@ -587,6 +591,46 @@ async def test_selling_scan_never_takes_a_line_past_what_is_on_hand(client, doc_
     assert body["failed"][0]["label"] == "CAP: insufficient stock - 3 on this document, available 2"
     lines = await _lines(client, t, doc)
     assert _ids(lines) == [lot] and float(lines[0]["quantity"]) == 2.0
+
+
+# A credit note takes the sold lot back, so a product code naming several lots is ambiguous there.
+@pytest.mark.parametrize("doc_type", [d for d in SALES_SIDE if d != "credit_note"])
+async def test_selling_scan_caps_every_line_of_a_product_at_its_on_hand(client, doc_type):
+    """Where goods leave stock, the cap counts every line drawing on the product's stock: the line a
+    product code binds and the lines its lots' own barcodes add, in either order."""
+    t = await _register(client)
+    older_bc, newer_bc = _codes()
+    await _item(client, t, "POOL", qty=15, allow_splitting=True, barcode=older_bc)
+    await _item(client, t, "POOL", qty=5, allow_splitting=True, barcode=newer_bc)
+    label = "POOL: insufficient stock - 21 on this document, available 20"
+
+    doc = await _doc(client, t, doc_type)
+    assert (await _scan(client, t, doc, ",".join(["POOL"] * 20))).json()["scanned"] == 20
+    body = (await _scan(client, t, doc, newer_bc)).json()
+    assert body["scanned"] == 0 and _reasons(body) == {newer_bc: "insufficient_stock"}, body
+    assert body["failed"][0]["label"] == label
+    assert sum(float(line["quantity"]) for line in await _lines(client, t, doc)) == 20.0
+
+    doc = await _doc(client, t, doc_type)
+    assert (await _scan(client, t, doc, ",".join([newer_bc] * 5))).json()["scanned"] == 5
+    body = (await _scan(client, t, doc, ",".join(["POOL"] * 20))).json()
+    assert body["scanned"] == 15 and [f["reason"] for f in body["failed"]] == ["insufficient_stock"] * 5, body
+    assert body["failed"][0]["label"] == label
+    assert sum(float(line["quantity"]) for line in await _lines(client, t, doc)) == 20.0
+
+
+async def test_repeat_refusal_names_the_line_already_holding_the_piece(client):
+    """A repeat reported as already on the document names that line, so the page highlights it."""
+    t = await _register(client)
+    await _item(client, t, "HOLD1", qty=1, allow_splitting=False)
+    doc = await _doc(client, t)
+
+    assert (await _scan(client, t, doc, "HOLD1")).json()["scanned"] == 1
+    body = (await _scan(client, t, doc, "HOLD1")).json()
+    line_id = (await _lines(client, t, doc))[0]["line_id"]
+    assert _reasons(body) == {"HOLD1": "duplicate_scan"}, body
+    assert body["failed"][0]["line_id"] == line_id
+    assert [r["line_id"] for r in body["results"]] == [line_id]
 
 
 @pytest.mark.parametrize("doc_type", [*SALES_SIDE, "quotation"])
