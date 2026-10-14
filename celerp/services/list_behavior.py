@@ -108,6 +108,29 @@ def is_money_list(list_type: str | None) -> bool:
     return behavior(list_type).money
 
 
+@dataclass(frozen=True)
+class ScanBehavior:
+    """What one scan does on a record, for the one scan primitive (lists and documents)."""
+    finalized: str  # once past draft: count (check off a locked manifest) | noop (scanning refused)
+    priced: bool    # added lines carry a unit price from the chosen price list
+    lots: str       # how a product code (GTIN/SKU) picks its lot: single | consolidate | sold
+
+
+# Documents that scan differently from the default; any other document type uses _DOC_SCAN_DEFAULT.
+_DOC_SCAN_DEFAULT = ScanBehavior(finalized="noop", priced=True, lots="consolidate")
+DOC_SCAN_BEHAVIOR: dict[str, ScanBehavior] = {
+    "credit_note": ScanBehavior(finalized="noop", priced=True, lots="sold"),  # a return takes the sold lot
+}
+
+
+def scan_behavior(kind: str, doc_type: str | None) -> ScanBehavior:
+    """The scan behaviour of a list (kind "lists", by list_type) or a document (kind "docs")."""
+    if kind == "lists":
+        b = behavior(doc_type)
+        return ScanBehavior(finalized=b.scan_finalized, priced=b.money, lots="single")
+    return DOC_SCAN_BEHAVIOR.get(doc_type or "", _DOC_SCAN_DEFAULT)
+
+
 def terminal_action(list_type: str | None, key: str) -> TerminalAction | None:
     return next((a for a in behavior(list_type).terminal if a.key == key), None)
 

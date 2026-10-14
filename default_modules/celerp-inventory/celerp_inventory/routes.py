@@ -402,7 +402,7 @@ class ReserveBody(BaseModel):
 
 
 # Statuses hidden from the default inventory view. Users must explicitly request them.
-_HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired", "disposed", DELETED})
+HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired", "disposed", DELETED})
 
 # Statuses of an item that is not stock yet or any more: never valued, never low stock,
 # and the only ones Delete takes.
@@ -1224,7 +1224,7 @@ async def query_items(
     elif f.status:
         result = [r for r in result if str(r.get("status") or "").lower() == f.status.lower()]
     else:
-        result = [r for r in result if str(r.get("status") or "").lower() not in _HIDDEN_STATUSES]
+        result = [r for r in result if str(r.get("status") or "").lower() not in HIDDEN_STATUSES]
 
     # Contact-scoped holdings: memo out to a customer, or consignment in from a supplier.
     # Membership is derived from that contact's docs (celerp.services.holdings), and is
