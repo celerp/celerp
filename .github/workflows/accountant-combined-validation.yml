@@ -1,0 +1,54 @@
+name: Accountant combined integration
+on:
+  push:
+    branches: [accountant-company-handoff-20261011]
+permissions:
+  contents: read
+jobs:
+  combined:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Merge exact accounting correction head into integration checkout
+        run: |
+          git config user.name "Noah Severs"
+          git config user.email "118095044+ngsevers@users.noreply.github.com"
+          git fetch --no-tags origin cffd130e77d6408c56e54562cd5c0c8131a7ab7e
+          git merge --no-ff --no-commit FETCH_HEAD
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+      - name: Check combined first-party modules
+        run: |
+          python scripts/gen_first_party_lock.py
+          git diff --check
+      - name: Run combined accountant scenarios
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+        run: >
+          timeout 820 pytest -q --tb=short --no-cov --timeout=40 -n 2
+          tests/test_peer_inventory.py
+          tests/test_celerp_peer_connector.py
+          tests/test_company_peer_access.py
+          tests/test_company_peer_identity.py
+          tests/test_peer_documents.py
+          tests/test_peer_payments.py
+          tests/test_accountant_aging.py
+          tests/test_payments_stripe.py
