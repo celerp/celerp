@@ -524,6 +524,19 @@ async def test_doc_scan_repeat_lot_is_reported_not_added_again(client, doc_type)
     assert _ids(lines) == [lot] and float(lines[0]["quantity"]) == 5.0
 
 
+@pytest.mark.parametrize("doc_type", ["bill", "purchase_order"])
+async def test_doc_scan_repeat_lot_takes_another_line_where_the_document_may_repeat(client, doc_type):
+    """Only an invoice or memo holds a lot once; a document that does not claim its stock takes a
+    repeat scan of a stocked lot as another line, in one run and across runs."""
+    t = await _register(client)
+    lot = await _item(client, t, "RP", qty=5, allow_splitting=False)
+    doc = await _doc(client, t, doc_type)
+
+    assert (await _scan(client, t, doc, "RP,RP")).json()["scanned"] == 2
+    assert (await _scan(client, t, doc, "RP")).json()["scanned"] == 1
+    assert _ids(await _lines(client, t, doc)) == [lot, lot, lot]
+
+
 async def test_doc_scan_counted_item_accumulates(client):
     t = await _register(client)
     item = await _item(client, t, "CT", qty=0)

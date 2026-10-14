@@ -13,7 +13,9 @@ else in the lifecycle, filters, or badges changes (GDR 2h / SOLID Open-Closed).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+from celerp.services.document_lines import DOCUMENT_ITEM_UNIQUE_DOC_TYPES
 
 # Uniform status spine for ALL list types. The terminal outcome lives in `result`;
 # intra-finalized milestones (quote sent/accepted, transfer issued) are timestamps.
@@ -120,6 +122,9 @@ class ScanBehavior:
     # on-hand as it stands, zero included, for a stock count). An item kept in no stock (a service)
     # has no on-hand to take, so it counts one per scan except under snapshot.
     unstocked: str = "refuse"
+    # A scan of a lot the record already holds, when the lot does not count one per scan: refuse
+    # (reported as already on the record) or append (another line, where a record may repeat an item).
+    repeats: str = "refuse"
 
 
 # The record field holding its recent scan runs, so a retried run replays instead of re-adding.
@@ -145,7 +150,9 @@ def scan_behavior(kind: str, doc_type: str | None) -> ScanBehavior:
     if kind == "lists":
         b = behavior(doc_type)
         return ScanBehavior(finalized=b.scan_finalized, priced=b.money, lots="single", unstocked=b.scan_unstocked)
-    return DOC_SCAN_BEHAVIOR.get(doc_type or "", _DOC_SCAN_DEFAULT)
+    b = DOC_SCAN_BEHAVIOR.get(doc_type or "", _DOC_SCAN_DEFAULT)
+    # Only a document that claims its stock holds a lot once; any other document may repeat it.
+    return b if doc_type in DOCUMENT_ITEM_UNIQUE_DOC_TYPES else replace(b, repeats="append")
 
 
 def terminal_action(list_type: str | None, key: str) -> TerminalAction | None:
