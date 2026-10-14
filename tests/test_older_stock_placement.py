@@ -28,6 +28,7 @@ from sqlalchemy import delete, select, update
 from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, INVENTORY_ORIGIN_SCHEMA
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.account_roles import role_map
 from celerp.services.auto_je import _emit_auto_posted_je
 from celerp.services.business_time import business_date_at
 from celerp.services.company_lock import locked_company
@@ -285,6 +286,92 @@ async def test_placement_held_by_a_period_lock_writes_nothing_and_runs_once_unlo
     assert await _lock_notices(session, auth) == []
 
 
+async def test_a_period_lock_holds_back_placement_that_needs_no_adjustment_and_tells_the_company(
+        session, client, auth):
+    """Books that already tie out need no adjustment, but placing still records each lot
+    on today's date, so a lock through today holds it back with the lock notice."""
+    lots = await _older_company(session, client, auth, [30.0])
+    await _settings(session, auth, lock_date=_today())
+    events = await _events(session, auth)
+    await _startup(session)
+    await _startup(session)
+    assert await _events(session, auth) == events
+    assert await _accounts(session, auth, lots) == [None]
+    (notice,) = await _lock_notices(session, auth)
+    assert notice.body == i18n.t("notice.older_stock_locked.body", "en", day=_today())
+
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {k: v for k, v in company.settings.items() if k != "lock_date"}
+    await session.commit()
+    await _startup(session)
+    assert await _accounts(session, auth, lots) == ["1130-OB"]
+    assert await _placements(session, auth) == []
+    assert await _lock_notices(session, auth) == []
+
+
+async def _waiting_for_purchased(session, client, auth, short: float = 0.0) -> list[str]:
+    """Older lots a start left waiting because purchased inventory (1130-P) cannot take
+    entries, and a new asset account 1135 ready to be set as purchased inventory."""
+    from celerp_accounting.models import Account
+
+    lots = await _older_company(session, client, auth, [30.0], short=short)
+    await session.execute(update(Account).where(Account.company_id == auth["company_id"], Account.code == "1130-P")
+                          .values(is_active=False))
+    await session.commit()
+    await _startup(session)
+    assert await _accounts(session, auth, lots) == [None]
+    r = await client.post("/accounting/accounts", headers=auth["headers"], json={
+        "code": "1135", "name": "Account 1135", "account_type": "asset", "parent_code": "1100"})
+    assert r.status_code == 200, r.text
+    return lots
+
+
+async def test_a_posting_account_change_is_kept_when_a_period_lock_holds_placement_back(session, client, auth):
+    lots = await _waiting_for_purchased(session, client, auth)
+    await _settings(session, auth, lock_date=_today())
+    r = await client.put("/accounting/posting-accounts/inventory_purchased", headers=auth["headers"],
+                         json={"code": "1135"})
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    assert role_map(await _settings(session, auth))["inventory_purchased"] == "1135"
+    assert await _accounts(session, auth, lots) == [None]
+    assert len(await _lock_notices(session, auth)) == 1
+
+
+async def test_a_placement_that_fails_keeps_the_posting_account_change_and_tells_the_company(
+        session, client, auth):
+    lots = await _waiting_for_purchased(session, client, auth, short=10.0)
+    with patch("celerp.services.lot_origin.post_opening_stock_delta", AsyncMock(side_effect=RuntimeError("boom"))):
+        r = await client.put("/accounting/posting-accounts/inventory_purchased", headers=auth["headers"],
+                             json={"code": "1135"})
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    assert role_map(await _settings(session, auth))["inventory_purchased"] == "1135"
+    assert await _accounts(session, auth, lots) == [None]
+    assert await _placed_lots(session, auth) == []
+    (notice,) = await _notices(session, auth, i18n.t("notice.older_stock_failed.title", "en"))
+    assert notice.priority == "high" and notice.action_url == _TAB
+    assert notice.body == i18n.t("notice.older_stock_failed.body", "en")
+
+
+async def test_a_lot_whose_account_is_already_recorded_is_not_reported_placed_again(session, client, auth):
+    """A lot whose stored state lost its account while the event recording it stands is
+    not placed again: nothing is written for it and no second placed notice is sent."""
+    lots = await _older_company(session, client, auth, [30.0, 20.0])
+    await _startup(session)
+    assert len(await _notices(session, auth, _PLACED)) == 1
+    row = (await session.execute(select(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_id == lots[0]))).scalar_one()
+    row.state = {k: v for k, v in row.state.items() if k != _FIELD}
+    await session.commit()
+    events = await _events(session, auth)
+    for _ in range(3):
+        await _startup(session)
+    assert await _events(session, auth) == events
+    assert len(await _notices(session, auth, _PLACED)) == 1
+    assert await _placements(session, auth) == []
+
+
 @pytest.mark.parametrize("role,code,fix", [("inventory_purchased", "1130-P", ("1135", "asset", "1100")),
                                            ("retained_earnings", "3200", ("3210", "equity", "3000"))])
 async def test_older_stock_waits_for_purchased_inventory_then_is_placed_when_it_is_set(
@@ -460,6 +547,21 @@ async def test_a_move_sent_twice_moves_once(session, client, auth):
     assert await _events(session, auth) == events
     assert len(await _entries(session, auth, "je:auto:older-stock-moved:")) == 1
     assert await _net(session, auth, "1130-P", "1130-OB") == (30.0, 0.0)
+
+
+async def test_a_move_key_reused_for_a_different_move_is_refused(session, client, auth):
+    lots = await _older_company(session, client, auth, [10.0, 20.0])
+    await _startup(session)
+    key = uuid.uuid4().hex
+    first = await _move(client, auth, lots[:1], "1130-P", key=key)
+    assert first.status_code == 200, first.text
+    events = await _events(session, auth)
+    for item_ids, code in ((lots, "1130-P"), (lots[:1], "1130-OB")):
+        r = await _move(client, auth, item_ids, code, key=key)
+        detail = _refused(r, 409, "older_stock.move.key_reused")
+        assert "nothing was moved" in detail["message"]
+    assert await _events(session, auth) == events
+    assert await _accounts(session, auth, lots) == ["1130-P", "1130-OB"]
 
 
 async def test_a_lot_moved_since_cannot_be_moved_from_its_old_account(session, client, auth):
@@ -665,7 +767,8 @@ def test_older_stock_notices_translate():
             "notice.older_stock_unmapped.body_purchased", "notice.older_stock_unmapped.body_retained",
             "event.item.inventory_account.moved", "older_stock.tab", "older_stock.move",
             "older_stock.move.nothing_selected", "older_stock.move.too_many", "older_stock.move.no_key",
-            "older_stock.move.not_placed", "older_stock.move.invoiced", "older_stock.undo.done",
+            "older_stock.move.not_placed", "older_stock.move.invoiced", "older_stock.move.key_reused",
+            "notice.older_stock_locked.body", "notice.older_stock_failed.title", "notice.older_stock_failed.body", "older_stock.undo.done",
             "older_stock.undo.moved_since", "older_stock.undo.no_move", "older_stock.no_adjustment",
             "inventory.account_moved_since")
     for lang in _LOCALES:
