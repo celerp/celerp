@@ -449,10 +449,8 @@ async def test_real_service_invoice_mirror_posts_once_in_second_company(client, 
     source_revision = source_row.version
     payload = {key: source_state[key] for key in _FIELDS if key in source_state}
 
-    receiver = await client.post("/auth/register", json={
-        "company_name": "Independent Firm", "email": "accountant-mirror@example.test",
-        "name": "Owner", "password": "password123",
-    })
+    receiver = await client.post(
+        "/companies", json={"name": "Independent Firm"}, headers=_h(source_token))
     assert receiver.status_code == 200, receiver.text
     receiver_token = receiver.json()["access_token"]
     target_company = uuid.UUID(_company_id(receiver_token))
