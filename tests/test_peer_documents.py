@@ -424,3 +424,64 @@ async def test_canonical_sent_transition_can_participate_in_peer_transaction(mon
     assert emitted[0]["event_type"] == "doc.sent"
     assert emitted[0]["data"].get("sent_to") is None
     assert emitted[0]["idempotency_key"] == "source:invoice:sent:3"
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("docs_running")
+async def test_real_service_invoice_mirror_posts_once_in_second_company(client, session):
+    from sqlalchemy import select, func
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+    from celerp.services.peer_identity import new_target_identity
+    from celerp.services.peer_documents import _FIELDS
+    from test_payments_stripe import _register, _payable_invoice, _h, _company_id
+
+    source_token = await _register(client)
+    source_company = uuid.UUID(_company_id(source_token))
+    source_doc, _ = await _payable_invoice(client, source_token)
+    response = await client.get(f"/docs/{source_doc}", headers=_h(source_token))
+    assert response.status_code == 200
+    source_state = response.json()
+    assert source_state["status"] == "final"
+    source_row = await session.get(Projection, (source_company, source_doc),
+                                   populate_existing=True)
+    source_revision = source_row.version
+    payload = {key: source_state[key] for key in _FIELDS if key in source_state}
+
+    receiver = await client.post("/auth/register", json={
+        "company_name": "Independent Firm", "email": "accountant-mirror@example.test",
+        "name": "Owner", "password": "password123",
+    })
+    assert receiver.status_code == 200, receiver.text
+    receiver_token = receiver.json()["access_token"]
+    target_company = uuid.UUID(_company_id(receiver_token))
+    grant = SimpleNamespace(company_id=target_company, source_company_id=source_company)
+    assert await documents.receive_draft_document(
+        session, grant=grant, source_entity_id=source_doc,
+        source_revision=source_revision, data=payload,
+    ) == "created"
+    await session.commit()
+    target_doc = new_target_identity(source_company, "doc", source_doc)
+    target = (await client.get(f"/docs/{target_doc}", headers=_h(receiver_token))).json()
+    assert target["status"] == "final"
+    assert target["total"] == source_state["total"]
+    assert target["amount_outstanding"] == source_state["amount_outstanding"]
+    before = (await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == target_company)))
+    assert before > 0
+
+    assert await documents.receive_draft_document(
+        session, grant=grant, source_entity_id=source_doc,
+        source_revision=source_revision, data=payload,
+    ) == "skipped"
+    await session.commit()
+    after = (await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == target_company)))
+    assert after == before
+    with pytest.raises(HTTPException) as conflicting:
+        await documents.receive_draft_document(
+            session, grant=grant, source_entity_id=source_doc,
+            source_revision=source_revision, data={**payload, "notes": "Changed receipt"},
+        )
+    assert conflicting.value.status_code == 409
