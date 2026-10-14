@@ -86,6 +86,8 @@ def _scan(page, code: str) -> None:
     inp.click()
     inp.fill(code)
     inp.press("Enter")
+    page.locator("#scan-bar-add").click()
+    page.wait_for_function("() => !document.getElementById('scan-bar-input').disabled", timeout=8000)
 
 
 def _seed_name_decoy(api, tag: str, code: str) -> str:
