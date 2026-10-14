@@ -4264,6 +4264,7 @@
   "older_stock.move": "Move to account",
   "older_stock.move.cannot_take": "Account {code} is inactive or has accounts under it, so it cannot take entries.",
   "older_stock.move.invoiced": "{sku} is on an invoice not yet shipped ({doc}). Ship or void that invoice, then move the lot.",
+  "older_stock.move.key_reused": "This operation key was already used for a different move, so nothing was moved. Reload the page and try again.",
   "older_stock.move.no_key": "This move carries no operation key, so it was not made. Reload the page and try again.",
   "older_stock.move.not_placed": "{sku} was not placed automatically or is no longer in stock, so it cannot be moved here.",
   "older_stock.move.nothing_selected": "Select the lots to move.",

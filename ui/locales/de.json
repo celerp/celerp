@@ -4264,6 +4264,7 @@
   "older_stock.move": "Auf Konto umbuchen",
   "older_stock.move.cannot_take": "Konto {code} ist inaktiv oder hat Unterkonten, daher nimmt es keine Buchungen an.",
   "older_stock.move.invoiced": "{sku} steht auf einer noch nicht versandten Rechnung ({doc}). Versenden oder stornieren Sie diese Rechnung und buchen Sie das Los dann um.",
+  "older_stock.move.key_reused": "Dieser Vorgangsschlüssel wurde bereits für eine andere Umbuchung verwendet, daher wurde nichts umgebucht. Laden Sie die Seite neu und versuchen Sie es erneut.",
   "older_stock.move.no_key": "Diese Umbuchung trägt keinen Vorgangsschlüssel und wurde nicht ausgeführt. Laden Sie die Seite neu und versuchen Sie es erneut.",
   "older_stock.move.not_placed": "{sku} wurde nicht automatisch zugeordnet oder ist nicht mehr am Lager und kann hier nicht umgebucht werden.",
   "older_stock.move.nothing_selected": "Wählen Sie die Lose zum Umbuchen aus.",

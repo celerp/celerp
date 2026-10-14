@@ -4264,6 +4264,7 @@
   "older_stock.move": "Sposta su conto",
   "older_stock.move.cannot_take": "Il conto {code} è inattivo o ha sottoconti, quindi non accetta registrazioni.",
   "older_stock.move.invoiced": "{sku} è su una fattura non ancora spedita ({doc}). Spedisci o annulla quella fattura, poi sposta il lotto.",
+  "older_stock.move.key_reused": "Questa chiave di operazione è già stata usata per un altro spostamento, quindi non è stato spostato nulla. Ricarica la pagina e riprova.",
   "older_stock.move.no_key": "Questo spostamento non ha una chiave di operazione, quindi non è stato fatto. Ricarica la pagina e riprova.",
   "older_stock.move.not_placed": "{sku} non è stato assegnato automaticamente o non è più in magazzino, quindi non si può spostare qui.",
   "older_stock.move.nothing_selected": "Seleziona i lotti da spostare.",

@@ -4264,6 +4264,7 @@
   "older_stock.move": "Chuyển sang tài khoản",
   "older_stock.move.cannot_take": "Tài khoản {code} không hoạt động hoặc có tài khoản con nên không nhận bút toán.",
   "older_stock.move.invoiced": "{sku} nằm trên hóa đơn chưa giao ({doc}). Hãy giao hoặc hủy hóa đơn đó rồi chuyển lô.",
+  "older_stock.move.key_reused": "Khóa thao tác này đã được dùng cho một lần chuyển khác nên không có gì được chuyển. Hãy tải lại trang và thử lại.",
   "older_stock.move.no_key": "Lần chuyển này không có khóa thao tác nên chưa được thực hiện. Hãy tải lại trang và thử lại.",
   "older_stock.move.not_placed": "{sku} không được đưa vào tự động hoặc không còn trong kho nên không thể chuyển tại đây.",
   "older_stock.move.nothing_selected": "Chọn các lô cần chuyển.",

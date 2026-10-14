@@ -4264,6 +4264,7 @@
   "older_stock.move": "Transférer vers un compte",
   "older_stock.move.cannot_take": "Le compte {code} est inactif ou a des sous-comptes, il ne peut donc pas recevoir d'écritures.",
   "older_stock.move.invoiced": "{sku} figure sur une facture pas encore expédiée ({doc}). Expédiez ou annulez cette facture, puis transférez le lot.",
+  "older_stock.move.key_reused": "Cette clé d'opération a déjà servi pour un autre transfert, rien n'a donc été déplacé. Rechargez la page et réessayez.",
   "older_stock.move.no_key": "Ce transfert ne porte pas de clé d'opération, il n'a donc pas été fait. Rechargez la page et réessayez.",
   "older_stock.move.not_placed": "{sku} n'a pas été affecté automatiquement ou n'est plus en stock, il ne peut donc pas être transféré ici.",
   "older_stock.move.nothing_selected": "Sélectionnez les lots à transférer.",

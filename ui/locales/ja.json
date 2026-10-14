@@ -4264,6 +4264,7 @@
   "older_stock.move": "勘定へ移動",
   "older_stock.move.cannot_take": "勘定 {code} は無効か下位勘定があるため、仕訳を受け付けません。",
   "older_stock.move.invoiced": "{sku} は未出荷の請求書 ({doc}) に載っています。その請求書を出荷または取り消してから、ロットを移動してください。",
+  "older_stock.move.key_reused": "この操作キーは別の移動にすでに使われているため、何も移動されませんでした。ページを再読み込みしてもう一度お試しください。",
   "older_stock.move.no_key": "この移動には操作キーがないため、実行されませんでした。ページを再読み込みしてもう一度お試しください。",
   "older_stock.move.not_placed": "{sku} は自動で割り当てられていないか在庫がもうないため、ここでは移動できません。",
   "older_stock.move.nothing_selected": "移動するロットを選択してください。",
