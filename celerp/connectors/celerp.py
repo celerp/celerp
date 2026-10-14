@@ -115,26 +115,50 @@ async def _read_documents(company_id: uuid.UUID, after: str, since=None) -> list
 
 
 async def _read_audits(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
-    """Read completed physical counts, retaining the source location and lot identities."""
+    """Deliver each completed count in canonical ledger posting order."""
+    from sqlalchemy import func, and_
     from celerp.db import get_session_ctx
     from celerp.models.company import Location
+    from celerp.models.ledger import LedgerEntry
 
+    try:
+        previous_event = int(after or "0")
+    except ValueError:
+        raise ValueError("Invalid inventory synchronization cursor") from None
+    if previous_event < 0:
+        raise ValueError("Invalid inventory synchronization cursor")
+    # A count may be closed again after an undo. Only its latest closing event
+    # represents the present, posted audit. The ledger id is an authoritative,
+    # monotonically increasing position within the source installation.
+    latest = (
+        select(LedgerEntry.entity_id.label("entity_id"),
+               func.max(LedgerEntry.id).label("closed_id"))
+        .where(LedgerEntry.company_id == company_id,
+               LedgerEntry.entity_type == "list",
+               LedgerEntry.event_type == "list.closed",
+               LedgerEntry.data["result"].as_string() == "stock_adjusted")
+        .group_by(LedgerEntry.entity_id).subquery()
+    )
     async with get_session_ctx() as session:
-        query = select(
-            Projection.entity_id, Projection.version, Projection.state,
-        ).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "list",
-            Projection.state["list_type"].as_string() == "audit",
-            Projection.state["status"].as_string() == "closed",
-            Projection.state["result"].as_string() == "stock_adjusted",
-            Projection.entity_id > after,
+        query = (
+            select(latest.c.closed_id, Projection.entity_id,
+                   Projection.version, Projection.state)
+            .join(Projection, and_(
+                Projection.company_id == company_id,
+                Projection.entity_type == "list",
+                Projection.entity_id == latest.c.entity_id))
+            .join(LedgerEntry, LedgerEntry.id == latest.c.closed_id)
+            .where(Projection.state["list_type"].as_string() == "audit",
+                   Projection.state["status"].as_string() == "closed",
+                   Projection.state["result"].as_string() == "stock_adjusted",
+                   latest.c.closed_id > previous_event)
         )
         if since is not None:
-            query = query.where(Projection.updated_at >= since)
-        rows = (await session.execute(query.order_by(Projection.entity_id).limit(_PAGE))).all()
+            query = query.where(LedgerEntry.ts >= since)
+        rows = (await session.execute(
+            query.order_by(latest.c.closed_id).limit(_PAGE))).all()
         out = []
-        for entity_id, revision, state in rows:
+        for closed_id, entity_id, revision, state in rows:
             src = dict(state or {})
             source_location = str(src.get("location_id") or "")
             try:
@@ -154,9 +178,9 @@ async def _read_audits(company_id: uuid.UUID, after: str, since=None) -> list[tu
                 "location_name": location.name if location is not None else "",
                 "location_type": location.type if location is not None else "",
                 "counts": counts,
+                "source_closed_event_id": int(closed_id),
             }))
         return out
-
 
 
 class CelerpConnector(ConnectorBase):
@@ -261,7 +285,8 @@ class CelerpConnector(ConnectorBase):
                             "id": entity_id, "label": entity_id,
                             "reason": "Receiving installation needs attention",
                         })
-                after = page[-1][0]
+                after = (str(page[-1][2]["source_closed_event_id"]) if kind == "inventory"
+                         else page[-1][0])
                 if len(page) < _PAGE:
                     break
         return result

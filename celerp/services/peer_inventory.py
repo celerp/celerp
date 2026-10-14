@@ -13,12 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
+from celerp.models.company_peer import CompanyPeerIdentity
 from celerp.models.projections import Projection
 from celerp.services.peer_identity import (
-    claim_peer_revision, commit_peer_revision, peer_identity, resolve_peer_location,
+    _digest, claim_peer_revision, commit_peer_revision, peer_identity, resolve_peer_location,
 )
 
-_FIELDS = frozenset({"location_id", "location_name", "location_type", "counts"})
+_FIELDS = frozenset({"location_id", "location_name", "location_type", "counts",
+                     "source_closed_event_id"})
 
 
 async def receive_stock_audit(
@@ -41,6 +43,9 @@ async def receive_stock_audit(
     if (not isinstance(source_location, str)
             or not source_entity_id.startswith("list:")):
         raise HTTPException(422, "Invalid stock count identity")
+    source_position = data.get("source_closed_event_id")
+    if type(source_position) is not int or not 1 <= source_position <= 2**63 - 1:
+        raise HTTPException(422, "Invalid source stock audit position")
     source_counts = data.get("counts")
     if not isinstance(source_counts, list) or not 1 <= len(source_counts) <= 1000:
         raise HTTPException(422, "Invalid stock count entries")
@@ -64,9 +69,28 @@ async def receive_stock_audit(
     if claim.replay:
         return "skipped"
 
+    # Serialize all completed counts from the same source location using the
+    # durable peer identity ledger. Older source counts must never overwrite a
+    # newer stock adjustment, even if delivery was interrupted or reordered.
+    cursor = await session.scalar(select(CompanyPeerIdentity).where(
+        CompanyPeerIdentity.company_id == grant.company_id,
+        CompanyPeerIdentity.source_company_id == grant.source_company_id,
+        CompanyPeerIdentity.entity_type == "audit_cursor",
+        CompanyPeerIdentity.source_key_hash == _digest(source_location),
+    ).with_for_update())
+    if cursor is not None:
+        if cursor.source_entity_id != source_location:
+            raise HTTPException(409, "Stock audit cursor identity conflict")
+        if (source_position < cursor.last_revision
+                or (source_position == cursor.last_revision
+                    and cursor.last_payload_hash != _digest(source_entity_id))):
+            raise HTTPException(409, "Stock audit is older than the last applied count")
+
     location_id = await resolve_peer_location(
         session, grant=grant, source_id=source_location,
         name=data["location_name"], location_type=data["location_type"])
+    if cursor is not None and cursor.target_entity_id != location_id:
+        raise HTTPException(409, "Stock audit location identity changed")
     mapped: dict[str, float] = {}
     for source_id, quantity in counts.items():
         target_id = await peer_identity(
@@ -76,6 +100,26 @@ async def receive_stock_audit(
         if target_id is None or target_id in mapped:
             raise HTTPException(409, "Stock count item must be synchronized uniquely")
         mapped[target_id] = quantity
+
+    async def complete_revision() -> None:
+        await commit_peer_revision(
+            session, grant=grant, claim=claim, entity_type="list",
+            source_entity_id=source_entity_id, source_revision=source_revision)
+        nonlocal cursor
+        if cursor is None:
+            cursor = CompanyPeerIdentity(
+                company_id=grant.company_id,
+                source_company_id=grant.source_company_id,
+                entity_type="audit_cursor", source_entity_id=source_location,
+                source_key_hash=_digest(source_location), target_entity_id=location_id,
+                last_revision=source_position,
+                last_payload_hash=_digest(source_entity_id),
+            )
+            session.add(cursor)
+        elif source_position > cursor.last_revision:
+            cursor.last_revision = source_position
+            cursor.last_payload_hash = _digest(source_entity_id)
+        await session.flush()
 
     company = await session.get(Company, grant.company_id)
     if company is None or not company.is_active or company.is_migration_staged:
@@ -102,9 +146,7 @@ async def receive_stock_audit(
                     if isinstance(line, dict) and line.get("counted_qty") is not None}
         if existing != mapped or str(state.get("location_id")) != location_id:
             raise HTTPException(409, "Completed stock count cannot be silently rewritten")
-        await commit_peer_revision(
-            session, grant=grant, claim=claim, entity_type="list",
-            source_entity_id=source_entity_id, source_revision=source_revision)
+        await complete_revision()
         return "skipped"
 
     key = hashlib.sha256(
@@ -129,7 +171,5 @@ async def receive_stock_audit(
     await _set_list_fields(
         session, grant.company_id, claim.target_id, actor, {"line_items": lines})
     await adjust_audit_record(claim.target_id, cid, actor, session, commit=False)
-    await commit_peer_revision(
-        session, grant=grant, claim=claim, entity_type="list",
-        source_entity_id=source_entity_id, source_revision=source_revision)
+    await complete_revision()
     return "created"

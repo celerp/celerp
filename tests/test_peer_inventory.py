@@ -46,6 +46,7 @@ async def test_completed_peer_count_posts_canonical_adjustment_and_replays_once(
     data = {
         "location_id": str(source_location), "location_name": "Main",
         "location_type": "warehouse",
+        "source_closed_event_id": 21,
         "counts": [{"item_id": source_item, "counted_qty": 7}],
     }
     source_audit = "list:client-audit-1"
@@ -90,6 +91,7 @@ async def test_peer_count_never_overwrites_missing_or_wrong_location(client, ses
     data = {
         "location_id": str(uuid.uuid4()), "location_name": "No matching site",
         "location_type": "warehouse",
+        "source_closed_event_id": 21,
         "counts": [{"item_id": "item:not-paired", "counted_qty": 0}],
     }
     with pytest.raises(HTTPException) as refusal:
@@ -114,6 +116,7 @@ async def test_count_outbound_preserves_source_identity_and_retries(monkeypatch)
     source_state = {
         "location_id": str(uuid.uuid4()), "location_name": "Main",
         "location_type": "warehouse",
+        "source_closed_event_id": 21,
         "counts": [{"item_id": "item:s", "counted_qty": 4}],
     }
     async def watermark(*args):
@@ -163,3 +166,100 @@ async def test_company_copy_seeds_original_location_identity(client, session):
         session, target_company=target_company, source_company=source_company,
         entity_type="location", source_entity_id=str(original_id),
     ) == restored_id
+
+
+
+@pytest.mark.asyncio
+async def test_late_older_stock_count_cannot_reverse_newer_canonical_audit(client, session):
+    token = await _register(client)
+    company_id = uuid.UUID(_company_id(token))
+    location = await client.post("/companies/me/locations", headers=_h(token), json={
+        "name": "Main Audit Order", "type": "warehouse",
+    })
+    assert location.status_code == 200
+    location_id = location.json()["id"]
+    item = await client.post("/items", headers=_h(token), json={
+        "status": "available", "sku": "AUD-ORDER", "name": "Chronology Stock",
+        "quantity": 10, "cost_total": 100, "sell_by": "piece",
+        "location_id": location_id, "inventory_type": "stocked",
+    })
+    assert item.status_code == 200, item.text
+    item_id = item.json()["id"]
+    source_company, source_location = uuid.uuid4(), uuid.uuid4()
+    source_item = "item:chrono"
+    session.add(CompanyPeerIdentity(
+        company_id=company_id, source_company_id=source_company,
+        entity_type="item", source_entity_id=source_item,
+        source_key_hash=_digest(source_item), target_entity_id=item_id,
+        last_revision=1,
+    ))
+    await session.commit()
+    grant = SimpleNamespace(company_id=company_id, source_company_id=source_company)
+    def count(qty, position):
+        return {
+            "location_id": str(source_location), "location_name": "Main Audit Order",
+            "location_type": "warehouse", "source_closed_event_id": position,
+            "counts": [{"item_id": source_item, "counted_qty": qty}],
+        }
+    assert await receive_stock_audit(
+        session, grant=grant, source_entity_id="list:first",
+        source_revision=1, data=count(8, 31)) == "created"
+    await session.commit()
+    assert await receive_stock_audit(
+        session, grant=grant, source_entity_id="list:newest",
+        source_revision=1, data=count(6, 33)) == "created"
+    await session.commit()
+    with pytest.raises(HTTPException) as stale:
+        await receive_stock_audit(
+            session, grant=grant, source_entity_id="list:delayed",
+            source_revision=1, data=count(12, 32))
+    assert stale.value.status_code == 409
+    await session.rollback()
+    actual = await session.get(Projection, (company_id, item_id), populate_existing=True)
+    assert float(actual.state["quantity"]) == 6
+    cursor = await session.scalar(select(CompanyPeerIdentity).where(
+        CompanyPeerIdentity.company_id == company_id,
+        CompanyPeerIdentity.source_company_id == source_company,
+        CompanyPeerIdentity.entity_type == "audit_cursor",
+    ))
+    assert cursor.last_revision == 33
+    assert cursor.target_entity_id == location_id
+
+
+
+@pytest.mark.asyncio
+async def test_completed_stock_audits_page_in_posted_order_not_document_id(client, session):
+    from datetime import datetime, timezone
+    from celerp.models.ledger import LedgerEntry
+    from celerp.connectors.celerp import _read_audits
+
+    token = await _register(client)
+    company_id = uuid.UUID(_company_id(token))
+    created = await client.post("/companies/me/locations", headers=_h(token), json={
+        "name": "Chronological Location", "type": "warehouse",
+    })
+    assert created.status_code == 200
+    location_id = created.json()["id"]
+    position = []
+    for source_id, qty in (("list:z-older", 8), ("list:a-newer", 6)):
+        session.add(Projection(
+            company_id=company_id, entity_id=source_id, entity_type="list",
+            version=1, updated_at=datetime.now(timezone.utc),
+            state={"list_type": "audit", "status": "closed",
+                   "result": "stock_adjusted", "location_id": location_id,
+                   "line_items": [{"item_id": "item:lot", "counted_qty": qty}]},
+        ))
+        entry = LedgerEntry(
+            company_id=company_id, entity_id=source_id, entity_type="list",
+            event_type="list.closed", data={"result": "stock_adjusted"},
+            source="audit", idempotency_key=f"audit:{source_id}",
+        )
+        session.add(entry)
+        await session.flush()
+        position.append(entry.id)
+    await session.commit()
+    first = await _read_audits(company_id, "", None)
+    assert [x[0] for x in first] == ["list:z-older", "list:a-newer"]
+    assert [x[2]["source_closed_event_id"] for x in first] == position
+    second = await _read_audits(company_id, str(position[0]), None)
+    assert [x[0] for x in second] == ["list:a-newer"]
