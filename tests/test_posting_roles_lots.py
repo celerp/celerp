@@ -267,7 +267,7 @@ async def test_manufacturing_relieves_inputs_on_their_account_and_books_output_w
 
 
 @pytest.mark.asyncio
-async def test_an_older_lot_waits_for_its_account_and_only_one_that_holds_it_can_be_chosen(session, client, auth):
+async def test_an_older_lot_waits_for_its_account_until_the_next_start_places_it(session, client, auth):
     lot = await older_release_lot(session, auth["company_id"], auth["user_id"], 30.0, sku="OLD-2")
     await _remap(session, auth, await _new_inventory_account(client, auth), "inventory_purchased")
     # The older release's opening inventory entry carries it on 1130-OB.
@@ -283,15 +283,11 @@ async def test_an_older_lot_waits_for_its_account_and_only_one_that_holds_it_can
     assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
     await session.rollback()  # the refused request's work ends with it, as its own session would
 
-    for code in ("1131", "1130-P"):  # today's purchased account, and one that held purchases, hold none of it
-        r = await client.put(f"/accounting/posting-accounts/older-stock/{lot}", headers=auth["headers"],
-                             json={"code": code})
-        assert r.status_code == 422, r.text
-        assert "does not hold" in r.json()["detail"]["message"]
-    r = await client.put(f"/accounting/posting-accounts/older-stock/{lot}", headers=auth["headers"],
-                         json={"code": "1130-OB"})
-    assert r.status_code == 200, r.text
-    assert r.json()["older_stock"]["lots"] == []
+    from test_posting_roles_rollout import _startup
+
+    # The next start places it on the account that carries it, with nothing to book.
+    await _startup(session)
+    assert (await _state(session, auth, lot))[_FIELD] == "1130-OB"
     r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
     assert r.status_code == 200, r.text
     assert _credits(await _state(session, auth, f"je:auto:{inv}:fin")) == {"1130-OB": 30.0}

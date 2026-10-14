@@ -8,17 +8,14 @@ import uuid
 import pytest
 
 from test_helpers import in_language
-from test_posting_accounts_panel import _account, _put
-from test_posting_roles_older_stock import _choose
 from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
 
 async def test_keyed_not_found_keeps_its_message_key(client, auth):
-    await _account(client, auth, "1135", "asset", "1100")
-    assert (await _put(client, auth, "inventory_purchased", "1135")).status_code == 200
-    r = await _choose(client, auth, f"item:{uuid.uuid4()}", "1135")
+    r = await client.post("/accounting/older-stock/move", headers=auth["headers"],
+                          json={"item_ids": [f"item:{uuid.uuid4()}"], "code": "1130-P", "key": "k"})
     assert r.status_code == 404, r.text
     detail = r.json()["detail"]
     assert isinstance(detail, dict), detail

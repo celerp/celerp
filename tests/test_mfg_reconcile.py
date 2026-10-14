@@ -33,7 +33,7 @@ from test_helpers import TZ
 from test_mfg_wip_upgrade import _carried, _events, _facts, _job, _older_issue, _upgrade, in_production_slot  # noqa: F401
 from test_posting_roles_autoje import _unmap
 from test_posting_roles_lots import _lot
-from test_posting_roles_older_stock import _choose, _opening_entry, _restored, _without_accounting
+from test_posting_roles_older_stock import _restored, _without_accounting
 
 pytestmark = pytest.mark.asyncio
 
@@ -195,10 +195,8 @@ async def test_a_run_on_books_from_elsewhere_is_reconciled_and_carries_on(client
     wip = await role(session, auth, WIP)
     assert await lines(session, auth, f"je:auto:{order}:reconcile:rec") == [(wip, (WIP,), 40.0, 0),
                                                                           (re, (RETAINED,), 0, 40.0)]
-    # The six still on the shelf are placed the way any restored stock is: on the account the
-    # restored books carry them on.
-    await _opening_entry(session, auth, 60.0)
-    assert (await _choose(client, auth, raw, "1130-OB")).status_code == 200
+    # The six still on the shelf were placed at the upgrade the way any restored stock is.
+    assert (await _state(session, auth, raw))[LOT_ACCOUNT_FIELD]
     await _carried(client, session, auth)
     await _carry_on(client, session, auth, raw, order, 100.0, _carried)
 
