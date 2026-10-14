@@ -1,0 +1,165 @@
+"""Accountant stock counts use the canonical, journal-posting audit lifecycle."""
+from __future__ import annotations
+
+import uuid
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+from sqlalchemy import select
+
+from celerp.models.company_peer import CompanyPeerIdentity
+from celerp.models.projections import Projection
+from celerp.services.peer_identity import _digest
+from celerp.services.peer_inventory import receive_stock_audit
+from test_payments_stripe import _register, _h, _company_id
+
+pytestmark = pytest.mark.usefixtures("docs_running")
+
+
+@pytest.mark.asyncio
+async def test_completed_peer_count_posts_canonical_adjustment_and_replays_once(client, session):
+    token = await _register(client)
+    company_id = uuid.UUID(_company_id(token))
+    location = (await client.post("/companies/me/locations", headers=_h(token), json={
+        "name": "Main", "type": "warehouse",
+    }))
+    assert location.status_code == 200, location.text
+    location_id = location.json()["id"]
+    item = await client.post("/items", headers=_h(token), json={
+        "status": "available", "sku": "AUD-1", "name": "Audit Lot",
+        "quantity": 10, "cost_total": 100, "sell_by": "piece",
+        "location_id": location_id, "inventory_type": "stocked",
+    })
+    assert item.status_code == 200, item.text
+    item_id = item.json()["id"]
+    source_company, source_location = uuid.uuid4(), uuid.uuid4()
+    source_item = "item:from-client"
+    session.add(CompanyPeerIdentity(
+        company_id=company_id, source_company_id=source_company,
+        entity_type="item", source_entity_id=source_item,
+        source_key_hash=_digest(source_item), target_entity_id=item_id,
+        last_revision=1,
+    ))
+    await session.commit()
+    grant = SimpleNamespace(company_id=company_id, source_company_id=source_company)
+    data = {
+        "location_id": str(source_location), "location_name": "Main",
+        "location_type": "warehouse",
+        "counts": [{"item_id": source_item, "counted_qty": 7}],
+    }
+    source_audit = "list:client-audit-1"
+    applied = await receive_stock_audit(
+        session, grant=grant, source_entity_id=source_audit,
+        source_revision=1, data=data)
+    assert applied == "created"
+    await session.commit()
+    inventory = await session.get(Projection, (company_id, item_id), populate_existing=True)
+    assert float(inventory.state["quantity"]) == 7
+    audit_map = await session.scalar(select(CompanyPeerIdentity).where(
+        CompanyPeerIdentity.company_id == company_id,
+        CompanyPeerIdentity.source_company_id == source_company,
+        CompanyPeerIdentity.entity_type == "list",
+    ))
+    assert audit_map.last_revision == 1
+    audit = await session.get(Projection, (company_id, audit_map.target_entity_id))
+    assert audit.state["status"] == "closed"
+    assert audit.state["result"] == "stock_adjusted"
+    assert await receive_stock_audit(
+        session, grant=grant, source_entity_id=source_audit,
+        source_revision=1, data=data) == "skipped"
+    assert await receive_stock_audit(
+        session, grant=grant, source_entity_id=source_audit,
+        source_revision=2, data=data) == "skipped"
+    await session.commit()
+    unchanged = await session.get(Projection, (company_id, item_id), populate_existing=True)
+    assert float(unchanged.state["quantity"]) == 7
+    with pytest.raises(HTTPException) as conflict:
+        await receive_stock_audit(
+            session, grant=grant, source_entity_id=source_audit,
+            source_revision=2,
+            data={**data, "counts": [{"item_id": source_item, "counted_qty": 9}]})
+    assert conflict.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_peer_count_never_overwrites_missing_or_wrong_location(client, session):
+    token = await _register(client)
+    company = uuid.UUID(_company_id(token))
+    grant = SimpleNamespace(company_id=company, source_company_id=uuid.uuid4())
+    data = {
+        "location_id": str(uuid.uuid4()), "location_name": "No matching site",
+        "location_type": "warehouse",
+        "counts": [{"item_id": "item:not-paired", "counted_qty": 0}],
+    }
+    with pytest.raises(HTTPException) as refusal:
+        await receive_stock_audit(session, grant=grant,
+                                  source_entity_id="list:audit-unknown",
+                                  source_revision=1, data=data)
+    assert refusal.value.status_code == 409
+    await session.rollback()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company, Projection.entity_type == "list"))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_count_outbound_preserves_source_identity_and_retries(monkeypatch):
+    from celerp.connectors import celerp as connector
+    from celerp.connectors import sync_runner
+    from celerp.connectors.base import ConnectorContext
+
+    company_id = str(uuid.uuid4())
+    deliveries = []
+    source_state = {
+        "location_id": str(uuid.uuid4()), "location_name": "Main",
+        "location_type": "warehouse",
+        "counts": [{"item_id": "item:s", "counted_qty": 4}],
+    }
+    async def watermark(*args):
+        assert args[2] == "inventory_out"
+        return None
+    async def read_audits(cid, after, since):
+        assert str(cid) == company_id and not after and since is None
+        return [("list:audit", 6, source_state)]
+    class Client:
+        def __init__(self, **kw): assert kw == {"public_only": True}
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def post(self, url, **kw):
+            assert url == "https://firm.example/company-peers/inventory"
+            deliveries.append(kw["json"])
+            return SimpleNamespace(status_code=200, json=lambda: {"status": "created"})
+    monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
+    monkeypatch.setattr(connector, "_read_audits", read_audits)
+    monkeypatch.setattr(connector, "RateLimitedClient", Client)
+    response = await connector.CelerpConnector().sync_inventory_out(ConnectorContext(
+        company_id=company_id, store_handle="https://firm.example", access_token="cp1.secret"))
+    assert response.ok and response.created == 1
+    assert deliveries[0]["source_revision"] == 6
+    assert deliveries[0]["data"] == source_state
+
+
+
+@pytest.mark.asyncio
+async def test_company_copy_seeds_original_location_identity(client, session):
+    from celerp.services.peer_identity import seed_restored_identities, peer_identity
+
+    token = await _register(client)
+    target_company = uuid.UUID(_company_id(token))
+    response = await client.post("/companies/me/locations", headers=_h(token), json={
+        "name": "Secondary", "type": "warehouse",
+    })
+    assert response.status_code == 200, response.text
+    restored_id = response.json()["id"]
+    original_id = uuid.uuid4()
+    source_company = uuid.uuid4()
+    await seed_restored_identities(
+        session, target_company=target_company, source_company=source_company,
+        id_map={str(original_id): restored_id},
+    )
+    await session.commit()
+    assert await peer_identity(
+        session, target_company=target_company, source_company=source_company,
+        entity_type="location", source_entity_id=str(original_id),
+    ) == restored_id

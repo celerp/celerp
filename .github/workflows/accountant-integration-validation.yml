@@ -1,0 +1,49 @@
+name: Accountant integration validation
+on:
+  push:
+    branches: [accountant-company-handoff-20261011]
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+      - name: Refresh first-party module lock for validation
+        run: |
+          python scripts/gen_first_party_lock.py
+          grep '"celerp-docs":' default_modules/first_party.lock.json
+          git diff --check
+      - name: Compile changed runtime
+        run: |
+          python -m compileall -q celerp/services/peer_inventory.py celerp/services/peer_identity.py celerp/routers/company_peers.py celerp/connectors/celerp.py celerp/connectors/sync_runner.py default_modules/celerp-docs/celerp_docs/routes.py
+      - name: Focused accounting integration tests
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+        run: >
+          timeout 820 pytest -q --tb=short --no-cov --timeout=40 -n 2
+          tests/test_peer_inventory.py
+          tests/test_celerp_peer_connector.py
+          tests/test_company_peer_access.py
+          tests/test_company_peer_identity.py
+          tests/test_peer_documents.py
+          tests/test_peer_payments.py
+          default_modules/celerp-docs/tests/test_audits.py

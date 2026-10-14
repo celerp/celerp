@@ -15,8 +15,8 @@ from celerp.connectors import celerp as peer
 
 def test_celerp_is_outbound_only_and_registered():
     connector = get("celerp")
-    assert supported_outbound(connector) == ["products_out", "contacts_out", "documents_out", "attachments_out"]
-    assert sync_plan(connector, SyncDirection.OUTBOUND) == ["products_out", "contacts_out", "documents_out", "attachments_out"]
+    assert supported_outbound(connector) == ["products_out", "contacts_out", "documents_out", "inventory_out", "attachments_out"]
+    assert sync_plan(connector, SyncDirection.OUTBOUND) == ["products_out", "contacts_out", "documents_out", "inventory_out", "attachments_out"]
     assert sync_plan(connector, SyncDirection.INBOUND) == []
 
 
@@ -260,3 +260,12 @@ async def test_issued_stock_document_is_reviewed_not_silently_accounted(monkeypa
     assert not result.ok and result.created == 1
     assert result.attention[0]["id"] == "doc:stock"
     assert "Inventory-linked" in result.errors[0]
+
+
+
+def test_physical_counts_depend_on_document_reconciliation():
+    connector = peer.CelerpConnector()
+    assert connector.outbound_dependencies["inventory_out"] == {"documents_out"}
+    plan = sync_plan(connector, SyncDirection.OUTBOUND)
+    assert plan.index("documents_out") < plan.index("inventory_out")
+    assert plan.index("inventory_out") < plan.index("attachments_out")
