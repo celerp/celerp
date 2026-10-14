@@ -1203,6 +1203,11 @@ def _move_id(company_id, key: str) -> str:
     return _hash(f"{company_id}:{key}")
 
 
+def _request_id(item_ids: list[str], code: str) -> str:
+    """What a move asks for: its account and its lots, in any order."""
+    return _hash(":".join([code, *sorted(set(item_ids))]))
+
+
 def _move_je(move_id: str) -> str:
     return f"je:auto:older-stock-moved:{move_id}"
 
@@ -1278,10 +1283,11 @@ async def _open_day(session: AsyncSession, company_id) -> str:
 
 
 async def _move(session: AsyncSession, company_id, moves: list[tuple[Projection, str, str]], move_id: str,
-                actor_id, day: str, undo_of: str | None = None) -> Decimal:
+                actor_id, day: str, undo_of: str | None = None, request: str | None = None) -> Decimal:
     """Move each lot (row, from account, to account) and its value: one event per lot
     and one entry, dated ``day``, debiting each account by what arrives and crediting
-    each by what leaves. Returns the value moved."""
+    each by what leaves. ``request`` (_request_id) is kept on each event. Returns the
+    value moved."""
     from celerp.events.engine import emit_event
     from celerp.services.auto_je import _emit_auto_posted_je, _lot_line
 
@@ -1294,7 +1300,8 @@ async def _move(session: AsyncSession, company_id, moves: list[tuple[Projection,
         await emit_event(session, company_id=company_id, entity_id=row.entity_id, entity_type="item",
                          event_type=MOVED, data={LOT_ACCOUNT_FIELD: new, "from_account": old}, actor_id=actor_id,
                          location_id=None, source="system", idempotency_key=f"lot-move:{move_id}:{row.entity_id}",
-                         metadata_={"move": move_id, **({"undo_of": undo_of} if undo_of else {})})
+                         metadata_={"move": move_id, **({"undo_of": undo_of} if undo_of else {}),
+                                    **({"request": request} if request else {})})
         net[new], net[old] = net.get(new, Decimal("0")) + value, net.get(old, Decimal("0")) - value
         total += value
     lines = ([_lot_line(settings, c, debit=float(v)) for c, v in sorted(net.items()) if v > 0]
@@ -1312,8 +1319,9 @@ async def move_lot_accounts(session: AsyncSession, company_id, item_ids: list[st
                             actor_id) -> dict:
     """Move older lots placed automatically (_place) onto inventory account ``code``,
     their value with them, in one entry dated today. ``key`` identifies the operation, so
-    a request sent twice moves once and returns the first result. A lot already on
-    ``code`` is skipped. Refused, writing nothing: no lots or too many, no key, an
+    a request sent twice moves once and returns the first result; the key reused for a
+    different account or selection is refused (409). A lot already on ``code`` is
+    skipped. Refused, writing nothing: no lots or too many, no key, an
     account that is not inventory or cannot take entries, a lot not placed
     automatically or no longer in stock, a lot an unshipped invoice holds, or a locked
     period. Returns {"moved", "value", "code", "move_id"}."""
@@ -1331,9 +1339,13 @@ async def move_lot_accounts(session: AsyncSession, company_id, item_ids: list[st
     code = (code or "").strip()
     if not code:
         raise HTTPException(status_code=422, detail=no_account_chosen())
-    move_id = _move_id(company_id, key)
+    move_id, request = _move_id(company_id, key), _request_id(item_ids, code)
     company = await locked_company(session, company_id)
     if done := await _move_events(session, company_id, move_id):
+        if any((e.metadata_ or {}).get("request") != request for e in done):
+            raise _refused(409, "older_stock.move.key_reused",
+                           "This operation key was already used for a different move, so nothing was moved. "
+                           "Reload the page and try again.")
         return {"moved": len(done), "value": _debits(await _je_state(session, company_id, _move_je(move_id))),
                 "code": done[0].data[LOT_ACCOUNT_FIELD], "move_id": move_id}
     settings = dict(company.settings or {})
@@ -1355,7 +1367,7 @@ async def move_lot_accounts(session: AsyncSession, company_id, item_ids: list[st
     await _refuse_invoiced(session, company_id, rows)
     day = await _open_day(session, company_id)
     moves = [(r, r.state[LOT_ACCOUNT_FIELD], code) for r in rows if r.state.get(LOT_ACCOUNT_FIELD) != code]
-    value = await _move(session, company_id, moves, move_id, actor_id, day)
+    value = await _move(session, company_id, moves, move_id, actor_id, day, request=request)
     return {"moved": len(moves), "value": float(value), "code": code, "move_id": move_id}
 
 

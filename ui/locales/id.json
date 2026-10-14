@@ -4406,6 +4406,7 @@
   "older_stock.move": "Pindahkan ke akun",
   "older_stock.move.cannot_take": "Akun {code} tidak aktif atau memiliki subakun, jadi tidak dapat menerima entri.",
   "older_stock.move.invoiced": "{sku} ada di faktur yang belum dikirim ({doc}). Kirim atau batalkan faktur itu, lalu pindahkan lotnya.",
+  "older_stock.move.key_reused": "Kunci operasi ini sudah dipakai untuk pemindahan lain, jadi tidak ada yang dipindahkan. Muat ulang halaman dan coba lagi.",
   "older_stock.move.no_key": "Pemindahan ini tidak membawa kunci operasi, jadi tidak dilakukan. Muat ulang halaman dan coba lagi.",
   "older_stock.move.not_placed": "{sku} tidak ditempatkan secara otomatis atau sudah tidak ada di stok, jadi tidak dapat dipindahkan di sini.",
   "older_stock.move.nothing_selected": "Pilih lot yang akan dipindahkan.",

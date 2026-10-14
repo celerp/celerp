@@ -4406,6 +4406,7 @@
   "older_stock.move": "ወደ ሂሳብ አዛውር",
   "older_stock.move.cannot_take": "ሂሳብ {code} ንቁ አይደለም ወይም ንዑስ ሂሳቦች አሉት፣ ስለዚህ ግቤቶችን አይቀበልም።",
   "older_stock.move.invoiced": "{sku} ገና ባልተላከ ደረሰኝ ({doc}) ላይ ነው። ያንን ደረሰኝ ይላኩ ወይም ይሰርዙ፣ ከዚያ ሎቱን ያዛውሩ።",
+  "older_stock.move.key_reused": "ይህ የክዋኔ ቁልፍ ለሌላ ዝውውር አስቀድሞ ጥቅም ላይ ውሏል፣ ስለዚህ ምንም አልተዛወረም። ገጹን እንደገና ይጫኑ እና ደግመው ይሞክሩ።",
   "older_stock.move.no_key": "ይህ ዝውውር የክዋኔ ቁልፍ ስለሌለው አልተደረገም። ገጹን እንደገና ይጫኑ እና ደግመው ይሞክሩ።",
   "older_stock.move.not_placed": "{sku} በራሱ አልተቀመጠም ወይም ከእንግዲህ በክምችት ውስጥ የለም፣ ስለዚህ እዚህ ሊዛወር አይችልም።",
   "older_stock.move.nothing_selected": "የሚዛወሩትን ሎቶች ይምረጡ።",

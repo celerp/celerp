@@ -4406,6 +4406,7 @@
   "older_stock.move": "Traspasar a cuenta",
   "older_stock.move.cannot_take": "La cuenta {code} está inactiva o tiene subcuentas, así que no admite asientos.",
   "older_stock.move.invoiced": "{sku} está en una factura aún no enviada ({doc}). Envíe o anule esa factura y luego traspase el lote.",
+  "older_stock.move.key_reused": "Esta clave de operación ya se usó para otro traspaso, así que no se movió nada. Recargue la página e inténtelo de nuevo.",
   "older_stock.move.no_key": "Este traspaso no lleva clave de operación, así que no se hizo. Recargue la página e inténtelo de nuevo.",
   "older_stock.move.not_placed": "{sku} no se asignó automáticamente o ya no está en existencia, así que no se puede traspasar aquí.",
   "older_stock.move.nothing_selected": "Seleccione los lotes que desea traspasar.",

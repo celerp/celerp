@@ -4406,6 +4406,7 @@
   "older_stock.move": "Transferir para conta",
   "older_stock.move.cannot_take": "A conta {code} está inativa ou tem subcontas, então não aceita lançamentos.",
   "older_stock.move.invoiced": "{sku} está em uma fatura ainda não enviada ({doc}). Envie ou anule essa fatura e depois transfira o lote.",
+  "older_stock.move.key_reused": "Esta chave de operação já foi usada para outra transferência, então nada foi movido. Recarregue a página e tente novamente.",
   "older_stock.move.no_key": "Esta transferência não tem chave de operação, então não foi feita. Recarregue a página e tente novamente.",
   "older_stock.move.not_placed": "{sku} não foi atribuído automaticamente ou não está mais em estoque, então não pode ser transferido aqui.",
   "older_stock.move.nothing_selected": "Selecione os lotes a transferir.",
