@@ -188,9 +188,17 @@ def _scanned_skus(page) -> list[str]:
         """.map(r => (r.querySelector('[data-name=\"sku\"]') || {}).value)""")
 
 
+def _scanned_border(page) -> list[str]:
+    """The computed outline of each highlighted row, as "<width> <style>"."""
+    return page.evaluate(
+        """() => Array.from(document.querySelectorAll('#line-body tr.data-row--scanned')).map(r => {"""
+        """ const c = getComputedStyle(r); return c.outlineWidth + ' ' + c.outlineStyle; })""")
+
+
 def test_scan_highlights_the_lines_the_last_run_touched(page, ui_server, api):
     """Two scans of one splittable item are one row of quantity 2, highlighted; a scan of another
-    item moves the highlight to that row only, and the rows keep their order.
+    item moves the highlight to that row only, and the rows keep their order. The highlighted row
+    carries a 2px green border on screen and none in print.
 
     RED at the base: every scan of a splittable lot is its own new line and no row carries the
     scanned highlight."""
@@ -209,6 +217,10 @@ def test_scan_highlights_the_lines_the_last_run_touched(page, ui_server, api):
         arg=first["sku"], timeout=8000)
     assert _sku_row_count(page, first["sku"]) == 1
     assert _scanned_skus(page) == [first["sku"]]
+    assert _scanned_border(page) == ["2px solid"]
+    page.emulate_media(media="print")
+    assert [b.split()[1] for b in _scanned_border(page)] == ["none"]
+    page.emulate_media(media="screen")
 
     _scan(page, second["barcode"])
     _wait_for_sku_row(page, second["sku"])
