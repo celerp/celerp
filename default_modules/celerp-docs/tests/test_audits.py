@@ -188,7 +188,7 @@ async def test_scan_batch_resolves_in_one_inventory_load(client, monkeypatch):
     whole run through the batch resolver and never the per-code resolver (the N+1 that a 200-code run
     would otherwise trigger). Barcode precedence and ambiguity are unchanged - the batch resolver is
     the same rule, loaded once."""
-    import celerp_inventory.routes as inv
+    import celerp_inventory.services as inv
     calls = {"batch": 0, "single": 0}
     real_batch, real_single = inv.resolve_items_by_codes, inv.resolve_item_by_code
 
@@ -225,8 +225,8 @@ async def test_scan_duplicate_barcode_is_reported_not_silently_picked(client, mo
     per-company barcode unique index - is reported with the single duplicate-barcode message and
     never silently checked off to one arbitrary lot. The batch resolver is patched to surface the
     duplicate for one code; every other code resolves normally."""
-    import celerp_inventory.routes as inv
-    from celerp_inventory.routes import ResolveResult, resolve_items_by_codes as _real
+    import celerp_inventory.services as inv
+    from celerp_inventory.services import ResolveResult, resolve_items_by_codes as _real
 
     async def _dup(session, company_id, codes):
         base = await _real(session, company_id, codes)

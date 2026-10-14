@@ -12219,7 +12219,7 @@ async def scan_list(
     changed = False
 
     # Resolve the whole run against ONE inventory load (vs one load per code).
-    from celerp_inventory.routes import duplicate_barcode_detail, resolve_items_by_codes
+    from celerp_inventory.services import duplicate_barcode_detail, resolve_items_by_codes
     resolved = await resolve_items_by_codes(session, company_id, codes)
 
     for code in codes:
@@ -12323,7 +12323,7 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
     picked by the document's scan behaviour - the pick-order representative of splittable stock
     (consolidate) or a sold lot first (sold, for returns). Several lots still left is ambiguous."""
     from celerp_inventory.projections import held_elsewhere
-    from celerp_inventory.routes import HIDDEN_STATUSES
+    from celerp_inventory.services import HIDDEN_STATUSES
     from celerp.services.pick import consolidate_sales_lots
 
     def status(m):
@@ -12399,7 +12399,7 @@ async def scan_doc(
     currency = state.get("currency")
     tax = next((x for x in sales_taxes(settings) if x.get("is_default")), None)
 
-    from celerp_inventory.routes import duplicate_barcode_detail, resolve_items_by_codes
+    from celerp_inventory.services import duplicate_barcode_detail, resolve_items_by_codes
     resolved = await resolve_items_by_codes(session, company_id, codes)
     existing = [dict(l) for l in (state.get("line_items") or [])]
     known = line_id_counts(existing)

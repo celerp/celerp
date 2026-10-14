@@ -17,7 +17,7 @@ import pytest
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.projections.engine import ProjectionEngine
-from celerp_inventory.routes import (
+from celerp_inventory.services import (
     resolve_item_by_code,
     resolve_items_by_codes,
 )

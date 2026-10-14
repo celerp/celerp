@@ -204,8 +204,8 @@ async def test_doc_scan_reports_unknown_code(client):
 
 
 async def test_doc_scan_reports_ambiguous_and_collision(client, monkeypatch):
-    import celerp_inventory.routes as inv
-    from celerp_inventory.routes import ResolveResult, resolve_items_by_codes as _real
+    import celerp_inventory.services as inv
+    from celerp_inventory.services import ResolveResult, resolve_items_by_codes as _real
 
     t = await _register(client)
     bc, _ = _codes()

@@ -353,9 +353,9 @@ async def _physical_lots(token: str, code: str, *, credit_note: bool) -> list[di
     """Every distinct live lot whose barcode or RFID/EPC is exactly ``code``.
 
     Barcode and RFID/EPC are one physical namespace, gathered together before any product
-    identifier (GTIN, SKU, name), so scan Enter, leaving the SKU field and the autocomplete
-    list resolve a code to the same lot. A credit note looks among sold lots first. The
-    API normalizes the rfid_epc filter (trim + upper). A failed lookup raises: it is never
+    identifier (GTIN, SKU, name), so leaving the SKU field and picking from the autocomplete
+    list resolve a code to the same lot. A credit note looks among sold lots first. The API
+    normalizes the rfid_epc filter (trim + upper). A failed lookup raises: it is never
     reported as no match.
     """
     from celerp_inventory.routes import PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
