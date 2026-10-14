@@ -22,11 +22,12 @@ async def _post(ui_client, data, *, scan, cookies=True):
 
 
 async def test_doc_scan_proxy_posts_batch(ui_client):
-    scan = AsyncMock(return_value={"scanned": 2, "results": [], "failed": [], "version": 7})
-    r = await _post(ui_client, {"barcode": "A1,B2", "price_list": "Retail", "run_key": "run-1"}, scan=scan)
+    results = [{"code": "A1", "line_id": "l1"}, {"code": "A1", "line_id": "l1"}, {"code": "B2", "line_id": "l2"}]
+    scan = AsyncMock(return_value={"scanned": 3, "results": results, "failed": [], "version": 7})
+    r = await _post(ui_client, {"barcode": "A1,A1,B2", "price_list": "Retail", "run_key": "run-1"}, scan=scan)
     assert r.status_code == 200, r.text
-    assert r.json() == {"scanned": 2, "failed": [], "html": "", "version": 7}
-    assert scan.await_args.args[1:] == ("docs", "doc:INV-1", "A1,B2", "Retail", "run-1")
+    assert r.json() == {"scanned": 3, "failed": [], "html": "", "version": 7, "lines": ["l1", "l2"]}
+    assert scan.await_args.args[1:] == ("docs", "doc:INV-1", "A1,A1,B2", "Retail", "run-1")
 
 
 async def test_doc_scan_proxy_preserves_run_conflict(ui_client):
