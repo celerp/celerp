@@ -3422,7 +3422,7 @@ async def set_period_lock(token: str, lock_date: str | None) -> dict:
 
 
 async def get_posting_accounts(token: str) -> dict:
-    """GET each posting role's account and status, and older stock with no provable inventory account."""
+    """GET each posting role's account and status, and the accounts older stock can sit on."""
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/posting-accounts")).json()
 
@@ -3433,10 +3433,30 @@ async def set_posting_account(token: str, role: str, code: str) -> dict:
         return _raise(await c.put(f"/accounting/posting-accounts/{role}", json={"code": code})).json()
 
 
-async def set_older_stock_account(token: str, item_id: str, code: str) -> dict:
-    """PUT the inventory account of older stock that records none."""
+async def get_older_stock(token: str, params: dict) -> dict:
+    """GET the older stock placed automatically, its placements and moves (filters ``account`` and ``q``)."""
     async with _api_client(token) as c:
-        return _raise(await c.put(f"/accounting/posting-accounts/older-stock/{item_id}", json={"code": code})).json()
+        return _raise(await c.get("/accounting/older-stock", params={k: v for k, v in params.items() if v})).json()
+
+
+async def move_older_stock(token: str, item_ids: list[str], code: str, key: str) -> dict:
+    """POST a bulk move of older lots to inventory account ``code``, recorded once per ``key``."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/older-stock/move",
+                                   json={"item_ids": item_ids, "code": code, "key": key})).json()
+
+
+async def undo_older_stock_move(token: str, move_id: str) -> dict:
+    """POST the undo of an older-stock move."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/older-stock/moves/{move_id}/undo")).json()
+
+
+async def set_placement_adjustment(token: str, pid: str, booked: bool) -> dict:
+    """POST whether a placement's adjustment against retained earnings stands (booked again) or is reversed."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/older-stock/placements/{pid}/adjustment",
+                                   json={"booked": booked})).json()
 
 
 async def close_fiscal_year(token: str, fiscal_year_end: str) -> dict:

@@ -613,11 +613,12 @@ async def test_the_older_stock_tab_lists_placed_lots_and_its_empty_state(ui_clie
     assert "bulk-select-all" in body and 'value="item:old-1"' in body
     assert "OLD-1" in body and "Older lot" in body and ">--<" in body
     assert "$1,234.50" in body
-    assert 'hx-post="/settings/accounting/older-stock/move"' in body
+    # The shared bulk toolbar posts the ticked lots to the move route (its action list carries the URL).
+    assert 'id="bulkbar-older-stock-table"' in body and "/settings/accounting/older-stock/move" in body
     assert "Move to account" in body
     assert "/settings/accounting/older-stock/moves/m1/undo" in body
     assert "/settings/accounting/older-stock/placements/p1/adjustment" in body
-    assert "—" not in body
+    assert ">—<" not in body  # an empty value shows "--", never a dash glyph
 
     body, _ = await _tab(ui_client, _EMPTY)
     assert "No older stock was placed automatically." in body
