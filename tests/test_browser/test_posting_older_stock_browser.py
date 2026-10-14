@@ -33,7 +33,7 @@ def _company_id(client) -> str:
 
 def _older_stock(client, tag: str, costs: list[float]) -> list[str]:
     """Lots brought in by the batch import, then left as an older release left them: no lot
-    records its inventory account."""
+    records its inventory account, and no event records one."""
     records = [{"entity_id": f"item:{uuid.uuid4()}", "event_type": "item.created", "source": "csv",
                 "idempotency_key": f"older:{uuid.uuid4()}",
                 "data": {"sku": f"OLD-{tag}-{i}", "name": "Older ring", "quantity": 1, "sell_by": "piece",
@@ -43,12 +43,16 @@ def _older_stock(client, tag: str, costs: list[float]) -> list[str]:
     ids = [rec["entity_id"] for rec in records]
     _db("UPDATE projections SET state = (state::jsonb - 'inventory_account_code')::json"
         " WHERE company_id = %s AND entity_id = ANY(%s)", _company_id(client), ids)
+    _db("DELETE FROM ledger WHERE company_id = %s AND entity_id = ANY(%s)"
+        " AND event_type = 'item.inventory_account.recorded'", _company_id(client), ids)
     return ids
 
 
 def _start(client) -> None:
-    """What the next start does for the company: place its older stock."""
+    """What the next start does for the company: place its older stock. Run on its own
+    thread, since the page's sync driver holds this thread's event loop."""
     import asyncio
+    import threading
 
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -64,7 +68,11 @@ def _start(client) -> None:
         finally:
             await engine.dispose()
 
-    assert asyncio.run(run())
+    placed: list[bool] = []
+    worker = threading.Thread(target=lambda: placed.append(asyncio.run(run())))
+    worker.start()
+    worker.join()
+    assert placed == [True]
 
 
 def test_placed_older_stock_moves_in_bulk_and_the_move_undoes(page, ui_server, fresh_company, tmp_path):
@@ -88,10 +96,11 @@ def test_placed_older_stock_moves_in_bulk_and_the_move_undoes(page, ui_server, f
     page.screenshot(path=str(tmp_path / "older-stock-1280.png"), full_page=True)
 
     page.locator("#older-stock-table .bulk-select-all").check()
-    picker = page.locator("#older-stock-card .combobox-wrap")
+    page.locator("#older-stock-card .bulk-action-select").select_option("move")
+    picker = page.locator("#older-stock-card .bulk-fields .combobox-wrap")
     picker.locator(".combobox-input").fill("1130-P")
     picker.locator('.combobox-option[data-value="1130-P"]').click()
-    page.locator("#older-stock-card button", has_text="Move to account").click()
+    page.locator("#older-stock-card .bulk-apply").click()
     expect(page.locator("#older-stock-card")).to_contain_text("Moved 2 lots to 1130-P.")
     rows = page.locator("#older-stock-table tbody tr", has_text=f"OLD-{tag}")
     for i in range(2):

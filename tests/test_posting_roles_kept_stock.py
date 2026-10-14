@@ -504,6 +504,8 @@ async def test_older_archived_stock_the_books_do_not_carry_stays_off_them(sessio
 
 
 async def test_older_archived_stock_the_books_cannot_account_for_stays_off_them(session, client, auth):
+    """Not recognized, so it carries no value; like every older lot it still records an
+    inventory account when older stock is placed, for the day it is restored."""
     await _older_release(session, auth)
     archived, other = await _lot(client, auth, 40.0), await _lot(client, auth, 30.0)
     await _older_archive(session, auth, archived)
@@ -514,7 +516,8 @@ async def test_older_archived_stock_the_books_cannot_account_for_stays_off_them(
     assert _FLAG not in await _state(session, auth, archived)
     assert await _kept_stock_entry(session, auth) is None
     assert await _reclassification(session, auth) is None
-    assert await _accounts(session, auth, archived, other) == [None, None]
+    assert await _accounts(session, auth, archived, other) == ["1130-OB", "1130-OB"]
+    assert await _held(session, auth, archived) is None
     assert await _marked(session, auth)
 
 
@@ -551,7 +554,7 @@ async def test_a_locked_day_leaves_older_archived_stock_untouched_until_a_later_
     assert await _event_count(session, auth) == events
 
 
-async def test_an_opening_account_that_cannot_take_entries_leaves_older_archived_stock_untouched(
+async def test_an_opening_account_that_cannot_take_entries_leaves_older_archived_stock_unrecognized(
         session, client, auth):
     await _older_release(session, auth)
     archived = await _lot(client, auth, 40.0)
@@ -564,7 +567,8 @@ async def test_an_opening_account_that_cannot_take_entries_leaves_older_archived
     assert _FLAG not in await _state(session, auth, archived)
     assert await _kept_stock_entry(session, auth) is None
     assert await _reclassification(session, auth) is None
-    assert await _accounts(session, auth, archived) == [None]
+    assert await _accounts(session, auth, archived) == ["1130-P"]
+    assert await _held(session, auth, archived) is None
 
 
 async def test_an_upgrade_that_fails_part_way_keeps_none_of_its_work_and_retries(session, client, auth, monkeypatch):
