@@ -486,14 +486,14 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
                      Th(t("older_stock.col_account")),
                      Th(t("older_stock.col_adjustment"), cls="cell--number"), Th(t("th.status")), Th(""))),
             Tbody(*[_placement_row(p, currency) for p in placements]),
-            cls="data-table",
+            cls="data-table", id="older-stock-placements",
         ), cls="table-scroll-wrap") if placements else P(t("older_stock.no_placements"), cls="hint"),
         H4(t("older_stock.moves"), cls="mt-md"),
         Div(Table(
             Thead(Tr(Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_lots"), cls="cell--number"),
                      Th(t("older_stock.col_to")), Th(t("older_stock.col_value"), cls="cell--number"), Th(""))),
             Tbody(*[_move_row(m, currency) for m in moves]),
-            cls="data-table",
+            cls="data-table", id="older-stock-moves",
         ), cls="table-scroll-wrap") if moves else P(t("older_stock.no_moves"), cls="hint"),
         cls="settings-card", id="older-stock-card",
     )
