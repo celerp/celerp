@@ -131,6 +131,22 @@ def demand_claim(state: dict, doc_id: str | None) -> str | None:
         return OWN_RESERVED
     return None
 
+
+def held_elsewhere(item: dict, doc_id: str | None, line_id: str | None, source_memo_id: str | None = None) -> bool:
+    """A lot this line may not newly take: reserved to another record or to none
+    (``demand_claim``), reserved to this record for another of its lines, or out on a memo
+    this record is not and was not made from (``out_on_another_memo``)."""
+    from celerp.services.document_lines import out_on_another_memo
+
+    if out_on_another_memo(item, doc_id, source_memo_id):
+        return True
+    if str(item.get("status") or "").lower() != "reserved":
+        return False
+    if demand_claim(item, doc_id) is None:
+        return True
+    holder = item.get("status_line_entity_id")
+    return bool(holder) and holder != line_id
+
 # Old attachment type → new document_tag mapping (for lazy migration)
 _ATTACHMENT_TYPE_TO_TAG: dict[str, str] = {
     "image": "product_images",

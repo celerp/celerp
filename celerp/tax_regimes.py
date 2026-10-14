@@ -15,6 +15,8 @@ Each entry:
 """
 from __future__ import annotations
 
+import copy
+
 _T = dict  # type alias for readability
 
 TAX_REGIMES: dict[str, _T] = {
@@ -232,3 +234,20 @@ def get_regime(country_code: str | None) -> dict:
     if not country_code:
         return TAX_REGIMES["_default"]
     return TAX_REGIMES.get(country_code.strip().upper(), TAX_REGIMES["_default"])
+
+
+def generic_taxes() -> list[dict]:
+    """The neutral tax list a company starts from until it configures its own."""
+    return copy.deepcopy(TAX_REGIMES["_default"]["taxes"])
+
+
+def configured(settings: dict, key: str, default: list[dict]) -> list[dict]:
+    """The list saved under ``key``, an explicitly saved empty list included; a copy
+    of ``default`` only when nothing was ever saved."""
+    value = settings.get(key)
+    return value if value is not None else copy.deepcopy(default)
+
+
+def sales_taxes(settings: dict) -> list[dict]:
+    """The company's sales taxes: what it saved, else the generic list."""
+    return configured(settings, "taxes", generic_taxes())

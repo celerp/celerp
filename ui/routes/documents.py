@@ -308,23 +308,6 @@ class _PickerRefusal(Exception):
         self.status = status
 
 
-def _held_elsewhere(item: dict, doc_id: str | None, line_id: str | None, source_memo_id: str | None = None) -> bool:
-    """A lot this line may not newly take: reserved to another record or to none
-    (``demand_claim``), reserved to this record for another of its lines, or out on a memo
-    this record is not and was not made from (``out_on_another_memo``)."""
-    from celerp.services.document_lines import out_on_another_memo
-    from celerp_inventory.projections import demand_claim
-
-    if out_on_another_memo(item, doc_id, source_memo_id):
-        return True
-    if str(item.get("status") or "").lower() != "reserved":
-        return False
-    if demand_claim(item, doc_id) is None:
-        return True
-    holder = item.get("status_line_entity_id")
-    return bool(holder) and holder != line_id
-
-
 async def _held_by_another_record(token: str, items: list[dict], code: str) -> str:
     """The refusal for ``code`` whose lots ``items`` are reserved for, or out on a memo to,
     another record, naming that record by its number when they are all held by one whose
@@ -352,10 +335,11 @@ async def _hold_refusal(token: str, item: dict, code: str, *, doc_type: str, doc
     stock; another record's hold, or a lot out on another memo, blocks the stock-claiming
     documents; a hold for another line of this record blocks every other line."""
     from celerp.services.document_lines import DOCUMENT_ITEM_UNIQUE_DOC_TYPES
+    from celerp_inventory.projections import held_elsewhere
 
     if str(item.get("status") or "").lower() == "draft":
         return t("item.draft", sku=item.get("sku") or code)
-    if not _held_elsewhere(item, doc_id, line_id, source_memo_id):
+    if not held_elsewhere(item, doc_id, line_id, source_memo_id):
         return None
     if doc_id and item.get("status_doc_id") == doc_id:
         return t("documents.lot_held_by_other_line", code=code)
@@ -412,9 +396,11 @@ async def _sales_options(token: str, items: list[dict], company_settings: dict, 
     consolidation, so a SKU's option only ever stands for (and counts) stock this line may
     draw. Raises ``_PickerRefusal`` when every matched lot is held elsewhere, rather than
     letting the caller fall through to a different item."""
+    from celerp_inventory.projections import held_elsewhere
+
     items = [i for i in items if str(i.get("status") or "").lower() != "draft"]
     drawable = [i for i in items
-                if not (splitting_allowed(i) and _held_elsewhere(i, doc_id, line_id, source_memo_id))]
+                if not (splitting_allowed(i) and held_elsewhere(i, doc_id, line_id, source_memo_id))]
     if items and not drawable:
         raise _PickerRefusal(await _held_by_another_record(token, items, code))
     return _consolidate_sales_lots(drawable, company_settings)

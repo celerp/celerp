@@ -126,7 +126,7 @@ async def test_two_concurrent_scan_batches_both_survive(_db_engine):
     """Two scans of different barcodes onto the same draft quotation, on separately committed
     sessions, must both land: two lines and both run keys. Without the row lock both read the
     empty array and the second's commit clobbers the first - one line, one run key survive."""
-    from celerp_docs.routes import scan_list, ListScanBody
+    from celerp_docs.routes import scan_list, ScanBody
 
     factory = _factory(_db_engine)
     company_id, user_id, user = await _seed_company(factory)
@@ -142,7 +142,7 @@ async def test_two_concurrent_scan_batches_both_survive(_db_engine):
         async def _scan(label, barcode, run_key, session):
             try:
                 outcome[label] = await scan_list(
-                    list_id, ListScanBody(barcode=barcode, run_key=run_key),
+                    list_id, ScanBody(barcode=barcode, run_key=run_key),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - captured for the race assertion
                 outcome[label] = exc
@@ -440,7 +440,7 @@ async def test_scan_versus_versioned_save_never_drops_scanned_line(_db_engine):
     quotation. The scanned line X must always survive. The patch may 409 on a stale version (an
     allowed outcome); if it succeeds, Y is present too. Without the lock the patch passes its
     stale version check and its replacement drops X - X absent."""
-    from celerp_docs.routes import scan_list, patch_list, ListScanBody, ListPatch
+    from celerp_docs.routes import scan_list, patch_list, ScanBody, ListPatch
 
     factory = _factory(_db_engine)
     company_id, user_id, user = await _seed_company(factory)
@@ -458,7 +458,7 @@ async def test_scan_versus_versioned_save_never_drops_scanned_line(_db_engine):
         async def _scan(session):
             try:
                 outcome["scan"] = await scan_list(
-                    list_id, ListScanBody(barcode=bc_x, run_key="kX"),
+                    list_id, ScanBody(barcode=bc_x, run_key="kX"),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - captured for the race assertion
                 outcome["scan"] = exc
@@ -507,7 +507,7 @@ async def test_scan_versus_finalize_audit_freezes_consistently(_db_engine):
     exact committed array). If the scan reported it added Z, Z's line is in the final list. Without
     the lock, a scan-committed-last run leaves an unfrozen Z on the finalized audit (a line with no
     on_hand), and a finalize-committed-last run drops the scanned Z."""
-    from celerp_docs.routes import scan_list, finalize_list, ListScanBody
+    from celerp_docs.routes import scan_list, finalize_list, ScanBody
 
     factory = _factory(_db_engine)
     company_id, user_id, user = await _seed_company(factory)
@@ -524,7 +524,7 @@ async def test_scan_versus_finalize_audit_freezes_consistently(_db_engine):
         async def _scan(session):
             try:
                 outcome["scan"] = await scan_list(
-                    list_id, ListScanBody(barcode=bc_z, run_key="kZ"),
+                    list_id, ScanBody(barcode=bc_z, run_key="kZ"),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - captured for the race assertion
                 outcome["scan"] = exc
