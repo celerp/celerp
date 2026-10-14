@@ -189,18 +189,19 @@ async def record_source_control(session: AsyncSession, company_id, role, code: s
 
 
 class LotOriginError(HTTPException):
-    """A lot from before lots recorded their inventory account was left unplaced by the
-    upgrade (celerp.services.lot_origin), so its cost cannot move until the user picks
-    the account (lot_origin.choose_lot_account)."""
+    """A lot from before lots recorded their inventory account is not placed yet
+    (celerp.services.lot_origin.place_older_stock), so its cost cannot move. Placement
+    waits only on a posting account setting or a period lock, each with its own notice."""
 
     def __init__(self, sku: str):
         super().__init__(
             status_code=409,
             detail=refusal(
                 "posting.older_stock.no_account",
-                f"Stock {sku or 'item'} has no recorded inventory account, so its cost cannot be moved "
-                "without guessing. Choose its inventory account under Older stock in "
-                "Settings > Accounting > Posting accounts.", sku=sku or "item"),
+                f"Stock {sku or 'item'} has no inventory account yet, so its cost cannot move. "
+                "Celerp places older stock on the Purchased inventory account set under "
+                "Settings > Accounting > Posting accounts; the bell notice says what is holding "
+                "it back.", sku=sku or "item"),
             headers={"X-Celerp-Fix": POSTING_ACCOUNTS_PATH},
         )
 

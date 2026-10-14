@@ -359,8 +359,15 @@ class ItemCostAdjusted(BaseModel):
 
 class ItemInventoryAccountRecorded(BaseModel):
     # A lot from before lots recorded their inventory account: the account the upgrade
-    # placed it on, or the one the user picked for it. Only a lot with no account can take one.
+    # placed it on. Only a lot with no account can take one.
     inventory_account_code: str
+
+
+class ItemInventoryAccountMoved(BaseModel):
+    # Older stock placed automatically, moved to another inventory account (or back, when
+    # the move is undone). Applied only while the lot is still on ``from_account``.
+    inventory_account_code: str
+    from_account: str
 
 
 class ItemConsignorPayableRecorded(BaseModel):
@@ -1379,6 +1386,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.produced": ItemProduced,
     "item.cost_adjusted": ItemCostAdjusted,
     "item.inventory_account.recorded": ItemInventoryAccountRecorded,
+    "item.inventory_account.moved": ItemInventoryAccountMoved,
     "item.consignor_payable.recorded": ItemConsignorPayableRecorded,
     "item.consignment.bought": ItemConsignmentBought,
     "item.inventory_on_books.recorded": ItemInventoryOnBooksRecorded,

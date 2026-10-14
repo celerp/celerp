@@ -518,7 +518,7 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # payload is the new absolute cost_base; the landed pools stay on top of it.
         current["cost_base"] = float(data["cost_total"])
         _recompute_cost(current)
-    elif event_type == "item.inventory_account.recorded":
+    elif event_type in ("item.inventory_account.recorded", "item.inventory_account.moved"):
         current[LOT_ACCOUNT_FIELD] = data[LOT_ACCOUNT_FIELD]
     elif event_type == "item.consignor_payable.recorded":
         current[CONSIGNOR_PAYABLE_FIELD] = data[CONSIGNOR_PAYABLE_FIELD]

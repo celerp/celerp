@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, INVENTORY_ORIGIN_SCHEMA
 from celerp.models.ledger import LedgerEntry
@@ -58,8 +58,9 @@ _LOCALES = ("am", "ar", "de", "en", "es", "fr", "id", "it", "ja", "pt", "th", "v
 
 async def _imported(session, client, auth, costs: list[float], **fields) -> list[str]:
     """Lots brought in by the batch import, 500 to a call, then stripped of the account
-    each records, as an older release never recorded one. The import's opening entry
-    stays on 1130-OB, where an older release booked opening stock."""
+    each records and of the event recording it, as an older release never recorded one.
+    The import's opening entry stays on 1130-OB, where an older release booked opening
+    stock."""
     ids: list[str] = []
     for start in range(0, len(costs), 500):
         records = [{"entity_id": f"item:{uuid.uuid4()}", "event_type": "item.created", "source": "csv",
@@ -76,6 +77,9 @@ async def _imported(session, client, auth, costs: list[float], **fields) -> list
         .execution_options(populate_existing=True))).scalars().all()
     for row in rows:
         row.state = {k: v for k, v in row.state.items() if k != _FIELD}
+    await session.execute(delete(LedgerEntry).where(
+        LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id.in_(ids),
+        LedgerEntry.event_type == "item.inventory_account.recorded"))
     await session.commit()
     return ids
 
@@ -323,8 +327,12 @@ async def test_older_stock_with_no_cost_is_placed_at_zero(session, client, auth)
 
 async def test_consigned_and_draft_lots_are_not_placed(session, client, auth):
     owned = await _imported(session, client, auth, [30.0])
-    consigned = await _imported(session, client, auth, [40.0], consignment_flag="in")
+    consigned = await _imported(session, client, auth, [40.0])
     draft = await _imported(session, client, auth, [50.0], status="draft")
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": consigned[0]},
+                            populate_existing=True)
+    row.state = {**row.state, "consignment_flag": "in"}  # held for a consignor, as goods received on consignment
+    await session.commit()
     await _older_release(session, auth)
     await _marked(session, auth)
     await _startup(session)
@@ -400,7 +408,11 @@ async def test_a_lot_with_no_account_or_not_owned_cannot_be_moved(session, clien
     from test_posting_roles_lots import _lot
 
     placed = await _older_company(session, client, auth, [10.0])
-    consigned = await _imported(session, client, auth, [40.0], consignment_flag="in")
+    consigned = await _imported(session, client, auth, [40.0])
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": consigned[0]},
+                            populate_existing=True)
+    row.state = {**row.state, "consignment_flag": "in"}
+    await session.commit()
     await _startup(session)
     bought = await _lot(client, auth, 5.0, sku="NEW-1")  # records its account when it is made
     events = await _events(session, auth)

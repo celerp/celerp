@@ -12,7 +12,7 @@ notification.
 
 Runs at startup behind an instance_meta marker, exactly like the status-doc
 backfill. A doc inside a locked accounting period, one whose lot is older stock
-still waiting for the user to choose its inventory account, or one whose legacy
+not yet placed on its inventory account, or one whose legacy
 state the cost computation rejects is counted; the marker stays unset in that
 case so the next boot retries the stragglers - the emit idempotency keys make
 re-posting impossible for docs already handled. Each boot brings the company's
@@ -263,8 +263,8 @@ async def run_cogs_backfill(session) -> dict:
                     )
                     await auto_je.record_consignor_payables(session, doc.company_id, None, cogs_result.payables)
         except LotOriginError:
-            # Older stock waiting for its inventory account: the user chooses it and the
-            # next boot posts the doc.
+            # Older stock waiting for its inventory account: placed at the next start,
+            # which then posts the doc.
             c["older_stock"] += 1
         except HTTPException as exc:
             if exc.status_code == 503:

@@ -13,8 +13,9 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
+from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
 from celerp.services.company_lock import locked_company
@@ -60,10 +61,14 @@ async def _sell(client, auth, *lots: tuple[str, float]) -> str:
 
 
 async def _forget_origin(session, auth, item_id: str) -> None:
-    """Make a lot look like one created before lots recorded their account."""
+    """Make a lot look like one created before lots recorded their account: neither its
+    state nor its history records one."""
     row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": item_id},
                             populate_existing=True)
     row.state = {k: v for k, v in row.state.items() if k != _FIELD}
+    await session.execute(delete(LedgerEntry).where(
+        LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == item_id,
+        LedgerEntry.event_type == "item.inventory_account.recorded"))
     await session.commit()
 
 
@@ -133,7 +138,7 @@ async def test_an_older_lot_with_no_provable_account_refuses_to_move_its_cost(se
     assert r.status_code == 200, r.text
     r = await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    assert "no recorded inventory account" in r.json()["detail"]["message"]
+    assert "has no inventory account yet" in r.json()["detail"]["message"]
     assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
 
 
@@ -279,7 +284,7 @@ async def test_an_older_lot_waits_for_its_account_until_the_next_start_places_it
     inv = r.json()["id"]
     r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    assert "OLD-2 has no recorded inventory account" in r.json()["detail"]["message"]
+    assert "OLD-2 has no inventory account yet" in r.json()["detail"]["message"]
     assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
     await session.rollback()  # the refused request's work ends with it, as its own session would
 

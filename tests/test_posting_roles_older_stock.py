@@ -506,7 +506,17 @@ async def _migration_run(session, client, auth) -> None:
 
 
 async def _source_controls(session, client, auth) -> None:
-    await _settings(session, auth, posting_source_controls={"inventory": "1400"})
+    """Books a migration brought in: its source controls, and the posting accounts its
+    finalize mapped, which the start does not guess for source books."""
+    from celerp.services.account_roles import with_role
+
+    company = await locked_company(session, auth["company_id"])
+    settings = {**company.settings, "posting_source_controls": {"inventory": "1400"}}
+    for role, code in (("inventory_purchased", "1130-P"), ("inventory_opening", "1130-OB"),
+                       ("retained_earnings", "3200")):
+        settings = with_role(settings, role, code)
+    company.settings = settings
+    await session.commit()
 
 
 # Where each is placed: opening inventory when it holds the stock or the books show stock
@@ -768,9 +778,7 @@ async def test_opening_stock_is_dated_the_business_day_when_the_servers_day_is_l
 async def test_a_company_created_with_lots_recording_their_account_is_never_normalized(session, client, auth):
     assert await _marked(session, auth)
     lot = await _lot(client, auth, 30.0)
-    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": lot}, populate_existing=True)
-    row.state = {k: v for k, v in row.state.items() if k != _FIELD}  # would be moved to 1130-P if it entered
-    await session.commit()
+    await _forget_origin(session, auth, lot)  # would be moved to 1130-P if it entered
     await _startup(session)
     assert await _reclassification(session, auth) is None
     # Only placed, on the account holding it, with nothing booked.

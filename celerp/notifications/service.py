@@ -298,6 +298,17 @@ async def clear_every_company(session: AsyncSession, category: str, title: str) 
     return result.rowcount
 
 
+async def clear_standing(session: AsyncSession, company_id: uuid.UUID, category: str, title: str) -> int:
+    """A company's condition (see notify_standing) no longer holds: its notice is
+    removed, so a notice that stands always means the condition holds now. Caller
+    commits. Returns the number removed."""
+    result = await session.execute(
+        delete(Notification).where(Notification.company_id == company_id, Notification.category == category,
+                                   Notification.title == title)
+    )
+    return result.rowcount
+
+
 async def get_unread_count(
     session: AsyncSession,
     company_id: uuid.UUID,
