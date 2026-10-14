@@ -1207,7 +1207,7 @@
   "company_backup.handoff_unavailable": "No se puede abrir la entrega. Compruebe el enlace o solicite una copia nueva.",
   "company_backup.handoffs_empty": "Todavía no se han enviado copias.",
   "company_backup.handoffs_title": "Copias de empresas",
-  "company_backup.handoffs_unavailable": "La actividad de las copias no está disponible. Inténtalo de nuevo.",
+  "company_backup.handoffs_unavailable": "La actividad de las copias no está disponible. Inténtelo de nuevo.",
   "company_backup.import_module": "Importar módulo",
   "company_backup.integrations_disconnected": "Las conexiones con otros servicios, como tiendas y contabilidad, no se restauran desde una copia de seguridad. Vuelva a conectar cada una en Acceso web.",
   "company_backup.module_consent": "Activar {name}, que no proviene de Celerp",
