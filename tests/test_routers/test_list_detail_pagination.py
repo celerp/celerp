@@ -239,7 +239,7 @@ async def test_scan_on_page_two_rerenders_page_two(ui_app):
     r, page_mock = await _audit_request(
         ui_app, "POST", "/lists/list:aud/scan",
         data={"barcode": "SKU150", "offset": "100", "limit": "100"},
-        extra={"ui.api_client.scan_list": scan})
+        extra={"ui.api_client.scan_codes": scan})
     assert _tbody_offsets(page_mock) == [100]
     assert "SKU150" in r.json()["html"] and "SKU0<" not in r.json()["html"]
 

@@ -3,11 +3,13 @@
 """Browser tests for the reservation UI corrections on draft documents.
 
 Covers:
-  - RESMOD-01: A row added via the scan bar populates its Status cell with the
+  - RESMOD-01: A row added via the line picker populates its Status cell with the
     rest of the row (badge label + class straight from the status map), no reload.
   - RESMOD-02: Saving a draft holding a foreign-reserved line opens the
     resolution dialog (linked to the reserving document); ESC keeps the rows;
     "Remove from draft" deletes them and the clean re-save persists.
+  - The scan bar refuses a foreign-reserved lot outright, naming the reserving document,
+    and adds nothing.
 """
 from __future__ import annotations
 
@@ -60,11 +62,16 @@ def _reserve_on_new_invoice(api, sku, eid):
     return doc_id, number
 
 
-def _scan_add(page, sku):
-    """Add an item to the open draft via the scan bar (client-side append)."""
-    scan = page.locator("#scan-bar-input")
-    scan.fill(sku)
-    scan.press("Enter")
+def _picker_add(page, sku):
+    """Add an item to the open draft through the line picker (client-side append, then autosave)."""
+    page.wait_for_selector("#line-body", timeout=8000)
+    page.evaluate("celerpAddLine()")
+    inp = page.locator('#line-body tr').last.locator('[data-name="sku"]')
+    inp.click()
+    inp.fill(sku)
+    opt = page.locator(".catalog-ac-option:not(.catalog-ac-option--custom)", has_text=sku).first
+    opt.wait_for(state="visible", timeout=8000)
+    opt.click()
 
 
 # celerpFillRow sets the hidden entity_id input's value PROPERTY (not the HTML
@@ -93,7 +100,7 @@ def _wait_status_cell_html(page, eid, timeout=5000):
 
 
 def test_added_row_status_populates(page, ui_server, api):
-    """RESMOD-01: scanning a reserved item onto a draft fills the Status cell
+    """RESMOD-01: picking a reserved item onto a draft fills the Status cell
     immediately - exact badge label ('Reserved') and class (badge--reserved)
     from the status map, with the reserving doc number linked."""
     sku = f"RESMOD-FILL-{uuid.uuid4().hex[:6]}"
@@ -102,7 +109,7 @@ def test_added_row_status_populates(page, ui_server, api):
 
     draft_id = _create_draft_invoice(api, f"RESMOD-DRAFT-{uuid.uuid4().hex[:6]}", [], total=0)
     page.goto(f"{ui_server}/docs/{draft_id}", wait_until="domcontentloaded")
-    _scan_add(page, sku)
+    _picker_add(page, sku)
 
     cell_html = _wait_status_cell_html(page, eid)
     assert "badge--reserved" in cell_html, f"Expected badge--reserved, got: {cell_html}"
@@ -130,9 +137,9 @@ def test_conflict_modal_removes_line(page, ui_server, api):
     ], total=50.0)
 
     page.goto(f"{ui_server}/docs/{draft_id}", wait_until="domcontentloaded")
-    _scan_add(page, sku_res)
+    _picker_add(page, sku_res)
 
-    # The scan-triggered autosave hits the foreign-reserved 422: dialog opens.
+    # The pick-triggered autosave hits the foreign-reserved 422: dialog opens.
     dlg = page.locator("#reserved-conflict-modal")
     dlg.wait_for(state="visible", timeout=5000)
     line = dlg.locator(".reserved-conflict-line")
@@ -169,3 +176,26 @@ def test_conflict_modal_removes_line(page, ui_server, api):
     page.goto(f"{ui_server}/docs/{draft_id}", wait_until="domcontentloaded")
     assert _row_count(page, eid_res) == 0, "Reloaded draft must not show the removed reserved line"
     assert _row_count(page, eid_ok) == 1, "Reloaded draft must keep the plain line"
+
+
+def test_scan_refuses_reserved_lot_naming_holder(page, ui_server, api):
+    """A scanned foreign-reserved lot never reaches the draft: the scan bar names the
+    reserving document, keeps the code in the field, and no line is stored."""
+    sku = f"RESMOD-SCAN-{uuid.uuid4().hex[:6]}"
+    eid = _create_item(api, sku)
+    _owner_doc, owner_number = _reserve_on_new_invoice(api, sku, eid)
+
+    draft_id = _create_draft_invoice(api, f"RESMOD-DRAFT-{uuid.uuid4().hex[:6]}", [], total=0)
+    page.goto(f"{ui_server}/docs/{draft_id}", wait_until="domcontentloaded")
+    scan = page.locator("#scan-bar-input")
+    scan.wait_for(timeout=8000)
+    scan.fill(sku)
+    scan.press("Enter")
+    page.locator("#scan-bar-add").click()
+    page.wait_for_function(
+        "() => (document.querySelector('.scan-bar-status')?.textContent || '').includes('\u2717')",
+        timeout=8000)
+    assert owner_number in page.locator(".scan-bar-status").inner_text()
+    assert sku in page.locator("#scan-bar-input").input_value()
+    assert _row_count(page, eid) == 0
+    assert api.get(f"/docs/{draft_id}").json().get("line_items") in (None, [])

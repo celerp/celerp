@@ -113,7 +113,7 @@ _REWRITTEN = [
     "documents.import_failed", "documents.invalid_returned_quantity", "documents.line_item_not_found",
     "documents.list_not_found", "documents.lookup_error", "documents.reprice_failed",
     "documents.reprice_missing_item_tip", "documents.reprice_partial_many", "documents.reprice_partial_one",
-    "documents.save_failed", "documents.scan_error", "documents.scan_not_found",
+    "documents.save_failed", "documents.scan_error",
     "ai.memory_clear_failed", "label.loading_templates", "error.cannot_divide_by_zero_qty",
 ]
 
@@ -142,7 +142,6 @@ def test_every_new_document_error_key_is_in_every_language():
 
 def test_rewritten_messages_say_what_to_do():
     assert t("documents.err_delete_not_draft", "en").startswith("Only a draft can be deleted.")
-    assert t("documents.scan_not_found", "en", code="X1") == "Celerp couldn't find X1. Check the code and try again."
     assert t("label.loading_templates", "en") == "Loading templates..."
 
 

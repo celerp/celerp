@@ -2344,15 +2344,16 @@ async def get_audit(token: str, entity_id: str) -> dict:
     return await get_list(token, entity_id)
 
 
-async def scan_list(token: str, entity_id: str, barcode: str, price_list: str | None = None,
-                    run_key: str | None = None) -> dict:
+async def scan_codes(token: str, kind: str, entity_id: str, barcode: str, price_list: str | None = None,
+                     run_key: str | None = None) -> dict:
+    """Post one batched scan run to a list or document (kind "lists" or "docs")."""
     body: dict = {"barcode": barcode}
     if price_list:
         body["price_list"] = price_list
     if run_key:
         body["run_key"] = run_key
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/scan", json=body)).json()
+        return _raise(await c.post(f"/{kind}/{entity_id}/scan", json=body)).json()
 
 
 async def set_audit_count(token: str, entity_id: str, item_id: str, counted_qty: float | None) -> dict:
