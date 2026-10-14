@@ -338,6 +338,18 @@ async def test_a_posting_account_change_is_kept_when_a_period_lock_holds_placeme
     assert len(await _lock_notices(session, auth)) == 1
 
 
+async def test_setting_the_posting_account_withdraws_its_notice_while_a_lock_holds_placement(
+        session, client, auth):
+    await _waiting_for_purchased(session, client, auth)
+    assert len(await _notices(session, auth, _UNMAPPED)) == 1
+    await _settings(session, auth, lock_date=_today())
+    r = await client.put("/accounting/posting-accounts/inventory_purchased", headers=auth["headers"],
+                         json={"code": "1135"})
+    assert r.status_code == 200, r.text
+    assert await _notices(session, auth, _UNMAPPED) == []
+    assert len(await _lock_notices(session, auth)) == 1
+
+
 def _days_from_today(days: int) -> str:
     return (date.fromisoformat(_today()) + timedelta(days=days)).isoformat()
 
