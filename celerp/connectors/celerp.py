@@ -167,7 +167,11 @@ class CelerpConnector(ConnectorBase):
     supported_entities = []
     store_scoped_ids = False
     conflict_strategy = {SyncEntity.CONTACTS: "source"}
-    outbound_dependencies = {"inventory_out": frozenset({"documents_out"})}
+    outbound_dependencies = {
+        "documents_out": frozenset({"contacts_out", "products_out"}),
+        "inventory_out": frozenset({"documents_out"}),
+        "attachments_out": frozenset({"documents_out"}),
+    }
 
     async def sync_products(self, ctx: ConnectorContext, since=None) -> SyncResult:
         raise NotImplementedError("Inbound peer synchronization is not supported")

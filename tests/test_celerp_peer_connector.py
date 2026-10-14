@@ -304,3 +304,48 @@ async def test_stock_audit_does_not_require_contact_or_product_name(monkeypatch)
     assert posted[0][0] == "https://peer.example/company-peers/inventory"
     assert posted[0][1]["source_entity_id"] == "list:count-1"
     assert posted[0][1]["data"]["counts"][0]["counted_qty"] == 4
+
+
+
+@pytest.mark.asyncio
+async def test_accountant_downstream_stops_when_required_outbound_entity_failed(monkeypatch):
+    from contextlib import asynccontextmanager
+    from celerp import db
+    from celerp.connectors import ownership, sync_runner
+    from celerp.connectors.base import SyncEntity, SyncResult
+
+    class Session:
+        async def commit(self):
+            pass
+
+    @asynccontextmanager
+    async def session():
+        yield Session()
+
+    async def no_config(*args, **kwargs):
+        return None
+
+    seen = []
+    async def fake_run_sync(connector, ctx, entity, **kwargs):
+        seen.append(entity)
+        return SyncResult(
+            entity=SyncEntity.PRODUCTS if entity == "products_out" else SyncEntity.CONTACTS,
+            direction=SyncDirection.OUTBOUND,
+            errors=["Source product needs review"] if entity == "products_out" else [],
+        )
+
+    monkeypatch.setattr(db, "get_session_ctx", session)
+    monkeypatch.setattr(ownership, "lock_connector_operation", no_config)
+    monkeypatch.setattr(sync_runner, "run_sync", fake_run_sync)
+    connector = peer.CelerpConnector()
+    assert connector.outbound_dependencies["documents_out"] == frozenset(
+        {"contacts_out", "products_out"})
+    assert connector.outbound_dependencies["attachments_out"] == frozenset({"documents_out"})
+    results = await sync_runner.run_connector_sync(
+        connector,
+        ConnectorContext(company_id=str(uuid.uuid4()), access_token="cp1.fake",
+                         store_handle="https://firm.example"),
+        SyncDirection.OUTBOUND,
+    )
+    assert seen == ["products_out", "contacts_out"]
+    assert len(results) == 2 and not results[0].ok

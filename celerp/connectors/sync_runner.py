@@ -94,7 +94,7 @@ async def run_connector_sync(
     completed: dict[str, bool] = {}
     dependencies = getattr(connector, "outbound_dependencies", {})
     for entity in sync_plan(connector, resolved_direction):
-        if any(completed.get(dep) is False for dep in dependencies.get(entity, ())):
+        if any(completed.get(dep) is not True for dep in dependencies.get(entity, ())):
             break
         result = await run_sync(
             connector, ctx, entity, direction=resolved_direction,
