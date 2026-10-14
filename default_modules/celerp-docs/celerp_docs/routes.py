@@ -12116,18 +12116,20 @@ def _scan_replay(row: Projection, payload: ScanBody, codes: list[str]):
                     "code": "scan_run_conflict",
                     "detail": t("documents.err_scan_conflict"),
                     "version": row.version})
-            return {"scanned": rec.get("scanned", 0), "results": [],
+            return {"scanned": rec.get("scanned", 0), "results": rec.get("results", []),
                     "failed": rec.get("failed", []), "duplicate": True, "version": row.version}
     return None
 
 
-def _record_scan_run(state: dict, payload: ScanBody, codes: list[str], scanned: int, failed: list[dict]) -> list[dict]:
+def _record_scan_run(state: dict, payload: ScanBody, codes: list[str], results: list[dict],
+                     failed: list[dict]) -> list[dict]:
     """The record's recent scan runs with this one appended, so a retry replays instead of
-    re-adding. The stored failed list is already bounded: each code is <= MAX_CODE_LEN and the
-    batch <= MAX_SCAN_BATCH, so the retained replay data can never bloat the projection."""
+    re-adding and names the same lines. The stored results and failed lists are already bounded:
+    each code is <= MAX_CODE_LEN and the batch <= MAX_SCAN_BATCH, so the retained replay data can
+    never bloat the projection."""
     runs = [dict(r) for r in (state.get(SCAN_RUNS_FIELD) or [])]
     runs.append({"key": payload.run_key, "fp": _scan_run_fingerprint(codes, payload.price_list),
-                 "scanned": scanned, "failed": failed})
+                 "scanned": len(results) - len(failed), "results": results, "failed": failed})
     return runs[-_MAX_SCAN_RUNS:]
 
 
@@ -12137,10 +12139,13 @@ def _scan_status_allowed(sb: ScanBehavior, status: str | None) -> bool:
     return status == DRAFT or (status == FINALIZED and sb.finalized == "count")
 
 
-def _scan_failure(failed: list[dict], results: list[dict], code: str, reason: str, label: str) -> None:
-    """Report one code the run could not apply, in both the failure list and the per-code results."""
-    failed.append({"code": code, "reason": reason, "label": label})
-    results.append({"code": code, "state": "error", "reason": reason, "label": label})
+def _scan_failure(failed: list[dict], results: list[dict], code: str, reason: str, label: str,
+                  line_id: str | None = None) -> None:
+    """Report one code the run could not apply, in both the failure list and the per-code results;
+    `line_id` names the line already holding what the code named."""
+    extra = {"line_id": line_id} if line_id else {}
+    failed.append({"code": code, "reason": reason, "label": label, **extra})
+    results.append({"code": code, "state": "error", "reason": reason, "label": label, **extra})
 
 
 @lists_router.post("/{entity_id}/scan")
@@ -12180,7 +12185,7 @@ async def scan_list(
     if scanned:
         fields = {"line_items": lines}
         if payload.run_key:
-            fields[SCAN_RUNS_FIELD] = _record_scan_run(state, payload, codes, scanned, failed)
+            fields[SCAN_RUNS_FIELD] = _record_scan_run(state, payload, codes, results, failed)
         entry = await _set_list_fields(session, company_id, entity_id, user, fields)
         await session.commit()
         version = entry.id
@@ -12198,14 +12203,15 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     past draft (a locked audit) only checks off the lines it holds, and a counting draft moves a
     line it already holds to the top. Otherwise:
       - a splittable lot or an item kept in no stock raises its line by one, or starts a line of
-        one, whatever code named it; where goods leave stock (`sb.unstocked` refuse) a line never
-        takes more than is on hand;
+        one, whatever code named it; where goods leave stock (`sb.unstocked` refuse) neither a
+        line nor all the lines drawing on one product's stock take more than is on hand;
       - a lot that may not be split is one physical piece and takes its whole on-hand on a new
         line, `build` making it; a repeat is reported as already on the record where
         `sb.repeats` refuses it and is another line where goods are bought in;
       - a lot with nothing on hand goes by `sb.unstocked`.
     An RFID tag names one piece: the same tag read again in one run is the same read and passes
-    silently, and a tag already on the record from an earlier run is reported. "On the record"
+    silently, and a tag already on the record from an earlier run is reported, naming the line that
+    holds it, as every repeat refusal does. "On the record"
     counts stored lines, lines placed earlier in this run, and lines a concurrent run committed
     before the caller took the row lock. A line must pass the shared quantity rule and the caller's
     own writer rules (`admit`, returning a (reason, label) refusal or None). A code any rule
@@ -12219,6 +12225,20 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     results: list[dict] = []
     failed: list[dict] = []
     tagged: set[str] = set()  # lots read by RFID tag in this run
+    pools: dict[str, tuple[set[str], float]] = {}
+
+    async def product_pool(lot: Projection) -> tuple[set[str], float]:
+        """The splittable lots a product code would draw on and what they hold together, read once
+        per product as its own scan would bind them (one lot standing for all). A product that is
+        not one splittable pool has no cap beyond each line's own."""
+        sku = str(lot.state.get("sku") or "")
+        if sku not in pools:
+            res = (await resolve_items_by_codes(session, company_id, [sku])).get(sku) if sku else None
+            rep, quantity, _, _ = ((None, 0, None, None) if res is None or not res.matches or res.kind != "sku"
+                                   else _scan_lot(sku, res, sb, settings, state, entity_id))
+            pools[sku] = (({m.entity_id for m in res.matches if splitting_allowed(m.state or {})}, float(quantity or 0))
+                          if rep is not None and not _whole_piece(rep.state) else (set(), float("inf")))
+        return pools[sku]
     for code in codes:
         res = resolved.get(code)
         if res is not None and res.duplicate_physical:
@@ -12259,7 +12279,7 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
             whole = sb.unstocked == "snapshot" or _whole_piece(lot.state)
             if idx is not None and (res.kind == "rfid_epc" or (whole and sb.repeats == "refuse")):
                 _scan_failure(failed, results, code, "duplicate_scan",
-                              f"{code}: already on {noun}{_sku_note(code, lot)}")
+                              f"{code}: already on {noun}{_sku_note(code, lot)}", lines[idx].get("line_id"))
                 continue
             empty = stocked and not float(on_hand or 0) > 0
             if whole or idx is None:
@@ -12277,12 +12297,19 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
                 except HTTPException as exc:
                     _scan_failure(failed, results, code, "invalid_quantity", exc.detail)
                     continue
-            if sb.unstocked == "refuse" and stocked and not whole and line["quantity"] > float(on_hand or 0):
-                _scan_failure(failed, results, code, "insufficient_stock",
-                              f"{sku}: insufficient stock - {line['quantity']:g} on {noun}, "
-                              f"available {float(on_hand or 0):g}")
-                continue
             placed = lines[:idx] + [line] + lines[idx + 1:] if not whole and idx is not None else lines + [line]
+            if sb.unstocked == "refuse" and stocked and not whole:
+                # The line never takes more than its lot stands for, and every line drawing on the
+                # product's stock together never takes more than the product has.
+                taken, available = line["quantity"], float(on_hand or 0)
+                if taken <= available:
+                    pool_ids, available = await product_pool(lot)
+                    taken = sum(float(l.get("quantity") or 0) for l in placed
+                                if (l.get("item_id") or l.get("entity_id")) in pool_ids)
+                if taken > available:
+                    _scan_failure(failed, results, code, "insufficient_stock",
+                                  f"{sku}: insufficient stock - {taken:g} on {noun}, available {available:g}")
+                    continue
             if admit is not None and (refused := admit(lot, placed)) is not None:
                 _scan_failure(failed, results, code, *refused)
                 continue
@@ -12416,7 +12443,7 @@ async def scan_doc(
     scanned = len(results) - len(failed)
     version = row.version
     if scanned:
-        runs = _record_scan_run(state, payload, codes, scanned, failed) if payload.run_key else None
+        runs = _record_scan_run(state, payload, codes, results, failed) if payload.run_key else None
         written = await write_doc_patch(session, company_id, role, settings, user, entity_id,
                                         DocPatch(fields_changed={"line_items": {"new": lines}},
                                                  expected_version=row.version), scan_runs=runs)
