@@ -183,6 +183,31 @@ async def _read_audits(company_id: uuid.UUID, after: str, since=None) -> list[tu
         return out
 
 
+async def _excluded_stock_document(company_id: uuid.UUID) -> str | None:
+    """An excluded stock transaction cannot be represented as a count variance."""
+    from celerp.db import get_session_ctx
+    from celerp.services.peer_documents import requires_stock_movement
+
+    after = ""
+    async with get_session_ctx() as session:
+        while True:
+            rows = (await session.execute(select(
+                Projection.entity_id, Projection.state,
+            ).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "doc",
+                Projection.entity_id > after,
+                Projection.state["accounting_sync_excluded"].as_boolean().is_(True),
+            ).order_by(Projection.entity_id).limit(_PAGE))).all()
+            for entity_id, state in rows:
+                state = state or {}
+                if state.get("status") not in ("draft", "void") and requires_stock_movement(state):
+                    return str(entity_id)
+            if len(rows) < _PAGE:
+                return None
+            after = rows[-1][0]
+
+
 class CelerpConnector(ConnectorBase):
     name = "celerp"
     display_name = "Celerp Accountant"
@@ -301,6 +326,14 @@ class CelerpConnector(ConnectorBase):
         return await self._send_outbound(ctx, "documents", _read_documents)
 
     async def sync_inventory_out(self, ctx: ConnectorContext) -> SyncResult:
+        excluded = await _excluded_stock_document(uuid.UUID(ctx.company_id))
+        if excluded is not None:
+            return SyncResult(
+                entity=SyncEntity.INVENTORY, direction=SyncDirection.OUTBOUND,
+                errors=["Inventory needs a complete source-document reconciliation"],
+                attention=[{"id": excluded, "label": excluded,
+                            "reason": "A stock-linked document was excluded from accounting sync"}],
+            )
         return await self._send_outbound(ctx, "inventory", _read_audits)
 
     async def sync_attachments_out(self, ctx: ConnectorContext) -> SyncResult:

@@ -296,3 +296,66 @@ def test_stock_route_accepts_ordered_audit_contract_and_rejects_missing_position
                 source_company_id=uuid.uuid4(), source_entity_id="list:src",
                 source_revision=1, data=invalid,
             )
+
+
+
+@pytest.mark.asyncio
+async def test_stock_sync_refuses_missing_issued_stock_document(monkeypatch):
+    from celerp.connectors import celerp as peer
+    from celerp.connectors.base import ConnectorContext
+
+    async def excluded(cid):
+        assert isinstance(cid, uuid.UUID)
+        return "doc:excluded-sale"
+
+    async def must_not_send(*args):
+        pytest.fail("Stock counts must not bypass an excluded stock transaction")
+
+    monkeypatch.setattr(peer, "_excluded_stock_document", excluded)
+    monkeypatch.setattr(peer, "_read_audits", must_not_send)
+    connector = peer.CelerpConnector()
+    result = await connector.sync_inventory_out(ConnectorContext(
+        company_id=str(uuid.uuid4()), store_handle="https://peer.example",
+        access_token="cp1.secret",
+    ))
+    assert not result.ok
+    assert result.attention[0]["id"] == "doc:excluded-sale"
+    assert "reconciliation" in result.errors[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_stock_exclusion_guard_checks_full_document_page(monkeypatch):
+    from contextlib import asynccontextmanager
+    from celerp.connectors import celerp as peer
+    from celerp.db import get_session_ctx
+    from celerp.models.projections import Projection
+
+    cid = uuid.uuid4()
+    # The guard scans beyond a first page of excluded nonstock documents.
+    pages = 0
+    class Records:
+        def __init__(self, values):
+            self.values = values
+        def all(self):
+            return self.values
+    class Session:
+        async def execute(self, stmt):
+            nonlocal pages
+            pages += 1
+            if pages == 1:
+                return Records([
+                    (f"doc:{n:04}", {"status": "final", "accounting_sync_excluded": True,
+                                    "line_items": [{"name": "Consulting"}]})
+                    for n in range(peer._PAGE)
+                ])
+            return Records([
+                ("doc:1000", {"status": "final", "accounting_sync_excluded": True,
+                              "line_items": [{"sku": "ITEM", "quantity": 1}]})
+            ])
+    @asynccontextmanager
+    async def session_factory():
+        yield Session()
+
+    monkeypatch.setattr("celerp.db.get_session_ctx", session_factory)
+    assert await peer._excluded_stock_document(cid) == "doc:1000"
+    assert pages == 2
