@@ -198,7 +198,8 @@ def _scanned_border(page) -> list[str]:
 def test_scan_highlights_the_lines_the_last_run_touched(page, ui_server, api):
     """Two scans of one splittable item are one row of quantity 2, highlighted; a scan of another
     item moves the highlight to that row only, and the rows keep their order. The highlighted row
-    carries a 2px green border on screen and none in print.
+    carries a 2px green border on screen and none in print, and no background tint: its cells are
+    coloured exactly like the plain row's.
 
     RED at the base: every scan of a splittable lot is its own new line and no row carries the
     scanned highlight."""
@@ -230,3 +231,7 @@ def test_scan_highlights_the_lines_the_last_run_touched(page, ui_server, api):
     order = page.evaluate("""() => Array.from(document.querySelectorAll('#line-body [data-name=\"sku\"]'))"""
                           """.map(e => e.value).filter(Boolean)""")
     assert order == [first["sku"], second["sku"]]
+    plain, scanned = page.evaluate(
+        """() => Array.from(document.querySelectorAll('#line-body tr')).filter(r => r.querySelector('[data-name=\"sku\"]')?.value)"""
+        """.map(r => Array.from(r.cells).map(c => getComputedStyle(c).backgroundColor))""")
+    assert scanned == plain
