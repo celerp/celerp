@@ -229,7 +229,7 @@ class CelerpConnector(ConnectorBase):
                             reason = "Inventory-linked document requires full copy or shared access"
                     else:
                         data = {key: state.get(key) for key in fields}
-                    if reason is None and kind != "documents" and (not isinstance(data.get("name"), str) or not data["name"].strip()):
+                    if reason is None and kind in ("contacts", "products") and (not isinstance(data.get("name"), str) or not data["name"].strip()):
                         reason = "Contact name unavailable" if kind == "contacts" else "Product name missing"
                     if reason is not None:
                         result.errors.append(reason)

@@ -269,3 +269,38 @@ def test_physical_counts_depend_on_document_reconciliation():
     plan = sync_plan(connector, SyncDirection.OUTBOUND)
     assert plan.index("documents_out") < plan.index("inventory_out")
     assert plan.index("inventory_out") < plan.index("attachments_out")
+
+
+@pytest.mark.asyncio
+async def test_stock_audit_does_not_require_contact_or_product_name(monkeypatch):
+    from celerp.connectors import sync_runner
+
+    source = str(uuid.uuid4())
+    posted = []
+    async def watermark(*args):
+        return None
+    async def audits(company_id, after, since):
+        assert str(company_id) == source
+        return [("list:count-1", 2, {
+            "location_id": "location:a", "location_name": "Warehouse",
+            "location_type": "warehouse",
+            "counts": [{"item_id": "item:a", "counted_qty": 4}],
+        })] if not after else []
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs == {"public_only": True}
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def post(self, url, **kwargs):
+            posted.append((url, kwargs["json"]))
+            return SimpleNamespace(status_code=200, json=lambda: {"status": "created"})
+    monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
+    monkeypatch.setattr(peer, "_read_audits", audits)
+    monkeypatch.setattr(peer, "RateLimitedClient", Client)
+    result = await peer.CelerpConnector().sync_inventory_out(ConnectorContext(
+        company_id=source, store_handle="https://peer.example", access_token="cp1.key",
+    ))
+    assert result.ok and result.created == 1 and not result.errors
+    assert posted[0][0] == "https://peer.example/company-peers/inventory"
+    assert posted[0][1]["source_entity_id"] == "list:count-1"
+    assert posted[0][1]["data"]["counts"][0]["counted_qty"] == 4
