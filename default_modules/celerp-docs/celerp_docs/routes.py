@@ -287,7 +287,7 @@ async def _earlier_run(session: AsyncSession, company_id, key: str, *, event_typ
 
 
 _PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id", "source_memo_id",
-                              "received_items", "received_item_ids", "credited"})
+                              "received_items", "received_item_ids", "credited", SCAN_RUNS_FIELD})
 
 
 def _refuse_protected_fields(fields_changed: dict) -> None:
@@ -1866,11 +1866,15 @@ def _assert_doc_editable(state: dict) -> None:
         doc_status=status))
 
 
-async def write_doc_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: DocPatch) -> dict:
-    """Apply a document edit without committing, so an import can make it part of a larger unit."""
+async def write_doc_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: DocPatch,
+                          *, scan_runs: list[dict] | None = None) -> dict:
+    """Apply a document edit without committing, so an import can make it part of a larger unit.
+    Only the document scan passes `scan_runs`, the scan ledger no caller may patch."""
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
+    if scan_runs is not None:
+        fields_changed[SCAN_RUNS_FIELD] = {"new": scan_runs}
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
     if selecting and "line_items" in fields_changed:
@@ -12227,9 +12231,8 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     past draft (a locked audit) only checks off the lines it holds. Otherwise a lot already on the
     record (a stored line, one placed earlier in this run, or one a concurrent run committed before
     the caller took the row lock) is placed as the scan behaviour says: a counting draft moves its
-    line to the top, an item that counts one per scan (`sb.unstocked`) adds one to its line, a
-    record that may repeat an item (`sb.repeats`) takes another line, and anything else is reported
-    as already on the record. A new line is made by `build` from the lot and the quantity it takes,
+    line to the top, an item that counts one per scan (by `sb.quantity`) adds one to its line, and
+    anything else, or any repeat of an RFID tag, is reported as already on the record. A new line is made by `build` from the lot and the quantity it takes,
     and must pass the shared quantity rule and the caller's own writer rules (`admit`,
     returning a (reason, label) refusal or None). A code any rule refuses is reported and skipped,
     never aborting the run."""
@@ -12272,17 +12275,16 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
             lines.insert(0, lines.pop(idx))  # a counting manifest is a set: the scan moves its line up
             result_state = "present"
         else:
-            counted = sb.unstocked != "snapshot" and (
-                not is_stock_type(lot.state) or (sb.unstocked == "one" and not float(on_hand or 0) > 0))
-            if idx is not None and not counted:
-                if sb.repeats == "refuse":
-                    _scan_failure(failed, results, code, "duplicate_scan",
-                                  f"{code}: already on {noun}{_sku_note(code, lot)}")
-                    continue
-                idx = None  # a record that may repeat an item takes the scan as another line
+            counted = sb.quantity != "snapshot" and (
+                sb.quantity == "count" or not is_stock_type(lot.state)
+                or (sb.quantity == "stock_or_one" and not float(on_hand or 0) > 0))
+            if idx is not None and (not counted or res.kind == "rfid_epc"):  # an RFID tag is one piece
+                _scan_failure(failed, results, code, "duplicate_scan",
+                              f"{code}: already on {noun}{_sku_note(code, lot)}")
+                continue
             line = ({**lines[idx], "quantity": float(lines[idx].get("quantity") or 0) + 1} if idx is not None
                     else build(lot, 1 if counted else on_hand))
-            if sb.unstocked != "snapshot":
+            if sb.quantity != "snapshot":
                 # The same per-line rule as an ordinary writer: a stocked line carries a quantity its
                 # unit allows, so a stocked item with nothing on hand is reported, never placed.
                 try:
@@ -12418,11 +12420,10 @@ async def scan_doc(
     scanned = len(results) - len(failed)
     version = row.version
     if scanned:
-        fields = {"line_items": {"new": lines}}
-        if payload.run_key:
-            fields[SCAN_RUNS_FIELD] = {"new": _record_scan_run(state, payload, codes, scanned, failed)}
+        runs = _record_scan_run(state, payload, codes, scanned, failed) if payload.run_key else None
         written = await write_doc_patch(session, company_id, role, settings, user, entity_id,
-                                        DocPatch(fields_changed=fields, expected_version=row.version))
+                                        DocPatch(fields_changed={"line_items": {"new": lines}},
+                                                 expected_version=row.version), scan_runs=runs)
         await session.commit()
         version = written["version"]
     return {"scanned": scanned, "results": results, "failed": failed, "version": version}

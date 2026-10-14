@@ -42,6 +42,15 @@ def _sku_row_count(page, sku: str) -> int:
     )
 
 
+def _sku_row_quantity(page, sku: str) -> float:
+    """The quantity input's live value on the line row whose SKU input holds *sku*."""
+    return float(page.evaluate(
+        """(sku) => Array.from(document.querySelectorAll('#line-body [data-name=\"sku\"]'))"""
+        """.find(e => e.value === sku).closest('tr').querySelector('[data-name=\"quantity\"]').value""",
+        sku,
+    ))
+
+
 def _wait_for_sku_row(page, sku: str, timeout: int = 8000) -> None:
     page.wait_for_function(
         """(sku) => Array.from(document.querySelectorAll('#line-body [data-name=\"sku\"]'))"""
@@ -148,12 +157,11 @@ def test_browser_rfid_epc_scanner_input(page, ui_server, api):
 
 
 def test_invoice_duplicate_blocked_inbound_allowed(page, ui_server, api):
-    """The physical-duplicate guard blocks a repeat on an outbound invoice but an
-    inbound bill must allow the same item to be scanned twice.
+    """A repeat scan of a lot is reported on an outbound invoice, while on an
+    inbound bill each scan is one more unit on the same line.
 
-    Part (a) is the control and passes at merge base. Part (b) is RED at merge
-    base: the client guard runs on all doc types, so the bill wrongly blocks the
-    second scan and only one line appears where two are required."""
+    Part (a) is the control. Part (b): two barcode scans on a bill give one row
+    of quantity 2, never a second row."""
     tag = uuid.uuid4().hex[:6]
     barcode = str(uuid.uuid4().int)[:12]
     item = _seed_item(api, tag, barcode=barcode, allow_splitting=False)
@@ -169,11 +177,13 @@ def test_invoice_duplicate_blocked_inbound_allowed(page, ui_server, api):
     assert _sku_row_count(page, item["sku"]) == 1, \
         "the invoice must block a duplicate non-splittable scan"
 
-    # (b) Inbound bill: repeats are allowed, so both scans append a line.
+    # (b) Inbound bill: each scan counts one more unit onto the one line.
     _open_doc(page, ui_server, api, "bill")
     _scan(page, item["barcode"])
     _wait_for_sku_row(page, item["sku"])
     _scan(page, item["barcode"])
     page.wait_for_timeout(2000)
-    assert _sku_row_count(page, item["sku"]) == 2, \
-        "an inbound bill must allow the same item to be scanned twice"
+    assert _sku_row_count(page, item["sku"]) == 1, \
+        "a repeat scan on a bill must count up the line, not add a second one"
+    assert _sku_row_quantity(page, item["sku"]) == 2.0, \
+        "two scans on a bill must give a quantity of 2"

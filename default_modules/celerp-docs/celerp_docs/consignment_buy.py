@@ -43,6 +43,7 @@ from celerp.services.account_roles import consignor_of, is_consigned, lineage, n
 from celerp.services.company_lock import lock_projections
 from celerp.services.lot_origin import RETIRED
 from celerp.services.money import allocate_pro_rata, round_money, to_decimal, to_stored_float
+from celerp_docs.doc_constants import LIFECYCLE_OWNED_FIELDS
 from celerp_docs.doc_money import UnratedTaxError, document_money
 
 _EPS = Decimal("1e-9")
@@ -382,9 +383,9 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
             "Nothing received on this consignment is still held or sold, so there is nothing to buy. "
             "Receive the goods first."))
     bill_id = f"doc:{ref}"
-    # What went back to the consignor was returned on the consignment, never on the bill.
-    data = {k: v for k, v in state.items() if k not in {
-        "status", "entity_type", "amount_paid", "amount_outstanding", "returned_items", "returned_credit"}}
+    # The bill starts its own lifecycle, as any conversion does: what went back to the consignor was
+    # returned on the consignment, never on the bill, and the consignment's scan runs stay with it.
+    data = {k: v for k, v in state.items() if k not in LIFECYCLE_OWNED_FIELDS}
     data["line_items"] = lines
     data["received_items"], data["received_item_ids"] = _bill_receipts(state, plan, source)
     if changed:
@@ -394,8 +395,9 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
             data.update(document_money(data, lines, currency, keep_unrated_tax=False))
         except UnratedTaxError as exc:
             raise _cannot_recompute() from exc
+    # The bill is born issued, so it is finalized in its own right.
     data.update({"doc_type": "bill", "ref_id": ref, "source_consignment_id": consignment_id,
-                 "status": "awaiting_payment"})
+                 "status": "awaiting_payment", "finalized": True})
     await emit_event(
         session, company_id=company_id, entity_id=bill_id, entity_type="doc", event_type="doc.created",
         data=data, actor_id=user_id, location_id=None, source="api",
