@@ -12226,10 +12226,11 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     The run resolves against one inventory load and each code picks its lot by `sb.lots`. A record
     past draft (a locked audit) only checks off the lines it holds. Otherwise a lot already on the
     record (a stored line, one placed earlier in this run, or one a concurrent run committed before
-    the caller took the row lock) is never placed twice: a counting draft moves its line to the top,
-    an item that counts one per scan (`sb.unstocked`) adds one to its line, and anything else is
-    reported as already on the record. A new line is made by `build` from the lot and the quantity
-    it takes, and must pass the shared quantity rule and the caller's own writer rules (`admit`,
+    the caller took the row lock) is placed as the scan behaviour says: a counting draft moves its
+    line to the top, an item that counts one per scan (`sb.unstocked`) adds one to its line, a
+    record that may repeat an item (`sb.repeats`) takes another line, and anything else is reported
+    as already on the record. A new line is made by `build` from the lot and the quantity it takes,
+    and must pass the shared quantity rule and the caller's own writer rules (`admit`,
     returning a (reason, label) refusal or None). A code any rule refuses is reported and skipped,
     never aborting the run."""
     from celerp_inventory.services import duplicate_barcode_detail, resolve_items_by_codes
@@ -12274,9 +12275,11 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
             counted = sb.unstocked != "snapshot" and (
                 not is_stock_type(lot.state) or (sb.unstocked == "one" and not float(on_hand or 0) > 0))
             if idx is not None and not counted:
-                _scan_failure(failed, results, code, "duplicate_scan",
-                              f"{code}: already on {noun}{_sku_note(code, lot)}")
-                continue
+                if sb.repeats == "refuse":
+                    _scan_failure(failed, results, code, "duplicate_scan",
+                                  f"{code}: already on {noun}{_sku_note(code, lot)}")
+                    continue
+                idx = None  # a record that may repeat an item takes the scan as another line
             line = ({**lines[idx], "quantity": float(lines[idx].get("quantity") or 0) + 1} if idx is not None
                     else build(lot, 1 if counted else on_hand))
             if sb.unstocked != "snapshot":
