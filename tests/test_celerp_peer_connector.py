@@ -294,7 +294,10 @@ async def test_stock_audit_does_not_require_contact_or_product_name(monkeypatch)
         async def post(self, url, **kwargs):
             posted.append((url, kwargs["json"]))
             return SimpleNamespace(status_code=200, json=lambda: {"status": "created"})
+    async def no_excluded_document(company_id):
+        return None
     monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
+    monkeypatch.setattr(peer, "_excluded_stock_document", no_excluded_document)
     monkeypatch.setattr(peer, "_read_audits", audits)
     monkeypatch.setattr(peer, "RateLimitedClient", Client)
     result = await peer.CelerpConnector().sync_inventory_out(ConnectorContext(
