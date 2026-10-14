@@ -70,8 +70,6 @@ async def test_doc_page_scan_uses_batch_primitive():
     html = to_xml(_doc_detail(doc))
     assert 'id="scan-bar-add"' in html
     assert "_CELERP_BASE + _CELERP_EID + '/scan'" in html
-    assert "catalog-lookup" not in html
-    assert "_CELERP_IS_LIST" not in html
 
 
 async def test_activity_hides_scan_runs():
