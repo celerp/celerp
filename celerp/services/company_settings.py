@@ -39,6 +39,7 @@ OWNERS: dict[str, str] = {
     "line_item_identifier": COMPANY_SETTINGS,
     "getting_started_dismissed": COMPANY_SETTINGS,
     "finish_setup_dismissed": COMPANY_SETTINGS,
+    "older_stock_banner_dismissed": COMPANY_SETTINGS,
     "dashboard": COMPANY_SETTINGS,
     # Manufacturing preferences (automatic work orders, issue before complete).
     "manufacturing": COMPANY_SETTINGS,
@@ -54,7 +55,6 @@ OWNERS: dict[str, str] = {
     "lock_date": PERIOD_LOCK,
     "posting_roles": POSTING_ACCOUNTS,
     "posting_role_scopes": POSTING_ACCOUNTS,
-    "inventory_origin_schema": "PUT /accounting/posting-accounts/older-stock/{item_id}",
     # Lists and schemas with their own pages.
     "role_grants": "PATCH /companies/me/role-permissions",
     "vertical": "POST /companies/me/business-type",
@@ -79,6 +79,8 @@ OWNERS: dict[str, str] = {
     "role_permissions": SYSTEM,  # retired storage of role grants
     "posting_roles_schema": SYSTEM,
     "posting_source_controls": SYSTEM,
+    "inventory_origin_schema": SYSTEM,  # set once older stock is upgraded
+    "older_stock_placed": SYSTEM,  # the latest automatic placement, shown on the dashboard
     "sequences": SYSTEM,  # document numbering, advanced as documents are numbered
     "self_contact_id": SYSTEM,
     "ai_memory": SYSTEM,

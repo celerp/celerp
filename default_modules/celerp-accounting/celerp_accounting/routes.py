@@ -328,7 +328,9 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     kept, so placing would strand its sold and archived stock): as opening stock when Accounting is being turned on now
     (lot_origin.open_inventory_origins), otherwise by the upgrade of older books, which
     also decides whether stock an older release archived is still on them
-    (lot_origin.normalize_legacy_inventory_origins). A company that fails to upgrade
+    (lot_origin.normalize_legacy_inventory_origins). Older stock an upgraded company
+    still holds unplaced, held back by a posting account or a period lock, is placed on
+    every later start once that is fixed (lot_origin.place_older_stock). A company that fails to upgrade
     keeps none of that work, is logged, and is retried on the next start. A company
     staged for a migration is left alone: its chart and posting accounts come from the
     imported books when the migration is finalized.
@@ -341,6 +343,7 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     from celerp.services.lot_origin import (
         normalize_legacy_inventory_origins,
         open_inventory_origins,
+        place_older_stock,
     )
     from celerp.services.posting_readiness import notify_unmapped
     from sqlalchemy import select as _select
@@ -360,9 +363,14 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
         if await reconcile_company(session, company_id, claim):
             await notify_unmapped(session, company_id)
         settings = await current_settings(session, company_id)
-        if INVENTORY_ORIGIN_KEY in settings or not uses_module(settings, "celerp-accounting"):
+        if not uses_module(settings, "celerp-accounting"):
             continue
-        place = open_inventory_origins if company_id in unseeded else normalize_legacy_inventory_origins
+        if INVENTORY_ORIGIN_KEY in settings:
+            place = place_older_stock
+        elif company_id in unseeded:
+            place = open_inventory_origins
+        else:
+            place = normalize_legacy_inventory_origins
         try:
             await place(session, company_id)
         except Exception:
@@ -4459,7 +4467,7 @@ class PostingAccountIn(BaseModel):
 async def _posting_accounts(session: AsyncSession, company_id) -> dict:
     from celerp.services.posting_readiness import panel
 
-    return await panel(session, company_id) or {"roles": [], "older_stock": {"lots": [], "candidates": []}}
+    return await panel(session, company_id) or {"roles": [], "older_stock": {"candidates": []}}
 
 
 @router.get("/posting-accounts")
@@ -4469,23 +4477,6 @@ async def get_posting_accounts(
     _: None = require_permission("manage_accounting"),
 ) -> dict:
     """Each posting role's account and whether it can take new postings."""
-    return await _posting_accounts(session, company_id)
-
-
-@router.put("/posting-accounts/older-stock/{item_id}")
-async def set_older_stock_posting_account(
-    item_id: str,
-    payload: PostingAccountIn,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    _: None = require_permission("manage_accounting"),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Record the inventory account of older stock that records none."""
-    from celerp.services.lot_origin import choose_lot_account
-
-    await choose_lot_account(session, company_id, item_id, payload.code, user.id)
-    await session.commit()
     return await _posting_accounts(session, company_id)
 
 
@@ -4499,12 +4490,89 @@ async def set_posting_account(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Point a role at another account for new postings. Balances already posted stay
-    where they are; the earlier account stays with the role for them."""
+    where they are; the earlier account stays with the role for them. Fixing Purchased
+    inventory or Retained earnings places older stock that waited on it at once."""
     from celerp.services.account_roles import set_role
+    from celerp.services.lot_origin import place_older_stock
 
     await set_role(session, company_id, role, payload.code, user.id)
+    if role in ("inventory_purchased", "retained_earnings"):
+        await place_older_stock(session, company_id)
     await session.commit()
     return await _posting_accounts(session, company_id)
+
+
+class OlderStockMoveIn(BaseModel):
+    item_ids: list[str] = []
+    code: str = ""
+    key: str | None = None
+
+
+class PlacementAdjustmentIn(BaseModel):
+    booked: bool
+
+
+@router.get("/older-stock")
+async def get_older_stock(
+    account: str | None = None,
+    q: str | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
+) -> dict:
+    """Older stock placed automatically: its lots, placements, moves and move targets."""
+    from celerp.services.lot_origin import older_stock_view
+
+    return await older_stock_view(session, company_id, account, q)
+
+
+@router.post("/older-stock/move")
+async def move_older_stock(
+    payload: OlderStockMoveIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Move older lots onto another inventory account, their value with them."""
+    from celerp.services.lot_origin import move_lot_accounts, older_stock_view
+
+    result = await move_lot_accounts(session, company_id, payload.item_ids, payload.code, payload.key, user.id)
+    await session.commit()
+    return {**await older_stock_view(session, company_id), "result": result}
+
+
+@router.post("/older-stock/moves/{move_id}/undo")
+async def undo_older_stock_move(
+    move_id: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Put the lots of one move back on the accounts they came from."""
+    from celerp.services.lot_origin import older_stock_view, undo_lot_move
+
+    await undo_lot_move(session, company_id, move_id, user.id)
+    await session.commit()
+    return await older_stock_view(session, company_id)
+
+
+@router.post("/older-stock/placements/{pid}/adjustment")
+async def set_older_stock_adjustment(
+    pid: str,
+    payload: PlacementAdjustmentIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Reverse a placement's adjustment against retained earnings, or book it again."""
+    from celerp.services.lot_origin import older_stock_view, set_placement_adjustment
+
+    await set_placement_adjustment(session, company_id, pid, payload.booked, user.id)
+    await session.commit()
+    return await older_stock_view(session, company_id)
 
 
 class CloseYearPayload(BaseModel):
