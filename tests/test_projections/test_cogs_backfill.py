@@ -788,12 +788,12 @@ async def test_backfill_reports_an_older_cost_line_it_cannot_classify_instead_of
     assert await _marker_value(session) is None
 
 
-_OLDER_STOCK_NEXT = ("1 wait for an inventory account: choose it under Older stock in "
-                     "Settings > Accounting > Posting accounts, then restart Celerp.")
+_OLDER_STOCK_NEXT = ("1 wait for older stock to be placed on an inventory account: "
+                     "the older stock notice says what holds it back.")
 
 
 async def _place_lot(session, company_id, entity_id: str) -> None:
-    """The user chose the older lot's inventory account."""
+    """The older lot was placed on an inventory account."""
     row = (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one()
     row.state = {**row.state, LOT_ACCOUNT_FIELD: "1130-P"}
@@ -942,8 +942,8 @@ async def test_backfill_notice_is_keyed_and_shown_in_the_readers_language(sessio
         ("notice.cogs_backfill.older_stock", {"count": 1})]
     es = _shown_in("es", notice)
     assert es["title"] == "Costo de ventas contabilizado para facturas anteriores"
-    assert es["body"].startswith("1 factura, total 20.00. 1 esperan una cuenta de inventario"), es["body"]
-    assert es["body"].endswith("reinicie Celerp."), es["body"]
+    assert es["body"].startswith("1 factura, total 20.00. 1 esperan a que las existencias antiguas"), es["body"]
+    assert es["body"].endswith("indica qué lo impide."), es["body"]
 
 
 @pytest.mark.asyncio

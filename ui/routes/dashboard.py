@@ -772,6 +772,7 @@ def setup_routes(app):
             page_header(t("page.dashboard", lang)),
             Script("window.celerpUseDays && window.celerpUseDays(true);"),
             _finish_setup_banner(company, settings, role),
+            _older_stock_banner(settings, role),
             welcome or "",
             await _demo_note(token, settings, role),
             _kpi_grid(cfg, values, role=role, settings=settings),
@@ -825,6 +826,22 @@ def setup_routes(app):
             await api.patch_company(token, {"finish_setup_dismissed": True})
         except APIError as e:
             return Div(e.detail, cls="error-banner", id="finish-setup-banner")
+        return ""
+
+    @app.post("/dashboard/older-stock/dismiss")
+    async def dismiss_older_stock(request: Request):
+        """Close the older stock banner for the placement it reports. Undo is not offered:
+        the placement stays one click away in Settings > Accounting > Older stock."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            company = await api.get_company(token)
+            placed = (company.get("settings") or {}).get("older_stock_placed")
+            if placed:
+                await api.patch_company(token, {"older_stock_banner_dismissed": placed})
+        except APIError as e:
+            return Div(e.detail, cls="error-banner", id="older-stock-banner")
         return ""
 
     @app.get("/history")
@@ -1016,6 +1033,23 @@ def _finish_setup_banner(company: dict, settings: dict, role: str) -> FT | str:
                       hx_post="/dashboard/finish-setup/dismiss",
                       hx_target="#finish-setup-banner", hx_swap="outerHTML"),
                cls="info-banner", id="finish-setup-banner")
+
+
+def _older_stock_banner(settings: dict, role: str) -> FT | str:
+    """Older stock placed automatically on an inventory account is shown to those who keep
+    the books until they close it; a later placement shows it again."""
+    placed = settings.get("older_stock_placed")
+    if (not placed or settings.get("older_stock_banner_dismissed") == placed
+            or not _role_has_permission(settings, role, "manage_accounting")):
+        return ""
+    return Div(Span("ℹ️", cls="info-banner-icon"),
+               Span(t("dashboard.older_stock_placed"), " ",
+                    A(t("dashboard.older_stock_review"), href="/settings/accounting?tab=older-stock")),
+               Button("×", type="button", cls="getting-started-dismiss info-banner-close",
+                      title=t("settings.dismiss"), aria_label=t("settings.dismiss"),
+                      hx_post="/dashboard/older-stock/dismiss",
+                      hx_target="#older-stock-banner", hx_swap="outerHTML"),
+               cls="info-banner", id="older-stock-banner")
 
 
 async def _load_dashboard(token: str):
