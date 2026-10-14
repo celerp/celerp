@@ -600,6 +600,16 @@ async def place_older_stock(session: AsyncSession, company_id) -> bool:
         return False
 
 
+async def place_for_posting_account(session: AsyncSession, company_id) -> bool:
+    """A posting account older stock may wait on was just set: the notice asking for it
+    is withdrawn whatever placing then does (_place repeats it while an account is still
+    missing), and the stock is placed (place_older_stock)."""
+    from celerp.notifications import service as notification_service
+
+    await notification_service.clear_standing(session, company_id, "accounting", _notice(UNMAPPED_NOTICE)[0])
+    return await place_older_stock(session, company_id)
+
+
 async def period_open(session: AsyncSession, company_id, day: str) -> bool:
     from celerp.events.engine import _check_period_lock
 

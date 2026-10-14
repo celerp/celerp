@@ -4493,11 +4493,11 @@ async def set_posting_account(
     where they are; the earlier account stays with the role for them. Fixing Purchased
     inventory or Retained earnings places older stock that waited on it at once."""
     from celerp.services.account_roles import set_role
-    from celerp.services.lot_origin import place_older_stock
+    from celerp.services.lot_origin import place_for_posting_account
 
     await set_role(session, company_id, role, payload.code, user.id)
     if role in ("inventory_purchased", "retained_earnings"):
-        await place_older_stock(session, company_id)
+        await place_for_posting_account(session, company_id)
     await session.commit()
     return await _posting_accounts(session, company_id)
 
