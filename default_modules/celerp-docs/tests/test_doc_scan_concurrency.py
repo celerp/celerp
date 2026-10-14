@@ -18,14 +18,14 @@ from celerp.events.engine import emit_event
 from test_list_outcome_concurrency import _barcode, _cleanup, _factory, _seed_company, _state
 
 
-async def _seed_unique_item(factory, company_id, user, *, sku, barcode, splitting) -> str:
+async def _seed_unique_item(factory, company_id, user, *, sku, barcode, splitting, quantity=1) -> str:
     from celerp.services.lot_origin import recognize_opening_lots
 
     entity_id = f"item:{uuid.uuid4()}"
     async with factory() as s:
         await emit_event(
             s, company_id=company_id, entity_id=entity_id, entity_type="item", event_type="item.created",
-            data={"status": "available", "sku": sku, "name": sku, "quantity": 1, "sell_by": "piece",
+            data={"status": "available", "sku": sku, "name": sku, "quantity": quantity, "sell_by": "piece",
                   "barcode": barcode, "cost_price": 1, "allow_splitting": splitting},
             actor_id=user.id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()), metadata_={},
         )
@@ -116,5 +116,50 @@ async def test_concurrent_same_unique_item_lands_once(_db_engine):
         assert len(landed) == 1, outcome
         state = await _state(factory, company_id, doc)
         assert [line.get("entity_id") or line.get("item_id") for line in state["line_items"]] == [item]
+    finally:
+        await _cleanup(factory, company_id, user_id)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_lot_lands_one_full_line(_db_engine):
+    """A splittable 5-unit lot in two concurrent batches lands as one line of 5; the batch that
+    reads it under the row lock second reports it as already on the document."""
+    factory = _factory(_db_engine)
+    company_id, user_id, user = await _seed_company(factory)
+    try:
+        bc = _barcode()
+        item = await _seed_unique_item(factory, company_id, user, sku="S5", barcode=bc, splitting=True, quantity=5)
+        doc = await _seed_draft_doc(factory, company_id, user, "invoice")
+
+        outcome = await _race(factory, company_id, user, doc, {"k1": bc, "k2": bc})
+
+        assert sorted(r["scanned"] for r in outcome.values()) == [0, 1], outcome
+        repeat = next(r for r in outcome.values() if r["scanned"] == 0)
+        assert [f["reason"] for f in repeat["failed"]] == ["duplicate_scan"], repeat
+        assert "already on this document" in repeat["failed"][0]["label"]
+        state = await _state(factory, company_id, doc)
+        assert [line.get("item_id") for line in state["line_items"]] == [item]
+        assert float(state["line_items"][0]["quantity"]) == 5.0
+    finally:
+        await _cleanup(factory, company_id, user_id)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_counted_scans_add_up(_db_engine):
+    """An item with no stock on a purchase order counts one per scan; two concurrent batches
+    both count, onto the one line."""
+    factory = _factory(_db_engine)
+    company_id, user_id, user = await _seed_company(factory)
+    try:
+        bc = _barcode()
+        item = await _seed_unique_item(factory, company_id, user, sku="Z0", barcode=bc, splitting=False, quantity=0)
+        doc = await _seed_draft_doc(factory, company_id, user, "purchase_order")
+
+        outcome = await _race(factory, company_id, user, doc, {"k1": bc, "k2": bc})
+
+        assert [r["scanned"] for r in outcome.values()] == [1, 1], outcome
+        state = await _state(factory, company_id, doc)
+        assert [line.get("item_id") for line in state["line_items"]] == [item]
+        assert float(state["line_items"][0]["quantity"]) == 2.0
     finally:
         await _cleanup(factory, company_id, user_id)

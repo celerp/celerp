@@ -42,6 +42,7 @@ class ListBehavior:
     finalize_milestone: str | None = None   # timestamp set on finalize, or "freeze_onhand" sentinel
     terminal: tuple[TerminalAction, ...] = ()
     scan_finalized: str = "noop"            # scan behaviour once finalized: count | receive | noop
+    scan_unstocked: str = "refuse"          # a scanned item with no stock on hand (ScanBehavior.unstocked)
     customs: bool = False                   # value-bearing but non-accounting: per-line customs
                                             # value/HS/origin columns, declared total, no disc/tax
 
@@ -72,7 +73,7 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
             "adjust", "Adjust stock", "stock_adjusted",
             confirm="Apply the counted quantities to stock? This posts a journal entry.",
             manager=True),),
-        scan_finalized="count",
+        scan_finalized="count", scan_unstocked="snapshot",
     ),
     "writeoff": ListBehavior(
         # Event-based (enter the known quantity leaving stock per line), vs audit's count-based
@@ -114,12 +115,28 @@ class ScanBehavior:
     finalized: str  # once past draft: count (check off a locked manifest) | noop (scanning refused)
     priced: bool    # added lines carry a unit price from the chosen price list
     lots: str       # how a product code (GTIN/SKU) picks its lot: single | consolidate | sold
+    # A scanned stocked item with nothing on hand: refuse (a line must carry stock), one (a line of
+    # one that each repeat scan counts up, for goods being bought or quoted), or snapshot (the
+    # on-hand as it stands, zero included, for a stock count). An item kept in no stock (a service)
+    # has no on-hand to take, so it counts one per scan except under snapshot.
+    unstocked: str = "refuse"
 
+
+# The record field holding its recent scan runs, so a retried run replays instead of re-adding.
+# It belongs to the record it was scanned on: a conversion or a copy starts without it.
+SCAN_RUNS_FIELD = "scan_runs"
 
 # Documents that scan differently from the default; any other document type uses _DOC_SCAN_DEFAULT.
 _DOC_SCAN_DEFAULT = ScanBehavior(finalized="noop", priced=True, lots="consolidate")
+_DOC_SCAN_COUNTED = ScanBehavior(finalized="noop", priced=True, lots="consolidate", unstocked="one")
 DOC_SCAN_BEHAVIOR: dict[str, ScanBehavior] = {
     "credit_note": ScanBehavior(finalized="noop", priced=True, lots="sold"),  # a return takes the sold lot
+    # Goods being bought, received on consignment or quoted need not be in stock yet.
+    "purchase_order": _DOC_SCAN_COUNTED,
+    "subscription_po": _DOC_SCAN_COUNTED,
+    "bill": _DOC_SCAN_COUNTED,
+    "consignment_in": _DOC_SCAN_COUNTED,
+    "quotation": _DOC_SCAN_COUNTED,
 }
 
 
@@ -127,7 +144,7 @@ def scan_behavior(kind: str, doc_type: str | None) -> ScanBehavior:
     """The scan behaviour of a list (kind "lists", by list_type) or a document (kind "docs")."""
     if kind == "lists":
         b = behavior(doc_type)
-        return ScanBehavior(finalized=b.scan_finalized, priced=b.money, lots="single")
+        return ScanBehavior(finalized=b.scan_finalized, priced=b.money, lots="single", unstocked=b.scan_unstocked)
     return DOC_SCAN_BEHAVIOR.get(doc_type or "", _DOC_SCAN_DEFAULT)
 
 

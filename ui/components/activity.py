@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 
 from fasthtml.common import *
 from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA, cost_columns
+from celerp.services.list_behavior import SCAN_RUNS_FIELD
 from celerp.services.pricing import PRICE_LISTS_FALLBACK
 from celerp.services.units import line_receive_kind
 from ui.i18n import t, get_lang, category_label, doc_type_label, field_label, price_list_label
@@ -272,7 +273,7 @@ _ORIGIN_EVENT_TYPES = frozenset({
 })
 
 # scan_runs is the scan bar's idempotency ledger, not something the user edited.
-_SYSTEM_FIELDS = frozenset({"updated_at", "created_at", "scan_runs"})
+_SYSTEM_FIELDS = frozenset({"updated_at", "created_at", SCAN_RUNS_FIELD})
 
 # Document totals that are computed from line_items + header fields (see _recalc_list_totals).
 # Editing an item's price or quantity recalculates these, but the user's action was the line

@@ -253,14 +253,16 @@ async def test_doc_scan_refuses_held_lot(client):
     assert "HELD" in labels  # a SKU whose only lot is held elsewhere is refused, not substituted
     assert await _lines(client, t, doc) == []
 
-    # The invoice made from the memo may take the memo's own lot.
+    # The invoice made from the memo carries the memo's own lot already: a scan of it is reported
+    # as already on the invoice, not refused as held by the memo and not added twice.
     conv = await client.post(f"/docs/{memo}/convert", headers=_h(t), json={})
     assert conv.status_code == 200, conv.text
-    invoice = conv.json().get("target_doc_id") or conv.json().get("id")
-    before = await _lines(client, t, invoice)
+    invoice = conv.json()["target_doc_id"]
+    assert _ids(await _lines(client, t, invoice)) == [out]
     body = (await _scan(client, t, invoice, out_bc)).json()
-    assert body["scanned"] == 1, body
-    assert _ids(await _lines(client, t, invoice)) == _ids(before) + [out]
+    assert _reasons(body) == {out_bc: "duplicate_scan"}, body
+    assert "already on this document" in body["failed"][0]["label"]
+    assert _ids(await _lines(client, t, invoice)) == [out]
 
 
 @pytest.mark.parametrize("doc_type", ["invoice", "memo"])
@@ -476,3 +478,182 @@ async def test_scan_behavior_config_drives_doc_scan(client, monkeypatch):
     assert not _scan_status_allowed(scan_behavior("docs", "invoice"), "finalized")
     monkeypatch.setitem(lb.DOC_SCAN_BEHAVIOR, "invoice", ScanBehavior("count", True, "consolidate"))
     assert _scan_status_allowed(scan_behavior("docs", "invoice"), "finalized")
+
+
+# ── Quantity: what a line takes, and what a repeat scan does ────────────────────
+
+
+async def _list_scan(client, t, list_id, barcode, **extra):
+    return await client.post(f"/lists/{list_id}/scan", headers=_h(t), json={"barcode": barcode, **extra})
+
+
+async def _list_lines(client, t, list_id) -> list[dict]:
+    r = await client.get(f"/lists/{list_id}", headers=_h(t))
+    assert r.status_code == 200, r.text
+    return r.json().get("line_items") or []
+
+
+@pytest.mark.parametrize("doc_type", ["purchase_order", "bill", "consignment_in", "quotation"])
+async def test_buy_side_and_quote_scan_takes_unstocked_item_at_one(client, doc_type):
+    t = await _register(client)
+    stocked = await _item(client, t, "BS-STOCK", qty=5)
+    unstocked = await _item(client, t, "BS-ZERO", qty=0)
+    doc = await _doc(client, t, doc_type)
+
+    body = (await _scan(client, t, doc, "BS-STOCK,BS-ZERO")).json()
+    assert body["scanned"] == 2 and body["failed"] == [], body
+    lines = await _lines(client, t, doc)
+    assert _ids(lines) == [stocked, unstocked]
+    # A stocked item still takes its on-hand quantity; an item with none takes a line of one.
+    assert [float(line["quantity"]) for line in lines] == [5.0, 1.0]
+
+
+@pytest.mark.parametrize("doc_type", ["invoice", "memo"])
+async def test_doc_scan_repeat_lot_is_reported_not_added_again(client, doc_type):
+    t = await _register(client)
+    lot = await _item(client, t, "RL", qty=5, allow_splitting=True)
+    doc = await _doc(client, t, doc_type)
+
+    body = (await _scan(client, t, doc, "RL,RL,RL")).json()
+    assert body["scanned"] == 1, body
+    assert [f["reason"] for f in body["failed"]] == ["duplicate_scan", "duplicate_scan"]
+    assert all("already on this document" in f["label"] for f in body["failed"])
+    body = (await _scan(client, t, doc, "RL")).json()
+    assert body["scanned"] == 0 and _reasons(body) == {"RL": "duplicate_scan"}
+    lines = await _lines(client, t, doc)
+    assert _ids(lines) == [lot] and float(lines[0]["quantity"]) == 5.0
+
+
+async def test_doc_scan_counted_item_accumulates(client):
+    t = await _register(client)
+    item = await _item(client, t, "CT", qty=0)
+    doc = await _doc(client, t, "purchase_order")
+
+    assert (await _scan(client, t, doc, "CT,CT")).json()["scanned"] == 2
+    assert (await _scan(client, t, doc, "CT")).json()["scanned"] == 1
+    lines = await _lines(client, t, doc)
+    assert _ids(lines) == [item] and float(lines[0]["quantity"]) == 3.0
+
+
+async def test_doc_scan_service_item_counts_on_an_invoice(client):
+    """An item kept in no stock has no quantity to take: each scan counts one more."""
+    t = await _register(client)
+    item = await _item(client, t, "SVC", qty=0, inventory_type="service")
+    doc = await _doc(client, t)
+
+    assert (await _scan(client, t, doc, "SVC,SVC")).json()["scanned"] == 2
+    lines = await _lines(client, t, doc)
+    assert _ids(lines) == [item] and float(lines[0]["quantity"]) == 2.0
+
+
+async def test_list_scan_counted_item_accumulates(client):
+    t = await _register(client)
+    item = await _item(client, t, "LCT", qty=0, inventory_type="service")
+    lst = await _quotation_list(client, t)
+
+    assert (await _list_scan(client, t, lst, "LCT,LCT")).json()["scanned"] == 2
+    assert (await _list_scan(client, t, lst, "LCT")).json()["scanned"] == 1
+    lines = await _list_lines(client, t, lst)
+    assert _ids(lines) == [item] and float(lines[0]["quantity"]) == 3.0
+
+
+async def test_two_open_pages_scanning_one_document_both_land(client):
+    """Two scanners with the same document open each add a different item: both lines persist.
+    The retired per-scan path saved each page's whole line set, so the later save dropped the
+    other page's line."""
+    t = await _register(client)
+    bc_x, bc_y = _codes()
+    x = await _item(client, t, "PG-X", barcode=bc_x)
+    y = await _item(client, t, "PG-Y", barcode=bc_y)
+    doc = await _doc(client, t)
+    page_a, page_b = await _get(client, t, doc), await _get(client, t, doc)
+    assert page_a["version"] == page_b["version"]
+
+    assert (await _scan(client, t, doc, bc_x, run_key="page-a")).json()["scanned"] == 1
+    assert (await _scan(client, t, doc, bc_y, run_key="page-b")).json()["scanned"] == 1
+    assert _ids(await _lines(client, t, doc)) == [x, y]
+
+
+# ── Lists read the same config through the same loop ────────────────────────────
+
+
+def _patch_list_scan(monkeypatch, **changes):
+    """Make every list scan read a changed scan config, to show the list path follows it."""
+    import dataclasses
+
+    import celerp_docs.routes as docs
+
+    real = docs.scan_behavior
+
+    def patched(kind, doc_type):
+        sb = real(kind, doc_type)
+        return dataclasses.replace(sb, **changes) if kind == "lists" else sb
+
+    monkeypatch.setattr(docs, "scan_behavior", patched)
+
+
+async def test_list_scan_reads_priced_from_config(client, monkeypatch):
+    t = await _register(client)
+    await _item(client, t, "LP", retail_price=9)
+    lst = await _quotation_list(client, t)
+    _patch_list_scan(monkeypatch, priced=False)
+
+    assert (await _list_scan(client, t, lst, "LP")).json()["scanned"] == 1
+    assert not (await _list_lines(client, t, lst))[0].get("unit_price")
+
+
+async def test_list_scan_reads_lots_from_config(client, monkeypatch):
+    t = await _register(client)
+    await _item(client, t, "LL", qty=2, allow_splitting=True)
+    await _item(client, t, "LL", qty=3, allow_splitting=True)
+    lst = await _quotation_list(client, t)
+    assert _reasons((await _list_scan(client, t, lst, "LL")).json()) == {"LL": "ambiguous_sku"}
+
+    _patch_list_scan(monkeypatch, lots="consolidate")
+    assert (await _list_scan(client, t, lst, "LL")).json()["scanned"] == 1
+    assert float((await _list_lines(client, t, lst))[0]["quantity"]) == 5.0
+
+
+def test_one_scan_loop_serves_lists_and_documents():
+    import inspect
+
+    import celerp_docs.routes as docs
+
+    for endpoint in (docs.scan_list, docs.scan_doc):
+        source = inspect.getsource(endpoint)
+        assert "_apply_scan_run(" in source and "for code in codes" not in source, endpoint.__name__
+        assert "is_money_list" not in source and "require_positive" not in source, endpoint.__name__
+
+
+# ── The scan ledger belongs to the record it was scanned on ─────────────────────
+
+
+async def test_conversions_and_copies_start_without_the_scan_ledger(client):
+    t = await _register(client)
+    await _item(client, t, "LG-1", qty=1)
+    await _item(client, t, "LG-2", qty=1)
+
+    lst = await _quotation_list(client, t)
+    assert (await _list_scan(client, t, lst, "LG-1", run_key="run-q")).json()["scanned"] == 1
+    copy = await client.post(f"/lists/{lst}/duplicate", headers=_h(t))
+    assert copy.status_code == 200, copy.text
+    copied = (await client.get(f"/lists/{copy.json()['id']}", headers=_h(t))).json()
+    assert not copied.get("scan_runs"), copied.get("scan_runs")
+    assert (await client.post(f"/lists/{lst}/finalize", headers=_h(t))).status_code == 200
+    conv = await client.post(f"/lists/{lst}/convert", headers=_h(t), json={"target_type": "invoice"})
+    assert conv.status_code == 200, conv.text
+    invoice = await _get(client, t, conv.json()["target_doc_id"])
+    assert invoice["line_items"] and not invoice.get("scan_runs"), invoice.get("scan_runs")
+    # The same key on the new invoice is a new run, not a replay of the quotation's.
+    body = (await _scan(client, t, invoice["id"], "LG-2", run_key="run-q")).json()
+    assert body["scanned"] == 1 and not body.get("duplicate"), body
+
+    memo = await _doc(client, t, "memo")
+    item = await _item(client, t, "LG-3", qty=1)
+    assert (await _scan(client, t, memo, "LG-3", run_key="run-m")).json()["scanned"] == 1
+    assert (await client.post(f"/docs/{memo}/finalize", headers=_h(t))).status_code == 200
+    r = await client.post(f"/docs/{memo}/fulfill-lines", headers=_h(t), json={"line_entity_ids": [item]})
+    assert r.status_code == 200, r.text
+    conv = await client.post(f"/docs/{memo}/convert", headers=_h(t), json={})
+    assert conv.status_code == 200, conv.text
+    assert not (await _get(client, t, conv.json()["target_doc_id"])).get("scan_runs")

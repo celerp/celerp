@@ -51,7 +51,7 @@ from celerp.services.business_time import business_date_at, business_date_of
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed, splitting_off
 from celerp.services.document_lines import (
-    assert_document_item_uniqueness, assert_line_holds_respected, assert_new_references_eligible,
+    assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
     reserved_refusal, shipped_elsewhere, strip_line_ids,
 )
@@ -72,8 +72,8 @@ from celerp.output.document_context import prepare_document_output
 from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, VENDOR_DOC_TYPES, CREDIT_APPLICATION_METHODS
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance, today_iso
 from celerp.services.list_behavior import (
-    DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, ScanBehavior, behavior, scan_behavior,
-    terminal_action, is_money_list,
+    DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, ScanBehavior, behavior,
+    scan_behavior, terminal_action, is_money_list,
 )
 from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
 from celerp.schemas.numbers import FiniteFloat
@@ -9266,7 +9266,8 @@ async def convert_list(
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": new_doc_id},
         )
     new_data = {k: v for k, v in state.items()
-                if k not in {"status", "result", "entity_type", "list_type", "finalized_at", "sent_at", "accepted_at"}}
+                if k not in {"status", "result", "entity_type", "list_type", "finalized_at", "sent_at", "accepted_at",
+                             SCAN_RUNS_FIELD}}
     new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
     await emit_event(
         session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
@@ -9295,7 +9296,8 @@ async def duplicate_list(
     state = row.state
     ref_id = next_doc_ref(company, list_sequence_key(state.get("list_type")))
     new_entity_id = f"list:{ref_id}"
-    new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type", "ref_id", "share_token"}}
+    new_data = {k: v for k, v in state.items()
+                if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD}}
     new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id,
                      "line_items": strip_line_ids(state.get("line_items"))})
     entry = await _emit_list(session, company_id, new_entity_id, "list.created", new_data, user)
@@ -12023,39 +12025,34 @@ async def _lock_audit_lines(session: AsyncSession, company_id: str, lines: list[
         if item is None:
             l["on_hand"] = float(l.get("on_hand") or 0) if keep_unlinked_on_hand else 0.0
             continue
-        fresh = _scan_line_from_item(item, "audit", None)
-        l.update({f: fresh[f] for f in _AUDIT_IDENTITY_FIELDS})
+        l.update({f: item.state.get(f) for f in _AUDIT_IDENTITY_FIELDS})
         l["on_hand"] = float(item.state.get("quantity") or 0)
 
 
 def _normalize_line_item_ids(lines: list) -> None:
     """In-place: ensure every line carries `item_id`. The editable list UI sends the item's id in
     `entity_id` (what celerpFillRow + the hidden field carry), but scan check-off, finalize dedup and
-    the on-hand freeze all key on `item_id` (as `_scan_line_from_item` and the LineItem model set it).
+    the on-hand freeze all key on `item_id` (as `_scan_line` and the LineItem model set it).
     Without this, any autosave on an editable draft strips the item link and those operations break."""
     for l in lines:
         if isinstance(l, dict) and l.get("entity_id") and not l.get("item_id"):
             l["item_id"] = l["entity_id"]
 
 
-def _scan_line_from_item(item: Projection, list_type: str, price_list: str | None,
-                         price_config: tuple[list[dict], str, str] | None = None,
-                         currency: str | None = None) -> dict:
-    """Build a new line for a scanned item. Money lists carry a unit_price from the chosen price
-    list, through the same catalog rate as repricing."""
-    st = item.state
-    line = {"item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
-            "description": st.get("name"), "barcode": st.get("barcode")}
+def _scan_line(item: Projection, quantity, *, priced: bool, price_list: str | None,
+               currency: str | None = None, price_config: tuple[list[dict], str, str] | None = None) -> dict:
+    """A new line for a scanned item, on a list or a document: the item's identity and unit, the
+    quantity it takes, and a unit price from the chosen price list when the record is priced,
+    through the same catalog rate as repricing."""
+    st = item.state or {}
     # Carry the item's unit so the stored line renders with it (a 650 gram scan stays 650 gram, not a
     # bare 650). unit and sell_by are the same value; the line row reads either.
-    line["unit"] = st.get("sell_by")
-    line["sell_by"] = st.get("sell_by")
-    # System qty snapshot for the Qty column; on_hand is frozen separately at finalize.
-    line["quantity"] = float(st.get("quantity") or 0)
-    if list_type != "audit":
-        if is_money_list(list_type):
-            line["unit_price"] = float(_catalog_rate(st, item.entity_id, price_list or DEFAULT_PRICE_LIST_NAME,
-                                                     currency, price_config))
+    line = {"item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
+            "description": st.get("name"), "barcode": st.get("barcode"),
+            "unit": st.get("sell_by"), "sell_by": st.get("sell_by"), "quantity": float(quantity or 0)}
+    if priced:
+        line["unit_price"] = float(_catalog_rate(st, item.entity_id, price_list or DEFAULT_PRICE_LIST_NAME,
+                                                 currency, price_config))
     return line
 
 
@@ -12138,7 +12135,7 @@ def _scan_replay(row: Projection, payload: ScanBody, codes: list[str]):
     if not payload.run_key:
         return None
     fp = _scan_run_fingerprint(codes, payload.price_list)
-    for rec in (row.state.get("scan_runs") or []):
+    for rec in (row.state.get(SCAN_RUNS_FIELD) or []):
         if rec.get("key") == payload.run_key:
             if rec.get("fp") != fp:
                 # A client bug (edited the field then resubmitted under a spent key). Reply with a code
@@ -12158,7 +12155,7 @@ def _record_scan_run(state: dict, payload: ScanBody, codes: list[str], scanned: 
     """The record's recent scan runs with this one appended, so a retry replays instead of
     re-adding. The stored failed list is already bounded: each code is <= MAX_CODE_LEN and the
     batch <= MAX_SCAN_BATCH, so the retained replay data can never bloat the projection."""
-    runs = [dict(r) for r in (state.get("scan_runs") or [])]
+    runs = [dict(r) for r in (state.get(SCAN_RUNS_FIELD) or [])]
     runs.append({"key": payload.run_key, "fp": _scan_run_fingerprint(codes, payload.price_list),
                  "scanned": scanned, "failed": failed})
     return runs[-_MAX_SCAN_RUNS:]
@@ -12183,133 +12180,127 @@ async def scan_list(
     role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """One scan endpoint for every list type, dispatching on (list_type, status):
-
-    - DRAFT (all types): always ADD a line (audit dedups its manifest + moves to top; money lists
-      price the new line). No status change (GDR 2d) - building the list never finalizes it.
-    - FINALIZED audit: record presence (audited_at); the locked manifest never grows.
-    - FINALIZED quotation / any closed|void list: scanning is disabled (clear 409).
-    """
+    """One scan endpoint for every list type. The list type's scan behaviour decides what a scan
+    does: in draft every type builds its list (a counting audit moves a line it already holds to the
+    top, a priced list prices each new line); past draft only a counting audit takes a scan, checking
+    off its locked manifest. No scan changes the list's status (GDR 2d)."""
     row = await _get_list_for_update(session, company_id, entity_id)
     state = row.state
     status = state.get("status")
-    lt = state.get("list_type") or DEFAULT_LIST_TYPE
-    # Resolve and apply every code against ONE in-memory copy of line_items and persist a single
-    # time; a code that fails to resolve is collected in `failed` and reported, never aborting the
-    # codes that did resolve.
     codes = _scan_codes(payload)
     if status not in (DRAFT, FINALIZED):
         raise HTTPException(status_code=409, detail=t("documents.err_scan_closed"))
-    sb = scan_behavior("lists", lt)
+    sb = scan_behavior("lists", state.get("list_type") or DEFAULT_LIST_TYPE)
     if not _scan_status_allowed(sb, status):
         raise HTTPException(status_code=409, detail=t("documents.err_scan_finalized"))
-    price_config = None  # priced lists price new lines; fetched once for the whole batch, lazily
+    price_config = await get_price_config(session, company_id) if sb.priced or payload.price_list else None
     if payload.price_list:
-        price_config = await get_price_config(session, company_id)
         _check_price_list(settings, role, payload.price_list, price_config)
     if (replay := _scan_replay(row, payload, codes)) is not None:
         return replay
 
     lines = [dict(l) for l in (state.get("line_items") or [])]
     _normalize_line_item_ids(lines)  # heal any legacy lines stored with only entity_id so matching works
-    now = datetime.now(timezone.utc).isoformat()
-    unit_map = None      # unit rules for scan-line validation; fetched once, lazily, only if needed
-    results: list[dict] = []
-    failed: list[dict] = []
-    changed = False
-
-    # Resolve the whole run against ONE inventory load (vs one load per code).
-    from celerp_inventory.services import duplicate_barcode_detail, resolve_items_by_codes
-    resolved = await resolve_items_by_codes(session, company_id, codes)
-
-    for code in codes:
-        res = resolved.get(code)
-        reason = detail = None
-        if res is not None and res.duplicate_physical:
-            item = None
-            # The reason code "duplicate_barcode" is a stable external/audit contract; only
-            # the resolver property generalized to cover barcode + RFID EPC.
-            reason, detail = "duplicate_barcode", duplicate_barcode_detail(code)
-        elif res is not None and res.ambiguous:
-            item = None
-            reason, detail = "ambiguous_sku", _ambiguous_sku_detail(code)
-        else:
-            item = res.one if res is not None else None
-            if item is None:
-                reason, detail = (_locked_manifest_failure(code, None, lines) if status == FINALIZED
-                                  else ("unknown_code", _unknown_code_detail(code)))
-            elif str((item.state or {}).get("status") or "").lower() == "draft":
-                reason, detail = "draft_item", _draft_item_detail(code, item)
-        if detail is not None:
-            _scan_failure(failed, results, code, reason, detail)
-            continue
-
-        idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item.entity_id), None)
-        if status == DRAFT:
-            if lt == "audit":
-                # Manifest is a set: move an existing line to top, else add it (no count yet).
-                if idx is not None:
-                    lines.insert(0, lines.pop(idx))
-                    result_state = "present"
-                else:
-                    lines.insert(0, _scan_line_from_item(item, lt, None))
-                    result_state = "added"
-            else:
-                # A list holds one line per physical lot: the same item scanned again (already
-                # added earlier in this batch, or already on the list from a prior submit) is
-                # reported and skipped, not duplicated. `idx` is recomputed each iteration
-                # against the live `lines`, so this dedups both within-batch and against
-                # persisted lines - matching the audit branch's set semantics above.
-                if idx is not None:
-                    detail = f"{code}: already on the list{_sku_note(code, item)}"
-                    _scan_failure(failed, results, code, "duplicate_scan", detail)
-                    continue
-                # Scan runs through the SAME per-line rule as an ordinary writer: a stocked line's
-                # snapshot must satisfy its unit rule (a zero-on-hand non-audit line is invalid). A
-                # failure is reported per-code and skipped, never persisted. sell_by is already in the
-                # item's own state, so no per-item query is needed.
-                if unit_map is None:
-                    unit_map = await _get_unit_map(session, company_id)
-                try:
-                    _check_line_quantity(
-                        item.state.get("quantity"), item.state.get("sell_by"), unit_map,
-                        require_positive=(lt != "audit"),
-                        label=item.state.get("sku") or code,
-                    )
-                except HTTPException as exc:
-                    _scan_failure(failed, results, code, "invalid_quantity", exc.detail)
-                    continue
-                if price_config is None:
-                    price_config = await get_price_config(session, company_id)
-                lines.append(_scan_line_from_item(item, lt, payload.price_list, price_config=price_config,
-                                                  currency=state.get("currency")))
-                result_state = "added"
-        else:
-            # FINALIZED audit: the manifest is LOCKED - scanning only checks off items already on the
-            # list and never adds. An item not on the list is reported (add it while still a draft), as
-            # is a code that is another line's locked barcode.
-            if idx is None or _locked_barcode_moved(code, item, lines):
-                reason, detail = _locked_manifest_failure(code, item, lines)
-                _scan_failure(failed, results, code, reason, detail)
-                continue
-            ln = lines.pop(idx)
-            ln["audited_at"] = now        # confirm presence -> the row highlights as accounted for
-            lines.insert(0, ln)           # newest scan to the top (GDR 2n)
-            result_state = "audited"
-        changed = True
-        results.append({"code": code, "state": result_state,
-                        "item_id": item.entity_id, "sku": item.state.get("sku")})
-
-    scanned = sum(1 for r in results if r["state"] != "error")
+    results, failed = await _apply_scan_run(
+        session, company_id, entity_id, state, lines, codes, sb, settings, noun="the list",
+        build=lambda lot, quantity: _scan_line(lot, quantity, priced=sb.priced, price_list=payload.price_list,
+                                               currency=state.get("currency"), price_config=price_config))
+    scanned = len(results) - len(failed)
     version = row.version
-    if changed:
+    if scanned:
         fields = {"line_items": lines}
         if payload.run_key:
-            fields["scan_runs"] = _record_scan_run(state, payload, codes, scanned, failed)
+            fields[SCAN_RUNS_FIELD] = _record_scan_run(state, payload, codes, scanned, failed)
         entry = await _set_list_fields(session, company_id, entity_id, user, fields)
         await session.commit()
         version = entry.id
     return {"scanned": scanned, "results": results, "failed": failed, "version": version}
+
+
+async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str, state: dict, lines: list[dict],
+                          codes: list[str], sb: ScanBehavior, settings: dict, *, noun: str,
+                          build, admit=None) -> tuple[list[dict], list[dict]]:
+    """Place a scan run on a record's lines, in place, as its scan behaviour says: the one loop
+    behind every list and document scan. Returns (results, failed).
+
+    The run resolves against one inventory load and each code picks its lot by `sb.lots`. A record
+    past draft (a locked audit) only checks off the lines it holds. Otherwise a lot already on the
+    record (a stored line, one placed earlier in this run, or one a concurrent run committed before
+    the caller took the row lock) is never placed twice: a counting draft moves its line to the top,
+    an item that counts one per scan (`sb.unstocked`) adds one to its line, and anything else is
+    reported as already on the record. A new line is made by `build` from the lot and the quantity
+    it takes, and must pass the shared quantity rule and the caller's own writer rules (`admit`,
+    returning a (reason, label) refusal or None). A code any rule refuses is reported and skipped,
+    never aborting the run."""
+    from celerp_inventory.services import duplicate_barcode_detail, resolve_items_by_codes
+
+    resolved = await resolve_items_by_codes(session, company_id, codes)
+    unit_map = await _get_unit_map(session, company_id)
+    locked = state.get("status") == FINALIZED
+    now = datetime.now(timezone.utc).isoformat()
+    results: list[dict] = []
+    failed: list[dict] = []
+    for code in codes:
+        res = resolved.get(code)
+        if res is not None and res.duplicate_physical:
+            # The reason code "duplicate_barcode" is a stable external/audit contract; it covers a
+            # barcode or RFID EPC held by more than one item.
+            _scan_failure(failed, results, code, "duplicate_barcode", duplicate_barcode_detail(code))
+            continue
+        lot, on_hand, reason, label = ((None, 0, "unknown_code", _unknown_code_detail(code))
+                                       if res is None or not res.matches
+                                       else _scan_lot(code, res, sb, settings, state, entity_id))
+        if lot is None:
+            if locked and reason == "unknown_code":
+                reason, label = _locked_manifest_failure(code, None, lines)
+            _scan_failure(failed, results, code, reason, label)
+            continue
+
+        idx = next((i for i, l in enumerate(lines) if (l.get("item_id") or l.get("entity_id")) == lot.entity_id), None)
+        if locked:
+            # The manifest is locked: a scan checks off a line it holds and never adds one. A code
+            # that is another line's locked barcode is reported, never counted against it.
+            if idx is None or _locked_barcode_moved(code, lot, lines):
+                _scan_failure(failed, results, code, *_locked_manifest_failure(code, lot, lines))
+                continue
+            line = lines.pop(idx)
+            line["audited_at"] = now   # confirm presence: the row highlights as accounted for
+            lines.insert(0, line)      # newest scan to the top (GDR 2n)
+            result_state = "audited"
+        elif idx is not None and sb.finalized == "count":
+            lines.insert(0, lines.pop(idx))  # a counting manifest is a set: the scan moves its line up
+            result_state = "present"
+        else:
+            counted = sb.unstocked != "snapshot" and (
+                not is_stock_type(lot.state) or (sb.unstocked == "one" and not float(on_hand or 0) > 0))
+            if idx is not None and not counted:
+                _scan_failure(failed, results, code, "duplicate_scan",
+                              f"{code}: already on {noun}{_sku_note(code, lot)}")
+                continue
+            line = ({**lines[idx], "quantity": float(lines[idx].get("quantity") or 0) + 1} if idx is not None
+                    else build(lot, 1 if counted else on_hand))
+            if sb.unstocked != "snapshot":
+                # The same per-line rule as an ordinary writer: a stocked line carries a quantity its
+                # unit allows, so a stocked item with nothing on hand is reported, never placed.
+                try:
+                    _check_line_quantity(line.get("quantity"), line.get("sell_by"), unit_map,
+                                         require_positive=True, label=lot.state.get("sku") or code)
+                except HTTPException as exc:
+                    _scan_failure(failed, results, code, "invalid_quantity", exc.detail)
+                    continue
+            if idx is None and admit is not None and (refused := admit(lot, lines + [line])) is not None:
+                _scan_failure(failed, results, code, *refused)
+                continue
+            if idx is not None:
+                lines[idx] = line
+            elif sb.finalized == "count":
+                lines.insert(0, line)  # a counting manifest shows the newest scan first
+            else:
+                lines.append(line)
+            result_state = "added"
+        results.append({"code": code, "state": result_state,
+                        "item_id": lot.entity_id, "sku": lot.state.get("sku")})
+    return results, failed
 
 
 def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
@@ -12320,8 +12311,9 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
     A physical code (barcode, RFID EPC) names its lot. A product code (GTIN, SKU) names every lot of
     the product: lots out of use are passed over, lots held for another record are taken only when
     nothing else is left (the writer then refuses them, naming the holder), and what remains is
-    picked by the document's scan behaviour - the pick-order representative of splittable stock
-    (consolidate) or a sold lot first (sold, for returns). Several lots still left is ambiguous."""
+    picked by the record's scan behaviour - the pick-order representative of splittable stock
+    (consolidate) or a sold lot first (sold, for returns). Several lots still left is ambiguous. A
+    list names its lot outright (single): a product code matching several lots is ambiguous."""
     from celerp_inventory.projections import held_elsewhere
     from celerp_inventory.services import HIDDEN_STATUSES
     from celerp.services.pick import consolidate_sales_lots
@@ -12329,6 +12321,14 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
     def status(m):
         return str((m.state or {}).get("status") or "").lower()
 
+    if sb.lots == "single":
+        if res.ambiguous:
+            return None, 0, "ambiguous_sku", _ambiguous_sku_detail(code)
+        if res.one is None:
+            return None, 0, "unknown_code", _unknown_code_detail(code)
+        if status(res.one) == "draft":
+            return None, 0, "draft_item", _draft_item_detail(code, res.one)
+        return res.one, (res.one.state or {}).get("quantity"), None, None
     takeable = HIDDEN_STATUSES - ({"sold"} if sb.lots == "sold" else set())
     live = [m for m in res.matches if status(m) not in takeable]
     if not live:
@@ -12353,16 +12353,13 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
 
 def _scan_doc_line(lot: Projection, quantity, sb: ScanBehavior, price_list: str, currency: str | None,
                    price_config: tuple[list[dict], str, str], tax: dict | None) -> dict:
-    """A new document line for a scanned lot: the item's identity, unit and quantity, a unit price
-    from the price list when the document is priced, and the company's default sales tax."""
+    """A new document line for a scanned lot: the scan line, how a purchase receives it, the item's
+    customs fields and the company's default sales tax."""
     st = lot.state or {}
-    line = {"item_id": lot.entity_id, "sku": st.get("sku"), "name": st.get("name"),
-            "description": st.get("name"), "barcode": st.get("barcode"),
-            "unit": st.get("sell_by"), "sell_by": st.get("sell_by"), "quantity": float(quantity or 0),
-            "receive_as": default_receive_as(st.get("inventory_type"), st.get("sell_by")),
-            **{k: st[k] for k in ("hs_code", "country_of_origin", "category") if st.get(k)}}
-    if sb.priced:
-        line["unit_price"] = float(_catalog_rate(st, lot.entity_id, price_list, currency, price_config))
+    line = _scan_line(lot, quantity, priced=sb.priced, price_list=price_list, currency=currency,
+                      price_config=price_config)
+    line["receive_as"] = default_receive_as(st.get("inventory_type"), st.get("sell_by"))
+    line.update({k: st[k] for k in ("hs_code", "country_of_origin", "category") if st.get(k)})
     if tax and float(tax.get("rate") or 0):
         line["taxes"] = [{"code": tax.get("name"), "rate": float(tax["rate"]), "amount": 0, "order": 0,
                           "is_compound": bool(tax.get("is_compound")), "label": ""}]
@@ -12376,12 +12373,12 @@ async def scan_doc(
     role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user), session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Add a scanned run to a document: the same batched, idempotent primitive as a list scan.
+    """Add a scanned run to a document: the same batched, idempotent primitive and placement loop as
+    a list scan.
 
-    Every code resolves against one inventory load and is placed on its own new line through the
-    document writer's own rules (eligibility, holds, item uniqueness, quantity), so a code the
-    writer would refuse is reported per code instead of aborting the run. The lines that pass are
-    written once, under the version read with the document row lock."""
+    A code the document writer would refuse (eligibility, holds, quantity) is reported per code
+    instead of aborting the run. The lines that pass are written once, under the version read with
+    the document row lock."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     doc_type = state.get("doc_type")
@@ -12389,7 +12386,6 @@ async def scan_doc(
     if not _scan_status_allowed(sb, state.get("status")):
         _assert_doc_editable(state)
     codes = _scan_codes(payload)
-    unit_map = await _get_unit_map(session, company_id)
     price_config = await get_price_config(session, company_id)
     if payload.price_list:
         _check_price_list(settings, role, payload.price_list, price_config)
@@ -12398,62 +12394,35 @@ async def scan_doc(
     price_list = payload.price_list or DEFAULT_PRICE_LIST_NAME
     currency = state.get("currency")
     tax = next((x for x in sales_taxes(settings) if x.get("is_default")), None)
-
-    from celerp_inventory.services import duplicate_barcode_detail, resolve_items_by_codes
-    resolved = await resolve_items_by_codes(session, company_id, codes)
     existing = [dict(l) for l in (state.get("line_items") or [])]
     known = line_id_counts(existing)
-    placed: list[dict] = []
-    results: list[dict] = []
-    failed: list[dict] = []
-    for code in codes:
-        res = resolved.get(code)
-        if res is None or not res.matches:
-            _scan_failure(failed, results, code, "unknown_code", _unknown_code_detail(code))
-            continue
-        if res.duplicate_physical:
-            _scan_failure(failed, results, code, "duplicate_barcode", duplicate_barcode_detail(code))
-            continue
-        lot, quantity, reason, label = _scan_lot(code, res, sb, settings, state, entity_id)
-        if lot is None:
-            _scan_failure(failed, results, code, reason, label)
-            continue
-        line = _scan_doc_line(lot, quantity, sb, price_list, currency, price_config, tax)
-        lines = existing + placed + [line]
-        # The writer's own rules, judged per code so one refused code never aborts the run.
-        try:
-            assert_new_references_eligible({lot.entity_id: lot}, lines, known=known, doc_type=doc_type,
-                                           entity_id=entity_id, source_memo_id=state.get("source_memo_id"))
-            assert_line_holds_respected({lot.entity_id: lot}, lines, existing, entity_id=entity_id)
-        except HTTPException as exc:
-            refused = exc.detail.get("message") or "; ".join(e["message"] for e in exc.detail["errors"])
-            _scan_failure(failed, results, code, "unavailable", refused)
-            continue
-        try:
-            await assert_document_item_uniqueness(session, company_id, doc_type, lines)
-        except HTTPException:
-            _scan_failure(failed, results, code, "duplicate_scan",
-                          f"{code}: already on this document{_sku_note(code, lot)}")
-            continue
-        try:
-            _check_line_quantity(line["quantity"], line.get("sell_by"), unit_map, require_positive=True,
-                                 label=lot.state.get("sku") or code)
-        except HTTPException as exc:
-            _scan_failure(failed, results, code, "invalid_quantity", exc.detail)
-            continue
-        placed.append(line)
-        results.append({"code": code, "state": "added", "item_id": lot.entity_id, "sku": lot.state.get("sku")})
 
+    def admit(lot: Projection, candidate: list[dict]) -> tuple[str, str] | None:
+        """The document writer's own rules for a new line, judged per code."""
+        try:
+            assert_new_references_eligible({lot.entity_id: lot}, candidate, known=known, doc_type=doc_type,
+                                           entity_id=entity_id, source_memo_id=state.get("source_memo_id"))
+            assert_line_holds_respected({lot.entity_id: lot}, candidate, existing, entity_id=entity_id)
+        except HTTPException as exc:
+            return "unavailable", exc.detail.get("message") or "; ".join(e["message"] for e in exc.detail["errors"])
+        return None
+
+    lines = [dict(l) for l in existing]
+    results, failed = await _apply_scan_run(
+        session, company_id, entity_id, state, lines, codes, sb, settings, noun="this document",
+        build=lambda lot, quantity: _scan_doc_line(lot, quantity, sb, price_list, currency, price_config, tax),
+        admit=admit)
+    scanned = len(results) - len(failed)
     version = row.version
-    if placed:
-        fields = {"line_items": {"new": existing + placed}}
+    if scanned:
+        fields = {"line_items": {"new": lines}}
         if payload.run_key:
-            fields["scan_runs"] = {"new": _record_scan_run(state, payload, codes, len(placed), failed)}
+            fields[SCAN_RUNS_FIELD] = {"new": _record_scan_run(state, payload, codes, scanned, failed)}
         written = await write_doc_patch(session, company_id, role, settings, user, entity_id,
                                         DocPatch(fields_changed=fields, expected_version=row.version))
         await session.commit()
         version = written["version"]
-    return {"scanned": len(placed), "results": results, "failed": failed, "version": version}
+    return {"scanned": scanned, "results": results, "failed": failed, "version": version}
 
 
 @lists_router.patch("/{entity_id}/line/{item_id}")
