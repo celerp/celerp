@@ -5107,7 +5107,7 @@
   "notice.older_stock_unmapped.title": "Older stock waits for a posting account",
   "notice.older_stock_moved.body": "Older releases booked the cost of opening stock sold to {p}, so {p} and {ob} only matched your stock together. One entry dated {day} moved {amount} {currency} from {ob} to {p}, and your older stock now sits on {p}. Total inventory and retained earnings are unchanged.",
   "notice.older_stock_locked.title": "Older stock waits for an open period",
-  "notice.older_stock_locked.body": "The books are locked through {day}, so older stock could not be placed on an inventory account: placing it is recorded today. Move the period lock before today and the next start places it.",
+  "notice.older_stock_locked.body": "The books are locked through {day}, so older stock could not be placed on an inventory account: placing it is recorded today. Move the period lock before today and the stock is placed at once.",
   "notice.mfg_reconcile_needed.title": "Production run needs reconciling",
   "notice.mfg_reconcile_needed.body": "The value of the materials in the production run for {run} cannot be worked out from its history ({reason}). It cannot issue, return, receive or complete until it is reconciled: open it from here and record what its materials are worth.",
   "notice.mfg_wip_recorded.title": "Materials in production recorded",

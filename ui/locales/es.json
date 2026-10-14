@@ -5109,7 +5109,7 @@
   "notice.older_stock_unmapped.title": "Las existencias antiguas esperan una cuenta contable",
   "notice.older_stock_moved.body": "Versiones anteriores contabilizaron el costo del inventario inicial vendido en {p}, por lo que {p} y {ob} solo cuadraban con su inventario en conjunto. Un asiento con fecha {day} trasladó {amount} {currency} de {ob} a {p}, y su inventario anterior ahora está en {p}. El inventario total y las ganancias retenidas no cambian.",
   "notice.older_stock_locked.title": "El inventario antiguo espera un periodo abierto",
-  "notice.older_stock_locked.body": "Los libros están bloqueados hasta el {day}, así que las existencias antiguas no se pudieron asignar a una cuenta de inventario: la asignación se registra con fecha de hoy. Mueva el bloqueo de período antes de hoy y el próximo inicio las asignará.",
+  "notice.older_stock_locked.body": "Los libros están bloqueados hasta el {day}, así que las existencias antiguas no se pudieron asignar a una cuenta de inventario: la asignación se registra con fecha de hoy. Mueva el bloqueo de período antes de hoy y las existencias se asignarán al instante.",
   "notice.mfg_reconcile_needed.title": "Una orden de producción necesita conciliación",
   "notice.mfg_reconcile_needed.body": "El valor de los materiales de la orden de producción de {run} no se puede calcular a partir de su historial ({reason}). No puede entregar, devolver, recibir ni completar hasta que se concilie: ábrala desde aquí y registre cuánto valen sus materiales.",
   "notice.mfg_wip_recorded.title": "Materiales en producción registrados",

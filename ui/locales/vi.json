@@ -5109,7 +5109,7 @@
   "notice.older_stock_unmapped.title": "Hàng tồn cũ đang chờ tài khoản hạch toán",
   "notice.older_stock_moved.body": "Các phiên bản trước đã ghi giá vốn của hàng tồn đầu kỳ đã bán vào {p}, nên {p} và {ob} chỉ khớp với hàng tồn kho khi gộp lại. Một bút toán ngày {day} đã chuyển {amount} {currency} từ {ob} sang {p}, và hàng tồn kho cũ hiện nằm trên {p}. Tổng hàng tồn kho và lợi nhuận giữ lại không thay đổi.",
   "notice.older_stock_locked.title": "Hàng tồn kho cũ đang chờ kỳ mở",
-  "notice.older_stock_locked.body": "Sổ sách bị khóa đến {day}, nên hàng tồn cũ chưa thể đưa vào tài khoản hàng tồn kho: việc đưa vào được ghi nhận vào ngày hôm nay. Dời khóa kỳ về trước hôm nay và lần khởi động tiếp theo sẽ đưa hàng vào.",
+  "notice.older_stock_locked.body": "Sổ sách bị khóa đến {day}, nên hàng tồn cũ chưa thể đưa vào tài khoản hàng tồn kho: việc đưa vào được ghi nhận vào ngày hôm nay. Dời khóa kỳ về trước hôm nay và hàng sẽ được đưa vào ngay.",
   "notice.mfg_reconcile_needed.title": "Lệnh sản xuất cần được đối chiếu",
   "notice.mfg_reconcile_needed.body": "Không thể tính giá trị nguyên vật liệu trong lệnh sản xuất cho {run} từ lịch sử của nó ({reason}). Lệnh không thể xuất, trả lại, nhận hoặc hoàn thành cho đến khi được đối chiếu: mở lệnh từ đây và ghi nhận giá trị nguyên vật liệu của nó.",
   "notice.mfg_wip_recorded.title": "Đã ghi nhận nguyên vật liệu đang sản xuất",
