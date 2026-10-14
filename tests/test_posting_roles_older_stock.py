@@ -14,8 +14,8 @@ Nothing else changes: total inventory, retained earnings, cost of sales and olde
 documents stay as they were.
 
 Anything the books cannot vouch for (a migration, a restored backup, an import,
-accounts that do not add up) is left alone, and each such lot waits for the
-user to pick its account, which is accepted only when that account holds it.
+accounts that do not add up) is placed on one default inventory account, with any
+difference booked against retained earnings, and the company is told.
 
 The companies here are built the way an older release wrote them: no posting
 accounts in the settings, journal lines without roles, every receipt and sale
@@ -39,7 +39,7 @@ from celerp.services.business_time import business_date_at
 from celerp.services.company_lock import locked_company
 from stock_books import assert_settled, book_older_opening, older_release_lot
 from test_cost_restatement import _state
-from test_helpers import TZ, in_language
+from test_helpers import TZ
 from test_money_stock_and_contact_invariants import _account_net
 from test_posting_roles_lot_origin import _books_match_lots
 from test_posting_roles_lots import _forget_origin, _lot, _sell
@@ -51,7 +51,6 @@ pytestmark = pytest.mark.asyncio
 
 _FIELD = "inventory_account_code"
 _MARK = "inventory_origin_schema"
-_REPAIR = "Settings > Accounting > Posting accounts"
 
 
 async def _older_release(session, auth) -> None:
@@ -170,28 +169,30 @@ async def _marked(session, auth) -> bool:
     return marked
 
 
-async def _placement_notices(session, auth) -> list:
+async def _placement(session, auth) -> dict | None:
+    """The entry booking the difference when older stock was placed, if there was one."""
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry",
+        Projection.entity_id.like("je:auto:older-stock-placed:%")))).scalars().all()
+    (row,) = [r for r in rows if ":t" not in r.entity_id.rsplit(":", 1)[-1]] or [None]
+    return row.state if row is not None else None
+
+
+async def _told_placed(session, auth, code: str) -> None:
     from celerp.models.notification import Notification
 
-    return list((await session.execute(select(Notification).where(
+    session.expire_all()
+    (notice,) = (await session.execute(select(Notification).where(
         Notification.company_id == auth["company_id"],
-        Notification.title == "Older stock needs an inventory account"))).scalars().all())
-
-
-async def _told_to_place(session, auth) -> None:
-    (notice,) = await _placement_notices(session, auth)
-    assert notice.action_url == "/settings/accounting?tab=posting-accounts"
-    assert "older lot(s) in stock" in notice.body
+        Notification.title == "Older stock placed on an inventory account"))).scalars().all()
+    assert notice.action_url == "/settings/accounting?tab=older-stock" and notice.priority == "high"
+    assert code in notice.body
 
 
 async def _events(session, auth) -> int:
     return await session.scalar(select(func.count()).select_from(LedgerEntry).where(
         LedgerEntry.company_id == auth["company_id"]))
-
-
-async def _choose(client, auth, item_id: str, code: str):
-    return await client.put(f"/accounting/posting-accounts/older-stock/{item_id}", headers=auth["headers"],
-                            json={"code": code})
 
 
 def _moved(je: dict) -> dict[str, tuple[float, float]]:
@@ -209,7 +210,7 @@ async def test_all_old_purchased_stock_records_purchased_inventory_with_no_entry
     assert await _reclassification(session, auth) is None
     assert await _net(session, auth, "1130-P", "1130-OB") == (80.0, 0.0)
     assert await _marked(session, auth)
-    assert await _placement_notices(session, auth) == []  # every lot placed: nothing to tell
+    assert await _placement(session, auth) is None  # every lot normalized: nothing placed
 
 
 async def test_all_old_opening_stock_moves_into_purchased_inventory(session, client, auth):
@@ -437,16 +438,18 @@ async def test_a_failure_part_way_leaves_no_entry_and_no_lot_recorded(session, c
     assert await _net(session, auth, "1130-P", "1130-OB") == (70.0, 0.0)
 
 
-async def test_accounts_that_do_not_add_up_to_the_stock_are_left_for_the_user(session, client, auth):
+async def test_accounts_that_do_not_add_up_to_the_stock_are_placed_with_the_difference_booked(
+        session, client, auth):
     await _older_release(session, auth)
     lot = await _lot(client, auth, 30.0)
     await _books_over(session, client, auth)
     await _startup(session)
     assert await _reclassification(session, auth) is None
-    assert await _accounts(session, auth, lot) == [None]
-    assert await _net(session, auth, "1130-P", "1130-OB") == (40.0, 0.0)
+    assert await _accounts(session, auth, lot) == ["1130-P"]
+    assert _moved(await _placement(session, auth)) == {"3200": (10.0, 0.0), "1130-P": (0.0, 10.0)}
+    assert await _net(session, auth, "1130-P", "1130-OB") == (30.0, 0.0)
     assert await _marked(session, auth)
-    await _told_to_place(session, auth)
+    await _told_placed(session, auth, "1130-P")
 
 
 async def test_an_opening_entry_short_of_the_stock_is_brought_current_then_moved(session, client, auth):
@@ -506,22 +509,37 @@ async def _source_controls(session, client, auth) -> None:
     await _settings(session, auth, posting_source_controls={"inventory": "1400"})
 
 
-@pytest.mark.parametrize("source", [_from_migration, _from_bundle_import, _restored, _custom_opening_account,
-                                    _migration_run, _source_controls])
-async def test_a_company_the_books_cannot_vouch_for_is_left_alone(session, client, auth, source):
+# Where each is placed: opening inventory when it holds the stock or the books show stock
+# brought in from elsewhere, purchased inventory when opening inventory cannot take it;
+# any difference is booked against retained earnings.
+@pytest.mark.parametrize("source,code,difference,books", [
+    (_from_migration, "1130-OB", 5.0, (0.0, 35.0)),
+    (_from_bundle_import, "1130-OB", 5.0, (0.0, 35.0)),
+    (_restored, "1130-OB", 0.0, (0.0, 30.0)),
+    (_custom_opening_account, "1130-P", 30.0, (30.0, 30.0)),
+    (_migration_run, "1130-OB", 0.0, (0.0, 30.0)),
+    (_source_controls, "1130-OB", 0.0, (0.0, 30.0))])
+async def test_a_company_the_books_cannot_vouch_for_is_placed(session, client, auth, source, code, difference,
+                                                              books):
     await _older_release(session, auth)
     lot = await _lot(client, auth, 30.0)
     await _opening_entry(session, auth, 30.0)
     await source(session, client, auth)
     await _startup(session)
     assert await _reclassification(session, auth) is None
-    assert await _accounts(session, auth, lot) == [None]
-    assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 30.0)
+    assert await _accounts(session, auth, lot) == [code]
+    entry = await _placement(session, auth)
+    if difference:
+        assert _moved(entry) == {code: (difference, 0.0), "3200": (0.0, difference)}
+    else:
+        assert entry is None
+    assert await _net(session, auth, "1130-P", "1130-OB") == books
     assert await _marked(session, auth)
-    await _told_to_place(session, auth)
+    await _told_placed(session, auth, code)
 
 
-async def test_stock_already_on_a_third_inventory_account_leaves_the_company_alone(session, client, auth):
+async def test_stock_already_on_a_third_inventory_account_places_the_rest_on_opening_inventory(
+        session, client, auth):
     await _older_release(session, auth)
     lot = await _lot(client, auth, 30.0)
     elsewhere = await _lot(client, auth, 10.0)
@@ -529,8 +547,9 @@ async def test_stock_already_on_a_third_inventory_account_leaves_the_company_alo
     await _opening_entry(session, auth, 40.0)  # 1130-P and 1130-OB add up to all the stock
     await _startup(session)
     assert await _reclassification(session, auth) is None
-    assert await _accounts(session, auth, lot, elsewhere) == [None, "1131"]
-    assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 40.0)
+    assert await _accounts(session, auth, lot, elsewhere) == ["1130-OB", "1131"]
+    assert _moved(await _placement(session, auth)) == {"3200": (10.0, 0.0), "1130-OB": (0.0, 10.0)}
+    assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 30.0)
     assert await _marked(session, auth)
 
 
@@ -549,8 +568,10 @@ async def test_an_earlier_move_into_purchased_inventory_is_never_made_again(sess
     await session.commit()
     await _startup(session)
     assert _moved(await _reclassification(session, auth)) == {"1130-P": (5.0, 0.0), "1130-OB": (0.0, 5.0)}
-    assert await _accounts(session, auth, lot) == [None]
-    assert await _net(session, auth, "1130-P", "1130-OB") == (5.0, 25.0)
+    # The earlier move is not made again; the lot is placed where it began, with the rest booked.
+    assert await _accounts(session, auth, lot) == ["1130-P"]
+    assert _moved(await _placement(session, auth)) == {"1130-P": (25.0, 0.0), "3200": (0.0, 25.0)}
+    assert await _net(session, auth, "1130-P", "1130-OB") == (30.0, 25.0)
     assert await _marked(session, auth)
 
 
@@ -585,9 +606,9 @@ async def _lock_notices(session, auth) -> list:
 
 async def test_an_upgrade_a_period_lock_holds_back_is_told_once_and_cleared_when_it_runs(session, client, auth):
     """Older stock the upgrade could not place cannot be sold or moved until its account is
-    known: the company is told which lock holds it back and both ways on (choose the account
-    now, or move the lock), once however often it restarts, and the notice is taken off the
-    bell once the upgrade runs."""
+    known: the company is told which lock holds it back and how to go on (move the lock),
+    once however often it restarts, and the notice is taken off the bell once the upgrade
+    runs."""
     await _older_release(session, auth)
     await _lot(client, auth, 30.0)
     await _opening_entry(session, auth, 30.0)
@@ -597,10 +618,9 @@ async def test_an_upgrade_a_period_lock_holds_back_is_told_once_and_cleared_when
     await _startup(session)
     (notice,) = await _lock_notices(session, auth)
     assert day in notice.body
-    # Choosing the account is open while the period stays locked, so the notice names it.
     assert notice.body == i18n.t("notice.older_stock_locked.body", "en", day=day)
-    assert _REPAIR in notice.body and "cannot be sold" not in notice.body
-    assert "Buchungskonten" in i18n.t("notice.older_stock_locked.body", "de", day=day)
+    assert "Move the period lock" in notice.body and "Choose its inventory account" not in notice.body
+    assert i18n.t("notice.older_stock_locked.body", "de", day=day) != notice.body
     assert notice.action_url == "/settings/accounting?tab=period-lock"
     assert notice.i18n["title"] == "notice.older_stock_locked.title" and notice.i18n["params"] == {"day": day}
 
@@ -745,15 +765,17 @@ async def test_opening_stock_is_dated_the_business_day_when_the_servers_day_is_l
     assert await _net(session, auth, "1130-OB") == (30.0,)
 
 
-async def test_a_company_created_with_lots_recording_their_account_never_enters(session, client, auth):
+async def test_a_company_created_with_lots_recording_their_account_is_never_normalized(session, client, auth):
     assert await _marked(session, auth)
     lot = await _lot(client, auth, 30.0)
     row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": lot}, populate_existing=True)
-    row.state = {k: v for k, v in row.state.items() if k != _FIELD}  # would be normalized if it entered
+    row.state = {k: v for k, v in row.state.items() if k != _FIELD}  # would be moved to 1130-P if it entered
     await session.commit()
     await _startup(session)
     assert await _reclassification(session, auth) is None
-    assert await _accounts(session, auth, lot) == [None]
+    # Only placed, on the account holding it, with nothing booked.
+    assert await _accounts(session, auth, lot) == ["1130-OB"]
+    assert await _placement(session, auth) is None
     assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 30.0)
 
 
@@ -807,74 +829,24 @@ async def test_restored_stock_is_not_assumed_to_be_opening_stock_when_accounting
     await _restored(session, client, auth)
     lot = await _lot(client, auth, 30.0)
     await _startup(session)
-    assert await _accounts(session, auth, lot) == [None]
-    assert await _net(session, auth, "1130-OB") == (0.0,)
+    # Not assumed to be opening stock: placed on purchased inventory, its value booked there.
+    assert await _accounts(session, auth, lot) == ["1130-P"]
+    assert _moved(await _placement(session, auth)) == {"1130-P": (30.0, 0.0), "3200": (0.0, 30.0)}
+    assert await _net(session, auth, "1130-P", "1130-OB") == (30.0, 0.0)
 
 
-# --- What the normalization leaves unresolved waits for the user's pick -------------------
+# --- Placed older stock sells from the account it was placed on ------------------------
 
 
-async def test_an_unresolved_lot_moves_its_cost_once_an_account_that_holds_it_is_picked(session, client, auth):
+async def test_placed_older_stock_sells_from_the_account_it_was_placed_on(session, client, auth):
     await _older_release(session, auth)
     await _restored(session, client, auth)
     lot = await _lot(client, auth, 30.0)
     await _opening_entry(session, auth, 30.0)
     await _startup(session)
-    assert await _accounts(session, auth, lot) == [None]
-    r = await client.post("/docs", headers=auth["headers"], json={
-        "doc_type": "invoice", "total": 50.0,
-        "line_items": [{"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})
-    assert r.status_code == 200, r.text
-    r = await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"])
-    assert r.status_code == 409, r.text
-    # A refused request writes nothing; the test client shares one session, so undo its writes here.
-    await session.rollback()
-    detail = r.json()["detail"]
-    assert "has no recorded inventory account" in detail["message"] and _REPAIR in detail["message"]
-    german = in_language("de", detail)
-    assert german.startswith(f"Bestand {detail['params']['sku']} hat kein erfasstes Bestandskonto")
-    assert "Buchungskonten" in german
-    assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
-
-    r = await _choose(client, auth, lot, "1130-P")
-    assert r.status_code == 422, r.text
-    assert "Account 1130-OB holds it: choose 1130-OB." in r.json()["detail"]["message"]
-    r = await _choose(client, auth, lot, "1210")
-    assert r.status_code == 422, r.text
-    r = await _choose(client, auth, lot, "1130-OB")
-    assert r.status_code == 200, r.text
     assert await _accounts(session, auth, lot) == ["1130-OB"]
-    assert (await _choose(client, auth, lot, "1130-OB")).status_code == 409
-
     await _sold(client, auth, (lot, 1))
     await _books(session, client, auth, purchased=0.0, opening=0.0)
-
-
-async def test_a_lot_split_across_inventory_accounts_is_refused_naming_the_transfer_that_places_it(
-        session, client, auth):
-    await _older_release(session, auth)
-    await _restored(session, client, auth)
-    lot = await _lot(client, auth, 50.0)
-    await _opening_entry(session, auth, 30.0)
-    await _books_over(session, client, auth)
-    await _startup(session)
-    assert await _accounts(session, auth, lot) == [None]
-
-    r = await _choose(client, auth, lot, "1130-OB")
-    assert r.status_code == 422, r.text
-    assert "Move 20.00 from 1130-P to 1130-OB with a journal entry" in r.json()["detail"]["message"], r.text
-    assert "books need reconciling" not in r.json()["detail"]["message"]
-
-    cid, je = auth["company_id"], f"je:{uuid.uuid4()}"
-    await _emit_auto_posted_je(
-        session, company_id=cid, user_id=auth["user_id"], je_id=je, idem_create=f"{je}:c",
-        idem_posted=f"{je}:p", memo="Move inventory value", metadata_={"trigger": "manual"},
-        entries=[{"account": "1130-OB", "debit": 20.0, "credit": 0.0},
-                 {"account": "1130-P", "debit": 0.0, "credit": 20.0}])
-    await session.commit()
-    r = await _choose(client, auth, lot, "1130-OB")
-    assert r.status_code == 200, r.text
-    assert await _accounts(session, auth, lot) == ["1130-OB"]
 
 
 # --- A draft from an older release has never held stock -------------------------------
@@ -947,7 +919,7 @@ async def test_an_older_draft_records_nothing_on_upgrade_when_the_opening_accoun
     assert await _accounts(session, auth, draft) == [None]
     r = await client.post("/items/bulk/make-available", headers=auth["headers"], json={"entity_ids": [draft]})
     assert r.status_code == 409, r.text
-    assert _REPAIR in r.json()["detail"]["message"]
+    assert "Settings > Accounting > Posting accounts" in r.json()["detail"]["message"]
     assert (await _status(session, auth, draft), *await _accounts(session, auth, draft)) == ("draft", None)
 
 
@@ -978,7 +950,7 @@ async def test_an_older_draft_is_booked_once_made_available_where_the_books_cann
     await books(session, client, auth)
     await _startup(session)
     assert await _reclassification(session, auth) is None
-    assert await _accounts(session, auth, lot, draft) == [None, None]
+    assert (await _accounts(session, auth, lot, draft))[1] is None
     assert await _marked(session, auth)
     before = await _account_net(session, auth["company_id"], "1130-OB")
     await _make_available(client, auth, draft)
@@ -1022,27 +994,3 @@ async def test_older_stock_waits_for_accounting_to_be_turned_on_then_is_placed(s
     assert await _books_match_lots(session, auth, "1130-P", "1130-OB") == {"1130-P": 100.0, "1130-OB": 0.0}
     await _sold(client, auth, (sold, 1))
     await assert_settled(client, session, auth)
-
-
-# --- Only stock on the books waiting for its account can be placed ---------------------
-
-
-@pytest.mark.parametrize("status,cost", [("draft", 10.0), ("sold", 10.0), ("available", 0.0)])
-async def test_older_stock_off_the_books_or_worth_nothing_cannot_be_given_an_account(
-        session, client, auth, status, cost):
-    await _older_release(session, auth)
-    await _restored(session, client, auth)
-    waiting = await _lot(client, auth, 30.0)
-    await _opening_entry(session, auth, 30.0)
-    item = await older_release_lot(session, auth["company_id"], auth["user_id"], cost, status=status)
-    await _startup(session)
-
-    r = await _choose(client, auth, item, "1130-OB")
-
-    assert r.status_code == 422, r.text
-    detail = r.json()["detail"]
-    assert detail["message_key"] == "posting.older_stock.not_waiting", detail
-    assert detail["message"] == "This item holds no stock on the books, so there is nothing to place.", detail
-    assert in_language("de", detail) != detail["message"]
-    assert await _accounts(session, auth, item) == [None]
-    assert (await _choose(client, auth, waiting, "1130-OB")).status_code == 200
