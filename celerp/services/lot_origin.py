@@ -37,6 +37,7 @@ again (set_placement_adjustment).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from types import SimpleNamespace
@@ -73,6 +74,8 @@ from celerp.services.account_roles import (
 )
 from celerp.services.business_time import business_date_at, business_date_of
 from celerp.services.money import round_money
+
+logger = logging.getLogger(__name__)
 
 RECORDED = "item.inventory_account.recorded"
 MOVED = "item.inventory_account.moved"
@@ -356,13 +359,18 @@ def _legacy(items: list[Projection]) -> list[Projection]:
             if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and _owned_stock(r) and not _draft(r.state or {})]
 
 
+def _record_key(item_id: str) -> str:
+    """The idempotency key of the event recording a lot's inventory account: once per lot."""
+    return f"lot-account:{item_id}"
+
+
 async def _record(session: AsyncSession, company_id, item_id: str, code: str, why: str, actor_id,
                   metadata: dict | None = None) -> None:
     from celerp.events.engine import emit_event
 
     await emit_event(session, company_id=company_id, entity_id=item_id, entity_type="item", event_type=RECORDED,
                      data={LOT_ACCOUNT_FIELD: code}, actor_id=actor_id, location_id=None, source="system",
-                     idempotency_key=f"lot-account:{item_id}", metadata_={"recorded_by": why, **(metadata or {})})
+                     idempotency_key=_record_key(item_id), metadata_={"recorded_by": why, **(metadata or {})})
 
 
 async def books_from_elsewhere(session: AsyncSession, company_id, settings: dict) -> bool:
@@ -449,10 +457,38 @@ async def _notify_placed(session: AsyncSession, company_id, *, count: int, code:
                                       action_url=OLDER_STOCK_PATH, priority="high", i18n=i18n)
 
 
-def _placement_id(company_id, item_ids: list[str]) -> str:
+FAILED_NOTICE = "notice.older_stock_failed"
+
+
+async def _notify_failed(session: AsyncSession, company_id) -> None:
+    """Placing older stock failed for a reason no setting explains. Nothing was written;
+    the company is told, kept current while it stands, and the notice is removed once
+    the stock is placed (_place)."""
+    from celerp.notifications import service as notification_service
+
+    title, body, i18n = _notice(FAILED_NOTICE)
+    await notification_service.notify_standing(session, company_id, "accounting", title, body,
+                                               action_url=OLDER_STOCK_PATH, i18n=i18n)
+
+
+async def _recorded(session: AsyncSession, company_id, item_ids: list[str]) -> set[str]:
+    """Those of ``item_ids`` whose inventory account is already recorded by an event
+    (_record), whatever their stored state shows: recording one again writes nothing."""
+    if not item_ids:
+        return set()
+    return set((await session.execute(select(LedgerEntry.entity_id).where(
+        LedgerEntry.company_id == company_id,
+        LedgerEntry.idempotency_key.in_([_record_key(i) for i in item_ids])))).scalars())
+
+
+def _hash(text: str) -> str:
     import hashlib
 
-    return hashlib.sha256("\n".join([str(company_id), *item_ids]).encode()).hexdigest()[:16]
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _placement_id(company_id, item_ids: list[str]) -> str:
+    return _hash("\n".join([str(company_id), *item_ids]))
 
 
 async def _place(session: AsyncSession, company_id) -> bool:
@@ -470,8 +506,9 @@ async def _place(session: AsyncSession, company_id) -> bool:
 
     Purchased inventory unusable, or retained earnings unusable while an adjustment is
     needed: nothing is placed and the company is told which setting to fix
-    (_notify_unmapped). An adjustment on a period-locked day raises _Locked. Returns
-    whether lots were placed."""
+    (_notify_unmapped). Placing records each lot on today's date, so a period-locked
+    today raises _Locked, adjustment or not. A lot whose placement is already recorded
+    (_recorded) is not placed again. Returns whether lots were placed."""
     from celerp.notifications import service as notification_service
     from celerp.services.auto_je import recognized_unshipped
     from celerp.services.company_lock import locked_company
@@ -480,6 +517,8 @@ async def _place(session: AsyncSession, company_id) -> bool:
     await notification_service.mark_done(session, company_id, PERIOD_LOCK_PATH)
     items = await _items(session, company_id)
     pending = sorted(_legacy(items), key=lambda r: r.entity_id)
+    done = await _recorded(session, company_id, [r.entity_id for r in pending])
+    pending = [r for r in pending if r.entity_id not in done]
     if not pending:
         return False
     company = await locked_company(session, company_id)
@@ -512,7 +551,7 @@ async def _place(session: AsyncSession, company_id) -> bool:
         await _notify_unmapped(session, company_id, retained)
         return False
     day = business_date_of(None, settings.get("timezone"))
-    if delta and not await period_open(session, company_id, day):
+    if not await period_open(session, company_id, day):
         raise _Locked
     ids = [r.entity_id for r in pending]
     pid = _placement_id(company_id, ids)
@@ -525,7 +564,8 @@ async def _place(session: AsyncSession, company_id) -> bool:
         metadata={"trigger": "older_stock.placed", "placement": pid}, actor_id=None, day=day)
     company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), "older_stock_placed": pid}
-    await notification_service.clear_standing(session, company_id, "accounting", _notice(UNMAPPED_NOTICE)[0])
+    for notice in (UNMAPPED_NOTICE, FAILED_NOTICE):
+        await notification_service.clear_standing(session, company_id, "accounting", _notice(notice)[0])
     await _notify_placed(session, company_id, count=len(ids), code=target, value=value, held=room[target],
                          delta=delta, equity=current.get(retained), currency=currency, day=day)
     await session.flush()
@@ -538,8 +578,9 @@ async def place_older_stock(session: AsyncSession, company_id) -> bool:
     A company not upgraded yet is left to the upgrade (normalize_legacy_inventory_origins),
     and one with nothing to place is read once and never locked. Everything is written
     in one savepoint: a period lock holding back the adjustment rolls it back whole and
-    tells the company (_notify_locked), to retry on a later start. Returns whether lots
-    were placed."""
+    tells the company (_notify_locked), to retry on a later start. Any other failure is
+    rolled back whole, logged and told (_notify_failed), so it never fails the start or
+    the posting-account change that asked for it. Returns whether lots were placed."""
     if INVENTORY_ORIGIN_KEY not in await current_settings(session, company_id):
         return False
     if not _legacy(await _items(session, company_id)):
@@ -552,6 +593,10 @@ async def place_older_stock(session: AsyncSession, company_id) -> bool:
         await _notify_locked(session, company_id)
         return False
     except _Retry:
+        return False
+    except Exception:
+        logger.exception("Older stock of company %s was not placed; retrying on the next start", company_id)
+        await _notify_failed(session, company_id)
         return False
 
 
@@ -1080,8 +1125,6 @@ async def recognize_opening_lots(session: AsyncSession, company_id, item_ids, ac
     to roll back whole. With Accounting off nothing is recorded or booked: the stock is
     opening stock when Accounting is turned on (open_inventory_origins). The entry is
     keyed by the operation and the lots it booked, so a retry books nothing more."""
-    import hashlib
-
     from celerp.services.auto_je import entry_day
     from celerp.services.company_lock import locked_company
 
@@ -1104,7 +1147,7 @@ async def recognize_opening_lots(session: AsyncSession, company_id, item_ids, ac
     day = await entry_day(session, company_id, at)
     for lot in lots:
         await _record(session, company_id, lot.entity_id, code, "opening stock", actor_id)
-    digest = hashlib.sha256("\n".join(lot.entity_id for lot in lots).encode()).hexdigest()[:16]
+    digest = _hash("\n".join(lot.entity_id for lot in lots))
     key = f"opening-stock:{operation_id}:{digest}"
     await post_opening_stock_delta(
         session, company_id, {code: value}, onto_books=True, je_id=f"je:auto:{key}", idem=key,
@@ -1118,8 +1161,6 @@ async def remove_opening_lots(session: AsyncSession, company_id, item_ids, actor
     comes off the account it recorded against retained earnings, in one entry for the
     operation, so the books still equal the stock left. A lot that records no account
     has nothing booked to take off."""
-    import hashlib
-
     from celerp.services.auto_je import entry_day
     from celerp.services.company_lock import locked_company
 
@@ -1137,7 +1178,7 @@ async def remove_opening_lots(session: AsyncSession, company_id, item_ids, actor
         value, code = held_value(row), (row.state or {}).get(LOT_ACCOUNT_FIELD)
         if value is not None and code:
             values[code] = values.get(code, Decimal("0")) + value
-    digest = hashlib.sha256("\n".join(ids).encode()).hexdigest()[:16]
+    digest = _hash("\n".join(ids))
     key = f"opening-stock-removed:{operation_id}:{digest}"
     await post_opening_stock_delta(
         session, company_id, values, onto_books=False, je_id=f"je:auto:{key}", idem=key,
@@ -1159,9 +1200,7 @@ def _sku(row: Projection) -> str:
 
 
 def _move_id(company_id, key: str) -> str:
-    import hashlib
-
-    return hashlib.sha256(f"{company_id}:{key}".encode()).hexdigest()[:16]
+    return _hash(f"{company_id}:{key}")
 
 
 def _move_je(move_id: str) -> str:
