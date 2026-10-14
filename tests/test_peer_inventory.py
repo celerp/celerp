@@ -263,3 +263,28 @@ async def test_completed_stock_audits_page_in_posted_order_not_document_id(clien
     assert [x[2]["source_closed_event_id"] for x in first] == position
     second = await _read_audits(company_id, str(position[0]), None)
     assert [x[0] for x in second] == ["list:a-newer"]
+
+
+
+def test_stock_route_accepts_ordered_audit_contract_and_rejects_missing_position():
+    from pydantic import ValidationError
+    from celerp.routers.company_peers import PeerStockAuditUpdate
+
+    data = {
+        "location_id": str(uuid.uuid4()), "location_name": "Warehouse",
+        "location_type": "warehouse", "source_closed_event_id": 44,
+        "counts": [{"item_id": "item:src", "counted_qty": 5}],
+    }
+    incoming = PeerStockAuditUpdate(
+        source_company_id=uuid.uuid4(), source_entity_id="list:src",
+        source_revision=1, data=data,
+    )
+    assert incoming.data.model_dump(mode="json")["source_closed_event_id"] == 44
+    for invalid in ({k: v for k, v in data.items() if k != "source_closed_event_id"},
+                    {**data, "source_closed_event_id": True},
+                    {**data, "source_closed_event_id": -1}):
+        with pytest.raises(ValidationError):
+            PeerStockAuditUpdate(
+                source_company_id=uuid.uuid4(), source_entity_id="list:src",
+                source_revision=1, data=invalid,
+            )

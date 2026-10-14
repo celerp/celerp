@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, File, Form, UploadFile
-from pydantic import BaseModel, Field, ConfigDict, FiniteFloat
+from pydantic import BaseModel, Field, ConfigDict, FiniteFloat, StrictInt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -217,6 +217,7 @@ class StockCountData(BaseModel):
     location_id: uuid.UUID
     location_name: str = Field(min_length=1, max_length=255)
     location_type: str = Field(min_length=1, max_length=64)
+    source_closed_event_id: StrictInt = Field(ge=1, le=2**63 - 1)
     counts: list[StockCountItem] = Field(min_length=1, max_length=1000)
 
 
