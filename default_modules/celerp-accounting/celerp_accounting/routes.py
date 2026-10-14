@@ -4491,11 +4491,14 @@ async def set_posting_account(
 ) -> dict:
     """Point a role at another account for new postings. Balances already posted stay
     where they are; the earlier account stays with the role for them. Fixing Purchased
-    inventory or Retained earnings places older stock that waited on it at once."""
+    inventory or Retained earnings places older stock that waited on it at once, and
+    the notice of missing posting accounts follows what is still missing."""
     from celerp.services.account_roles import set_role
     from celerp.services.lot_origin import place_for_posting_account
+    from celerp.services.posting_readiness import notify_unmapped
 
     await set_role(session, company_id, role, payload.code, user.id)
+    await notify_unmapped(session, company_id)
     if role in ("inventory_purchased", "retained_earnings"):
         await place_for_posting_account(session, company_id)
     await session.commit()
