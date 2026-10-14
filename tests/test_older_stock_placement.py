@@ -391,6 +391,30 @@ async def test_a_lock_moved_before_today_withdraws_its_notice_even_when_placing_
     assert len(await _notices(session, auth, i18n.t("notice.older_stock_failed.title", "en"))) == 1
 
 
+async def test_the_posting_accounts_notice_stays_while_one_is_missing_and_goes_once_none_is(
+        session, client, auth):
+    from celerp.accounting_roles import ROLES_KEY
+    from celerp.services.posting_readiness import notify_unmapped
+
+    title = i18n.t("notice.posting_unmapped.title", "en")
+    company = await locked_company(session, auth["company_id"])
+    roles = {k: v for k, v in company.settings[ROLES_KEY].items() if k not in ("general_expense", "sales_revenue")}
+    company.settings = {**company.settings, ROLES_KEY: roles}
+    await session.flush()
+    assert await notify_unmapped(session, auth["company_id"])
+    await session.commit()
+
+    for role, code, left in (("general_expense", "6950", ["sales_revenue"]), ("sales_revenue", "4100", None)):
+        r = await client.put(f"/accounting/posting-accounts/{role}", headers=auth["headers"], json={"code": code})
+        assert r.status_code == 200, r.text
+        notices = await _notices(session, auth, title)
+        if left is None:
+            assert notices == []
+        else:
+            (notice,) = notices
+            assert notice.i18n["params"] == {"roles": left}
+
+
 async def test_a_placement_that_fails_keeps_the_posting_account_change_and_tells_the_company(
         session, client, auth):
     lots = await _waiting_for_purchased(session, client, auth, short=10.0)

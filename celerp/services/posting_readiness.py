@@ -124,27 +124,24 @@ def _labels(roles: list[str]) -> str:
 
 
 async def notify_unmapped(session: AsyncSession, company_id) -> bool:
-    """One high-priority notice when a role the company's workflows need has no
-    account, deduped on the standing notice so a restart never stacks them. Returns
-    whether a notice was created. The caller commits."""
+    """One high-priority notice while a role the company's workflows need has no
+    account, deduped on the standing notice so a restart never stacks them and kept
+    current with the roles still missing; withdrawn once none is. Returns whether a
+    notice was created. The caller commits."""
     from celerp.notifications import service as notification_service
 
     settings = await current_settings(session, company_id)
     needed = set(needed_roles(await used_groups(session, company_id, settings)))
     missing = [r for r in unmapped_roles(settings) if r in needed]
     if not missing:
+        await notification_service.clear_standing(session, company_id, NOTICE_CATEGORY, NOTICE_TITLE)
         return False
-    if await notification_service.has_standing(session, company_id, NOTICE_CATEGORY, NOTICE_TITLE):
-        return False
-    labels = _labels(missing)
-    await notification_service.create(
+    return await notification_service.notify_standing(
         session, company_id, NOTICE_CATEGORY, NOTICE_TITLE,
-        f"Choose the account for: {labels}. Until then, anything that posts to them is refused.",
-        action_url=POSTING_ACCOUNTS_PATH, priority="high",
+        f"Choose the account for: {_labels(missing)}. Until then, anything that posts to them is refused.",
+        action_url=POSTING_ACCOUNTS_PATH,
         i18n={"title": "notice.posting_unmapped.title", "body": "notice.posting_unmapped.body",
-              "params": {"roles": missing}},
-    )
-    return True
+              "params": {"roles": missing}})
 
 
 async def _chart(session: AsyncSession, company_id) -> dict[str, dict] | None:
