@@ -292,15 +292,13 @@ async def test_scanned_line_carries_unit_and_real_qty(client):
     assert lines[0].get("sell_by") == "gram"
 
 
-# --- B2: scan shares validation; zero non-audit stocked is invalid ---------
+# --- B2: scan shares validation; a non-audit list never holds a zero line ---
 
 
 @pytest.mark.asyncio
-async def test_zero_on_hand_scanned_non_audit_reported_not_persisted(client):
-    """Scanning a zero-on-hand stocked item onto a quotation reports it in `failed` and persists no
-    line: scan validates through the same per-line rule as ordinary writers, and a non-audit stocked
-    line must be positive. Red at merge-base: the scan persists an unvalidated qty-0 line; after the fix
-    it is reported and skipped."""
+async def test_zero_on_hand_scanned_onto_a_quote_list_takes_one_never_zero(client):
+    """Scanning a zero-on-hand stocked item onto a quotation list adds a line of one, as a quotation
+    document does, and never the unvalidated qty-0 line a non-audit list must not hold."""
     t = await _register(client)
     loc = await _location(client, t)
     await _item(client, t, "Z0-1", loc=loc, qty=0, barcode="920001", sell_by="piece")
@@ -308,11 +306,9 @@ async def test_zero_on_hand_scanned_non_audit_reported_not_persisted(client):
 
     r = await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": "920001"})
     assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["scanned"] == 0
-    assert any(f.get("code") == "920001" for f in body.get("failed", []))
+    assert r.json()["scanned"] == 1 and r.json()["failed"] == []
     lines = (await _state(client, t, q))["line_items"]
-    assert lines == [] or all(li.get("sku") != "Z0-1" for li in lines)
+    assert [(li.get("sku"), float(li["quantity"])) for li in lines] == [("Z0-1", 1.0)]
 
 
 @pytest.mark.asyncio

@@ -145,14 +145,15 @@ async def test_concurrent_same_lot_lands_one_full_line(_db_engine):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_counted_scans_add_up(_db_engine):
-    """An item with no stock on a purchase order counts one per scan; two concurrent batches
-    both count, onto the one line."""
+@pytest.mark.parametrize("on_hand", [0, 5])
+async def test_concurrent_counted_scans_add_up(_db_engine, on_hand):
+    """A purchase order counts one unit per scan, stocked or not; two concurrent batches both
+    count, onto the one line."""
     factory = _factory(_db_engine)
     company_id, user_id, user = await _seed_company(factory)
     try:
         bc = _barcode()
-        item = await _seed_unique_item(factory, company_id, user, sku="Z0", barcode=bc, splitting=False, quantity=0)
+        item = await _seed_unique_item(factory, company_id, user, sku="Z0", barcode=bc, splitting=False, quantity=on_hand)
         doc = await _seed_draft_doc(factory, company_id, user, "purchase_order")
 
         outcome = await _race(factory, company_id, user, doc, {"k1": bc, "k2": bc})
