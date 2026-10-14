@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -336,6 +336,35 @@ async def test_a_posting_account_change_is_kept_when_a_period_lock_holds_placeme
     assert role_map(await _settings(session, auth))["inventory_purchased"] == "1135"
     assert await _accounts(session, auth, lots) == [None]
     assert len(await _lock_notices(session, auth)) == 1
+
+
+def _days_from_today(days: int) -> str:
+    return (date.fromisoformat(_today()) + timedelta(days=days)).isoformat()
+
+
+async def _lock_through(client, auth, day: str) -> None:
+    r = await client.post("/accounting/period-lock", headers=auth["headers"], json={"lock_date": day})
+    assert r.status_code == 200, r.text
+    assert r.json()["lock_date"] == day
+
+
+async def test_moving_the_period_lock_before_today_places_held_stock_at_once(session, client, auth):
+    lots = await _older_company(session, client, auth, [30.0], short=10.0)
+    await _settings(session, auth, lock_date=_today())
+    await _startup(session)
+    (notice,) = await _lock_notices(session, auth)
+    assert "placed at once" in notice.body
+
+    await _lock_through(client, auth, _days_from_today(1))
+    assert await _accounts(session, auth, lots) == [None]
+    (notice,) = await _lock_notices(session, auth)
+    assert notice.body == i18n.t("notice.older_stock_locked.body", "en", day=_days_from_today(1))
+
+    await _lock_through(client, auth, _days_from_today(-1))
+    assert await _accounts(session, auth, lots) == ["1130-OB"]
+    assert len(await _placements(session, auth)) == 1
+    assert await _lock_notices(session, auth) == []
+    assert len(await _notices(session, auth, _PLACED)) == 1
 
 
 async def test_a_placement_that_fails_keeps_the_posting_account_change_and_tells_the_company(

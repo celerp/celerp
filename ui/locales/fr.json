@@ -4365,7 +4365,7 @@
   "notice.mfg_wip_recorded.title": "Matières en production enregistrées",
   "notice.older_stock_failed.body": "Le stock ancien sans compte de stock n'a pas pu être affecté à un compte en raison d'une erreur inattendue. Rien n'a été enregistré ni comptabilisé, et le prochain démarrage réessaiera. Si cet avis persiste, contactez le support.",
   "notice.older_stock_failed.title": "Le stock ancien n'a pas pu être affecté",
-  "notice.older_stock_locked.body": "Les comptes sont verrouillés jusqu'au {day}, le stock ancien n'a donc pas pu être affecté à un compte de stock : l'affectation est enregistrée à la date d'aujourd'hui. Déplacez le verrouillage de période avant aujourd'hui et le prochain démarrage l'affectera.",
+  "notice.older_stock_locked.body": "Les comptes sont verrouillés jusqu'au {day}, le stock ancien n'a donc pas pu être affecté à un compte de stock : l'affectation est enregistrée à la date d'aujourd'hui. Déplacez le verrouillage de période avant aujourd'hui et le stock sera affecté aussitôt.",
   "notice.older_stock_locked.title": "Le stock ancien attend une période ouverte",
   "notice.older_stock_moved.body": "Des versions antérieures ont comptabilisé le coût du stock d'ouverture vendu sur {p}, si bien que {p} et {ob} ne correspondaient à votre stock qu'ensemble. Une écriture datée du {day} a transféré {amount} {currency} de {ob} vers {p}, et votre stock ancien est maintenant sur {p}. Le stock total et les résultats reportés sont inchangés.",
   "notice.older_stock_moved.title": "Stock ancien transféré vers le stock acheté",

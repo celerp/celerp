@@ -715,15 +715,15 @@ class _Locked(_Retry):
 async def _notify_locked(session: AsyncSession, company_id) -> None:
     """Older stock left unplaced cannot be sold or moved until its account is known, so a
     company whose upgrade a period lock holds back is told which lock and how to go on:
-    move the lock before today, and the next start places it. Once per lock date; the
-    notice is removed when the upgrade runs (_place)."""
+    move the lock before today and the stock is placed at once (set_period_lock). One
+    notice kept current with the lock date; removed when the upgrade runs (_place)."""
     from celerp.notifications import service as notification_service
     from celerp.services.company_lock import locked_company
 
     day = str(((await locked_company(session, company_id)).settings or {}).get("lock_date") or "")
     title, body, i18n = _notice("notice.older_stock_locked", day=day)
-    await notification_service.notify_once(session, company_id, "accounting", title, body,
-                                           action_url=PERIOD_LOCK_PATH, i18n=i18n)
+    await notification_service.notify_standing(session, company_id, "accounting", title, body,
+                                               action_url=PERIOD_LOCK_PATH, i18n=i18n)
 
 
 async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) -> bool:

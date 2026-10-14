@@ -4365,7 +4365,7 @@
   "notice.mfg_wip_recorded.title": "仕掛中の材料を記録しました",
   "notice.older_stock_failed.body": "棚卸資産勘定のない旧在庫を、予期しないエラーのため勘定に割り当てられませんでした。記録や仕訳は何も行われておらず、次回の起動時に再試行します。この通知が消えない場合はサポートにお問い合わせください。",
   "notice.older_stock_failed.title": "旧在庫を割り当てられませんでした",
-  "notice.older_stock_locked.body": "帳簿は {day} までロックされているため、旧在庫を棚卸資産勘定に割り当てられませんでした。割り当ては本日付で記録されます。期間ロックを本日より前に移すと、次回の起動時に割り当てられます。",
+  "notice.older_stock_locked.body": "帳簿は {day} までロックされているため、旧在庫を棚卸資産勘定に割り当てられませんでした。割り当ては本日付で記録されます。期間ロックを本日より前に移すと、すぐに割り当てられます。",
   "notice.older_stock_locked.title": "旧在庫は期間の開放を待っています",
   "notice.older_stock_moved.body": "以前のリリースでは販売済みの期首在庫の原価を {p} に計上していたため、{p} と {ob} は合計でのみ在庫と一致していました。{day} 付の仕訳で {amount} {currency} を {ob} から {p} に振り替え、以前の在庫は {p} に計上されています。在庫総額と利益剰余金は変わりません。",
   "notice.older_stock_moved.title": "以前の在庫を仕入在庫に振り替えました",

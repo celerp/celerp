@@ -4365,7 +4365,7 @@
   "notice.mfg_wip_recorded.title": "Materialien in Produktion erfasst",
   "notice.older_stock_failed.body": "Älterer Bestand ohne Bestandskonto konnte wegen eines unerwarteten Fehlers keinem zugeordnet werden. Es wurde nichts erfasst oder gebucht, und der nächste Start versucht es erneut. Bleibt dieser Hinweis bestehen, wenden Sie sich an den Support.",
   "notice.older_stock_failed.title": "Älterer Bestand konnte nicht zugeordnet werden",
-  "notice.older_stock_locked.body": "Die Bücher sind bis {day} gesperrt, daher konnte älterer Bestand keinem Bestandskonto zugeordnet werden: Die Zuordnung wird mit heutigem Datum erfasst. Verschieben Sie die Periodensperre vor heute, dann ordnet der nächste Start ihn zu.",
+  "notice.older_stock_locked.body": "Die Bücher sind bis {day} gesperrt, daher konnte älterer Bestand keinem Bestandskonto zugeordnet werden: Die Zuordnung wird mit heutigem Datum erfasst. Verschieben Sie die Periodensperre vor heute, dann wird der Bestand sofort zugeordnet.",
   "notice.older_stock_locked.title": "Älterer Bestand wartet auf eine offene Periode",
   "notice.older_stock_moved.body": "Ältere Versionen buchten die Kosten von verkauftem Anfangsbestand auf {p}, daher stimmten {p} und {ob} nur zusammen mit Ihrem Bestand überein. Eine Buchung vom {day} hat {amount} {currency} von {ob} auf {p} umgebucht; Ihr älterer Bestand liegt jetzt auf {p}. Gesamtbestand und Gewinnvortrag sind unverändert.",
   "notice.older_stock_moved.title": "Älterer Bestand auf gekauften Bestand umgebucht",

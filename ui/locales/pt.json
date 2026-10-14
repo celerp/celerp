@@ -4365,7 +4365,7 @@
   "notice.mfg_wip_recorded.title": "Materiais em produção registrados",
   "notice.older_stock_failed.body": "O estoque antigo sem conta de estoque não pôde ser atribuído a uma por causa de um erro inesperado. Nada foi registrado ou lançado, e a próxima inicialização tentará de novo. Se este aviso continuar, fale com o suporte.",
   "notice.older_stock_failed.title": "Não foi possível atribuir o estoque antigo",
-  "notice.older_stock_locked.body": "Os livros estão bloqueados até {day}, então o estoque antigo não pôde ser atribuído a uma conta de estoque: a atribuição é registrada com a data de hoje. Mova o bloqueio de período para antes de hoje e a próxima inicialização o atribuirá.",
+  "notice.older_stock_locked.body": "Os livros estão bloqueados até {day}, então o estoque antigo não pôde ser atribuído a uma conta de estoque: a atribuição é registrada com a data de hoje. Mova o bloqueio de período para antes de hoje e o estoque será atribuído na hora.",
   "notice.older_stock_locked.title": "O estoque antigo aguarda um período aberto",
   "notice.older_stock_moved.body": "Versões anteriores lançaram o custo do estoque inicial vendido em {p}, de modo que {p} e {ob} só correspondiam ao seu estoque em conjunto. Um lançamento datado de {day} transferiu {amount} {currency} de {ob} para {p}, e seu estoque antigo agora está em {p}. O estoque total e os lucros acumulados não mudam.",
   "notice.older_stock_moved.title": "Estoque antigo transferido para estoque comprado",
