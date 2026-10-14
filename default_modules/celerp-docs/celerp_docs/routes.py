@@ -11931,9 +11931,10 @@ async def _set_list_fields(session, company_id, entity_id, user, fields: dict):
     return await _emit_list(session, company_id, entity_id, "list.updated", {"fields_changed": fc}, user)
 
 
-def _ambiguous_sku_detail(code: str) -> str:
-    """The one message for an ambiguous SKU: never silently pick a lot - the operator disambiguates."""
-    return f"{code}: multiple items share this SKU; scan a barcode or choose a lot"
+def _ambiguous_sku_detail(code: str, pieces: int) -> str:
+    """The one message for an ambiguous product code: never silently pick a piece - the piece handed
+    over must be the piece on the record, so the operator scans its own code."""
+    return f"{code}: {pieces} pieces share this code - scan the piece's own barcode or tag"
 
 
 def _unknown_code_detail(code: str) -> str:
@@ -12022,7 +12023,7 @@ def _scan_line(item: Projection, quantity, *, priced: bool, price_list: str | No
     st = item.state or {}
     # Carry the item's unit so the stored line renders with it (a 650 gram scan stays 650 gram, not a
     # bare 650). unit and sell_by are the same value; the line row reads either.
-    line = {"item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
+    line = {"line_id": uuid.uuid4().hex, "item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
             "description": st.get("name"), "barcode": st.get("barcode"),
             "unit": st.get("sell_by"), "sell_by": st.get("sell_by"), "quantity": float(quantity or 0)}
     if priced:
@@ -12190,17 +12191,25 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
                           codes: list[str], sb: ScanBehavior, settings: dict, *, noun: str,
                           build, admit=None) -> tuple[list[dict], list[dict]]:
     """Place a scan run on a record's lines, in place, as its scan behaviour says: the one loop
-    behind every list and document scan. Returns (results, failed).
+    behind every list and document scan. Returns (results, failed); each placed code's result names
+    the line it added or raised.
 
     The run resolves against one inventory load and each code picks its lot by `sb.lots`. A record
-    past draft (a locked audit) only checks off the lines it holds. Otherwise a lot already on the
-    record (a stored line, one placed earlier in this run, or one a concurrent run committed before
-    the caller took the row lock) is placed as the scan behaviour says: a counting draft moves its
-    line to the top, an item that counts one per scan (by `sb.quantity`) adds one to its line, and
-    anything else, or any repeat of an RFID tag, is reported as already on the record. A new line is made by `build` from the lot and the quantity it takes,
-    and must pass the shared quantity rule and the caller's own writer rules (`admit`,
-    returning a (reason, label) refusal or None). A code any rule refuses is reported and skipped,
-    never aborting the run."""
+    past draft (a locked audit) only checks off the lines it holds, and a counting draft moves a
+    line it already holds to the top. Otherwise:
+      - a splittable lot or an item kept in no stock raises its line by one, or starts a line of
+        one, whatever code named it; where goods leave stock (`sb.unstocked` refuse) a line never
+        takes more than is on hand;
+      - a lot that may not be split is one physical piece and takes its whole on-hand on a new
+        line, `build` making it; a repeat is reported as already on the record where
+        `sb.repeats` refuses it and is another line where goods are bought in;
+      - a lot with nothing on hand goes by `sb.unstocked`.
+    An RFID tag names one piece: the same tag read again in one run is the same read and passes
+    silently, and a tag already on the record from an earlier run is reported. "On the record"
+    counts stored lines, lines placed earlier in this run, and lines a concurrent run committed
+    before the caller took the row lock. A line must pass the shared quantity rule and the caller's
+    own writer rules (`admit`, returning a (reason, label) refusal or None). A code any rule
+    refuses is reported and skipped, never aborting the run."""
     from celerp_inventory.services import duplicate_barcode_detail, resolve_items_by_codes
 
     resolved = await resolve_items_by_codes(session, company_id, codes)
@@ -12209,6 +12218,7 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     now = datetime.now(timezone.utc).isoformat()
     results: list[dict] = []
     failed: list[dict] = []
+    tagged: set[str] = set()  # lots read by RFID tag in this run
     for code in codes:
         res = resolved.get(code)
         if res is not None and res.duplicate_physical:
@@ -12224,6 +12234,10 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
                 reason, label = _locked_manifest_failure(code, None, lines)
             _scan_failure(failed, results, code, reason, label)
             continue
+        if res.kind == "rfid_epc":
+            if lot.entity_id in tagged:
+                continue  # the same tag read twice in one pass is one read
+            tagged.add(lot.entity_id)
 
         idx = next((i for i, l in enumerate(lines) if (l.get("item_id") or l.get("entity_id")) == lot.entity_id), None)
         if locked:
@@ -12237,40 +12251,56 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
             lines.insert(0, line)      # newest scan to the top (GDR 2n)
             result_state = "audited"
         elif idx is not None and sb.finalized == "count":
-            lines.insert(0, lines.pop(idx))  # a counting manifest is a set: the scan moves its line up
+            line = lines.pop(idx)
+            lines.insert(0, line)  # a counting manifest is a set: the scan moves its line up
             result_state = "present"
         else:
-            counted = sb.quantity != "snapshot" and (
-                sb.quantity == "count" or not is_stock_type(lot.state)
-                or (sb.quantity == "stock_or_one" and not float(on_hand or 0) > 0))
-            if idx is not None and (not counted or res.kind == "rfid_epc"):  # an RFID tag is one piece
+            stocked = is_stock_type(lot.state)
+            whole = sb.unstocked == "snapshot" or _whole_piece(lot.state)
+            if idx is not None and (res.kind == "rfid_epc" or (whole and sb.repeats == "refuse")):
                 _scan_failure(failed, results, code, "duplicate_scan",
                               f"{code}: already on {noun}{_sku_note(code, lot)}")
                 continue
-            line = ({**lines[idx], "quantity": float(lines[idx].get("quantity") or 0) + 1} if idx is not None
-                    else build(lot, 1 if counted else on_hand))
-            if sb.quantity != "snapshot":
+            empty = stocked and not float(on_hand or 0) > 0
+            if whole or idx is None:
+                line = build(lot, 1 if not whole and not empty or empty and sb.unstocked == "one" else on_hand)
+            else:
+                line = {**lines[idx], "quantity": float(lines[idx].get("quantity") or 0) + 1}
+                line["line_id"] = line.get("line_id") or uuid.uuid4().hex
+            sku = lot.state.get("sku") or code
+            if sb.unstocked != "snapshot":
                 # The same per-line rule as an ordinary writer: a stocked line carries a quantity its
                 # unit allows, so a stocked item with nothing on hand is reported, never placed.
                 try:
                     _check_line_quantity(line.get("quantity"), line.get("sell_by"), unit_map,
-                                         require_positive=True, label=lot.state.get("sku") or code)
+                                         require_positive=True, label=sku)
                 except HTTPException as exc:
                     _scan_failure(failed, results, code, "invalid_quantity", exc.detail)
                     continue
-            if idx is None and admit is not None and (refused := admit(lot, lines + [line])) is not None:
+            if sb.unstocked == "refuse" and stocked and not whole and line["quantity"] > float(on_hand or 0):
+                _scan_failure(failed, results, code, "insufficient_stock",
+                              f"{sku}: insufficient stock - {line['quantity']:g} on {noun}, "
+                              f"available {float(on_hand or 0):g}")
+                continue
+            placed = lines[:idx] + [line] + lines[idx + 1:] if not whole and idx is not None else lines + [line]
+            if admit is not None and (refused := admit(lot, placed)) is not None:
                 _scan_failure(failed, results, code, *refused)
                 continue
-            if idx is not None:
+            if not whole and idx is not None:
                 lines[idx] = line
             elif sb.finalized == "count":
                 lines.insert(0, line)  # a counting manifest shows the newest scan first
             else:
                 lines.append(line)
             result_state = "added"
-        results.append({"code": code, "state": result_state,
-                        "item_id": lot.entity_id, "sku": lot.state.get("sku")})
+        results.append({"code": code, "state": result_state, "item_id": lot.entity_id,
+                        "sku": lot.state.get("sku"), "line_id": line.get("line_id")})
     return results, failed
+
+
+def _whole_piece(item_state: dict | None) -> bool:
+    """A stocked lot that may not be split: one physical piece, taken whole and placed once."""
+    return is_stock_type(item_state or {}) and not splitting_allowed(item_state or {})
 
 
 def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
@@ -12282,8 +12312,9 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
     the product: lots out of use are passed over, lots held for another record are taken only when
     nothing else is left (the writer then refuses them, naming the holder), and what remains is
     picked by the record's scan behaviour - the pick-order representative of splittable stock
-    (consolidate) or a sold lot first (sold, for returns). Several lots still left is ambiguous. A
-    list names its lot outright (single): a product code matching several lots is ambiguous."""
+    (consolidate) or a sold lot first (sold, for returns). Several lots still left is ambiguous: a
+    piece that may not be split is never chosen for the operator, who scans its own barcode or tag.
+    A list names its lot outright (single): a product code matching several lots is ambiguous."""
     from celerp_inventory.projections import held_elsewhere
     from celerp_inventory.services import HIDDEN_STATUSES
     from celerp.services.pick import consolidate_sales_lots
@@ -12293,7 +12324,7 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
 
     if sb.lots == "single":
         if res.ambiguous:
-            return None, 0, "ambiguous_sku", _ambiguous_sku_detail(code)
+            return None, 0, "ambiguous_sku", _ambiguous_sku_detail(code, len(res.matches))
         if res.one is None:
             return None, 0, "unknown_code", _unknown_code_detail(code)
         if status(res.one) == "draft":
@@ -12317,7 +12348,7 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
     if sb.lots == "consolidate":
         picked = consolidate_sales_lots(picked, settings)
     if len(picked) > 1:
-        return None, 0, "ambiguous_sku", _ambiguous_sku_detail(code)
+        return None, 0, "ambiguous_sku", _ambiguous_sku_detail(code, len(picked))
     return next(m for m in stock if m.entity_id == picked[0]["entity_id"]), picked[0].get("quantity"), None, None
 
 

@@ -4897,7 +4897,8 @@ celerpUpdateBulkAlloc();
           a non-Latin SKU, and Starlette encodes headers as Latin-1, which would 500 after the good
           scans had already committed and leave the client able to re-submit and duplicate them;
         - `version`: the record version after the write, so the client's optimistic-lock token
-          tracks it (a later line save must not 409 on a stale version).
+          tracks it (a later line save must not 409 on a stale version);
+        - `lines`: the line ids the run added or raised, which the client highlights until the next run.
         """
         from starlette.responses import JSONResponse as _JSON
         token = _token(request)
@@ -4921,8 +4922,9 @@ celerpUpdateBulkAlloc();
             return _JSON(body, status_code=e.status or 400)
         res = res or {}
         html = (await tbody(token, form)) if tbody else ""
+        lines = list(dict.fromkeys(r["line_id"] for r in res.get("results") or [] if r.get("line_id")))
         return _JSON({"scanned": res.get("scanned", 0), "failed": res.get("failed") or [],
-                      "html": html, "version": res.get("version")})
+                      "html": html, "version": res.get("version"), "lines": lines})
 
     @app.post("/docs/{entity_id}/scan")
     async def doc_scan(request: Request, entity_id: str):
@@ -8111,8 +8113,9 @@ function _celerpPickerStatus(text) {{
             // Best-effort: refresh the visible lines. A failure here never resurrects the pruned codes -
             // the lines are already committed and will appear on the next natural render. The version is
             // advanced only inside a successful install (see _celerpInstallLineBody).
+            window._celerpScannedLines = data.lines || [];
             try {{
-                await _celerpInstallLineBody(data.html || '', data.version);
+                if (await _celerpInstallLineBody(data.html || '', data.version)) _celerpMarkScanned(true);
             }} catch (err) {{ /* refresh is best-effort; codes are already acknowledged */ }}
             _clearStatusSoon();
             return true;
@@ -8959,6 +8962,23 @@ async function _celerpFetchLineBody() {{
     const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
     return doc.getElementById('{line_body_id}');
 }}
+/* The lines the last scan run added or raised keep the scanned highlight, through any re-render of
+   the rows, until the next run replaces them. Rows stay in their stored order; after a scan the
+   first highlighted row is scrolled into view. */
+window._celerpScannedLines = window._celerpScannedLines || [];
+function _celerpMarkScanned(scroll) {{
+    const tbody = document.getElementById('{line_body_id}');
+    if (!tbody) return;
+    let first = null;
+    tbody.querySelectorAll('tr').forEach(function(row) {{
+        const ref = row.querySelector('[data-name="line_id"], [data-line-id]');
+        const id = ref ? (ref.dataset.lineId || ref.value || '') : '';
+        const on = !!id && window._celerpScannedLines.indexOf(id) >= 0;
+        row.classList.toggle('data-row--scanned', on);
+        if (on && !first) first = row;
+    }});
+    if (scroll && first) first.scrollIntoView({{block: 'nearest'}});
+}}
 async function _celerpInstallLineBody(html, version) {{
     if (!html) {{
         const fresh = await _celerpFetchLineBody();
@@ -8976,6 +8996,7 @@ async function _celerpInstallLineBody(html, version) {{
     // The installed rows are the stored window now, so the next save replaces exactly them.
     if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
     celerpUpdateTotals();
+    _celerpMarkScanned(false);
     _celerpHadLines = true;
     if (version != null) _celerpEntityVersion = version;
     return true;

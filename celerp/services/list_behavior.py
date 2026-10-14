@@ -42,7 +42,7 @@ class ListBehavior:
     finalize_milestone: str | None = None   # timestamp set on finalize, or "freeze_onhand" sentinel
     terminal: tuple[TerminalAction, ...] = ()
     scan_finalized: str = "noop"            # scan behaviour once finalized: count | receive | noop
-    scan_quantity: str = "stock"            # what a scanned line takes (ScanBehavior.quantity)
+    scan_unstocked: str = "refuse"          # a scanned lot with nothing on hand (ScanBehavior.unstocked)
     customs: bool = False                   # value-bearing but non-accounting: per-line customs
                                             # value/HS/origin columns, declared total, no disc/tax
 
@@ -57,7 +57,7 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
             TerminalAction("convert-invoice", "Convert to invoice", "converted"),
             TerminalAction("convert-memo", "Convert to memo", "converted"),
         ),
-        scan_finalized="noop", scan_quantity="stock_or_one",  # as a quotation document
+        scan_finalized="noop", scan_unstocked="one",  # as a quotation document
     ),
     "transfer": ListBehavior(
         label="Transfer", money=False, finalize_label="Issue", finalize_milestone="issued_at",
@@ -73,7 +73,7 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
             "adjust", "Adjust stock", "stock_adjusted",
             confirm="Apply the counted quantities to stock? This posts a journal entry.",
             manager=True),),
-        scan_finalized="count", scan_quantity="snapshot",
+        scan_finalized="count", scan_unstocked="snapshot",
     ),
     "writeoff": ListBehavior(
         # Event-based (enter the known quantity leaving stock per line), vs audit's count-based
@@ -115,14 +115,18 @@ class ScanBehavior:
     finalized: str  # once past draft: count (check off a locked manifest) | noop (scanning refused)
     priced: bool    # added lines carry a unit price from the chosen price list
     lots: str       # how a product code (GTIN/SKU) picks its lot: single | consolidate | sold
-    # What a scanned lot's line takes, and what a repeat scan of it does:
-    #   stock         its on-hand; nothing on hand is refused; a repeat is reported as already there
-    #   stock_or_one  as stock, but nothing on hand takes one and each repeat counts one more
-    #   count         one unit per scan, stocked or not; each repeat counts one more on its line
-    #   snapshot      its on-hand as it stands, zero included (a stock count)
-    # An item kept in no stock (a service) counts one per scan except under snapshot, and an RFID
-    # tag names one piece, so its repeat is always reported.
-    quantity: str = "stock"
+    # A splittable lot or an item kept in no stock (a service) raises its line by one per scan, a
+    # lot that may not be split takes all it has on hand. A scanned lot by `unstocked`:
+    #   refuse    nothing on hand is reported, and no line takes more than is on hand (goods
+    #             leaving stock)
+    #   one       nothing on hand is taken at one (goods bought in, or offered before they are
+    #             stocked)
+    #   snapshot  every lot takes its on-hand as it stands, zero included (a stock count)
+    unstocked: str = "refuse"
+    # A repeat of a lot that may not be split, by `repeats`: refuse reports it as already on the
+    # record (it is one physical lot), append adds it as another line (another lot bought in). An
+    # RFID tag from an earlier run names the one piece already there, so it is always reported.
+    repeats: str = "refuse"
 
 
 # The record field holding its recent scan runs, so a retried run replays instead of re-adding.
@@ -132,9 +136,10 @@ SCAN_RUNS_FIELD = "scan_runs"
 # Every document type's scan; a type not listed scans as a sale. A shipping document is a list
 # type and scans through LIST_BEHAVIOR.
 _DOC_SCAN_SALE = ScanBehavior(finalized="noop", priced=True, lots="consolidate")
-_DOC_SCAN_BUY = ScanBehavior(finalized="noop", priced=True, lots="consolidate", quantity="count")
+_DOC_SCAN_BUY = ScanBehavior(finalized="noop", priced=True, lots="consolidate", unstocked="one", repeats="append")
 DOC_SCAN_BEHAVIOR: dict[str, ScanBehavior] = {
-    # Goods sold or taken out of stock: a lot takes what is on hand, once.
+    # Goods sold or taken out of stock: a lot must be on hand, and a lot that may not be split
+    # is on the document once.
     "invoice": _DOC_SCAN_SALE,
     "memo": _DOC_SCAN_SALE,
     "proforma": _DOC_SCAN_SALE,
@@ -143,8 +148,9 @@ DOC_SCAN_BEHAVIOR: dict[str, ScanBehavior] = {
     "production_order": _DOC_SCAN_SALE,
     "credit_note": ScanBehavior(finalized="noop", priced=True, lots="sold"),  # a return takes the sold lot
     # A quote may offer goods not yet in stock.
-    "quotation": ScanBehavior(finalized="noop", priced=True, lots="consolidate", quantity="stock_or_one"),
-    # Goods being bought in: each scan is one more unit.
+    "quotation": ScanBehavior(finalized="noop", priced=True, lots="consolidate", unstocked="one"),
+    # Goods being bought in: nothing need be on hand, and a repeat of a lot that may not be split
+    # is another lot.
     "purchase_order": _DOC_SCAN_BUY,
     "subscription_po": _DOC_SCAN_BUY,
     "bill": _DOC_SCAN_BUY,
@@ -156,7 +162,7 @@ def scan_behavior(kind: str, doc_type: str | None) -> ScanBehavior:
     """The scan behaviour of a list (kind "lists", by list_type) or a document (kind "docs")."""
     if kind == "lists":
         b = behavior(doc_type)
-        return ScanBehavior(finalized=b.scan_finalized, priced=b.money, lots="single", quantity=b.scan_quantity)
+        return ScanBehavior(finalized=b.scan_finalized, priced=b.money, lots="single", unstocked=b.scan_unstocked)
     return DOC_SCAN_BEHAVIOR.get(doc_type or "", _DOC_SCAN_SALE)
 
 

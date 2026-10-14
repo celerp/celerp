@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Two scan batches submitted to one document at the same moment both land, and a
-non-splittable item in both lands once. Each batch runs on its own committed session,
+"""Two scan batches submitted to one document at the same moment both land: a splittable item
+in both is one line of two, and a non-splittable item in both lands once. Each batch runs on its own committed session,
 so a lost update or a doubled line would show in the final committed state; the doc
 row lock taken before the read is what serializes them."""
 
@@ -122,13 +122,13 @@ async def test_concurrent_same_unique_item_lands_once(_db_engine):
 
 @pytest.mark.asyncio
 async def test_concurrent_same_lot_lands_one_full_line(_db_engine):
-    """A splittable 5-unit lot in two concurrent batches lands as one line of 5; the batch that
+    """A non-splittable 5-unit lot in two concurrent batches lands as one line of 5; the batch that
     reads it under the row lock second reports it as already on the document."""
     factory = _factory(_db_engine)
     company_id, user_id, user = await _seed_company(factory)
     try:
         bc = _barcode()
-        item = await _seed_unique_item(factory, company_id, user, sku="S5", barcode=bc, splitting=True, quantity=5)
+        item = await _seed_unique_item(factory, company_id, user, sku="S5", barcode=bc, splitting=False, quantity=5)
         doc = await _seed_draft_doc(factory, company_id, user, "invoice")
 
         outcome = await _race(factory, company_id, user, doc, {"k1": bc, "k2": bc})
@@ -145,22 +145,22 @@ async def test_concurrent_same_lot_lands_one_full_line(_db_engine):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("on_hand", [0, 5])
-async def test_concurrent_counted_scans_add_up(_db_engine, on_hand):
-    """A purchase order counts one unit per scan, stocked or not; two concurrent batches both
-    count, onto the one line."""
+@pytest.mark.parametrize(("doc_type", "on_hand"), [("purchase_order", 0), ("purchase_order", 5), ("invoice", 5)])
+async def test_concurrent_scans_of_a_splittable_lot_are_one_line_of_two(_db_engine, doc_type, on_hand):
+    """A repeat raises the line: two concurrent batches scanning one splittable lot leave exactly
+    one line of two, neither scan lost."""
     factory = _factory(_db_engine)
     company_id, user_id, user = await _seed_company(factory)
     try:
         bc = _barcode()
-        item = await _seed_unique_item(factory, company_id, user, sku="Z0", barcode=bc, splitting=False, quantity=on_hand)
-        doc = await _seed_draft_doc(factory, company_id, user, "purchase_order")
+        item = await _seed_unique_item(factory, company_id, user, sku="Z0", barcode=bc, splitting=True, quantity=on_hand)
+        doc = await _seed_draft_doc(factory, company_id, user, doc_type)
 
         outcome = await _race(factory, company_id, user, doc, {"k1": bc, "k2": bc})
 
         assert [r["scanned"] for r in outcome.values()] == [1, 1], outcome
         state = await _state(factory, company_id, doc)
         assert [line.get("item_id") for line in state["line_items"]] == [item]
-        assert float(state["line_items"][0]["quantity"]) == 2.0
+        assert [float(line["quantity"]) for line in state["line_items"]] == [2.0]
     finally:
         await _cleanup(factory, company_id, user_id)
