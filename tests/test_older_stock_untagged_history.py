@@ -232,6 +232,26 @@ async def test_a_bank_account_is_never_possible_stock_evidence(session, client, 
     assert (await _net(session, auth, "1111"))[0] == 5000.0
 
 
+async def test_a_lot_whose_stock_evidence_is_uncertain_still_sells(session, client, auth):
+    """Only booking the uncertain evidence is refused: the lot itself sells on an invoice
+    as any other, and the sale recognizes its cost."""
+    (lot,) = await _older_books(session, client, auth, {"inventory_opening": ["1130-OB"], "tax_input": ["1130-OB"]})
+    await _startup(session)
+    (placement,) = (await _view(client, auth))["placements"]
+    assert placement["classification"] == "uncertain"
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "contact_name": "Buyer",
+        "line_items": [{"entity_id": lot, "name": "Older lot", "quantity": 1, "unit_price": 100.0}]})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    r = await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    fin = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": f"je:auto:{doc}:fin"})
+    assert fin is not None and fin.state["status"] == "posted"
+    assert sum(e.get("debit") or 0 for e in fin.state["entries"] if e["account"].startswith("5")) == 30.0
+
+
 async def test_refusing_to_book_uncertain_evidence_names_every_account(session, client, auth):
     """Uncertain lines on 1130-X and 1130-Y: the refusal names both, each with its amount
     and entries, not only the first."""
