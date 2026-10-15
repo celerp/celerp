@@ -969,7 +969,12 @@ class GatewayClient:
         # The local server takes a forwarding address from this machine as the visitor's,
         # but the one the relay copies names an edge server or whatever the visitor typed.
         # Without it every proxied visitor arrives from loopback, which names no one.
-        headers = {k: v for k, v in headers.items() if k.lower() != "x-forwarded-for"}
+        # The caller header is likewise trusted from loopback as the visitor the UI
+        # server names, so a visitor who sets it would choose whose sign-ins they spend.
+        from celerp.services.auth import CALLER_HEADER
+
+        dropped = {"x-forwarded-for", CALLER_HEADER.lower()}
+        headers = {k: v for k, v in headers.items() if k.lower() not in dropped}
 
         url = f"http://127.0.0.1:{port}{raw_path}"
         if query:

@@ -369,3 +369,25 @@ async def test_a_proxied_visitor_reaches_the_ui_from_the_gateway_never_a_forward
         await gw._handle_proxy_request({"id": "f", "method": "GET", "path": "/login", "query": "",
                                         "headers": {**forwarded, "x-forwarded-proto": "https"}, "body_b64": ""})
     assert seen == ["127.0.0.1"] * 3
+
+
+@pytest.mark.asyncio
+async def test_a_proxied_visitor_can_never_name_the_caller_the_api_counts(gw, monkeypatch):
+    """The API takes the caller header from a loopback request as the visitor the UI
+    server names. The gateway's requests arrive from loopback too, so a visitor who sets
+    that header through the relay would choose who their sign-ins count against: the
+    gateway drops it, in every spelling, on every proxied path."""
+    from celerp.services.auth import CALLER_HEADER
+
+    seen: list = []
+
+    async def _record(scope, receive, send):
+        seen.append({k.decode().lower(): v.decode() for k, v in scope["headers"]}.get(CALLER_HEADER.lower()))
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    _install_asgi_client(monkeypatch, _record)
+    for path in ("/share/abc", "/pay/abc", "/login"):
+        for spelling in (CALLER_HEADER, CALLER_HEADER.lower(), CALLER_HEADER.upper()):
+            await gw._handle_proxy_request({"id": "c", "method": "GET", "path": path, "query": "",
+                                            "headers": {spelling: "198.51.100.77"}, "body_b64": ""})
+    assert seen == [None] * 9
