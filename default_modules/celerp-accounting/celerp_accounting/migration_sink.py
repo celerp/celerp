@@ -29,12 +29,15 @@ from celerp.importers.schema import (
     ReconciliationMeasure,
 )
 from celerp.accounting_roles import AccountRole
+from celerp.models.projections import Projection
+from celerp.services.doc_balance import doc_value, outstanding_balance
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkContext
 from celerp.services.account_roles import current_settings, merge_survivors, record_source_control, source_controls
 from celerp.services.migration_core_sink import (
     deterministic_id,
     import_prepared,
     mapped_targets,
+    run_targets,
     sink_result,
 )
 from celerp.services.money import round_money, to_stored_float
@@ -80,6 +83,11 @@ _PARTY_MEASURES = {
     ReconciliationMeasure.AP_BY_SUPPLIER: AccountRole.PAYABLE,
 }
 
+_DOCUMENT_RESIDUALS = {
+    ReconciliationMeasure.AR_DOCUMENT_RESIDUAL: AccountRole.RECEIVABLE,
+    ReconciliationMeasure.AP_DOCUMENT_RESIDUAL: AccountRole.PAYABLE,
+}
+
 
 class AccountingMigrationSink:
     key = "celerp-accounting"
@@ -99,6 +107,7 @@ class AccountingMigrationSink:
     ) -> list[DestinationMeasurement]:
         wanted = [e for e in expectations.expectations if e.measure in (
             _ACCOUNT_MEASURES | _CONTROL_MEASURES.keys() | _PARTY_MEASURES.keys()
+            | _DOCUMENT_RESIDUALS.keys()
             | {ReconciliationMeasure.DEBITS_EQUAL_CREDITS}
         )]
         if not wanted:
@@ -120,6 +129,36 @@ class AccountingMigrationSink:
                     bucket = (entry.get("account") or "", _line_party(refs, je_id, entry, survivors))
                     party_totals[bucket] = party_totals.get(bucket, Decimal(0)) + amounts[0] - amounts[1]
 
+        open_ar = Decimal(0)
+        open_ap = Decimal(0)
+        if any(e.measure in _DOCUMENT_RESIDUALS for e in wanted):
+            doc_ids = await run_targets(context, "doc")
+            found: set[str] = set()
+            for start in range(0, len(doc_ids), 500):
+                rows = (await context.session.execute(select(Projection).where(
+                    Projection.company_id == context.company_id,
+                    Projection.entity_id.in_(doc_ids[start:start + 500]),
+                    Projection.entity_type == "doc",
+                ))).scalars()
+                for document in rows:
+                    found.add(document.entity_id)
+                    state = document.state or {}
+                    if doc_value(state, "total") in (None, ""):
+                        raise ValueError("An imported document has no measurable total")
+                    balance = outstanding_balance(state)
+                    if balance is None:
+                        raise ValueError("An imported document has no measurable outstanding balance")
+                    doc_type = state.get("doc_type")
+                    if doc_type == "invoice":
+                        open_ar += balance
+                    elif doc_type == "credit_note":
+                        open_ar -= balance
+                    elif doc_type == "bill":
+                        open_ap += balance
+                    elif doc_type == "debit_note":
+                        open_ap -= balance
+            if len(found) != len(set(doc_ids)):
+                raise ValueError("An imported document could not be measured for reconciliation")
         out: list[DestinationMeasurement] = []
         for e in wanted:
             if e.measure == ReconciliationMeasure.DEBITS_EQUAL_CREDITS:
@@ -128,6 +167,11 @@ class AccountingMigrationSink:
                 if e.key not in codes:
                     continue
                 actual = balances.get(codes[e.key], Decimal(0))
+            elif e.measure in _DOCUMENT_RESIDUALS:
+                role = _DOCUMENT_RESIDUALS[e.measure]
+                control = sum((balances.get(code, Decimal(0)) for code in source_controls(settings, role)),
+                              Decimal(0))
+                actual = (control - open_ar if role == AccountRole.RECEIVABLE else control + open_ap)
             elif e.measure in _CONTROL_MEASURES:
                 controls = [codes[e.key]] if e.key in codes else source_controls(settings, _CONTROL_MEASURES[e.measure])
                 actual = sum((balances.get(code, Decimal(0)) for code in controls), Decimal(0))

@@ -562,6 +562,8 @@ class ReconciliationMeasure(StrEnum):
     AR_BY_CUSTOMER = "ar_by_customer"
     AP_CONTROL = "ap_control"
     AP_BY_SUPPLIER = "ap_by_supplier"
+    AR_DOCUMENT_RESIDUAL = "ar_document_residual"
+    AP_DOCUMENT_RESIDUAL = "ap_document_residual"
     BANK_CASH = "bank_cash"
     INVENTORY_QUANTITY = "inventory_quantity"
     INVENTORY_VALUE = "inventory_value"

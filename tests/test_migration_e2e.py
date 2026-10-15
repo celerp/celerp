@@ -612,3 +612,43 @@ async def test_discard_keeps_attachment_files_until_commit_and_survives_a_storag
     warnings = [r.getMessage() for r in caplog.records if r.name == "celerp.services.migrations"]
     assert any(str(task_id) in m and "kept for a retry" in m for m in warnings), warnings
     assert all(company not in m for m in warnings)
+
+@pytest.mark.parametrize("doc_type, measure", [
+    ("invoice", "ar_document_residual"), ("bill", "ap_document_residual"),
+])
+async def test_open_documents_must_tie_out_to_imported_control_balances(
+    real_engine, monkeypatch, tmp_path, doc_type, measure,
+):
+    """A balanced ledger alone cannot prove the imported open documents are correct."""
+    from decimal import Decimal
+    from celerp.models.projections import Projection
+    from celerp.services import migrations
+    from fixtures.manager_io.support import BASIC
+
+    run, rejected = await migrate(real_engine, BASIC.read_bytes(), BASIC.name,
+                                  {"mode": "full_history"}, monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    initial = {row["check"]: row for row in run.reconciliation["rows"]
+               if row["check"] == measure}
+    assert initial[measure]["result"] == "pass"
+
+    async with maker(real_engine)() as session:
+        row = (await session.execute(select(Projection).where(
+            Projection.company_id == run.company_id,
+            Projection.entity_type == "doc",
+        ))).scalars().all()
+        target = next(p for p in row if p.state.get("doc_type") == doc_type
+                      and Decimal(str(p.state.get("amount_outstanding", 0))) > 0)
+        previous = Decimal(str(target.state["amount_outstanding"]))
+        target.state = {**target.state, "amount_outstanding": str(previous + Decimal("7.00"))}
+        await session.commit()
+
+    async with maker(real_engine)() as session:
+        refreshed = await session.get(type(run), run.id)
+        report = await migrations._verification(session, refreshed)
+    by_check = {row["check"]: row for row in report["rows"] if row["check"] == measure}
+    assert by_check[measure]["result"] == "fail"
+    assert Decimal(by_check[measure]["difference"]) in (Decimal("-7"), Decimal("7"))
+    assert all(row["result"] == "pass" for row in report["rows"]
+               if row["check"] in ("ar_control", "ap_control"))
