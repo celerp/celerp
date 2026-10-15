@@ -1168,7 +1168,8 @@ def test_older_stock_notices_translate():
             "older_stock.col_by", "older_stock.col_amount", "older_stock.col_correction", "older_stock.corrections", "older_stock.no_corrections",
             "older_stock.kind.recognize", "older_stock.kind.unresolve", "enum.older_stock_classification.exact",
             "enum.older_stock_classification.transfer", "enum.older_stock_classification.opening_stock",
-            "enum.older_stock_classification.unresolved",
+            "enum.older_stock_classification.unresolved", "enum.older_stock_classification.uncertain",
+            "older_stock.book_difference_confirm", "older_stock.open.uncertain", "older_stock.correct.uncertain",
             "inventory.account_moved_since")
     for lang in _LOCALES:
         catalog = json.loads((locales / f"{lang}.json").read_text(encoding="utf-8"))

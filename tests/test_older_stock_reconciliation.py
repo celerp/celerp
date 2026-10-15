@@ -229,6 +229,14 @@ async def _sold(client, auth, item_id: str):
     return await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"])
 
 
+def _evidence(findings: list[dict]) -> list[tuple[str, float]]:
+    """The books check's findings, which must all be lines that may or may not have been
+    stock, as (account, amount), each from one entry."""
+    assert {f["kind"] for f in findings} <= {"uncertain_evidence"}, findings
+    assert all(len(f["entries"]) == 1 for f in findings), findings
+    return [(f["account"], f["amount"]) for f in findings]
+
+
 async def test_cash_sales_and_receivables_on_any_account_are_never_counted_as_stock(session, client, auth):
     """Only lines posted for an inventory role are stock: a bank is refused as an
     inventory account, a receivable once used as purchased inventory keeps its sales,
@@ -260,7 +268,9 @@ async def test_cash_sales_and_receivables_on_any_account_are_never_counted_as_st
     (record,) = await _records(session, auth)
     assert record["rooms"] == {"1130-P": 60000.0, "1130-OB": 40000.0, "1120": 0.0}
     assert (record["transferred"], record["recognized"], record["unresolved"]) == (40000.0, 0.0, 0.0)
-    assert await _off_books(session, auth) == []
+    # The credit sale on 1120 carries no roles of its own and 1120 has served both a
+    # receivable and purchased inventory: it is shown for review, never counted or booked.
+    assert _evidence(await _off_books(session, auth)) == [("1120", 3000.0)]
 
 
 async def test_a_bank_or_receivable_already_in_the_inventory_history_keeps_its_balance(session, client, auth):
@@ -289,7 +299,7 @@ async def test_a_bank_or_receivable_already_in_the_inventory_history_keeps_its_b
     (record,) = await _records(session, auth)
     assert record["rooms"] == {"1130-P": 60000.0, "1130-OB": 40000.0, "1111": 0.0, "1120": 0.0}
     assert (record["transferred"], record["recognized"], record["unresolved"]) == (40000.0, 0.0, 0.0)
-    assert await _off_books(session, auth) == []
+    assert _evidence(await _off_books(session, auth)) == [("1111", 5000.0), ("1120", 3000.0)]
 
 
 async def test_prepaid_rent_on_an_account_once_used_as_purchased_inventory_is_never_swept(session, client, auth):

@@ -464,17 +464,28 @@ def _retained(view: dict) -> str:
     return account_label(view.get("retained")) or role_label("retained_earnings", "Retained earnings")
 
 
+def _uncertain_text(found: dict, currency: str | None) -> str:
+    """Lines on an account that may or may not have been stock: the account, their
+    amount and the entries holding them (lot_origin.uncertain_evidence)."""
+    return t("older_stock.open.uncertain", account=found["account"], amount=fmt_money(found["amount"], currency),
+             entries=", ".join(found["entries"]))
+
+
 def _placement_row(p: dict, currency: str, filters: dict, retained: str) -> FT:
     """A placement: its classification, what it transferred between accounts, recognized as
     opening stock and left unresolved, the journal entries it posted, and the correction
     each difference allows (lot_origin.correct_placements). A surplus stays open as a plain
-    line with one explicit write-off, confirmed naming the account it posts to, and a
-    write-off is undone in one click."""
+    line with one explicit write-off, and a shortfall is booked the same way, each
+    confirmed naming the account it posts to and undone in one click. Lines that may or
+    may not have been stock are shown as evidence to review, with nothing to book."""
     surplus = fmt_money(p["unresolved"], currency) if p["unresolved"] > 0 else None
-    actions = ([Div(t("older_stock.surplus", amount=surplus)),
-                _correction(p["pid"], "recognize", t("older_stock.write_off"), filters,
-                            t("older_stock.write_off_confirm", amount=surplus, account=retained))] if surplus else []) \
-        + ([_correction(p["pid"], "recognize", t("older_stock.book_difference"), filters)]
+    actions = [Div(_uncertain_text(u, currency), cls="text-muted") for u in p.get("uncertain") or []] \
+        + ([Div(t("older_stock.surplus", amount=surplus)),
+            _correction(p["pid"], "recognize", t("older_stock.write_off"), filters,
+                        t("older_stock.write_off_confirm", amount=surplus, account=retained))] if surplus else []) \
+        + ([_correction(p["pid"], "recognize", t("older_stock.book_difference"), filters,
+                        t("older_stock.book_difference_confirm", amount=fmt_money(-p["unresolved"], currency),
+                          account=retained))]
            if p["unresolved"] < 0 else []) \
         + ([_correction(p["pid"], "unresolve", t("older_stock.leave_unresolved"), filters)]
            if p["recognized"] > 0 else []) \
@@ -550,7 +561,8 @@ def _reconciliation_summary(rec: dict | None, currency: str | None) -> FT | None
                   " ", A(t("older_stock.state.fix"), href=r["action_url"])
                   if r.get("action_url") not in (None, OLDER_STOCK_PATH) else None)
                for r in rec.get("reasons") or []]
-    opened = [Li(t(f"older_stock.open.{o['kind']}", account=o["account"], amount=fmt_money(o["amount"], currency)))
+    opened = [Li(_uncertain_text(o, currency) if o["kind"] == "uncertain" else
+                 t(f"older_stock.open.{o['kind']}", account=o["account"], amount=fmt_money(o["amount"], currency)))
               for o in rec.get("open") or []]
     return Div(
         H4(t(f"older_stock.state.{state}")),
