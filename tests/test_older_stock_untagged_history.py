@@ -547,3 +547,44 @@ async def test_the_tab_shows_a_stock_gap_with_what_the_books_and_the_stock_hold(
         {"account": "1130-P", "kind": "stock_gap", "amount": -30.0, "books": 0.0, "stock": 30.0}]}})
     banner = body.split('id="older-stock-reconciliation"')[1].split("</div>")[0]
     assert "1130-P: the books hold $0.00 as stock on this account, but the stock recorded on it is worth $30.00" in banner
+
+
+async def test_the_older_stock_view_reads_the_lots_still_held_never_every_lot_ever_placed(session, client, auth):
+    """200 lots placed automatically, then 190 of them sold and shipped: the view reads
+    the lots still in stock, never every lot a placement recorded, so its queries stay
+    the same and the rows it reads fall with what is held."""
+    from test_older_stock_invoices import _ship
+    from test_posting_roles_lots import _sell
+
+    from celerp.services.lot_origin import older_stock_view
+
+    execute, rows = session.execute, []
+
+    async def _counted(*args, **kwargs):
+        frozen = (await execute(*args, **kwargs)).freeze()
+        rows.append(len(frozen().all()))
+        return frozen()
+
+    async def _read() -> tuple[int, int, dict]:
+        session.expire_all()
+        rows.clear()
+        session.execute = _counted
+        try:
+            view = await older_stock_view(session, auth["company_id"])
+        finally:
+            del session.execute
+        return len(rows), sum(rows), view
+
+    lots = await _imported(session, client, auth, [10.0] * 200)
+    await _older_release(session, auth)
+    await _marked(session, auth)
+    await _startup(session)
+    held_queries, held_rows, held = await _read()
+    inv = await _sell(client, auth, *[(lot, 1) for lot in lots[:190]])
+    await _ship(client, auth, inv, *lots[:190])
+    sold_queries, sold_rows, sold = await _read()
+    assert (held["totals"]["lots"], sold["totals"]["lots"]) == (200, 10)
+    assert {lot["item_id"] for lot in sold["lots"]} == set(lots[190:])
+    assert sold["matching"]["count"] == 10 and sold["matching"]["value"] == 100.0
+    assert sold_queries <= held_queries
+    assert sold_rows < held_rows / 2, (held_rows, sold_rows)

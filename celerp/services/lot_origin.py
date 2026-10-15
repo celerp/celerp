@@ -190,11 +190,26 @@ def value_moved(before: dict, after: dict | None, currency: str) -> Decimal:
     return round_money(recorded_value(before), currency) - round_money(left, currency)
 
 
-async def _items(session: AsyncSession, company_id) -> list[Projection]:
-    """Every item row as the database holds it now, never as an earlier read loaded it."""
+def _in_stock_row():
+    """in_stock as a condition on an item row, from the same statuses, so a read skips
+    every lot whose stock left the books (sold, merged, retired with its value given up)."""
+    status = func.lower(func.coalesce(Projection.state["status"].as_string(), ""))
+    return and_(status.not_in(OFF_BOOKS),
+                or_(status.not_in(RETIRED), Projection.state[ON_BOOKS_FIELD].as_string() == "true"))
+
+
+async def _items(session: AsyncSession, company_id, *where) -> list[Projection]:
+    """Every item row (meeting ``where``) as the database holds it now, never as an
+    earlier read loaded it."""
     return list((await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type == "item")
+        Projection.company_id == company_id, Projection.entity_type == "item", *where)
         .execution_options(populate_existing=True))).scalars())
+
+
+async def _held_items(session: AsyncSession, company_id) -> list[Projection]:
+    """The item rows whose stock is on the books (in_stock), filtered in the read: every
+    lot holding value (held_value) is among them, and a lot sold long ago is never read."""
+    return [r for r in await _items(session, company_id, _in_stock_row()) if in_stock(r.state)]
 
 
 async def _posted_entries(session: AsyncSession, company_id, ids=None) -> list[tuple[str, dict]]:
@@ -297,7 +312,7 @@ async def stock_holders(session: AsyncSession, company_id, settings: dict, codes
     account (_stock_balance), or a lot holding value records it."""
     currency = settings.get("currency", "USD")
     entries = await _posted_entries(session, company_id)
-    lots = {(r.state or {}).get(LOT_ACCOUNT_FIELD) for r in await _items(session, company_id) if held_value(r)}
+    lots = {(r.state or {}).get(LOT_ACCOUNT_FIELD) for r in await _held_items(session, company_id) if held_value(r)}
     return {code for code in codes
             if code in lots or round_money(_stock_balance(settings, entries, code), currency)}
 
@@ -326,7 +341,7 @@ async def account_rooms(session: AsyncSession, company_id, codes) -> dict[str, D
 
     settings = await current_settings(session, company_id)
     currency = settings.get("currency", "USD")
-    entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
+    entries, items = await _posted_entries(session, company_id), await _held_items(session, company_id)
     sold, unresolved = await recognized_unshipped(session, company_id), await unresolved_differences(session, company_id)
     return {code: round_money(_room(settings, entries, items, code, currency, sold, unresolved), currency)
             for code in codes}
@@ -344,20 +359,22 @@ def unrecorded(items: list[Projection]) -> list[Projection]:
     return [r for r in items if awaits_account(r)]
 
 
-async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
+async def stock_off_books(session: AsyncSession, company_id, items: list[Projection] | None = None) -> list[dict]:
     """What the books check reports about stock: each lot on hand holding value that
     records no inventory account, each account lots are carried on whose balance differs
     from the stock on hand recorded on it beyond what a placement recorded there and what
     its uncertain lines could explain (unexplained), those uncertain lines as evidence to
     review (uncertain_evidence), and each difference a placement recorded, unresolved, for
-    the accountant (_place). Read only; nothing is booked to close a gap."""
+    the accountant (_place). ``items`` are the lots in stock (_held_items) when the caller
+    has already read them. Read only; nothing is booked to close a gap."""
     from celerp.services.auto_je import recognized_unshipped
 
     settings = await current_settings(session, company_id)
     if SCHEMA_KEY not in settings:
         return []
     currency = settings.get("currency", "USD")
-    entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
+    entries = await _posted_entries(session, company_id)
+    items = await _held_items(session, company_id) if items is None else items
     sold, unresolved = await recognized_unshipped(session, company_id), await unresolved_differences(session, company_id)
     findings = [{"kind": "unplaced_lot", "entity_id": r.entity_id, "sku": (r.state or {}).get("sku")}
                 for r in sorted(unrecorded(items), key=lambda r: r.entity_id)]
@@ -2046,17 +2063,21 @@ def _placement_records(company_id):
 
 
 async def older_stock_lots(session: AsyncSession, company_id, currency: str, account: str | None = None,
-                           q: str | None = None) -> list[dict]:
+                           q: str | None = None, items: list[Projection] | None = None) -> list[dict]:
     """The lots placed automatically still in stock, newest placement first, each with
     its SKU, name, account, booked value, placement and version; filtered (_matching) to
-    ``account`` and to ``q`` in their SKU or name."""
-    recorded = (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.metadata_["placement"].as_string())
-                                      .where(LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
-                                             LedgerEntry.metadata_["placement"].as_string().is_not(None))
-                                      .order_by(LedgerEntry.id.desc()))).all()
-    rows = {r.entity_id: r for r in (await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type == "item",
-        Projection.entity_id.in_([item_id for item_id, _ in recorded])))).scalars()}
+    ``account`` and to ``q`` in their SKU or name. Only the placements of lots in stock
+    now are read (_in_stock_row), with the item rows of ``items`` (_held_items) when the
+    caller has already read them."""
+    placement = LedgerEntry.metadata_["placement"].as_string()
+    recorded = (await session.execute(
+        select(LedgerEntry.entity_id, placement)
+        .join(Projection, and_(Projection.company_id == LedgerEntry.company_id,
+                               Projection.entity_id == LedgerEntry.entity_id))
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED, placement.is_not(None),
+               Projection.entity_type == "item", _in_stock_row())
+        .order_by(LedgerEntry.id.desc()))).all()
+    rows = {r.entity_id: r for r in (await _held_items(session, company_id) if items is None else items)}
     return _matching([{"item_id": item_id, "sku": rows[item_id].state.get("sku") or "",
                        "name": rows[item_id].state.get("name") or "",
                        "account": rows[item_id].state.get(LOT_ACCOUNT_FIELD),
@@ -2148,13 +2169,15 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
     its own offset, with its total under ``totals``; how many lots match the filters and
     their value, which a move of every matching lot (move_matching_lots) takes, under
     ``matching``. Placements, moves and corrections are paged in their queries; the lots
-    are read once in full, as the summary and ``matching`` add up their booked values."""
+    in stock are read once (_held_items), for the books check and for the lots, as the
+    summary and ``matching`` add up their booked values; lots no longer held are never read."""
     from celerp.services.posting_readiness import older_stock_targets
 
     settings = await current_settings(session, company_id)
     currency, tz = settings.get("currency", "USD"), settings.get("timezone")
     offsets = offsets or {}
-    held = await older_stock_lots(session, company_id, currency)
+    items = await _held_items(session, company_id)
+    held = await older_stock_lots(session, company_id, currency, items=items)
     summary: dict[str, dict] = {}
 
     def _account(code: str) -> dict:
@@ -2174,7 +2197,7 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
         for f in ("value", *_PLACED_AMOUNTS):
             row[f] = round(row[f], 2)
     lots = _matching(held, account, q)
-    off_books = await stock_off_books(session, company_id)
+    off_books = await stock_off_books(session, company_id, items)
     shown_on = await _shown_on(session, company_id, off_books)
     lists = {"lots": (lots[offsets.get("lots", 0):offsets.get("lots", 0) + limit], len(lots)),
              "placements": await _placements_page(session, company_id, offsets.get("placements", 0), limit,
