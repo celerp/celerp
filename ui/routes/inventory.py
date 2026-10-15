@@ -4152,7 +4152,7 @@ function celerpPrintLabel(entityId, templateId) {
                 if doc_type == "invoice":
                     line_items = await _line_items_from_inventory(token, entity_ids)
                     from ui.routes.documents import _company_doc_taxes
-                    doc_taxes = await _company_doc_taxes(token)
+                    doc_taxes = await _company_doc_taxes(token, "invoice")
                     result = await api.create_doc(token, {"doc_type": "invoice", "status": "draft", "line_items": line_items, "doc_taxes": doc_taxes})
                     doc_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
@@ -4165,7 +4165,7 @@ function celerpPrintLabel(entityId, templateId) {
                 elif doc_type == "memo":
                     line_items = await _line_items_from_inventory(token, entity_ids)
                     from ui.routes.documents import _company_doc_taxes
-                    doc_taxes = await _company_doc_taxes(token)
+                    doc_taxes = await _company_doc_taxes(token, "memo")
                     result = await api.create_doc(token, {"doc_type": "memo", "status": "draft", "line_items": line_items, "doc_taxes": doc_taxes})
                     doc_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})

@@ -556,7 +556,17 @@ def _finalize_cycle(doc: dict, kind: str) -> tuple[str, str]:
     return (f"fin:{cycle}", f"{kind}.finalized:{cycle}") if cycle else ("fin", f"{kind}.finalized")
 
 
+def refuse_negative_output_tax(doc: dict) -> None:
+    """Refuse (409) a sale whose taxes come to less than zero. Output tax is never
+    negative: a withholding tax netted into it would understate it."""
+    if to_decimal(doc.get("tax") or 0) < 0:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=409, detail=t("error.output_tax_negative"))
+
+
 async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD", span_lots: bool = False) -> None:
+    refuse_negative_output_tax(doc)
     total, tax, revenue = _sale_totals(doc, base_currency)
     cycle_suffix, je_type_key = _finalize_cycle(doc, "invoice")
     # Recognize COGS with revenue: cost of the goods sold posts on the same JE, dated

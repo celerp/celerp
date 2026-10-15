@@ -592,7 +592,8 @@ async def test_non_compound_doc_taxes_both_apply_to_base(client):
 
 @pytest.mark.asyncio
 async def test_negative_wht_doc_tax(client):
-    """Negative (offset) doc tax - withholding tax reduces net payable.
+    """Negative (offset) doc tax on a purchase bill - withholding tax reduces net payable.
+    A sale cannot carry it (tests/test_routers/test_tax_side.py).
 
     Setup: subtotal = 1000
       VAT 7%: +70.0
@@ -601,7 +602,7 @@ async def test_negative_wht_doc_tax(client):
     """
     token = await _register(client, email="wht@test.example")
     payload = {
-        "doc_type": "invoice",
+        "doc_type": "bill",
         "line_items": [{"description": "Service", "quantity": 1, "unit_price": 1000.0, "line_total": 1000.0}],
         "doc_taxes": [
             {"code": "VAT 7%", "rate": 7.0, "amount": 0.0, "order": 0, "is_compound": False},

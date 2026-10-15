@@ -255,8 +255,38 @@ def sales_taxes(settings: dict) -> list[dict]:
     return configured(settings, "taxes", generic_taxes())
 
 
+def doc_side(doc_type: str | None) -> str:
+    """The side a document's taxes apply to: "purchase" for a purchase document, else "sales"."""
+    return "purchase" if doc_type in PURCHASE_DOC_TYPES else "sales"
+
+
+def taxes_for(taxes: list[dict], doc_type: str | None) -> list[dict]:
+    """The taxes a document of this type can carry: those for its side and those for both."""
+    side = doc_side(doc_type)
+    return [x for x in taxes if (x.get("tax_type") or "both") in (side, "both")]
+
+
 def default_tax(taxes: list[dict], doc_type: str | None) -> dict | None:
     """The tax a new line on a document of this type starts with: the company default, when it
     applies to that side (a purchase document takes no sales-only tax, a sale no purchase-only one)."""
-    side = "purchase" if doc_type in PURCHASE_DOC_TYPES else "sales"
-    return next((x for x in taxes if x.get("is_default") and (x.get("tax_type") or "both") in (side, "both")), None)
+    return next((x for x in taxes_for(taxes, doc_type) if x.get("is_default")), None)
+
+
+def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> str | None:
+    """The name of the first tax in ``applied`` (each a ``code`` and ``rate``) a document of
+    this type cannot carry, else None. A tax takes its side from the company's tax lists by
+    name. On a sale a negative rate is always refused: it is tax withheld on a purchase, and
+    a sale has no output tax to net it against."""
+    side = doc_side(doc_type)
+    sides = {x.get("name"): x.get("tax_type") or "both"
+             for x in [*(settings.get("purchasing_taxes") or []), *sales_taxes(settings)]}
+    for tax in applied:
+        code = str(tax.get("code") or "")
+        try:
+            rate = float(tax.get("rate") or 0)
+        except (TypeError, ValueError):
+            rate = 0.0  # an unreadable rate is refused where the money is computed
+        tax_side = "purchase" if side == "sales" and rate < 0 else sides.get(code, "both")
+        if tax_side not in (side, "both"):
+            return code or f"{rate:g}%"
+    return None

@@ -32,7 +32,7 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import document_money
+from celerp_docs.doc_money import assert_taxes_fit_side, document_money
 from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services import auto_je
@@ -1791,6 +1791,7 @@ async def create_doc(
         ]
         data.update(document_money(data, lines, currency, keep_unrated_tax=True))
         data["line_items"] = lines
+    assert_taxes_fit_side(settings, payload.doc_type, data, data.get("line_items") or [])
 
     if contact is not None:
         data.update(await _contact_selection_values(
@@ -1958,6 +1959,10 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     if {"original_doc_id", "doc_type"} & fields_changed.keys():
         await credit_note_original(session, company_id, {
             **row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}})
+    # Taxes change only on a draft; a finalized document's line edits leave them as posted.
+    if is_draft and {"doc_type", "doc_taxes", "line_items", "tax_rate"} & fields_changed.keys():
+        _taxed = {**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}}
+        assert_taxes_fit_side(settings, _taxed.get("doc_type"), _taxed, _taxed.get("line_items") or [])
     # Uniqueness check when ref_id is being changed
     new_ref = (fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
@@ -2382,6 +2387,7 @@ async def finalize_document(
     if row.state.get("doc_type") in _BILL_POSTED:
         await require_line_destinations(session, company_id, row.state["line_items"])
     if row.state.get("doc_type") == "invoice":
+        auto_je.refuse_negative_output_tax(row.state)
         await _refuse_unsellable_lots(session, company_id, entity_id, row.state)
         await _refuse_unfillable_invoice_lines(session, company_id, entity_id, row.state,
                                                (_company.settings or {}) if _company else {})

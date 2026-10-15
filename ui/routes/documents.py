@@ -31,7 +31,7 @@ from ui.components.table import search_bar, search_results, EMPTY, pagination, p
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import default_tax
+from celerp.tax_regimes import default_tax, taxes_for
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -1360,15 +1360,15 @@ async def _po_line_suggestions(token: str, doc: dict) -> dict[str, str]:
     return out
 
 
-async def _company_doc_taxes(token: str) -> list[dict]:
-    """Fetch company sales taxes and return them as doc_taxes dicts for new documents."""
+async def _company_doc_taxes(token: str, doc_type: str) -> list[dict]:
+    """The company's rated taxes for this document type's side, as doc_taxes dicts for a new document."""
     try:
         taxes = await api.get_taxes(token)
     except Exception:
         return []
     return [
         {"code": tax.get("name", "Tax"), "rate": float(tax.get("rate", 0)), "order": i, "is_compound": bool(tax.get("is_compound"))}
-        for i, tax in enumerate(taxes)
+        for i, tax in enumerate(taxes_for(taxes, doc_type))
         if tax.get("rate")
     ]
 
@@ -1719,7 +1719,7 @@ def setup_routes(app):
         if not entity_ids:
             return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="modal-container")
         line_items = await _line_items_from_inventory(token, entity_ids)
-        doc_taxes = await _company_doc_taxes(token)
+        doc_taxes = await _company_doc_taxes(token, "invoice")
         try:
             result = await api.create_doc(token, {
                 "doc_type": "invoice",
@@ -7246,7 +7246,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="catalog-ac-wrap",
             )
 
-        _taxes_list = company_taxes or []
+        _taxes_list = taxes_for(company_taxes or [], doc_type)
         _default_tax = default_tax(_taxes_list, doc_type)
         _default_tax_value = f"{_default_tax.get('name', '')}|{float(_default_tax.get('rate', 0))}" if _default_tax else "|0"
 
