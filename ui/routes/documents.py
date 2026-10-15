@@ -30,7 +30,8 @@ from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
+from celerp.tax_regimes import default_tax
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -1779,8 +1780,8 @@ def setup_routes(app):
         q = request.query_params
         settings = (await api.get_company(token)).get("settings") or {}
         unit_map = build_unit_map(await api.get_units(token))
-        price_list = q.get("price_list", DEFAULT_PRICE_LIST_NAME).strip() or DEFAULT_PRICE_LIST_NAME
         doc_type = q.get("doc_type", "").strip()
+        price_list = line_price_list(doc_type, q.get("price_list", "").strip())
         doc_id = q.get("doc_id", "").strip() or None
         # An invoice made from a memo may take that memo's lots.
         source_memo_id = (await api.get_doc(token, doc_id)).get("source_memo_id") if doc_type == "invoice" and doc_id else None
@@ -7246,7 +7247,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
 
         _taxes_list = company_taxes or []
-        _default_tax = next((tax for tax in _taxes_list if tax.get("is_default")), None)
+        _default_tax = default_tax(_taxes_list, doc_type)
         _default_tax_value = f"{_default_tax.get('name', '')}|{float(_default_tax.get('rate', 0))}" if _default_tax else "|0"
 
         def _tax_select(li: dict | None = None) -> FT:

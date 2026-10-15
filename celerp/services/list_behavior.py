@@ -113,7 +113,7 @@ def is_money_list(list_type: str | None) -> bool:
 class ScanBehavior:
     """What one scan does on a record, for the one scan primitive (lists and documents)."""
     finalized: str  # once past draft: count (check off a locked manifest) | noop (scanning refused)
-    priced: bool    # added lines carry a unit price from the chosen price list
+    priced: bool    # added lines carry a unit price (pricing.line_price_list: cost on a purchase document)
     lots: str       # how a product code (GTIN/SKU) picks its lot: single | consolidate | sold
     # A splittable lot or an item kept in no stock (a service) raises its line by one per scan, a
     # lot that may not be split takes all it has on hand. A scanned lot by `unstocked`:
@@ -133,6 +133,10 @@ class ScanBehavior:
 # It belongs to the record it was scanned on: a conversion or a copy starts without it.
 SCAN_RUNS_FIELD = "scan_runs"
 
+# Document types that buy goods in: a line added to one is priced at what the goods cost and
+# takes only a tax that applies to purchases.
+PURCHASE_DOC_TYPES: frozenset[str] = frozenset({"purchase_order", "subscription_po", "bill", "consignment_in"})
+
 # Every document type's scan; a type not listed scans as a sale. A shipping document is a list
 # type and scans through LIST_BEHAVIOR.
 _DOC_SCAN_SALE = ScanBehavior(finalized="noop", priced=True, lots="consolidate")
@@ -151,10 +155,7 @@ DOC_SCAN_BEHAVIOR: dict[str, ScanBehavior] = {
     "quotation": ScanBehavior(finalized="noop", priced=True, lots="consolidate", unstocked="one"),
     # Goods being bought in: nothing need be on hand, and a repeat of a lot that may not be split
     # is another lot.
-    "purchase_order": _DOC_SCAN_BUY,
-    "subscription_po": _DOC_SCAN_BUY,
-    "bill": _DOC_SCAN_BUY,
-    "consignment_in": _DOC_SCAN_BUY,
+    **dict.fromkeys(sorted(PURCHASE_DOC_TYPES), _DOC_SCAN_BUY),
 }
 
 

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import copy
 
+from celerp.services.list_behavior import PURCHASE_DOC_TYPES
+
 _T = dict  # type alias for readability
 
 TAX_REGIMES: dict[str, _T] = {
@@ -251,3 +253,10 @@ def configured(settings: dict, key: str, default: list[dict]) -> list[dict]:
 def sales_taxes(settings: dict) -> list[dict]:
     """The company's sales taxes: what it saved, else the generic list."""
     return configured(settings, "taxes", generic_taxes())
+
+
+def default_tax(taxes: list[dict], doc_type: str | None) -> dict | None:
+    """The tax a new line on a document of this type starts with: the company default, when it
+    applies to that side (a purchase document takes no sales-only tax, a sale no purchase-only one)."""
+    side = "purchase" if doc_type in PURCHASE_DOC_TYPES else "sales"
+    return next((x for x in taxes if x.get("is_default") and (x.get("tax_type") or "both") in (side, "both")), None)

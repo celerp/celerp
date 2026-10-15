@@ -177,6 +177,67 @@ async def test_doc_scan_applies_default_sales_tax(client):
     assert float((await _get(client, t, doc))["tax"]) > 0
 
 
+async def _taxes(client, t, *taxes):
+    r = await client.patch("/companies/me/taxes", headers=_h(t), json={"taxes": list(taxes)})
+    assert r.status_code == 200, r.text
+
+
+_SALES_ONLY = {"name": "Sales tax", "rate": 8, "tax_type": "sales", "is_default": True}
+_BOTH = {"name": "VAT", "rate": 7, "tax_type": "both", "is_default": True}
+
+
+def _tax_codes(line) -> list[tuple[str, float]]:
+    return [(tax["code"], float(tax["rate"])) for tax in line.get("taxes") or []]
+
+
+@pytest.mark.parametrize("doc_type", ["bill", "purchase_order", "consignment_in"])
+async def test_buying_scan_prices_at_cost_and_skips_a_sales_only_default_tax(client, doc_type):
+    t = await _register(client)
+    await _taxes(client, t, _SALES_ONLY)
+    await _item(client, t, "BC", retail_price=100, cost_price=40)
+    doc = await _doc(client, t, doc_type)
+
+    assert (await _scan(client, t, doc, "BC")).json()["scanned"] == 1
+    [line] = await _lines(client, t, doc)
+    assert float(line["unit_price"]) == 40.0
+    assert _tax_codes(line) == []
+
+
+@pytest.mark.parametrize("doc_type", ["bill", "purchase_order"])
+async def test_buying_scan_takes_a_default_tax_that_applies_to_purchases(client, doc_type):
+    t = await _register(client)
+    await _taxes(client, t, _BOTH)
+    await _item(client, t, "BV", retail_price=100, cost_price=40)
+    doc = await _doc(client, t, doc_type)
+
+    assert (await _scan(client, t, doc, "BV")).json()["scanned"] == 1
+    [line] = await _lines(client, t, doc)
+    assert (float(line["unit_price"]), _tax_codes(line)) == (40.0, [("VAT", 7.0)])
+
+
+async def test_buying_scan_by_someone_who_cannot_see_costs_adds_the_line_unpriced(client, session):
+    t = await _register(client)
+    await _item(client, t, "BH", retail_price=100, cost_price=40)
+    doc = await _doc(client, t, "bill")
+    operator = await _user_with_role(client, session, t, "operator")
+
+    r = await _scan(client, operator, doc, "BH")
+    assert r.status_code == 200 and r.json()["scanned"] == 1, r.text
+    [line] = await _lines(client, t, doc)
+    assert float(line.get("unit_price") or 0) == 0.0
+
+
+async def test_selling_scan_keeps_the_retail_price_and_the_default_tax(client):
+    t = await _register(client)
+    await _taxes(client, t, _SALES_ONLY)
+    await _item(client, t, "SC", retail_price=100, cost_price=40)
+    doc = await _doc(client, t, "invoice")
+
+    assert (await _scan(client, t, doc, "SC")).json()["scanned"] == 1
+    [line] = await _lines(client, t, doc)
+    assert (float(line["unit_price"]), _tax_codes(line)) == (100.0, [("Sales tax", 8.0)])
+
+
 async def test_doc_scan_returns_version(client):
     t = await _register(client)
     await _item(client, t, "VR")

@@ -46,7 +46,7 @@ from celerp.services.journal_accounts import require_destinations, require_line_
 from celerp.services.lot_origin import in_stock, is_stock_type
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.payments import recorded_unmatched, return_unmatched
-from celerp.tax_regimes import sales_taxes
+from celerp.tax_regimes import default_tax, sales_taxes
 from celerp.services.business_time import business_date_at, business_date_of
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed, splitting_off
@@ -64,7 +64,7 @@ from celerp_docs.sequences import next_doc_ref, next_draft_ref, require_doc_type
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, default_receive_as, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, validate_line_quantity
 from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, price_keys_in, resolve_price
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
@@ -12385,12 +12385,12 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, state: dict,
     return next(m for m in stock if m.entity_id == picked[0]["entity_id"]), picked[0].get("quantity"), None, None
 
 
-def _scan_doc_line(lot: Projection, quantity, sb: ScanBehavior, price_list: str, currency: str | None,
+def _scan_doc_line(lot: Projection, quantity, priced: bool, price_list: str, currency: str | None,
                    price_config: tuple[list[dict], str, str], tax: dict | None) -> dict:
     """A new document line for a scanned lot: the scan line, how a purchase receives it, the item's
-    customs fields and the company's default sales tax."""
+    customs fields and the document type's default tax."""
     st = lot.state or {}
-    line = _scan_line(lot, quantity, priced=sb.priced, price_list=price_list, currency=currency,
+    line = _scan_line(lot, quantity, priced=priced, price_list=price_list, currency=currency,
                       price_config=price_config)
     line["receive_as"] = default_receive_as(st.get("inventory_type"), st.get("sell_by"))
     line.update({k: st[k] for k in ("hs_code", "country_of_origin", "category") if st.get(k)})
@@ -12425,9 +12425,12 @@ async def scan_doc(
         _check_price_list(settings, role, payload.price_list, price_config)
     if (replay := _scan_replay(row, payload, codes)) is not None:
         return replay
-    price_list = payload.price_list or DEFAULT_PRICE_LIST_NAME
+    # Priced as a line added in the editor: a purchase document at cost, which a caller who may not
+    # see costs adds unpriced.
+    price_list = line_price_list(doc_type, payload.price_list)
+    priced = sb.priced and (not is_cost_list_name(price_list) or role_has_permission(settings, role, "view_inventory_costs"))
     currency = state.get("currency")
-    tax = next((x for x in sales_taxes(settings) if x.get("is_default")), None)
+    tax = default_tax(sales_taxes(settings), doc_type)
     existing = [dict(l) for l in (state.get("line_items") or [])]
     known = line_id_counts(existing)
 
@@ -12444,7 +12447,7 @@ async def scan_doc(
     lines = [dict(l) for l in existing]
     results, failed = await _apply_scan_run(
         session, company_id, entity_id, state, lines, codes, sb, settings, noun="this document",
-        build=lambda lot, quantity: _scan_doc_line(lot, quantity, sb, price_list, currency, price_config, tax),
+        build=lambda lot, quantity: _scan_doc_line(lot, quantity, priced, price_list, currency, price_config, tax),
         admit=admit)
     scanned = len(results) - len(failed)
     version = row.version
