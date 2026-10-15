@@ -449,7 +449,13 @@ _IN_FINALIZE: contextvars.ContextVar[bool] = contextvars.ContextVar("_IN_FINALIZ
 
 
 async def _timed_finalize(client, auth, engine, doc: str) -> tuple[float, int, int]:
-    """Finalize ``doc``: (seconds taken, SQL statements run, rows they returned)."""
+    """Finalize ``doc``: (seconds taken, SQL statements run, rows they returned).
+
+    DrainMiddleware's drain flag is read from a cache that expires a second after it was
+    last filled, so whether the request pays that read depends on wall-clock timing, not
+    on finalizing; it is answered without the database here, so only finalizing counts."""
+    from unittest.mock import AsyncMock, patch
+
     from sqlalchemy import event
 
     statements = rows = 0
@@ -464,9 +470,10 @@ async def _timed_finalize(client, auth, engine, doc: str) -> tuple[float, int, i
     event.listen(engine.sync_engine, "after_cursor_execute", count)
     token = _IN_FINALIZE.set(True)
     try:
-        started = time.perf_counter()
-        await _ok(client, auth, f"/docs/{doc}/finalize")
-        seconds = time.perf_counter() - started
+        with patch("celerp.middleware.is_draining", AsyncMock(return_value=False)):
+            started = time.perf_counter()
+            await _ok(client, auth, f"/docs/{doc}/finalize")
+            seconds = time.perf_counter() - started
     finally:
         _IN_FINALIZE.reset(token)
         event.remove(engine.sync_engine, "after_cursor_execute", count)
