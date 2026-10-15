@@ -11981,10 +11981,12 @@ async def _get_audit(session: AsyncSession, company_id, entity_id: str, *, for_u
     return row
 
 
-async def _set_list_fields(session, company_id, entity_id, user, fields: dict):
+async def _set_list_fields(session, company_id, entity_id, user, fields: dict, *,
+                           idempotency_key: str | None = None):
     """Emit list.updated carrying the given top-level field changes (used by every type)."""
     fc = {k: {"new": v} for k, v in fields.items()}
-    return await _emit_list(session, company_id, entity_id, "list.updated", {"fields_changed": fc}, user)
+    return await _emit_list(session, company_id, entity_id, "list.updated",
+                            {"fields_changed": fc}, user, idem_key=idempotency_key)
 
 
 def _ambiguous_sku_detail(code: str, pieces: int) -> str:
@@ -12156,31 +12158,40 @@ def _scan_codes(payload: ScanBody) -> list[str]:
     return codes
 
 
-def _scan_replay(row: Projection, payload: ScanBody, codes: list[str]):
-    """The recorded outcome of a retried run, a 409 for a spent run key reused on a different
-    batch, or None for a new run.
+def _scan_event_key(entity_id: str, run_key: str) -> str:
+    raw = f"{len(entity_id)}:{entity_id}:{run_key}".encode("utf-8")
+    return "scan:" + hashlib.sha256(raw).hexdigest()
 
-    A retry of one Add click carries the same run_key AND the same batch still sitting in the
-    field. The key alone is not enough: if the response is lost, the user could edit the field to a
-    new batch and resubmit under the same key - replaying the old run would then silently drop the
-    new one. So each recorded run stores a fingerprint of its normalized codes + price_list."""
+
+async def _scan_replay(session: AsyncSession, row: Projection, payload: ScanBody, codes: list[str]):
+    """Replay a batch from the bounded projection cache or its durable domain event."""
     if not payload.run_key:
         return None
     fp = _scan_run_fingerprint(codes, payload.price_list)
-    for rec in (row.state.get(SCAN_RUNS_FIELD) or []):
-        if rec.get("key") == payload.run_key:
-            if rec.get("fp") != fp:
-                # A client bug (edited the field then resubmitted under a spent key). Reply with a code
-                # so the scan bar branches on it, not on message text, and the record's version so it
-                # can refresh the rows it shows.
-                from fastapi.responses import JSONResponse
-                return JSONResponse(status_code=409, content={
-                    "code": "scan_run_conflict",
-                    "detail": t("documents.err_scan_conflict"),
-                    "version": row.version})
-            return {"scanned": rec.get("scanned", 0), "results": rec.get("results", []),
-                    "failed": rec.get("failed", []), "duplicate": True, "version": row.version}
-    return None
+    previous = next((rec for rec in (row.state.get(SCAN_RUNS_FIELD) or [])
+                     if rec.get("key") == payload.run_key), None)
+    if previous is None:
+        entry = await find_event_by_idempotency(
+            session, row.company_id, _scan_event_key(row.entity_id, payload.run_key))
+        if entry is not None:
+            event_type = "doc.updated" if row.entity_type == "doc" else "list.updated"
+            if entry.entity_id != row.entity_id or entry.event_type != event_type:
+                raise HTTPException(409, "Scan operation identity conflicts with a previous event")
+            history = ((entry.data or {}).get("fields_changed") or {}).get(SCAN_RUNS_FIELD) or {}
+            previous = next((rec for rec in (history.get("new") or [])
+                             if isinstance(rec, dict) and rec.get("key") == payload.run_key), None)
+            if previous is None:
+                raise HTTPException(409, "Scan operation has no replayable result")
+    if previous is None:
+        return None
+    if previous.get("fp") != fp:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=409, content={
+            "code": "scan_run_conflict",
+            "detail": t("documents.err_scan_conflict"),
+            "version": row.version})
+    return {"scanned": previous.get("scanned", 0), "results": previous.get("results", []),
+            "failed": previous.get("failed", []), "duplicate": True, "version": row.version}
 
 
 def _record_scan_run(state: dict, payload: ScanBody, codes: list[str], results: list[dict],
@@ -12233,7 +12244,7 @@ async def scan_list(
     price_config = await get_price_config(session, company_id) if sb.priced or payload.price_list else None
     if payload.price_list:
         _check_price_list(settings, role, payload.price_list, price_config)
-    if (replay := _scan_replay(row, payload, codes)) is not None:
+    if (replay := await _scan_replay(session, row, payload, codes)) is not None:
         return replay
 
     lines = [dict(l) for l in (state.get("line_items") or [])]
@@ -12249,7 +12260,9 @@ async def scan_list(
         fields = {"line_items": lines} if scanned else {}
         if payload.run_key:
             fields[SCAN_RUNS_FIELD] = _record_scan_run(state, payload, codes, results, failed)
-        entry = await _set_list_fields(session, company_id, entity_id, user, fields)
+        entry = await _set_list_fields(
+            session, company_id, entity_id, user, fields,
+            idempotency_key=_scan_event_key(entity_id, payload.run_key) if payload.run_key else None)
         await session.commit()
         version = entry.id
     return {"scanned": scanned, "results": results, "failed": failed, "version": version}
@@ -12486,7 +12499,7 @@ async def scan_doc(
     price_config = await get_price_config(session, company_id)
     if payload.price_list:
         _check_price_list(settings, role, payload.price_list, price_config)
-    if (replay := _scan_replay(row, payload, codes)) is not None:
+    if (replay := await _scan_replay(session, row, payload, codes)) is not None:
         return replay
     # Priced as a line added in the editor: a purchase document at cost, which a caller who may not
     # see costs adds unpriced.
@@ -12517,9 +12530,11 @@ async def scan_doc(
     # A run is recorded whatever it placed, so its retry returns this answer (_scan_replay).
     if scanned or payload.run_key:
         runs = _record_scan_run(state, payload, codes, results, failed) if payload.run_key else None
-        written = await write_doc_patch(session, company_id, role, settings, user, entity_id,
-                                        DocPatch(fields_changed={"line_items": {"new": lines}} if scanned else {},
-                                                 expected_version=row.version), scan_runs=runs)
+        written = await write_doc_patch(
+            session, company_id, role, settings, user, entity_id,
+            DocPatch(fields_changed={"line_items": {"new": lines}} if scanned else {}, expected_version=row.version,
+                     idempotency_key=_scan_event_key(entity_id, payload.run_key) if payload.run_key else None),
+            scan_runs=runs)
         await session.commit()
         version = written["version"]
     return {"scanned": scanned, "results": results, "failed": failed, "version": version}
