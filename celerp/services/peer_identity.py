@@ -16,7 +16,7 @@ from celerp.models.company_peer import CompanyPeerIdentity
 from celerp.models.projections import Projection
 from celerp.services.company_lock import locked_company
 
-ENTITY_TYPES = frozenset({"contact", "item", "doc"})
+ENTITY_TYPES = frozenset({"contact", "item", "doc", "list"})
 BATCH = 500
 
 
@@ -53,12 +53,23 @@ async def seed_restored_identities(session: AsyncSession, *, target_company: uui
         await session.execute(insert(CompanyPeerIdentity), values)
         count += len(values)
         last = rows[-1][0]
+    from celerp.models.company import Location
+    locations = (await session.execute(select(Location.id).where(
+        Location.company_id == target_company))).scalars().all()
+    if locations:
+        await session.execute(insert(CompanyPeerIdentity), [{
+            "company_id": target_company, "source_company_id": source_company,
+            "entity_type": "location", "source_entity_id": old_id.get(str(loc), str(loc)),
+            "source_key_hash": _digest(old_id.get(str(loc), str(loc))),
+            "target_entity_id": str(loc), "last_revision": 1,
+        } for loc in locations])
+        count += len(locations)
     return count
 
 
 async def peer_identity(session: AsyncSession, *, target_company: uuid.UUID,
                         source_company: uuid.UUID, entity_type: str, source_entity_id: str) -> str | None:
-    if entity_type not in ENTITY_TYPES or not isinstance(source_entity_id, str) or not source_entity_id:
+    if entity_type not in ENTITY_TYPES | {"location"} or not isinstance(source_entity_id, str) or not source_entity_id:
         raise HTTPException(422, "Invalid external identity")
     row = await session.scalar(select(CompanyPeerIdentity).where(
         CompanyPeerIdentity.company_id == target_company,
@@ -70,10 +81,57 @@ async def peer_identity(session: AsyncSession, *, target_company: uuid.UUID,
         return None
     if row.source_entity_id != source_entity_id:
         raise HTTPException(409, "External identity conflict")
-    other = await session.get(Projection, (target_company, row.target_entity_id))
-    if other is None or other.entity_type != entity_type:
-        raise HTTPException(409, "External identity no longer matches its record")
+    if entity_type == "location":
+        from celerp.models.company import Location
+        try:
+            target_id = uuid.UUID(row.target_entity_id)
+        except ValueError as exc:
+            raise HTTPException(409, "Mapped location identity is invalid") from exc
+        other = await session.get(Location, target_id)
+        if other is None or other.company_id != target_company:
+            raise HTTPException(409, "Mapped location is unavailable")
+    else:
+        other = await session.get(Projection, (target_company, row.target_entity_id))
+        if other is None or other.entity_type != entity_type:
+            raise HTTPException(409, "External identity no longer matches its record")
     return row.target_entity_id
+
+
+async def resolve_peer_location(session: AsyncSession, *, grant, source_id: str,
+                                name: str, location_type: str) -> str:
+    """Bind a source location to a named location for stock audit reconciliation."""
+    from celerp.models.company import Location
+    if (not isinstance(source_id, str) or not isinstance(name, str)
+            or not name.strip() or not isinstance(location_type, str)
+            or not 1 <= len(name) <= 255 or not 1 <= len(location_type) <= 64):
+        raise HTTPException(422, "Invalid source location")
+    try:
+        uuid.UUID(source_id)
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid source location identity") from exc
+    mapped = await peer_identity(
+        session, target_company=grant.company_id, source_company=grant.source_company_id,
+        entity_type="location", source_entity_id=source_id)
+    if mapped is not None:
+        return mapped
+    target = await session.scalar(select(Location).where(
+        Location.company_id == grant.company_id,
+        Location.name == name, Location.type == location_type).with_for_update())
+    if target is None:
+        raise HTTPException(409, "Configure a matching inventory location before syncing counts")
+    conflict = await session.scalar(select(CompanyPeerIdentity.id).where(
+        CompanyPeerIdentity.company_id == grant.company_id,
+        CompanyPeerIdentity.entity_type == "location",
+        CompanyPeerIdentity.target_entity_id == str(target.id)).limit(1))
+    if conflict is not None:
+        raise HTTPException(409, "Inventory location is already paired with another company")
+    session.add(CompanyPeerIdentity(
+        company_id=grant.company_id, source_company_id=grant.source_company_id,
+        entity_type="location", source_entity_id=source_id,
+        source_key_hash=_digest(source_id), target_entity_id=str(target.id),
+        last_revision=1))
+    await session.flush()
+    return str(target.id)
 
 
 def new_target_identity(source_company: uuid.UUID, entity_type: str, source_entity_id: str) -> str:

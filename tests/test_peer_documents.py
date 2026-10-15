@@ -424,3 +424,127 @@ async def test_canonical_sent_transition_can_participate_in_peer_transaction(mon
     assert emitted[0]["event_type"] == "doc.sent"
     assert emitted[0]["data"].get("sent_to") is None
     assert emitted[0]["idempotency_key"] == "source:invoice:sent:3"
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("docs_running")
+async def test_real_service_invoice_mirror_posts_once_in_second_company(client, session):
+    from sqlalchemy import select, func
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+    from celerp.services.peer_identity import new_target_identity
+    from celerp.services.peer_documents import _FIELDS
+    from test_payments_stripe import _register, _payable_invoice, _h, _company_id
+
+    source_token = await _register(client)
+    source_company = uuid.UUID(_company_id(source_token))
+    source_doc, _ = await _payable_invoice(client, source_token)
+    response = await client.get(f"/docs/{source_doc}", headers=_h(source_token))
+    assert response.status_code == 200
+    source_state = response.json()
+    assert source_state["status"] == "final"
+    source_row = await session.get(Projection, (source_company, source_doc),
+                                   populate_existing=True)
+    source_revision = source_row.version
+    payload = {key: source_state[key] for key in _FIELDS if key in source_state}
+
+    receiver = await client.post(
+        "/companies", json={"name": "Independent Firm"}, headers=_h(source_token))
+    assert receiver.status_code == 200, receiver.text
+    receiver_token = receiver.json()["access_token"]
+    target_company = uuid.UUID(_company_id(receiver_token))
+    grant = SimpleNamespace(company_id=target_company, source_company_id=source_company)
+    assert await documents.receive_draft_document(
+        session, grant=grant, source_entity_id=source_doc,
+        source_revision=source_revision, data=payload,
+    ) == "created"
+    await session.commit()
+    target_doc = new_target_identity(source_company, "doc", source_doc)
+    target = (await client.get(f"/docs/{target_doc}", headers=_h(receiver_token))).json()
+    assert target["status"] == "final"
+    assert target["total"] == source_state["total"]
+    assert target["amount_outstanding"] == source_state["amount_outstanding"]
+    before = (await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == target_company)))
+    assert before > 0
+
+    assert await documents.receive_draft_document(
+        session, grant=grant, source_entity_id=source_doc,
+        source_revision=source_revision, data=payload,
+    ) == "skipped"
+    await session.commit()
+    after = (await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == target_company)))
+    assert after == before
+    with pytest.raises(HTTPException) as conflicting:
+        await documents.receive_draft_document(
+            session, grant=grant, source_entity_id=source_doc,
+            source_revision=source_revision, data={**payload, "notes": "Changed receipt"},
+        )
+    assert conflicting.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_issued_service_label_cannot_mask_mapped_stock_item(monkeypatch):
+    from celerp_docs import import_service
+    from celerp.models.projections import Projection
+
+    class StockSession(_Session):
+        async def get(self, model, identifier):
+            if model is Projection:
+                return SimpleNamespace(entity_type="item", state={
+                    "inventory_type": "stocked", "sell_by": "piece"})
+            return await super().get(model, identifier)
+
+    async def claimed(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target", mapping=None)
+    async def mapped(*args, **kwargs):
+        return "item:target"
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("A mislabeled stock line must not reach the importer")
+
+    monkeypatch.setattr(documents, "claim_peer_revision", claimed)
+    monkeypatch.setattr(documents, "_map_identity", mapped)
+    monkeypatch.setattr(import_service, "import_doc_records", forbidden)
+    with pytest.raises(HTTPException) as exc:
+        await documents.receive_draft_document(
+            StockSession(), grant=_grant(), source_entity_id="doc:source",
+            source_revision=1, data={
+                "doc_type": "invoice", "status": "final", "currency": "USD",
+                "line_items": [{
+                    "name": "Service", "item_id": "item:source",
+                    "inventory_type": "service", "sell_by": "service",
+                    "quantity": 1, "unit_price": 40,
+                }],
+            })
+    assert exc.value.status_code == 409
+    assert "stock operations" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_issued_service_line_rejects_missing_mapped_item(monkeypatch):
+    from celerp_docs import import_service
+
+    async def claimed(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target", mapping=None)
+    async def mapped(*args, **kwargs):
+        return "item:missing"
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("An unavailable item must not be imported")
+
+    monkeypatch.setattr(documents, "claim_peer_revision", claimed)
+    monkeypatch.setattr(documents, "_map_identity", mapped)
+    monkeypatch.setattr(import_service, "import_doc_records", forbidden)
+    with pytest.raises(HTTPException) as exc:
+        await documents.receive_draft_document(
+            _Session(), grant=_grant(), source_entity_id="doc:source",
+            source_revision=1, data={
+                "doc_type": "bill", "status": "final", "currency": "USD",
+                "line_items": [{
+                    "name": "Service", "item_id": "item:source",
+                    "inventory_type": "service", "sell_by": "service",
+                    "quantity": 1, "unit_price": 25,
+                }],
+            })
+    assert exc.value.status_code == 409

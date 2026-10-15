@@ -60,6 +60,7 @@ _PUBLIC_API_PREFIXES = (
     "/company-peers/products",
     "/company-peers/documents",
     "/company-peers/attachments",
+    "/company-peers/inventory",
 )
 
 

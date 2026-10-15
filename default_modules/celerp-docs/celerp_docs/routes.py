@@ -9070,6 +9070,10 @@ async def finalize_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    return await finalize_list_record(entity_id, company_id, user, session, commit=True)
+
+
+async def finalize_list_record(entity_id: str, company_id: str, user, session: AsyncSession, *, commit: bool = True) -> dict:
     """Lock a draft list (draft -> finalized). The single draft->open transition for every type.
 
     Type-specific on-finalize (from the behaviour registry): a quotation records `sent_at`, a
@@ -9107,7 +9111,8 @@ async def finalize_list(
     elif milestone:
         data[milestone] = now
     entry = await _emit_list(session, company_id, entity_id, "list.finalized", data, user)
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id, "status": FINALIZED}
 
 
@@ -12091,6 +12096,11 @@ async def create_audit_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    return await create_audit_list_record(payload, company_id, user, session, commit=True)
+
+
+async def create_audit_list_record(payload: AuditCreateBody, company_id: str, user, session: AsyncSession, *,
+                                  commit: bool = True, entity_id_override: str | None = None) -> dict:
     """Create a location-bound audit as a DRAFT manifest pre-seeded with the location's physical
     items. The manifest is reviewed/extended in draft (scan adds more); Finalize freezes each line's
     on-hand snapshot, then counting happens in the finalized stage."""
@@ -12109,14 +12119,15 @@ async def create_audit_list(
         lines.append({"item_id": r.entity_id, "sku": st.get("sku"), "name": st.get("name"),
                       "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0)})
     ref_id = next_doc_ref(company, "audit")
-    entity_id = f"list:{ref_id}"
+    entity_id = entity_id_override or f"list:{ref_id}"
     if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
         raise HTTPException(status_code=409, detail=t("documents.err_audit_number_taken", number=ref_id))
     data = {"list_type": "audit", "location_id": payload.location_id, "status": DRAFT,
             "ref_id": ref_id, "line_items": lines, "adjust_count": 0,
             "currency": company.settings.get("currency", "USD")}
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id, "id": entity_id, "ref_id": ref_id, "line_count": len(lines)}
 
 
@@ -12578,6 +12589,10 @@ async def adjust_audit(
     _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    return await adjust_audit_record(entity_id, company_id, user, session, commit=True)
+
+
+async def adjust_audit_record(entity_id: str, company_id: str, user, session: AsyncSession, *, commit: bool = True) -> dict:
     """Apply a finalized audit against fresh, locked inventory state."""
     at = datetime.now(timezone.utc).isoformat()  # one business day for the whole adjustment
     await lock_company(session, company_id)  # before the audit and item row locks (lock order)
@@ -12674,7 +12689,8 @@ async def adjust_audit(
     )
     await _emit_list(session, company_id, entity_id, "list.closed",
                      {"result": "stock_adjusted", "line_items": lines, "adjust_count": cycle + 1}, user)
-    await session.commit()
+    if commit:
+        await session.commit()
     return {
         "adjusted": adjusted, "skipped": skipped,
         "shrinkage_value": to_stored_float(round_money(shrink_val, currency)),

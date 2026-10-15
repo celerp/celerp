@@ -97,13 +97,14 @@ def test_unimplemented_peer_operations_cannot_be_pre_authorized():
     from pydantic import ValidationError
     from celerp.routers.company_peers import GrantRequest
 
-    assert SCOPES == frozenset({"contacts", "products", "documents"})
+    assert SCOPES == frozenset({"contacts", "products", "documents", "inventory"})
     target = uuid.uuid4()
     common = {"source_company_id": target, "label": "Reviewed contact-only access"}
     assert GrantRequest(**common, scopes={"contacts"}).scopes == {"contacts"}
     assert GrantRequest(**common, scopes={"products", "contacts"}).scopes == {"products", "contacts"}
     assert GrantRequest(**common, scopes={"documents"}).scopes == {"documents"}
-    for dormant in ("items", "invoices", "payments", "inventory", "attachments"):
+    assert GrantRequest(**common, scopes={"inventory"}).scopes == {"inventory"}
+    for dormant in ("items", "invoices", "payments", "attachments"):
         with pytest.raises(ValidationError):
             GrantRequest(**common, scopes={dormant})
 
@@ -128,3 +129,24 @@ async def test_product_peer_scope_is_separate_from_contact_authority(db):
         with pytest.raises(HTTPException):
             await authenticate(session, key, source_company_id=uuid.uuid4(),
                                scope="products", now=AT)
+
+
+
+@pytest.mark.asyncio
+async def test_inventory_scope_does_not_grant_financial_document_authority(db):
+    factory, target = db
+    source = uuid.uuid4()
+    async with factory() as session:
+        _, key = await issue(session, company_id=target, source_company_id=source,
+                             label="Physical counts", scopes=frozenset({"inventory"}), now=AT)
+        await session.commit()
+    async with factory() as session:
+        grant = await authenticate(session, key, source_company_id=source,
+                                   scope="inventory", now=AT)
+        assert grant.company_id == target
+        with pytest.raises(HTTPException):
+            await authenticate(session, key, source_company_id=source,
+                               scope="documents", now=AT)
+        with pytest.raises(HTTPException):
+            await authenticate(session, key, source_company_id=uuid.uuid4(),
+                               scope="inventory", now=AT)

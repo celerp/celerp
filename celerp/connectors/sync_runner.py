@@ -30,8 +30,8 @@ _SYNC_METHODS = {
     "products_out": "sync_products_out",
     "contacts_out": "sync_contacts_out",
     "invoices_out": "sync_invoices_out",
-    "inventory_out": "sync_inventory_out",
     "documents_out": "sync_documents_out",
+    "inventory_out": "sync_inventory_out",
     "attachments_out": "sync_attachments_out",
 }
 _OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out", "contacts_out", "documents_out", "attachments_out"}
@@ -40,8 +40,8 @@ _OUTBOUND_ENTITY_METHODS = {
     "products_out": "sync_products_out",
     "contacts_out": "sync_contacts_out",
     "invoices_out": "sync_invoices_out",
-    "inventory_out": "sync_inventory_out",
     "documents_out": "sync_documents_out",
+    "inventory_out": "sync_inventory_out",
     "attachments_out": "sync_attachments_out",
 }
 
@@ -90,19 +90,21 @@ async def run_connector_sync(
         expected_direction = resolved_direction if config is not None else None
         await guard_session.commit()
 
-    return [
-        await run_sync(
-            connector,
-            ctx,
-            entity,
-            direction=resolved_direction,
-            reconcile=reconcile,
-            expected_config_id=expected_config_id,
+    results: list[SyncResult] = []
+    completed: dict[str, bool] = {}
+    dependencies = getattr(connector, "outbound_dependencies", {})
+    for entity in sync_plan(connector, resolved_direction):
+        if any(completed.get(dep) is not True for dep in dependencies.get(entity, ())):
+            break
+        result = await run_sync(
+            connector, ctx, entity, direction=resolved_direction,
+            reconcile=reconcile, expected_config_id=expected_config_id,
             expected_direction=expected_direction,
             expected_store_handle=ctx.store_handle,
         )
-        for entity in sync_plan(connector, resolved_direction)
-    ]
+        completed[entity] = result.ok
+        results.append(result)
+    return results
 
 
 def _since_reset(company_id: str, connector: str):

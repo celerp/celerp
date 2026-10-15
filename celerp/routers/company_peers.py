@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, File, Form, UploadFile
-from pydantic import BaseModel, Field, ConfigDict, FiniteFloat
+from pydantic import BaseModel, Field, ConfigDict, FiniteFloat, StrictInt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,13 +20,13 @@ from celerp.services import peer_access
 
 router = APIRouter(prefix="/company-peers", tags=["company-peers"])
 
-Scope = Literal["contacts", "products", "documents"]
+Scope = Literal["contacts", "products", "documents", "inventory"]
 
 
 class GrantRequest(BaseModel):
     source_company_id: uuid.UUID
     label: str = Field(min_length=1, max_length=128)
-    scopes: set[Scope] = Field(min_length=1, max_length=3)
+    scopes: set[Scope] = Field(min_length=1, max_length=4)
     lifetime_days: int = Field(default=30, ge=1, le=90)
 
 
@@ -203,3 +203,47 @@ async def receive_peer_attachment(
         document_tag=document_tag, description=description,
     )
     return {"status": status}
+
+
+
+class StockCountItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    item_id: str = Field(min_length=1, max_length=512)
+    counted_qty: FiniteFloat = Field(ge=0)
+
+
+class StockCountData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    location_id: uuid.UUID
+    location_name: str = Field(min_length=1, max_length=255)
+    location_type: str = Field(min_length=1, max_length=64)
+    source_closed_event_id: StrictInt = Field(ge=1, le=2**63 - 1)
+    counts: list[StockCountItem] = Field(min_length=1, max_length=1000)
+
+
+class PeerStockAuditUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_company_id: uuid.UUID
+    source_entity_id: str = Field(min_length=1, max_length=512)
+    source_revision: int = Field(ge=1, le=2**63 - 1)
+    data: StockCountData
+
+
+@router.post("/inventory")
+async def receive_peer_stock_audit(
+    body: PeerStockAuditUpdate,
+    authorization: str = Header(default=""),
+    session: AsyncSession = Depends(get_session),
+):
+    from celerp.services.peer_inventory import receive_stock_audit
+    scheme, _, credential = authorization.partition(" ")
+    if scheme != "Peer" or not credential:
+        raise HTTPException(401, "Invalid integration credentials")
+    grant = await peer_access.authenticate(
+        session, credential, source_company_id=body.source_company_id,
+        scope="inventory")
+    outcome = await receive_stock_audit(
+        session, grant=grant, source_entity_id=body.source_entity_id,
+        source_revision=body.source_revision, data=body.data.model_dump(mode="json"))
+    await session.commit()
+    return {"status": outcome}

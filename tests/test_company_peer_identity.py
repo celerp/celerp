@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from celerp.models.company import Company
+from celerp.models.company import Company, Location
 from celerp.models.company_peer import CompanyPeerIdentity
 from celerp.models.projections import Projection
 from celerp.services.peer_identity import seed_restored_identities, peer_identity
@@ -18,6 +18,7 @@ async def test_restored_contact_identity_reuses_new_local_record():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Company.__table__.create)
+        await conn.run_sync(Location.__table__.create)
         await conn.run_sync(Projection.__table__.create)
         await conn.run_sync(CompanyPeerIdentity.__table__.create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -63,6 +64,7 @@ async def test_receiver_does_not_mutate_company_owned_contact():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Company.__table__.create)
+        await conn.run_sync(Location.__table__.create)
         await conn.run_sync(Projection.__table__.create)
         await conn.run_sync(CompanyPeerIdentity.__table__.create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
