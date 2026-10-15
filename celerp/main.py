@@ -125,7 +125,7 @@ async def _try_auto_activate() -> None:
             f"{relay_base}/auth/activate",
             activate_payload(
                 iid, first_boot=_FIRST_BOOT, activation_verifier=verifier,
-                boot_id=_BOOT_ID))
+                boot_id=_BOOT_ID, include_handoff=True))
 
         if r is None or r.status_code != 200:
             return
@@ -140,7 +140,8 @@ async def _try_auto_activate() -> None:
             tos_version=data.get("tos_version"),
             backup_encryption_key=data.get("backup_encryption_key"),
             tier=data.get("tier"), status=data.get("status"),
-            expected_verifier=verifier if verifier else None)
+            expected_verifier=verifier if verifier else None,
+            acknowledged_handoff_id=data.get("acknowledged_handoff_id"))
         _log.info("Recovered cloud relay activation (instance_id=%s)", iid)
     except Exception as exc:
         logging.getLogger(__name__).debug(

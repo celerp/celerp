@@ -89,17 +89,24 @@ class MaxBodySizeMiddleware:
         # same total cap.
         if scope.get("path", "").endswith(
             ("/items/files/bulk", "/items/attachments/bulk", "/backup/import", "/backup/import-bootstrap",
-             "/migrations/bootstrap/scan", "/migrations/scan", "/company-backups/read",
-             "/company-backups/bootstrap/read")
+             "/migrations/bootstrap/scan", "/migrations/scan")
         ):
             await self.app(scope, receive, send)
             return
+
+        limit = self.max_body_size_bytes
+        if scope.get("path", "").endswith((
+            "/company-backups/read", "/company-backups/bootstrap/read",
+            "/company-backups/start-company/read",
+        )):
+            from celerp.services.company_backup import MAX_UPLOAD_BYTES
+            limit = MAX_UPLOAD_BYTES + 256 * 1024  # account for multipart framing
 
         headers = dict(scope.get("headers", []))
         cl = headers.get(b"content-length")
         if cl is not None:
             try:
-                if int(cl) > self.max_body_size_bytes:
+                if int(cl) > limit:
                     response = JSONResponse(status_code=413, content={"detail": t("error.upload_too_large")})
                     await response(scope, receive, send)
                     return
@@ -108,7 +115,6 @@ class MaxBodySizeMiddleware:
                 await response(scope, receive, send)
                 return
 
-        limit = self.max_body_size_bytes
         received = 0
         too_large = False
         started = False

@@ -75,6 +75,7 @@ def test_encrypt_upload_and_cleanup(tmp_path, monkeypatch):
     assert restored.read_bytes() == source.read_bytes()
     assert calls[0][0] == "GET" and calls[1][1] == "/handoffs"
     assert calls[1][2]["proof_hash"] == hashlib.sha256(secret).hexdigest()
+    assert calls[1][2]["backup_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
     assert secret.hex() not in json.dumps(calls[1][2])
     assert parse_handoff_link(result["link"]).copy_id == copy_id
     assert calls[2][2]["link"] == result["link"]

@@ -696,6 +696,12 @@ async def test_handoff_link_uses_existing_backup_preview(ui, real_engine, real_c
         destination.write_bytes(backup)
 
     monkeypatch.setattr(page, "download_company_handoff", retrieve)
+    from celerp.services import company_handoff_transfer
+    async def verify(copy_id, proof, digest):
+        assert copy_id == str(page.parse_handoff_link(link).copy_id)
+        assert proof == page.parse_handoff_link(link).proof_hash
+        assert digest == __import__("hashlib").sha256(backup).hexdigest()
+    monkeypatch.setattr(company_handoff_transfer, "verify_company_handoff", verify)
     before = await _company_ids(real_engine)
     r = await ui.post("/settings/restore-backup/read", data={"handoff_link": link})
     assert r.status_code == 200, r.text
@@ -754,3 +760,49 @@ async def test_company_handoff_send_form_retries_original_operation(ui, real_eng
     assert sent.status_code == 200 and "Company copy sent" in _page(sent)
     assert [call[1]["operation_id"] for call in calls] == [initial["operation_id"]] * 2
     assert all(call[1]["key"] == initial["key"] for call in calls)
+
+
+async def test_company_handoff_activity_revoke_and_navigation(ui, real_engine, monkeypatch):
+    from ui.routes import company_backup as route
+    from ui import api_client as api
+
+    _, _, tok = await _setup(real_engine, name="Company handoff list")
+    ui.cookies.set("celerp_token", tok)
+    copy_id = str(uuid.uuid4())
+    calls = []
+
+    async def list_activity(token):
+        assert token == tok
+        return {"items": [{"id": copy_id, "status": "sent", "opened": True,
+                           "downloaded": False, "company_opened": False,
+                           "expires_at": "2026-10-25T00:00:00+00:00"}]}
+
+    async def revoke(token, which):
+        calls.append((token, which))
+        return {"revoked": True}
+
+    monkeypatch.setattr(api, "company_backup_handoffs", list_activity)
+    monkeypatch.setattr(api, "company_backup_revoke_handoff", revoke)
+    sent = await ui.get(route.SEND)
+    assert sent.status_code == 200 and route.HANDOFFS in _page(sent)
+    listed = await ui.get(route.HANDOFFS)
+    assert listed.status_code == 200 and "Opened" in _page(listed)
+    assert f"{route.HANDOFFS}/{copy_id}/revoke" in _page(listed)
+    revoked = await ui.post(f"{route.HANDOFFS}/{copy_id}/revoke")
+    assert revoked.status_code == 303 and revoked.headers["location"] == route.HANDOFFS
+    assert calls == [(tok, copy_id)]
+
+
+async def test_switch_to_migrated_company_before_send(ui, real_engine):
+    user, first, access = await _setup(real_engine, name="First books")
+    second = await company(real_engine, user, "Migrated books", "migration-switch-target")
+    ui.cookies.set("celerp_token", access)
+    action = await ui.get(f"/switch-company/{second}?next=/settings/company-handoff")
+    assert action.status_code == 302
+    assert action.headers["location"] == "/settings/company-handoff"
+    assert _claims(_cookie(action, "celerp_token"))["company_id"] == str(second)
+    # Never make company switching a general-purpose redirect endpoint.
+    other = await ui.get(f"/switch-company/{first}?next=https://bad.example")
+    assert other.status_code == 302 and other.headers["location"] == "/"
+    encoded = await ui.get(f"/switch-company/{first}?next=%2F%2Fevil.example")
+    assert encoded.status_code == 302 and encoded.headers["location"] == "/"

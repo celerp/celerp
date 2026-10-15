@@ -3930,7 +3930,8 @@ def _backup_path(token: str | None, step: str) -> str:
 
 
 async def company_backup_read(token: str | None, filename: str, content: BinaryIO,
-                              setup_code: str | None = None, mode: str | None = None) -> dict:
+                              setup_code: str | None = None, mode: str | None = None,
+                              handoff: tuple[str, str] | None = None) -> dict:
     """Upload a company backup for checking. Nothing is written. Returns the upload token, a
     preview and, for a signed-in owner, what restoring it in ``mode`` does."""
     async with _local_error_mapping():
@@ -3938,7 +3939,9 @@ async def company_backup_read(token: str | None, filename: str, content: BinaryI
                                  headers=None if token else _setup_code_headers(setup_code)) as c:
             r = await c.post(_backup_path(token, "read"),
                              files=[("file", (filename, content, "application/octet-stream"))],
-                             data={"mode": mode} if token and mode else None)
+                             data={**({"mode": mode} if token and mode else {}),
+                                   **({"handoff_copy_id": handoff[0], "handoff_proof": handoff[1]}
+                                      if handoff else {})} or None)
     return _raise(r).json()
 
 
@@ -3947,6 +3950,21 @@ async def company_backup_send_handoff(token: str, payload: dict) -> dict:
     async with _local_error_mapping():
         async with _local_client(token, timeout=httpx.Timeout(900, connect=10.0), bulk=True) as c:
             response = await c.post("/company-backups/send-handoff", json=payload)
+    return _raise(response).json()
+
+
+async def company_backup_handoffs(token: str) -> dict:
+    """Activity for the authenticated company's copies."""
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            response = await c.get("/company-backups/handoffs")
+    return _raise(response).json()
+
+
+async def company_backup_revoke_handoff(token: str, copy_id: str) -> dict:
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            response = await c.post(f"/company-backups/handoffs/{copy_id}/revoke")
     return _raise(response).json()
 
 
@@ -4010,14 +4028,17 @@ async def company_backup_reactivate(token: str, upload_token: str, mode: str, pl
     return _raise(r).json()
 
 
-async def company_backup_start_read(email: str, password: str, filename: str, content: BinaryIO) -> dict:
+async def company_backup_start_read(email: str, password: str, filename: str, content: BinaryIO,
+                                    handoff: tuple[str, str] | None = None) -> dict:
     """Upload a company backup for a login with no company left, for checking. Nothing is
     written. Returns the upload token, a preview and what restoring it does."""
     async with _local_error_mapping():
         async with _local_client(None, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True) as c:
             r = await c.post("/company-backups/start-company/read",
                              files=[("file", (filename, content, "application/octet-stream"))],
-                             data={"email": email, "password": password})
+                             data={"email": email, "password": password,
+                                   **({"handoff_copy_id": handoff[0], "handoff_proof": handoff[1]}
+                                      if handoff else {})} or None)
     return _raise(r).json()
 
 

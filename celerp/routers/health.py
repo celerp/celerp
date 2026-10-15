@@ -321,6 +321,7 @@ async def _apply_gateway_token_api(
     expected_verifier: str | None = None,
     keep_disconnected: bool = False,
     restart_transport: bool = False,
+    acknowledged_handoff_id: str | None = None,
 ) -> bool:
     from celerp.services.cloud_entitlement import apply_activation_state
     return await apply_activation_state(
@@ -332,6 +333,7 @@ async def _apply_gateway_token_api(
         expected_verifier=expected_verifier,
         keep_disconnected=keep_disconnected,
         restart_transport=restart_transport,
+        acknowledged_handoff_id=acknowledged_handoff_id,
     )
 
 @settings_router.post("/cloud-activate", dependencies=[Depends(require_install_owner)])
@@ -396,7 +398,7 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
         return await c.post(
             f"{relay_base}/auth/activate",
             json=activate_payload(
-                local_iid, activation_verifier=verifier),
+                local_iid, activation_verifier=verifier, include_handoff=True),
             headers={},
         )
 
@@ -431,7 +433,7 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
             target["iid"] = authenticated_iid or local_iid
             return await c.post(
                 f"{relay_base}/auth/activate",
-                json=activate_payload(target["iid"]),
+                json=activate_payload(target["iid"], include_handoff=True),
                 headers={"Authorization": f"Bearer {jwt}"},
             )
 
@@ -498,6 +500,7 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
         expected_verifier=verifier if authority["kind"] == "verifier" else None,
         keep_disconnected=keep_disconnected,
         restart_transport=(intent == "connect"),
+        acknowledged_handoff_id=data.get("acknowledged_handoff_id"),
     )
     if not accepted:
         return {
@@ -922,7 +925,7 @@ async def _activate_after_claim(
         with _relay_leg("activate") as leg:
             resp = await c.post(
                 f"{relay_base}/auth/activate",
-                json=activate_payload(iid, activation_verifier=verifier),
+                json=activate_payload(iid, activation_verifier=verifier, include_handoff=True),
             )
             leg["status"] = resp.status_code
         return resp
@@ -944,6 +947,7 @@ async def _activate_after_claim(
         tier=data.get("tier"), status=data.get("status"),
         expected_verifier=verifier,
         keep_disconnected=keep_disconnected,
+        acknowledged_handoff_id=data.get("acknowledged_handoff_id"),
     )
     if not accepted:
         return None

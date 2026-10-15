@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import time
 import uuid
@@ -29,6 +30,7 @@ from celerp.services.company_files import company_backups_dir
 logger = logging.getLogger(__name__)
 
 UPLOAD_TTL_SECONDS = 24 * 3600
+RECEIPT_TTL_SECONDS = 90 * 24 * 3600
 UPLOADS = "uploads"
 UPLOAD_SUFFIX, EXPORT_SUFFIX, META_SUFFIX = ".upload", ".export", ".json"
 _CHUNK = 1024 * 1024
@@ -102,6 +104,66 @@ def stage_facts(stage: Path) -> dict:
     return facts if isinstance(facts, dict) else {}
 
 
+def bind_handoff(stage: Path, copy_id: str, proof: str) -> None:
+    """Attach a handoff receipt to one privately staged, validated backup."""
+    try:
+        canonical = str(uuid.UUID(copy_id))
+    except (ValueError, TypeError):
+        raise ValueError("Invalid company handoff") from None
+    if canonical != copy_id or not re.fullmatch(r"[0-9a-f]{64}", proof):
+        raise ValueError("Invalid company handoff")
+    facts = stage_facts(stage)
+    if not stage.is_file() or not facts.get("owner"):
+        raise ValueError("The backup upload is unavailable")
+    receipt = {"copy_id": copy_id, "proof": proof}
+    if "handoff" in facts and facts["handoff"] != receipt:
+        raise ValueError("A different handoff is already associated with this upload")
+    _write_meta(stage, {**facts, "handoff": receipt})
+
+
+def _receipt(stage: Path) -> dict | None:
+    facts = stage_facts(stage)
+    value = facts.get("handoff")
+    if (not isinstance(value, dict) or not isinstance(facts.get("restored"), dict)
+            or not facts["restored"].get("company_id")):
+        return None
+    try:
+        canonical = str(uuid.UUID(value["copy_id"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if canonical != value["copy_id"] or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("proof"))):
+        return None
+    return value
+
+
+def pending_handoffs(*, reported: bool | None = None) -> list[tuple[Path, dict]]:
+    """Read receipt records retained after a verified restore, never the backup content."""
+    result = []
+    for metadata in _private_dir(UPLOADS).glob("*.json"):
+        stage = metadata.with_suffix(UPLOAD_SUFFIX)
+        receipt = _receipt(stage)
+        if receipt and (reported is None or bool(receipt.get("reported")) == reported):
+            result.append((stage, receipt))
+    return sorted(result, key=lambda pair: pair[0].name)
+
+
+def mark_handoff_reported(stage: Path) -> None:
+    receipt = _receipt(stage)
+    if receipt is None:
+        return
+    facts = stage_facts(stage)
+    _write_meta(stage, {**facts, "handoff": {**receipt, "reported": True}})
+
+
+def acknowledge_handoff(copy_id: str) -> None:
+    """Stop reporting a handoff after the cloud confirms attribution."""
+    for stage, receipt in pending_handoffs():
+        if receipt["copy_id"] == copy_id:
+            facts = stage_facts(stage)
+            facts.pop("handoff", None)
+            _write_meta(stage, facts)
+
+
 def restored_company(stage: Path) -> str | None:
     """The company a finished restore of this upload opened."""
     return (stage_facts(stage).get("restored") or {}).get("company_id")
@@ -116,7 +178,7 @@ def finish_stage(stage: Path, company_id) -> None:
     """The restore is done: delete the backup and keep only which company it opened."""
     facts = stage_facts(stage)
     stage.unlink(missing_ok=True)
-    kept = {k: facts[k] for k in ("owner", "mode", "created_at") if k in facts}
+    kept = {k: facts[k] for k in ("owner", "mode", "created_at", "handoff") if k in facts}
     try:
         _write_meta(stage, {**kept, "restored": {"company_id": str(company_id)}})
     except OSError:
@@ -128,8 +190,12 @@ def purge_expired_uploads() -> None:
     cutoff = time.time() - UPLOAD_TTL_SECONDS
     for f in _private_dir(UPLOADS).iterdir():
         try:
-            if f.is_file() and f.stat().st_mtime < cutoff:
-                f.unlink(missing_ok=True)
+            if not f.is_file() or f.stat().st_mtime >= cutoff:
+                continue
+            if f.suffix == META_SUFFIX and _receipt(f.with_suffix(UPLOAD_SUFFIX)):
+                if f.stat().st_mtime >= time.time() - RECEIPT_TTL_SECONDS:
+                    continue
+            f.unlink(missing_ok=True)
         except FileNotFoundError:
             continue  # removed by another request meanwhile
 

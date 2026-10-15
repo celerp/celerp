@@ -43,3 +43,61 @@ async def test_handoff_export_is_owned_and_company_scoped(real_engine, real_clie
                                       headers={"Authorization": f"Bearer {bearer}"})
     assert accepted.status_code == 200, accepted.text
     assert captures == [("send", company_id), ("export", company_id)]
+
+@pytest.mark.asyncio
+async def test_handoff_activity_and_revoke_are_company_scoped(real_engine, real_client, monkeypatch):
+    from celerp.services import company_handoff_sender
+    user = await owner(real_engine)
+    first = await company(real_engine, user, "Company One", "handoff-owner-one")
+    second = await company(real_engine, user, "Company Two", "handoff-owner-two")
+    bearer = await token(real_engine, user, first)
+    first_copy, second_copy = str(uuid.uuid4()), str(uuid.uuid4())
+    calls = []
+
+    async def cloud(method, path, *, params=None, **kw):
+        calls.append((method, path, params))
+        if method == "GET":
+            assert params == {"company_id": str(first)}
+            return {"items": [{"id": first_copy, "company_id": str(first),
+                               "status": "sent", "opened": True,
+                               "downloaded": False, "company_opened": False,
+                               "expires_at": "2026-10-25T00:00:00+00:00"}]}
+        assert method == "POST" and path == f"/handoffs/{first_copy}/revoke"
+        return {"revoked": True}
+
+    monkeypatch.setattr(company_handoff_sender, "_cloud", cloud)
+    url = "/company-backups/handoffs"
+    assert (await real_client.get(url)).status_code == 401
+    headers = {"Authorization": f"Bearer {bearer}"}
+    response = await real_client.get(url, headers=headers)
+    assert response.status_code == 200, response.text
+    assert len(response.json()["items"]) == 1
+    assert response.json()["items"][0]["id"] == first_copy
+    assert "firm_name" not in response.text
+    bad = await real_client.post(f"{url}/{second_copy}/revoke", headers=headers)
+    assert bad.status_code == 404
+    assert not any(method == "POST" for method, _, _ in calls)
+    good = await real_client.post(f"{url}/{first_copy}/revoke", headers=headers)
+    assert good.status_code == 200
+    assert calls[-1][:2] == ("POST", f"/handoffs/{first_copy}/revoke")
+
+
+@pytest.mark.asyncio
+async def test_handoff_activity_rejects_cross_company_cloud_response(real_engine, real_client, monkeypatch):
+    from celerp.services import company_handoff_sender
+    user = await owner(real_engine)
+    first = await company(real_engine, user, "Company One", "handoff-other-one")
+    second = await company(real_engine, user, "Company Two", "handoff-other-two")
+    bearer = await token(real_engine, user, first)
+    calls = []
+
+    async def wrong_company(method, path, *, params=None, **kw):
+        calls.append(method)
+        return {"items": [{"id": str(uuid.uuid4()), "company_id": str(second), "status": "sent"}]}
+
+    monkeypatch.setattr(company_handoff_sender, "_cloud", wrong_company)
+    headers = {"Authorization": f"Bearer {bearer}"}
+    assert (await real_client.get("/company-backups/handoffs", headers=headers)).status_code == 502
+    assert (await real_client.post(f"/company-backups/handoffs/{uuid.uuid4()}/revoke",
+                                   headers=headers)).status_code == 502
+    assert calls == ["GET", "GET"]

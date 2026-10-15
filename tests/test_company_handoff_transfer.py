@@ -155,3 +155,26 @@ def test_transient_service_error_reuses_grant_operation(tmp_path, monkeypatch):
     asyncio.run(transfer.download_company_handoff(handoff_page_link(hid, secret), out))
     assert out.read_bytes() == source.read_bytes()
     assert requests[0] == requests[1]
+
+
+@pytest.mark.asyncio
+async def test_archive_verification_is_bound_to_original_content(monkeypatch):
+    from celerp.services.company_handoff_transfer import verify_company_handoff, HandoffDownloadError
+    copy_id = uuid.uuid4()
+    proof, original = "a" * 64, "b" * 64
+    requests = []
+    def handler(req):
+        requests.append(req)
+        supplied = __import__("json").loads(req.content)
+        if supplied == {"proof": proof, "backup_sha256": original}:
+            return httpx.Response(200, json={"verified": True})
+        return httpx.Response(404)
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        lambda **kwargs: real(transport=httpx.MockTransport(handler), **kwargs))
+    await verify_company_handoff(str(copy_id), proof, original)
+    with pytest.raises(HandoffDownloadError):
+        await verify_company_handoff(str(copy_id), proof, "c" * 64)
+    with pytest.raises(HandoffDownloadError):
+        await verify_company_handoff("../bad", proof, original)
+    assert len(requests) == 2

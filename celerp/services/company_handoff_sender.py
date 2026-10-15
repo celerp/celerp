@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from celerp.services import cloud_entitlement, company_backup_files as files
-from celerp.services.company_handoff_crypto import encrypt_file
+from celerp.services.company_handoff_crypto import decrypt_file, encrypt_file
 from celerp.services.company_handoff_links import handoff_page_link
 
 
@@ -108,6 +108,20 @@ async def _stage_once(path: Path, secret: bytes,
         candidate.unlink(missing_ok=True)
 
 
+def _verified_archive_digest(stage: Path, secret: bytes, company_id: uuid.UUID) -> str:
+    """Hash the exact immutable snapshot represented by the staged ciphertext."""
+    plain = files.export_path(company_id)
+    try:
+        decrypt_file(stage, plain, secret)
+        digest = hashlib.sha256()
+        with plain.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
+    finally:
+        plain.unlink(missing_ok=True)
+
+
 async def _send(copy_id: uuid.UUID, operation_id: uuid.UUID, secret: bytes, *,
                 recipient: str, reply_to: str, note: str) -> dict:
     link = handoff_page_link(copy_id, secret)
@@ -140,10 +154,12 @@ async def send_company_backup(*, export: Callable[[Path], Awaitable[None]],
         await _stage_once(stage, secret, export, company_id)
 
     size = stage.stat().st_size
+    backup_sha256 = await asyncio.to_thread(_verified_archive_digest, stage, secret, company_id)
     created = await _cloud("POST", "/handoffs", payload={
         "operation_id": str(operation_id), "company_id": str(company_id),
         "firm_name": firm_name, "size_bytes": size,
         "proof_hash": hashlib.sha256(secret).hexdigest(),
+        "backup_sha256": backup_sha256,
     }, expected=201)
     try:
         copy_id = uuid.UUID(created["id"])
