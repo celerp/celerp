@@ -58,8 +58,11 @@ INVENTORY_ORIGIN_SCHEMA = 1
 # stock (celerp.services.lot_origin.in_stock). Only the system writes it.
 ON_BOOKS_FIELD = "inventory_on_books"
 
+# Settings > Accounting, which only those who manage accounting can use: a notice
+# linking into it is listed with no link to anyone else (notifications.service.link_for).
+ACCOUNTING_SETTINGS_PATH = "/settings/accounting"
 # Where a user fixes a missing or invalid role.
-POSTING_ACCOUNTS_PATH = "/settings/accounting?tab=posting-accounts"
+POSTING_ACCOUNTS_PATH = f"{ACCOUNTING_SETTINGS_PATH}?tab=posting-accounts"
 
 
 class AccountRole(StrEnum):

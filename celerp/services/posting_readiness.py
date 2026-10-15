@@ -49,7 +49,6 @@ from celerp.services.account_roles import (
     source_controls,
     stock_problems,
     target_problems,
-    unmapped_roles,
     with_role,
 )
 
@@ -124,16 +123,26 @@ def _labels(roles: list[str]) -> str:
     return ", ".join(ROLE_LABELS[AccountRole(r)] for r in roles)
 
 
-async def notify_unmapped(session: AsyncSession, company_id) -> bool:
-    """One high-priority notice while a role the company's workflows need has no
-    account, deduped on the standing notice so a restart never stacks them and kept
-    current with the roles still missing; withdrawn once none is. Returns whether a
-    notice was created. The caller commits."""
+async def notify_unmapped(session: AsyncSession, company_id, refused=()) -> bool:
+    """One high-priority notice while a role has no account that can take its postings
+    and the company's workflows need it, a posting was just refused for it (``refused``),
+    or the notice already names it. Deduped on the standing notice so a restart never
+    stacks them and kept current with the roles still wrong; withdrawn once none is.
+    Returns whether a notice was created. The caller commits."""
+    from celerp.models.notification import Notification
     from celerp.notifications import service as notification_service
+    from celerp.services.journal_accounts import lock_accounts
 
     settings = await current_settings(session, company_id)
-    needed = set(needed_roles(await used_groups(session, company_id, settings)))
-    missing = [r for r in unmapped_roles(settings) if r in needed]
+    named = (await session.execute(select(Notification.i18n).where(
+        Notification.company_id == company_id, Notification.category == NOTICE_CATEGORY,
+        Notification.title == NOTICE_TITLE).limit(1))).scalar()
+    wanted = {*needed_roles(await used_groups(session, company_id, settings)), *refused,
+              *((named or {}).get("params") or {}).get("roles", ())}
+    current = role_map(settings)
+    problems = target_problems(sorted(wanted), current, await lock_accounts(
+        session, company_id, {current[r] for r in wanted if current.get(r)}))
+    missing = [role.value for role in AccountRole if role.value in problems]
     if not missing:
         await notification_service.clear_standing(session, company_id, NOTICE_CATEGORY, NOTICE_TITLE)
         return False

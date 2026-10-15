@@ -202,7 +202,7 @@ async def test_thousands_of_imported_older_lots_are_placed_in_one_start(session,
     (entry,) = await _placements(session, auth)
     assert _lines(entry) == {"1130-OB": (10.0, 0.0), "3200": (0.0, 10.0)}
     (notice,) = await _notices(session, auth, _PLACED)
-    assert notice.priority == "high" and notice.action_url == _TAB
+    assert notice.priority == "high" and notice.action_url == f"{_TAB}#older-stock-reconciliation"
     assert "2000 older stock items" in notice.body
     assert await _net(session, auth, "1130-OB") == (2000.0,)
     assert await _off_books(session, auth) == []
@@ -429,6 +429,63 @@ async def test_a_placement_that_fails_keeps_the_posting_account_change_and_tells
     (notice,) = await _notices(session, auth, i18n.t("notice.older_stock_failed.title", "en"))
     assert notice.priority == "high" and notice.action_url == _TAB
     assert notice.body == i18n.t("notice.older_stock_failed.body", "en")
+
+
+# --- Who a notice is for ------------------------------------------------------------------
+
+
+async def _bell(client, headers, title: str) -> dict:
+    r = await client.get("/notifications", headers=headers)
+    assert r.status_code == 200, r.text
+    (notice,) = [n for n in r.json()["items"] if n["title"] == title]
+    return notice
+
+
+async def test_the_placed_notice_links_only_accountants_to_where_reconciliation_stands(session, client, auth):
+    from test_company_settings_owners import _user_with_role
+
+    await _older_company(session, client, auth, [30.0, 20.0])
+    await _startup(session)
+    clerk = await _user_with_role(client, session, auth["headers"], "operator")
+    accountant = await _bell(client, auth["headers"], _PLACED)
+    seller = await _bell(client, clerk, _PLACED)
+    assert accountant["action_url"] == f"{_TAB}#older-stock-reconciliation"
+    assert seller["action_url"] is None
+    assert seller["body"] == accountant["body"] == i18n.t("notice.older_stock_placed.body", "en", count=2)
+
+
+async def test_a_posting_refused_for_its_account_tells_the_clerk_who_fixes_it_and_notifies_accountants(
+        session, client, auth):
+    from test_company_settings_owners import _user_with_role
+
+    from celerp.accounting_roles import ROLES_KEY
+
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {**company.settings, ROLES_KEY: {**company.settings[ROLES_KEY], "sales_revenue": "1110"}}
+    await session.commit()
+    clerk = await _user_with_role(client, session, auth["headers"], "operator")
+    r = await client.post("/docs", headers=clerk, json={
+        "doc_type": "invoice", "contact_name": "Buyer",
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100, "line_total": 100}],
+        "subtotal": 100, "tax": 0, "total": 100})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    r = await client.post(f"/docs/{doc}/finalize", headers=clerk)
+    detail = _refused(r, 409, "posting.refused")
+    assert "Someone who manages accounting must choose the account" in detail["message"]
+    assert "they have been notified" in detail["message"]
+
+    title = i18n.t("notice.posting_unmapped.title", "en")
+    (notice,) = await _notices(session, auth, title)
+    assert notice.i18n["params"] == {"roles": ["sales_revenue"]}
+    assert (await _bell(client, auth["headers"], title))["action_url"] == "/settings/accounting?tab=posting-accounts"
+    assert (await _bell(client, clerk, title))["action_url"] is None
+
+    r = await client.put("/accounting/posting-accounts/sales_revenue", headers=auth["headers"], json={"code": "4100"})
+    assert r.status_code == 200, r.text
+    assert await _notices(session, auth, title) == []
+    r = await client.post(f"/docs/{doc}/finalize", headers=clerk)
+    assert r.status_code == 200, r.text
 
 
 # --- Where reconciliation stands ---------------------------------------------------------

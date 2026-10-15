@@ -54,6 +54,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
+    ACCOUNTING_SETTINGS_PATH,
     INVENTORY_ORIGIN_KEY,
     INVENTORY_ORIGIN_SCHEMA,
     LOT_ACCOUNT_FIELD,
@@ -90,7 +91,9 @@ RECORDED = "item.inventory_account.recorded"
 MOVED = "item.inventory_account.moved"
 KEPT = "item.inventory_on_books.recorded"
 
-OLDER_STOCK_PATH = "/settings/accounting?tab=older-stock"
+OLDER_STOCK_PATH = f"{ACCOUNTING_SETTINGS_PATH}?tab=older-stock"
+# The top of the Older stock tab, where it says whether the stock is reconciled.
+RECONCILIATION_PATH = f"{OLDER_STOCK_PATH}#older-stock-reconciliation"
 PLACED_BY = "placed automatically"
 MAX_MOVE = 10000
 
@@ -497,13 +500,15 @@ async def _notify_unmapped(session: AsyncSession, company_id, variant: str, prob
 
 
 async def _notify_placed(session: AsyncSession, company_id, count: int) -> None:
-    """One plain notice for the person selling; the accounts, amounts and journal entries
-    are on Settings > Accounting > Older stock (older_stock_view)."""
+    """One plain notice for the person selling. It links those who manage accounting to
+    where the placement's reconciliation stands, with the accounts, amounts and journal
+    entries below it (older_stock_view); anyone else is shown it with no link
+    (notifications.service.link_for)."""
     from celerp.notifications import service as notification_service
 
     title, body, i18n = _notice("notice.older_stock_placed", "body", count=count)
     await notification_service.create(session, company_id, "accounting", title, body,
-                                      action_url=OLDER_STOCK_PATH, priority="high", i18n=i18n)
+                                      action_url=RECONCILIATION_PATH, priority="high", i18n=i18n)
 
 
 FAILED_NOTICE = "notice.older_stock_failed"
@@ -963,7 +968,7 @@ async def consumed_facts(session: AsyncSession, company_id, marker: str,
     return found
 
 
-PERIOD_LOCK_PATH = "/settings/accounting?tab=period-lock"
+PERIOD_LOCK_PATH = f"{ACCOUNTING_SETTINGS_PATH}?tab=period-lock"
 LOCKED_NOTICE = "notice.older_stock_locked"
 
 

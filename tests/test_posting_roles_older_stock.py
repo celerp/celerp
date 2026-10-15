@@ -190,7 +190,8 @@ async def _told_placed(session, auth) -> None:
     (notice,) = (await session.execute(select(Notification).where(
         Notification.company_id == auth["company_id"],
         Notification.title == "Existing inventory is ready"))).scalars().all()
-    assert notice.action_url == "/settings/accounting?tab=older-stock" and notice.priority == "high"
+    assert notice.action_url == "/settings/accounting?tab=older-stock#older-stock-reconciliation"
+    assert notice.priority == "high"
     assert "Sales and shipments can continue normally." in notice.body
 
 

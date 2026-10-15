@@ -22,6 +22,7 @@ _runtime.watch_supervisor_pipe()
 from celerp.db import create_tables, engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import CodeConflictError
 from celerp.projections.engine import UnhandledEventsError
+from celerp.services.account_roles import PostingRoleError
 from celerp.services.auto_je import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 load_cloud_config()
@@ -43,7 +44,7 @@ from celerp.held_back import (
     module_start_step,
     unowned_error,
 )
-from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, OlderStockMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
+from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, OlderStockMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception, notify_refused
 from ui.i18n import I18nMiddleware, t
 
 from celerp.routers import auth, companies, company_backup, ledger, migrations
@@ -771,6 +772,19 @@ async def code_conflict_handler(_request: Request, exc: CodeConflictError):
 async def unhandled_events_handler(_request: Request, exc: UnhandledEventsError):
     # Every rebuild door (ledger, doctor, admin) is refused the same way before it changes anything.
     return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(PostingRoleError)
+async def posting_refused_handler(request: Request, exc: PostingRoleError):
+    # Those who manage accounting are notified of the roles refused (notify_refused);
+    # the refusal is returned whether or not that succeeds.
+    company_id = getattr(request.state, "company_id", None)
+    if company_id is not None:
+        try:
+            await notify_refused(company_id, [p["params"]["role"] for p in exc.detail["params"]["problems"]])
+        except Exception:
+            logging.getLogger(__name__).exception("Could not notify a refused posting")
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
 
 
 @app.exception_handler(UnbalancedJournalEntry)

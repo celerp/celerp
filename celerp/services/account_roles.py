@@ -44,14 +44,16 @@ from celerp.models.projections import Projection
 
 
 class PostingRoleError(HTTPException):
-    """A role new recognition needs is missing or its account cannot take the posting."""
+    """A role new recognition needs is missing or its account cannot take the posting.
+    Whoever was refused may not manage accounting, so the refusal says who fixes it, and
+    those who do are notified (celerp.main.posting_refused_handler)."""
 
     def __init__(self, problems: list[dict]):
         text = " ".join(p["message"] for p in problems)
         super().__init__(
             status_code=409,
-            detail=refusal("posting.refused", f"{text} Choose the account in Settings > Accounting > Posting accounts.",
-                           problems=problems),
+            detail=refusal("posting.refused", f"{text} Someone who manages accounting must choose the account in "
+                           "Settings > Accounting > Posting accounts; they have been notified.", problems=problems),
             headers={"X-Celerp-Fix": POSTING_ACCOUNTS_PATH},
         )
 
@@ -203,8 +205,8 @@ class LotOriginError(HTTPException):
                 "posting.older_stock.no_account",
                 f"Stock {sku or 'item'} has no inventory account yet, so its cost cannot move. "
                 "Celerp places older stock on the Purchased inventory account set under "
-                "Settings > Accounting > Posting accounts; the bell notice says what is holding "
-                "it back.", sku=sku or "item"),
+                "Settings > Accounting > Posting accounts. When a setting holds it back, the bell "
+                "notice says which, and someone who manages accounting must fix it.", sku=sku or "item"),
             headers={"X-Celerp-Fix": POSTING_ACCOUNTS_PATH},
         )
 

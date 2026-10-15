@@ -441,6 +441,18 @@ async def _placed(company_id) -> bool:
     return placed
 
 
+async def notify_refused(company_id, roles: list[str]) -> None:
+    """A posting was refused because ``roles`` have no account that can take it. The
+    refused request has rolled back, so those who manage accounting are notified in a
+    transaction of its own (posting_readiness.notify_unmapped)."""
+    from celerp.services.posting_readiness import notify_unmapped
+
+    async with get_session_ctx() as session:
+        await session.rollback()
+        await notify_unmapped(session, company_id, roles)
+        await session.commit()
+
+
 # The anonymous liveness probes, matched exactly: the only routes an unfinished
 # System Recovery still serves. Readiness is refused until the recovery converges,
 # so nothing routes traffic to an installation that answers only 503s. Never a

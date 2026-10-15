@@ -95,15 +95,17 @@ def test_an_api_refusal_reaches_every_ui_site_in_the_users_language():
     from ui.api_client import APIError, _raise
 
     error = PostingRoleError(list(target_problems(["cogs"], {}, None).values()))
-    assert error.detail["message"] == ("Cost of goods sold has no account set. "
-                                       "Choose the account in Settings > Accounting > Posting accounts.")
+    assert error.detail["message"] == ("Cost of goods sold has no account set. Someone who manages accounting "
+                                       "must choose the account in Settings > Accounting > Posting accounts; "
+                                       "they have been notified.")
     response = httpx.Response(409, json={"detail": error.detail}, request=httpx.Request("PUT", "http://x/"))
     i18n.set_lang("de")
     with pytest.raises(APIError) as exc:
         _raise(response)
     label = _catalog("de")["posting.role.cogs"]
-    assert exc.value.detail == (f"Für {label} ist kein Konto festgelegt. "
-                                "Wählen Sie das Konto unter Einstellungen > Buchhaltung > Buchungskonten.")
+    assert exc.value.detail == (f"Für {label} ist kein Konto festgelegt. Jemand, der die Buchhaltung verwaltet, "
+                                "muss das Konto unter Einstellungen > Buchhaltung > Buchungskonten wählen; "
+                                "diese Personen wurden benachrichtigt.")
     assert exc.value.data == error.detail
 
 
