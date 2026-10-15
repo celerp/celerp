@@ -113,8 +113,11 @@ def _verified_archive_digest(stage: Path, secret: bytes, company_id: uuid.UUID) 
     plain = files.export_path(company_id)
     try:
         decrypt_file(stage, plain, secret)
+        digest = hashlib.sha256()
         with plain.open("rb") as stream:
-            return hashlib.file_digest(stream, "sha256").hexdigest()
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
     finally:
         plain.unlink(missing_ok=True)
 
