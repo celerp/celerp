@@ -526,6 +526,7 @@
   "lines.cannot_reserve": "Reservierung nicht möglich: {reasons}",
   "lines.reserve_status": "{skus} kann nicht reserviert werden: neuer Bestand kann nur in einem Status reserviert werden, der dies erlaubt.",
   "lines.cannot_fulfil": "Ausführung nicht möglich: {reasons}",
+  "lines.short_at_location": "Nur {available} von {needed} {sku} liegen in {location}, dem Versandort dieses Belegs. Lagern Sie zuerst Bestand nach {location} um oder versenden Sie von einem anderen Lagerort.",
   "lines.cannot_revert": "Rücknahme nicht möglich: {reasons}",
   "lines.cannot_set_available": "Kann nicht als verfügbar markiert werden: {reasons}",
   "lines.available_nothing_held": "{name}: auf dieser Zeile ist nichts reserviert oder draußen",

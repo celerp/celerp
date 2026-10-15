@@ -526,6 +526,7 @@
   "lines.cannot_reserve": "Tidak dapat memesan: {reasons}",
   "lines.reserve_status": "Tidak dapat memesan {skus}: stok baru hanya dapat dipesan pada catatan dengan status yang mengizinkannya.",
   "lines.cannot_fulfil": "Tidak dapat memproses: {reasons}",
+  "lines.short_at_location": "Hanya {available} dari {needed} {sku} yang ada di {location}, lokasi pengiriman dokumen ini. Pindahkan stok ke {location} terlebih dahulu, atau kirim dari lokasi lain.",
   "lines.cannot_revert": "Tidak dapat mengambil kembali: {reasons}",
   "lines.cannot_set_available": "Tidak dapat ditetapkan sebagai tersedia: {reasons}",
   "lines.available_nothing_held": "{name}: tidak ada yang dipesan atau keluar pada baris ini",

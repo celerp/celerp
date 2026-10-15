@@ -559,6 +559,7 @@
   "lines.cannot_reserve": "ማስያዝ አልተቻለም፦ {reasons}",
   "lines.reserve_status": "{skus}ን ማስያዝ አልተቻለም፦ አዲስ ክምችት ሊያዝ የሚችለው ሁኔታው በሚፈቅድ መዝገብ ላይ ብቻ ነው።",
   "lines.cannot_fulfil": "ትዕዛዝ መፈጸም አልተቻለም፦ {reasons}",
+  "lines.short_at_location": "ከ{needed} {sku} ውስጥ {available} ብቻ ይህ ሰነድ የሚላክበት {location} ላይ ይገኛል። መጀመሪያ ክምችት ወደ {location} ያዛውሩ፣ ወይም ከሌላ ቦታ ይላኩት።",
   "lines.cannot_revert": "መመለስ አይቻልም: {reasons}",
   "lines.cannot_set_available": "እንዳለ ማዘጋጀት አይቻልም: {reasons}",
   "lines.available_nothing_held": "{name}: በዚህ መስመር ላይ የተያዘ ወይም ውጭ ያለ ምንም የለም",

@@ -526,6 +526,7 @@
   "lines.cannot_reserve": "Impossibile riservare: {reasons}",
   "lines.reserve_status": "Impossibile riservare {skus}: nuovo stock si può riservare solo su un record in uno stato che lo consente.",
   "lines.cannot_fulfil": "Impossibile evadere: {reasons}",
+  "lines.short_at_location": "Solo {available} di {needed} {sku} si trovano in {location}, da dove viene spedito questo documento. Sposta prima le scorte in {location} oppure spedisci da un'altra ubicazione.",
   "lines.cannot_revert": "Impossibile riprendere: {reasons}",
   "lines.cannot_set_available": "Impossibile impostare come disponibile: {reasons}",
   "lines.available_nothing_held": "{name}: non c'è nulla di riservato o fuori su questa riga",

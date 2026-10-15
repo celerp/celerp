@@ -526,6 +526,7 @@
   "lines.cannot_reserve": "確保できません: {reasons}",
   "lines.reserve_status": "{skus} を確保できません: 新たな在庫の確保は、それを許可するステータスの記録でのみ可能です。",
   "lines.cannot_fulfil": "出荷できません: {reasons}",
+  "lines.short_at_location": "{sku} は {needed} のうち {available} しか {location}（この書類の出荷元）にありません。先に在庫を {location} へ移動するか、別のロケーションから出荷してください。",
   "lines.cannot_revert": "戻せません: {reasons}",
   "lines.cannot_set_available": "「利用可能」に設定できません: {reasons}",
   "lines.available_nothing_held": "{name}: この行で確保中または出ているものはありません",

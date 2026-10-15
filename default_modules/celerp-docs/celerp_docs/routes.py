@@ -27,7 +27,7 @@ from celerp.db import get_session
 from celerp.events.engine import (emit_event, find_event_by_idempotency, is_stripe_receipt,
                                   refuse_stripe_payment_removal, stripe_payment_indexes, stripe_receipt_references)
 from celerp.importers.results import failure_reason
-from celerp.models.company import Company
+from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
@@ -1706,6 +1706,7 @@ async def create_doc(
     # the lines are checked as the last of them left the items, and numbering is serialized.
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
     company = await locked_company(session, company_id)
+    await require_company_location(session, company_id, payload.from_location_id)
 
     # Locked, so the total checked is the one the invoice's last writer left.
     inv = await credit_note_original(session, company_id, payload.model_dump(), for_update=True)
@@ -1959,6 +1960,8 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     if {"original_doc_id", "doc_type"} & fields_changed.keys():
         await credit_note_original(session, company_id, {
             **row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}})
+    if "from_location_id" in fields_changed:
+        await require_company_location(session, company_id, (fields_changed["from_location_id"] or {}).get("new"))
     # Taxes change only on a draft; a finalized document's line edits leave them as posted.
     if is_draft and {"doc_type", "doc_taxes", "line_items", "tax_rate"} & fields_changed.keys():
         _taxed = {**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}}
@@ -9651,7 +9654,7 @@ def _stock_line(line_items: list[dict], index: int, locked: dict[str, Projection
 
 def _line_plan(
     line_items: list[dict], index: int, locked: dict[str, Projection], by_line: dict[int, list[str]],
-    owner_id: str, company_settings: dict, remaining: dict[str, float],
+    owner_id: str, company_settings: dict, remaining: dict[str, float], location_id: str | None = None,
 ) -> tuple[list[tuple[dict, float, bool]], float, list[dict], list[dict]]:
     """Plan line ``index`` against the locked lots: ``(draws, shortfall, own holds,
     passed-over lots)``.
@@ -9660,11 +9663,13 @@ def _line_plan(
     be split across lots) free lots of the same product in pick order. ``remaining`` is
     shared by every line of one operation, so two lines never take the same stock. A lot
     that may not be split is never taken in part; the lots passed over for that are the
-    last element, so a shortfall they caused can say so."""
+    last element, so a shortfall they caused can say so. With ``location_id`` only lots at
+    that location are drawn, the line's own holds and bound lot included."""
     from celerp.services.pick import as_lot, line_draw_sources, plan_line_draws, resolve_pick_method
     from celerp_inventory.projections import demand_claim
     bound = locked[str(line_item_id(line_items[index]))]
-    lots = {eid: as_lot(eid, p.created_at, p.state, demand_claim(p.state, owner_id)) for eid, p in locked.items()}
+    lots = {eid: as_lot(eid, p.created_at, p.state, demand_claim(p.state, owner_id)) for eid, p in locked.items()
+            if location_id is None or _same_id(p.state.get("location_id"), location_id)}
     method = resolve_pick_method(bound.state, company_settings)
     own, primary, free = line_draw_sources(line_items, index, lots, by_line, method)
     needed = float(line_items[index].get("quantity") or 0)
@@ -9672,6 +9677,22 @@ def _line_plan(
     draws, short = plan_line_draws(needed, own=own, primary=primary, free=free, method=method,
                                    remaining=remaining, span=splitting_allowed(bound.state), skipped=skipped)
     return draws, short, own, skipped
+
+
+async def _location_name(session, company_id, location_id) -> str:
+    """The company location's name, or the id as given when it names none of them."""
+    try:
+        location = await session.get(Location, uuid.UUID(str(location_id)))
+    except ValueError:
+        location = None
+    return location.name if location and str(location.company_id) == str(company_id) else str(location_id)
+
+
+def _same_id(a, b) -> bool:
+    try:
+        return uuid.UUID(str(a)) == uuid.UUID(str(b))
+    except ValueError:
+        return False
 
 
 def _unavailable(bound: Projection, owner_id: str) -> dict | None:
@@ -9977,6 +9998,7 @@ async def _fulfill_lines_impl(
     unit_map = await _get_unit_map(session, company_id)
     company = await session.get(Company, company_id)
     company_settings = (company.settings or {}) if company else {}
+    ship_from = state.get("from_location_id") or None
 
     blocked: list[str] = []
     unavailable: list[dict] = []
@@ -10004,7 +10026,7 @@ async def _fulfill_lines_impl(
             line = plan_items[idx] = _less_credited_line(line, (invoiced - cut) / invoiced)
             line_qty = invoiced - cut
         draws, short, own, skipped = _line_plan(
-            plan_items, idx, locked, by_line, entity_id, company_settings, remaining)
+            plan_items, idx, locked, by_line, entity_id, company_settings, remaining, ship_from)
         held = sum(lot["quantity"] for lot in own)
         if held > invoiced + 1e-9:
             blocked.append(f"{sku}: holds {held:g} for a line of {invoiced:g}; reserve the line again first")
@@ -10015,6 +10037,13 @@ async def _fulfill_lines_impl(
             elif skipped and short > 1e-9:
                 raise HTTPException(status_code=409, detail=splitting_off(
                     str(skipped[0]["state"].get("sku") or sku), "ship"))
+            elif ship_from:
+                name = await _location_name(session, company_id, ship_from)
+                raise HTTPException(status_code=409, detail=refusal(
+                    "lines.short_at_location",
+                    f"Only {line_qty - short:g} of {line_qty:g} {sku} is at {name}, where this document "
+                    f"ships from. Move stock to {name} first, or ship it from another location.",
+                    sku=sku, needed=f"{line_qty:g}", available=f"{line_qty - short:g}", location=name))
             else:
                 blocked.append(f"{sku}: insufficient stock - invoiced {line_qty:g}, available {line_qty - short:g}")
             continue

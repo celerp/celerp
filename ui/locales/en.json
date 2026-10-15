@@ -584,6 +584,7 @@
   "lines.cannot_reserve": "Cannot reserve: {reasons}",
   "lines.reserve_status": "Cannot reserve {skus}: stock can only be newly reserved on a record in a status that allows it.",
   "lines.cannot_fulfil": "Cannot fulfill: {reasons}",
+  "lines.short_at_location": "Only {available} of {needed} {sku} is at {location}, where this document ships from. Move stock to {location} first, or ship it from another location.",
   "lines.cannot_revert": "Cannot take back: {reasons}",
   "lines.cannot_set_available": "Cannot set as available: {reasons}",
   "lines.available_nothing_held": "{name}: nothing is held or out on this line",

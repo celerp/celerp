@@ -526,6 +526,7 @@
   "lines.cannot_reserve": "No se puede reservar: {reasons}",
   "lines.reserve_status": "No se puede reservar {skus}: solo se puede reservar stock nuevo en un registro cuyo estado lo permita.",
   "lines.cannot_fulfil": "No se puede procesar: {reasons}",
+  "lines.short_at_location": "Solo hay {available} de {needed} {sku} en {location}, desde donde se envía este documento. Traslada primero existencias a {location} o envía desde otra ubicación.",
   "lines.cannot_revert": "No se puede recuperar: {reasons}",
   "lines.cannot_set_available": "No se puede marcar como disponible: {reasons}",
   "lines.available_nothing_held": "{name}: no hay nada reservado ni fuera en esta línea",

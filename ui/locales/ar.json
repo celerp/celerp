@@ -526,6 +526,7 @@
   "lines.cannot_reserve": "تعذر الحجز: {reasons}",
   "lines.reserve_status": "تعذر حجز {skus}: لا يمكن حجز مخزون جديد إلا في سجل تسمح حالته بذلك.",
   "lines.cannot_fulfil": "تعذر تنفيذ الطلب: {reasons}",
+  "lines.short_at_location": "يوجد {available} فقط من {needed} من {sku} في {location}، وهو الموقع الذي يُشحن منه هذا المستند. انقل المخزون إلى {location} أولاً، أو اشحنه من موقع آخر.",
   "lines.cannot_revert": "تعذر الاسترجاع: {reasons}",
   "lines.cannot_set_available": "تعذر التعيين كـ «متاح»: {reasons}",
   "lines.available_nothing_held": "{name}: لا شيء محجوز أو خارج على هذا السطر",

@@ -526,6 +526,7 @@
   "lines.cannot_reserve": "จองไม่ได้: {reasons}",
   "lines.reserve_status": "จอง {skus} ไม่ได้: จองสต็อกเพิ่มได้เฉพาะรายการที่อยู่ในสถานะที่อนุญาตเท่านั้น",
   "lines.cannot_fulfil": "จัดส่งไม่ได้: {reasons}",
+  "lines.short_at_location": "{sku} มีอยู่ที่ {location} ซึ่งเป็นสถานที่จัดส่งของเอกสารนี้เพียง {available} จาก {needed} ย้ายสต็อกไปที่ {location} ก่อน หรือจัดส่งจากสถานที่อื่น",
   "lines.cannot_revert": "รับคืนไม่ได้: {reasons}",
   "lines.cannot_set_available": "ตั้งเป็นมีในสต็อกไม่ได้: {reasons}",
   "lines.available_nothing_held": "{name}: ไม่มีสินค้าที่จองไว้หรือออกไปในรายการนี้",

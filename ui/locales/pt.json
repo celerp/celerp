@@ -526,6 +526,7 @@
   "lines.cannot_reserve": "Não é possível reservar: {reasons}",
   "lines.reserve_status": "Não é possível reservar {skus}: novo estoque só pode ser reservado em um registro cujo status o permita.",
   "lines.cannot_fulfil": "Não é possível processar: {reasons}",
+  "lines.short_at_location": "Apenas {available} de {needed} {sku} estão em {location}, de onde este documento é expedido. Mova o estoque para {location} primeiro ou expeça de outro local.",
   "lines.cannot_revert": "Não é possível recolher: {reasons}",
   "lines.cannot_set_available": "Não é possível definir como disponível: {reasons}",
   "lines.available_nothing_held": "{name}: não há nada reservado nem fora nesta linha",

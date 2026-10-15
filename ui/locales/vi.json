@@ -526,6 +526,7 @@
   "lines.cannot_reserve": "Không thể giữ hàng: {reasons}",
   "lines.reserve_status": "Không thể giữ {skus}: chỉ có thể giữ thêm hàng trên bản ghi ở trạng thái cho phép.",
   "lines.cannot_fulfil": "Không thể giao hàng: {reasons}",
+  "lines.short_at_location": "Chỉ có {available} trên {needed} {sku} tại {location}, nơi chứng từ này xuất hàng. Hãy chuyển hàng đến {location} trước, hoặc xuất từ một địa điểm khác.",
   "lines.cannot_revert": "Không thể nhận lại: {reasons}",
   "lines.cannot_set_available": "Không thể đặt thành có sẵn: {reasons}",
   "lines.available_nothing_held": "{name}: không có gì đang được giữ hoặc ở ngoài trên dòng này",
