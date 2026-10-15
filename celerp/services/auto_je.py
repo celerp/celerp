@@ -60,6 +60,7 @@ from celerp.services.money import allocate_pro_rata, checked_exchange_rate, rece
 from celerp.services.posting_dates import correction_day, void_reversal
 from celerp.services.pick import as_lot, attribute_holds, line_draw_sources, plan_line_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line, line_receive_kind
+from celerp.tax_regimes import doc_side, misplaced_tax
 from sqlalchemy import ARRAY, String, any_, bindparam, func, or_
 from sqlalchemy import select as _select
 from ui.i18n import t
@@ -565,8 +566,35 @@ def refuse_negative_output_tax(doc: dict) -> None:
         raise HTTPException(status_code=409, detail=t("error.output_tax_negative"))
 
 
+def refuse_misplaced_tax(settings: dict, doc_type: str | None, state: dict, lines: list[dict]) -> None:
+    """Refuse (422, naming the tax) a document carrying a tax for the other side: a
+    withholding or other purchase tax on a sale, or a sales-only tax on a purchase. Every
+    tax line counts: each line's taxes (or its rate and code), the document taxes and the
+    header rate."""
+    applied = [*(state.get("doc_taxes") or []), {"code": "", "rate": state.get("tax_rate")}]
+    for line in lines:
+        if isinstance(line, dict):
+            applied += line.get("taxes") or [{"code": line.get("tax_code"), "rate": line.get("tax_rate")}]
+    name = misplaced_tax(settings, doc_type, [tax for tax in applied if isinstance(tax, dict)])
+    if name is not None:
+        from fastapi import HTTPException
+
+        key = "documents.err_tax_purchase_only" if doc_side(doc_type) == "sales" else "documents.err_tax_sales_only"
+        raise HTTPException(status_code=422, detail=t(key, tax=name))
+
+
+def refuse_unissuable_taxes(settings: dict, doc_type: str | None, doc: dict) -> None:
+    """Refuse a document issued as ``doc_type`` with a tax for the other side
+    (refuse_misplaced_tax), and a sale or customer credit note whose taxes come to less than
+    zero (refuse_negative_output_tax). Every way a document is issued checks it: finalize,
+    import and unvoid, and every posting of an issued document's entry."""
+    refuse_misplaced_tax(settings, doc_type, doc, doc.get("line_items") or [])
+    if doc_side(doc_type) == "sales":
+        refuse_negative_output_tax(doc)
+
+
 async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD", span_lots: bool = False) -> None:
-    refuse_negative_output_tax(doc)
+    refuse_unissuable_taxes(await current_settings(session, company_id), "invoice", doc)
     total, tax, revenue = _sale_totals(doc, base_currency)
     cycle_suffix, je_type_key = _finalize_cycle(doc, "invoice")
     # Recognize COGS with revenue: cost of the goods sold posts on the same JE, dated
@@ -686,6 +714,7 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
     (credited_quantities), and goods that come back are booked by the return. Dated when
     the credit note was issued unless ``ts`` says otherwise, with ``memo`` replacing the
     standard one."""
+    refuse_unissuable_taxes(await current_settings(session, company_id), "credit_note", doc)
     entries = await _credit_note_lines(session, company_id, doc, base_currency)
     if not entries:
         return
@@ -710,10 +739,11 @@ async def create_for_debit_note_finalized(session, *, company_id, user_id, doc_i
     the other way round (Dr accounts payable, Cr each line's expense account and the input
     tax), with the payable on the account its bill recognized it on. A note a return raised
     posts nothing here: the return's own entries already took it off the payable."""
+    settings = await current_settings(session, company_id)
+    refuse_unissuable_taxes(settings, "debit_note", doc)
     built = await _bill_entries(session, company_id, doc_id, doc, base_currency)
     if built is None:
         return
-    settings = await current_settings(session, company_id)
     original = str(doc.get("original_doc_id") or "")
     ap = await party_origin(session, company_id, original, R.PAYABLE, settings) if original else None
     entries = []
@@ -2033,12 +2063,13 @@ async def create_for_bill_conversion(
     Returns what each line debits, in base currency, by line index: {index: (account,
     amount)}, before any netting against receipts.
     """
+    settings = await current_settings(session, company_id)
+    refuse_unissuable_taxes(settings, "bill", doc)
     built = await _bill_entries(session, company_id, doc_id, doc, base_currency)
     if built is None:
         return {}
     entries, sources, debits = built
     by_line = {index: (e["account"], d) for index, e, d in zip(sources, entries, debits) if index is not None}
-    settings = await current_settings(session, company_id)
     # What the document's purchase order receipts already booked is not booked again, so
     # receiving before or after finalizing ends in the same books.
     # A line first takes up what the receipts booked for the same purpose, on the accounts

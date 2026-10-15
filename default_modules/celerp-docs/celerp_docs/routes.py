@@ -32,7 +32,7 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import assert_issuable_taxes, assert_taxes_fit_side, document_money, money_from_lines
+from celerp_docs.doc_money import document_money, money_from_lines
 from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services import auto_je
@@ -1783,7 +1783,7 @@ async def create_doc(
     # every later edit applies (header discount before tax, shipping in the total).
     if not payload.total and payload.line_items:
         data.update(money_from_lines(data, data.get("currency", "USD")))
-    assert_taxes_fit_side(settings, payload.doc_type, data, data.get("line_items") or [])
+    auto_je.refuse_misplaced_tax(settings, payload.doc_type, data, data.get("line_items") or [])
 
     if contact is not None:
         data.update(await _contact_selection_values(
@@ -1956,7 +1956,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     # Taxes change only on a draft; a finalized document's line edits leave them as posted.
     if is_draft and {"doc_type", "doc_taxes", "line_items", "tax_rate"} & fields_changed.keys():
         _taxed = {**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}}
-        assert_taxes_fit_side(settings, _taxed.get("doc_type"), _taxed, _taxed.get("line_items") or [])
+        auto_je.refuse_misplaced_tax(settings, _taxed.get("doc_type"), _taxed, _taxed.get("line_items") or [])
     # Uniqueness check when ref_id is being changed
     new_ref = (fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
@@ -2378,7 +2378,7 @@ async def finalize_document(
         return {"event_id": None, "already_finalized": True}
     if not (row.state.get("line_items") or []):
         raise HTTPException(status_code=422, detail="Add at least one line item before finalizing this document.")
-    assert_issuable_taxes((_company.settings or {}) if _company else {}, row.state)
+    auto_je.refuse_unissuable_taxes((_company.settings or {}) if _company else {}, row.state.get("doc_type"), row.state)
     if row.state.get("doc_type") in _BILL_POSTED:
         await require_line_destinations(session, company_id, row.state["line_items"])
     if row.state.get("doc_type") == "invoice":
@@ -3342,6 +3342,9 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
     restored_status = state.get("pre_void_status")
     if not restored_status:
         raise HTTPException(status_code=409, detail=t("documents.err_unvoid_legacy"))
+    if restored_status not in UNISSUED_STATUSES:
+        # Unvoiding an issued document issues it again, under the tax rules it would be issued under today.
+        auto_je.refuse_unissuable_taxes(await current_settings(session, company_id), state.get("doc_type"), state)
     if (memo := await _source_memo(session, company_id, state)) is not None and \
             memo.state.get("converted_to") != entity_id:
         number = memo.state.get("doc_number") or memo.state.get("ref_id") or memo.entity_id

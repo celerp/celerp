@@ -10,9 +10,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
-from celerp.services.auto_je import refuse_negative_output_tax
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp.tax_regimes import doc_side, misplaced_tax
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from ui.i18n import t
 
@@ -39,31 +37,6 @@ def _recompute_tax_applications(raw, base, currency: str):
     resolved = compute_tax_amounts(definitions, to_stored_float(round_money(base, currency)), currency)
     return [item.model_dump() for item in resolved], sum(
         (to_decimal(item.amount) for item in resolved), to_decimal(0))
-
-
-def assert_taxes_fit_side(settings: dict, doc_type: str | None, state: dict, lines: list[dict]) -> None:
-    """Refuse (422, naming the tax) a document carrying a tax for the other side: a
-    withholding or other purchase tax on a sale, or a sales-only tax on a purchase. Every
-    tax counts: each line's taxes (or its rate and code), the document taxes and the
-    header rate."""
-    applied = [*(state.get("doc_taxes") or []), {"code": "", "rate": state.get("tax_rate")}]
-    for line in lines:
-        if isinstance(line, dict):
-            applied += line.get("taxes") or [{"code": line.get("tax_code"), "rate": line.get("tax_rate")}]
-    name = misplaced_tax(settings, doc_type, [tax for tax in applied if isinstance(tax, dict)])
-    if name is not None:
-        key = "documents.err_tax_purchase_only" if doc_side(doc_type) == "sales" else "documents.err_tax_sales_only"
-        raise HTTPException(status_code=422, detail=t(key, tax=name))
-
-
-def assert_issuable_taxes(settings: dict, state: dict) -> None:
-    """Refuse a document issued with a tax for the other side (assert_taxes_fit_side), and a
-    sale or customer credit note whose taxes come to less than zero (409). Every way a
-    document is issued checks it: finalize, whatever made the draft, and an import of an
-    issued document."""
-    assert_taxes_fit_side(settings, state.get("doc_type"), state, state.get("line_items") or [])
-    if doc_side(state.get("doc_type")) == "sales":
-        refuse_negative_output_tax(state)
 
 
 def _line_amount(line: dict):

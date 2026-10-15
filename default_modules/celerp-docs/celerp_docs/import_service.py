@@ -24,7 +24,7 @@ from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.journal_accounts import require_line_destinations
 from celerp.services.locations import require_ship_from
-from celerp_docs.doc_money import assert_issuable_taxes, money_from_lines
+from celerp_docs.doc_money import money_from_lines
 from celerp_docs.doc_projections import UNISSUED_STATUSES
 from celerp_docs.routes import (
     RECORD_NOW,
@@ -184,7 +184,7 @@ async def create_imported_doc(
     await require_ship_from(session, company_id, rec.data.get("from_location_id"))
     priced = rec.data
     if str(rec.data.get("status") or "draft") not in UNISSUED_STATUSES:
-        assert_issuable_taxes(settings, rec.data)
+        auto_je.refuse_unissuable_taxes(settings, rec.data.get("doc_type"), rec.data)
     elif rec.data.get("total") in (None, "") and rec.data.get("line_items"):
         # A draft the file gives no totals for is worth what its lines are, as in the app.
         priced = money_from_lines(rec.data, rec.data.get("currency") or base_currency)
