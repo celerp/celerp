@@ -284,7 +284,9 @@ def test_every_anonymous_api_page_is_reached_through_connect_or_named_as_ui_only
             elif hasattr(r, "path"):
                 yield prefix + r.path
 
-    routes = {r.path_format: r for _, _, r in _api_routes(app)}
+    # Keyed by the path the app serves: an included router's own route carries only its
+    # path within that router.
+    routes = {path: r for path, _, r in _api_routes(app)}
     for router in _module_routers():
         routes.update({r.path_format: r for r in router.routes if hasattr(r, "dependant")})
     served_by_ui = set(ui_paths(ui_app.routes))
