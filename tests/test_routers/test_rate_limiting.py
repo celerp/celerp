@@ -127,3 +127,60 @@ async def test_the_ui_names_the_visitor_it_sees_never_one_the_browser_claims():
         assert (await ui.get("/", headers={CALLER_HEADER: "192.0.2.1"})).status_code == 204
     assert sent["caller"] == "198.51.100.7"
     assert api_client._caller.get() is None
+
+
+def _ask(client, path: str, email: str, password: str, caller: str):
+    return client.post(path, json={"email": email, "password": password, "company_name": "Next Co"},
+                       headers={CALLER_HEADER: caller})
+
+
+@pytest.mark.asyncio
+async def test_one_account_takes_twenty_failed_sign_ins_from_every_address_together(client, session, limits_on):
+    """A guesser moving to a new address for each attempt still meets a limit on the account:
+    past twenty failures it takes no password, the right one included, and says to wait or
+    reset the password. Every other account signs in as before, and a reset lets the owner
+    back in at once."""
+    from celerp.services.session_tracker import clear
+    from test_password_reset import _request_reset
+
+    r = await client.post("/auth/register", json={"company_name": "RL Co", "email": "v@test.example", "name": "V",
+                                                  "password": "pwvalid1"})
+    assert r.status_code == 200, r.text
+    r = await client.post("/companies/me/users", headers={"Authorization": f"Bearer {r.json()['access_token']}"},
+                          json={"name": "W", "email": "w@test.example", "password": "pwvalid1", "role": "operator"})
+    assert r.status_code == 200, r.text
+    await clear(session)
+    tries = [(await _ask(client, "/auth/login", "v@test.example", "wrong-pw", f"198.51.100.{i}")).status_code
+             for i in range(20)]
+    assert tries == [401] * 20
+    r = await _ask(client, "/auth/login", "v@test.example", "pwvalid1", "192.0.2.50")
+    assert r.status_code == 429, r.text
+    assert "15 minutes" in r.json()["detail"] and "reset your password" in r.json()["detail"], r.text
+    for path in ("/auth/login-force", "/auth/start-company"):
+        assert (await _ask(client, path, "v@test.example", "pwvalid1", "192.0.2.51")).status_code == 429, path
+    assert (await _ask(client, "/auth/login", "w@test.example", "pwvalid1", "198.51.100.1")).status_code == 200
+    await clear(session)
+
+    raw = await _request_reset(client, "v@test.example")
+    r = await client.post("/auth/password-reset/confirm", json={"token": raw, "new_password": "pwvalid2"})
+    assert r.status_code == 200, r.text
+    assert (await _ask(client, "/auth/login", "v@test.example", "pwvalid2", "192.0.2.50")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_an_ipv6_visitor_counts_by_its_64(client, limits_on):
+    """An IPv6 visitor holds a whole /64, so every address in it is one caller; a visitor in
+    the next /64 is another."""
+    tries = [(await _ask(client, "/auth/login", "a@test.example", "wrong-pw", f"2001:db8::{i + 1:x}")).status_code
+             for i in range(11)]
+    assert tries == [401] * 10 + [429]
+    assert (await _ask(client, "/auth/login", "a@test.example", "wrong-pw", "2001:db8:0:1::1")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_a_forced_sign_in_counts_with_the_ordinary_one(client, limits_on):
+    """Taking over the sign-in place is one more way to try a password, so it shares the
+    ordinary sign-in's count: ten failures on one take the other's attempts too."""
+    assert await _bad_logins(client, "a@test.example", 10, {CALLER_HEADER: "198.51.100.1"}) == [401] * 10
+    r = await _ask(client, "/auth/login-force", "a@test.example", "wrong-pw", "198.51.100.1")
+    assert r.status_code == 429, r.text

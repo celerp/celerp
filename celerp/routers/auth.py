@@ -149,11 +149,18 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     return tokens
 
 
+from limits import parse as parse_limit
 from slowapi import Limiter
 
 # Module-level limiter for the sign-in and setup routes, counted per caller.
 # Tests reset this via conftest: celerp.routers.auth.limiter._storage.reset()
 limiter = Limiter(key_func=request_caller)
+
+# Failed sign-ins one account takes from every caller together. Past it the account takes
+# no password, the right one included, until the window has passed or the password is
+# reset: a guesser changing address for each attempt still meets a limit, and every other
+# account signs in as before.
+_ACCOUNT_FAILURES = parse_limit("20 per 15 minutes")
 
 
 async def _note_account(request: Request) -> None:
@@ -173,7 +180,15 @@ def _account_key(request: Request) -> str:
     return request.state.account_key
 
 
+def _failures_key(email: str) -> str:
+    return f"sign-in-failures|{str(email or '').strip().lower()}"
+
+
 _PER_ACCOUNT = [Depends(_note_account)]
+
+# The ordinary sign-in, taking over the sign-in place and starting a company all try a
+# password, so one caller's attempts on one account count against them all together.
+_SIGN_IN = limiter.shared_limit("10/minute", scope="sign-in", key_func=_account_key)
 
 
 # A sign-in picks again only when a company it picked was removed meanwhile.
@@ -181,9 +196,15 @@ _PICK_ATTEMPTS = 3
 
 
 async def authenticate(session: AsyncSession, email: str, password: str) -> User:
-    """The active login these credentials belong to; a neutral 401 otherwise."""
+    """The active login these credentials belong to; a neutral 401 otherwise, or 429 once
+    the account has taken its failed sign-ins (_ACCOUNT_FAILURES)."""
+    key = _failures_key(email)
+    if limiter.enabled and not limiter.limiter.test(_ACCOUNT_FAILURES, key):
+        raise HTTPException(status_code=429, detail=t("auth.account_sign_ins_paused"))
     user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
     if not user or not user.auth_hash or not verify_password(password, user.auth_hash) or not user.is_active:
+        if limiter.enabled:
+            limiter.limiter.hit(_ACCOUNT_FAILURES, key)
         raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
     # A legacy hash moves to the current scheme now; a legacy password shorter than
     # the policy keeps its hash until the user changes it.
@@ -218,7 +239,7 @@ async def hold_direct_slot(session: AsyncSession, *, taking_over: bool = False) 
 
 
 @router.post("/login", dependencies=_PER_ACCOUNT)
-@limiter.limit("10/minute", key_func=_account_key)
+@_SIGN_IN
 async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.credentials import issue_token_pair
     user = await authenticate(session, payload.email, payload.password)
@@ -238,7 +259,7 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
 
 
 @router.post("/login-force", dependencies=_PER_ACCOUNT)
-@limiter.limit("5/minute", key_func=_account_key)
+@_SIGN_IN
 async def login_force(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     """Like /login but evicts all other active sessions from the tracker first, in the
     same transaction as the new session."""
@@ -264,7 +285,7 @@ class StartCompanyRequest(BaseModel):
 
 
 @router.post("/start-company", dependencies=_PER_ACCOUNT)
-@limiter.limit("5/minute", key_func=_account_key)
+@_SIGN_IN
 async def start_company(request: Request, payload: StartCompanyRequest,
                         session: AsyncSession = Depends(get_session)) -> dict:
     """Create a company for a login that has none left, after its last company was reset,
@@ -493,6 +514,8 @@ async def password_reset_confirm(
         raise HTTPException(status_code=400, detail=t("auth.password_too_short"))
     user.auth_hash = hash_password(payload.new_password)
     user.reset_token = None
+    # A new password ends the pause on failed sign-ins: resetting is the way back in.
+    limiter.limiter.clear(_ACCOUNT_FAILURES, _failures_key(user.email))
     user.reset_token_expires = None
     # Rotate the user's nonce so every access and refresh token issued before the
     # reset dies immediately (a reset is a security-sensitive credential change).

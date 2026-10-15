@@ -4875,6 +4875,7 @@
   "enum.item_status.reserved": "Reservado",
   "enum.item_status.merged": "Mesclado",
   "auth.invalid_credentials": "O e-mail ou a senha não estão corretos. Verifique os dois e tente novamente, ou use \"Esqueceu sua senha?\" na página de login.",
+  "auth.account_sign_ins_paused": "Esta conta teve muitas tentativas de login sem sucesso. Aguarde 15 minutos e tente novamente, ou redefina sua senha em \"Esqueceu sua senha?\" na página de login.",
   "auth.reset_link_invalid": "Este link de redefinição de senha não é mais válido. Os links expiram e funcionam só uma vez. Use \"Esqueceu sua senha?\" na página de login para receber um novo link.",
   "auth.setup_code_invalid": "O código de configuração está errado ou faltando. Copie-o do arquivo setup-code salvo junto às configurações do Celerp e digite-o novamente.",
   "auth.has_company": "Este e-mail já tem uma empresa. Entre com ele em vez de criar uma nova empresa.",

@@ -4875,6 +4875,7 @@
   "enum.item_status.reserved": "Riservato",
   "enum.item_status.merged": "Unito",
   "auth.invalid_credentials": "L'email o la password non sono corrette. Controlla entrambe e riprova, oppure usa \"Password dimenticata?\" nella pagina di accesso.",
+  "auth.account_sign_ins_paused": "Questo account ha avuto troppi accessi non riusciti. Attendi 15 minuti e riprova, oppure reimposta la password con \"Password dimenticata?\" nella pagina di accesso.",
   "auth.reset_link_invalid": "Questo link per reimpostare la password non è più valido. I link scadono e funzionano una sola volta. Usa \"Password dimenticata?\" nella pagina di accesso per riceverne uno nuovo.",
   "auth.setup_code_invalid": "Il codice di configurazione è errato o mancante. Copialo dal file setup-code salvato accanto alle impostazioni di Celerp, poi inseriscilo di nuovo.",
   "auth.has_company": "Questa email ha già un'azienda. Accedi con questa email invece di creare una nuova azienda.",

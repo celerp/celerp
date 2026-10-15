@@ -4875,6 +4875,7 @@
   "enum.item_status.reserved": "Reserviert",
   "enum.item_status.merged": "Zusammengeführt",
   "auth.invalid_credentials": "E-Mail oder Passwort stimmt nicht. Prüfen Sie beides und versuchen Sie es erneut, oder nutzen Sie \"Passwort vergessen?\" auf der Anmeldeseite.",
+  "auth.account_sign_ins_paused": "Für dieses Konto gab es zu viele fehlgeschlagene Anmeldungen. Warten Sie 15 Minuten und versuchen Sie es erneut, oder setzen Sie Ihr Passwort über \"Passwort vergessen?\" auf der Anmeldeseite zurück.",
   "auth.reset_link_invalid": "Dieser Link zum Zurücksetzen des Passworts ist nicht mehr gültig. Links laufen ab und funktionieren nur einmal. Nutzen Sie \"Passwort vergessen?\" auf der Anmeldeseite, um einen neuen Link zu erhalten.",
   "auth.setup_code_invalid": "Der Einrichtungscode ist falsch oder fehlt. Kopieren Sie ihn aus der Datei setup-code neben den Celerp-Einstellungen und geben Sie ihn erneut ein.",
   "auth.has_company": "Diese E-Mail hat bereits ein Unternehmen. Melden Sie sich damit an, statt ein neues Unternehmen anzulegen.",

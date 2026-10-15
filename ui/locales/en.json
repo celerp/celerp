@@ -4875,6 +4875,7 @@
   "enum.item_status.reserved": "Reserved",
   "enum.item_status.merged": "Merged",
   "auth.invalid_credentials": "The email or password isn't right. Check both and try again, or use \"Forgot password?\" on the sign-in page.",
+  "auth.account_sign_ins_paused": "This account has had too many failed sign-ins. Wait 15 minutes and try again, or reset your password with \"Forgot password?\" on the sign-in page.",
   "auth.reset_link_invalid": "This password reset link is no longer valid. Links expire and work only once. Use \"Forgot password?\" on the sign-in page to get a new link.",
   "auth.setup_code_invalid": "The setup code is wrong or missing. Copy it from the setup-code file saved next to Celerp's settings, then enter it again.",
   "auth.has_company": "This email already has a company. Sign in with it instead of creating a new company.",

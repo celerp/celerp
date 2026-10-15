@@ -6,7 +6,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 
 import bcrypt
 from fastapi import Depends, HTTPException, Request, status
@@ -290,8 +290,20 @@ async def signed_request_context(session: AsyncSession) -> AuthContext | None:
     return await validate_access_token(session, token) if isinstance(token, str) else None
 
 
+def _counted_as(address: str) -> str:
+    """The caller an address counts as: an IPv6 address by its /64, which one visitor holds
+    whole, so stepping through it is not a new caller each time."""
+    try:
+        ip = ip_address(address)
+    except ValueError:
+        return address
+    if ip.version == 6 and ip.ipv4_mapped is None:
+        return str(ip_network(f"{ip}/64", strict=False))
+    return str(getattr(ip, "ipv4_mapped", None) or ip)
+
+
 def request_caller(request: Request) -> str:
-    """The address a request is made for. CALLER_HEADER counts only on a loopback request,
+    """The caller a request is counted for. CALLER_HEADER counts only on a loopback request,
     where it comes from the UI server, so no one reaching the API from elsewhere can name
     an address of their choosing."""
     host = request.client.host if request.client else ""
@@ -299,7 +311,7 @@ def request_caller(request: Request) -> str:
         loopback = ip_address(host).is_loopback
     except ValueError:
         loopback = False
-    return (request.headers.get(CALLER_HEADER) or host) if loopback else host
+    return _counted_as((request.headers.get(CALLER_HEADER) or host) if loopback else host)
 
 
 async def get_current_user(ctx: AuthContext = Depends(get_auth_context)) -> User:
