@@ -1161,6 +1161,31 @@ async def _drop_document_entries(session, company_id, doc_id: str) -> None:
     await session.commit()
 
 
+async def _service_tax(client, token, tax_type: str) -> None:
+    taxes = [{"name": "Service tax", "rate": 5.0, "tax_type": tax_type, "is_default": False}]
+    for path in ("/companies/me/taxes", "/companies/me/purchasing-taxes"):
+        assert (await client.patch(path, headers=_h(token), json={"taxes": taxes})).status_code == 200
+
+
+async def _finalized_invoice(client, token, *, taxed: bool = False, issue_date: str | None = None) -> str:
+    line = {"description": "Service", "quantity": 1, "unit_price": 1000.0}
+    if taxed:
+        line["taxes"] = [{"code": "Service tax", "rate": 5.0, "order": 0}]
+    body = {"doc_type": "invoice", "contact_name": "C", "line_items": [line]}
+    if issue_date:
+        body["issue_date"] = issue_date
+    r = await client.post("/docs", headers=_h(token), json=body)
+    assert r.status_code == 200, r.text
+    assert (await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(token))).status_code == 200
+    return r.json()["id"]
+
+
+async def _missing_jes(client, token, fix: bool) -> dict:
+    r = await client.post(f"/admin/doctor?checks=missing_jes&fix={'true' if fix else 'false'}", headers=_h(token))
+    assert r.status_code == 200, r.text
+    return next(c for c in r.json()["results"] if c["check"] == "missing_jes")
+
+
 @pytest.mark.asyncio
 async def test_doctor_repairs_each_document_on_its_own_and_names_the_ones_it_cannot(client, session):
     """One invoice whose missing entry the posting tax check refuses (its tax is now a
@@ -1168,24 +1193,11 @@ async def test_doctor_repairs_each_document_on_its_own_and_names_the_ones_it_can
     the same run is still repaired and kept."""
     token = await _register(client)
     company_id = uuid.UUID((await client.get("/companies/me", headers=_h(token))).json()["id"])
-    both = [{"name": "Service tax", "rate": 5.0, "tax_type": "both", "is_default": False}]
-    for path in ("/companies/me/taxes", "/companies/me/purchasing-taxes"):
-        assert (await client.patch(path, headers=_h(token), json={"taxes": both})).status_code == 200
-    docs = []
-    for taxed in (False, True, False):
-        line = {"description": "Service", "quantity": 1, "unit_price": 1000.0}
-        if taxed:
-            line["taxes"] = [{"code": "Service tax", "rate": 5.0, "order": 0}]
-        r = await client.post("/docs", headers=_h(token), json={
-            "doc_type": "invoice", "contact_name": "C", "line_items": [line]})
-        assert r.status_code == 200, r.text
-        assert (await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(token))).status_code == 200
-        docs.append(r.json()["id"])
+    await _service_tax(client, token, "both")
+    docs = [await _finalized_invoice(client, token, taxed=taxed) for taxed in (False, True, False)]
     for doc in docs:
         await _drop_document_entries(session, company_id, doc)
-    purchase = [{"name": "Service tax", "rate": 5.0, "tax_type": "purchase", "is_default": False}]
-    for path in ("/companies/me/taxes", "/companies/me/purchasing-taxes"):
-        assert (await client.patch(path, headers=_h(token), json={"taxes": purchase})).status_code == 200
+    await _service_tax(client, token, "purchase")
     blocked_number = (await client.get(f"/docs/{docs[1]}", headers=_h(token))).json()["doc_number"]
 
     for fix in ("false", "true"):
@@ -1207,3 +1219,51 @@ async def test_doctor_repairs_each_document_on_its_own_and_names_the_ones_it_can
     assert [any(je.startswith(f"je:auto:{doc}:") for je in posted) for doc in docs] == [True, False, True]
     r = await client.post("/admin/doctor?fix=true", headers=_h(token))
     assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_doctor_dry_run_names_a_locked_period_refusal_as_the_fix_does(client, session):
+    """An invoice dated inside a locked period is named with the lock refusal by the dry
+    run exactly as by the fix run, so the dry run never calls that repair auto-fixable; the
+    other invoice is repaired and a second fix run posts nothing new."""
+    from ui.i18n import t
+    from celerp.services.company_lock import locked_company
+
+    token = await _register(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(token))).json()["id"])
+    old = await _finalized_invoice(client, token, issue_date="2020-03-01")
+    new = await _finalized_invoice(client, token)
+    for doc in (old, new):
+        await _drop_document_entries(session, company_id, doc)
+    company = await locked_company(session, company_id)
+    company.settings = {**company.settings, "lock_date": "2020-12-31"}
+    await session.commit()
+    old_number = (await client.get(f"/docs/{old}", headers=_h(token))).json()["doc_number"]
+    refused = [(old, old_number, t("error.period_locked", "en", date="2020-12-31"))]
+
+    runs = [await _missing_jes(client, token, fix) for fix in (False, True, True)]
+    for run in runs:
+        assert [(d["doc_id"], d["doc_number"], d["blocked_reason"])
+                for d in run["details"] if d.get("blocked_reason")] == refused
+        assert run["auto_fixable"] is False
+    assert [run["fixed"] for run in runs] == [0, 1, 0]
+    assert [d["doc_id"] for d in runs[0]["details"]] == [old, new]
+
+
+@pytest.mark.asyncio
+async def test_doctor_names_every_refusal_however_many_entries_are_missing(client, session):
+    """With more missing entries than the report lists, the one the tax check refuses is
+    still named, by the dry run and by the fix run alike."""
+    token = await _register(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(token))).json()["id"])
+    await _service_tax(client, token, "both")
+    docs = [await _finalized_invoice(client, token) for _ in range(51)]
+    docs.append(await _finalized_invoice(client, token, taxed=True))
+    for doc in docs:
+        await _drop_document_entries(session, company_id, doc)
+    await _service_tax(client, token, "purchase")
+
+    for fix in (False, True):
+        missing = await _missing_jes(client, token, fix)
+        assert missing["found"] == 52
+        assert [d["doc_id"] for d in missing["details"] if d.get("blocked_reason")] == [docs[-1]]

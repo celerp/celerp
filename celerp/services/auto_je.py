@@ -593,6 +593,11 @@ def refuse_unissuable_taxes(settings: dict, doc_type: str | None, doc: dict) -> 
         refuse_negative_output_tax(doc)
 
 
+def finalized_entry_day(doc: dict) -> str | None:
+    """The date a document's issue entry posts on: its finalize, else its issue date."""
+    return doc.get("finalized_at") or doc.get("issue_date")
+
+
 async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD", span_lots: bool = False) -> None:
     refuse_unissuable_taxes(await current_settings(session, company_id), "invoice", doc)
     total, tax, revenue = _sale_totals(doc, base_currency)
@@ -628,7 +633,7 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
         idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
         idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
         memo=f"Auto JE for {doc_id} finalized",
-        ts=doc.get("finalized_at") or doc.get("issue_date"),
+        ts=finalized_entry_day(doc),
         entries=entries,
         metadata_=metadata_,
     )
@@ -727,7 +732,7 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
         idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
         idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
         memo=memo or f"Auto JE for credit note {doc_id} finalized",
-        ts=ts or doc.get("finalized_at") or doc.get("issue_date"),
+        ts=ts or finalized_entry_day(doc),
         entries=entries,
         metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
     )
@@ -761,7 +766,7 @@ async def create_for_debit_note_finalized(session, *, company_id, user_id, doc_i
         idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
         idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
         memo=f"Auto JE for supplier credit note {doc_id} finalized",
-        ts=doc.get("finalized_at") or doc.get("issue_date"),
+        ts=finalized_entry_day(doc),
         entries=entries,
         metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
     )
@@ -852,7 +857,7 @@ async def true_up_credit_note_rate(session, *, company_id, user_id, doc_id: str,
             session, company_id=company_id, user_id=user_id, doc_id=doc_id, settings=settings, ar=ar,
             gap=taken - to_decimal(_sale_totals(doc, base_currency)[0]), je_id=f"je:auto:{doc_id}:fin:rate",
             op="credit_note.rate", memo=memo or f"Credit note {doc_id} brought to its invoice's rate",
-            ts=ts or doc.get("finalized_at") or doc.get("issue_date"),
+            ts=ts or finalized_entry_day(doc),
             metadata_={"trigger": "doc.finalized", "doc_id": doc_id})
     rate = require_doc_rate(doc, base_currency)
     for payment in doc.get("payments") or []:
@@ -908,7 +913,7 @@ async def _post_opening_settled(session, *, company_id, user_id, doc_id: str, do
         idem_create=je_idempotency_key(doc_id, op, "c"),
         idem_posted=je_idempotency_key(doc_id, op, "p"),
         memo=memo,
-        ts=doc.get("finalized_at") or doc.get("issue_date"),
+        ts=finalized_entry_day(doc),
         entries=entries,
         metadata_={"trigger": "doc.imported", "doc_id": doc_id},
     )
