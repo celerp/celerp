@@ -161,3 +161,26 @@ async def test_chunked_upload_over_the_cap_is_refused_by_the_app(client):
             content=body(), headers={"content-type": f"multipart/form-data; boundary={boundary}"},
         )
     assert r.status_code == 413, r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", [
+    "/company-backups/read",
+    "/company-backups/bootstrap/read",
+    "/company-backups/start-company/read",
+])
+async def test_company_archive_upload_has_path_specific_streaming_cap(path):
+    from celerp.middleware import MaxBodySizeMiddleware
+    from celerp.services.company_backup import MAX_UPLOAD_BYTES
+    mw = MaxBodySizeMiddleware(_ok_app, max_body_size_bytes=10 * 1024 * 1024)
+    assert await _drive(mw, path, 50 * 1024 * 1024) == 200
+    assert await _drive(mw, path, MAX_UPLOAD_BYTES + 256 * 1024 + 1) == 413
+
+
+@pytest.mark.asyncio
+async def test_company_archive_cap_applies_to_chunked_uploads(monkeypatch):
+    from celerp.services import company_backup
+    monkeypatch.setattr(company_backup, "MAX_UPLOAD_BYTES", 1024)
+    status, received = await _drive_chunked(1024, "/company-backups/start-company/read", 3, 128 * 1024)
+    assert status == 413
+    assert received <= 1024 + 256 * 1024

@@ -696,6 +696,12 @@ async def test_handoff_link_uses_existing_backup_preview(ui, real_engine, real_c
         destination.write_bytes(backup)
 
     monkeypatch.setattr(page, "download_company_handoff", retrieve)
+    from celerp.services import company_handoff_transfer
+    async def verify(copy_id, proof, digest):
+        assert copy_id == str(page.parse_handoff_link(link).copy_id)
+        assert proof == page.parse_handoff_link(link).proof_hash
+        assert digest == __import__("hashlib").sha256(backup).hexdigest()
+    monkeypatch.setattr(company_handoff_transfer, "verify_company_handoff", verify)
     before = await _company_ids(real_engine)
     r = await ui.post("/settings/restore-backup/read", data={"handoff_link": link})
     assert r.status_code == 200, r.text

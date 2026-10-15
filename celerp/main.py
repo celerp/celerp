@@ -122,8 +122,6 @@ async def _try_auto_activate() -> None:
                 f"{relay_base}/auth/checkin",
                 activate_payload(iid, first_boot=_FIRST_BOOT, boot_id=_BOOT_ID))
             return
-        from celerp.services.company_handoff_receipts import retry_completed_handoffs
-        await retry_completed_handoffs()
         r = await relay_post_with_retry(
             f"{relay_base}/auth/activate",
             activate_payload(
