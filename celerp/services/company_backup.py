@@ -1234,17 +1234,26 @@ def _same_file(backup: BackupFile, restored: Company | None) -> None:
         raise BackupError(409, t(CHANGED_COPY))
 
 
+async def _signed_in_owner(session: AsyncSession, owner_account: dict, caller: str | None) -> User:
+    """The user ``owner_account`` signs in as, checked as sign-in checks it: a wrong password
+    or unknown email is refused (401) in sign-in's words and counted against the same
+    slowdown, and the upload stays usable for another try."""
+    user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
+    if not password_attempts.check(owner_account["email"], owner_account["password"], user and user.auth_hash, caller):
+        raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
+    return user
+
+
 async def _bootstrap_existing(session: AsyncSession, backup: BackupFile,
                               owner_account: dict, caller: str | None) -> tuple[Company, User] | None:
     """The company a bootstrap restore of this backup already created, with its owner, when
-    the same account repeats it; refused for anyone else or when that company is deactivated."""
+    the same account repeats it. A wrong password is refused as sign-in refuses it; another
+    account, or a deactivated company, gets the installation's already-set-up refusal."""
     company = await session.scalar(_restored_as(backup.manifest["backup_id"]))
     if company is None:
         return None
-    user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
-    if (not password_attempts.check(owner_account["email"], owner_account["password"], user and user.auth_hash, caller)
-            or not company.is_active
-            or not await _is_member(session, user.id, company.id)):
+    user = await _signed_in_owner(session, owner_account, caller)
+    if not company.is_active or not await _is_member(session, user.id, company.id):
         raise BackupError(409, t(ALREADY_SET_UP))
     _same_file(backup, company)
     return company, user
@@ -1691,11 +1700,7 @@ async def reopen_restored(company_id, *, user_id=None, owner_account: dict | Non
     async with AsyncSession(bind=celerp.db.engine) as session:
         company = await session.get(Company, uuid.UUID(company_id))
         if owner_account is not None:
-            user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
-            if not password_attempts.check(owner_account["email"], owner_account["password"],
-                                           user and user.auth_hash, caller):
-                raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
-            user_id = user.id
+            user_id = (await _signed_in_owner(session, owner_account, caller)).id
         if (company is None or not company.is_active or user_id is None
                 or not await _is_member(session, uuid.UUID(str(user_id)), company.id)):
             return None

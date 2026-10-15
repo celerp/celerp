@@ -172,6 +172,31 @@ async def test_bootstrap_repeat_reports_opened_existing(real_client, real_engine
     assert retry.json()["company_id"] == first.json()["company_id"]
 
 
+
+async def test_bootstrap_second_upload_with_a_wrong_password_reads_as_sign_in(real_client, real_engine):
+    """A second upload of the same backup, staged before the first restore finished, with a
+    wrong password says the email or password isn't right, as sign-in does, never that the
+    installation is already set up; the same upload then opens the company with the right one."""
+    from ui.i18n import t
+    user, cid, tok = await _setup(real_engine)
+    data = await download(real_client, tok)
+    await _fresh_install(real_engine)
+    account = {"name": "First Owner", "email": "first@example.test", "password": "firstpw1234"}
+    tokens = []
+    for _ in range(2):
+        r = await real_client.post("/company-backups/bootstrap/read", files={"file": ("a.celerp-company", data)})
+        assert r.status_code == 200, r.text
+        tokens.append(r.json()["upload_token"])
+    first = await real_client.post("/company-backups/bootstrap/restore", json={"upload_token": tokens[0], **account})
+    assert first.status_code == 201, first.text
+
+    second = {"upload_token": tokens[1], **account}
+    wrong = await real_client.post("/company-backups/bootstrap/restore", json={**second, "password": "otherpw1234"})
+    assert (wrong.status_code, wrong.json()["detail"]) == (401, t("auth.invalid_credentials")), wrong.text
+    right = await real_client.post("/company-backups/bootstrap/restore", json=second)
+    assert right.status_code == 200, right.text
+    assert (right.json()["outcome"], right.json()["company_id"]) == ("opened_existing", first.json()["company_id"])
+
 # ── E3: what travels with a backup, stated as policy ─────────────────────────
 
 async def test_role_permission_policy_is_explicit():
