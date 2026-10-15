@@ -380,6 +380,112 @@ async def test_an_account_still_holding_stock_is_refused_for_any_other_posting_a
     assert (await _role(client, auth, "default_deposit", "1135")).status_code == 200  # emptied by the placement
 
 
+async def _inactive(session, auth, code: str, *, active: bool = False) -> None:
+    from celerp_accounting.models import Account
+
+    account = (await session.execute(select(Account).where(
+        Account.company_id == auth["company_id"], Account.code == code))).scalar_one()
+    account.is_active = active
+    await session.commit()
+
+
+async def _mapped(session, auth) -> None:
+    """The inventory and retained earnings accounts set the way a current release sets
+    them, so switching one off later leaves the role pointing at it."""
+    roles = {"inventory_purchased": "1130-P", "inventory_opening": "1130-OB", "retained_earnings": "3200"}
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {**company.settings,
+                        "posting_roles": {**(company.settings.get("posting_roles") or {}), **roles},
+                        "posting_role_scopes": {**(company.settings.get("posting_role_scopes") or {}),
+                                                **{role: [code] for role, code in roles.items()}}}
+    await session.commit()
+
+
+@pytest.mark.parametrize("on_purchased", [0.0, 60000.0])
+async def test_an_inactive_opening_account_holding_stock_value_holds_placement_naming_it(
+        session, client, auth, on_purchased):
+    """Opening inventory switched off while it still holds stock value: that value is
+    counted, cannot be moved off a switched-off account, so nothing is placed or
+    recognized again, and the notice names the account to fix. Once it is switched back
+    on the stock is placed with nothing added to the books."""
+    lots = await _older_company(session, client, auth, _LOTS)
+    if on_purchased:
+        await _split(session, auth, on_purchased)
+    await _mapped(session, auth)
+    await _inactive(session, auth, "1130-OB")
+    await _startup(session)
+
+    assert await _accounts(session, auth, lots) == [None] * 4
+    assert await _records(session, auth) == []
+    (notice,) = await _notices(session, auth, "Older stock waits for a posting account")
+    assert "Opening inventory is set to account 1130-OB, which is inactive." in notice.body
+
+    await _inactive(session, auth, "1130-OB", active=True)
+    await _startup(session)
+    (record,) = await _records(session, auth)
+    assert record["recognized"] == 0.0
+    assert sum((await assert_books_carry_stock(session, auth["company_id"])).values()) == Decimal("100000.00")
+
+
+async def test_an_inactive_purchased_account_holding_nothing_leaves_older_stock_on_opening_inventory(
+        session, client, auth):
+    """Purchased inventory switched off while it holds nothing: older stock is placed on
+    opening inventory, nothing is recognized, and the stock sells."""
+    lots = await _older_company(session, client, auth, _LOTS)
+    await _mapped(session, auth)
+    await _inactive(session, auth, "1130-P")
+    await _startup(session)
+
+    assert set(await _accounts(session, auth, lots)) == {"1130-OB"}
+    assert await _notices(session, auth, "Older stock waits for a posting account") == []
+    (record,) = await _records(session, auth)
+    assert (record["account"], record["transferred"], record["recognized"]) == ("1130-OB", 0.0, 0.0)
+    assert await assert_books_carry_stock(session, auth["company_id"]) == {
+        "1130-P": Decimal("0.00"), "1130-OB": Decimal("100000.00")}
+    assert (await _sold(client, auth, lots[0])).status_code == 200
+
+
+async def test_an_inactive_purchased_account_holding_stock_value_holds_placement_naming_it(session, client, auth):
+    lots = await _older_company(session, client, auth, _LOTS)
+    await _split(session, auth, 60000.0)
+    await _mapped(session, auth)
+    await _inactive(session, auth, "1130-P")
+    await _startup(session)
+
+    assert await _accounts(session, auth, lots) == [None] * 4
+    assert await _records(session, auth) == []
+    (notice,) = await _notices(session, auth, "Older stock waits for a posting account")
+    assert "Inventory purchased is set to account 1130-P, which is inactive." in notice.body
+
+
+async def test_older_stock_waits_naming_each_inventory_account_and_why_it_cannot_take_entries(
+        session, client, auth):
+    """Neither inventory account can take the stock: nothing is placed or recognized, and
+    the notice names each account and what is wrong with it."""
+    lots = await _older_company(session, client, auth, _LOTS)
+    await _mapped(session, auth)
+    await _inactive(session, auth, "1130-P")
+    await _inactive(session, auth, "1130-OB")
+    await _startup(session)
+
+    assert await _accounts(session, auth, lots) == [None] * 4
+    assert await _records(session, auth) == []
+    (notice,) = await _notices(session, auth, "Older stock waits for a posting account")
+    assert "Inventory purchased is set to account 1130-P, which is inactive." in notice.body
+    assert "Opening inventory is set to account 1130-OB, which is inactive." in notice.body
+
+
+async def test_older_stock_short_of_its_value_waits_naming_the_retained_earnings_account(session, client, auth):
+    lots = await _older_company(session, client, auth, _LOTS, short=10000.0)
+    await _mapped(session, auth)
+    await _inactive(session, auth, "3200")
+    await _startup(session)
+
+    assert await _accounts(session, auth, lots) == [None] * 4
+    (notice,) = await _notices(session, auth, "Older stock waits for a posting account")
+    assert "Retained earnings is set to account 3200, which is inactive." in notice.body
+
+
 async def test_stock_the_accounts_hold_exactly_is_placed_with_no_entry(session, client, auth):
     lots = await _older_company(session, client, auth, _LOTS)
     await _startup(session)

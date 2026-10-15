@@ -218,6 +218,12 @@ def _stock_balance(settings: dict, entries: list[tuple[str, dict]], code: str) -
     return _balance([(je, e) for je, e in entries if stock_line(settings, e)], code)
 
 
+def stock_accounts(settings: dict, entries: list[tuple[str, dict]]) -> list[str]:
+    """Every account a line was posted to as stock (account_roles.stock_line), whatever
+    role it serves now or whether it can still take entries, in first-posted order."""
+    return list(dict.fromkeys(e["account"] for _, e in entries if e.get("account") and stock_line(settings, e)))
+
+
 async def stock_balances(session: AsyncSession, company_id, settings: dict, codes) -> dict[str, Decimal]:
     """_stock_balance of each of ``codes``, read once."""
     entries = await _posted_entries(session, company_id)
@@ -463,24 +469,29 @@ async def _mark(session: AsyncSession, company_id) -> None:
 
 def _notice(base: str, body: str = "body", **params) -> tuple[str, str, dict]:
     """A notice's English title and body from the catalog keys ``base.title`` and
-    ``base.<body>``, and the i18n record each reader's language is shown from."""
+    ``base.<body>``, and the i18n record each reader's language is shown from; a
+    ``problems`` param (refusals) reads in English as their messages."""
     from ui.i18n import t
 
     keys = {"title": f"{base}.title", "body": f"{base}.{body}"}
-    return t(keys["title"], "en"), t(keys["body"], "en", **params), {**keys, "params": params}
+    english = {name: " ".join(r["message"] for r in v) if name == "problems" else v for name, v in params.items()}
+    return t(keys["title"], "en"), t(keys["body"], "en", **english), {**keys, "params": params}
 
 
 UNMAPPED_NOTICE = "notice.older_stock_unmapped"
 
 
-async def _notify_unmapped(session: AsyncSession, company_id, role: str) -> None:
-    """Older stock waits because the posting account ``role`` (purchased inventory, or
-    retained earnings when an adjustment is needed) cannot take entries. Told once while
-    it stands, kept current, and removed once the stock is placed (_place)."""
+async def _notify_unmapped(session: AsyncSession, company_id, variant: str, problems: list[dict]) -> None:
+    """Older stock waits because no inventory account can take it (``body_inventory``),
+    an inventory account that cannot take entries still holds value placing must move
+    off it (``body_held``), or retained earnings cannot take the adjustment it needs
+    (``body_retained``);
+    ``problems`` are the refusals (target_problem) naming each account and what is wrong
+    with it. Told once while it stands, kept current, and removed once the stock is
+    placed (_place)."""
     from celerp.notifications import service as notification_service
 
-    variant = "body_purchased" if role == AccountRole.INVENTORY_PURCHASED.value else "body_retained"
-    title, body, i18n = _notice(UNMAPPED_NOTICE, variant)
+    title, body, i18n = _notice(UNMAPPED_NOTICE, variant, problems=problems)
     await notification_service.notify_standing(session, company_id, "accounting", title, body,
                                                action_url=POSTING_ACCOUNTS_PATH, i18n=i18n)
 
@@ -604,9 +615,13 @@ async def _place(session: AsyncSession, company_id) -> bool:
     difference. The company is told (_notify_placed) and the dashboard shows it until
     dismissed (``older_stock_placed``).
 
-    Purchased inventory unusable, or retained earnings unusable while opening stock must
-    be recognized: nothing is placed and the company is told which setting to fix
-    (_notify_unmapped). Placing records each lot on today's date, so a period-locked
+    The default account is chosen only among the current inventory accounts that can
+    take entries; every account lines were posted to as stock (stock_accounts) is
+    counted, usable or not, so what it holds is never recognized again. Nothing is
+    placed, and the company is told which account to fix and why (_notify_unmapped),
+    when neither current inventory account can take entries, when one that cannot still
+    holds value that must be moved off it, or when retained earnings cannot take entries
+    while opening stock must be recognized. Placing records each lot on today's date, so a period-locked
     today raises _Locked. A lot whose placement is already recorded (_recorded) is not
     placed again. Returns whether lots were placed."""
     from celerp.events.engine import emit_event
@@ -629,17 +644,18 @@ async def _place(session: AsyncSession, company_id) -> bool:
     roles = [purchased, opening, retained]
     current = role_map(settings)
     scope = list(dict.fromkeys(c for role in _INVENTORY for c in scope_list(settings, role)))
-    accounts = await lock_accounts(session, company_id, {current[r] for r in roles if current.get(r)} | set(scope))
+    entries = await _posted_entries(session, company_id)
+    held = list(dict.fromkeys([*scope, *stock_accounts(settings, entries)]))
+    accounts = await lock_accounts(session, company_id, {current[r] for r in roles if current.get(r)} | set(held))
     if accounts is None:
         return False  # Accounting is not running: nothing can be booked or placed
     problems = target_problems(roles, current, accounts)
-    if purchased in problems:
-        await _notify_unmapped(session, company_id, purchased)
+    p, ob = current.get(purchased), current.get(opening)
+    usable = list(dict.fromkeys(current[r] for r in (purchased, opening) if r not in problems))
+    if not usable:
+        await _notify_unmapped(session, company_id, "body_inventory", [problems[purchased], problems[opening]])
         return False
-    p, ob = current[purchased], current.get(opening)
-    usable = [p] + ([ob] if opening not in problems and ob != p else [])
-    former = [c for c in scope if c not in (p, ob) and c in accounts]
-    entries = await _posted_entries(session, company_id)
+    counted = [c for c in dict.fromkeys([p, ob, *held]) if c and c in accounts and c not in usable]
     opening_first = (await books_from_elsewhere(session, company_id, settings)
                      or not any(e.get("account") == p for _, e in entries))
     candidates = sorted(usable, key=lambda c: c != ob) if opening_first else usable
@@ -647,16 +663,20 @@ async def _place(session: AsyncSession, company_id) -> bool:
     sold = await recognized_unshipped(session, company_id)
     unresolved = await unresolved_differences(session, company_id)
     room = {c: round_money(_room(settings, entries, items, c, currency, sold, unresolved), currency)
-            for c in candidates + former}
+            for c in candidates + counted}
     provisional = round_money(sold.get(UNPLACED, 0), currency)
     value = round_money(sum((booked_value(r, currency) for r in pending), Decimal("0")), currency)
     owed = value - provisional  # cost already taken off the books by invoices whose entries name no one account
     most = max(candidates, key=lambda c: room[c])
-    target = next((c for c in candidates if room[c] == owed), None) or (most if room[most] > 0 else p)
+    target = next((c for c in candidates if room[c] == owed), None) or (most if room[most] > 0 else usable[0])
     moved = {c: room[c] for c in room if c != target and room[c]}
     gap = round_money(sum(room.values(), Decimal("0")) - owed, currency)
+    stuck = [problems[r] for r in (purchased, opening) if r in problems and current.get(r) in moved]
+    if stuck:
+        await _notify_unmapped(session, company_id, "body_held", stuck)
+        return False
     if gap < 0 and retained in problems:
-        await _notify_unmapped(session, company_id, retained)
+        await _notify_unmapped(session, company_id, "body_retained", [problems[retained]])
         return False
     day = business_date_of(None, settings.get("timezone"))
     if not await period_open(session, company_id, day):

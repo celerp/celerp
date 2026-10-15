@@ -42,13 +42,14 @@ RETAINED = AccountRole.RETAINED_EARNINGS.value
 
 
 async def _upgrade_while_placement_waits(session, auth) -> None:
-    """A start while the purchased inventory account cannot take entries, so older stock waits
-    for its inventory account; the account is then switched back on, which places nothing."""
-    p = await role(session, auth, AccountRole.INVENTORY_PURCHASED.value)
+    """A start while neither inventory account can take entries, so older stock waits for
+    its inventory account; the accounts are then switched back on, which places nothing."""
+    codes = [await role(session, auth, r.value)
+             for r in (AccountRole.INVENTORY_PURCHASED, AccountRole.INVENTORY_OPENING)]
 
     async def active(on: bool) -> None:
         await session.execute(update(Account).where(
-            Account.company_id == auth["company_id"], Account.code == p).values(is_active=on))
+            Account.company_id == auth["company_id"], Account.code.in_(codes)).values(is_active=on))
         await session.commit()
 
     await active(False)

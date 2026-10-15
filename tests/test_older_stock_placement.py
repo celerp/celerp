@@ -308,42 +308,43 @@ async def test_a_period_lock_holds_back_placement_that_needs_no_adjustment_and_t
     assert await _lock_notices(session, auth) == []
 
 
-async def _waiting_for_purchased(session, client, auth, short: float = 0.0) -> list[str]:
-    """Older lots a start left waiting because purchased inventory (1130-P) cannot take
-    entries, and a new asset account 1135 ready to be set as purchased inventory."""
+async def _waiting_for_retained(session, client, auth) -> list[str]:
+    """Older lots a start left waiting because opening stock must be recognized and
+    retained earnings (3200) cannot take entries, and a new equity account 3210 ready to
+    be set as retained earnings."""
     from celerp_accounting.models import Account
 
-    lots = await _older_company(session, client, auth, [30.0], short=short)
-    await session.execute(update(Account).where(Account.company_id == auth["company_id"], Account.code == "1130-P")
+    lots = await _older_company(session, client, auth, [30.0], short=10.0)
+    await session.execute(update(Account).where(Account.company_id == auth["company_id"], Account.code == "3200")
                           .values(is_active=False))
     await session.commit()
     await _startup(session)
     assert await _accounts(session, auth, lots) == [None]
     r = await client.post("/accounting/accounts", headers=auth["headers"], json={
-        "code": "1135", "name": "Account 1135", "account_type": "asset", "parent_code": "1100"})
+        "code": "3210", "name": "Account 3210", "account_type": "equity", "parent_code": "3000"})
     assert r.status_code == 200, r.text
     return lots
 
 
 async def test_a_posting_account_change_is_kept_when_a_period_lock_holds_placement_back(session, client, auth):
-    lots = await _waiting_for_purchased(session, client, auth)
+    lots = await _waiting_for_retained(session, client, auth)
     await _settings(session, auth, lock_date=_today())
-    r = await client.put("/accounting/posting-accounts/inventory_purchased", headers=auth["headers"],
-                         json={"code": "1135"})
+    r = await client.put("/accounting/posting-accounts/retained_earnings", headers=auth["headers"],
+                         json={"code": "3210"})
     assert r.status_code == 200, r.text
     session.expire_all()
-    assert role_map(await _settings(session, auth))["inventory_purchased"] == "1135"
+    assert role_map(await _settings(session, auth))["retained_earnings"] == "3210"
     assert await _accounts(session, auth, lots) == [None]
     assert len(await _lock_notices(session, auth)) == 1
 
 
 async def test_setting_the_posting_account_withdraws_its_notice_while_a_lock_holds_placement(
         session, client, auth):
-    await _waiting_for_purchased(session, client, auth)
+    await _waiting_for_retained(session, client, auth)
     assert len(await _notices(session, auth, _UNMAPPED)) == 1
     await _settings(session, auth, lock_date=_today())
-    r = await client.put("/accounting/posting-accounts/inventory_purchased", headers=auth["headers"],
-                         json={"code": "1135"})
+    r = await client.put("/accounting/posting-accounts/retained_earnings", headers=auth["headers"],
+                         json={"code": "3210"})
     assert r.status_code == 200, r.text
     assert await _notices(session, auth, _UNMAPPED) == []
     assert len(await _lock_notices(session, auth)) == 1
@@ -416,13 +417,13 @@ async def test_the_posting_accounts_notice_stays_while_one_is_missing_and_goes_o
 
 async def test_a_placement_that_fails_keeps_the_posting_account_change_and_tells_the_company(
         session, client, auth):
-    lots = await _waiting_for_purchased(session, client, auth, short=10.0)
+    lots = await _waiting_for_retained(session, client, auth)
     with patch("celerp.services.lot_origin.post_opening_stock_delta", AsyncMock(side_effect=RuntimeError("boom"))):
-        r = await client.put("/accounting/posting-accounts/inventory_purchased", headers=auth["headers"],
-                             json={"code": "1135"})
+        r = await client.put("/accounting/posting-accounts/retained_earnings", headers=auth["headers"],
+                             json={"code": "3210"})
     assert r.status_code == 200, r.text
     session.expire_all()
-    assert role_map(await _settings(session, auth))["inventory_purchased"] == "1135"
+    assert role_map(await _settings(session, auth))["retained_earnings"] == "3210"
     assert await _accounts(session, auth, lots) == [None]
     assert await _placed_lots(session, auth) == []
     (notice,) = await _notices(session, auth, i18n.t("notice.older_stock_failed.title", "en"))
@@ -448,11 +449,10 @@ async def test_a_lot_whose_account_is_already_recorded_is_not_reported_placed_ag
     assert await _placements(session, auth) == []
 
 
-@pytest.mark.parametrize("role,code,fix", [("inventory_purchased", "1130-P", ("1135", "asset", "1100")),
-                                           ("retained_earnings", "3200", ("3210", "equity", "3000"))])
-async def test_older_stock_waits_for_purchased_inventory_then_is_placed_when_it_is_set(
-        session, client, auth, role, code, fix):
+async def test_older_stock_waits_for_retained_earnings_then_is_placed_when_it_is_set(session, client, auth):
     from celerp_accounting.models import Account
+
+    role, code, (new, kind, parent) = "retained_earnings", "3200", ("3210", "equity", "3000")
 
     lots = await _older_company(session, client, auth, [30.0], short=10.0)
     await session.execute(update(Account).where(Account.company_id == auth["company_id"], Account.code == code)
@@ -465,10 +465,9 @@ async def test_older_stock_waits_for_purchased_inventory_then_is_placed_when_it_
     assert await _events(session, auth) == events
     (notice,) = await _notices(session, auth, _UNMAPPED)
     assert notice.action_url == "/settings/accounting?tab=posting-accounts"
-    setting = "Purchased inventory" if role == "inventory_purchased" else "Retained earnings"
-    assert setting in notice.body and "Settings > Accounting > Posting accounts" in notice.body
+    assert "Retained earnings has no account set." in notice.body  # an inactive account is never mapped
+    assert "Settings > Accounting > Posting accounts" in notice.body
 
-    new, kind, parent = fix
     r = await client.post("/accounting/accounts", headers=auth["headers"], json={
         "code": new, "name": f"Account {new}", "account_type": kind, "parent_code": parent})
     assert r.status_code == 200, r.text
@@ -476,8 +475,7 @@ async def test_older_stock_waits_for_purchased_inventory_then_is_placed_when_it_
     assert r.status_code == 200, r.text
     assert await _accounts(session, auth, lots) == ["1130-OB"]
     (entry,) = await _placements(session, auth)
-    equity = new if role == "retained_earnings" else "3200"
-    assert _lines(entry) == {"1130-OB": (10.0, 0.0), equity: (0.0, 10.0)}
+    assert _lines(entry) == {"1130-OB": (10.0, 0.0), new: (0.0, 10.0)}
     assert await _notices(session, auth, _UNMAPPED) == []
 
 
@@ -819,7 +817,8 @@ def test_older_stock_notices_translate():
     locales = Path(__file__).resolve().parents[1] / "ui" / "locales"
     keys = ("notice.older_stock_placed.title", "notice.older_stock_placed.body",
             "notice.older_stock_unmapped.title",
-            "notice.older_stock_unmapped.body_purchased", "notice.older_stock_unmapped.body_retained",
+            "notice.older_stock_unmapped.body_inventory", "notice.older_stock_unmapped.body_held",
+            "notice.older_stock_unmapped.body_retained",
             "event.item.inventory_account.moved", "older_stock.tab", "older_stock.move",
             "older_stock.move.nothing_selected", "older_stock.move.too_many", "older_stock.move.no_key",
             "older_stock.move.not_placed", "older_stock.move.invoiced", "older_stock.move.key_reused",
