@@ -96,11 +96,11 @@ def test_placed_older_stock_moves_in_bulk_and_the_move_undoes(page, ui_server, f
     page.screenshot(path=str(tmp_path / "older-stock-1280.png"), full_page=True)
 
     page.locator("#older-stock-table .bulk-select-all").check()
-    page.locator("#older-stock-card .bulk-action-select").select_option("move")
-    picker = page.locator("#older-stock-card .bulk-fields .combobox-wrap")
+    page.locator("#bulkbar-older-stock-table .bulk-action-select").select_option("move")
+    picker = page.locator("#bulkbar-older-stock-table .bulk-fields .combobox-wrap")
     picker.locator(".combobox-input").fill("1130-P")
     picker.locator('.combobox-option[data-value="1130-P"]').click()
-    page.locator("#older-stock-card .bulk-apply").click()
+    page.locator("#bulkbar-older-stock-table .bulk-apply").click()
     expect(page.locator("#older-stock-card")).to_contain_text("Moved 2 lots to 1130-P.")
     rows = page.locator("#older-stock-table tbody tr", has_text=f"OLD-{tag}")
     for i in range(2):
