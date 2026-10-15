@@ -92,9 +92,10 @@ class StartCompanyStartIn(BaseModel):
 
 
 class FinalizeIn(BaseModel):
-    """Posting-account choices; ``posting_readiness.apply_choices`` checks them so every problem is explained."""
+    """Posting-account choices and acknowledgment of measured differences."""
     roles: Any = None
     add_accounts: Any = None
+    reviewed_differences: bool = False
 
 
 class BootstrapStartIn(BaseModel):
@@ -555,7 +556,10 @@ async def finalize_run(run_id: uuid.UUID, body: FinalizeIn | None = None,
                        session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
     try:
-        await migrations.finalize(session, run, body.model_dump() if body else None)
+        await migrations.finalize(
+            session, run, body.model_dump(exclude={"reviewed_differences"}) if body else None,
+            reviewed_differences=body.reviewed_differences if body else False,
+        )
     except BaseException:
         await session.rollback()
         raise
