@@ -231,5 +231,6 @@ async def test_two_starts_at_once_place_the_stock_once(committed_engine, own_cli
     assert len(entries) == 1
     items = await _rows(committed_engine, cid, "item")
     assert items[held].get(_FIELD) == "1130-OB"
-    # 30 of stock on hand: 1130-OB carried 130, so 100 is taken off against retained earnings.
-    assert (await _net(committed_engine, cid, "1130-P"), await _net(committed_engine, cid, "1130-OB")) == (-100.0, 30.0)
+    # 30 of stock on hand: 1130-OB carried 130 and 1130-P the -100 the older sale relieved,
+    # together the stock, so the 100 is moved across and nothing is booked against equity.
+    assert (await _net(committed_engine, cid, "1130-P"), await _net(committed_engine, cid, "1130-OB")) == (0.0, 30.0)

@@ -1228,6 +1228,24 @@ class SysMigrationApplied(BaseModel):
     revision: str
 
 
+class SysOlderStockPlaced(BaseModel):
+    # One placement of older stock (lot_origin._place): the account its lots were placed
+    # on, what each inventory account held beyond its stock before (rooms), the value
+    # moved onto the account, recognized as opening stock or left unresolved, and the
+    # journal entries that booked it.
+    placement: str
+    day: str
+    count: int
+    value: float
+    account: str
+    rooms: dict[str, float]
+    transferred: float
+    recognized: float
+    unresolved: float
+    classification: str
+    journal: list[str]
+
+
 # Subscription schemas - open/permissive since subscription data is user-defined
 class SubCreated(BaseModel):
     model_config = {"extra": "allow"}
@@ -1516,6 +1534,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "sys.api_key.revoked": SysApiKeyRevoked,
     "sys.backup.created": SysBackupCreated,
     "sys.migration.applied": SysMigrationApplied,
+    "sys.older_stock.placed": SysOlderStockPlaced,
 
     # Lists
     "list.created": ListCreated,

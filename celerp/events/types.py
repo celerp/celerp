@@ -140,3 +140,4 @@ class EventType(StrEnum):
     SYS_API_KEY_REVOKED = "sys.api_key.revoked"
     SYS_BACKUP_CREATED = "sys.backup.created"
     SYS_MIGRATION_APPLIED = "sys.migration.applied"
+    SYS_OLDER_STOCK_PLACED = "sys.older_stock.placed"

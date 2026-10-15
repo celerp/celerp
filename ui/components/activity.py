@@ -247,6 +247,7 @@ _SYSTEM_EVENT_TYPES = frozenset({
     "payment_batch.recorded",
     "line_action.recorded",
     "sys.migration.applied",
+    "sys.older_stock.placed",
 })
 
 # metadata_.reason values that mark an event as a mechanical side-effect of a

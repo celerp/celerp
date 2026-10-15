@@ -5,8 +5,10 @@
 One check shared by every stock-boundary test. Only the accounts lots are carried on
 count: the purchased and opening inventory accounts, every account that has served
 either. For each, the posted balance equals the value of the owned lots on hand
-(lot_origin.held_value) that record it. Clearing accounts that hold value not yet in
-a lot are not part of it.
+(lot_origin.held_value) that record it, less the cost finalized invoices recognized and
+have not shipped, plus the difference an older-stock placement recorded on it,
+unresolved, for the accountant (lot_origin.unresolved_differences). Clearing accounts
+that hold value not yet in a lot are not part of it.
 
 With Accounting on, every lot of the company's own that is on hand records one of
 those accounts, except the ones the caller names as unplaced (stock from another
@@ -32,7 +34,7 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.account_roles import scope_codes
-from celerp.services.lot_origin import held_value
+from celerp.services.lot_origin import held_value, unresolved_differences
 from celerp.services.money import round_money
 
 SAMPLE_STOCK_ENTRY = "je:auto:opening-stock:sample-stock:"
@@ -113,6 +115,8 @@ async def assert_books_carry_stock(session, company_id, *, unplaced=(),
             held[code] -= round_money(amount, currency)  # sold on a finalized invoice, not yet shipped
     for code, amount in (in_transit or {}).items():
         held[code] = held.get(code, Decimal("0")) + round_money(Decimal(str(amount)), currency)
+    for code, amount in (await unresolved_differences(session, company_id)).items():
+        held[code] = held.get(code, Decimal("0")) + amount  # recorded by a placement, left for the accountant
     held = {code: round_money(v, currency) for code, v in held.items()}
     assert books == held, f"books {books} != stock recorded on them {held}"
     return books

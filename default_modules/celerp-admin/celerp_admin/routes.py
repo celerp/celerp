@@ -1048,8 +1048,9 @@ async def _check_stock_on_books(
     session: AsyncSession, company_id, user_id, *, fix: bool,
 ) -> dict:
     """Find stock the books do not carry: a lot on hand that records no inventory
-    account, and an inventory account whose balance differs from the stock recorded on
-    it (lot_origin.stock_off_books). Report-only: closing a gap needs the user to decide
+    account, an inventory account whose balance differs from the stock recorded on it,
+    and a difference an older-stock placement left on an account for the accountant
+    (lot_origin.stock_off_books). Report-only: closing a gap needs the user to decide
     where the value belongs."""
     from celerp.services.lot_origin import stock_off_books
 

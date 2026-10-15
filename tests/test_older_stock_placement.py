@@ -3,9 +3,10 @@
 """Older stock placed on an inventory account by itself, moved in bulk, and undone.
 
 Stock from before lots recorded their inventory account is placed at start, every lot
-of it, on one default account: the account the books show holding it, or purchased
-inventory. Any difference between what that account holds and the stock is booked in
-one dated adjustment against retained earnings, and the company is told. From
+of it, on one default account: the account the books show holding most of it, or
+purchased inventory. What the inventory accounts hold short of the stock is recognized
+as opening stock, what they hold beyond it is left unresolved for the accountant
+(test_older_stock_reconciliation), and the company is told. From
 Settings > Accounting > Older stock the lots can be moved to another inventory account
 in bulk, each move undone, and the adjustment reversed or booked again.
 
@@ -221,22 +222,19 @@ async def test_a_migrated_company_places_its_stock_on_opening_inventory(session,
     assert await _off_books(session, auth) == []
 
 
-async def test_accounts_that_do_not_add_up_are_placed_with_one_adjustment(session, client, auth):
+async def test_accounts_holding_more_than_the_stock_leave_the_difference_unresolved(session, client, auth):
     lots = await _imported(session, client, auth, [30.0])
     await _older_release(session, auth)
     await _written_down(session, auth, "1130-OB", 30.0)
     await _books_over(session, client, auth)  # 1130-P carries 40 for 30 of stock
     await _startup(session)
     assert await _accounts(session, auth, lots) == ["1130-P"]
-    (entry,) = await _placements(session, auth)
-    assert _lines(entry) == {"3200": (10.0, 0.0), "1130-P": (0.0, 10.0)}
-    assert entry["ts"][:10] == _today()
-    assert await _net(session, auth, "1130-P", "1130-OB") == (30.0, 0.0)
+    assert await _placements(session, auth) == []
+    assert await _net(session, auth, "1130-P", "1130-OB") == (40.0, 0.0)
     (notice,) = await _notices(session, auth, _PLACED)
-    assert notice.body == i18n.t("notice.older_stock_placed.body_adjusted", "en", **notice.i18n["params"])
-    for part in ("1130-P", "40.00", "10.00", "3200", _today()):
-        assert part in notice.body, part
-    assert await _off_books(session, auth) == []
+    assert notice.body == i18n.t("notice.older_stock_placed.body", "en", **notice.i18n["params"])
+    assert await _off_books(session, auth) == [
+        {"kind": "unresolved_difference", "account": "1130-P", "amount": 10.0}]
 
 
 async def test_existing_upgraded_company_with_unplaced_lots_is_placed_at_the_next_start(session, client, auth):
@@ -711,7 +709,7 @@ async def test_the_placement_adjustment_can_be_reversed_and_booked_again(session
     r = await client.post(path, headers=auth["headers"], json={"booked": True})
     assert r.status_code == 200, r.text
     assert await _net(session, auth, "1130-OB") == (30.0,)
-    toggles = await _entries(session, auth, f"je:auto:older-stock-placed:{placement['pid']}:t")
+    toggles = await _entries(session, auth, f"je:auto:older-stock-placed:{placement['pid']}:opening:t")
     assert [_lines(t) for t in toggles] == [{"3200": (10.0, 0.0), "1130-OB": (0.0, 10.0)},
                                             {"1130-OB": (10.0, 0.0), "3200": (0.0, 10.0)}]
     assert await _accounts(session, auth, lots) == ["1130-OB"]

@@ -14,8 +14,9 @@ Nothing else changes: total inventory, retained earnings, cost of sales and olde
 documents stay as they were.
 
 Anything the books cannot vouch for (a migration, a restored backup, an import,
-accounts that do not add up) is placed on one default inventory account, with any
-difference booked against retained earnings, and the company is told.
+accounts that do not add up) is placed on one default inventory account, against
+what the inventory accounts hold together (test_older_stock_reconciliation), and the
+company is told.
 
 The companies here are built the way an older release wrote them: no posting
 accounts in the settings, journal lines without roles, every receipt and sale
@@ -26,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -37,6 +39,7 @@ from celerp.models.projections import Projection
 from celerp.services.auto_je import _emit_auto_posted_je
 from celerp.services.business_time import business_date_at
 from celerp.services.company_lock import locked_company
+from celerp.services.lot_origin import unresolved_differences
 from stock_books import assert_settled, book_older_opening, older_release_lot
 from test_cost_restatement import _state
 from test_helpers import TZ
@@ -169,13 +172,14 @@ async def _marked(session, auth) -> bool:
     return marked
 
 
-async def _placement(session, auth) -> dict | None:
-    """The entry booking the difference when older stock was placed, if there was one."""
+async def _placement(session, auth, part: str = "opening") -> dict | None:
+    """The entry placing older stock booked, if there was one: the opening stock it
+    recognized, or (``part`` "transfer") what it moved between inventory accounts."""
     session.expire_all()
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry",
-        Projection.entity_id.like("je:auto:older-stock-placed:%")))).scalars().all()
-    (row,) = [r for r in rows if ":t" not in r.entity_id.rsplit(":", 1)[-1]] or [None]
+        Projection.entity_id.like(f"je:auto:older-stock-placed:%:{part}")))).scalars().all()
+    (row,) = rows or [None]
     return row.state if row is not None else None
 
 
@@ -438,7 +442,7 @@ async def test_a_failure_part_way_leaves_no_entry_and_no_lot_recorded(session, c
     assert await _net(session, auth, "1130-P", "1130-OB") == (70.0, 0.0)
 
 
-async def test_accounts_that_do_not_add_up_to_the_stock_are_placed_with_the_difference_booked(
+async def test_accounts_holding_more_than_the_stock_are_placed_with_the_difference_left_unresolved(
         session, client, auth):
     await _older_release(session, auth)
     lot = await _lot(client, auth, 30.0)
@@ -446,8 +450,9 @@ async def test_accounts_that_do_not_add_up_to_the_stock_are_placed_with_the_diff
     await _startup(session)
     assert await _reclassification(session, auth) is None
     assert await _accounts(session, auth, lot) == ["1130-P"]
-    assert _moved(await _placement(session, auth)) == {"3200": (10.0, 0.0), "1130-P": (0.0, 10.0)}
-    assert await _net(session, auth, "1130-P", "1130-OB") == (30.0, 0.0)
+    assert await _placement(session, auth) is None and await _placement(session, auth, "transfer") is None
+    assert await _net(session, auth, "1130-P", "1130-OB") == (40.0, 0.0)
+    assert await unresolved_differences(session, auth["company_id"]) == {"1130-P": Decimal("10")}
     assert await _marked(session, auth)
     await _told_placed(session, auth, "1130-P")
 
@@ -521,7 +526,7 @@ async def _source_controls(session, client, auth) -> None:
 
 # Where each is placed: opening inventory when it holds the stock or the books show stock
 # brought in from elsewhere, purchased inventory when opening inventory cannot take it;
-# any difference is booked against retained earnings.
+# stock the accounts fall short of is recognized as opening stock.
 @pytest.mark.parametrize("source,code,difference,books", [
     (_from_migration, "1130-OB", 5.0, (0.0, 35.0)),
     (_from_bundle_import, "1130-OB", 5.0, (0.0, 35.0)),
@@ -558,8 +563,10 @@ async def test_stock_already_on_a_third_inventory_account_places_the_rest_on_ope
     await _startup(session)
     assert await _reclassification(session, auth) is None
     assert await _accounts(session, auth, lot, elsewhere) == ["1130-OB", "1131"]
-    assert _moved(await _placement(session, auth)) == {"3200": (10.0, 0.0), "1130-OB": (0.0, 10.0)}
-    assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 30.0)
+    # The 10 opening inventory holds beyond the stock on it is left for the accountant.
+    assert await _placement(session, auth) is None
+    assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 40.0)
+    assert await unresolved_differences(session, auth["company_id"]) == {"1130-OB": Decimal("10")}
     assert await _marked(session, auth)
 
 
@@ -578,10 +585,12 @@ async def test_an_earlier_move_into_purchased_inventory_is_never_made_again(sess
     await session.commit()
     await _startup(session)
     assert _moved(await _reclassification(session, auth)) == {"1130-P": (5.0, 0.0), "1130-OB": (0.0, 5.0)}
-    # The earlier move is not made again; the lot is placed where it began, with the rest booked.
-    assert await _accounts(session, auth, lot) == ["1130-P"]
-    assert _moved(await _placement(session, auth)) == {"1130-P": (25.0, 0.0), "3200": (0.0, 25.0)}
-    assert await _net(session, auth, "1130-P", "1130-OB") == (30.0, 25.0)
+    # The earlier move is not made again; the lot is placed on the account holding most
+    # of it, with the rest moved there and nothing booked against equity.
+    assert await _accounts(session, auth, lot) == ["1130-OB"]
+    assert _moved(await _placement(session, auth, "transfer")) == {"1130-OB": (5.0, 0.0), "1130-P": (0.0, 5.0)}
+    assert await _placement(session, auth) is None
+    assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 30.0)
     assert await _marked(session, auth)
 
 

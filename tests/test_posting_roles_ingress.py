@@ -60,7 +60,7 @@ async def _opening_entries(session, company_id) -> list[dict]:
             and any(e.get("account") == _RE for e in r.state.get("entries") or [])]
 
 
-_PLACED = "Older stock placed on its inventory account"
+_PLACED = "Opening stock recognized for older stock"
 
 
 def _placed(entries: list[dict]) -> float:
