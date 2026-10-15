@@ -135,13 +135,6 @@ class Settings(BaseSettings):
     smtp_from: str = ""
     smtp_from_name: str = "Celerp"  # Display name shown to recipients, e.g. "Acme ERP"
     smtp_tls: bool = True
-    # Worker counts for multi-worker server deploys.
-    # api_workers: number of Uvicorn workers for the API process.
-    # gui_workers: number of Uvicorn workers for the GUI process.
-    # Electron builds always use 1/1 regardless of this setting.
-    api_workers: int = 2
-    gui_workers: int = 1
-
     # GitHub-star CTA. The relay (celerp.com) is the single source of the count,
     # tier ladder, and copy; the install only renders the relay's resolved CTA and
     # falls back to a static neutral link when the relay is unreachable.

@@ -37,7 +37,7 @@ from celerp.routers.migrations import ensure_not_bootstrapped, owner_account, us
 from celerp.services import bootstrap
 from celerp.services import company_backup as cb
 from celerp.services import company_backup_files as files
-from celerp.services.auth import AuthContext
+from celerp.services.auth import AuthContext, request_caller
 from ui.i18n import t
 
 logger = logging.getLogger(__name__)
@@ -387,14 +387,15 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
     account = {"name": name, "email": email, "password": payload.password}
     stage = _stage(_BOOTSTRAP, payload.upload_token)
     if not stage.is_file():
-        result = await cb.reopen_restored(files.restored_company(stage), owner_account=account)
+        result = await cb.reopen_restored(files.restored_company(stage), owner_account=account,
+                                          caller=request_caller(request))
         if result is None:
             raise HTTPException(status_code=409, detail=t("company_backup.upload_expired"))
         return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                               expected_snonce=None))
     try:
         result = await cb.restore_company(stage, mode="bootstrap", owner_account=account,
-                                          company_name=payload.company_name)
+                                          company_name=payload.company_name, caller=request_caller(request))
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
@@ -412,7 +413,7 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
 @limiter.limit("5/minute")
 async def start_company_read(request: Request, file: UploadFile = File(...), email: str = Form(...),
                              password: str = Form(...), session: AsyncSession = Depends(get_session)):
-    user = await companyless_login(session, email, password)
+    user = await companyless_login(session, email, password, request_caller(request))
     try:
         return await _read(file, str(user.id), session, _START_COMPANY, user.id)
     except cb.BackupError as exc:
@@ -434,7 +435,7 @@ async def start_company_restore(request: Request, payload: StartCompanyRestoreIn
     """Restore a staged backup as the company of a login that has none left, as the preview
     showed it, and sign it in to that company."""
     from celerp.credentials import issue_token_pair_by_id
-    user = await companyless_login(session, payload.email, payload.password)
+    user = await companyless_login(session, payload.email, payload.password, request_caller(request))
     stage = _uploaded(str(user.id), payload.upload_token)
     await hold_direct_slot(session)
     try:

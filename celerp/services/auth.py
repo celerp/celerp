@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import math
+import threading
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -94,6 +97,98 @@ def verify_password(plain: str, hashed: str) -> bool:
         return pwd_context.verify(plain, hashed)
     except (ValueError, TypeError):
         return False
+
+
+# Failed password checks slow the next try down, never shut anyone out: an account takes
+# FREE_ACCOUNT_FAILURES from every caller together and a caller FREE_CALLER_FAILURES across
+# every account, then each further failure doubles the wait from one second up to
+# MAX_WAIT_SECONDS. A key quiet for FORGET_AFTER_SECONDS starts again.
+FREE_ACCOUNT_FAILURES = 5
+FREE_CALLER_FAILURES = 20
+MAX_WAIT_SECONDS = 300
+FORGET_AFTER_SECONDS = 3600
+_clock = time.monotonic
+
+
+@dataclass
+class _Tally:
+    free: int
+    failures: int = 0
+    last_failure: float = 0.0
+
+    def open_at(self) -> float:
+        """When the next attempt may start."""
+        if self.failures < self.free:
+            return self.last_failure
+        return self.last_failure + min(2 ** min(self.failures - self.free, 16), MAX_WAIT_SECONDS)
+
+
+class PasswordAttempts:
+    """Every password check, counted per account and per caller.
+
+    The API runs as one process (celerp.capacity), so the counts live in it, and a check is
+    admitted and counted as a failure in one step under one lock before the password is
+    read: of many attempts arriving at once only the ones the counts allow are checked.
+    The right password then takes its count back."""
+
+    def __init__(self) -> None:
+        self._tallies: dict[str, _Tally] = {}
+        self._lock = threading.Lock()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._tallies.clear()
+
+    def forget(self, email: str) -> None:
+        """Start the account's count again, as a new password does."""
+        with self._lock:
+            self._tallies.pop(_account(email), None)
+
+    def check(self, email: str, password: str, auth_hash: str | None, caller: str | None) -> bool:
+        """Whether *password* is the one *auth_hash* holds, as one attempt on the account
+        *email* names from *caller*; no hash never matches. 429 with Retry-After, and the
+        password left unread, while the account or the caller must wait."""
+        keys = [(_account(email), FREE_ACCOUNT_FAILURES)]
+        if caller:
+            keys.append((f"caller|{caller}", FREE_CALLER_FAILURES))
+        now = _clock()
+        with self._lock:
+            tallies = [self._tally(key, free, now) for key, free in keys]
+            wait = max(tally.open_at() - now for tally in tallies)
+            if wait > 0:
+                seconds = math.ceil(wait)
+                raise HTTPException(
+                    status_code=429, headers={"Retry-After": str(seconds)},
+                    detail=t("auth.sign_ins_paused_one") if seconds == 1 else t("auth.sign_ins_paused", seconds=seconds))
+            for tally in tallies:
+                tally.failures += 1
+                tally.last_failure = now
+            if len(self._tallies) > 10_000:
+                self._sweep(now)
+        if not (auth_hash and verify_password(password, auth_hash)):
+            return False
+        with self._lock:
+            self._tallies.pop(keys[0][0], None)
+            if caller and (tally := self._tallies.get(keys[1][0])):
+                tally.failures = max(tally.failures - 1, 0)
+        return True
+
+    def _tally(self, key: str, free: int, now: float) -> _Tally:
+        tally = self._tallies.get(key)
+        if tally is None or now - tally.last_failure >= FORGET_AFTER_SECONDS:
+            tally = self._tallies[key] = _Tally(free)
+        return tally
+
+    def _sweep(self, now: float) -> None:
+        for key in [k for k, v in self._tallies.items() if now - v.last_failure >= FORGET_AFTER_SECONDS]:
+            del self._tallies[key]
+
+
+def _account(email: str) -> str:
+    return f"account|{str(email or '').strip().lower()}"
+
+
+password_attempts = PasswordAttempts()
 
 
 def password_needs_rehash(hashed: str) -> bool:

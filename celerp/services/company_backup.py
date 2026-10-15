@@ -60,7 +60,7 @@ from celerp.modules import requirements
 from celerp.modules.loader import module_label
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
-from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_password
+from celerp.services.auth import HAS_COMPANY, hold_companyless_login, password_attempts
 from celerp.services.company_settings import SET_BY_KEYS
 from celerp.services.company_backup_files import private_file
 from celerp.services.company_lock import hold_company, lock_company, locked_company
@@ -1234,15 +1234,15 @@ def _same_file(backup: BackupFile, restored: Company | None) -> None:
 
 
 async def _bootstrap_existing(session: AsyncSession, backup: BackupFile,
-                              owner_account: dict) -> tuple[Company, User] | None:
+                              owner_account: dict, caller: str | None) -> tuple[Company, User] | None:
     """The company a bootstrap restore of this backup already created, with its owner, when
     the same account repeats it; refused for anyone else or when that company is deactivated."""
     company = await session.scalar(_restored_as(backup.manifest["backup_id"]))
     if company is None:
         return None
     user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
-    if (not company.is_active or user is None or not user.auth_hash
-            or not verify_password(owner_account["password"], user.auth_hash)
+    if (not password_attempts.check(owner_account["email"], owner_account["password"], user and user.auth_hash, caller)
+            or not company.is_active
             or not await _is_member(session, user.id, company.id)):
         raise BackupError(409, t(ALREADY_SET_UP))
     _same_file(backup, company)
@@ -1538,7 +1538,7 @@ def _chosen_name(name: str) -> str:
 
 async def restore_company(path: Path, *, mode: str, user_id=None, current_company_id=None,
                           owner_account: dict | None = None, plan_fingerprint: str | None = None,
-                          company_name: str | None = None) -> RestoreResult:
+                          company_name: str | None = None, caller: str | None = None) -> RestoreResult:
     """Restore a backup file as a new company and commit it.
 
     ``settings`` and ``new_company`` restore it for the signed-in ``user_id`` as the
@@ -1574,7 +1574,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 await _wait_for(session, bootstrap.lock_bootstrap)  # any other first-owner setup
             if mode == "bootstrap":
                 plan = plan_bootstrap_restore(backup)
-                found = await _bootstrap_existing(session, backup, owner_account)
+                found = await _bootstrap_existing(session, backup, owner_account, caller)
                 if found is not None:
                     company, user = found
                     result = RestoreResult(company_id=str(company.id), company_name=company.name,
@@ -1678,7 +1678,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                          role_permissions=plan.role_permissions)
 
 
-async def reopen_restored(company_id, *, user_id=None, owner_account: dict | None = None) -> RestoreResult | None:
+async def reopen_restored(company_id, *, user_id=None, owner_account: dict | None = None,
+                          caller: str | None = None) -> RestoreResult | None:
     """The company a finished restore opened, for a retry whose response was lost: for the
     signed-in ``user_id``, or for the first owner's ``owner_account`` on a fresh
     installation, when they are still an active member of it and it is active. None
@@ -1689,7 +1690,8 @@ async def reopen_restored(company_id, *, user_id=None, owner_account: dict | Non
         company = await session.get(Company, uuid.UUID(company_id))
         if owner_account is not None:
             user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
-            if user is None or not user.auth_hash or not verify_password(owner_account["password"], user.auth_hash):
+            if not password_attempts.check(owner_account["email"], owner_account["password"],
+                                           user and user.auth_hash, caller):
                 return None
             user_id = user.id
         if (company is None or not company.is_active or user_id is None
