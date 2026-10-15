@@ -5,15 +5,39 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import BinaryIO
 
 import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
+from celerp.services.auth import CALLER_HEADER
 from celerp.services.company_settings import BOOKS_KEYS, GENERAL
 from ui.i18n import current_lang, refusal_text, t
 
 logger = logging.getLogger(__name__)
+
+# The address of the visitor whose request the UI is serving, as the UI sees it.
+_caller: ContextVar[str | None] = ContextVar("celerp_caller", default=None)
+
+
+class CallerMiddleware:
+    """Pure ASGI middleware: records each request's client address, which every call
+    into the local API names in CALLER_HEADER so the API's rate limits count the visitor,
+    never the UI server. Taken from the connection, never from a header the browser sent."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        token = _caller.set((scope.get("client") or ("",))[0] or None)
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            _caller.reset(token)
 
 # The bulk transport carries the handful of long, finite local operations (backup
 # bootstrap/import, large attachment transfer) so they never hold an interactive
@@ -185,6 +209,8 @@ def _local_client(
     # The API answers in the language of the page that asked, so the messages it
     # returns read in the user's language.
     merged_headers.setdefault("Accept-Language", current_lang())
+    if caller := _caller.get():
+        merged_headers[CALLER_HEADER] = caller
     if token is not None:
         merged_headers["Authorization"] = f"Bearer {token}"
 

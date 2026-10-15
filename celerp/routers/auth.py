@@ -37,6 +37,7 @@ from celerp.services.auth import (
     usable_company_link,
     oauth2_scheme_optional,
     password_needs_rehash,
+    request_caller,
     validate_access_token,
     validate_password,
     verify_password,
@@ -149,11 +150,30 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
 
 
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 
-# Module-level limiter for /auth/login rate limiting.
+# Module-level limiter for the sign-in and setup routes, counted per caller.
 # Tests reset this via conftest: celerp.routers.auth.limiter._storage.reset()
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=request_caller)
+
+
+async def _note_account(request: Request) -> None:
+    """Counts a sign-in attempt per caller and per account named, so failed attempts on one
+    account never lock another out. Behind Connect every visitor reaches the UI from the
+    gateway's own address, so the account is what tells them apart. Read from the raw
+    body, which the route itself then validates."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    account = body.get("email") if isinstance(body, dict) else None
+    request.state.account_key = f"{request_caller(request)}|{str(account or '').strip().lower()}"
+
+
+def _account_key(request: Request) -> str:
+    return request.state.account_key
+
+
+_PER_ACCOUNT = [Depends(_note_account)]
 
 
 # A sign-in picks again only when a company it picked was removed meanwhile.
@@ -197,8 +217,8 @@ async def hold_direct_slot(session: AsyncSession, *, taking_over: bool = False) 
         raise HTTPException(status_code=409, detail="direct_connection_limit")
 
 
-@router.post("/login")
-@limiter.limit("10/minute")
+@router.post("/login", dependencies=_PER_ACCOUNT)
+@limiter.limit("10/minute", key_func=_account_key)
 async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.credentials import issue_token_pair
     user = await authenticate(session, payload.email, payload.password)
@@ -217,8 +237,8 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
     raise CompanyUnavailable()
 
 
-@router.post("/login-force")
-@limiter.limit("5/minute")
+@router.post("/login-force", dependencies=_PER_ACCOUNT)
+@limiter.limit("5/minute", key_func=_account_key)
 async def login_force(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     """Like /login but evicts all other active sessions from the tracker first, in the
     same transaction as the new session."""
@@ -243,8 +263,8 @@ class StartCompanyRequest(BaseModel):
     company_name: str
 
 
-@router.post("/start-company")
-@limiter.limit("5/minute")
+@router.post("/start-company", dependencies=_PER_ACCOUNT)
+@limiter.limit("5/minute", key_func=_account_key)
 async def start_company(request: Request, payload: StartCompanyRequest,
                         session: AsyncSession = Depends(get_session)) -> dict:
     """Create a company for a login that has none left, after its last company was reset,
@@ -394,8 +414,8 @@ class PasswordResetConfirmBody(BaseModel):
 _RESET_TOKEN_TTL_MINUTES = 15
 
 
-@router.post("/password-reset/request")
-@limiter.limit("3/minute")
+@router.post("/password-reset/request", dependencies=_PER_ACCOUNT)
+@limiter.limit("3/minute", key_func=_account_key)
 async def password_reset_request(
     request: Request,
     payload: PasswordResetRequestBody,

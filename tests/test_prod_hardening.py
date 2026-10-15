@@ -40,10 +40,9 @@ async def test_health_version_prefers_app_version_env(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_rate_limit_on_login(client: AsyncClient) -> None:
-    # /auth/login is gated by celerp.routers.auth.limiter ("10/minute") - NOT app.state.limiter, so
-    # the old version re-enabled the wrong limiter and never actually exercised the limit. Enable the
-    # real one with fresh storage; 12 rapid attempts from one client must cross the limit. Isolation:
-    # the autouse _disable_rate_limits fixture resets the storage + disables both limiters on teardown,
+    # /auth/login is gated by celerp.routers.auth.limiter ("10/minute" per caller and account).
+    # Enable it with fresh storage; 12 rapid attempts on one account must cross the limit. Isolation:
+    # the autouse _disable_rate_limits fixture resets the storage and disables the limiter on teardown,
     # and xdist workers are separate processes, so this can't leak into other auth tests.
     from celerp.routers.auth import limiter as auth_limiter
     auth_limiter.enabled = True

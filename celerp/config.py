@@ -125,8 +125,6 @@ class Settings(BaseSettings):
 
     # Cookie security — set True in prod (HTTPS); False allows HTTP in dev/CI
     cookie_secure: bool = False
-    # Redis URL for distributed rate limiting; empty = per-process only
-    redis_url: str = ""  # e.g. redis://localhost:6379/0
     # Email: SMTP fallback for self-hosted installs.
     # If GATEWAY_TOKEN is set, email routes through the cloud relay instead.
     # If neither is configured, email notifications are silently skipped.

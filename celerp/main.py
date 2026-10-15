@@ -13,9 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
 from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
@@ -642,9 +640,6 @@ async def _serve(_app: FastAPI, held):
 logging.basicConfig(level=settings.log_level.upper())
 log = logging.getLogger(__name__)
 
-_storage_uri = settings.redis_url or "memory://"
-limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"], storage_uri=_storage_uri)
-
 _OPENAPI_TAGS = [
     {"name": "auth", "description": "Authenticate users and manage sessions and access tokens."},
     {"name": "companies", "description": "Manage companies, members, and roles."},
@@ -704,8 +699,6 @@ def _openapi_settings() -> dict:
 
 
 app = FastAPI(title="Celerp REST API", docs_url=None, redoc_url=None, lifespan=lifespan, **_openapi_settings())
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Innermost, so a request it runs again passes every check below once more.
 app.add_middleware(OlderStockMiddleware)
 app.add_middleware(DrainMiddleware)

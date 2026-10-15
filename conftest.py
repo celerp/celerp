@@ -529,13 +529,9 @@ def _reset_cloud_settings():
 def _disable_rate_limits():
     from celerp.routers.auth import limiter as auth_limiter
 
-    app.state.limiter.enabled = False
-    app.state.limiter._storage.reset()
     auth_limiter.enabled = False
     auth_limiter._storage.reset()
     yield
-    app.state.limiter.enabled = False
-    app.state.limiter._storage.reset()
     auth_limiter.enabled = False
     auth_limiter._storage.reset()
 

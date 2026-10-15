@@ -427,6 +427,11 @@ class NoStorePagesMiddleware:
 
 app.add_middleware(NoStorePagesMiddleware)
 
+# Added after every middleware that calls the API, so each of those calls names its visitor too.
+from ui.api_client import CallerMiddleware  # noqa: E402
+
+app.add_middleware(CallerMiddleware)
+
 # ── Error handlers ─────────────────────────────────────────────────────────────
 
 async def ui_404_handler(request: Request, exc) -> HTMLResponse:

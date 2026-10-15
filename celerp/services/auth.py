@@ -6,6 +6,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from ipaddress import ip_address
 
 import bcrypt
 from fastapi import Depends, HTTPException, Request, status
@@ -30,6 +31,10 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 # refresh-token body (logout) read the header without 401ing when it is absent,
 # so a refresh-only credential can still be honored.
 oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+
+# The UI server calls this API over loopback on a visitor's behalf and names the visitor's
+# address in this header, so a rate limit counts that visitor rather than the UI itself.
+CALLER_HEADER = "X-Celerp-Caller"
 
 ROLE_LEVELS = {"viewer": 1, "operator": 2, "manager": 3, "admin": 4, "owner": 5}
 
@@ -283,6 +288,18 @@ async def signed_request_context(session: AsyncSession) -> AuthContext | None:
     access token get_auth_context accepted; None when there is no such request."""
     token = session.info.get(SIGNED_TOKEN)
     return await validate_access_token(session, token) if isinstance(token, str) else None
+
+
+def request_caller(request: Request) -> str:
+    """The address a request is made for. CALLER_HEADER counts only on a loopback request,
+    where it comes from the UI server, so no one reaching the API from elsewhere can name
+    an address of their choosing."""
+    host = request.client.host if request.client else ""
+    try:
+        loopback = ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    return (request.headers.get(CALLER_HEADER) or host) if loopback else host
 
 
 async def get_current_user(ctx: AuthContext = Depends(get_auth_context)) -> User:
