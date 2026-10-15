@@ -6,7 +6,11 @@ from __future__ import annotations
 import json
 import logging
 import time
+from contextvars import ContextVar
 from typing import Callable
+
+from sqlalchemy import event
+from sqlalchemy.orm import Session
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -330,7 +334,10 @@ class OlderStockMiddleware:
     transaction of its own, and once none waits the request runs again, once, and its
     answer is the one returned. Placing that cannot happen (a posting account or a
     period lock holds it back, each with its own notice) returns the refusal as it was.
-    The company is the one the request was authorised for (auth.get_auth_context)."""
+    A request that committed any write before it was refused (_COMMITTED) is never run
+    again, so nothing it wrote is written twice; the stock is still placed and the
+    refusal returned. The company is the one the request was authorised for
+    (auth.get_auth_context)."""
 
     _REFUSED = (409, 422)
 
@@ -349,11 +356,15 @@ class OlderStockMiddleware:
             body.append(message.get("body", b""))
             more = message.get("more_body", False)
         body = b"".join(body)
-        held = await self._run(scope, body, receive, send)
+        token = _COMMITTED.set(committed := [])
+        try:
+            held = await self._run(scope, body, receive, send)
+        finally:
+            _COMMITTED.reset(token)
         if held is None:
             return
         company_id = (scope.get("state") or {}).get("company_id")
-        if company_id is not None and _placeable(held) and await _placed(company_id):
+        if company_id is not None and _placeable(held) and await _placed(company_id) and not committed:
             await self._run(scope, body, receive, send, hold=False)
             return
         for message in held:
@@ -381,6 +392,32 @@ class OlderStockMiddleware:
 
         await self.app(scope, replay, keep)
         return held or None
+
+
+# Set while OlderStockMiddleware runs a request the first time: a commit that wrote
+# anything appends to it, so the request is known to have kept a write. A savepoint
+# released inside the request is not a commit; only the outermost transaction counts.
+_COMMITTED: ContextVar[list | None] = ContextVar("older_stock_committed", default=None)
+
+
+@event.listens_for(Session, "after_flush")
+def _flushed(session: Session, _context) -> None:
+    if _COMMITTED.get() is not None and (session.new or session.dirty or session.deleted):
+        session.info["older_stock_wrote"] = True
+
+
+@event.listens_for(Session, "after_commit")
+def _committed(session: Session) -> None:
+    if session.in_nested_transaction():
+        return
+    if session.info.pop("older_stock_wrote", False) and (committed := _COMMITTED.get()) is not None:
+        committed.append(True)
+
+
+@event.listens_for(Session, "after_transaction_end")
+def _ended(session: Session, transaction) -> None:
+    if transaction.parent is None:  # committed (counted above), rolled back or closed
+        session.info.pop("older_stock_wrote", None)
 
 
 def _placeable(held: list[dict]) -> bool:

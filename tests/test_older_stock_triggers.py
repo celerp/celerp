@@ -8,13 +8,20 @@ is not placed yet: a sale, a shipment or a move of older stock. The refused requ
 rolled back whole, the stock is placed the one canonical way
 (lot_origin.place_company_stock) in its own transaction, and the request runs again,
 once. Two such requests at the same time place the stock once and both go through.
+A request that committed any of its writes before it was refused is never run again,
+so a retry cannot write anything twice.
 """
 from __future__ import annotations
 
 import asyncio
+import uuid
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import func, select
+from starlette.requests import Request
+
+from celerp.models.ledger import LedgerEntry
 
 from celerp.models.projections import Projection
 from migration_support import auth as bearer, maker
@@ -50,6 +57,79 @@ async def test_a_sale_of_unplaced_older_stock_places_it_and_goes_through(session
     r = await _ship(client, auth, inv, lots[0])
     assert r.status_code == 200, r.text
     await assert_settled(client, session, auth)
+
+
+async def _ledger(session, auth, prefix: str) -> list[tuple[str, str]]:
+    session.expire_all()
+    return sorted((e.entity_id, e.event_type) for e in (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id.startswith(prefix)))).scalars())
+
+
+async def test_a_sale_run_again_after_placing_writes_its_document_and_entry_once(session, client, auth):
+    import celerp.middleware as middleware
+
+    lots = await _older_company(session, client, auth, [100.0, 50.0])
+    await _posting_accounts_set(session, auth)
+    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "invoice", "line_items": [
+        {"entity_id": lots[0], "name": "Lot", "quantity": 1, "unit_price": 150.0, "sell_by": "piece"}]})
+    assert r.status_code == 200, r.text
+    inv = r.json()["id"]
+    docs, entries = await _ledger(session, auth, inv), await _ledger(session, auth, f"je:auto:{inv}:")
+    placed = AsyncMock(side_effect=middleware._placed)
+
+    with patch.object(middleware, "_placed", placed):
+        r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"], json={})
+
+    assert r.status_code == 200, r.text
+    placed.assert_awaited_once()  # refused once for the unplaced lot, then run again
+    finalized = [e for e in await _ledger(session, auth, inv) if e not in docs]
+    assert [t for _, t in finalized] == ["doc.finalized"]
+    assert await session.scalar(select(func.count()).select_from(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "doc")) == 1
+    (je,) = {e for e, _ in await _ledger(session, auth, f"je:auto:{inv}:") if (e, _) not in entries}
+    assert je == f"je:auto:{inv}:fin"
+    await assert_settled(client, session, auth)
+
+
+@pytest.mark.parametrize("commits_first", [False, True])
+async def test_a_request_that_committed_before_its_refusal_is_never_run_again(session, auth, commits_first):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    import celerp.middleware as middleware
+    from celerp.services.account_roles import LotOriginError
+    from celerp.services.auto_je import _emit_auto_posted_je
+
+    calls: list[str] = []
+    app = FastAPI()
+
+    @app.post("/write")
+    async def write(request: Request):
+        request.state.company_id = auth["company_id"]
+        je = f"je:{uuid.uuid4()}"
+        calls.append(je)
+        if commits_first:
+            await _emit_auto_posted_je(
+                session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=je,
+                idem_create=f"{je}:c", idem_posted=f"{je}:p", memo="Written before the refusal",
+                metadata_={"trigger": "manual"}, entries=[{"account": "1130-P", "debit": 10.0, "credit": 0.0},
+                                                          {"account": "3200", "debit": 0.0, "credit": 10.0}])
+            await session.commit()
+        raise LotOriginError("OLD-1")
+
+    placed = AsyncMock(return_value=True)
+    with patch.object(middleware, "_placed", placed):
+        async with AsyncClient(transport=ASGITransport(app=middleware.OlderStockMiddleware(app)),
+                               base_url="http://test") as c:
+            r = await c.post("/write", json={})
+
+    placed.assert_awaited_once()
+    if commits_first:
+        assert len(calls) == 1
+        assert r.status_code == 409 and r.json()["detail"]["message_key"] == "posting.older_stock.no_account"
+        assert len(await _ledger(session, auth, calls[0])) == 2  # created and posted, once
+    else:
+        assert len(calls) == 2  # nothing was kept, so it ran again
 
 
 async def test_moving_unplaced_older_stock_places_it_first(session, client, auth):
