@@ -809,6 +809,45 @@ def _confirmed_action_identity(message_id: uuid.UUID, tool_call_id: str) -> str:
     return f"{message_id}:{tool_call_id}"
 
 
+async def _attach_confirmed_bill_receipt(
+    session: AsyncSession, *, company_id, user_id,
+    message_id: uuid.UUID, record: dict, result: dict,
+) -> None:
+    """Keep the source receipt on its confirmed bill through ordinary file attachment."""
+    from celerp.ai.files import load_file
+    from celerp.events.engine import find_event_by_idempotency
+    from celerp.models.projections import Projection
+    from celerp.services.attachments import attach_file, storing
+
+    data = result.get("data")
+    doc_id = data.get("id") if isinstance(data, dict) else None
+    if not isinstance(doc_id, str) or not doc_id.startswith("doc:"):
+        raise ValueError("Confirmed bill returned no document identity")
+    source_id = record.get("file_id")
+    if not isinstance(source_id, str):
+        raise ValueError("Confirmed bill has no source receipt")
+    operation = f"ai-receipt:{message_id}:{record['id']}"
+    idem = f"ai:receipt:{uuid.uuid5(uuid.NAMESPACE_URL, operation)}"
+    replay = await find_event_by_idempotency(session, company_id, idem)
+    if replay is not None:
+        if replay.event_type != "doc.file_attached" or replay.entity_id != doc_id:
+            raise ValueError("Receipt identity was already used for another document")
+        return
+    original = await session.get(Projection, (company_id, doc_id))
+    if original is None or original.entity_type != "doc" or original.state.get("doc_type") != "bill":
+        raise ValueError("Confirmed bill is no longer available")
+    content, source = load_file(source_id, company_id, user_id)
+    mime = str(source.get("content_type") or "")
+    filename = source.get("filename") or "Receipt"
+    stable_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{company_id}:{operation}"))
+    async with storing(session, company_id) as files:
+        meta = await files.file(content, filename, mime, att_id=stable_id)
+        await attach_file(
+            session, company_id, "doc", doc_id, meta, user_id,
+            source="api", idempotency_key=idem, document_tag="receipt",
+        )
+
+
 async def _run_confirmed_action(
     request: Request,
     session: AsyncSession,
@@ -883,6 +922,20 @@ async def _run_confirmed_action(
         resolved_arguments or {},
         _confirmed_action_identity(message_id, record["id"]),
     )
+    if result["ok"] and record["name"] == _DOCS_CREATE and record.get("file_id"):
+        try:
+            await _attach_confirmed_bill_receipt(
+                session, company_id=company_id, user_id=user_id,
+                message_id=message_id, record=record, result=result,
+            )
+        except Exception:
+            result = {
+                "ok": False, "status": 503, "data": None,
+                "error": {
+                    "code": "receipt_attachment_pending",
+                    "message": "The bill was created, but its source receipt was not attached. Retry this action.",
+                },
+            }
     action_error = _action_error(result)
     action_status = (
         "completed" if result["ok"]
@@ -1264,9 +1317,7 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
         warnings.append("No date was found; the bill is dated today.")
 
     reference = str(extraction.get("reference") or "").strip()
-    notes = f"Receipt file: {file_id} ({filename})"
-    if reference:
-        notes = f"Vendor reference: {reference}. {notes}"
+    notes = f"Vendor reference: {reference}" if reference else ""
 
     body: dict = {
         "doc_type": "bill",
