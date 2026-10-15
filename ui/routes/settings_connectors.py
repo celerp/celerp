@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, RedirectResponse
 
 from ui.components.attrs import hx_vals
 from ui.components.activity import relative_time
@@ -878,6 +878,8 @@ def _connector_card(
             if config is not None else None
         )
         action_area = Div(
+            *([P(t("accountant_access.connector_source_help", lang), cls="settings-hint")]
+              if cid == "celerp" else []),
             Form(
                 Input(name="store_url", placeholder="https://accountant.example.com" if cid == "celerp" else "https://mystore.com",
                       cls="input input--sm", style="flex:1;min-width:200px;"),
@@ -1052,14 +1054,197 @@ async def connectors_tab_content(lang: str, token: str, category: str, company_i
     names = {c["id"]: c.get("name", c["id"]) for c in catalog}
     lost = [names[cid] for cid in await _awaiting_reconnect(company_id) if cid in names]
 
+    from ui.api_client import get_company, role_from_company
+    show_recipient_access = False
+    if category == "accounting":
+        try:
+            show_recipient_access = role_from_company(await get_company(token)) == "owner"
+        except Exception:
+            pass
     return Div(
         *([_reconnect_banner(lost, lang)] if lost else []),
         *cards,
+        *([Div(
+            H3(t("accountant_access.title", lang)),
+            P(t("accountant_access.description", lang)),
+            A(t("accountant_access.manage", lang), href="/settings/accountant-access",
+              cls="btn btn--secondary"),
+            cls="settings-card",
+        )] if show_recipient_access else []),
         cls="settings-card",
     )
 
 
 def setup_routes(app):
+
+    @app.get("/settings/accountant-access")
+    async def accountant_access_page(request: Request):
+        from ui.api_client import APIError, accountant_peer_grants, role_from_company
+        from ui.components.shell import base_shell, page_header
+        from ui.security import not_permitted_redirect
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (denied := await _check_permission(request, "manage_integrations")):
+            return denied
+        company = getattr(request.state, "auth_company", {})
+        if role_from_company(company) != "owner":
+            return not_permitted_redirect(request)
+        lang = get_lang(request)
+        try:
+            grants = (await accountant_peer_grants(token)).get("items", [])
+        except APIError as exc:
+            grants = []
+            notice = P(str(exc), cls="flash flash--warning")
+        else:
+            notice = ""
+        rows = [
+            Tr(
+                Td(g.get("label") or ""),
+                Td(", ".join(g.get("scopes") or [])),
+                Td(g.get("source_company_id") or ""),
+                Td(g.get("expires_at") or ""),
+                Td(
+                    Span(t("accountant_access.revoked", lang)) if g.get("revoked")
+                    else Button(
+                        t("accountant_access.revoke", lang), type="button",
+                        hx_post=f"/settings/accountant-access/grants/{g['id']}/revoke",
+                        hx_confirm=t("accountant_access.revoke_confirm", lang),
+                        hx_swap="none", cls="btn btn--danger btn--sm",
+                    )
+                ),
+            )
+            for g in grants
+        ]
+        return await base_shell(
+            page_header(
+                t("accountant_access.title", lang),
+                A(t("connectors.back_to_connectors", lang),
+                  href="/settings/cloud?tab=accounting",
+                  cls="btn btn--secondary btn--sm"),
+            ),
+            P(t("accountant_access.description", lang)),
+            P(t("accountant_access.direction_warning", lang), cls="settings-hint"),
+            P(t("accountant_access.source_help", lang)),
+            Form(
+                Label(t("accountant_access.client_id", lang)),
+                Input(name="source_company_id", type="text", required=True,
+                      maxlength="36", placeholder="00000000-0000-0000-0000-000000000000",
+                      cls="form-input"),
+                Label(t("accountant_access.label", lang)),
+                Input(name="label", required=True, maxlength="128",
+                      placeholder=t("accountant_access.label_example", lang),
+                      cls="form-input"),
+                Div(
+                    Label(Input(type="checkbox", name="scopes", value="contacts",
+                                checked=True), t("accountant_access.contacts", lang)),
+                    Label(Input(type="checkbox", name="scopes", value="products",
+                                checked=True), t("accountant_access.products", lang)),
+                    Label(Input(type="checkbox", name="scopes", value="documents"),
+                          t("accountant_access.documents", lang)),
+                ),
+                Label(t("accountant_access.lifetime", lang)),
+                Select(
+                    Option("14", value="14"),
+                    Option("30", value="30", selected=True),
+                    Option("90", value="90"),
+                    name="lifetime_days",
+                    cls="form-input"),
+                Button(t("accountant_access.issue", lang), type="submit",
+                       cls="btn btn--primary"),
+                hx_post="/settings/accountant-access/grants",
+                hx_target="#accountant-access-result",
+                hx_swap="innerHTML",
+                cls="form-card",
+            ),
+            Div(id="accountant-access-result"),
+            notice,
+            H3(t("accountant_access.active_grants", lang)),
+            Table(
+                Thead(Tr(
+                    Th(t("accountant_access.label", lang)),
+                    Th(t("accountant_access.scopes", lang)),
+                    Th(t("accountant_access.client_id", lang)),
+                    Th(t("accountant_access.expires", lang)),
+                    Th(t("th.actions", lang)),
+                )),
+                Tbody(*rows),
+                cls="data-table",
+            ) if rows else P(t("accountant_access.none", lang)),
+            title=t("accountant_access.title", lang), nav_active="settings",
+            request=request,
+        )
+
+    @app.post("/settings/accountant-access/grants")
+    async def accountant_access_issue(request: Request):
+        import uuid
+        from ui import api_client as api
+        from ui.security import not_permitted_redirect
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (denied := await _check_permission(request, "manage_integrations")):
+            return denied
+        if api.role_from_company(getattr(request.state, "auth_company", {})) != "owner":
+            return not_permitted_redirect(request)
+        lang = get_lang(request)
+        form = await request.form()
+        try:
+            source_id = str(uuid.UUID(str(form.get("source_company_id") or "")))
+            label = str(form.get("label") or "").strip()
+            lifetime = int(form.get("lifetime_days") or "30")
+            scopes = sorted(set(str(scope) for scope in form.getlist("scopes")))
+            if not (1 <= len(label) <= 128 and 1 <= lifetime <= 90
+                    and scopes and set(scopes) <= {"contacts", "products", "documents"}):
+                raise ValueError("Invalid grant selection")
+        except (ValueError, TypeError):
+            return Span(t("accountant_access.invalid", lang),
+                        cls="flash flash--warning")
+        try:
+            issued = await api.issue_accountant_peer_grant(token, {
+                "source_company_id": source_id, "label": label,
+                "scopes": scopes, "lifetime_days": lifetime,
+            })
+        except api.APIError as exc:
+            return Span(str(exc), cls="flash flash--warning")
+        credential = issued.get("credential")
+        if not isinstance(credential, str) or not credential.startswith("cp1."):
+            return Span(t("accountant_access.unavailable", lang),
+                        cls="flash flash--warning")
+        content = Div(
+            P(t("accountant_access.copy_now", lang)),
+            Input(type="text", readonly=True, value=credential,
+                  onclick="this.select()", cls="form-input"),
+            P(t("accountant_access.one_time", lang)),
+            cls="settings-card",
+        )
+        return HTMLResponse(
+            to_xml(content), headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+    @app.post("/settings/accountant-access/grants/{grant_id}/revoke")
+    async def accountant_access_revoke(request: Request, grant_id: str):
+        import uuid
+        from ui import api_client as api
+        from ui.security import not_permitted_redirect
+        from starlette.responses import Response
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (denied := await _check_permission(request, "manage_integrations")):
+            return denied
+        if api.role_from_company(getattr(request.state, "auth_company", {})) != "owner":
+            return not_permitted_redirect(request)
+        try:
+            grant_id = str(uuid.UUID(grant_id))
+        except ValueError:
+            return Response(status_code=404)
+        try:
+            await api.revoke_accountant_peer_grant(token, grant_id)
+        except api.APIError as exc:
+            return Span(str(exc), cls="flash flash--warning")
+        return Response("", status_code=204, headers={"HX-Refresh": "true"})
+
+
 
     @app.get("/settings/connectors/{platform}/oauth-redirect")
     async def connector_oauth_redirect(request: Request, platform: str, shop: str = ""):
@@ -1449,6 +1634,12 @@ def setup_routes(app):
                 A(t("connectors.back_to_connectors", lang), href=f"/settings/cloud?tab={c.get('category', 'website')}",
                   cls="btn btn--secondary btn--sm"),
             ),
+            Div(
+                P(t("accountant_access.your_id", lang)),
+                Code(company_id),
+                P(t("accountant_access.give_id", lang)),
+                cls="settings-card",
+            ) if platform == "celerp" else "",
             _connector_detail_body(c, runs, config, lang, deposit=deposit,
                                    attention=await _attention(company_id, platform)),
             title=f"{name} - Celerp",
