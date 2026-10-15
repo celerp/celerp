@@ -179,14 +179,17 @@ async def test_a_writer_not_proven_safe_to_run_again_places_the_stock_and_return
 
 def test_the_writers_run_again_are_exactly_those_proven_safe():
     """Each writer marked here has its run again proven to touch nothing outside the
-    database (test_a_writer_run_again_touches_nothing_outside_the_database)."""
+    database (test_a_writer_run_again_touches_nothing_outside_the_database). The walk
+    covers the app's routes and every router a module defines, mounted or not."""
+    from celerp.ai.tools import _api_routes
     from celerp.main import app
     from celerp.services.lot_origin import RERUN_AFTER_PLACING
+    from test_module_write_routes_guarded import _module_routers
 
-    marked = {(m, route.path) for route in app.routes if getattr(getattr(route, "endpoint", None),
-                                                                 RERUN_AFTER_PLACING, False)
-              for m in route.methods}
-    assert marked == {("POST", "/docs/{entity_id}/finalize"), ("POST", "/accounting/older-stock/move")}
+    routes = [r for _, _, r in _api_routes(app)] + [r for router in _module_routers() for r in router.routes]
+    marked = {f"{e.__module__}:{e.__name__}" for r in routes
+              if getattr(e := getattr(r, "endpoint", None), RERUN_AFTER_PLACING, False)}
+    assert marked == {"celerp_docs.routes:finalize_doc", "celerp_accounting.routes:move_older_stock"}
 
 
 @pytest.fixture

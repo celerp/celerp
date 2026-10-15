@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Callable
 
 from sqlalchemy import event
@@ -336,7 +337,7 @@ class OlderStockMiddleware:
     period lock holds it back, each with its own notice) returns the refusal as it was.
     Only a writer marked lot_origin.rerun_after_placing runs again, as nothing it does
     before such a refusal reaches outside the database; and not when it committed any
-    write before it was refused (_COMMITTED), so nothing it wrote is written twice. Any
+    write before it was refused (_WRITES), so nothing it wrote is written twice. Any
     other has its stock placed and its refusal returned. The company is the one the
     request was authorised for (auth.get_auth_context)."""
 
@@ -357,15 +358,15 @@ class OlderStockMiddleware:
             body.append(message.get("body", b""))
             more = message.get("more_body", False)
         body = b"".join(body)
-        token = _COMMITTED.set(committed := [])
+        token = _WRITES.set(writes := _Writes())
         try:
             held = await self._run(scope, body, receive, send)
         finally:
-            _COMMITTED.reset(token)
+            _WRITES.reset(token)
         if held is None:
             return
         company_id = (scope.get("state") or {}).get("company_id")
-        if (company_id is not None and _placeable(held) and await _placed(company_id) and not committed
+        if (company_id is not None and _placeable(held) and await _placed(company_id) and not writes.committed
                 and _reruns(scope)):
             await self._run(scope, body, receive, send, hold=False)
             return
@@ -396,37 +397,43 @@ class OlderStockMiddleware:
         return held or None
 
 
-# Set while OlderStockMiddleware runs a request the first time: a commit on any
-# connection that ran a statement other than a read appends to it, so the request is
-# known to have kept a write, whether through a session's objects, a text or Core
-# statement, or a connection of its own. A released savepoint is not a commit; a
-# write inside one rolled back still counts, which only ever keeps a request from
-# running again.
-_COMMITTED: ContextVar[list | None] = ContextVar("older_stock_committed", default=None)
-_WROTE = "older_stock_wrote"
+@dataclass
+class _Writes:
+    """What a request run by OlderStockMiddleware wrote: the connections holding a write
+    not committed yet (by id), and whether any write was committed."""
+    pending: set[int] = field(default_factory=set)
+    committed: bool = False
+
+
+# Set while OlderStockMiddleware runs a request the first time. A statement other than
+# a read marks its connection, and that connection's commit marks the request as having
+# kept a write, whether through a session's objects, a text or Core statement, or a
+# connection of its own. A released savepoint is not a commit; a write inside one
+# rolled back still counts, which only ever keeps a request from running again. Only
+# the connection's identity is read, so a connection being invalidated is never touched.
+_WRITES: ContextVar[_Writes | None] = ContextVar("older_stock_writes", default=None)
 _READS = frozenset({"SELECT", "SHOW", "SAVEPOINT", "RELEASE", "ROLLBACK", "BEGIN", "COMMIT", "SET"})
 
 
 @event.listens_for(Engine, "begin")
-def _began(conn) -> None:
-    conn.info.pop(_WROTE, None)
+@event.listens_for(Engine, "rollback")
+def _discarded(conn) -> None:
+    if (writes := _WRITES.get()) is not None:
+        writes.pending.discard(id(conn))
 
 
 @event.listens_for(Engine, "after_cursor_execute")
 def _executed(conn, _cursor, statement: str, _parameters, _context, _executemany) -> None:
-    if _COMMITTED.get() is not None and (statement.split(None, 1) or ["SELECT"])[0].upper() not in _READS:
-        conn.info[_WROTE] = True
+    writes = _WRITES.get()
+    if writes is not None and (statement.split(None, 1) or ["SELECT"])[0].upper() not in _READS:
+        writes.pending.add(id(conn))
 
 
 @event.listens_for(Engine, "commit")
 def _committed(conn) -> None:
-    if conn.info.pop(_WROTE, False) and (committed := _COMMITTED.get()) is not None:
-        committed.append(True)
-
-
-@event.listens_for(Engine, "rollback")
-def _rolled_back(conn) -> None:
-    conn.info.pop(_WROTE, None)
+    if (writes := _WRITES.get()) is not None and id(conn) in writes.pending:
+        writes.pending.discard(id(conn))
+        writes.committed = True
 
 
 def _reruns(scope: Scope) -> bool:
