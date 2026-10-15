@@ -522,6 +522,7 @@ class GatewayClient:
         "invoice.payment": "_handle_invoice_payment",
         "invoice.payment_release": "_handle_invoice_payment_release",
         "invoice.refund": "_handle_invoice_refund",
+        "invoice.fees": "_handle_invoice_fees",
     }
 
     def _build_hello_payload(self, tos_version: str, app_version: str) -> dict:
@@ -762,6 +763,11 @@ class GatewayClient:
         """Record a delivered invoice payment and acknowledge it once recorded."""
         from celerp.services.payments import receive_payment
         await self._receive_delivery("invoice.payment", receive_payment, payload)
+
+    async def _handle_invoice_fees(self, payload: dict) -> None:
+        """Record actual payment fee adjustments using the invoice's existing books."""
+        from celerp.services.payments import receive_fees
+        await self._receive_delivery("invoice.fees", receive_fees, payload)
 
     async def _handle_invoice_refund(self, payload: dict) -> None:
         """Record a delivered change to a refund of an invoice payment and acknowledge
