@@ -116,3 +116,13 @@ def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
     result["tax"] = to_stored_float(tax_total)
     result["total"] = to_stored_float(round_money(taxable + tax_total + shipping, currency))
     return result
+
+
+def money_from_lines(data: dict, currency: str) -> dict:
+    """A document given its lines but no total, with its money taken from those lines: each
+    line's total (its own, or quantity times unit price) and the document's subtotal,
+    discount, taxes and total (document_money). The one rule for a document created in the
+    app and a draft imported without totals."""
+    lines = [{**line, "line_total": to_stored_float(round_money(_line_amount(line), currency))}
+             for line in data.get("line_items") or [] if isinstance(line, dict)]
+    return {**data, **document_money(data, lines, currency, keep_unrated_tax=True), "line_items": lines}

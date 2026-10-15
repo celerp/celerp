@@ -1141,3 +1141,245 @@ async def test_doctor_reports_missing_foreign_rate_as_blocked_instead_of_posting
     detail = next(d for d in finding["details"] if d["doc_id"] == entity_id)
     assert "rate" in detail["blocked_reason"].lower()
     assert "enter the exchange rate" in detail["blocked_reason"].lower()
+
+
+async def _drop_document_entries(session, company_id, doc_id: str) -> None:
+    """The document's entries removed, as a release that never posted them left it."""
+    from sqlalchemy import delete, select
+
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    jes = list((await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        Projection.entity_id.like(f"je:auto:{doc_id}:%")))).scalars())
+    assert jes
+    await session.execute(delete(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(jes)))
+    await session.execute(delete(Projection).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(jes)))
+    await session.commit()
+
+
+async def _service_tax(client, token, tax_type: str) -> None:
+    taxes = [{"name": "Service tax", "rate": 5.0, "tax_type": tax_type, "is_default": False}]
+    for path in ("/companies/me/taxes", "/companies/me/purchasing-taxes"):
+        assert (await client.patch(path, headers=_h(token), json={"taxes": taxes})).status_code == 200
+
+
+async def _finalized_invoice(client, token, *, taxed: bool = False, issue_date: str | None = None) -> str:
+    line = {"description": "Service", "quantity": 1, "unit_price": 1000.0}
+    if taxed:
+        line["taxes"] = [{"code": "Service tax", "rate": 5.0, "order": 0}]
+    body = {"doc_type": "invoice", "contact_name": "C", "line_items": [line]}
+    if issue_date:
+        body["issue_date"] = issue_date
+    r = await client.post("/docs", headers=_h(token), json=body)
+    assert r.status_code == 200, r.text
+    assert (await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(token))).status_code == 200
+    return r.json()["id"]
+
+
+async def _missing_jes(client, token, fix: bool) -> dict:
+    r = await client.post(f"/admin/doctor?checks=missing_jes&fix={'true' if fix else 'false'}", headers=_h(token))
+    assert r.status_code == 200, r.text
+    return next(c for c in r.json()["results"] if c["check"] == "missing_jes")
+
+
+@pytest.mark.asyncio
+async def test_doctor_repairs_each_document_on_its_own_and_names_the_ones_it_cannot(client, session):
+    """One invoice whose missing entry the posting tax check refuses (its tax is now a
+    purchase tax only) is reported by number with the reason; every other missing entry in
+    the same run is still repaired and kept."""
+    token = await _register(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(token))).json()["id"])
+    await _service_tax(client, token, "both")
+    docs = [await _finalized_invoice(client, token, taxed=taxed) for taxed in (False, True, False)]
+    for doc in docs:
+        await _drop_document_entries(session, company_id, doc)
+    await _service_tax(client, token, "purchase")
+    blocked_number = (await client.get(f"/docs/{docs[1]}", headers=_h(token))).json()["doc_number"]
+
+    for fix in ("false", "true"):
+        r = await client.post(f"/admin/doctor?checks=missing_jes&fix={fix}", headers=_h(token))
+        assert r.status_code == 200, r.text
+        missing = next(c for c in r.json()["results"] if c["check"] == "missing_jes")
+        blocked = [d for d in missing["details"] if d.get("blocked_reason")]
+        assert [(d["doc_id"], d["doc_number"]) for d in blocked] == [(docs[1], blocked_number)]
+        assert "Service tax is a purchase tax" in blocked[0]["blocked_reason"]
+        assert missing["auto_fixable"] is False
+        assert missing["fixed"] == (2 if fix == "true" else 0)
+
+    session.expire_all()
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    posted = set((await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry"))).scalars())
+    assert [any(je.startswith(f"je:auto:{doc}:") for je in posted) for doc in docs] == [True, False, True]
+    r = await client.post("/admin/doctor?fix=true", headers=_h(token))
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_doctor_dry_run_names_a_locked_period_refusal_as_the_fix_does(client, session):
+    """An invoice dated inside a locked period is named with the lock refusal by the dry
+    run exactly as by the fix run, so the dry run never calls that repair auto-fixable; the
+    other invoice is repaired and a second fix run posts nothing new."""
+    from ui.i18n import t
+    from celerp.services.company_lock import locked_company
+
+    token = await _register(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(token))).json()["id"])
+    old = await _finalized_invoice(client, token, issue_date="2020-03-01")
+    new = await _finalized_invoice(client, token)
+    for doc in (old, new):
+        await _drop_document_entries(session, company_id, doc)
+    company = await locked_company(session, company_id)
+    company.settings = {**company.settings, "lock_date": "2020-12-31"}
+    await session.commit()
+    old_number = (await client.get(f"/docs/{old}", headers=_h(token))).json()["doc_number"]
+    refused = [(old, old_number, t("error.period_locked", "en", date="2020-12-31"))]
+
+    runs = [await _missing_jes(client, token, fix) for fix in (False, True, True)]
+    for run in runs:
+        assert [(d["doc_id"], d["doc_number"], d["blocked_reason"])
+                for d in run["details"] if d.get("blocked_reason")] == refused
+        assert run["auto_fixable"] is False
+    assert [run["fixed"] for run in runs] == [0, 1, 0]
+    assert [d["doc_id"] for d in runs[0]["details"]] == [old, new]
+
+
+@pytest.mark.asyncio
+async def test_doctor_names_every_refusal_however_many_entries_are_missing(client, session):
+    """With more missing entries than the report lists, the one the tax check refuses is
+    still named, by the dry run and by the fix run alike."""
+    token = await _register(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(token))).json()["id"])
+    await _service_tax(client, token, "both")
+    docs = [await _finalized_invoice(client, token) for _ in range(51)]
+    docs.append(await _finalized_invoice(client, token, taxed=True))
+    for doc in docs:
+        await _drop_document_entries(session, company_id, doc)
+    await _service_tax(client, token, "purchase")
+
+    for fix in (False, True):
+        missing = await _missing_jes(client, token, fix)
+        assert missing["found"] == 52
+        assert [d["doc_id"] for d in missing["details"] if d.get("blocked_reason")] == [docs[-1]]
+
+
+_UNEXPECTED = "could not be repaired because of an unexpected error"
+
+
+@pytest.mark.asyncio
+async def test_doctor_names_a_document_an_unexpected_error_stops_and_repairs_the_rest(
+    client, session, monkeypatch, caplog,
+):
+    """An unexpected error while repairing one invoice undoes only that invoice's writes:
+    the other invoices are repaired and kept, the failing one is named with a plain reason
+    (nothing internal in the reply), and the server log records it with the error."""
+    import logging
+
+    from celerp.services import auto_je
+
+    token = await _register(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(token))).json()["id"])
+    docs = [await _finalized_invoice(client, token) for _ in range(3)]
+    for doc in docs:
+        await _drop_document_entries(session, company_id, doc)
+    original = auto_je.create_for_doc_finalized
+
+    async def _fails_on_the_second(session, **kw):
+        await original(session, **kw)
+        if kw["doc_id"] == docs[1]:
+            raise KeyError("internal-detail")
+
+    monkeypatch.setattr(auto_je, "create_for_doc_finalized", _fails_on_the_second)
+    with caplog.at_level(logging.ERROR):
+        missing = await _missing_jes(client, token, True)
+
+    named = [d for d in missing["details"] if d.get("blocked_reason")]
+    assert [d["doc_id"] for d in named] == [docs[1]]
+    assert _UNEXPECTED in named[0]["blocked_reason"]
+    assert "internal-detail" not in str(missing)
+    assert missing["fixed"] == 2 and missing["auto_fixable"] is False
+    logged = [r for r in caplog.records if docs[1] in r.getMessage()]
+    assert logged and logged[0].exc_info and "internal-detail" in str(logged[0].exc_info[1])
+
+    session.expire_all()
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    posted = set((await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry"))).scalars())
+    assert [any(je.startswith(f"je:auto:{doc}:") for je in posted) for doc in docs] == [True, False, True]
+
+
+@pytest.mark.asyncio
+async def test_doctor_names_an_entry_an_unexpected_error_stops_voiding_and_voids_the_rest(
+    client, session, monkeypatch, caplog,
+):
+    """An unexpected error while voiding one uncaused entry leaves that entry as it was and
+    names it; the other uncaused entries are voided and kept."""
+    import logging
+
+    from sqlalchemy import delete
+
+    import celerp_admin.routes as doctor
+    from celerp.models.ledger import LedgerEntry
+
+    token = await _register(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(token))).json()["id"])
+    docs = [await _finalized_invoice(client, token) for _ in range(3)]
+    await session.execute(delete(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(docs),
+        LedgerEntry.event_type == "doc.finalized"))
+    await session.commit()
+    original = doctor.emit_event
+
+    async def _fails_on_the_second(session, **kw):
+        await original(session, **kw)
+        if kw["metadata_"]["doc_id"] == docs[1]:
+            raise KeyError("internal-detail")
+
+    monkeypatch.setattr(doctor, "emit_event", _fails_on_the_second)
+    with caplog.at_level(logging.ERROR):
+        r = await client.post("/admin/doctor?checks=uncaused_recognition_jes&fix=true", headers=_h(token))
+    assert r.status_code == 200, r.text
+    found = next(c for c in r.json()["results"] if c["check"] == "uncaused_recognition_jes")
+
+    named = [d for d in found["details"] if d.get("blocked_reason")]
+    assert {d["doc_id"] for d in named} == {docs[1]}
+    assert all(_UNEXPECTED in d["blocked_reason"] for d in named)
+    assert "internal-detail" not in r.text
+    assert found["fixed"] == found["found"] - len(named) > 0
+    assert any(docs[1] in rec.getMessage() and rec.exc_info for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_doctor_holds_a_payment_entry_until_its_sale_entry_can_be_posted(client, session):
+    """An invoice whose sale entry is refused (its date is locked) keeps its payment entry
+    back too, naming the sale entry it waits on, in the dry run and the fix run alike: a
+    payment posted alone would clear a receivable the books never raised."""
+    from celerp.services.company_lock import locked_company
+
+    token = await _register(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(token))).json()["id"])
+    doc = await _finalized_invoice(client, token, issue_date="2020-03-01")
+    r = await client.post(f"/docs/{doc}/payment", headers=_h(token), json={
+        "amount": 1000.0, "payment_date": "2021-02-01", "method": "cash", "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+    await _drop_document_entries(session, company_id, doc)
+    company = await locked_company(session, company_id)
+    company.settings = {**company.settings, "lock_date": "2020-12-31"}
+    await session.commit()
+    number = (await client.get(f"/docs/{doc}", headers=_h(token))).json()["doc_number"]
+
+    for fix in (False, True):
+        missing = await _missing_jes(client, token, fix)
+        refused = {d["trigger"]: d["blocked_reason"] for d in missing["details"] if d.get("blocked_reason")}
+        assert set(refused) == {"finalize", "payment"}
+        assert number in refused["payment"] and "sale entry" in refused["payment"]
+        assert missing["fixed"] == 0
+    assert not [je for je in await _document_jes(client, token) if doc in je["entity_id"]]

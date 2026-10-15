@@ -30,7 +30,8 @@ from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
+from celerp.tax_regimes import default_tax, taxes_for
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
@@ -308,23 +309,6 @@ class _PickerRefusal(Exception):
         self.status = status
 
 
-def _held_elsewhere(item: dict, doc_id: str | None, line_id: str | None, source_memo_id: str | None = None) -> bool:
-    """A lot this line may not newly take: reserved to another record or to none
-    (``demand_claim``), reserved to this record for another of its lines, or out on a memo
-    this record is not and was not made from (``out_on_another_memo``)."""
-    from celerp.services.document_lines import out_on_another_memo
-    from celerp_inventory.projections import demand_claim
-
-    if out_on_another_memo(item, doc_id, source_memo_id):
-        return True
-    if str(item.get("status") or "").lower() != "reserved":
-        return False
-    if demand_claim(item, doc_id) is None:
-        return True
-    holder = item.get("status_line_entity_id")
-    return bool(holder) and holder != line_id
-
-
 async def _held_by_another_record(token: str, items: list[dict], code: str) -> str:
     """The refusal for ``code`` whose lots ``items`` are reserved for, or out on a memo to,
     another record, naming that record by its number when they are all held by one whose
@@ -352,10 +336,11 @@ async def _hold_refusal(token: str, item: dict, code: str, *, doc_type: str, doc
     stock; another record's hold, or a lot out on another memo, blocks the stock-claiming
     documents; a hold for another line of this record blocks every other line."""
     from celerp.services.document_lines import DOCUMENT_ITEM_UNIQUE_DOC_TYPES
+    from celerp_inventory.projections import held_elsewhere
 
     if str(item.get("status") or "").lower() == "draft":
         return t("item.draft", sku=item.get("sku") or code)
-    if not _held_elsewhere(item, doc_id, line_id, source_memo_id):
+    if not held_elsewhere(item, doc_id, line_id, source_memo_id):
         return None
     if doc_id and item.get("status_doc_id") == doc_id:
         return t("documents.lot_held_by_other_line", code=code)
@@ -368,9 +353,9 @@ async def _physical_lots(token: str, code: str, *, credit_note: bool) -> list[di
     """Every distinct live lot whose barcode or RFID/EPC is exactly ``code``.
 
     Barcode and RFID/EPC are one physical namespace, gathered together before any product
-    identifier (GTIN, SKU, name), so scan Enter, leaving the SKU field and the autocomplete
-    list resolve a code to the same lot. A credit note looks among sold lots first. The
-    API normalizes the rfid_epc filter (trim + upper). A failed lookup raises: it is never
+    identifier (GTIN, SKU, name), so leaving the SKU field and picking from the autocomplete
+    list resolve a code to the same lot. A credit note looks among sold lots first. The API
+    normalizes the rfid_epc filter (trim + upper). A failed lookup raises: it is never
     reported as no match.
     """
     from celerp_inventory.routes import PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
@@ -412,9 +397,11 @@ async def _sales_options(token: str, items: list[dict], company_settings: dict, 
     consolidation, so a SKU's option only ever stands for (and counts) stock this line may
     draw. Raises ``_PickerRefusal`` when every matched lot is held elsewhere, rather than
     letting the caller fall through to a different item."""
+    from celerp_inventory.projections import held_elsewhere
+
     items = [i for i in items if str(i.get("status") or "").lower() != "draft"]
     drawable = [i for i in items
-                if not (splitting_allowed(i) and _held_elsewhere(i, doc_id, line_id, source_memo_id))]
+                if not (splitting_allowed(i) and held_elsewhere(i, doc_id, line_id, source_memo_id))]
     if items and not drawable:
         raise _PickerRefusal(await _held_by_another_record(token, items, code))
     return _consolidate_sales_lots(drawable, company_settings)
@@ -441,7 +428,7 @@ logger = logging.getLogger(__name__)
 # Lists constants
 # ---------------------------------------------------------------------------
 from celerp.services.list_behavior import (
-    behavior as _list_behavior, status_key as _list_status_key,
+    behavior as _list_behavior, status_key as _list_status_key, SUPPLIER_DOC_TYPES,
     LIST_TYPES as _REG_LIST_TYPES, LIST_STATUSES as _LIST_STATUSES, DRAFT as _LD, FINALIZED as _LF, CLOSED as _LC,
 )
 
@@ -1373,15 +1360,15 @@ async def _po_line_suggestions(token: str, doc: dict) -> dict[str, str]:
     return out
 
 
-async def _company_doc_taxes(token: str) -> list[dict]:
-    """Fetch company sales taxes and return them as doc_taxes dicts for new documents."""
+async def _company_doc_taxes(token: str, doc_type: str) -> list[dict]:
+    """The company's rated taxes for this document type's side, as doc_taxes dicts for a new document."""
     try:
-        taxes = await api.get_taxes(token)
+        taxes = await api.get_document_taxes(token, doc_type)
     except Exception:
         return []
     return [
         {"code": tax.get("name", "Tax"), "rate": float(tax.get("rate", 0)), "order": i, "is_compound": bool(tax.get("is_compound"))}
-        for i, tax in enumerate(taxes)
+        for i, tax in enumerate(taxes_for(taxes, doc_type))
         if tax.get("rate")
     ]
 
@@ -1732,7 +1719,7 @@ def setup_routes(app):
         if not entity_ids:
             return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="modal-container")
         line_items = await _line_items_from_inventory(token, entity_ids)
-        doc_taxes = await _company_doc_taxes(token)
+        doc_taxes = await _company_doc_taxes(token, "invoice")
         try:
             result = await api.create_doc(token, {
                 "doc_type": "invoice",
@@ -1793,8 +1780,8 @@ def setup_routes(app):
         q = request.query_params
         settings = (await api.get_company(token)).get("settings") or {}
         unit_map = build_unit_map(await api.get_units(token))
-        price_list = q.get("price_list", DEFAULT_PRICE_LIST_NAME).strip() or DEFAULT_PRICE_LIST_NAME
         doc_type = q.get("doc_type", "").strip()
+        price_list = line_price_list(doc_type, q.get("price_list", "").strip())
         doc_id = q.get("doc_id", "").strip() or None
         # An invoice made from a memo may take that memo's lots.
         source_memo_id = (await api.get_doc(token, doc_id)).get("source_memo_id") if doc_type == "invoice" and doc_id else None
@@ -1816,52 +1803,6 @@ def setup_routes(app):
             return JSONResponse({"error": e.message}, status_code=e.status)
         logger.warning("Document picker lookup failed: %s", e)
         return JSONResponse({"error": error_message(e)}, status_code=502)
-
-    @app.get("/docs/catalog-lookup")
-    async def doc_catalog_lookup(request: Request):
-        """Resolve one typed or scanned code: an exact barcode or RFID/EPC names one lot;
-        else GTIN, then SKU (a chooser when several lots remain), then a name match.
-        Returns the picked item, a chooser, or {} for no match; 409 for a code it must
-        not resolve, 502 when the lookup failed."""
-        from starlette.responses import JSONResponse
-        if not _token(request):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        code = request.query_params.get("sku", "").strip()
-        if not code:
-            return JSONResponse({})
-        try:
-            ctx = await _picker_context(request)
-            token, extract = ctx["token"], ctx["extract"]
-            is_credit_note = ctx["doc_type"] == "credit_note"
-            lot = await _exact_physical_lot(token, code, doc_type=ctx["doc_type"], doc_id=ctx["doc_id"],
-                                            line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
-            if lot is not None:
-                return JSONResponse(extract(lot))
-
-            async def matches(field: str, limit: int = 20) -> list[dict]:
-                params = {field: code, "limit": limit}
-                found = (await api.list_items(token, {**params, "status": "sold"}))["items"] if is_credit_note else []
-                found = found or (await api.list_items(token, params))["items"]
-                if is_credit_note:
-                    return [i for i in found if str(i.get("status") or "").lower() != "draft"]
-                return await _sales_options(token, found, ctx["settings"], code, doc_id=ctx["doc_id"],
-                                            line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
-
-            # GTIN names a product, not a lot, so it behaves like a SKU: forward sales
-            # consolidate splittable lots; several remaining lots -> chooser.
-            for field in ("gtin", "sku"):
-                found = await matches(field)
-                if len(found) > 1:
-                    return JSONResponse({"ambiguous": True, "code": code, "candidates": [extract(i) for i in found]})
-                if found:
-                    return JSONResponse(extract(found[0]))
-            if not is_credit_note:
-                found = await matches("q", limit=1)
-                if found:
-                    return JSONResponse(extract(found[0]))
-        except (APIError, _PickerRefusal) as e:
-            return _picker_error(e)
-        return JSONResponse({})
 
     @app.get("/docs/catalog-search")
     async def doc_catalog_search(request: Request):
@@ -2477,7 +2418,7 @@ celerpUpdateBulkAlloc();
             pass
         company_taxes: list[dict] = []
         try:
-            company_taxes = await api.get_taxes(token)
+            company_taxes = await api.get_document_taxes(token, doc_type)
         except Exception:
             pass
         # Fetch bank accounts for payment section
@@ -2764,8 +2705,7 @@ celerpUpdateBulkAlloc();
         elif field in ("contact_id", "commission_contact_id", "contact_company_name"):
             # Commission agents are always vendors; the party is a vendor on purchase-side
             # documents and a customer everywhere else.
-            from celerp_docs.doc_constants import VENDOR_DOC_TYPES
-            is_vendor = field == "commission_contact_id" or doc.get("doc_type", "") in VENDOR_DOC_TYPES
+            is_vendor = field == "commission_contact_id" or doc.get("doc_type", "") in SUPPLIER_DOC_TYPES
             input_el = await _contact_picker(
                 token, resource="doc", entity_id=entity_id, field=field,
                 value=value if field == "commission_contact_id" else str(doc.get("contact_id") or ""),
@@ -2836,10 +2776,9 @@ celerpUpdateBulkAlloc();
         if value == "__new__":
             from starlette.responses import Response as _R
             # Route to vendors page for vendor doc types and commission contacts
-            from celerp_docs.doc_constants import VENDOR_DOC_TYPES
             try:
                 doc = await api.get_doc(token, entity_id)
-                is_vendor_context = field == "commission_contact_id" or doc.get("doc_type") in VENDOR_DOC_TYPES
+                is_vendor_context = field == "commission_contact_id" or doc.get("doc_type") in SUPPLIER_DOC_TYPES
             except APIError:
                 is_vendor_context = field == "commission_contact_id"
             target = "/contacts/vendors" if is_vendor_context else "/contacts/customers"
@@ -4591,7 +4530,7 @@ celerpUpdateBulkAlloc();
             pass
         company_taxes: list[dict] = []
         try:
-            company_taxes = await api.get_taxes(token)
+            company_taxes = await api.get_document_taxes(token, lst["doc_type"])
         except Exception:
             pass
 
@@ -4942,25 +4881,25 @@ celerpUpdateBulkAlloc();
             cls=row_cls,
         )
 
-    @app.post("/lists/{entity_id}/scan")
-    async def list_scan(request: Request, entity_id: str):
-        """One scan endpoint for every list type (the client fork is gone, DRY). The scan bar
-        accumulates codes client-side (Enter appends a comma, never a per-scan request) and submits
-        the whole run here as one comma-separated batch. The backend dispatches on (list_type, status)
-        and adds every resolvable code against a single write; codes that fail to resolve come back in
-        the JSON body so the good ones still land. The reply is always JSON:
+    async def _proxy_scan(request: Request, entity_id: str, kind: str, tbody=None):
+        """The one scan endpoint adapter, shared by lists and documents. The scan bar accumulates
+        codes client-side (Enter appends a comma, never a per-scan request) and submits the whole run
+        here as one comma-separated batch with its run key. The backend adds every resolvable code
+        against a single write; codes that fail to resolve come back in the JSON body so the good ones
+        still land. The reply is always JSON:
 
-        - `html`: for a finalized audit (the rapid check-off case), the re-rendered #line-body tbody
-          the client swaps in for speed; empty for every other list, where the client pulls the fresh
-          tbody from a background page fetch so the editable column layout renders through the same
-          detail renderer (no duplicated row builder) without a page reload;
+        - `html`: the re-rendered #line-body tbody when `tbody` renders one (the finalized audit's
+          rapid check-off case); empty otherwise, and the client pulls the fresh tbody from a
+          background page fetch so the editable layout renders through the same detail renderer;
         - `failed`: the per-code failures (code + detail) - the client repopulates the field with just
           those to retry. It is deliberately not returned in a response header: a code or detail can be
           a non-Latin SKU, and Starlette encodes headers as Latin-1, which would 500 after the good
-          scans had already committed and leave the client able to re-submit and duplicate them.
+          scans had already committed and leave the client able to re-submit and duplicate them;
+        - `version`: the record version after the write, so the client's optimistic-lock token
+          tracks it (a later line save must not 409 on a stale version);
+        - `lines`: the line ids the run added or raised, which the client highlights until the next run.
         """
         from starlette.responses import JSONResponse as _JSON
-        from fasthtml.common import to_xml
         token = _token(request)
         if not token:
             return _action_error(t("error.session_expired"))
@@ -4971,38 +4910,37 @@ celerpUpdateBulkAlloc();
         if not barcode:
             return _JSON({"scanned": 0, "failed": [], "html": ""})
         try:
-            res = await api.scan_list(token, entity_id, barcode, price_list, run_key)
+            res = await api.scan_codes(token, kind, entity_id, barcode, price_list, run_key)
         except APIError as e:
-            # A LIST-LEVEL rejection (closed/void, a finalized list whose type disables scanning, or a
-            # spent scan run key reused for a different batch). The scan bar branches on the structured
-            # body: a machine `code` (e.g. scan_run_conflict) drives its recovery, a plain rejection is
-            # shown as-is. Preserve the whole structured body when the backend sent one, else wrap the
-            # string detail. Per-code failures are NOT this - they come back 200 in the JSON body.
+            # A RECORD-LEVEL rejection (closed/void, a finalized record that refuses scanning, or a
+            # spent scan run key reused for a different batch, which carries the current version).
+            # The scan bar branches on the structured body: a machine `code` (e.g. scan_run_conflict)
+            # drives its recovery, a plain rejection is shown as-is. Per-code failures are NOT this -
+            # they come back 200 in the JSON body.
             body = e.data if isinstance(e.data, dict) and e.data.get("code") else {"detail": error_message(e)}
-            if body.get("code") == "scan_run_conflict":
-                # The conflicting run already committed its batch, so the list projection has advanced.
-                # Hand back the current version so the client can resync its optimistic-lock token after
-                # it reloads the visible lines. Read the header only (bounded page), never the whole
-                # list. If this read fails, the client keeps Add locked and asks for a page reload
-                # rather than submit against stale rows.
-                try:
-                    body = {**body, "version": (await api.get_list_page(token, entity_id, limit=1)).get("version")}
-                except APIError:
-                    pass
             return _JSON(body, status_code=e.status or 400)
-        # Read the header only (bounded page) to decide the swap; the whole list array is never pulled.
-        _page = await api.get_list_page(token, entity_id, limit=1)
-        lst = _page.get("list", {}) or {}
-        # Only a finalized audit (the locked counting manifest) gets the fast static tbody swap; a draft
-        # audit is editable, so it reloads like every other building list to keep its inputs.
-        html = ""
-        if (lst.get("list_type") or "") == "audit" and lst.get("status") in (_LF, _LC):
-            html = to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form)))
-        # The scanned write advanced the list projection version; hand the fresh version back so the
-        # client's optimistic-lock token tracks it (a later line save must not 409 on a stale version).
-        return _JSON({"scanned": (res or {}).get("scanned", 0),
-                      "failed": (res or {}).get("failed") or [], "html": html,
-                      "version": _page.get("version")})
+        res = res or {}
+        html = (await tbody(token, form)) if tbody else ""
+        lines = list(dict.fromkeys(r["line_id"] for r in res.get("results") or [] if r.get("line_id")))
+        return _JSON({"scanned": res.get("scanned", 0), "failed": res.get("failed") or [],
+                      "html": html, "version": res.get("version"), "lines": lines})
+
+    @app.post("/docs/{entity_id}/scan")
+    async def doc_scan(request: Request, entity_id: str):
+        return await _proxy_scan(request, entity_id, "docs")
+
+    @app.post("/lists/{entity_id}/scan")
+    async def list_scan(request: Request, entity_id: str):
+        async def _audit_tbody(token, form):
+            # Only a finalized audit (the locked counting manifest) gets the fast static tbody swap; a
+            # draft audit is editable, so it reloads like every other building list to keep its inputs.
+            # Read the header only (bounded page); the whole list array is never pulled.
+            from fasthtml.common import to_xml
+            lst = (await api.get_list_page(token, entity_id, limit=1)).get("list", {}) or {}
+            if (lst.get("list_type") or "") == "audit" and lst.get("status") in (_LF, _LC):
+                return to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form)))
+            return ""
+        return await _proxy_scan(request, entity_id, "lists", _audit_tbody)
 
     @app.post("/lists/{entity_id}/set-scanned")
     async def list_set_scanned(request: Request, entity_id: str):
@@ -7306,8 +7244,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="catalog-ac-wrap",
             )
 
-        _taxes_list = company_taxes or []
-        _default_tax = next((tax for tax in _taxes_list if tax.get("is_default")), None)
+        _taxes_list = taxes_for(company_taxes or [], doc_type)
+        _default_tax = default_tax(_taxes_list, doc_type)
         _default_tax_value = f"{_default_tax.get('name', '')}|{float(_default_tax.get('rate', 0))}" if _default_tax else "|0"
 
         def _tax_select(li: dict | None = None) -> FT:
@@ -7830,11 +7768,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Span("📷", cls="scan-bar-icon"),
                 Input(type="text", id="scan-bar-input", placeholder=_scan_placeholder,
                       cls="scan-bar-input", autocomplete="off", autofocus=False),
-                # Lists accumulate scans as a comma list (Enter appends a comma, never a request) and
-                # submit the whole run with this one button. Documents look each scan up on the spot,
-                # so they need no submit button.
-                (Button(_scan_btn, type="button", id="scan-bar-add",
-                        cls="btn btn--primary btn--sm") if is_list else None),
+                # Scans accumulate as a comma list (Enter appends a comma, never a request) and the
+                # whole run submits with this one button, on lists and documents alike.
+                Button(_scan_btn, type="button", id="scan-bar-add", cls="btn btn--primary btn--sm"),
                 Span("", id="scan-bar-status", cls="scan-bar-status"),
                 cls="scan-bar",
             ),
@@ -7975,7 +7911,6 @@ function _celerpUnitFromTotal(total, qty) {{
 /* ── Price list / doc-type helpers ── */
 window._CELERP_DOC_TYPE = {repr(doc_type)};
 window._CELERP_DOC_ID = {_json.dumps(entity_id or "")};
-window._CELERP_IS_LIST = {repr("true" if is_list else "false")};
 window._CELERP_IS_DRAFT = {repr("true" if is_draft else "false")};
 // A counting (finalized) audit renders this section too, but its line structure is locked:
 // nothing on it may write the line array.
@@ -7989,8 +7924,6 @@ window._L = {_json.dumps({
     "scan_added": _scan_done,
     "scan_run_committed": t("documents.scan_run_committed"),
     "scan_reload_needed": t("documents.scan_reload_needed"),
-    "scanned": t("documents.scanned_prefix"),
-    "scan_not_found": t("documents.scan_not_found"),
     "lookup_error": t("documents.lookup_error"),
     "view_item_details": t("documents.view_item_details"),
     "no_linked_item": t("documents.no_linked_item"),
@@ -8063,7 +7996,7 @@ function _celerpPickerStatus(text) {{
     if (!scanInput) return;
     const addBtn = document.getElementById('scan-bar-add');
 
-    // LISTS: submit the whole accumulated comma list in ONE request. Every resolvable code is added
+    // Submit the whole accumulated comma list in ONE request. Every resolvable code is added
     // against a single write; codes that fail come back in the JSON body, so the good ones still land
     // and only the failures are left in the field to retry. The body's `html` is either a re-rendered
     // tbody (finalized-audit fast path) or empty, in which case the fresh tbody comes from a background
@@ -8102,7 +8035,7 @@ function _celerpPickerStatus(text) {{
         // the line tbody while this operation is queued/executing, so a user cannot
         // create a newer local edit between the canonical line save and the scan.
         // Locked audit scanning is not a draft-line mutation and stays untouched.
-        const lockDraftLines = _CELERP_IS_LIST === 'true' && _CELERP_IS_DRAFT === 'true';
+        const lockDraftLines = _CELERP_IS_DRAFT === 'true' && _CELERP_CAN_EDIT_LINES;
         if (lockDraftLines) {{
             const lineBody = document.getElementById('{line_body_id}');
             if (lineBody) lineBody.inert = true;
@@ -8115,7 +8048,7 @@ function _celerpPickerStatus(text) {{
                 const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey,
                     offset: _CELERP_LINE_OFFSET, limit: _CELERP_LINE_LIMIT}});
                 if (plSelect) fd.append('price_list', plSelect.value);
-                const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
+                const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
                 if (!resp.ok) {{
                     // Branch on the structured code, never on message text.
                     let code = null, detail = null, version = null;
@@ -8146,7 +8079,7 @@ function _celerpPickerStatus(text) {{
                         }}
                         return;
                     }}
-                    // Any other rejection (closed/void list) committed nothing, so keep the field AND the
+                    // Any other rejection (a closed, void, or locked record) committed nothing, so keep the field AND the
                     // key for a plain retry.
                     scanStatus.textContent = '✗ ' + (typeof detail === 'string' ? detail : _L.scan_error);
                     scanStatus.className = 'scan-bar-status scan-bar-status--err';
@@ -8179,8 +8112,9 @@ function _celerpPickerStatus(text) {{
             // Best-effort: refresh the visible lines. A failure here never resurrects the pruned codes -
             // the lines are already committed and will appear on the next natural render. The version is
             // advanced only inside a successful install (see _celerpInstallLineBody).
+            window._celerpScannedLines = data.lines || [];
             try {{
-                await _celerpInstallLineBody(data.html || '', data.version);
+                if (await _celerpInstallLineBody(data.html || '', data.version)) _celerpMarkScanned(true);
             }} catch (err) {{ /* refresh is best-effort; codes are already acknowledged */ }}
             _clearStatusSoon();
             return true;
@@ -8225,66 +8159,10 @@ function _celerpPickerStatus(text) {{
         e.preventDefault();
         const code = scanInput.value.trim();
         if (!code) return;
-        if (_CELERP_IS_LIST === 'true') {{
-            // Enter is a SEPARATOR, not a submit: append a comma so a fast next scan can never glue
-            // onto this one, and NEVER touch the server per scan. The run submits once via Add.
-            if (!/,\\s*$/.test(scanInput.value)) scanInput.value = scanInput.value.replace(/\\s+$/, '') + ', ';
-            scanInput.focus();
-            return;
-        }}
-        // Documents (invoices, POs, ...): client-side catalog lookup + append, per scan.
-        clearTimeout(_statusTimer);
-        scanStatus.textContent = _L.scanning;
-        scanStatus.className = 'scan-bar-status';
-        try {{
-            const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam() + _celerpDocTypeParam() + _celerpHolderParam(null));
-            if (!resp.ok) {{
-                scanStatus.textContent = '✗ ' + await _celerpPickerError(resp);
-                scanStatus.className = 'scan-bar-status scan-bar-status--err';
-                scanInput.value = '';
-                scanInput.focus();
-                _clearStatusSoon();
-                return;
-            }}
-            const data = await resp.json();
-            if (data.description || data.sku) {{
-                const tbody2 = document.getElementById('{line_body_id}');
-                // The first scan into a new document fills its empty starter row; every other
-                // scan fills a fresh row that is appended below.
-                const starter = _celerpStarterRow(tbody2);
-                const tpl = starter ? null : document.getElementById('line-row-tpl').content.cloneNode(true);
-                const row = starter || tpl.querySelector('tr') || tpl.children[0];
-                const d = {{...data, sku: data.sku || code}};
-                // A false return means the item is a non-splittable duplicate already on
-                // the doc, so do NOT add the row and do NOT autosave - just show the message.
-                if (row && !celerpFillRow(row, d)) {{
-                    scanStatus.textContent = '✗ ' + _L.dup_on_doc;
-                    scanStatus.className = 'scan-bar-status scan-bar-status--err';
-                    scanInput.value = '';
-                    scanInput.focus();
-                    _clearStatusSoon();
-                    return;
-                }}
-                if (!starter) {{
-                    tbody2.appendChild(tpl);
-                    const newRow2 = tbody2.lastElementChild;
-                    if (newRow2) newRow2.querySelectorAll('.combobox-wrap').forEach(initCombobox);
-                }}
-                celerpUpdateTotals();
-                celerpAutoSave();
-                scanStatus.textContent = '✓ ' + (data.sku || code);
-                scanStatus.className = 'scan-bar-status scan-bar-status--ok';
-            }} else {{
-                scanStatus.textContent = '✗ ' + _L.scan_not_found.replace('{{code}}', code);
-                scanStatus.className = 'scan-bar-status scan-bar-status--err';
-            }}
-        }} catch (err) {{
-            scanStatus.textContent = '✗ ' + _L.lookup_error;
-            scanStatus.className = 'scan-bar-status scan-bar-status--err';
-        }}
-        scanInput.value = '';
+        // Enter is a SEPARATOR, not a submit: append a comma so a fast next scan can never glue
+        // onto this one, and NEVER touch the server per scan. The run submits once via Add.
+        if (!/,\\s*$/.test(scanInput.value)) scanInput.value = scanInput.value.replace(/\\s+$/, '') + ', ';
         scanInput.focus();
-        _clearStatusSoon();
     }});
 }})();
 function celerpFindPhysicalDuplicate(row, data) {{
@@ -9011,14 +8889,6 @@ function _celerpRowHasContent(row) {{
     return !!(val('description') || val('sku') || parseFloat(val('unit_price') || 0)
               || val('entity_id') || val('barcode'));
 }}
-function _celerpStarterRow(tbody) {{
-    // The empty row a new document opens with, while it is still the only row and untouched.
-    const rows = tbody ? tbody.querySelectorAll('tr') : [];
-    if (rows.length !== 1) return null;
-    const row = rows[0];
-    if (row.querySelector('[data-name="line_id"]')?.value || _celerpRowHasContent(row)) return null;
-    return row;
-}}
 function _celerpCollectLines() {{
     // Returns the serialized lines, or null when a meaningful row carries an
     // invalid quantity - the caller aborts the whole save and sends nothing.
@@ -9091,6 +8961,23 @@ async function _celerpFetchLineBody() {{
     const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
     return doc.getElementById('{line_body_id}');
 }}
+/* The lines the last scan run added or raised keep the scanned highlight, through any re-render of
+   the rows, until the next run replaces them. Rows stay in their stored order; after a scan the
+   first highlighted row is scrolled into view. */
+window._celerpScannedLines = window._celerpScannedLines || [];
+function _celerpMarkScanned(scroll) {{
+    const tbody = document.getElementById('{line_body_id}');
+    if (!tbody) return;
+    let first = null;
+    tbody.querySelectorAll('tr').forEach(function(row) {{
+        const ref = row.querySelector('[data-name="line_id"], [data-line-id]');
+        const id = ref ? (ref.dataset.lineId || ref.value || '') : '';
+        const on = !!id && window._celerpScannedLines.indexOf(id) >= 0;
+        row.classList.toggle('data-row--scanned', on);
+        if (on && !first) first = row;
+    }});
+    if (scroll && first) first.scrollIntoView({{block: 'nearest'}});
+}}
 async function _celerpInstallLineBody(html, version) {{
     if (!html) {{
         const fresh = await _celerpFetchLineBody();
@@ -9108,6 +8995,7 @@ async function _celerpInstallLineBody(html, version) {{
     // The installed rows are the stored window now, so the next save replaces exactly them.
     if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
     celerpUpdateTotals();
+    _celerpMarkScanned(false);
     _celerpHadLines = true;
     if (version != null) _celerpEntityVersion = version;
     return true;

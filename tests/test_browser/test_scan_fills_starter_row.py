@@ -33,8 +33,10 @@ def _scan(page, code: str) -> None:
     inp.click()
     inp.fill(code)
     inp.press("Enter")
+    page.locator("#scan-bar-add").click()
     page.wait_for_function(
-        "() => /[\\u2713\\u2717]/.test(document.querySelector('.scan-bar-status')?.textContent || '')",
+        "() => !document.getElementById('scan-bar-input').disabled"
+        " && /[\\u2713\\u2717]/.test(document.querySelector('.scan-bar-status')?.textContent || '')",
         timeout=8000)
 
 

@@ -36,10 +36,11 @@ from celerp.services.auth import (
     lock_issuance_company,
     usable_company_link,
     oauth2_scheme_optional,
+    password_attempts,
     password_needs_rehash,
+    request_caller,
     validate_access_token,
     validate_password,
-    verify_password,
 )
 from ui.i18n import t
 
@@ -149,21 +150,42 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
 
 
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 
-# Module-level limiter for /auth/login rate limiting.
+# Module-level limiter for the sign-in and setup routes, counted per caller.
 # Tests reset this via conftest: celerp.routers.auth.limiter._storage.reset()
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=request_caller)
+
+
+async def _note_account(request: Request) -> None:
+    """Counts a password reset request per caller and per account named, so requests for one
+    account never block another. Behind Connect every visitor reaches the UI from the
+    gateway's own address, so the account is what tells them apart. Read from the raw
+    body, which the route itself then validates."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    account = body.get("email") if isinstance(body, dict) else None
+    request.state.account_key = f"{request_caller(request)}|{str(account or '').strip().lower()}"
+
+
+def _account_key(request: Request) -> str:
+    return request.state.account_key
+
+
+_PER_ACCOUNT = [Depends(_note_account)]
 
 
 # A sign-in picks again only when a company it picked was removed meanwhile.
 _PICK_ATTEMPTS = 3
 
 
-async def authenticate(session: AsyncSession, email: str, password: str) -> User:
-    """The active login these credentials belong to; a neutral 401 otherwise."""
+async def authenticate(session: AsyncSession, email: str, password: str, caller: str) -> User:
+    """The active login these credentials belong to, offered by *caller*; a neutral 401
+    otherwise, or 429 while the account or the caller must wait (password_attempts)."""
     user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
-    if not user or not user.auth_hash or not verify_password(password, user.auth_hash) or not user.is_active:
+    auth_hash = user.auth_hash if user and user.is_active else None
+    if not password_attempts.check(email, password, auth_hash, caller):
         raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
     # A legacy hash moves to the current scheme now; a legacy password shorter than
     # the policy keeps its hash until the user changes it.
@@ -172,9 +194,9 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> User
     return user
 
 
-async def companyless_login(session: AsyncSession, email: str, password: str) -> User:
+async def companyless_login(session: AsyncSession, email: str, password: str, caller: str) -> User:
     """The login these credentials belong to, when it has no company left; 409 otherwise."""
-    user = await authenticate(session, email, password)
+    user = await authenticate(session, email, password, caller)
     if await first_usable_company_link(session, user.id) is not None:
         raise HTTPException(status_code=409, detail=t(HAS_COMPANY))
     return user
@@ -198,10 +220,9 @@ async def hold_direct_slot(session: AsyncSession, *, taking_over: bool = False) 
 
 
 @router.post("/login")
-@limiter.limit("10/minute")
 async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.credentials import issue_token_pair
-    user = await authenticate(session, payload.email, payload.password)
+    user = await authenticate(session, payload.email, payload.password, request_caller(request))
     await hold_direct_slot(session)
     # Signs in to the company first_usable_company_link picks. A company removed
     # between the pick and the issuance issues nothing; the pick is made again
@@ -218,12 +239,11 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
 
 
 @router.post("/login-force")
-@limiter.limit("5/minute")
 async def login_force(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     """Like /login but evicts all other active sessions from the tracker first, in the
     same transaction as the new session."""
     from celerp.credentials import issue_token_pair
-    user = await authenticate(session, payload.email, payload.password)
+    user = await authenticate(session, payload.email, payload.password, request_caller(request))
     await hold_direct_slot(session, taking_over=True)
     link = await first_usable_company_link(session, user.id)
     if link is None:
@@ -244,13 +264,12 @@ class StartCompanyRequest(BaseModel):
 
 
 @router.post("/start-company")
-@limiter.limit("5/minute")
 async def start_company(request: Request, payload: StartCompanyRequest,
                         session: AsyncSession = Depends(get_session)) -> dict:
     """Create a company for a login that has none left, after its last company was reset,
     and sign it in as that company's owner."""
     from celerp.credentials import issue_token_pair
-    user = await authenticate(session, payload.email, payload.password)
+    user = await authenticate(session, payload.email, payload.password, request_caller(request))
     name = payload.company_name.strip()
     if not name:
         raise HTTPException(status_code=422, detail=t("error.company_name_blank"))
@@ -394,8 +413,8 @@ class PasswordResetConfirmBody(BaseModel):
 _RESET_TOKEN_TTL_MINUTES = 15
 
 
-@router.post("/password-reset/request")
-@limiter.limit("3/minute")
+@router.post("/password-reset/request", dependencies=_PER_ACCOUNT)
+@limiter.limit("3/minute", key_func=_account_key)
 async def password_reset_request(
     request: Request,
     payload: PasswordResetRequestBody,
@@ -473,6 +492,8 @@ async def password_reset_confirm(
         raise HTTPException(status_code=400, detail=t("auth.password_too_short"))
     user.auth_hash = hash_password(payload.new_password)
     user.reset_token = None
+    # A new password starts the account's failed sign-ins again: resetting is the way back in.
+    password_attempts.forget(user.email)
     user.reset_token_expires = None
     # Rotate the user's nonce so every access and refresh token issued before the
     # reset dies immediately (a reset is a security-sensitive credential change).
@@ -489,12 +510,13 @@ class ChangePasswordBody(BaseModel):
 
 @router.post("/change-password")
 async def change_password(
+    request: Request,
     payload: ChangePasswordBody,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Change password for the currently authenticated user."""
-    if not user.auth_hash or not verify_password(payload.current_password, user.auth_hash):
+    if not password_attempts.check(user.email, payload.current_password, user.auth_hash, request_caller(request)):
         raise HTTPException(status_code=400, detail=t("auth.current_password_wrong"))
     try:
         validate_password(payload.new_password)

@@ -47,8 +47,8 @@ from celerp.services.account_roles import (
     role_map,
     scope_list,
     source_controls,
+    stock_problems,
     target_problems,
-    unmapped_roles,
     with_role,
 )
 
@@ -123,28 +123,35 @@ def _labels(roles: list[str]) -> str:
     return ", ".join(ROLE_LABELS[AccountRole(r)] for r in roles)
 
 
-async def notify_unmapped(session: AsyncSession, company_id) -> bool:
-    """One high-priority notice when a role the company's workflows need has no
-    account, deduped on the standing notice so a restart never stacks them. Returns
-    whether a notice was created. The caller commits."""
+async def notify_unmapped(session: AsyncSession, company_id, refused=()) -> bool:
+    """One high-priority notice while a role has no account that can take its postings
+    and the company's workflows need it, a posting was just refused for it (``refused``),
+    or the notice already names it. Deduped on the standing notice so a restart never
+    stacks them and kept current with the roles still wrong; withdrawn once none is.
+    Returns whether a notice was created. The caller commits."""
+    from celerp.models.notification import Notification
     from celerp.notifications import service as notification_service
+    from celerp.services.journal_accounts import lock_accounts
 
     settings = await current_settings(session, company_id)
-    needed = set(needed_roles(await used_groups(session, company_id, settings)))
-    missing = [r for r in unmapped_roles(settings) if r in needed]
+    named = (await session.execute(select(Notification.i18n).where(
+        Notification.company_id == company_id, Notification.category == NOTICE_CATEGORY,
+        Notification.title == NOTICE_TITLE).limit(1))).scalar()
+    wanted = {*needed_roles(await used_groups(session, company_id, settings)), *refused,
+              *((named or {}).get("params") or {}).get("roles", ())}
+    current = role_map(settings)
+    problems = target_problems(sorted(wanted), current, await lock_accounts(
+        session, company_id, {current[r] for r in wanted if current.get(r)}))
+    missing = [role.value for role in AccountRole if role.value in problems]
     if not missing:
+        await notification_service.clear_standing(session, company_id, NOTICE_CATEGORY, NOTICE_TITLE)
         return False
-    if await notification_service.has_standing(session, company_id, NOTICE_CATEGORY, NOTICE_TITLE):
-        return False
-    labels = _labels(missing)
-    await notification_service.create(
+    return await notification_service.notify_standing(
         session, company_id, NOTICE_CATEGORY, NOTICE_TITLE,
-        f"Choose the account for: {labels}. Until then, anything that posts to them is refused.",
-        action_url=POSTING_ACCOUNTS_PATH, priority="high",
+        f"Choose the account for: {_labels(missing)}. Until then, anything that posts to them is refused.",
+        action_url=POSTING_ACCOUNTS_PATH,
         i18n={"title": "notice.posting_unmapped.title", "body": "notice.posting_unmapped.body",
-              "params": {"roles": missing}},
-    )
-    return True
+              "params": {"roles": missing}})
 
 
 async def _chart(session: AsyncSession, company_id) -> dict[str, dict] | None:
@@ -348,6 +355,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
         problem = target_problem(role, trial, held.get(code))
         if problem:
             problems.append(problem)
+    problems += await stock_problems(session, company_id, dict(company.settings or {}), final)
     if problems:
         raise _refused(problems)
     settings = {**(company.settings or {}), SCHEMA_KEY: POSTING_ROLES_SCHEMA}
@@ -376,23 +384,58 @@ def _status(role: str, current: dict[str, str], chart: dict[str, dict], required
     return ("inactive" if not account.get("is_active", True) else "wrong_type"), problem
 
 
-async def _older_stock(session: AsyncSession, company_id, settings: dict, chart: dict[str, dict]) -> dict:
-    """Older stock on hand that records no inventory account (lot_origin), and the
-    accounts each may be picked from: those that have held purchased or opening inventory."""
-    from celerp.services.lot_origin import unrecorded_lots
+_STOCK_ROLES = (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
 
-    held = {c for role in (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
-            for c in scope_list(settings, role)}
-    return {"lots": await unrecorded_lots(session, company_id),
-            "currency": str(settings.get("currency") or "USD").upper(),
-            "candidates": [_brief(chart[c]) for c in sorted(held) if c in chart]}
+
+def _older_stock(settings: dict, chart: dict[str, dict]) -> dict:
+    """The accounts that have held purchased or opening inventory, for the screens that
+    place stock on one, the retained earnings account a write-off of a surplus posts to
+    (None while unmapped), and the company currency."""
+    held = {c for role in _STOCK_ROLES for c in scope_list(settings, role)}
+    retained = role_map(settings).get(AccountRole.RETAINED_EARNINGS.value)
+    return {"currency": str(settings.get("currency") or "USD").upper(),
+            "candidates": [_brief(chart[c]) for c in sorted(held) if c in chart],
+            "retained": _brief(chart[retained]) if retained in chart else None}
+
+
+def _move_problem(settings: dict, account: dict) -> str | None:
+    """Why older stock cannot be moved onto ``account`` (a chart row as _chart reads it),
+    or None. It may go onto an account that has held inventory, or onto an asset account
+    that holds no cash and that no other posting account uses (a new inventory account),
+    as long as it can take entries."""
+    code = account["code"]
+    held = {c for role in _STOCK_ROLES for c in scope_list(settings, role)}
+    others = {c for role, c in role_map(settings).items() if role not in _STOCK_ROLES}
+    if account.get("cash") or (code not in held and (code in others or account.get("account_type") != "asset")):
+        return "never_inventory"
+    if not account.get("is_active", True) or account.get("has_children"):
+        return "cannot_take"
+    return None
+
+
+async def older_stock_targets(session: AsyncSession, company_id) -> dict:
+    """The accounts older stock can be moved onto (``targets``, each one _move_problem
+    accepts), the retained earnings account and the company currency (_older_stock), read
+    now. No targets while accounting is not running."""
+    settings, chart = await current_settings(session, company_id), await _chart(session, company_id) or {}
+    held = _older_stock(settings, chart)
+    return {"currency": held["currency"], "retained": held["retained"],
+            "targets": [_brief(a) for a in chart.values() if _move_problem(settings, a) is None]}
+
+
+async def older_stock_move_problem(session: AsyncSession, company_id, code: str) -> str | None:
+    """Why older stock cannot be moved onto account ``code`` now: ``not_in_chart``,
+    ``never_inventory`` or ``cannot_take`` (_move_problem), or None. The one rule the move
+    and its account picker (older_stock_targets) share."""
+    settings, chart = await current_settings(session, company_id), await _chart(session, company_id) or {}
+    return "not_in_chart" if code not in chart else _move_problem(settings, chart[code])
 
 
 async def panel(session: AsyncSession, company_id) -> dict | None:
     """Settings > Accounting > Posting accounts: every role with its account, status,
     the accounts it served before (``earlier``, where existing balances stay) and the
-    accounts that can serve it; plus older stock that records no inventory account. None when
-    accounting is not running."""
+    accounts that can serve it; plus the accounts that have held inventory (_older_stock). None
+    when accounting is not running."""
     chart = await _chart(session, company_id)
     if chart is None:
         return None
@@ -412,4 +455,4 @@ async def panel(session: AsyncSession, company_id) -> dict | None:
             "earlier": [c for c in scope_list(settings, role.value) if c != code],
             "candidates": _ranked(role.value, chart, []),
         })
-    return {"roles": rows, "older_stock": await _older_stock(session, company_id, settings, chart)}
+    return {"roles": rows, "older_stock": _older_stock(settings, chart)}

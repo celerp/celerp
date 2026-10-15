@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 
 from fasthtml.common import *
 from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA, cost_columns
+from celerp.services.list_behavior import SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES
 from celerp.services.pricing import PRICE_LISTS_FALLBACK
 from celerp.services.units import line_receive_kind
 from ui.i18n import t, get_lang, category_label, doc_type_label, field_label, price_list_label
@@ -33,8 +34,8 @@ _EVENT_TYPES: tuple[str, ...] = (
     "item.transform", "item.transformed_from", "item.source_deactivated",
     "item.merge_undone", "item.unmerged",
     "item.fulfilled", "item.fulfillment_reversed", "item.consumed", "item.produced",
-    "item.inventory_account.recorded", "item.consignor_payable.recorded", "item.consignment.bought",
-    "item.inventory_on_books.recorded",
+    "item.inventory_account.recorded", "item.inventory_account.moved", "item.consignor_payable.recorded",
+    "item.consignment.bought", "item.inventory_on_books.recorded",
     "mfg.order.wip_opened", "mfg.order.wip_unresolved",
     "doc.created", "doc.updated", "doc.finalized", "doc.paid", "doc.voided",
     "doc.sent", "doc.marked_sent", "doc.converted", "doc.converted_to_bill",
@@ -246,6 +247,8 @@ _SYSTEM_EVENT_TYPES = frozenset({
     "payment_batch.recorded",
     "line_action.recorded",
     "sys.migration.applied",
+    "sys.older_stock.placed",
+    "sys.older_stock.corrected",
 })
 
 # metadata_.reason values that mark an event as a mechanical side-effect of a
@@ -271,7 +274,8 @@ _ORIGIN_EVENT_TYPES = frozenset({
     "item.transformed_from",
 })
 
-_SYSTEM_FIELDS = frozenset({"updated_at", "created_at"})
+# scan_runs is the scan bar's idempotency ledger, not something the user edited.
+_SYSTEM_FIELDS = frozenset({"updated_at", "created_at", SCAN_RUNS_FIELD})
 
 # Document totals that are computed from line_items + header fields (see _recalc_list_totals).
 # Editing an item's price or quantity recalculates these, but the user's action was the line
@@ -823,8 +827,7 @@ def format_timestamp(ts: str) -> str:
 
 def _is_vendor_doc(entry: dict) -> bool:
     """True when the entry's document is one the company pays (a bill, PO, ...)."""
-    from celerp_docs.doc_constants import VENDOR_DOC_TYPES
-    return str(entry.get("entity_doc_type") or "") in VENDOR_DOC_TYPES
+    return str(entry.get("entity_doc_type") or "") in SUPPLIER_DOC_TYPES
 
 
 def _event_display(entry: dict) -> tuple[str, str]:

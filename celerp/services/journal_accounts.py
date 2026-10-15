@@ -120,7 +120,7 @@ async def add_account(session: AsyncSession, company_id, code: str, name: str, a
     await chart.add_account(session, company_id, code=code, name=name, account_type=account_type)
 
 
-async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -> None:
+async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *, restored: bool = False) -> None:
     """Check every line's account and write its immutable role snapshot in place.
 
     A line that names roles was chosen for them: its account must be the role's
@@ -130,7 +130,9 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -
     every role whose target or scope holds its account; an explicit empty list stays
     deliberately unclassified. Before the company has posting roles at all (a company
     still being migrated), such a line is left without a snapshot, so readers classify
-    it by the scopes the company's roles are given later.
+    it by the scopes the company's roles are given later. A *restored* copy of an entry
+    (an unvoid) keeps each line's snapshot as the original recorded it, so a line that
+    recorded none stays without one, never classified by today's roles.
     """
     entries = [e for e in (data.get("entries") or []) if isinstance(e, dict) and e.get("account")]
     if not entries:
@@ -147,7 +149,7 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -
                 f"Account {code} is not in the chart of accounts.", code=code))
         roles = entry.get("account_roles")
         if roles is None:
-            if SCHEMA_KEY in settings:
+            if SCHEMA_KEY in settings and not restored:
                 entry["account_roles"] = roles_for_account(settings, code)
             continue
         for role in roles:

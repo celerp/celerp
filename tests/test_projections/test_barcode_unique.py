@@ -167,7 +167,7 @@ async def _company(factory, name):
 
 
 async def _resolve(factory, company_id, code):
-    from celerp_inventory.routes import resolve_item_by_code
+    from celerp_inventory.services import resolve_item_by_code
 
     async with factory() as s:
         return await resolve_item_by_code(s, company_id, code)

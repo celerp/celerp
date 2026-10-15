@@ -6,7 +6,12 @@ from __future__ import annotations
 import json
 import logging
 import time
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Callable
+
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -319,6 +324,156 @@ class DrainMiddleware:
             return
 
         await self.app(scope, receive, send)
+
+
+class OlderStockMiddleware:
+    """Run a write request once more after placing older stock it was refused for.
+
+    A request refused only because a lot it needs records no inventory account yet
+    (lot_origin.PLACEABLE_REFUSALS) has ended, rolled back, holding nothing. Its
+    company's stock is then placed the one way (lot_origin.place_unplaced_stock) in a
+    transaction of its own, and once none waits the request runs again, once, and its
+    answer is the one returned. Placing that cannot happen (a posting account or a
+    period lock holds it back, each with its own notice) returns the refusal as it was.
+    Only a writer marked lot_origin.rerun_after_placing runs again, as nothing it does
+    before such a refusal reaches outside the database; and not when it committed any
+    write before it was refused (_WRITES), so nothing it wrote is written twice. Any
+    other has its stock placed and its refusal returned. The company is the one the
+    request was authorised for (auth.get_auth_context)."""
+
+    _REFUSED = (409, 422)
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("method", "") not in _WRITE_METHODS:
+            await self.app(scope, receive, send)
+            return
+        body, more = [], True
+        while more:
+            message = await receive()
+            if message["type"] != "http.request":
+                return  # the client went away before sending the request
+            body.append(message.get("body", b""))
+            more = message.get("more_body", False)
+        body = b"".join(body)
+        token = _WRITES.set(writes := _Writes())
+        try:
+            held = await self._run(scope, body, receive, send)
+        finally:
+            _WRITES.reset(token)
+        if held is None:
+            return
+        company_id = (scope.get("state") or {}).get("company_id")
+        if (company_id is not None and _placeable(held) and await _placed(company_id) and not writes.committed
+                and _reruns(scope)):
+            await self._run(scope, body, receive, send, hold=False)
+            return
+        for message in held:
+            await send(message)
+
+    async def _run(self, scope: Scope, body: bytes, receive: Receive, send: Send, *,
+                   hold: bool = True) -> list[dict] | None:
+        """Run the request on ``body``. A refusal is kept and returned instead of sent
+        when ``hold``; anything else is sent as it comes and None returned."""
+        sent = False
+        held: list[dict] = []
+
+        async def replay() -> dict:
+            nonlocal sent
+            if sent:
+                return await receive()
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        async def keep(message: dict) -> None:
+            if held or (hold and message["type"] == "http.response.start" and message["status"] in self._REFUSED):
+                held.append(message)
+            else:
+                await send(message)
+
+        await self.app(scope, replay, keep)
+        return held or None
+
+
+@dataclass
+class _Writes:
+    """What a request run by OlderStockMiddleware wrote: the connections holding a write
+    not committed yet (by id), and whether any write was committed."""
+    pending: set[int] = field(default_factory=set)
+    committed: bool = False
+
+
+# Set while OlderStockMiddleware runs a request the first time. A statement other than
+# a read marks its connection, and that connection's commit marks the request as having
+# kept a write, whether through a session's objects, a text or Core statement, or a
+# connection of its own. A released savepoint is not a commit; a write inside one
+# rolled back still counts, which only ever keeps a request from running again. Only
+# the connection's identity is read, so a connection being invalidated is never touched.
+_WRITES: ContextVar[_Writes | None] = ContextVar("older_stock_writes", default=None)
+_READS = frozenset({"SELECT", "SHOW", "SAVEPOINT", "RELEASE", "ROLLBACK", "BEGIN", "COMMIT", "SET"})
+
+
+@event.listens_for(Engine, "begin")
+@event.listens_for(Engine, "rollback")
+def _discarded(conn) -> None:
+    if (writes := _WRITES.get()) is not None:
+        writes.pending.discard(id(conn))
+
+
+@event.listens_for(Engine, "after_cursor_execute")
+def _executed(conn, _cursor, statement: str, _parameters, _context, _executemany) -> None:
+    writes = _WRITES.get()
+    if writes is not None and (statement.split(None, 1) or ["SELECT"])[0].upper() not in _READS:
+        writes.pending.add(id(conn))
+
+
+@event.listens_for(Engine, "commit")
+def _committed(conn) -> None:
+    if (writes := _WRITES.get()) is not None and id(conn) in writes.pending:
+        writes.pending.discard(id(conn))
+        writes.committed = True
+
+
+def _reruns(scope: Scope) -> bool:
+    """Whether the request's writer may run again (lot_origin.rerun_after_placing)."""
+    from celerp.services.lot_origin import RERUN_AFTER_PLACING
+
+    return getattr(scope.get("endpoint"), RERUN_AFTER_PLACING, False)
+
+
+def _placeable(held: list[dict]) -> bool:
+    """Whether a held refusal is one placing older stock can lift."""
+    from celerp.services.lot_origin import PLACEABLE_REFUSALS
+
+    try:
+        detail = json.loads(b"".join(m.get("body", b"") for m in held[1:])).get("detail")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(detail, dict) and detail.get("message_key") in PLACEABLE_REFUSALS
+
+
+async def _placed(company_id) -> bool:
+    from celerp.services.lot_origin import place_unplaced_stock
+
+    async with get_session_ctx() as session:
+        await session.rollback()  # nothing of the refused request is kept
+        placed = await place_unplaced_stock(session, company_id)
+        await session.commit()
+    return placed
+
+
+async def notify_refused(company_id, roles: list[str]) -> None:
+    """A posting was refused because ``roles`` have no account that can take it. The
+    refused request has rolled back, so those who manage accounting are notified in a
+    transaction of its own (posting_readiness.notify_unmapped)."""
+    from celerp.services.posting_readiness import notify_unmapped
+
+    async with get_session_ctx() as session:
+        await session.rollback()
+        await notify_unmapped(session, company_id, roles)
+        await session.commit()
 
 
 # The anonymous liveness probes, matched exactly: the only routes an unfinished

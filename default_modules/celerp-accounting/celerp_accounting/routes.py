@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 from typing import Any
 
@@ -33,6 +33,7 @@ from celerp_accounting.chart_rules import (
     checked_account_code,
     checked_account_name,
     checked_account_type,
+    cash_accounts,
     checked_code_length,
     parent_problem,
     posting_targets,
@@ -44,6 +45,7 @@ from celerp_accounting.models import Account, BankAccount, BankStatementLine, Re
 from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, refusal
 from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
+from celerp.services.lot_origin import rerun_after_placing
 from celerp.services.attachments import (
     company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
 )
@@ -320,29 +322,21 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     created (e.g. first-run with no modules, then preset applied), and a deactivated
     company then works when it is reactivated. A chart seeded by an older release gets
     the accounts seeded since, where it is provably Celerp's own (_add_seeded_accounts).
-    Then every company's posting accounts are
-    reconciled with its chart (account_roles.reconcile_company), and a company left
-    without an account its workflows need gets one notice pointing at the fix. Stock from
-    before lots recorded their inventory account is then placed once, in one savepoint per
-    company and only once the company runs Accounting (until then its books are not
-    kept, so placing would strand its sold and archived stock): as opening stock when Accounting is being turned on now
-    (lot_origin.open_inventory_origins), otherwise by the upgrade of older books, which
-    also decides whether stock an older release archived is still on them
-    (lot_origin.normalize_legacy_inventory_origins). A company that fails to upgrade
-    keeps none of that work, is logged, and is retried on the next start. A company
+    Then every company's posting accounts are reconciled with its chart, a company left
+    without an account its workflows need gets one notice pointing at the fix, and its
+    stock recording no inventory account is placed (lot_origin.place_company_stock, the
+    same entry every writer bringing such stock in while Celerp runs uses): as opening
+    stock when Accounting is being turned on now, otherwise by the upgrade of older
+    books, and on every later start once a posting account or period lock holding it
+    back is fixed. A company that fails keeps none of that work, is logged, and is
+    retried on the next start. A company
     staged for a migration is left alone: its chart and posting accounts come from the
     imported books when the migration is finalized.
     """
-    from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, UNGUESSED_ROLES
+    from celerp.accounting_roles import UNGUESSED_ROLES
     from celerp.models.company import Company
-    from celerp.modules.registry import uses_module
     from celerp.services import migrations
-    from celerp.services.account_roles import current_settings, reconcile_company
-    from celerp.services.lot_origin import (
-        normalize_legacy_inventory_origins,
-        open_inventory_origins,
-    )
-    from celerp.services.posting_readiness import notify_unmapped
+    from celerp.services.lot_origin import place_company_stock
     from sqlalchemy import select as _select
 
     unseeded = set((await session.execute(
@@ -357,16 +351,7 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
             claim = UNGUESSED_ROLES
         else:
             claim = await _add_seeded_accounts(session, company_id)
-        if await reconcile_company(session, company_id, claim):
-            await notify_unmapped(session, company_id)
-        settings = await current_settings(session, company_id)
-        if INVENTORY_ORIGIN_KEY in settings or not uses_module(settings, "celerp-accounting"):
-            continue
-        place = open_inventory_origins if company_id in unseeded else normalize_legacy_inventory_origins
-        try:
-            await place(session, company_id)
-        except Exception:
-            logger.exception("Older stock of company %s was not placed; retrying on the next start", company_id)
+        await place_company_stock(session, company_id, claim=claim, opening=company_id in unseeded)
 
 
 def _account_to_dict(acc: Account) -> dict:
@@ -4236,28 +4221,6 @@ async def _get_recon_and_line(
 # Cash flow statement
 # ---------------------------------------------------------------------------
 
-def _cash_codes(accounts, banks, settings: dict) -> set[str]:
-    """The accounts that hold cash: every bank account, and every account at any
-    depth under the company's current cash and cash equivalents header, the header
-    included. A former header is not cash once the header has moved. Cycle-safe."""
-    codes = {b.chart_account_code for b in banks}
-    children: dict[str, list[str]] = {}
-    for a in accounts:
-        if a.parent_code:
-            children.setdefault(a.parent_code, []).append(a.code)
-    header = role_map(settings).get(AccountRole.CASH_AND_EQUIVALENTS.value)
-    stack = [header] if header else []
-    seen: set[str] = set()
-    while stack:
-        code = stack.pop()
-        if code in seen:
-            continue
-        seen.add(code)
-        codes.add(code)
-        stack.extend(children.get(code, ()))
-    return codes
-
-
 def _cash_flow_category(account_map: dict[str, Account], code: str) -> str:
     """The account's own section, else the nearest parent account's, else operating.
     Cycle-safe."""
@@ -4330,7 +4293,7 @@ async def cash_flow(
     banks = (
         await session.execute(select(BankAccount).where(BankAccount.company_id == company_id))
     ).scalars().all()
-    cash_codes = _cash_codes(accounts, banks, await current_settings(session, company_id))
+    cash_codes = cash_accounts(accounts, banks, await current_settings(session, company_id))
 
     base = await _base_currency(session, company_id)
     posted = await _je_rows(session, company_id)
@@ -4459,7 +4422,7 @@ class PostingAccountIn(BaseModel):
 async def _posting_accounts(session: AsyncSession, company_id) -> dict:
     from celerp.services.posting_readiness import panel
 
-    return await panel(session, company_id) or {"roles": [], "older_stock": {"lots": [], "candidates": []}}
+    return await panel(session, company_id) or {"roles": [], "older_stock": {"candidates": []}}
 
 
 @router.get("/posting-accounts")
@@ -4469,23 +4432,6 @@ async def get_posting_accounts(
     _: None = require_permission("manage_accounting"),
 ) -> dict:
     """Each posting role's account and whether it can take new postings."""
-    return await _posting_accounts(session, company_id)
-
-
-@router.put("/posting-accounts/older-stock/{item_id}")
-async def set_older_stock_posting_account(
-    item_id: str,
-    payload: PostingAccountIn,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    _: None = require_permission("manage_accounting"),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Record the inventory account of older stock that records none."""
-    from celerp.services.lot_origin import choose_lot_account
-
-    await choose_lot_account(session, company_id, item_id, payload.code, user.id)
-    await session.commit()
     return await _posting_accounts(session, company_id)
 
 
@@ -4499,12 +4445,143 @@ async def set_posting_account(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Point a role at another account for new postings. Balances already posted stay
-    where they are; the earlier account stays with the role for them."""
+    where they are; the earlier account stays with the role for them. Fixing Purchased
+    inventory or Retained earnings places older stock that waited on it at once, and
+    the notice of missing posting accounts follows what is still missing."""
     from celerp.services.account_roles import set_role
+    from celerp.services.lot_origin import place_for_posting_account
+    from celerp.services.posting_readiness import notify_unmapped
 
     await set_role(session, company_id, role, payload.code, user.id)
+    await notify_unmapped(session, company_id)
+    if role in ("inventory_purchased", "retained_earnings"):
+        await place_for_posting_account(session, company_id)
     await session.commit()
     return await _posting_accounts(session, company_id)
+
+
+class OlderStockMoveIn(BaseModel):
+    item_ids: list[str] = []
+    code: str = ""
+    key: str | None = None
+
+
+class OlderStockMoveAllIn(BaseModel):
+    account: str | None = None
+    q: str | None = None
+    selection: str = Field(default="", max_length=64)
+    code: str = ""
+    key: str | None = None
+
+
+class PlacementCorrectionIn(BaseModel):
+    placements: list[str] = []
+    kind: str = ""
+
+
+@router.get("/older-stock")
+async def get_older_stock(
+    account: str | None = None,
+    q: str | None = None,
+    lots_offset: int = Query(0, ge=0),
+    placements_offset: int = Query(0, ge=0),
+    moves_offset: int = Query(0, ge=0),
+    corrections_offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
+) -> dict:
+    """Older stock placed automatically: a page of its lots, placements, moves and
+    corrections, a summary per inventory account, and the move targets."""
+    from celerp.services.lot_origin import older_stock_view
+
+    offsets = {"lots": lots_offset, "placements": placements_offset, "moves": moves_offset,
+               "corrections": corrections_offset}
+    return await older_stock_view(session, company_id, account, q, offsets, limit)
+
+
+@router.post("/older-stock/move")
+@rerun_after_placing
+async def move_older_stock(
+    payload: OlderStockMoveIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Move older lots onto another inventory account, their value with them."""
+    from celerp.services.lot_origin import move_lot_accounts, older_stock_view
+
+    result = await move_lot_accounts(session, company_id, payload.item_ids, payload.code, payload.key, user.id)
+    await session.commit()
+    return {**await older_stock_view(session, company_id), "result": result}
+
+
+@router.post("/older-stock/move-all")
+async def move_all_older_stock(
+    payload: OlderStockMoveAllIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Move every older lot matching the Older stock filters (``account``, ``q``) onto
+    another inventory account as one move, ``selection`` being the fingerprint of the lots
+    the user confirmed."""
+    from celerp.services.lot_origin import move_matching_lots, older_stock_view
+
+    result = await move_matching_lots(session, company_id, payload.account, payload.q, payload.selection, payload.code,
+                                      payload.key, user.id)
+    await session.commit()
+    return {**await older_stock_view(session, company_id), "result": result}
+
+
+@router.post("/older-stock/moves/{move_id}/undo")
+async def undo_older_stock_move(
+    move_id: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Put the lots of one move back on the accounts they came from."""
+    from celerp.services.lot_origin import older_stock_view, undo_lot_move
+
+    await undo_lot_move(session, company_id, move_id, user.id)
+    await session.commit()
+    return await older_stock_view(session, company_id)
+
+
+@router.post("/older-stock/retry")
+async def retry_older_stock(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Try placing the older stock still awaiting an account again, after a failure."""
+    from celerp.services.lot_origin import older_stock_view, place_unplaced_stock
+
+    placed = await place_unplaced_stock(session, company_id)
+    await session.commit()
+    return {**await older_stock_view(session, company_id), "result": {"placed": placed}}
+
+
+@router.post("/older-stock/corrections")
+async def correct_older_stock(
+    payload: PlacementCorrectionIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Correct how placements treated their difference: book it against retained
+    earnings, or leave it unresolved."""
+    from celerp.services.lot_origin import correct_placements, older_stock_view
+
+    corrected = await correct_placements(session, company_id, payload.placements, payload.kind, user.id)
+    await session.commit()
+    return {**await older_stock_view(session, company_id), "result": {"corrected": corrected}}
 
 
 class CloseYearPayload(BaseModel):
@@ -4535,10 +4612,17 @@ async def set_period_lock(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Lock the books through ``lock_date``, or unlock them. Older stock a lock held back
+    is placed at once when the lock no longer covers today; placing never fails the
+    lock change (place_after_lock_change)."""
+    from celerp.services.lot_origin import place_after_lock_change
+
     company = await locked_company(session, company_id)
     if payload.lock_date:
         _require_iso_date(payload.lock_date, t("migration.lock_date"))
     write_period_lock(company, payload.lock_date, user.id)
+    await place_after_lock_change(session, company_id)
+    company = await locked_company(session, company_id)  # placing rolled back expires the row
     settings = company.settings
     await session.commit()
     return {

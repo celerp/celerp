@@ -44,6 +44,18 @@ def message_keys(notif: Notification) -> dict | None:
     a notice an earlier release stored without them; none for a notice shown as stored."""
     return notif.i18n or STORED_NOTICE_KEYS.get((notif.category, notif.title))
 
+
+def link_for(notif: Notification, settings: dict | None, role: str) -> str | None:
+    """The page a notice links a reader with ``role`` to. Settings > Accounting is only for
+    those who manage accounting, so anyone else is shown such a notice with no link."""
+    from celerp.accounting_roles import ACCOUNTING_SETTINGS_PATH
+    from celerp.services.permissions import role_has_permission
+
+    url = notif.action_url
+    if url and url.startswith(ACCOUNTING_SETTINGS_PATH) and not role_has_permission(settings, role, "manage_accounting"):
+        return None
+    return url
+
 # session.info key: events waiting for their transaction to commit, each with
 # the (possibly nested) transaction that wrote its row.
 _PENDING = "celerp_notifications_pending"
@@ -294,6 +306,17 @@ async def clear_every_company(session: AsyncSession, category: str, title: str) 
     condition holds now. Caller commits. Returns the number removed."""
     result = await session.execute(
         delete(Notification).where(Notification.category == category, Notification.title == title)
+    )
+    return result.rowcount
+
+
+async def clear_standing(session: AsyncSession, company_id: uuid.UUID, category: str, title: str) -> int:
+    """A company's condition (see notify_standing) no longer holds: its notice is
+    removed, so a notice that stands always means the condition holds now. Caller
+    commits. Returns the number removed."""
+    result = await session.execute(
+        delete(Notification).where(Notification.company_id == company_id, Notification.category == category,
+                                   Notification.title == title)
     )
     return result.rowcount
 

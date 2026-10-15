@@ -184,3 +184,53 @@ async def test_two_starts_upgrading_the_same_company_upgrade_it_once(committed_e
     assert len(recorded) == len(set(recorded)) and {held, sold} <= set(recorded)
     assert move.state["status"] == "posted"
     assert (await _net(committed_engine, cid, "1130-P"), await _net(committed_engine, cid, "1130-OB")) == (30.0, 0.0)
+
+
+async def test_two_starts_at_once_place_the_stock_once(committed_engine, own_client):
+    """An upgraded company whose older stock was never placed, with two servers starting
+    against the same database: the second waits for the first's placement, then finds
+    nothing left to place, so there is one entry, one notice and each lot placed once."""
+    import asyncio
+
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.notification import Notification
+    from celerp.services.account_roles import reconcile_company
+    from celerp.services.company_lock import locked_company
+    from celerp.services.lot_origin import RECORDED, place_older_stock
+
+    cid, tok, inv, held, sold = await _older_books(committed_engine, own_client)
+    async with maker(committed_engine)() as s:
+        found = await locked_company(s, cid)
+        found.settings = {**found.settings, "inventory_origin_schema": 1}
+        await s.commit()
+    async with maker(committed_engine)() as first, maker(committed_engine)() as second:
+        await reconcile_company(first, cid)
+        assert await place_older_stock(first, cid)
+
+        async def start():
+            await reconcile_company(second, cid)
+            placed = await place_older_stock(second, cid)
+            await second.commit()
+            return placed
+
+        other = asyncio.create_task(start())
+        await _until_blocked(committed_engine, other)
+        await first.commit()
+        assert not await asyncio.wait_for(other, timeout=30)
+
+    async with maker(committed_engine)() as s:
+        recorded = (await s.execute(select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == cid, LedgerEntry.event_type == RECORDED))).scalars().all()
+        notices = (await s.execute(select(Notification).where(
+            Notification.company_id == cid,
+            Notification.title == "Existing inventory is ready"))).scalars().all()
+    assert recorded.count(held) == 1 and recorded.count(sold) == 1
+    assert len(notices) == 1
+    entries = [k for k, v in (await _rows(committed_engine, cid, "journal_entry")).items()
+               if k.startswith("je:auto:older-stock-placed:") and v.get("status") == "posted"]
+    assert len(entries) == 1
+    items = await _rows(committed_engine, cid, "item")
+    assert items[held].get(_FIELD) == "1130-OB"
+    # 30 of stock on hand: 1130-OB carried 130 and 1130-P the -100 the older sale relieved,
+    # together the stock, so the 100 is moved across and nothing is booked against equity.
+    assert (await _net(committed_engine, cid, "1130-P"), await _net(committed_engine, cid, "1130-OB")) == (0.0, 30.0)

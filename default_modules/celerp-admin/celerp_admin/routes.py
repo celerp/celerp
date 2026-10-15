@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -43,6 +44,7 @@ from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.physical_codes import physical_code_conflicts
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 ALL_CHECKS = [
     "missing_jes",
@@ -64,6 +66,31 @@ ALL_CHECKS = [
 
 
 # --- Individual checks ---
+
+_UNEXPECTED_ERROR = (
+    "This could not be repaired because of an unexpected error, which is recorded in the "
+    "server log. The other repairs in this run were kept."
+)
+
+
+async def _repair_one(session: AsyncSession, detail: dict, label: str, emit) -> bool:
+    """Run one repair on its own savepoint: a refusal or an unexpected error is reported on
+    *detail* and undoes only that repair's writes, never the run's other repairs. An
+    unexpected error is logged with *label* and the exception, never shown in the reply."""
+    try:
+        async with session.begin_nested():
+            await emit()
+    except HTTPException as exc:
+        detail["blocked_reason"] = str(exc.detail)
+        return False
+    except ValueError as exc:
+        detail["blocked_reason"] = str(exc)
+        return False
+    except Exception:
+        logger.exception("Doctor could not repair %s", label)
+        detail["blocked_reason"] = _UNEXPECTED_ERROR
+        return False
+    return True
 
 async def _documents_with_posting_event(
     session: AsyncSession, company_id,
@@ -112,6 +139,14 @@ async def _documents_with_posting_event(
     return posted_by, unrecorded
 
 
+def _every_refusal_named(details: list[dict], limit: int = 50) -> list[dict]:
+    """A check's details as reported, in order: every one it refused to repair, however
+    many, and the first *limit* of the rest. A refusal is something the user has to act on,
+    so it is never cut off by the repairable ones listed before it."""
+    listed = {id(d) for d in [d for d in details if not d.get("blocked_reason")][:limit]}
+    return [d for d in details if d.get("blocked_reason") or id(d) in listed]
+
+
 async def _check_missing_jes(
     session: AsyncSession, company_id, user_id, *, fix: bool,
 ) -> dict:
@@ -137,9 +172,12 @@ async def _check_missing_jes(
     )).scalars().all())
 
     posted_by, _ = await _documents_with_posting_event(session, company_id)
-    from celerp.services.auto_je import imported_payment_indexes
+    from celerp.services.account_roles import current_settings
+    from celerp.events.engine import _check_period_lock
+    from celerp.services.auto_je import finalized_entry_day, imported_payment_indexes, refuse_unissuable_taxes
 
     imported_payments = await imported_payment_indexes(session, company_id)
+    settings = await current_settings(session, company_id)
 
     from celerp.models.company import Company
     from celerp.services.money import checked_exchange_rate, require_doc_rate
@@ -173,11 +211,51 @@ async def _check_missing_jes(
             )
         return None
 
+    def _tax_problem(state: dict) -> str | None:
+        try:
+            refuse_unissuable_taxes(settings, "invoice", state)
+        except HTTPException as exc:
+            return str(exc.detail)
+        return None
+
+    async def _blocked(detail: dict, state: dict, day, *, payment: dict | None = None) -> bool:
+        """The refusals posting this entry would meet (exchange rate, an invoice's taxes, a
+        locked period on the day it posts), read before posting so the dry run and the fix
+        name the same documents with the same reasons. Recorded on *detail*."""
+        problem = _rate_problem(state, payment)
+        if problem is None and detail["trigger"] == "finalize":
+            problem = _tax_problem(state)
+        if problem is None:
+            try:
+                await _check_period_lock(session, company_id, {"ts": day})
+            except HTTPException as exc:
+                problem = str(exc.detail)
+        if problem:
+            detail["blocked_reason"] = problem
+        return problem is not None
+
+    async def _repaired(detail: dict, emit) -> bool:
+        return await _repair_one(
+            session, detail, f"the {detail['trigger']} entry of document {detail['doc_id']}", emit,
+        )
+
+    def _waits_on_sale(detail: dict, sale: dict | None) -> bool:
+        """A payment entry clears the receivable its document's sale entry raises, so it is
+        held back while that sale entry is missing and refused in this run."""
+        if sale is None or not sale.get("blocked_reason"):
+            return False
+        detail["blocked_reason"] = (
+            f"Waits on the sale entry of {sale['doc_number']}, which could not be posted. "
+            "Resolve that first; this payment entry is repaired on the next run."
+        )
+        return True
+
     for doc in docs:
         state = doc.state
         doc_type = state.get("doc_type", "")
         status = state.get("status", "")
         entity_id = doc.entity_id
+        doc_number = str(state.get("doc_number") or state.get("ref_id") or entity_id)
         total = float(state.get("total", 0) or 0)
 
         if status in ("void", "draft", "converted", "expired") or total <= 0:
@@ -185,14 +263,13 @@ async def _check_missing_jes(
 
         if doc_type == "invoice":
             fin_key = je_idempotency_key(entity_id, "invoice.finalized", "c")
+            sale = None
             if fin_key not in existing_keys and entity_id in posted_by["invoice"]:
-                problem = _rate_problem(state)
-                detail = {"doc_id": entity_id, "trigger": "finalize", "total": total}
-                if problem:
-                    detail["blocked_reason"] = problem
+                detail = sale = {"doc_id": entity_id, "doc_number": doc_number, "trigger": "finalize", "total": total}
                 missing.append(detail)
-                if fix and not problem:
-                    await _emit_finalize_je(session, company_id, user_id, entity_id, state)
+                if not await _blocked(detail, state, finalized_entry_day(state)) and fix and await _repaired(
+                    detail, lambda: _emit_finalize_je(session, company_id, user_id, entity_id, state),
+                ):
                     existing_keys.add(fin_key)
                     fixed += 1
 
@@ -218,43 +295,41 @@ async def _check_missing_jes(
                     pay_key = je_idempotency_key(entity_id, f"invoice.paid:{idx}", "c")
                     if pay_key in existing_keys:
                         continue
-                    problem = _rate_problem(state, pay)
                     detail = {
                         "doc_id": entity_id,
+                        "doc_number": doc_number,
                         "trigger": "payment",
                         "amount": pay.get("amount"),
                         "payment_index": idx,
                     }
-                    if problem:
-                        detail["blocked_reason"] = problem
                     missing.append(detail)
-                    if fix and not problem:
-                        await _emit_payment_je(
-                            session, company_id, user_id, entity_id,
-                            float(pay.get("amount") or 0), state,
-                            payment_index=idx, payment=pay,
-                        )
+                    if not _waits_on_sale(detail, sale) \
+                            and not await _blocked(detail, state, _payment_day(state, pay), payment=pay) \
+                            and fix and await _repaired(detail, lambda: _emit_payment_je(
+                        session, company_id, user_id, entity_id,
+                        float(pay.get("amount") or 0), state,
+                        payment_index=idx, payment=pay,
+                    )):
                         existing_keys.add(pay_key)
                         fixed += 1
             elif not bank_pays and not (state.get("payments") or []) and not opening_paid:
                 amount_paid = float(state.get("amount_paid", 0) or 0)
                 agg_key = je_idempotency_key(entity_id, "invoice.paid:0", "c")
                 if amount_paid > 0 and agg_key not in existing_keys:
-                    problem = _rate_problem(state)
                     detail = {
                         "doc_id": entity_id,
+                        "doc_number": doc_number,
                         "trigger": "payment",
                         "amount": amount_paid,
                         "payment_index": 0,
                     }
-                    if problem:
-                        detail["blocked_reason"] = problem
                     missing.append(detail)
-                    if fix and not problem:
-                        await _emit_payment_je(
-                            session, company_id, user_id, entity_id,
-                            amount_paid, state, payment_index=0,
-                        )
+                    if not _waits_on_sale(detail, sale) \
+                            and not await _blocked(detail, state, _payment_day(state, None)) \
+                            and fix and await _repaired(detail, lambda: _emit_payment_je(
+                        session, company_id, user_id, entity_id,
+                        amount_paid, state, payment_index=0,
+                    )):
                         existing_keys.add(agg_key)
                         fixed += 1
 
@@ -263,7 +338,7 @@ async def _check_missing_jes(
         "found": len(missing),
         "fixed": fixed,
         "auto_fixable": not any(detail.get("blocked_reason") for detail in missing),
-        "details": missing[:50],
+        "details": _every_refusal_named(missing),
     }
 
 
@@ -319,27 +394,22 @@ async def _check_uncaused_recognition_jes(
             continue
         if not fix:
             continue
-        try:
-            async with session.begin_nested():
-                await emit_event(
-                    session, company_id=company_id, entity_id=je_id,
-                    entity_type="journal_entry", event_type="acc.journal_entry.voided",
-                    data=je_void_data("Doctor: no finalize or receipt on the document", je.state),
-                    actor_id=user_id, location_id=None, source="doctor",
-                    idempotency_key=f"doctor:void-uncaused:{je_id}",
-                    metadata_={"voided_by": "doctor", "doc_id": doc_id},
-                )
-        except HTTPException as exc:
-            detail["blocked_reason"] = str(exc.detail)
-            continue
-        fixed += 1
+        if await _repair_one(session, detail, f"entry {je_id} of document {doc_id}", lambda: emit_event(
+            session, company_id=company_id, entity_id=je_id,
+            entity_type="journal_entry", event_type="acc.journal_entry.voided",
+            data=je_void_data("Doctor: no finalize or receipt on the document", je.state),
+            actor_id=user_id, location_id=None, source="doctor",
+            idempotency_key=f"doctor:void-uncaused:{je_id}",
+            metadata_={"voided_by": "doctor", "doc_id": doc_id},
+        )):
+            fixed += 1
 
     return {
         "check": "uncaused_recognition_jes",
         "found": len(found),
         "fixed": fixed,
         "auto_fixable": not any(d.get("blocked_reason") for d in found),
-        "details": found[:50],
+        "details": _every_refusal_named(found),
     }
 
 
@@ -608,6 +678,15 @@ async def _emit_finalize_je(
     )
 
 
+def _payment_day(state: dict, payment: dict | None) -> str:
+    """The date a repaired payment entry posts on: the payment's own date, else the
+    document's issue or creation date, else today."""
+    from datetime import date
+
+    return str((payment or {}).get("payment_date") or state.get("issue_date") or state.get("created_at")
+               or date.today().isoformat())[:10]
+
+
 async def _emit_payment_je(
     session: AsyncSession,
     company_id,
@@ -634,7 +713,7 @@ async def _emit_payment_je(
         amount=amount, payment_index=payment_index,
         bank_account_code=payment.get("bank_account"),
         doc_type=state.get("doc_type", "invoice"),
-        payment_date=str(payment.get("payment_date") or state.get("issue_date") or state.get("created_at") or __import__("datetime").date.today().isoformat())[:10],
+        payment_date=_payment_day(state, payment),
         base_currency=base_currency,
         doc_rate=float(document_rate),
         settlement_rate=float(settlement_rate),
@@ -1048,8 +1127,10 @@ async def _check_stock_on_books(
     session: AsyncSession, company_id, user_id, *, fix: bool,
 ) -> dict:
     """Find stock the books do not carry: a lot on hand that records no inventory
-    account, and an inventory account whose balance differs from the stock recorded on
-    it (lot_origin.stock_off_books). Report-only: closing a gap needs the user to decide
+    account, an inventory account whose balance differs from the stock recorded on it,
+    lines on an inventory account that may or may not have been stock, to review, and a
+    difference an older-stock placement left on an account for the accountant
+    (lot_origin.stock_off_books). Report-only: closing a gap needs the user to decide
     where the value belongs."""
     from celerp.services.lot_origin import stock_off_books
 

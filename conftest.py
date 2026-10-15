@@ -528,16 +528,15 @@ def _reset_cloud_settings():
 @pytest.fixture(autouse=True)
 def _disable_rate_limits():
     from celerp.routers.auth import limiter as auth_limiter
+    from celerp.services.auth import password_attempts
 
-    app.state.limiter.enabled = False
-    app.state.limiter._storage.reset()
     auth_limiter.enabled = False
     auth_limiter._storage.reset()
+    password_attempts.reset()
     yield
-    app.state.limiter.enabled = False
-    app.state.limiter._storage.reset()
     auth_limiter.enabled = False
     auth_limiter._storage.reset()
+    password_attempts.reset()
 
 
 @pytest.fixture(autouse=True)

@@ -5,8 +5,12 @@
 One check shared by every stock-boundary test. Only the accounts lots are carried on
 count: the purchased and opening inventory accounts, every account that has served
 either. For each, the posted balance equals the value of the owned lots on hand
-(lot_origin.held_value) that record it. Clearing accounts that hold value not yet in
-a lot are not part of it.
+(lot_origin.held_value) that record it, less the cost finalized invoices recognized and
+have not shipped, plus the difference an older-stock placement recorded on it,
+unresolved, for the accountant (lot_origin.unresolved_differences). On an account
+holding lines that may or may not have been stock (lot_origin.uncertain_evidence) the
+books carry the stock when some reading of those lines does (lot_origin.unexplained).
+Clearing accounts that hold value not yet in a lot are not part of it.
 
 With Accounting on, every lot of the company's own that is on hand records one of
 those accounts, except the ones the caller names as unplaced (stock from another
@@ -32,7 +36,7 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.account_roles import scope_codes
-from celerp.services.lot_origin import held_value
+from celerp.services.lot_origin import held_value, uncertain_evidence, unexplained, unresolved_differences
 from celerp.services.money import round_money
 
 SAMPLE_STOCK_ENTRY = "je:auto:opening-stock:sample-stock:"
@@ -83,8 +87,9 @@ async def assert_books_carry_stock(session, company_id, *, unplaced=(),
     rows = list((await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type.in_(("item", "journal_entry"))))).scalars())
     lots = [r for r in rows if r.entity_type == "item"]
-    lines = [e for r in rows if r.entity_type == "journal_entry" and (r.state or {}).get("status") == "posted"
-             for e in r.state.get("entries") or []]
+    posted = [(r.entity_id, e) for r in rows if r.entity_type == "journal_entry"
+              and (r.state or {}).get("status") == "posted" for e in r.state.get("entries") or []]
+    lines = [e for _, e in posted]
     codes = {code for role in _LOT_ROLES for code in scope_codes(settings, role)}
     books = {code: round_money(sum((Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
                                     for e in lines if e.get("account") == code), Decimal("0")), currency)
@@ -113,7 +118,13 @@ async def assert_books_carry_stock(session, company_id, *, unplaced=(),
             held[code] -= round_money(amount, currency)  # sold on a finalized invoice, not yet shipped
     for code, amount in (in_transit or {}).items():
         held[code] = held.get(code, Decimal("0")) + round_money(Decimal(str(amount)), currency)
+    for code, amount in (await unresolved_differences(session, company_id)).items():
+        held[code] = held.get(code, Decimal("0")) + amount  # recorded by a placement, left for the accountant
     held = {code: round_money(v, currency) for code, v in held.items()}
+    for found in uncertain_evidence(settings, posted, sorted(codes), currency):
+        code = found["account"]
+        if not unexplained(settings, posted, {code}, books[code] - Decimal(str(found["amount"])) - held[code]):
+            held[code] = books[code]  # some reading of the uncertain lines carries the stock
     assert books == held, f"books {books} != stock recorded on them {held}"
     return books
 

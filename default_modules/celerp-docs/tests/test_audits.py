@@ -29,9 +29,10 @@ async def _location(client, t, name="Warehouse A") -> str:
     return r.json()["id"]
 
 
-async def _item(client, t, sku, *, loc, qty, barcode=None, cost_total=None, inventory_type="stocked") -> str:
+async def _item(client, t, sku, *, loc, qty, barcode=None, cost_total=None, inventory_type="stocked",
+                **fields) -> str:
     body = {"status": "available", "sku": sku, "name": sku, "quantity": qty, "sell_by": "piece", "location_id": loc,
-            "inventory_type": inventory_type}
+            "inventory_type": inventory_type, **fields}
     if barcode:
         body["barcode"] = barcode
     if cost_total is not None:
@@ -185,22 +186,22 @@ async def _quotation(client, t) -> str:
 @pytest.mark.asyncio
 async def test_scan_batch_resolves_in_one_inventory_load(client, monkeypatch):
     """A batch of N codes resolves against ONE inventory load, not one per code: scanning routes the
-    whole run through the batch resolver and never the per-code resolver (the N+1 that a 200-code run
-    would otherwise trigger). Barcode precedence and ambiguity are unchanged - the batch resolver is
+    whole run through one item index and never the per-code resolver (the N+1 that a 200-code run
+    would otherwise trigger). Barcode precedence and ambiguity are unchanged - the index resolves by
     the same rule, loaded once."""
-    import celerp_inventory.routes as inv
+    import celerp_inventory.services as inv
     calls = {"batch": 0, "single": 0}
-    real_batch, real_single = inv.resolve_items_by_codes, inv.resolve_item_by_code
+    real_batch, real_single = inv.load_item_index, inv.resolve_item_by_code
 
-    async def _batch(session, company_id, codes):
+    async def _batch(session, company_id):
         calls["batch"] += 1
-        return await real_batch(session, company_id, codes)
+        return await real_batch(session, company_id)
 
     async def _single(session, company_id, code):
         calls["single"] += 1
         return await real_single(session, company_id, code)
 
-    monkeypatch.setattr(inv, "resolve_items_by_codes", _batch)
+    monkeypatch.setattr(inv, "load_item_index", _batch)
     monkeypatch.setattr(inv, "resolve_item_by_code", _single)
 
     t = await _register(client)
@@ -223,19 +224,20 @@ async def test_scan_batch_resolves_in_one_inventory_load(client, monkeypatch):
 async def test_scan_duplicate_barcode_is_reported_not_silently_picked(client, monkeypatch):
     """A barcode present on more than one lot - only reachable for legacy data predating the
     per-company barcode unique index - is reported with the single duplicate-barcode message and
-    never silently checked off to one arbitrary lot. The batch resolver is patched to surface the
+    never silently checked off to one arbitrary lot. The item index is patched to surface the
     duplicate for one code; every other code resolves normally."""
-    import celerp_inventory.routes as inv
-    from celerp_inventory.routes import ResolveResult, resolve_items_by_codes as _real
+    import celerp_inventory.services as inv
+    from celerp_inventory.services import ResolveResult
+    real = inv.ItemIndex.resolve
 
-    async def _dup(session, company_id, codes):
-        base = await _real(session, company_id, codes)
+    def _dup(index, codes):
+        base = real(index, codes)
         got = base.get("880001")
         if got is not None and got.kind == "barcode":
             base["880001"] = ResolveResult("barcode", list(got.matches) * 2)  # legacy: same barcode, two lots
         return base
 
-    monkeypatch.setattr(inv, "resolve_items_by_codes", _dup)
+    monkeypatch.setattr(inv.ItemIndex, "resolve", _dup)
 
     t = await _register(client)
     loc = await _location(client, t)
@@ -413,7 +415,7 @@ async def test_audit_duplicate_sku_distinct_lots_survive_and_scan_binds_lot(clie
     rej = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "SH"})
     assert rej.status_code == 200 and rej.json()["scanned"] == 0
     assert rej.json()["failed"][0]["reason"] == "ambiguous_sku"
-    assert "sku" in rej.json()["failed"][0]["label"].lower()
+    assert rej.json()["failed"][0]["label"] == "SH: 2 pieces share this code - scan the piece's own barcode or tag"
 
     # Count each lot independently, then Adjust: two independent quantity changes.
     assert (await client.patch(f"/lists/{audit}/line/{a}", headers=_h(t), json={"counted_qty": 4})).status_code == 200
@@ -722,12 +724,13 @@ async def test_scan_list_barcode_ignores_merged_source(client, session):
 
 @pytest.mark.asyncio
 async def test_scan_list_dedups_same_barcode_in_one_batch(client):
-    """Defect B: the same barcode scanned twice within one batch adds a single line; the second
-    occurrence is reported as a `duplicate_scan` error, and other distinct items still add."""
+    """Defect B: the same lot that may not be split, scanned twice within one batch, adds a single
+    line; the second occurrence is reported as a `duplicate_scan` error, and other distinct items
+    still add."""
     t = await _register(client)
     loc = await _location(client, t)
-    await _item(client, t, "D1", loc=loc, qty=5, barcode="810001")
-    await _item(client, t, "D2", loc=loc, qty=5, barcode="810002")
+    await _item(client, t, "D1", loc=loc, qty=5, barcode="810001", allow_splitting=False)
+    await _item(client, t, "D2", loc=loc, qty=5, barcode="810002", allow_splitting=False)
     q = await _quotation(client, t)
 
     r = await client.post(f"/lists/{q}/scan", headers=_h(t),
@@ -745,11 +748,11 @@ async def test_scan_list_dedups_same_barcode_in_one_batch(client):
 
 @pytest.mark.asyncio
 async def test_scan_list_dedups_against_existing_line(client):
-    """Defect B: an item already on the list from a prior submit is not appended a second time when
-    scanned again; it is reported as `duplicate_scan` and the line count is unchanged."""
+    """Defect B: a lot that may not be split, already on the list from a prior submit, is not
+    appended a second time when scanned again; it is reported as `duplicate_scan` and the line count is unchanged."""
     t = await _register(client)
     loc = await _location(client, t)
-    await _item(client, t, "E1", loc=loc, qty=5, barcode="820001")
+    await _item(client, t, "E1", loc=loc, qty=5, barcode="820001", allow_splitting=False)
     q = await _quotation(client, t)
 
     r1 = await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": "820001"})
@@ -768,12 +771,12 @@ async def test_scan_list_dedups_against_existing_line(client):
 
 @pytest.mark.asyncio
 async def test_scan_list_never_two_lines_same_item_id(client):
-    """Defect B invariant: however a lot is scanned - repeated in a batch and again across submits -
-    the persisted lines never hold two entries for one item_id."""
+    """Defect B invariant: however a lot that may not be split is scanned - repeated in a batch and
+    again across submits - the persisted lines never hold two entries for one item_id."""
     t = await _register(client)
     loc = await _location(client, t)
-    await _item(client, t, "F1", loc=loc, qty=5, barcode="830001")
-    await _item(client, t, "F2", loc=loc, qty=5, barcode="830002")
+    await _item(client, t, "F1", loc=loc, qty=5, barcode="830001", allow_splitting=False)
+    await _item(client, t, "F2", loc=loc, qty=5, barcode="830002", allow_splitting=False)
     q = await _quotation(client, t)
 
     await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": "830001,830001,830002"})

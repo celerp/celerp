@@ -176,14 +176,34 @@ def _run_id(page) -> str:
 
 
 def _choose_posting_accounts(page) -> None:
-    """Pick the first account offered for each posting account still unchosen."""
-    for select in page.locator('select[name^="role."]').all():
+    """Pick an account for each posting account still unchosen, keeping stock and
+    everything else apart as a user would: an inventory role takes the account another
+    inventory role already uses, any other role the first account offered that is not
+    one of those."""
+    from celerp.accounting_roles import INVENTORY_VALUE_ROLES
+
+    stock_roles = {f"role.{r.value}" for r in INVENTORY_VALUE_ROLES}
+    selects = page.locator('select[name^="role."]').all()
+    pickers = page.locator('.combobox-wrap:has(input[type="hidden"][name^="role."])').all()
+    fields = selects + [p.locator('input[type="hidden"]') for p in pickers]
+    stock = {f.input_value() for f in fields if f.get_attribute("name") in stock_roles and f.input_value()}
+
+    def choice(name: str, values: list[str]) -> str:
+        if name in stock_roles:
+            return next((v for v in values if v in stock), values[0])
+        return next(v for v in values if v not in stock)
+
+    for select in selects:
         if not select.input_value():
-            select.select_option(index=1)
-    for picker in page.locator('.combobox-wrap:has(input[type="hidden"][name^="role."])').all():
-        if not picker.locator('input[type="hidden"]').input_value():
+            values = [v for v in select.locator("option").evaluate_all("els => els.map(e => e.value)") if v]
+            select.select_option(choice(select.get_attribute("name"), values))
+    for picker in pickers:
+        field = picker.locator('input[type="hidden"]')
+        if not field.input_value():
+            options = picker.locator(".combobox-option[data-value]").all()
+            pick = choice(field.get_attribute("name"), [o.get_attribute("data-value") for o in options])
             picker.locator(".combobox-input").click()
-            picker.locator(".combobox-option").first.click()
+            picker.locator(f'.combobox-option[data-value="{pick}"]').click()
 
 
 def _verify_and_finish(page, run_id: str, company_name: str) -> None:

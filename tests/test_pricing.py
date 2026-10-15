@@ -461,15 +461,15 @@ async def test_flip_factor_reprices_reads(client):
 # ---------------------------------------------------------------------------
 
 def test_scan_line_prices_derived_list():
-    from celerp_docs.routes import _scan_line_from_item
+    from celerp_docs.routes import _scan_line
 
     proj = SimpleNamespace(
         entity_id="item:scan",
         state={"sku": "S-1", "name": "Widget", "barcode": "123", "retail_price": 719, "quantity": 3},
     )
-    line = _scan_line_from_item(proj, "quotation", "Trade", price_config=(_CONFIG, "Retail", "USD"))
+    line = _scan_line(proj, 3, priced=True, price_list="Trade", price_config=(_CONFIG, "Retail", "USD"))
     assert line["unit_price"] == 505.0
-    line = _scan_line_from_item(proj, "quotation", "Retail", price_config=(_CONFIG, "Retail", "USD"))
+    line = _scan_line(proj, 3, priced=True, price_list="Retail", price_config=(_CONFIG, "Retail", "USD"))
     assert line["unit_price"] == 719.0
 
 

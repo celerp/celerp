@@ -17,6 +17,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS
+from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
 from celerp.services.money import round_rate
 
 # Price list names treated as cost (restricted to manager+ and never derivable).
@@ -24,6 +25,9 @@ COST_PRICE_LIST_NAMES: frozenset[str] = frozenset({"cost", "cost price", "landed
 
 # The list every company starts pointing at, for both the default and the base list.
 DEFAULT_PRICE_LIST_NAME: str = "Retail"
+
+# The cost list: its price is the item's cost_price.
+COST_PRICE_LIST_NAME: str = "Cost"
 
 # Read fallback for companies whose settings were never seeded. Includes Cost so
 # cost columns and valuation keep working before first settings access.
@@ -76,6 +80,14 @@ def price_keys_in(values: dict, price_lists: list[dict] = ()) -> set[str]:
     nested = values.get("attributes")
     items = list(values.items()) + (list(nested.items()) if isinstance(nested, dict) else [])
     return {k for k, v in items if v is not None and is_price_item_key(k, price_lists)}
+
+
+def line_price_list(doc_type: str | None, price_list: str | None) -> str:
+    """The list a line added to a document is priced from: a supplier document prices at cost
+    (resolve_price reads ``cost_price``), any other at the chosen list, else the default."""
+    if doc_type in SUPPLIER_DOC_TYPES:
+        return COST_PRICE_LIST_NAME
+    return price_list or DEFAULT_PRICE_LIST_NAME
 
 
 def is_cost_list_name(name: str) -> bool:

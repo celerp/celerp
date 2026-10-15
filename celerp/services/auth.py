@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import math
+import threading
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from ipaddress import ip_address, ip_network
 
 import bcrypt
 from fastapi import Depends, HTTPException, Request, status
@@ -30,6 +34,10 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 # refresh-token body (logout) read the header without 401ing when it is absent,
 # so a refresh-only credential can still be honored.
 oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+
+# The UI server calls this API over loopback on a visitor's behalf and names the visitor's
+# address in this header, so a rate limit counts that visitor rather than the UI itself.
+CALLER_HEADER = "X-Celerp-Caller"
 
 ROLE_LEVELS = {"viewer": 1, "operator": 2, "manager": 3, "admin": 4, "owner": 5}
 
@@ -89,6 +97,100 @@ def verify_password(plain: str, hashed: str) -> bool:
         return pwd_context.verify(plain, hashed)
     except (ValueError, TypeError):
         return False
+
+
+# Failed password checks slow the next try down, never shut anyone out: an account takes
+# FREE_ACCOUNT_FAILURES from every caller together and a caller FREE_CALLER_FAILURES across
+# every account, then each further failure doubles the wait from one second up to
+# MAX_WAIT_SECONDS. A key quiet for FORGET_AFTER_SECONDS starts again. A loopback caller
+# names no one visitor (the desktop user, Connect and any proxy on this machine all arrive
+# from it), so it has no budget of its own; the account's budget still holds.
+FREE_ACCOUNT_FAILURES = 5
+FREE_CALLER_FAILURES = 20
+MAX_WAIT_SECONDS = 300
+FORGET_AFTER_SECONDS = 3600
+_clock = time.monotonic
+
+
+@dataclass
+class _Tally:
+    free: int
+    failures: int = 0
+    last_failure: float = 0.0
+
+    def open_at(self) -> float:
+        """When the next attempt may start."""
+        if self.failures < self.free:
+            return self.last_failure
+        return self.last_failure + min(2 ** min(self.failures - self.free, 16), MAX_WAIT_SECONDS)
+
+
+class PasswordAttempts:
+    """Every password check, counted per account and per caller.
+
+    The API runs as one process (celerp.capacity), so the counts live in it, and a check is
+    admitted and counted as a failure in one step under one lock before the password is
+    read: of many attempts arriving at once only the ones the counts allow are checked.
+    The right password then takes its count back."""
+
+    def __init__(self) -> None:
+        self._tallies: dict[str, _Tally] = {}
+        self._lock = threading.Lock()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._tallies.clear()
+
+    def forget(self, email: str) -> None:
+        """Start the account's count again, as a new password does."""
+        with self._lock:
+            self._tallies.pop(_account(email), None)
+
+    def check(self, email: str, password: str, auth_hash: str | None, caller: str | None) -> bool:
+        """Whether *password* is the one *auth_hash* holds, as one attempt on the account
+        *email* names from *caller*; no hash never matches. 429 with Retry-After, and the
+        password left unread, while the account or the caller must wait."""
+        keys = [(_account(email), FREE_ACCOUNT_FAILURES)]
+        if caller and not _is_loopback(caller):
+            keys.append((f"caller|{caller}", FREE_CALLER_FAILURES))
+        now = _clock()
+        with self._lock:
+            tallies = [self._tally(key, free, now) for key, free in keys]
+            wait = max(tally.open_at() - now for tally in tallies)
+            if wait > 0:
+                seconds = math.ceil(wait)
+                raise HTTPException(
+                    status_code=429, headers={"Retry-After": str(seconds)},
+                    detail=t("auth.sign_ins_paused_one") if seconds == 1 else t("auth.sign_ins_paused", seconds=seconds))
+            for tally in tallies:
+                tally.failures += 1
+                tally.last_failure = now
+            if len(self._tallies) > 10_000:
+                self._sweep(now)
+        if not (auth_hash and verify_password(password, auth_hash)):
+            return False
+        with self._lock:
+            self._tallies.pop(keys[0][0], None)
+            if len(keys) > 1 and (tally := self._tallies.get(keys[1][0])):
+                tally.failures = max(tally.failures - 1, 0)
+        return True
+
+    def _tally(self, key: str, free: int, now: float) -> _Tally:
+        tally = self._tallies.get(key)
+        if tally is None or now - tally.last_failure >= FORGET_AFTER_SECONDS:
+            tally = self._tallies[key] = _Tally(free)
+        return tally
+
+    def _sweep(self, now: float) -> None:
+        for key in [k for k, v in self._tallies.items() if now - v.last_failure >= FORGET_AFTER_SECONDS]:
+            del self._tallies[key]
+
+
+def _account(email: str) -> str:
+    return f"account|{str(email or '').strip().lower()}"
+
+
+password_attempts = PasswordAttempts()
 
 
 def password_needs_rehash(hashed: str) -> bool:
@@ -269,6 +371,7 @@ async def get_auth_context(
     from celerp.services.permissions import authorize_request, end_request
     authority = authorize_request(session, ctx.company_id, ctx.user.id, ctx.role)
     session.info[SIGNED_TOKEN] = token
+    request.state.company_id = ctx.company_id  # the company a refused request places stock for (OlderStockMiddleware)
     try:
         yield ctx
     finally:
@@ -282,6 +385,35 @@ async def signed_request_context(session: AsyncSession) -> AuthContext | None:
     access token get_auth_context accepted; None when there is no such request."""
     token = session.info.get(SIGNED_TOKEN)
     return await validate_access_token(session, token) if isinstance(token, str) else None
+
+
+def _is_loopback(address: str) -> bool:
+    try:
+        return ip_address(address).is_loopback
+    except ValueError:
+        return False
+
+
+def _counted_as(address: str) -> str:
+    """The caller an address counts as: an IPv6 address by its /64, which one visitor holds
+    whole, so stepping through it is not a new caller each time. A loopback address stays
+    itself."""
+    try:
+        ip = ip_address(address)
+    except ValueError:
+        return address
+    ip = getattr(ip, "ipv4_mapped", None) or ip
+    if ip.version == 6 and not ip.is_loopback:
+        return str(ip_network(f"{ip}/64", strict=False))
+    return str(ip)
+
+
+def request_caller(request: Request) -> str:
+    """The caller a request is counted for. CALLER_HEADER counts only on a loopback request,
+    where it comes from the UI server, so no one reaching the API from elsewhere can name
+    an address of their choosing."""
+    host = request.client.host if request.client else ""
+    return _counted_as((request.headers.get(CALLER_HEADER) or host) if _is_loopback(host) else host)
 
 
 async def get_current_user(ctx: AuthContext = Depends(get_auth_context)) -> User:

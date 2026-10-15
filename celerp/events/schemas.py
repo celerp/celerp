@@ -359,8 +359,15 @@ class ItemCostAdjusted(BaseModel):
 
 class ItemInventoryAccountRecorded(BaseModel):
     # A lot from before lots recorded their inventory account: the account the upgrade
-    # placed it on, or the one the user picked for it. Only a lot with no account can take one.
+    # placed it on. Only a lot with no account can take one.
     inventory_account_code: str
+
+
+class ItemInventoryAccountMoved(BaseModel):
+    # Older stock placed automatically, moved to another inventory account (or back, when
+    # the move is undone). Applied only while the lot is still on ``from_account``.
+    inventory_account_code: str
+    from_account: str
 
 
 class ItemConsignorPayableRecorded(BaseModel):
@@ -1221,6 +1228,39 @@ class SysMigrationApplied(BaseModel):
     revision: str
 
 
+class SysOlderStockPlaced(BaseModel):
+    # One placement of older stock (lot_origin._place): the account its lots were placed
+    # on, what each inventory account held beyond its stock before (rooms), the value
+    # moved onto the account, recognized as opening stock or left unresolved, the cost
+    # invoices recognized on the lots before with no entry naming its account
+    # (provisional), and the journal entries that booked it.
+    placement: str
+    day: str
+    count: int
+    value: float
+    account: str
+    rooms: dict[str, float]
+    transferred: float
+    recognized: float
+    unresolved: float
+    provisional: float
+    classification: str
+    journal: list[str]
+
+
+class SysOlderStockCorrected(BaseModel):
+    # A correction of how a placement treated its difference (lot_origin.correct_placements):
+    # ``amount`` booked onto the books (off them when negative), and what the placement
+    # has recognized and left unresolved after it.
+    placement: str
+    kind: str
+    day: str
+    amount: float
+    recognized: float
+    unresolved: float
+    journal: str
+
+
 # Subscription schemas - open/permissive since subscription data is user-defined
 class SubCreated(BaseModel):
     model_config = {"extra": "allow"}
@@ -1379,6 +1419,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.produced": ItemProduced,
     "item.cost_adjusted": ItemCostAdjusted,
     "item.inventory_account.recorded": ItemInventoryAccountRecorded,
+    "item.inventory_account.moved": ItemInventoryAccountMoved,
     "item.consignor_payable.recorded": ItemConsignorPayableRecorded,
     "item.consignment.bought": ItemConsignmentBought,
     "item.inventory_on_books.recorded": ItemInventoryOnBooksRecorded,
@@ -1508,6 +1549,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "sys.api_key.revoked": SysApiKeyRevoked,
     "sys.backup.created": SysBackupCreated,
     "sys.migration.applied": SysMigrationApplied,
+    "sys.older_stock.placed": SysOlderStockPlaced,
+    "sys.older_stock.corrected": SysOlderStockCorrected,
 
     # Lists
     "list.created": ListCreated,

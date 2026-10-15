@@ -189,6 +189,13 @@ def shipped_elsewhere(by_doc: dict[str, list[str]]) -> dict:
                    went=went, docs=docs)
 
 
+def reserved_refusal(state: dict, sku: str) -> dict:
+    """The refusal for a lot reserved on another record, naming that record."""
+    owner = state.get("status_doc_number") or state.get("status_doc_id") or "another document"
+    return refusal("documents.lot_reserved_by", f"{sku}: reserved on {owner} - release it there first",
+                   code=sku, doc=owner)
+
+
 def memo_out_refusal(state: dict, sku: str) -> dict:
     """The refusal for a lot out on a memo other than the one this record may take it from,
     naming that memo when the lot carries its number."""
@@ -238,9 +245,7 @@ def assert_new_references_eligible(
         elif str(state.get("status") or "").lower() == "draft":
             errors.append(refusal("item.draft", f"{sku}: item is a draft - make it available first", sku=sku))
         elif claims_stock and state.get("status") == "reserved" and state.get("status_doc_id") != entity_id:
-            owner = state.get("status_doc_number") or state.get("status_doc_id") or "another document"
-            errors.append(refusal("documents.lot_reserved_by", f"{sku}: reserved on {owner} - release it there first",
-                                  code=sku, doc=owner))
+            errors.append(reserved_refusal(state, sku))
             conflicts.append({"entity_id": ident, "sku": sku, "doc_id": state.get("status_doc_id"),
                               "doc_number": state.get("status_doc_number"), "message": errors[-1]["message"]})
         elif claims_stock and out_on_another_memo(state, entity_id, source_memo_id):

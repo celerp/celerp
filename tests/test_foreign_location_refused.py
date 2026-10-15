@@ -245,3 +245,56 @@ async def test_manufacturing_run_at_another_company_location_is_refused(client, 
         "description": "Run", "inputs": [{"item_id": raw, "quantity": 1}],
         "output_item_id": made, "quantity": 1, "location_id": foreign}))
     assert await _events(session, auth, entity_type="mfg_order") == before
+
+
+# ---------------------------------------------------------------------------
+# Document ship-from location
+# ---------------------------------------------------------------------------
+
+SHIP_FROM_KEY = "location.ship_from_not_found"
+
+
+def _doc_record(n: str, loc: str) -> dict:
+    return {"entity_id": f"doc:IMP-{n}", "event_type": "doc.created", "source": "csv",
+            "idempotency_key": f"doc-imp-{n}-{uuid.uuid4().hex[:6]}",
+            "data": {"doc_type": "invoice", "status": "draft", "issue_date": "2026-10-01", "from_location_id": loc,
+                     "line_items": [{"description": "Stone", "quantity": 1, "unit_price": 10, "line_total": 10}]}}
+
+
+def _ship_from_refused(r, foreign: str) -> None:
+    """Refused naming the ship-from location, never echoing another company's id."""
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == SHIP_FROM_KEY, detail
+    assert "ship-from location" in detail["message"] and foreign not in detail["message"], detail
+
+
+async def test_doc_import_shipping_from_another_company_location_is_refused(client, session, auth):
+    foreign = await _foreign_location(session)
+    _ship_from_refused(await client.post("/docs/import", headers=auth["headers"], json=_doc_record("1", foreign)),
+                       foreign)
+    assert await _events(session, auth, entity_type="doc") == 0
+
+
+async def test_doc_batch_import_shipping_from_another_company_location_is_refused(client, session, auth):
+    foreign = await _foreign_location(session)
+    own = await _own_location(client, auth)
+    r = await client.post("/docs/import/batch", headers=auth["headers"], json={"records": [
+        _doc_record("2", foreign), _doc_record("3", own)]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["created"] == 1, body
+    assert any("doc:IMP-2" in e and "ship-from location" in e and foreign not in e for e in body["errors"]), body
+    session.expire_all()
+    assert await session.get(Projection, (auth["company_id"], "doc:IMP-2")) is None
+    assert (await session.get(Projection, (auth["company_id"], "doc:IMP-3"))).state["from_location_id"] == own
+
+
+async def test_doc_create_and_edit_shipping_from_another_company_location_are_refused(client, session, auth):
+    foreign = await _foreign_location(session)
+    h = auth["headers"]
+    _ship_from_refused(await client.post("/docs", headers=h, json={
+        "doc_type": "invoice", "from_location_id": foreign, "line_items": []}), foreign)
+    doc = (await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": []})).json()["id"]
+    _ship_from_refused(await client.patch(f"/docs/{doc}", headers=h, json={
+        "fields_changed": {"from_location_id": {"old": None, "new": foreign}}}), foreign)

@@ -45,6 +45,7 @@ def test_scanned_barcodes_stay_visible_and_print(page, ui_server, api):
         for bc in (bc_a, bc_b):
             page.locator("#scan-bar-input").fill(bc)
             page.locator("#scan-bar-input").press("Enter")
+            page.locator("#scan-bar-add").click()
             page.wait_for_selector(f'[data-name="barcode_display"]:has-text("{bc}")', timeout=8000)
 
         assert page.locator(f'[data-name="barcode_display"]:has-text("{bc_a}")').count() == 1

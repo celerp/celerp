@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Older stock on the posting-accounts tab reads cleanly on a laptop screen, and a
-notice that asks the user to act leads the bell and stands out."""
+"""Older stock placed at start reads cleanly on its tab on a laptop screen, moves in bulk
+and the move undoes; a notice that asks the user to act leads the bell and stands out."""
 from __future__ import annotations
 
 import base64
@@ -31,93 +31,85 @@ def _company_id(client) -> str:
     return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["company_id"]
 
 
-def _older_lot(client, sku: str, cost: float) -> str:
-    """A lot as an older release left it: its inventory account was never recorded."""
-    r = client.post("/items", json={"sku": sku, "name": "Older ring", "quantity": 1,
-                                    "sell_by": "piece", "status": "available", "cost_total": cost})
+def _older_stock(client, tag: str, costs: list[float]) -> list[str]:
+    """Lots brought in by the batch import, then left as an older release left them: no lot
+    records its inventory account, and no event records one."""
+    records = [{"entity_id": f"item:{uuid.uuid4()}", "event_type": "item.created", "source": "csv",
+                "idempotency_key": f"older:{uuid.uuid4()}",
+                "data": {"sku": f"OLD-{tag}-{i}", "name": "Older ring", "quantity": 1, "sell_by": "piece",
+                         "status": "available", "cost_total": cost}} for i, cost in enumerate(costs)]
+    r = client.post("/items/import/batch", json={"records": records})
     assert r.status_code == 200, r.text
-    item_id = r.json()["id"]
+    ids = [rec["entity_id"] for rec in records]
     _db("UPDATE projections SET state = (state::jsonb - 'inventory_account_code')::json"
-        " WHERE company_id = %s AND entity_id = %s", _company_id(client), item_id)
-    return item_id
+        " WHERE company_id = %s AND entity_id = ANY(%s)", _company_id(client), ids)
+    _db("DELETE FROM ledger WHERE company_id = %s AND entity_id = ANY(%s)"
+        " AND event_type = 'item.inventory_account.recorded'", _company_id(client), ids)
+    return ids
 
 
-def test_older_stock_reads_cleanly_at_laptop_width_and_asks_before_the_final_choice(
-        page, ui_server, fresh_company, tmp_path):
+def _start(client) -> None:
+    """What the next start does for the company: place its older stock. Run on its own
+    thread, since the page's sync driver holds this thread's event loop."""
+    import asyncio
+    import threading
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from celerp.services.lot_origin import place_older_stock
+
+    async def run():
+        engine = create_async_engine(os.environ["DATABASE_URL"])
+        try:
+            async with async_sessionmaker(engine, expire_on_commit=False)() as s:
+                placed = await place_older_stock(s, uuid.UUID(_company_id(client)))
+                await s.commit()
+                return placed
+        finally:
+            await engine.dispose()
+
+    placed: list[bool] = []
+    worker = threading.Thread(target=lambda: placed.append(asyncio.run(run())))
+    worker.start()
+    worker.join()
+    assert placed == [True]
+
+
+def test_placed_older_stock_moves_in_bulk_and_the_move_undoes(page, ui_server, fresh_company, tmp_path):
     from playwright.sync_api import expect
 
     tag = uuid.uuid4().hex[:6].upper()
-    _older_lot(fresh_company, f"OLD-{tag}", 260.0)
-    _older_lot(fresh_company, f"ZERO-{tag}", 0.0)
+    _older_stock(fresh_company, tag, [260.0, 40.0])
+    _start(fresh_company)
     page.set_viewport_size({"width": 1280, "height": 800})
-    page.goto(f"{ui_server}/settings/accounting?tab=posting-accounts", wait_until="domcontentloaded")
+    page.goto(f"{ui_server}/settings/accounting?tab=older-stock", wait_until="domcontentloaded")
 
-    table = page.locator("table.posting-accounts")
-    row = table.locator("tr", has_text=f"OLD-{tag}")
-    expect(row).to_have_count(1)
-    expect(table.locator("tr", has_text=f"ZERO-{tag}")).to_have_count(0)  # holds nothing
-    cells = row.locator("td")
-    assert cells.nth(0).inner_text().strip() == f"Older stock OLD-{tag} Older ring"
-    assert cells.nth(2).inner_text().strip() == "Valued at $260.00"
-    expect(page.locator("#older-stock-hint")).to_have_count(1)
-
+    table = page.locator("#older-stock-table")
+    expect(table.locator("tbody tr", has_text=f"OLD-{tag}")).to_have_count(2)
     # Nothing on the tab is cut off: the table fits its card and the page fits the window.
     fit = page.evaluate("""() => {
-        const wrap = document.querySelector('table.posting-accounts').closest('.table-scroll-wrap');
+        const wrap = document.querySelector('#older-stock-table').closest('.table-scroll-wrap');
         return {wrap: wrap.scrollWidth - wrap.clientWidth,
                 page: document.documentElement.scrollWidth - window.innerWidth};
     }""")
     assert fit == {"wrap": 0, "page": 0}, fit
     page.screenshot(path=str(tmp_path / "older-stock-1280.png"), full_page=True)
 
-    dialogs: list[str] = []
+    page.locator("#older-stock-table .bulk-select-all").check()
+    page.locator("#bulkbar-older-stock-table .bulk-action-select").select_option("move")
+    picker = page.locator("#bulkbar-older-stock-table .bulk-fields .combobox-wrap")
+    picker.locator(".combobox-input").fill("1130-P")
+    picker.locator('.combobox-option[data-value="1130-P"]').click()
+    page.locator("#bulkbar-older-stock-table .bulk-apply").click()
+    expect(page.locator("#older-stock-card")).to_contain_text("Moved 2 lots to 1130-P.")
+    rows = page.locator("#older-stock-table tbody tr", has_text=f"OLD-{tag}")
+    for i in range(2):
+        expect(rows.nth(i)).to_contain_text("1130-P")
 
-    def _dismiss(dialog):
-        dialogs.append(dialog.message)
-        dialog.dismiss()
-
-    page.on("dialog", _dismiss)
-    cells.nth(1).click()
-    picker = row.locator("[hx-patch]")
-    expect(picker).to_have_count(1)
-    picker.evaluate("""el => {
-        el.value = '1130-OB';
-        el.dispatchEvent(new Event('change', {bubbles: true}));
-    }""")
-    page.wait_for_timeout(300)
-    assert dialogs and f"OLD-{tag}" in dialogs[0], dialogs  # the final choice asks first
-    # Dismissed: nothing was recorded, the lot is still waiting for its account.
-    page.goto(f"{ui_server}/settings/accounting?tab=posting-accounts", wait_until="domcontentloaded")
-    expect(page.locator("table.posting-accounts tr", has_text=f"OLD-{tag}").locator("td").nth(2)) \
-        .to_have_text("Valued at $260.00")
-
-
-def test_a_refused_older_stock_choice_reads_in_german(page, ui_server, fresh_company):
-    from playwright.sync_api import expect
-
-    tag = uuid.uuid4().hex[:6].upper()
-    _older_lot(fresh_company, f"OLD-{tag}", 260.0)
-    host = ui_server.split("//", 1)[1].split(":", 1)[0]
-    page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
-    try:
-        page.set_viewport_size({"width": 1280, "height": 800})
-        page.goto(f"{ui_server}/settings/accounting?tab=posting-accounts", wait_until="domcontentloaded")
-        row = page.locator("table.posting-accounts tr", has_text=f"OLD-{tag}")
-        expect(row).to_have_count(1)
-        page.on("dialog", lambda dialog: dialog.accept())
-        row.locator("td").nth(1).click()
-        picker = row.locator("[hx-patch]")
-        expect(picker).to_have_count(1)
-        picker.evaluate("""el => {
-            el.value = '1130-P';
-            el.dispatchEvent(new Event('change', {bubbles: true}));
-        }""")
-        refusal = page.locator("table.posting-accounts tr", has_text=f"OLD-{tag}")
-        expect(refusal).to_contain_text("Konto 1130-P hält den Wert dieses Bestands")
-        expect(refusal).to_contain_text("Wählen Sie 1130-OB.")
-        assert "does not hold" not in refusal.inner_text()
-    finally:
-        page.context.clear_cookies()
+    page.locator("#older-stock-moves button", has_text="Undo").first.click()
+    for i in range(2):
+        expect(page.locator("#older-stock-table tbody tr", has_text=f"OLD-{tag}").nth(i)).to_contain_text(
+            "1130-OB")
 
 
 def test_a_notice_asking_for_action_leads_the_bell_and_stands_out(page, ui_server, fresh_company):

@@ -3,6 +3,7 @@
 """Shared constants for the docs module."""
 
 from celerp.services.doc_balance import MEMO_LIVE_STATUSES
+from celerp.services.list_behavior import SCAN_RUNS_FIELD
 
 # Per-doc-type allowlist: maps doc_type → set of statuses where fulfill-lines is permitted.
 # Only doc types listed here support the fulfill-lines / revert-lines endpoints.
@@ -76,11 +77,6 @@ SALES_PRICED_DOC_TYPES: frozenset[str] = frozenset({
     "invoice", "proforma", "quotation", "credit_note", "memo", "subscription_invoice",
 })
 
-# Purchase-side document types: their contact is a vendor (vendor or both), every
-# other document's contact is a customer (customer or both).
-VENDOR_DOC_TYPES: frozenset[str] = frozenset({"purchase_order", "bill", "consignment_in", "subscription_po",
-                                              "debit_note"})
-
 # Older records named their counterparty customer_id/customer_name (transfers: receiver).
 # Writes take them as the contact fields, and replay folds stored ones the same way.
 LEGACY_CONTACT_FIELDS: dict[str, str] = {
@@ -88,7 +84,7 @@ LEGACY_CONTACT_FIELDS: dict[str, str] = {
 }
 
 # State that only lifecycle operations write: finalize, send, payment, credit,
-# receive, fulfil, convert, close and void, plus the record identity the ledger assigns.
+# receive, fulfil, convert, close, void and scan, plus the record identity the ledger assigns.
 # Ordinary creation never carries any of it, since a new document or list is an
 # unpaid draft, and import-upsert never rewrites it. Only the snapshot import
 # routes bring in an issued record, behind their own permission checks.
@@ -100,7 +96,7 @@ LIFECYCLE_OWNED_FIELDS: frozenset[str] = frozenset({
     "converted_to", "converted_to_type", "source_po_ref", "source_proforma_ref", "source_memo_id", "linked",
     "result", "close_reason", "void_reason", "revert_count", "files",
     "pre_close_status", "pre_void_status", "pre_void_fulfillment", "pre_receipt_status", "pre_convert_status",
-    "entity_type", "company_id", "doc_number",
+    "entity_type", "company_id", "doc_number", SCAN_RUNS_FIELD,
 })
 
 

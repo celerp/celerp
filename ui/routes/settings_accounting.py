@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
@@ -12,12 +14,15 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.components.icons import import_icon
 from ui.api_client import APIError
-from ui.components.shell import base_shell, flash, page_header, page_title
+from ui.components.shell import base_shell, bug_report_url, flash, page_header, page_title
 from celerp.accounting_roles import account_label
+from celerp.services.lot_origin import OLDER_STOCK_PATH
 from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
-from ui.components.table import EMPTY, add_new_option, searchable_select, display_enum, fmt_money
+from ui.components.table import (EMPTY, add_new_option, bulk_toolbar, searchable_select, display_enum, fmt_money,
+                                 server_pager)
 
-from ui.components.posting_accounts import account_picker, distinct_name
+from ui.components.posting_accounts import account_picker
+from ui.components.operation_key import operation_key_attrs, operation_key_input, required_operation_key
 from ui.routes.accounting_import import ACCOUNT_TYPES
 
 # The cash flow sections an account may be pinned to. The accounting API owns this
@@ -45,6 +50,7 @@ def _accounting_settings_tabs(active: str) -> FT:
         ("rules", t("page.reconciliation_rules")),
         ("period-lock", t("page.period_lock")),
         ("posting-accounts", t("posting.tab")),
+        ("older-stock", t("older_stock.tab")),
     ]
     return Div(
         *[
@@ -302,9 +308,6 @@ def _cash_flow_edit_cell(a: dict) -> FT:
     )
 
 
-# Older stock with no inventory account edits through the same routes
-# as a role, keyed "older-stock:<item id>".
-_OLDER_STOCK = "older-stock:"
 _POSTING_BADGE = {"ready": "active", "unused": "inactive"}
 
 
@@ -319,11 +322,9 @@ def _posting_display_cell(key: str, account: dict | None, error: str | None = No
     )
 
 
-def _posting_edit_cell(key: str, candidates: list[dict], code: str | None, label: str,
-                       confirm: str | None = None) -> FT:
+def _posting_edit_cell(key: str, candidates: list[dict], code: str | None, label: str) -> FT:
     """The picker in place of the account. A change saves and swaps in the updated
-    row, after ``confirm`` when the choice is final; Escape puts the display cell back
-    without saving."""
+    row; Escape puts the display cell back without saving."""
     restore_url = f"/settings/accounting/posting-accounts/{key}/display"
     esc_js = (
         f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
@@ -333,8 +334,7 @@ def _posting_edit_cell(key: str, candidates: list[dict], code: str | None, label
         Div(
             account_picker("value", candidates, value=code or "", aria_label=label,
                            hx_patch=f"/settings/accounting/posting-accounts/{key}",
-                           hx_target="closest tr", hx_swap="outerHTML", hx_trigger="change", autofocus=True,
-                           hx_confirm=confirm),
+                           hx_target="closest tr", hx_swap="outerHTML", hx_trigger="change", autofocus=True),
             cls="cell-input-wrap", onkeydown=esc_js,
         ),
         cls="cell cell--editing",
@@ -353,55 +353,362 @@ def _posting_role_row(row: dict, error: str | None = None) -> FT:
     )
 
 
-def _older_lot(data: dict, key: str) -> dict | None:
-    item_id = key.removeprefix(_OLDER_STOCK)
-    return next((lot for lot in (data.get("older_stock") or {}).get("lots", []) if lot["item_id"] == item_id), None)
-
-
-def _older_lot_label(lot: dict) -> str:
-    """An older lot by its SKU, and its name when that says something more."""
-    return t("posting.older_stock", sku=lot["sku"], name=distinct_name(lot["sku"], lot["name"])).strip()
-
-
-def _older_stock_row(lot: dict, currency: str, error: str | None = None, recorded: dict | None = None) -> FT:
-    """One older lot with no inventory account. Once its account is chosen the
-    row shows it and is no longer editable: the lot's cost then moves through that
-    account, and moving the lot to another account later would leave its value behind."""
-    key = f"{_OLDER_STOCK}{lot['item_id']}"
-    return Tr(
-        Td(_older_lot_label(lot)),
-        Td(Span(account_label(recorded) or EMPTY)) if recorded
-        else _posting_display_cell(key, None, error),
-        Td(P(t("posting.older_stock_recorded") if recorded
-             else t("posting.older_stock_value", value=fmt_money(lot["value"], currency)), cls="text-muted")),
-        Td(EMPTY),
-    )
-
-
 def _posting_row(data: dict, key: str, error: str | None = None) -> FT | None:
-    if key.startswith(_OLDER_STOCK):
-        lot = _older_lot(data, key)
-        return _older_stock_row(lot, (data.get("older_stock") or {}).get("currency"), error) if lot else None
     row = next((r for r in data.get("roles", []) if r["role"] == key), None)
     return _posting_role_row(row, error) if row else None
 
 
 def _posting_accounts_tab(data: dict) -> FT:
-    older = data.get("older_stock") or {}
-    lots = older.get("lots", [])
     return Div(
         H3(t("posting.tab"), cls="section-title"),
         P(t("posting.panel_hint"), cls="text-muted mb-md"),
         Div(Table(
             Thead(Tr(Th(t("posting.col_role")), Th(t("posting.col_account")), Th(t("th.status")),
                      Th(t("posting.col_earlier")))),
-            Tbody(*[_posting_role_row(r) for r in data.get("roles", [])],
-                  *[_older_stock_row(lot, older.get("currency")) for lot in lots]),
+            Tbody(*[_posting_role_row(r) for r in data.get("roles", [])]),
             cls="data-table posting-accounts",
         ), cls="table-scroll-wrap"),
-        P(t("posting.older_stock_hint"), cls="text-muted mt-sm", id="older-stock-hint") if lots else None,
         cls="settings-card",
     )
+
+
+_OLDER_STOCK_URL = "/settings/accounting/older-stock"
+# The lists GET /accounting/older-stock pages, each from its own ``<name>_offset``.
+_OLDER_STOCK_PAGES = ("lots", "placements", "moves", "corrections")
+_OLDER_STOCK_MAX_PAGE = 500
+# Above this many accounts a choice of account is searchable (GDR 2i).
+_SEARCHABLE_AFTER = 10
+
+
+def _older_stock_filters(filters: dict, accounts: list[str]) -> FT:
+    """The account and SKU/name filters, passed in the URL (GDR 2m)."""
+    options = [("", t("older_stock.all_accounts"))] + [(a, a) for a in accounts]
+    account = filters.get("account", "")
+    picker = (searchable_select("account", options, value=account, aria_label=t("older_stock.col_account"))
+              if len(options) > _SEARCHABLE_AFTER else
+              Select(*[Option(label, value=v, selected=v == account) for v, label in options],
+                     name="account", cls="form-input", aria_label=t("older_stock.col_account")))
+    return Form(
+        Input(type="hidden", name="tab", value="older-stock"),
+        picker,
+        Input(type="search", name="q", value=filters.get("q", ""), placeholder=t("older_stock.search"),
+              cls="form-input", onkeydown="if(event.key==='Escape'){this.value='';this.blur();}"),
+        Button(t("btn.apply"), type="submit", cls="btn btn--secondary btn--sm"),
+        method="get", action="/settings/accounting", cls="filter-bar",
+    )
+
+
+def _older_lot_row(lot: dict, currency: str) -> FT:
+    return Tr(
+        Td(Input(type="checkbox", cls="bulk-select", name="selected", value=lot["item_id"]), cls="col-checkbox"),
+        Td(lot["sku"] or EMPTY),
+        Td(lot["name"] or EMPTY),
+        Td(lot["account"] or EMPTY),
+        Td(fmt_money(lot["value"], currency), cls="cell--number"),
+        cls="data-row",
+    )
+
+
+def _move_target(view: dict, **attrs) -> FT:
+    """The account picker for a move: the accounts the move accepts (``targets``)."""
+    return searchable_select("code", [(c["code"], account_label(c)) for c in view.get("targets", [])],
+                             placeholder=t("posting.choose"), aria_label=t("older_stock.move_to"), **attrs)
+
+
+def _move_all_form(view: dict, filters: dict) -> FT | None:
+    """Move every lot matching the filters, on every page, as one move: the button states
+    how many and their value, and asks before moving. The selection's fingerprint rides
+    along so the server refuses if the lots matching differ by then."""
+    matching = view.get("matching") or {}
+    n = int(matching.get("count") or 0)
+    if not n:
+        return None
+    value = fmt_money(matching.get("value") or 0, view.get("currency"))
+    return Form(
+        _move_target(view),
+        Input(type="hidden", name="selection", value=matching.get("selection") or ""),
+        operation_key_input(),
+        Button(t("older_stock.move_all", n=n, value=value), type="submit", cls="btn btn--sm btn--secondary"),
+        id="older-stock-move-all", cls="filter-bar",
+        hx_confirm=t("older_stock.move_all_confirm", n=n, value=value),
+        hx_post=_older_stock_url(filters, "/move-all"), hx_target="#older-stock-card", hx_swap="outerHTML",
+    )
+
+
+def _older_stock_url(filters: dict, path: str = "", **changes) -> str:
+    """An Older stock URL keeping the filters and pages shown, with ``changes`` applied:
+    the tab itself, or an action at ``path`` whose answer re-renders the same view."""
+    from urllib.parse import urlencode
+
+    query = urlencode({k: v for k, v in {**filters, **changes}.items() if v not in ("", None)})
+    base = f"{_OLDER_STOCK_URL}{path}" if path else OLDER_STOCK_PATH
+    return base + ("&" if "?" in base else "?") + query if query else base
+
+
+def _money(value, currency: str) -> FT | str:
+    return fmt_money(value, currency) if value else EMPTY
+
+
+def _correction_url(filters: dict, kind: str) -> str:
+    return _older_stock_url(filters, "/corrections", kind=kind)
+
+
+def _correction(pid: str, kind: str, label: str, filters: dict, confirm: str | None = None) -> FT:
+    return Button(label, type="button", cls="btn btn--xs btn--secondary",
+                  hx_post=_correction_url(filters, kind), hx_vals=json.dumps({"selected": pid}),
+                  hx_target="#older-stock-card", hx_swap="outerHTML", hx_confirm=confirm)
+
+
+def _retained(view: dict) -> str:
+    """The account a write-off posts to, as users read it (the role while it is unmapped)."""
+    return account_label(view.get("retained")) or role_label("retained_earnings", "Retained earnings")
+
+
+def _uncertain_text(found: dict, currency: str | None) -> str:
+    """Lines on an account that may or may not have been stock: the account, their
+    amount and the entries holding them (lot_origin.uncertain_evidence)."""
+    return t("older_stock.open.uncertain", account=found["account"], amount=fmt_money(found["amount"], currency),
+             entries=", ".join(found["entries"]))
+
+
+def _placement_row(p: dict, currency: str, filters: dict, retained: str) -> FT:
+    """A placement: its classification, what it transferred between accounts, recognized as
+    opening stock and left unresolved, the journal entries it posted, and the correction
+    each difference allows (lot_origin.correct_placements). A surplus stays open as a plain
+    line with one explicit write-off, and a shortfall is booked the same way, each
+    confirmed naming the account it posts to and undone in one click. Lines that may or
+    may not have been stock are shown as evidence to review, with nothing to book."""
+    surplus = fmt_money(p["unresolved"], currency) if p["unresolved"] > 0 else None
+    actions = [Div(_uncertain_text(u, currency), cls="text-muted") for u in p.get("uncertain") or []] \
+        + ([Div(t("older_stock.surplus", amount=surplus)),
+            _correction(p["pid"], "recognize", t("older_stock.write_off"), filters,
+                        t("older_stock.write_off_confirm", amount=surplus, account=retained))] if surplus else []) \
+        + ([_correction(p["pid"], "recognize", t("older_stock.book_difference"), filters,
+                        t("older_stock.book_difference_confirm", amount=fmt_money(-p["unresolved"], currency),
+                          account=retained))]
+           if p["unresolved"] < 0 else []) \
+        + ([_correction(p["pid"], "unresolve", t("older_stock.leave_unresolved"), filters)]
+           if p["recognized"] > 0 else []) \
+        + ([_correction(p["pid"], "unresolve", t("older_stock.undo_write_off"), filters)]
+           if p["recognized"] < 0 else [])
+    return Tr(
+        Td(Input(type="checkbox", cls="bulk-select", name="selected", value=p["pid"]), cls="col-checkbox"),
+        Td(p["day"], cls="cell--center"),
+        Td(str(p["count"]), cls="cell--number"),
+        Td(p["account"] or EMPTY),
+        Td(display_enum(p["classification"], "older_stock_classification") if p.get("classification") else EMPTY),
+        Td(_money(p["transferred"], currency), cls="cell--number"),
+        Td(_money(p["recognized"], currency), cls="cell--number"),
+        Td(_money(p["unresolved"], currency), cls="cell--number"),
+        Td(*([Div(j, cls="cell--mono") for j in p["journal"]] or [EMPTY])),
+        Td(*(actions or [EMPTY]), cls="cell--actions"),
+        cls="data-row",
+    )
+
+
+def _summary_row(s: dict, currency: str) -> FT:
+    return Tr(
+        Td(s["account"]),
+        Td(str(s["lots"]), cls="cell--number"),
+        Td(_money(s["value"], currency), cls="cell--number"),
+        Td(_money(s["transferred"], currency), cls="cell--number"),
+        Td(_money(s["recognized"], currency), cls="cell--number"),
+        Td(_money(s["unresolved"], currency), cls="cell--number"),
+    )
+
+
+def _correction_row(c: dict, currency: str) -> FT:
+    return Tr(
+        Td(c["day"], cls="cell--center"),
+        Td(t(f"older_stock.kind.{c['kind']}")),
+        Td(c.get("account") or EMPTY),
+        Td(fmt_money(c["amount"], currency), cls="cell--number"),
+        Td(c["journal"], cls="cell--mono"),
+        Td(c.get("actor_name") or EMPTY),
+    )
+
+
+def _move_row(m: dict, currency: str, filters: dict) -> FT:
+    """A move, undoable until a later move takes one of its lots elsewhere."""
+    if m.get("undo_of"):
+        action = Span(t("older_stock.undo_of"), cls="text-muted")
+    elif m["undone"]:
+        action = Span(t("older_stock.undone"), cls="text-muted")
+    else:
+        action = Button(t("btn.undo"), type="button", cls="btn btn--xs btn--secondary",
+                        hx_post=_older_stock_url(filters, f"/moves/{m['move_id']}/undo"),
+                        hx_target="#older-stock-card", hx_swap="outerHTML")
+    return Tr(
+        Td(m["day"], cls="cell--center"),
+        Td(str(m["count"]), cls="cell--number"),
+        Td(m["code"] or EMPTY),
+        Td(fmt_money(m["value"], currency), cls="cell--number"),
+        Td(action, cls="cell--actions"),
+    )
+
+
+_RECONCILIATION_BANNER = {"action": "error-banner", "review": "info-banner", "reconciled": "success-banner"}
+
+
+def _reconciliation_summary(rec: dict | None, currency: str | None) -> FT | None:
+    """Where the older stock stands with the books (lot_origin._reconciliation): the state,
+    why stock waits with a link to the setting to fix, or each open difference with the
+    way to review it in the placements below."""
+    if not rec:
+        return None
+    state = rec["state"]
+    reasons = [Li(refusal_text({"message": "", "message_key": r.get("body", ""), "params": r.get("params") or {}}),
+                  " ", A(t("older_stock.state.fix"), href=r["action_url"])
+                  if r.get("action_url") not in (None, OLDER_STOCK_PATH) else None)
+               for r in rec.get("reasons") or []]
+    opened = [Li(_uncertain_text(o, currency) if o["kind"] == "uncertain" else
+                 t(f"older_stock.open.{o['kind']}", account=o["account"], amount=fmt_money(o["amount"], currency),
+                   **{k: fmt_money(o[k], currency) for k in ("books", "stock") if k in o}))
+              for o in rec.get("open") or []]
+    return Div(
+        H4(t(f"older_stock.state.{state}")),
+        P(t(f"older_stock.state.{state}_hint", n=rec.get("waiting") or 0)),
+        Ul(*reasons, *opened) if reasons or opened else None,
+        A(t("older_stock.state.review_placements"), href="#older-stock-placements", cls="btn btn--sm btn--secondary")
+        if state == "review" else None,
+        cls=f"{_RECONCILIATION_BANNER[state]} mb-md", id="older-stock-reconciliation",
+    )
+
+
+def _placement_failure(failed: dict | None) -> FT | None:
+    """A standing failure to place older stock: what it means, Try again, and a bug
+    report pre-filled with the kind of error only."""
+    if not failed:
+        return None
+    report = bug_report_url(area="Accounting",
+                            current=f"Older stock could not be placed ({failed.get('error') or 'unknown error'}).")
+    return Div(
+        H4(t("notice.older_stock_failed.title")),
+        P(t("older_stock.failed")),
+        Div(Button(t("btn.retry"), type="button", cls="btn btn--sm btn--primary",
+                   hx_post=f"{_OLDER_STOCK_URL}/retry", hx_target="#older-stock-card", hx_swap="outerHTML"),
+            A(t("nav.report_bug"), href=report, target="_blank", rel="noopener", cls="btn btn--sm btn--secondary"),
+            cls="form-actions"),
+        cls="error-banner mb-md",
+    )
+
+
+def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = "success") -> FT:
+    """Settings > Accounting > Older stock: each inventory account with its lots and what
+    placements transferred, recognized and left unresolved; the lots placed automatically
+    with a bulk move to another inventory account; each placement with its classification,
+    journal entries and correction, one at a time or in bulk; every move; and every
+    correction with who made it. Newest first, each list paged on its own."""
+    currency = view.get("currency")
+    lots, placements, moves = view.get("lots", []), view.get("placements", []), view.get("moves", [])
+    summary, corrections = view.get("summary", []), view.get("corrections", [])
+    totals, limit = view.get("totals", {}), view.get("limit") or 50
+    retained = _retained(view)
+    target = _move_target(view, cls="bulk-field")
+
+    def pager(name: str) -> FT | str:
+        return server_pager(int(filters.get(f"{name}_offset") or 0), limit, totals.get(name, 0),
+                            lambda o, n: _older_stock_url(filters, **{f"{name}_offset": o, "limit": n}))
+
+    def table(table_id: str, head: list, rows: list, **attrs) -> FT:
+        return Div(Table(Thead(Tr(*head)), Tbody(*rows), cls="data-table", id=table_id, **attrs),
+                   cls="table-scroll-wrap")
+
+    select_all = Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")), cls="col-checkbox")
+    number = {"cls": "cell--number"}
+    if lots:
+        lot_table = table("older-stock-table", [
+            select_all, Th(t("th.sku")), Th(t("th.name")), Th(t("older_stock.col_account")),
+            Th(t("older_stock.col_value"), **number)],
+            [_older_lot_row(lot, currency) for lot in lots], **operation_key_attrs())
+    else:
+        lot_table = P(t("older_stock.no_match") if filters.get("account") or filters.get("q")
+                      else t("older_stock.empty"), cls="hint", id="older-stock-table")
+    return Div(
+        flash(message, kind) if message else None,
+        H3(t("older_stock.tab"), cls="section-title"),
+        _reconciliation_summary(view.get("reconciliation"), currency),
+        _placement_failure(view.get("failed")),
+        P(t("older_stock.hint"), cls="text-muted mb-md"),
+        H4(t("older_stock.summary")) if summary else None,
+        table("older-stock-summary", [
+            Th(t("older_stock.col_account")), Th(t("older_stock.col_lots"), **number),
+            Th(t("older_stock.col_value"), **number), Th(t("older_stock.col_transferred"), **number),
+            Th(t("older_stock.col_recognized"), **number), Th(t("older_stock.col_unresolved"), **number)],
+            [_summary_row(s, currency) for s in summary]) if summary else None,
+        _older_stock_filters(filters, view.get("accounts", [])),
+        bulk_toolbar("older-stock-table", [
+            {"value": "move", "label": t("older_stock.move"), "method": "post",
+             "url": _older_stock_url(filters, "/move"), "target": "#older-stock-card", "fields": True}],
+            fields=[target]),
+        lot_table,
+        pager("lots"),
+        _move_all_form(view, filters),
+        H4(t("older_stock.placements"), cls="mt-md"),
+        bulk_toolbar("older-stock-placements", [
+            {"value": "recognize", "label": t("older_stock.book_difference"), "method": "post",
+             "url": _correction_url(filters, "recognize"), "target": "#older-stock-card",
+             "confirm": t("older_stock.bulk_recognize_confirm", n="{n}", account=retained)},
+            {"value": "unresolve", "label": t("older_stock.leave_unresolved"), "method": "post",
+             "url": _correction_url(filters, "unresolve"), "target": "#older-stock-card"}]) if placements else None,
+        table("older-stock-placements", [
+            select_all, Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_lots"), **number),
+            Th(t("older_stock.col_account")), Th(t("older_stock.col_classification")),
+            Th(t("older_stock.col_transferred"), **number), Th(t("older_stock.col_recognized"), **number),
+            Th(t("older_stock.col_unresolved"), **number), Th(t("older_stock.col_journal")), Th("")],
+            [_placement_row(p, currency, filters, retained) for p in placements])
+        if placements else P(t("older_stock.no_placements"), cls="hint"),
+        pager("placements"),
+        H4(t("older_stock.moves"), cls="mt-md"),
+        table("older-stock-moves", [
+            Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_lots"), **number),
+            Th(t("older_stock.col_to")), Th(t("older_stock.col_value"), **number), Th("")],
+            [_move_row(m, currency, filters) for m in moves]) if moves else P(t("older_stock.no_moves"), cls="hint"),
+        pager("moves"),
+        H4(t("older_stock.corrections"), cls="mt-md"),
+        table("older-stock-corrections", [
+            Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_correction")),
+            Th(t("older_stock.col_account")), Th(t("older_stock.col_amount"), **number),
+            Th(t("older_stock.col_journal")), Th(t("older_stock.col_by"))],
+            [_correction_row(c, currency) for c in corrections])
+        if corrections else P(t("older_stock.no_corrections"), cls="hint"),
+        pager("corrections"),
+        cls="settings-card", id="older-stock-card",
+    )
+
+
+def _older_stock_filters_of(request: Request) -> dict:
+    """The filters and pages the Older stock tab shows, read from the URL (GDR 2m). A page
+    value that is not a whole number in range is left out, so the first page shows."""
+    params = request.query_params
+    filters = {k: v for k in ("account", "q") if (v := params.get(k, "").strip())}
+    for key in (*(f"{name}_offset" for name in _OLDER_STOCK_PAGES), "limit"):
+        raw = params.get(key, "").strip()
+        if raw.isdigit() and (key != "limit" or 1 <= int(raw) <= _OLDER_STOCK_MAX_PAGE):
+            filters[key] = raw
+    return filters
+
+
+async def _older_stock_action(request: Request, call) -> FT:
+    """Run an older-stock action and answer with the card again: the outcome on success,
+    the API's reason on a refusal, read within the filters the page was showing."""
+    token = _token(request)
+    if not token:
+        return P(t("error.session_expired"), cls="cell-error")
+    filters = _older_stock_filters_of(request)
+    try:
+        view = await call(token)
+        message, kind = view.pop("message", ""), view.pop("kind", "success")
+        if any(filters.values()):
+            view = await api.get_older_stock(token, filters)
+    except APIError as e:
+        message, kind = refusal_text(e.data or e.detail) or str(e.detail), "error"
+        try:
+            view = await api.get_older_stock(token, filters)
+        except APIError as e2:
+            return Div(P(refusal_text(e2.data or e2.detail) or str(e2.detail), cls="error-banner"),
+                       cls="settings-card", id="older-stock-card")
+    return _older_stock_card(view, filters, message, kind)
 
 
 def _chart_table(chart: list[dict]) -> FT:
@@ -614,6 +921,14 @@ def setup_routes(app):
         elif tab == "posting-accounts":
             try:
                 content = _posting_accounts_tab(await api.get_posting_accounts(token))
+            except APIError as e:
+                if e.status == 401:
+                    return RedirectResponse("/login", status_code=302)
+                content = Div(P(str(e.detail), cls="error-banner"), cls="settings-card")
+        elif tab == "older-stock":
+            filters = _older_stock_filters_of(request)
+            try:
+                content = _older_stock_card(await api.get_older_stock(token, filters), filters)
             except APIError as e:
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
@@ -1051,13 +1366,6 @@ def setup_routes(app):
             data = await api.get_posting_accounts(token)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        if key.startswith(_OLDER_STOCK):
-            lot = _older_lot(data, key)
-            if lot is None:
-                return P(t("posting.unknown_role"), cls="cell-error")
-            label = _older_lot_label(lot)
-            return _posting_edit_cell(key, (data.get("older_stock") or {}).get("candidates", []), None, label,
-                                      confirm=t("posting.older_stock_confirm", lot=label))
         row = next((r for r in data.get("roles", []) if r["role"] == key), None)
         if row is None:
             return P(t("posting.unknown_role"), cls="cell-error")
@@ -1073,11 +1381,6 @@ def setup_routes(app):
             data = await api.get_posting_accounts(token)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        if key.startswith(_OLDER_STOCK):
-            # An older lot shown here has no account yet; its own name is not one.
-            if _older_lot(data, key) is None:
-                return P(t("posting.unknown_role"), cls="cell-error")
-            return _posting_display_cell(key, None)
         current = next((r for r in data.get("roles", []) if r["role"] == key), None)
         if current is None:
             return P(t("posting.unknown_role"), cls="cell-error")
@@ -1093,15 +1396,7 @@ def setup_routes(app):
         form = await request.form()
         code = str(form.get("value", "")).strip()
         try:
-            if key.startswith(_OLDER_STOCK):
-                lot = _older_lot(await api.get_posting_accounts(token), key)
-                data = await api.set_older_stock_account(token, key.removeprefix(_OLDER_STOCK), code)
-                if lot is not None:
-                    chosen = next((c for c in (data.get("older_stock") or {}).get("candidates", [])
-                                   if c["code"] == code), {"code": code})
-                    return _older_stock_row(lot, "", recorded=chosen)
-            else:
-                data = await api.set_posting_account(token, key, code)
+            data = await api.set_posting_account(token, key, code)
             error = None
         except APIError as e:
             error = str(e.detail)
@@ -1110,6 +1405,65 @@ def setup_routes(app):
             except APIError as e2:
                 return P(str(e2.detail), cls="cell-error")
         return _posting_row(data, key, error) or P(t("posting.unknown_role"), cls="cell-error")
+
+    @app.post("/settings/accounting/older-stock/move")
+    async def older_stock_move(request: Request):
+        """Move the ticked lots to the chosen inventory account, once per page render."""
+        form = await request.form()
+
+        async def call(token):
+            view = await api.move_older_stock(token, list(dict.fromkeys(form.getlist("selected"))),
+                                              str(form.get("code", "")).strip(), required_operation_key(form))
+            done = view.pop("result")
+            return {**view, "message": t("older_stock.moved", n=done["moved"], code=done["code"])}
+
+        return await _older_stock_action(request, call)
+
+    @app.post("/settings/accounting/older-stock/move-all")
+    async def older_stock_move_all(request: Request):
+        """Move every lot matching the filters the page shows (in the URL) as one move."""
+        form = await request.form()
+        filters = _older_stock_filters_of(request)
+
+        async def call(token):
+            view = await api.move_all_older_stock(token, {k: filters[k] for k in ("account", "q") if k in filters},
+                                                  str(form.get("selection", "")).strip(),
+                                                  str(form.get("code", "")).strip(), required_operation_key(form))
+            done = view.pop("result")
+            return {**view, "message": t("older_stock.moved", n=done["moved"], code=done["code"])}
+
+        return await _older_stock_action(request, call)
+
+    @app.post("/settings/accounting/older-stock/moves/{move_id}/undo")
+    async def older_stock_undo(request: Request, move_id: str):
+        async def call(token):
+            return {**await api.undo_older_stock_move(token, move_id), "message": t("older_stock.undo_done")}
+
+        return await _older_stock_action(request, call)
+
+    @app.post("/settings/accounting/older-stock/retry")
+    async def older_stock_retry(request: Request):
+        async def call(token):
+            view = await api.retry_older_stock(token)
+            if view.pop("result")["placed"]:
+                return {**view, "message": t("older_stock.placed_msg")}
+            return {**view, "message": t("older_stock.still_failed"), "kind": "error"}
+
+        return await _older_stock_action(request, call)
+
+    @app.post("/settings/accounting/older-stock/corrections")
+    async def older_stock_correct(request: Request):
+        """Correct how the ticked placements (one, from its row, or many, from the bulk
+        toolbar) treated their difference; ``kind`` rides in the URL."""
+        form = await request.form()
+
+        async def call(token):
+            view = await api.correct_older_stock(token, list(dict.fromkeys(form.getlist("selected"))),
+                                                 request.query_params.get("kind", "").strip())
+            view.pop("result", None)
+            return {**view, "message": t("older_stock.corrected_msg")}
+
+        return await _older_stock_action(request, call)
 
     @app.get("/settings/accounting/chart/{code}/cash-flow/edit")
     async def cash_flow_field_edit(request: Request, code: str):

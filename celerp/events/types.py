@@ -27,6 +27,7 @@ class EventType(StrEnum):
     ITEM_PRODUCED = "item.produced"
     ITEM_COST_ADJUSTED = "item.cost_adjusted"
     ITEM_INVENTORY_ACCOUNT_RECORDED = "item.inventory_account.recorded"
+    ITEM_INVENTORY_ACCOUNT_MOVED = "item.inventory_account.moved"
     ITEM_CONSIGNOR_PAYABLE_RECORDED = "item.consignor_payable.recorded"
     ITEM_CONSIGNMENT_BOUGHT = "item.consignment.bought"
     ITEM_INVENTORY_ON_BOOKS_RECORDED = "item.inventory_on_books.recorded"
@@ -139,3 +140,5 @@ class EventType(StrEnum):
     SYS_API_KEY_REVOKED = "sys.api_key.revoked"
     SYS_BACKUP_CREATED = "sys.backup.created"
     SYS_MIGRATION_APPLIED = "sys.migration.applied"
+    SYS_OLDER_STOCK_PLACED = "sys.older_stock.placed"
+    SYS_OLDER_STOCK_CORRECTED = "sys.older_stock.corrected"

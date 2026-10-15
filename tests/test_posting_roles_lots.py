@@ -13,8 +13,9 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
+from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
 from celerp.services.company_lock import locked_company
@@ -60,10 +61,14 @@ async def _sell(client, auth, *lots: tuple[str, float]) -> str:
 
 
 async def _forget_origin(session, auth, item_id: str) -> None:
-    """Make a lot look like one created before lots recorded their account."""
+    """Make a lot look like one created before lots recorded their account: neither its
+    state nor its history records one."""
     row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": item_id},
                             populate_existing=True)
     row.state = {k: v for k, v in row.state.items() if k != _FIELD}
+    await session.execute(delete(LedgerEntry).where(
+        LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == item_id,
+        LedgerEntry.event_type == "item.inventory_account.recorded"))
     await session.commit()
 
 
@@ -124,7 +129,7 @@ async def test_a_split_lot_keeps_its_account_in_every_part(session, client, auth
 
 
 @pytest.mark.asyncio
-async def test_an_older_lot_with_no_provable_account_refuses_to_move_its_cost(session, client, auth):
+async def test_an_older_lot_is_placed_when_it_is_first_sold(session, client, auth):
     lot = await _lot(client, auth, 30.0)
     await _forget_origin(session, auth, lot)
     r = await client.post("/docs", headers=auth["headers"], json={
@@ -132,9 +137,8 @@ async def test_an_older_lot_with_no_provable_account_refuses_to_move_its_cost(se
         "line_items": [{"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})
     assert r.status_code == 200, r.text
     r = await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"])
-    assert r.status_code == 409, r.text
-    assert "no recorded inventory account" in r.json()["detail"]["message"]
-    assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, lot))[_FIELD] == "1130-OB"
 
 
 @pytest.mark.asyncio
@@ -267,7 +271,7 @@ async def test_manufacturing_relieves_inputs_on_their_account_and_books_output_w
 
 
 @pytest.mark.asyncio
-async def test_an_older_lot_waits_for_its_account_and_only_one_that_holds_it_can_be_chosen(session, client, auth):
+async def test_an_older_lot_is_placed_on_the_account_that_carries_it_when_it_is_sold(session, client, auth):
     lot = await older_release_lot(session, auth["company_id"], auth["user_id"], 30.0, sku="OLD-2")
     await _remap(session, auth, await _new_inventory_account(client, auth), "inventory_purchased")
     # The older release's opening inventory entry carries it on 1130-OB.
@@ -277,21 +281,9 @@ async def test_an_older_lot_waits_for_its_account_and_only_one_that_holds_it_can
         "line_items": [{"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})
     assert r.status_code == 200, r.text
     inv = r.json()["id"]
-    r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
-    assert r.status_code == 409, r.text
-    assert "OLD-2 has no recorded inventory account" in r.json()["detail"]["message"]
-    assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
-    await session.rollback()  # the refused request's work ends with it, as its own session would
 
-    for code in ("1131", "1130-P"):  # today's purchased account, and one that held purchases, hold none of it
-        r = await client.put(f"/accounting/posting-accounts/older-stock/{lot}", headers=auth["headers"],
-                             json={"code": code})
-        assert r.status_code == 422, r.text
-        assert "does not hold" in r.json()["detail"]["message"]
-    r = await client.put(f"/accounting/posting-accounts/older-stock/{lot}", headers=auth["headers"],
-                         json={"code": "1130-OB"})
-    assert r.status_code == 200, r.text
-    assert r.json()["older_stock"]["lots"] == []
+    # Selling it places it on the account that carries it, with nothing to book, and the sale goes through.
     r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
     assert r.status_code == 200, r.text
+    assert (await _state(session, auth, lot))[_FIELD] == "1130-OB"
     assert _credits(await _state(session, auth, f"je:auto:{inv}:fin")) == {"1130-OB": 30.0}

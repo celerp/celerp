@@ -18,8 +18,9 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
+from celerp.models.company import Company
 from celerp.notifications import service as notif_svc
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from ui.i18n import t
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
@@ -52,12 +53,15 @@ async def list_notifications(
     session: AsyncSession = Depends(get_session),
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    role: str = Depends(get_current_role),
 ):
-    """List notifications for the current user, newest first."""
+    """List notifications for the current user, newest first, each linking only to a page
+    the user can open (notif_svc.link_for)."""
     items = await notif_svc.list_notifications(
         session, company_id, user.id, limit=limit, offset=offset, unread_only=unread_only,
     )
     unread = await notif_svc.get_unread_count(session, company_id, user.id)
+    settings = (company.settings if (company := await session.get(Company, company_id)) else None) or {}
     return NotificationList(
         items=[
             NotificationOut(
@@ -65,7 +69,7 @@ async def list_notifications(
                 category=n.category,
                 title=n.title,
                 body=n.body,
-                action_url=n.action_url,
+                action_url=notif_svc.link_for(n, settings, role),
                 i18n=notif_svc.message_keys(n),
                 priority=n.priority,
                 read=read,

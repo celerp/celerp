@@ -1237,7 +1237,7 @@ async def test_undo_receive_return_removes_items_from_inventory(client, session)
     """Regression: Revert Return Stock must archive returned items so they no longer appear in inventory.
 
     Previously item.disposed projection never set status correctly, so items remained visible
-    in inventory (filtered by _HIDDEN_STATUSES which checks status field, not is_available).
+    in inventory (filtered by HIDDEN_STATUSES which checks status field, not is_available).
     """
     token = await _register(client)
     h = _h(token)

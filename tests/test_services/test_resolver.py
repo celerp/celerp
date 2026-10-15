@@ -14,7 +14,7 @@ import pytest
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.projections.engine import ProjectionEngine
-from celerp_inventory.routes import resolve_item_by_code
+from celerp_inventory.services import resolve_item_by_code
 
 
 async def _emit(session, cid, eid, data, *, legacy=False):
@@ -67,7 +67,7 @@ def test_duplicate_barcode_result_is_flagged_and_never_first_picked():
     """A barcode matching more than one item - only possible for legacy data predating the
     per-company barcode unique index - is flagged, never silently resolved to one lot. The one
     operator-facing message is sourced in a single place for every scan surface."""
-    from celerp_inventory.routes import ResolveResult, duplicate_barcode_detail
+    from celerp_inventory.services import ResolveResult, duplicate_barcode_detail
 
     dup = ResolveResult("barcode", ["m1", "m2"])
     assert dup.duplicate_physical is True
@@ -108,9 +108,9 @@ async def test_resolve_barcode_excludes_merged_source(session):
 
 @pytest.mark.asyncio
 async def test_resolve_batch_barcode_excludes_merged_source(session):
-    """The batch resolver uses the same lifecycle-aware rule as the single-code path (acceptance
+    """The item index resolves by the same lifecycle-aware rule as the single-code path (acceptance
     criterion 5): live+merged sharing a barcode resolves to the live lot, not a duplicate."""
-    from celerp_inventory.routes import resolve_items_by_codes
+    from celerp_inventory.services import load_item_index
 
     cid = await _seed(session, "MergeExclBatchCo")
     await _emit(session, cid, "item:src", {"sku": "SRC", "name": "Src", "quantity": 0, "barcode": "700002"})
@@ -118,7 +118,7 @@ async def test_resolve_batch_barcode_excludes_merged_source(session):
     await _emit(session, cid, "item:live", {"sku": "LIVE", "name": "Live", "quantity": 5, "barcode": "700002"}, legacy=True)
     await ProjectionEngine.rebuild(session)
 
-    out = await resolve_items_by_codes(session, cid, ["700002"])
+    out = (await load_item_index(session, cid)).resolve(["700002"])
     res = out["700002"]
     assert res.kind == "barcode"
     assert not res.duplicate_physical
@@ -192,14 +192,14 @@ async def test_resolve_sku_merged_and_live_share_sku_selects_live(session):
 @pytest.mark.asyncio
 async def test_resolve_batch_sku_excludes_merged_source_when_code_equals_barcode(session):
     """Batch form of the sku==barcode merged-exclusion: the merged source resolves to nothing."""
-    from celerp_inventory.routes import resolve_items_by_codes
+    from celerp_inventory.services import load_item_index
 
     cid = await _seed(session, "BatchMergedSkuEqBarcodeCo")
     await _emit(session, cid, "item:src", {"sku": "700702", "name": "Src", "quantity": 0, "barcode": "700702"})
     await _deactivate(session, cid, "item:src", "item:gone")
     await ProjectionEngine.rebuild(session)
 
-    out = await resolve_items_by_codes(session, cid, ["700702"])
+    out = (await load_item_index(session, cid)).resolve(["700702"])
     res = out["700702"]
     assert res.kind == "none"
     assert res.one is None
@@ -209,7 +209,7 @@ async def test_resolve_batch_sku_excludes_merged_source_when_code_equals_barcode
 async def test_resolve_batch_sku_merged_and_live_share_sku_selects_live(session):
     """Batch form of the merged+live shared-sku case: resolves to the single live lot, no false
     ambiguity."""
-    from celerp_inventory.routes import resolve_items_by_codes
+    from celerp_inventory.services import load_item_index
 
     cid = await _seed(session, "BatchMergedLiveShareSkuCo")
     await _emit(session, cid, "item:live", {"sku": "700703", "name": "Live", "quantity": 5, "barcode": "700803"})
@@ -217,7 +217,7 @@ async def test_resolve_batch_sku_merged_and_live_share_sku_selects_live(session)
     await _deactivate(session, cid, "item:src", "item:live")
     await ProjectionEngine.rebuild(session)
 
-    out = await resolve_items_by_codes(session, cid, ["700703"])
+    out = (await load_item_index(session, cid)).resolve(["700703"])
     res = out["700703"]
     assert res.kind == "sku"
     assert not res.ambiguous

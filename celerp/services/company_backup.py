@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from decimal import Context, Decimal
 from pathlib import Path
 
+from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,10 +61,11 @@ from celerp.modules import requirements
 from celerp.modules.loader import module_label
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
-from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_password
+from celerp.services.auth import HAS_COMPANY, hold_companyless_login, password_attempts
 from celerp.services.company_settings import SET_BY_KEYS
 from celerp.services.company_backup_files import private_file
 from celerp.services.company_lock import hold_company, lock_company, locked_company
+from celerp.services.lot_origin import place_company_stock
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
 from celerp.services.provisioning import create_install_owner, provision_restored_company
 from ui.i18n import t
@@ -1232,17 +1234,26 @@ def _same_file(backup: BackupFile, restored: Company | None) -> None:
         raise BackupError(409, t(CHANGED_COPY))
 
 
+async def _signed_in_owner(session: AsyncSession, owner_account: dict, caller: str | None) -> User:
+    """The user ``owner_account`` signs in as, checked as sign-in checks it: a wrong password
+    or unknown email is refused (401) in sign-in's words and counted against the same
+    slowdown, and the upload stays usable for another try."""
+    user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
+    if not password_attempts.check(owner_account["email"], owner_account["password"], user and user.auth_hash, caller):
+        raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
+    return user
+
+
 async def _bootstrap_existing(session: AsyncSession, backup: BackupFile,
-                              owner_account: dict) -> tuple[Company, User] | None:
+                              owner_account: dict, caller: str | None) -> tuple[Company, User] | None:
     """The company a bootstrap restore of this backup already created, with its owner, when
-    the same account repeats it; refused for anyone else or when that company is deactivated."""
+    the same account repeats it. A wrong password is refused as sign-in refuses it; another
+    account, or a deactivated company, gets the installation's already-set-up refusal."""
     company = await session.scalar(_restored_as(backup.manifest["backup_id"]))
     if company is None:
         return None
-    user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
-    if (not company.is_active or user is None or not user.auth_hash
-            or not verify_password(owner_account["password"], user.auth_hash)
-            or not await _is_member(session, user.id, company.id)):
+    user = await _signed_in_owner(session, owner_account, caller)
+    if not company.is_active or not await _is_member(session, user.id, company.id):
         raise BackupError(409, t(ALREADY_SET_UP))
     _same_file(backup, company)
     return company, user
@@ -1537,7 +1548,7 @@ def _chosen_name(name: str) -> str:
 
 async def restore_company(path: Path, *, mode: str, user_id=None, current_company_id=None,
                           owner_account: dict | None = None, plan_fingerprint: str | None = None,
-                          company_name: str | None = None) -> RestoreResult:
+                          company_name: str | None = None, caller: str | None = None) -> RestoreResult:
     """Restore a backup file as a new company and commit it.
 
     ``settings`` and ``new_company`` restore it for the signed-in ``user_id`` as the
@@ -1549,7 +1560,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
     caller's companies, else the preview's name. Restoring a backup that was already
     restored here opens that company for its members, unrenamed (outcome
     ``opened_existing``, or ``opened_existing_team_added`` when it gave its team access),
-    never reactivating it when it is deactivated."""
+    never reactivating it when it is deactivated. Restored stock recording no inventory
+    account is placed before the commit (lot_origin.place_company_stock)."""
     if mode not in MODES:
         raise ValueError(f"Unknown restore mode: {mode}")
     if mode == "bootstrap" and not (isinstance(owner_account, dict)
@@ -1572,7 +1584,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 await _wait_for(session, bootstrap.lock_bootstrap)  # any other first-owner setup
             if mode == "bootstrap":
                 plan = plan_bootstrap_restore(backup)
-                found = await _bootstrap_existing(session, backup, owner_account)
+                found = await _bootstrap_existing(session, backup, owner_account, caller)
                 if found is not None:
                     company, user = found
                     result = RestoreResult(company_id=str(company.id), company_name=company.name,
@@ -1655,6 +1667,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             if _same_lineage(mode, current_company_id, source):
                 await _rebind_actors(session, new_id)
             await _turn_off_shop_sync(session, new_id, user.id)
+            await place_company_stock(session, new_id)
             team = await _add_team(session, new_id, plan.team_to_add) if plan.team_to_add else 0
             await session.commit()
         except BaseException:
@@ -1675,20 +1688,19 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                          role_permissions=plan.role_permissions)
 
 
-async def reopen_restored(company_id, *, user_id=None, owner_account: dict | None = None) -> RestoreResult | None:
+async def reopen_restored(company_id, *, user_id=None, owner_account: dict | None = None,
+                          caller: str | None = None) -> RestoreResult | None:
     """The company a finished restore opened, for a retry whose response was lost: for the
     signed-in ``user_id``, or for the first owner's ``owner_account`` on a fresh
     installation, when they are still an active member of it and it is active. None
-    otherwise."""
+    otherwise. A wrong password for ``owner_account`` is refused (401) as sign-in refuses
+    it, so the owner can try again with the same upload."""
     if not _is_uuid(company_id):
         return None
     async with AsyncSession(bind=celerp.db.engine) as session:
         company = await session.get(Company, uuid.UUID(company_id))
         if owner_account is not None:
-            user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
-            if user is None or not user.auth_hash or not verify_password(owner_account["password"], user.auth_hash):
-                return None
-            user_id = user.id
+            user_id = (await _signed_in_owner(session, owner_account, caller)).id
         if (company is None or not company.is_active or user_id is None
                 or not await _is_member(session, uuid.UUID(str(user_id)), company.id)):
             return None

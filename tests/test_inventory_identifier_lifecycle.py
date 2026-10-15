@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
-from celerp_inventory.routes import resolve_item_by_code
+from celerp_inventory.services import resolve_item_by_code
 from test_helpers import merge_items, sell_item
 
 

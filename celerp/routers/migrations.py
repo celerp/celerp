@@ -49,6 +49,7 @@ from celerp.services.auth import (
     AuthContext,
     get_auth_context,
     hold_companyless_login,
+    request_caller,
     validate_password,
 )
 from celerp.services.permissions import role_has_permission
@@ -414,7 +415,8 @@ async def start_company_scan(request: Request, credentials: HTTPBasicCredentials
                              session: AsyncSession = Depends(get_session)) -> dict:
     if credentials is None:
         raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
-    user_id = (await companyless_login(session, credentials.username, credentials.password)).id
+    user_id = (await companyless_login(session, credentials.username, credentials.password,
+                                       request_caller(request))).id
     await session.rollback()  # nothing is held while the upload streams in
     scan = await store.create_scan(_upload_parts(request), owner=(START_COMPANY, user_id))
     return {"scan_token": scan.token, "scan": migrations.scan_view(scan)}
@@ -441,7 +443,7 @@ async def start_company_start(request: Request, payload: StartCompanyStartIn,
     lost is the same, and signing in lands on the company being moved in."""
     from celerp.credentials import issue_token_pair
     async with _start_errors(session):
-        user = await companyless_login(session, payload.email, payload.password)
+        user = await companyless_login(session, payload.email, payload.password, request_caller(request))
         await hold_direct_slot(session)
         if not await hold_companyless_login(session, user.id):
             raise HTTPException(status_code=409, detail=t(HAS_COMPANY))

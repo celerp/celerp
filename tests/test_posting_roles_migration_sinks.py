@@ -9,6 +9,7 @@ payable and inventory accounts.
 """
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 
 import pytest
@@ -198,3 +199,128 @@ async def test_migrated_stock_records_the_sources_inventory_account(session):
     assert result.errors == []
     row = await session.get(Projection, (context.company_id, result.mappings[0].target_entity_id))
     assert row.state["inventory_account_code"] == "130"
+
+
+_TWO_REVENUE_CHART = [*_SOURCE_CHART, ("sales-a", "4000", "Product sales", "revenue", None),
+                      ("sales-b", "4010", "Service sales", "revenue", None)]
+
+
+async def _imported_invoice(context, split: dict[str, str], *, ext: str = "inv-1") -> str:
+    """An imported invoice whose lines post ``split`` ({source account: net}) in the source
+    books, in a company whose posting accounts are chosen as finishing the migration
+    chooses them. Its Celerp id."""
+    from celerp.importers.schema import CIFContact, CIFDocument, CIFLineItem
+    from celerp.services.account_roles import current_settings, role_map
+    from celerp.services.posting_readiness import apply_choices, readiness
+    from migration_support import posting_choices_from
+
+    contact = CIFContact(**_PROVENANCE, source_type="Customer", source_external_id="party-1", name="Harbor Traders",
+                         roles=["customer"])
+    assert (await _via(context, "contacts", [contact])).errors == []
+    total = sum(Decimal(v) for v in split.values())
+    doc = CIFDocument(
+        **_PROVENANCE, source_type="SalesInvoice", source_external_id=ext, doc_type="invoice",
+        status="awaiting_payment", contact_external_id="party-1", ref=ext.upper(), issue_date="2026-01-04",
+        total=total, amount_paid=Decimal("0"), amount_outstanding=total,
+        line_items=[CIFLineItem(description=account, account_external_id=account, quantity=Decimal("1"),
+                                unit_price=Decimal(net), total_price=Decimal(net)) for account, net in split.items()],
+    )
+    result = await _via(context, "documents", [doc])
+    assert result.errors == [], result.errors
+    if not role_map(await current_settings(context.session, context.company_id)):
+        choices = posting_choices_from(await readiness(context.session, context.company_id) or [])
+        await apply_choices(context.session, context.company_id, choices)
+    return result.mappings[0].target_entity_id
+
+
+async def _credit_note_revenue(context, invoice: str, total: float, *, release: float | None = None) -> dict[str, float]:
+    """What a credit note of ``total`` on ``invoice`` puts on each revenue account (debit
+    positive), or with ``release`` what releasing that much of it takes back. The books
+    balance after it."""
+    from celerp.models.projections import Projection
+    from celerp.services import auto_je
+    from celerp.services.auto_je import company_currency
+
+    base = await company_currency(context.session, context.company_id)
+    note = f"doc:CN-{uuid.uuid4().hex[:6]}"
+    doc = {"doc_type": "credit_note", "original_doc_id": invoice, "currency": base, "total": total, "tax": 0}
+    await auto_je.create_for_credit_note_finalized(context.session, company_id=context.company_id,
+                                                   user_id=context.user_id, doc_id=note, doc=doc, base_currency=base)
+    je_id = f"je:auto:{note}:fin"
+    if release is not None:
+        await auto_je.release_credit_note_open(context.session, company_id=context.company_id, user_id=context.user_id,
+                                               doc_id=note, doc=doc, amount=release, base_currency=base)
+        je_id = f"je:auto:{note}:release"
+    debit = credit = Decimal(0)
+    for row in (await context.session.execute(select(Projection).where(
+            Projection.company_id == context.company_id, Projection.entity_type == "journal_entry"))).scalars():
+        if (row.state or {}).get("status") == "posted":
+            for e in row.state.get("entries") or []:
+                debit += Decimal(str(e.get("debit") or 0))
+                credit += Decimal(str(e.get("credit") or 0))
+    assert debit == credit, f"trial balance off: debits {debit}, credits {credit}"
+    out: dict[str, float] = {}
+    for e in await _entries(context, je_id):
+        if e["account"] in ("4000", "4010", "400"):
+            out[e["account"]] = out.get(e["account"], 0.0) + e["debit"] - e["credit"]
+    return out
+
+
+@pytest.mark.asyncio
+async def test_a_credit_note_on_an_imported_invoice_reverses_each_revenue_account_it_was_sold_on(session):
+    """An invoice the source books split 60/40 over two revenue accounts is credited back
+    60/40 on those accounts, never all on the account sales post to today."""
+    context = await _staged_context(session)
+    await _import_chart(context, _TWO_REVENUE_CHART)
+    invoice = await _imported_invoice(context, {"sales-a": "60.00", "sales-b": "40.00"})
+    assert await _credit_note_revenue(context, invoice, 100.0) == {"4000": 60.0, "4010": 40.0}
+    # Part of it splits the same way, to the cent.
+    assert await _credit_note_revenue(context, invoice, 25.0) == {"4000": 15.0, "4010": 10.0}
+    # Releasing an open credit takes it back off the same accounts.
+    assert await _credit_note_revenue(context, invoice, 100.0, release=50.0) == {"4000": -30.0, "4010": -20.0}
+
+
+@pytest.mark.asyncio
+async def test_a_credit_note_on_an_imported_invoice_with_a_discount_line_reverses_the_discount_too(session):
+    """An invoice that sold 100 on 4000 and 20 on 400 and gave a 20 discount on 4010 nets 100.
+    Credited in full, every revenue account goes back to where it was, the discount
+    included: the discount account is credited back, never left out with the rest spread
+    over the other accounts."""
+    context = await _staged_context(session)
+    await _import_chart(context, _TWO_REVENUE_CHART)
+    invoice = await _imported_invoice(context, {"sales-a": "100.00", "sales-b": "-20.00", "sales": "20.00"})
+    assert await _credit_note_revenue(context, invoice, 100.0) == {"400": 20.0, "4000": 100.0, "4010": -20.0}
+    # Half of it moves each account half as far, to the cent.
+    assert await _credit_note_revenue(context, invoice, 50.0) == {"400": 10.0, "4000": 50.0, "4010": -10.0}
+    # Releasing an open credit takes it back off the same accounts.
+    assert await _credit_note_revenue(context, invoice, 100.0, release=100.0) == {
+        "400": -20.0, "4000": -100.0, "4010": 20.0}
+
+
+@pytest.mark.asyncio
+async def test_a_credit_note_on_an_imported_invoice_sold_on_an_account_sales_do_not_post_to(session):
+    from celerp.services.account_roles import current_settings, role_map
+
+    context = await _staged_context(session)
+    await _import_chart(context, _TWO_REVENUE_CHART)
+    invoice = await _imported_invoice(context, {"sales-b": "100.00"})
+    assert role_map(await current_settings(session, context.company_id)).get("sales_revenue") != "4010"
+    assert await _credit_note_revenue(context, invoice, 100.0) == {"4010": 100.0}
+
+
+@pytest.mark.asyncio
+async def test_a_credit_note_after_sales_move_to_another_account_reverses_where_the_invoice_sold(session):
+    from celerp.models.company import Company
+    from celerp.services.account_roles import current_settings, role_map, with_role
+
+    context = await _staged_context(session)
+    await _import_chart(context, _TWO_REVENUE_CHART)
+    on_role = await _imported_invoice(context, {"sales": "100.00"}, ext="inv-1")
+    split = await _imported_invoice(context, {"sales-a": "60.00", "sales-b": "40.00"}, ext="inv-2")
+    settings = await current_settings(session, context.company_id)
+    assert role_map(settings).get("sales_revenue") == "400"
+    company = await session.get(Company, context.company_id)
+    company.settings = with_role(settings, "sales_revenue", "4010")
+    await session.flush()
+    assert await _credit_note_revenue(context, on_role, 100.0) == {"400": 100.0}
+    assert await _credit_note_revenue(context, split, 100.0) == {"4000": 60.0, "4010": 40.0}

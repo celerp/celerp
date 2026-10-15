@@ -17,9 +17,9 @@ import pytest
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.projections.engine import ProjectionEngine
-from celerp_inventory.routes import (
+from celerp_inventory.services import (
+    load_item_index,
     resolve_item_by_code,
-    resolve_items_by_codes,
 )
 
 async def _emit(session, cid, eid, data, *, legacy=False):
@@ -84,7 +84,7 @@ async def test_resolve_precedence_barcode_epc_gtin_sku(session):
 @pytest.mark.asyncio
 async def test_resolve_cross_field_barcode_epc_fails_closed(session):
     """A code held as item A's barcode and item B's rfid_epc resolves to TWO distinct
-    physical items, so both the single and the batch resolver fail closed rather than
+    physical items, so both the single resolver and the item index fail closed rather than
     silently return the barcode holder. Seeded via direct events (the interactive create
     guard refuses this cross-field shape), mirroring an import or legacy row.
 
@@ -100,7 +100,7 @@ async def test_resolve_cross_field_barcode_epc_fails_closed(session):
     assert single.one is None
     assert {r.entity_id for r in single.matches} == {"item:A", "item:B"}
 
-    batch = await resolve_items_by_codes(session, cid, ["70707070"])
+    batch = (await load_item_index(session, cid)).resolve(["70707070"])
     res = batch["70707070"]
     assert res.duplicate_physical is True
     assert res.one is None
@@ -139,7 +139,7 @@ async def test_resolve_gtin_multi_lot_ambiguous(session):
 
 @pytest.mark.asyncio
 async def test_resolve_batch_matches_single_for_new_kinds(session):
-    """The batch resolver returns the same kind and match-set as the single
+    """The item index returns the same kind and match-set as the single
     resolver for an rfid_epc code and a gtin code. RED at merge base: both paths
     return kind "none" for these codes, so asserting they equal "rfid_epc"/"gtin"
     fails. GTIN is 8 digits (a valid GTIN length)."""
@@ -148,7 +148,7 @@ async def test_resolve_batch_matches_single_for_new_kinds(session):
     await _emit(session, cid, "item:bg", {"sku": "BG", "name": "BG", "quantity": 1, "barcode": "99912", "gtin": "99902099"})
     await ProjectionEngine.rebuild(session)
 
-    out = await resolve_items_by_codes(session, cid, ["99901", "99902099"])
+    out = (await load_item_index(session, cid)).resolve(["99901", "99902099"])
     single_epc = await resolve_item_by_code(session, cid, "99901")
     single_gtin = await resolve_item_by_code(session, cid, "99902099")
 
@@ -167,7 +167,7 @@ async def test_resolve_epc_lowercase_batch_lookup(session):
     await _emit(session, cid, "item:d", {"sku": "D", "name": "D", "quantity": 1, "barcode": "33301", "rfid_epc": "DEAD01"})
     await ProjectionEngine.rebuild(session)
 
-    out = await resolve_items_by_codes(session, cid, ["dead01"])
+    out = (await load_item_index(session, cid)).resolve(["dead01"])
     res = out["dead01"]
     assert res.kind == "rfid_epc"
     assert res.one is not None and res.one.entity_id == "item:d"

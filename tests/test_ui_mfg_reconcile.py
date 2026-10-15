@@ -28,7 +28,7 @@ NEEDS = {"reason": "books disagree",
          "components": [{"item_id": "item:flour", "quantity": 2.5, "sku": "FLOUR", "name": "Flour"}]}
 POSTING = {"roles": [{"role": "retained_earnings", "code": "3200", "name": "Retained earnings"},
                      {"role": "work_in_progress", "code": "1130", "name": "Work in progress"}],
-           "older_stock": {"lots": [], "candidates": [{"code": "1120", "name": "Inventory", "account_type": "asset"}]}}
+           "older_stock": {"candidates": [{"code": "1120", "name": "Inventory", "account_type": "asset"}]}}
 LOCKED = {"message": "The books are locked for 2026-01-31, so this run cannot be reconciled until that period is open.",
           "message_key": "mfg.period_locked", "params": {"day": "2026-01-31"}}
 

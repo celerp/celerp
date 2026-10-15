@@ -15,6 +15,10 @@ Each entry:
 """
 from __future__ import annotations
 
+import copy
+
+from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
+
 _T = dict  # type alias for readability
 
 TAX_REGIMES: dict[str, _T] = {
@@ -232,3 +236,77 @@ def get_regime(country_code: str | None) -> dict:
     if not country_code:
         return TAX_REGIMES["_default"]
     return TAX_REGIMES.get(country_code.strip().upper(), TAX_REGIMES["_default"])
+
+
+def generic_taxes() -> list[dict]:
+    """The neutral tax list a company starts from until it configures its own."""
+    return copy.deepcopy(TAX_REGIMES["_default"]["taxes"])
+
+
+def configured(settings: dict, key: str, default: list[dict]) -> list[dict]:
+    """The list saved under ``key``, an explicitly saved empty list included; a copy
+    of ``default`` only when nothing was ever saved."""
+    value = settings.get(key)
+    return value if value is not None else copy.deepcopy(default)
+
+
+def sales_taxes(settings: dict) -> list[dict]:
+    """The company's sales taxes: what it saved, else the generic list."""
+    return configured(settings, "taxes", generic_taxes())
+
+
+def purchasing_taxes(settings: dict) -> list[dict]:
+    """The company's purchasing taxes: what it saved, else a copy of its sales taxes."""
+    return configured(settings, "purchasing_taxes", sales_taxes(settings))
+
+
+def doc_side(doc_type: str | None) -> str:
+    """The side a document's taxes apply to: "purchase" for a supplier document
+    (SUPPLIER_DOC_TYPES), else "sales"."""
+    return "purchase" if doc_type in SUPPLIER_DOC_TYPES else "sales"
+
+
+def side_taxes(settings: dict, doc_type: str | None) -> list[dict]:
+    """The tax list a document of this type draws from: purchasing taxes for a purchase
+    document, sales taxes for any other."""
+    return purchasing_taxes(settings) if doc_side(doc_type) == "purchase" else sales_taxes(settings)
+
+
+def taxes_for(taxes: list[dict], doc_type: str | None) -> list[dict]:
+    """The taxes a document of this type can carry: those for its side and those for both."""
+    side = doc_side(doc_type)
+    return [x for x in taxes if (x.get("tax_type") or "both") in (side, "both")]
+
+
+def default_tax(taxes: list[dict], doc_type: str | None) -> dict | None:
+    """The tax a new line on a document of this type starts with: the company default, when it
+    applies to that side (a purchase document takes no sales-only tax, a sale no purchase-only one)."""
+    return next((x for x in taxes_for(taxes, doc_type) if x.get("is_default")), None)
+
+
+def _tax_name_key(name) -> str:
+    """A tax name as a lookup key: the same name in another case or with spaces around it
+    is the same tax."""
+    return str(name or "").strip().casefold()
+
+
+def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> str | None:
+    """The name of the first tax in ``applied`` (each a ``code`` and ``rate``) a document of
+    this type cannot carry, else None. A tax takes its side from the company's tax lists by
+    name, ignoring case and surrounding spaces, the document's own side's list deciding a name
+    both lists hold. On a sale a negative rate is always refused: it is tax withheld on a
+    purchase, and a sale has no output tax to net it against."""
+    side = doc_side(doc_type)
+    other = sales_taxes(settings) if side == "purchase" else purchasing_taxes(settings)
+    sides = {_tax_name_key(x.get("name")): x.get("tax_type") or "both"
+             for x in [*other, *side_taxes(settings, doc_type)]}
+    for tax in applied:
+        code = str(tax.get("code") or "").strip()
+        try:
+            rate = float(tax.get("rate") or 0)
+        except (TypeError, ValueError):
+            rate = 0.0  # an unreadable rate is refused where the money is computed
+        tax_side = "purchase" if side == "sales" and rate < 0 else sides.get(_tax_name_key(code), "both")
+        if tax_side not in (side, "both"):
+            return code or f"{rate:g}%"
+    return None

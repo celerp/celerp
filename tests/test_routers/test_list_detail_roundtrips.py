@@ -204,9 +204,8 @@ async def test_audit_scan_tbody_never_requests_unbounded_list(ui_app):
     """The finalized-audit scan tbody swap must NOT pull the whole list through the
     unbounded /lists/{id}, and no single list-data request may exceed the page cap.
 
-    At HEAD list_scan reads api.get_list (unbounded) and _audit_line_tbody reads it
-    again, enriching all 250 lines. Observable signal: recorded GET /lists/list:big
-    (no /page suffix) requests."""
+    A scan that read the list through api.get_list would fetch and enrich all 250
+    lines. Observable signal: recorded GET /lists/list:big (no /page suffix) requests."""
     full = [_line(i) for i in range(250)]
     backend = _RecordingBackend(_audit_header("finalized"), page_items=full[:_PAGE_CAP],
                                 full_lines=full, page_has_item_meta=True)

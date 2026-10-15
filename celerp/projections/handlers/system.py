@@ -24,6 +24,11 @@ def apply_system_event(state: dict, event_type: str, data: dict) -> dict:
         current.update({"entity_type": "backup", **data})
     elif event_type == "sys.migration.applied":
         current.update({"entity_type": "migration", **data})
+    elif event_type == "sys.older_stock.placed":
+        current.update({"entity_type": "older_stock_placement", **data})
+    elif event_type == "sys.older_stock.corrected":
+        current.update({"recognized": data["recognized"], "unresolved": data["unresolved"],
+                        "corrections": [*current.get("corrections", []), data]})
     else:
         raise ValueError(f"Unsupported system event: {event_type}")
 

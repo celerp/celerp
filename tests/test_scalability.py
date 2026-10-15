@@ -8,7 +8,7 @@ Coverage:
   clear, expired JTIs excluded from active set
 - runtime_state: get_runtime_state defaults, set_draining, is_draining
 - DrainMiddleware: write blocked, read allowed, bypass paths, fail-open
-- Settings: api_workers, gui_workers defaults
+- Settings: no worker-count settings
 - JTI cleanup loop: expired rows deleted, non-expired rows kept
 - Migrations: p1q2r3s4t5u6 and q2r3s4t5u6v7 create correct tables
 """
@@ -380,32 +380,10 @@ class TestDrainMiddleware:
 # ---------------------------------------------------------------------------
 
 class TestWorkerConfig:
-    def test_api_workers_default(self):
-        """api_workers defaults to 2 for server deploys."""
+    def test_no_worker_count_settings(self):
+        """The API runs as one process (celerp.capacity), so no setting offers more workers."""
         from celerp.config import Settings
-        s = Settings()
-        assert s.api_workers == 2
-
-    def test_gui_workers_default(self):
-        """gui_workers defaults to 1 for server deploys."""
-        from celerp.config import Settings
-        s = Settings()
-        assert s.gui_workers == 1
-
-    def test_api_workers_env_override(self, monkeypatch):
-        """API_WORKERS env var overrides the default."""
-        monkeypatch.setenv("API_WORKERS", "4")
-        from importlib import reload
-        import celerp.config as cfg_mod
-        settings = cfg_mod.Settings()
-        assert settings.api_workers == 4
-
-    def test_gui_workers_env_override(self, monkeypatch):
-        """GUI_WORKERS env var overrides the default."""
-        monkeypatch.setenv("GUI_WORKERS", "2")
-        import celerp.config as cfg_mod
-        settings = cfg_mod.Settings()
-        assert settings.gui_workers == 2
+        assert not {"api_workers", "gui_workers"} & set(Settings.model_fields)
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,18 @@ def _not_found(value) -> HTTPException:
         value=str(value)))
 
 
+async def require_ship_from(session, company_id, location_id) -> uuid.UUID | None:
+    """require_company_location for a document's ship-from location, refused naming that
+    location rather than the value given, which may be another company's id."""
+    try:
+        return await require_company_location(session, company_id, location_id)
+    except HTTPException:
+        raise HTTPException(status_code=422, detail=refusal(
+            "location.ship_from_not_found",
+            "The ship-from location is not one of this company's locations. Choose a location from "
+            "Settings > Inventory > Locations, or add it there first.")) from None
+
+
 async def require_company_location(session, company_id, location_id) -> uuid.UUID | None:
     """The location's id when it belongs to the company; None when none is named."""
     if location_id is None or location_id == "":

@@ -40,24 +40,16 @@ async def test_health_version_prefers_app_version_env(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_rate_limit_on_login(client: AsyncClient) -> None:
-    # /auth/login is gated by celerp.routers.auth.limiter ("10/minute") - NOT app.state.limiter, so
-    # the old version re-enabled the wrong limiter and never actually exercised the limit. Enable the
-    # real one with fresh storage; 12 rapid attempts from one client must cross the limit. Isolation:
-    # the autouse _disable_rate_limits fixture resets the storage + disables both limiters on teardown,
-    # and xdist workers are separate processes, so this can't leak into other auth tests.
-    from celerp.routers.auth import limiter as auth_limiter
-    auth_limiter.enabled = True
-    auth_limiter._storage.reset()
-    try:
-        last = None
-        for _ in range(12):
-            last = await client.post("/auth/login", json={"email": "nobody@example.com", "password": "bad"})
-        assert last is not None
-        assert last.status_code == 429
-        assert last.json() == {"detail": t("error.rate_limited")}
-    finally:
-        auth_limiter.enabled = False
-        auth_limiter._storage.reset()
+    # /auth/login checks passwords through celerp.services.auth.password_attempts: past five
+    # failures on one account the next try waits, told at once. The autouse
+    # _disable_rate_limits fixture starts every test with no failures counted.
+    codes = [(await client.post("/auth/login", json={"email": "nobody@example.com", "password": "bad"})).status_code
+             for _ in range(5)]
+    last = await client.post("/auth/login", json={"email": "nobody@example.com", "password": "bad"})
+    assert codes == [401] * 5
+    assert last.status_code == 429
+    assert last.headers["Retry-After"] == "1"
+    assert last.json() == {"detail": t("auth.sign_ins_paused_one")}
 
 
 @pytest.mark.asyncio

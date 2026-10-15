@@ -47,3 +47,33 @@ async def test_the_bill_line_takes_the_picked_items_receive_as(client, auth):
     page = to_xml(documents._doc_detail(doc))
 
     assert "receiveAsEl.value = data.receive_as" in page
+
+
+@pytest.mark.parametrize(("doc_type", "price"), [("bill", 40.0), ("purchase_order", 40.0), ("invoice", 100.0)])
+@pytest.mark.asyncio
+async def test_a_picked_item_is_priced_at_cost_on_a_purchase_document(client, auth, routes, doc_type, price):
+    name = f"Cost {uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", headers=auth["headers"], json={
+        "status": "available", "sku": f"CO-{uuid.uuid4().hex[:6]}", "name": name, "quantity": 1,
+        "sell_by": "piece", "retail_price": 100, "cost_price": 40})
+    assert r.status_code == 200, r.text
+
+    resp = await routes[("get", "/docs/catalog-search")](_Request(query={"q": name, "doc_type": doc_type}))
+
+    [picked] = json.loads(resp.body)
+    assert picked["unit_price"] == price
+
+
+@pytest.mark.parametrize(("doc_type", "default"), [("bill", "'|0'"), ("purchase_order", "'|0'"), ("invoice", "'Sales tax|8.0'")])
+@pytest.mark.asyncio
+async def test_a_sales_only_default_tax_is_not_the_default_on_a_purchase_document(client, auth, doc_type, default):
+    from ui.routes import documents
+    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": doc_type, "line_items": []})
+    assert r.status_code == 200, r.text
+    doc = (await client.get(f"/docs/{r.json()['id']}", headers=auth["headers"])).json()
+    taxes = [{"name": "Sales tax", "rate": 8, "tax_type": "sales", "is_default": True},
+             {"name": "VAT", "rate": 7, "tax_type": "both", "is_default": False}]
+
+    page = to_xml(documents._doc_detail(doc, company_taxes=taxes))
+
+    assert f"window._CELERP_DEFAULT_TAX = {default};" in page

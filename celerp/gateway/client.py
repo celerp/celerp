@@ -48,6 +48,9 @@ _REAP_GRACE = 5 * 60       # seconds
 # socket is wedged (a stalled or backpressured peer). Bound every send so it surfaces as an
 # error instead of pinning the proxy task holding a relay slot forever.
 _SEND_DEADLINE = 30        # seconds
+# Anonymous API-app pages a visitor opens from a link: shared documents and pay links.
+# Matched on a segment boundary, so /payments or /shared-thing stay on the UI server.
+_PUBLIC_API_PREFIXES = ("/share", "/pay")
 
 
 class _SharedProxyTransport(httpx.AsyncHTTPTransport):
@@ -172,11 +175,11 @@ class GatewayClient:
         /api/, which are UI-server endpoints (HTMX fragments, image/barcode
         previews, item & bulk actions), NOT the internal data API. The API
         server is an internal backend the UI calls server-side via api_client.
-        The one exception: public share links (/share/<token>[/bundle]) are
-        anonymous API-app routes, so they must go to the API port — routed to
-        the UI server they 404 and every shared link is dead.
+        The exceptions are the anonymous API-app pages a visitor opens from a link
+        (_PUBLIC_API_PREFIXES): routed to the UI server they 404, so every shared
+        document and every pay link would be dead.
         """
-        if path == "/share" or path.startswith("/share/"):
+        if any(path == p or path.startswith(p + "/") for p in _PUBLIC_API_PREFIXES):
             return self._api_port
         return self._ui_port
 
@@ -963,6 +966,15 @@ class GatewayClient:
         # the same local app), but the original path is forwarded verbatim so the
         # local server performs its own decoding.
         port = self._local_port_for(policy_path)
+        # The local server takes a forwarding address from this machine as the visitor's,
+        # but the one the relay copies names an edge server or whatever the visitor typed.
+        # Without it every proxied visitor arrives from loopback, which names no one.
+        # The caller header is likewise trusted from loopback as the visitor the UI
+        # server names, so a visitor who sets it would choose whose sign-ins they spend.
+        from celerp.services.auth import CALLER_HEADER
+
+        dropped = {"x-forwarded-for", CALLER_HEADER.lower()}
+        headers = {k: v for k, v in headers.items() if k.lower() not in dropped}
 
         url = f"http://127.0.0.1:{port}{raw_path}"
         if query:

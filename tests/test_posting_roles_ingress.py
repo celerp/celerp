@@ -9,7 +9,8 @@ No other starting status can be entered by hand.
 
 An import books the stock it brings in once, in one entry for the whole import; a
 retry books nothing more, a draft row waits until it is made available, and a full
-snapshot of another system's item records no account and books nothing. Migrated
+snapshot of another system's item is not opening stock: it is placed at once, like any
+stock recording no inventory account (lot_origin.place_company_stock). Migrated
 stock keeps the account its source books held it in. With Accounting off nothing is
 booked, and turning Accounting on later books the imported stock as opening stock.
 
@@ -57,6 +58,15 @@ async def _opening_entries(session, company_id) -> list[dict]:
         Projection.company_id == company_id, Projection.entity_type == "journal_entry"))).scalars()
     return [r.state for r in rows if (r.state or {}).get("status") == "posted"
             and any(e.get("account") == _RE for e in r.state.get("entries") or [])]
+
+
+_PLACED = "Opening stock recognized for older stock"
+
+
+def _placed(entries: list[dict]) -> float:
+    """What the placement entries among these put on an inventory account."""
+    return sum(e["debit"] for entry in entries if entry.get("memo") == _PLACED
+               for e in entry["entries"] if e["account"] != _RE)
 
 
 async def _items_by_sku(session, company_id, sku: str) -> list[Projection]:
@@ -237,33 +247,41 @@ async def test_an_import_the_opening_account_cannot_take_writes_nothing(session,
     assert await _items_by_sku(session, auth["company_id"], "IMP-NOPE") == []
 
 
-async def test_a_raw_batch_books_its_local_creates_and_leaves_snapshots_unplaced(session, client, auth):
+async def test_a_raw_batch_books_its_local_creates_and_places_its_snapshots_at_once(session, client, auth):
     local, snapshot = _raw_record("item.created", 30.0), _raw_record("item.snapshot", 5.0, source="import:bundle")
     r = await _raw(client, auth, local, snapshot)
     assert r.status_code == 200 and r.json()["created"] == 2, r.text
     assert (await _state(session, auth, local["entity_id"])).get(_FIELD) == "1130-OB"
-    assert (await _state(session, auth, snapshot["entity_id"])).get(_FIELD) is None
-    [entry] = await _opening_entries(session, auth["company_id"])
+    assert (await _state(session, auth, snapshot["entity_id"])).get(_FIELD)
+    entries = await _opening_entries(session, auth["company_id"])
+    [entry] = [e for e in entries if e.get("memo") != _PLACED]
     assert sum(e["credit"] for e in entry["entries"] if e["account"] == _RE) == 30.0
-    await assert_books_carry_stock(session, auth["company_id"], unplaced={snapshot["entity_id"]})
+    assert _placed(entries) == 5.0
+    await assert_books_carry_stock(session, auth["company_id"])
 
 
-async def test_a_snapshot_followed_by_a_refused_create_of_the_same_item_books_nothing(session, client, auth):
+async def test_a_snapshot_followed_by_a_refused_create_of_the_same_item_books_no_opening_stock(session, client, auth):
     snapshot = _raw_record("item.snapshot", 70.0, source="import:bundle")
     create = {**_raw_record("item.created", 70.0), "entity_id": snapshot["entity_id"]}
     r = await _raw(client, auth, snapshot, create)
     assert r.status_code == 200, r.text
     assert (r.json()["created"], len(r.json()["errors"])) == (1, 1), r.text
-    assert (await _state(session, auth, snapshot["entity_id"])).get(_FIELD) is None
-    assert await _opening_entries(session, auth["company_id"]) == []
+    assert (await _state(session, auth, snapshot["entity_id"])).get(_FIELD)
+    entries = await _opening_entries(session, auth["company_id"])
+    # Only the placement brings the snapshot on: nothing is booked as opening stock.
+    assert [e.get("memo") for e in entries] == [_PLACED] and _placed(entries) == 70.0
+    await assert_books_carry_stock(session, auth["company_id"])
 
 
-async def test_a_raw_snapshot_alone_books_nothing_and_records_no_account(session, client, auth):
+async def test_a_raw_snapshot_alone_is_not_opening_stock_and_is_placed_at_once(session, client, auth):
     snapshot = _raw_record("item.snapshot", 5.0, source="import:bundle")
     r = await _raw(client, auth, snapshot)
     assert r.status_code == 200 and r.json()["created"] == 1, r.text
-    assert (await _state(session, auth, snapshot["entity_id"])).get(_FIELD) is None
-    assert await _opening_entries(session, auth["company_id"]) == []
+    assert (await _state(session, auth, snapshot["entity_id"])).get(_FIELD)
+    entries = await _opening_entries(session, auth["company_id"])
+    # Only the placement brings the snapshot on: nothing is booked as opening stock.
+    assert [e.get("memo") for e in entries] == [_PLACED] and _placed(entries) == 5.0
+    await assert_books_carry_stock(session, auth["company_id"])
 
 
 async def test_an_import_with_accounting_off_books_nothing_until_accounting_is_turned_on(session, client, auth):

@@ -242,6 +242,65 @@ def test_relay_routes_share_paths_to_api_server(client):
     assert client._local_port_for("/shared-thing") == client._ui_port
 
 
+def test_relay_routes_pay_links_to_api_server_and_lookalikes_to_ui(client):
+    """A pay link and the customer's return from checkout are API-app pages; on the
+    UI server they 404 and no invoice can be paid through Connect. Only the whole
+    segment counts, so the UI's own /payments pages and lookalikes stay on the UI."""
+    assert client._local_port_for("/pay/x") == client._api_port
+    assert client._local_port_for("/pay/x/return") == client._api_port
+    assert client._local_port_for("/payBy") == client._ui_port
+    assert client._local_port_for("/pay-x") == client._ui_port
+    assert client._local_port_for("/payments") == client._ui_port
+
+
+# Anonymous API routes the UI server calls in-process on a visitor's behalf: login, setup,
+# restore and probes. No browser opens them directly, so the relay never exposes them.
+_UI_CALLS_ONLY = ("/auth/", "/company-backups/", "/migrations/", "/backup/", "/import-bootstrap", "/__celerp/",
+                  "/health/")
+
+
+def test_every_anonymous_api_page_is_reached_through_connect_or_named_as_ui_only(client):
+    """Every API route with no sign-in that the UI app does not serve itself either goes
+    to the API port, or is one the UI server alone calls. A new public page added to the
+    API without routing would fail here instead of 404ing for every visitor."""
+    import re
+
+    from celerp.ai.tools import _api_routes
+    from celerp.main import app
+    from celerp.services.auth import get_auth_context
+    from starlette.routing import Mount
+    from test_module_write_routes_guarded import _module_routers
+    from ui.app import app as ui_app
+
+    def calls(dependant):
+        yield dependant.call
+        for sub in dependant.dependencies:
+            yield from calls(sub)
+
+    def ui_paths(routes, prefix=""):
+        for r in routes:
+            if isinstance(r, Mount):
+                yield from ui_paths(r.routes or [], prefix + r.path)
+            elif hasattr(r, "path"):
+                yield prefix + r.path
+
+    # Keyed by the path the app serves: an included router's own route carries only its
+    # path within that router.
+    routes = {path: r for path, _, r in _api_routes(app)}
+    for router in _module_routers():
+        routes.update({r.path_format: r for r in router.routes if hasattr(r, "dependant")})
+    served_by_ui = set(ui_paths(ui_app.routes))
+    anonymous = {path for path, r in routes.items()
+                 if get_auth_context not in set(calls(r.dependant)) and path not in served_by_ui}
+    reached = {path for path in anonymous
+               if client._local_port_for(re.sub(r"{[^}]+}", "x", path)) == client._api_port}
+    ui_only = {path for path in anonymous if path.startswith(_UI_CALLS_ONLY)}
+
+    assert {"/pay/{token}", "/pay/{token}/return", "/share/{token}", "/share/{token}/bundle"} <= reached
+    assert anonymous - reached - ui_only == set()
+    assert reached & ui_only == set()
+
+
 def test_stop_sets_running_false(client):
     """stop() sets _running=False."""
     client._running = True

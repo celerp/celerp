@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import (
     CONSIGNOR_FIELD,
     CONSIGNOR_PAYABLE_FIELD,
+    INVENTORY_VALUE_ROLES,
     LOT_ACCOUNT_FIELD,
     POSTING_ACCOUNTS_PATH,
     POSTING_ROLES_SCHEMA,
@@ -43,14 +44,16 @@ from celerp.models.projections import Projection
 
 
 class PostingRoleError(HTTPException):
-    """A role new recognition needs is missing or its account cannot take the posting."""
+    """A role new recognition needs is missing or its account cannot take the posting.
+    Whoever was refused may not manage accounting, so the refusal says who fixes it, and
+    those who do are notified (celerp.main.posting_refused_handler)."""
 
     def __init__(self, problems: list[dict]):
         text = " ".join(p["message"] for p in problems)
         super().__init__(
             status_code=409,
-            detail=refusal("posting.refused", f"{text} Choose the account in Settings > Accounting > Posting accounts.",
-                           problems=problems),
+            detail=refusal("posting.refused", f"{text} Someone who manages accounting must choose the account in "
+                           "Settings > Accounting > Posting accounts; they have been notified.", problems=problems),
             headers={"X-Celerp-Fix": POSTING_ACCOUNTS_PATH},
         )
 
@@ -189,18 +192,21 @@ async def record_source_control(session: AsyncSession, company_id, role, code: s
 
 
 class LotOriginError(HTTPException):
-    """A lot from before lots recorded their inventory account was left unplaced by the
-    upgrade (celerp.services.lot_origin), so its cost cannot move until the user picks
-    the account (lot_origin.choose_lot_account)."""
+    """A lot recording no inventory account is not placed yet, so its cost cannot move.
+    Such stock is placed as it arrives (celerp.services.lot_origin.place_company_stock):
+    at start, and by the import, restore or migration that brings it in while Celerp
+    runs. Placement then waits only on a posting account setting or a period lock, each
+    with its own notice."""
 
     def __init__(self, sku: str):
         super().__init__(
             status_code=409,
             detail=refusal(
                 "posting.older_stock.no_account",
-                f"Stock {sku or 'item'} has no recorded inventory account, so its cost cannot be moved "
-                "without guessing. Choose its inventory account under Older stock in "
-                "Settings > Accounting > Posting accounts.", sku=sku or "item"),
+                f"Stock {sku or 'item'} has no inventory account yet, so its cost cannot move. "
+                "Celerp places older stock on the Purchased inventory account set under "
+                "Settings > Accounting > Posting accounts. When a setting holds it back, the bell "
+                "notice says which, and someone who manages accounting must fix it.", sku=sku or "item"),
             headers={"X-Celerp-Fix": POSTING_ACCOUNTS_PATH},
         )
 
@@ -458,6 +464,67 @@ def target_problems(roles: list[str], current: dict[str, str], accounts: dict[st
     return problems
 
 
+def stock_line(settings: dict | None, entry: dict) -> bool:
+    """Whether a journal line moved stock value: it carried roles when posted
+    (line_roles) and every one of them is an inventory role. A line posted for cash,
+    deposits, receivables, input tax or any other role, or for none, is not stock,
+    whatever account it sits on."""
+    roles = line_roles(settings, entry)
+    return bool(roles) and all(is_role(r) and AccountRole(r) in INVENTORY_VALUE_ROLES for r in roles)
+
+
+def uncertain_stock_line(settings: dict | None, entry: dict) -> bool:
+    """Whether a line may have moved stock value but cannot be shown to: posted before
+    lines recorded their roles, on an account that has served an inventory role and
+    another one too (line_roles). stock_line counts it as not stock; that never proves
+    the stock was never booked."""
+    if entry.get("account_roles") is not None:
+        return False
+    stock = [is_role(r) and AccountRole(r) in INVENTORY_VALUE_ROLES for r in line_roles(settings, entry)]
+    return any(stock) and not all(stock)
+
+
+async def cash_accounts(session: AsyncSession, company_id) -> set[str]:
+    """The chart's accounts that hold cash: a bank account, or one under the cash and
+    cash equivalents header. None when accounting is not running."""
+    from celerp.services.journal_accounts import chart_access
+
+    access = chart_access()
+    return {row["code"] for row in await access.list_accounts(session, company_id) if row.get("cash")} if access else set()
+
+
+async def stock_problems(session: AsyncSession, company_id, settings: dict, choices: dict[str, str]) -> list[dict]:
+    """Why each role in ``choices`` ({role: code}) cannot be pointed at its account, with
+    the company's ``settings`` as they are before the change: an inventory role never
+    takes an account that holds cash (a bank account, or one under the cash and cash
+    equivalents header), and any other role never takes an account that still holds
+    stock (lot_origin.stock_holders), since a line posted there before posting accounts
+    existed would then read as that role's and stop counting as stock. A role kept on
+    the account it already uses is never refused."""
+    from celerp.services.lot_origin import stock_holders
+
+    current = role_map(settings)
+    changed = {role: code for role, code in choices.items() if current.get(role) != code}
+    stock = {role: code for role, code in changed.items() if AccountRole(role) in INVENTORY_VALUE_ROLES}
+    others = {role: code for role, code in changed.items() if role not in stock}
+    cash = await cash_accounts(session, company_id) if stock else set()
+    holders = await stock_holders(session, company_id, settings, set(others.values())) if others else set()
+    problems = []
+    for role, code in changed.items():
+        label = ROLE_LABELS[AccountRole(role)]
+        if role in stock and code in cash:
+            problems.append(refusal(
+                "posting.problem.not_inventory",
+                f"{label} cannot be set to account {code}: that account holds cash, so it is not an inventory "
+                "account. Choose an inventory account.", role=str(role), code=code))
+        elif role in others and code in holders:
+            problems.append(refusal(
+                "posting.problem.holds_inventory",
+                f"{label} cannot be set to account {code}: that account holds inventory. "
+                "Choose an account that holds no stock.", role=str(role), code=code))
+    return problems
+
+
 async def resolve_many(session: AsyncSession, company_id, roles) -> dict[str, str]:
     """The current target of every role one economic entry needs, from one read.
 
@@ -521,7 +588,8 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
             "Celerp couldn't find this company. It may have been deleted. Refresh the page."))
     # A child added under the account meanwhile would turn it into a header.
     await lock_chart(session, company_id)
-    settings = with_role(dict(company.settings or {}), role, code)
+    before = dict(company.settings or {})
+    settings = with_role(before, role, code)
     new_map = role_map(settings)
     # Exchange gain and loss are judged as a pair: moving one side can change what
     # the other side's account is allowed to be.
@@ -534,6 +602,9 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
         problem = target_problem(checked_role, new_map, accounts.get(new_map[checked_role]))
         if problem:
             raise HTTPException(status_code=422, detail=problem)
+    problems = await stock_problems(session, company_id, before, {role: code})
+    if problems:
+        raise HTTPException(status_code=422, detail=problems[0])
     from celerp.services.company_settings import record_change
     record_change(settings, ROLES_KEY, user_id)
     company.settings = settings

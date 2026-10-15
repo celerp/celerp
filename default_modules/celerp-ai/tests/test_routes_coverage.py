@@ -52,8 +52,6 @@ async def auth_client(session: AsyncSession):
     from celerp.services.session_tracker import clear as _clear_tracker
     await _clear_tracker(session)
     app.dependency_overrides[get_session] = lambda: session
-    if hasattr(app.state, "limiter"):
-        app.state.limiter.enabled = False
     token = secrets.token_hex(32)
     gw_state.set_session_token(token)
 

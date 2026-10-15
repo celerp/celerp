@@ -5,9 +5,9 @@
 Two customer-reported defects, both surfacing in the document/list line editor:
 
 1. A non-splittable physical item scanned or picked twice onto one document must
-   not create a second line. The client rejects the duplicate at the fill step,
-   shows a translated message, and never appends a row or autosaves; after a
-   reload the server holds the item exactly once.
+   not create a second line. The scan reports the duplicate, naming the code, and
+   appends no row; after a reload the server holds the item exactly
+   once.
 
 2. A meaningful list row whose quantity is blank/missing must NOT silently
    coerce to 1 and save. The save aborts before any request, shows a translated
@@ -21,12 +21,10 @@ import uuid
 
 import pytest
 
-from ui.i18n import t
-
 pytestmark = pytest.mark.browser
 
-# The English value of the shared dedup key (en locale in the browser context).
-_DUP_MSG = t("documents.duplicate_item_on_document", "en")
+# The scan bar's duplicate report, as the document scan words it.
+_DUP_MSG = "already on this document"
 
 
 def _sku_row_count(page, sku: str) -> int:
@@ -68,12 +66,21 @@ def _nonsplittable_item(api, tag: str) -> dict:
     return {"id": item.get("id") or item.get("entity_id"), "sku": sku, "barcode": barcode}
 
 
+def _scan(page, code: str) -> None:
+    """Scan one code the way the scan bar takes it: Enter queues it, Add submits the run."""
+    inp = page.locator("#scan-bar-input")
+    inp.click()
+    inp.fill(code)
+    inp.press("Enter")
+    page.locator("#scan-bar-add").click()
+
+
 # ── Defect 1: physical-duplicate guard (document scan) ──────────────────────────
 
 
 def test_duplicate_scan_blocked_and_persisted(page, ui_server, api):
     """Scanning a non-splittable item that is already on the invoice shows the
-    translated message, appends no second row, does not autosave, and after a
+    duplicate message, appends no second row, does not autosave, and after a
     reload the server holds the item on exactly one line."""
     tag = uuid.uuid4().hex[:6]
     item = _nonsplittable_item(api, tag)
@@ -82,20 +89,15 @@ def test_duplicate_scan_blocked_and_persisted(page, ui_server, api):
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.wait_for_selector("#scan-bar-input", timeout=8000)
 
-    inp = page.locator("#scan-bar-input")
     # First scan appends one line.
-    inp.click()
-    inp.fill(item["barcode"])
-    inp.press("Enter")
+    _scan(page, item["barcode"])
     _wait_for_sku_row(page, item["sku"])
     assert _sku_row_count(page, item["sku"]) == 1
 
     # Second scan of the same non-splittable item is rejected: no second row is
     # appended (the primary invariant, red at merge-base where it appends a
-    # duplicate), nothing new is autosaved, and the translated message shows.
-    inp.click()
-    inp.fill(item["barcode"])
-    inp.press("Enter")
+    # duplicate), nothing new is autosaved, and the duplicate message shows.
+    _scan(page, item["barcode"])
     page.wait_for_timeout(1500)
     assert _sku_row_count(page, item["sku"]) == 1, "the duplicate scan appended a second row"
     assert _DUP_MSG in (page.locator("#scan-bar-status").text_content() or ""), \
@@ -117,16 +119,11 @@ def test_duplicate_message_outlives_the_previous_scans_notice(page, ui_server, a
 
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.wait_for_selector("#scan-bar-input", timeout=8000)
-    inp = page.locator("#scan-bar-input")
-    inp.click()
-    inp.fill(item["barcode"])
-    inp.press("Enter")
+    _scan(page, item["barcode"])
     _wait_for_sku_row(page, item["sku"])
 
     page.wait_for_timeout(2000)
-    inp.click()
-    inp.fill(item["barcode"])
-    inp.press("Enter")
+    _scan(page, item["barcode"])
     page.wait_for_function(
         "m => (document.getElementById('scan-bar-status').textContent || '').includes(m)", arg=_DUP_MSG,
         timeout=8000)
@@ -134,13 +131,51 @@ def test_duplicate_message_outlives_the_previous_scans_notice(page, ui_server, a
     assert _DUP_MSG in (page.locator("#scan-bar-status").text_content() or ""), \
         "the duplicate-item message was cleared by the earlier scan's timer"
 
-def test_overlapping_lookup_race_no_duplicate(page, ui_server, api):
-    """Two genuinely simultaneous scans of the same non-splittable item persist only
-    one line. BOTH catalog-lookups are held until both are in flight, so neither
-    scan's client-side guard can see the other's row when it fills - the client
-    check is defeated by construction and the server backstop
-    (assert_document_item_uniqueness) is the only thing that can hold. After a
-    save/reload the server holds exactly one line."""
+def test_overlapping_scan_batches_no_duplicate(page, ui_server, api):
+    """Two pages submit the same non-splittable item to one invoice at the same moment.
+    Both scan requests are held until both are in flight, then released together, so
+    neither page can see the other's line first; the server serializes the two batches
+    and holds the item on exactly one line."""
+    tag = uuid.uuid4().hex[:6]
+    item = _nonsplittable_item(api, tag)
+    doc_id = api.post("/docs", json={"doc_type": "invoice", "status": "draft"}).json()["id"]
+
+    second = page.context.new_page()
+    held: list = []
+    for p in (page, second):
+        p.route("**/docs/*/scan", lambda route: held.append(route))
+        p.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+        p.wait_for_selector("#scan-bar-input", timeout=8000)
+
+    _scan(page, item["barcode"])
+    _scan(second, item["barcode"])
+
+    # The handler only records each route (never blocks the dispatch loop); the main
+    # thread waits for both, then continues each exactly once.
+    for _ in range(80):
+        if len(held) >= 2:
+            break
+        page.wait_for_timeout(50)
+    assert len(held) >= 2, f"expected both scan batches in flight, held {len(held)}"
+    for route in held:
+        try:
+            route.continue_()
+        except Exception:
+            pass
+    for p in (page, second):
+        p.unroute("**/docs/*/scan")
+    page.wait_for_timeout(2000)
+    second.close()
+
+    line_items = api.get(f"/docs/{doc_id}").json().get("line_items", [])
+    matches = [li for li in line_items if li.get("sku") == item["sku"]]
+    assert len(matches) == 1, f"server must hold one line for the item, got {line_items}"
+
+
+def test_doc_scan_retry_after_lost_response_replays(page, ui_server, api):
+    """The scan reaches the server and commits, but its response never comes back. The
+    field keeps the batch and its run key, so pressing Add again replays the recorded
+    run instead of adding the line a second time."""
     tag = uuid.uuid4().hex[:6]
     item = _nonsplittable_item(api, tag)
     doc_id = api.post("/docs", json={"doc_type": "invoice", "status": "draft"}).json()["id"]
@@ -148,47 +183,28 @@ def test_overlapping_lookup_race_no_duplicate(page, ui_server, api):
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.wait_for_selector("#scan-bar-input", timeout=8000)
 
-    # Hold BOTH catalog-lookups open, then release them together: neither fill runs
-    # before the other's row exists, so no "first row already appended" ordering is
-    # imposed and the client-side guard is defeated by construction. The handler only
-    # RECORDS the route and returns (never blocks the single Playwright dispatch loop -
-    # a blocking wait there would stop the partner's handler from ever running); the
-    # main thread below waits for both, then continues each exactly once.
-    held: list = []
-    page.route("**/docs/catalog-lookup*", lambda route: held.append(route))
+    dropped: list = []
 
-    inp = page.locator("#scan-bar-input")
-    # Fire the first scan (its lookup is held), then the second, without waiting for
-    # any row to appear in between.
-    inp.click()
-    inp.fill(item["barcode"])
-    inp.press("Enter")
-    inp.click()
-    inp.fill(item["barcode"])
-    inp.press("Enter")
-
-    # Wait for both lookups to be outstanding, then release them concurrently. Release
-    # each before removing the handler; a route the page has already abandoned (e.g. on
-    # teardown) is tolerated so the test fails on its assertion, never on route plumbing.
-    for _ in range(80):
-        if len(held) >= 2:
-            break
-        page.wait_for_timeout(50)
-    assert len(held) >= 2, f"expected both catalog-lookups in flight, held {len(held)}"
-    for route in held:
-        try:
+    def _drop_first(route):
+        if dropped:
             route.continue_()
-        except Exception:
-            pass
-    page.unroute("**/docs/catalog-lookup*")
+            return
+        dropped.append(route.fetch())  # the server handles and commits the batch
+        route.abort()                  # ...but the page never sees the reply
 
-    page.wait_for_timeout(2000)
+    page.route("**/docs/*/scan", _drop_first)
+    _scan(page, item["barcode"])
+    page.wait_for_function("() => !document.querySelector('#scan-bar-add').disabled", timeout=8000)
+    assert dropped, "the first scan never reached the server"
+    assert item["barcode"] in page.locator("#scan-bar-input").input_value()
 
-    # Authoritative: after the save round-trip the server holds exactly one line,
-    # held by the backend uniqueness backstop even though the client guard was raced.
+    page.locator("#scan-bar-add").click()
+    _wait_for_sku_row(page, item["sku"])
+    page.unroute("**/docs/*/scan")
+
     line_items = api.get(f"/docs/{doc_id}").json().get("line_items", [])
     matches = [li for li in line_items if li.get("sku") == item["sku"]]
-    assert len(matches) == 1, f"server must hold one line for the item, got {line_items}"
+    assert len(matches) == 1, f"the retried batch must replay, got {line_items}"
 
 
 # ── Defect 2: list-quantity read fail-close ─────────────────────────────────────

@@ -24,25 +24,37 @@ operation; returning it to draft takes that value off again (draft_boundary). Wi
 Accounting off the move books nothing, and the stock is opening stock when Accounting is
 turned on.
 
-Nothing else is assumed. Stock in a company whose books came from elsewhere (a
-migration, a bundle import, a restored backup), or whose two accounts do not add up to
-the stock on hand, records no account and refuses to move its cost
-(account_roles.lot_account) until the user picks the account that carries it here
-(choose_lot_account). A pick is accepted only when that account holds the lot's value
-beyond the stock already recorded on it.
+Stock the books cannot vouch for this way (a company whose books came from elsewhere,
+such as a migration, a bundle import or a restored backup, or whose two accounts do not
+add up to the stock) is placed as it arrives, every lot of it, on one default inventory
+account, against what the inventory accounts hold together: value split across them is
+moved onto the default account, value they fall short of is recognized as opening
+stock, and value they hold beyond the stock is recorded, unresolved, for the
+accountant; one placement record keeps all of it and the company is told
+(place_older_stock). Every inventory account then holds the lots recorded on it, less
+the cost invoices recognized and have not shipped, plus the difference recorded on it.
+Every start and every writer that brings such stock in while Celerp runs (a batch
+import of another system's items, a restored backup, a finalized migration) places it
+the same way (place_company_stock), as does turning Accounting on and any request
+refused only because the stock it needs is not placed yet, which then runs again
+(place_unplaced_stock). The user can move placed lots to another inventory
+account in bulk, each move booking its value across (move_lot_accounts), undo a move
+(undo_lot_move), and correct how a placement treated its difference (correct_placements).
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from types import SimpleNamespace
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
+    ACCOUNTING_SETTINGS_PATH,
     INVENTORY_ORIGIN_KEY,
     INVENTORY_ORIGIN_SCHEMA,
     LOT_ACCOUNT_FIELD,
@@ -66,13 +78,25 @@ from celerp.services.account_roles import (
     resolve_many,
     role_map,
     scope_codes,
+    scope_list,
+    stock_line,
     target_problems,
+    uncertain_stock_line,
 )
-from celerp.services.business_time import business_date_of
+from celerp.services.business_time import business_date_at, business_date_of
 from celerp.services.money import round_money
 
+logger = logging.getLogger(__name__)
+
 RECORDED = "item.inventory_account.recorded"
+MOVED = "item.inventory_account.moved"
 KEPT = "item.inventory_on_books.recorded"
+
+OLDER_STOCK_PATH = f"{ACCOUNTING_SETTINGS_PATH}?tab=older-stock"
+# The top of the Older stock tab, where it says whether the stock is reconciled.
+RECONCILIATION_PATH = f"{OLDER_STOCK_PATH}#older-stock-reconciliation"
+PLACED_BY = "placed automatically"
+MAX_MOVE = 10000
 
 # Statuses of lots whose stock is not on the books: no longer owned, or (draft) not yet
 # committed.
@@ -166,14 +190,34 @@ def value_moved(before: dict, after: dict | None, currency: str) -> Decimal:
     return round_money(recorded_value(before), currency) - round_money(left, currency)
 
 
-async def _items(session: AsyncSession, company_id) -> list[Projection]:
+def _in_stock_row():
+    """in_stock as a condition on an item row, from the same statuses, so a read skips
+    every lot whose stock left the books (sold, merged, retired with its value given up)."""
+    status = func.lower(func.coalesce(Projection.state["status"].as_string(), ""))
+    return and_(status.not_in(OFF_BOOKS),
+                or_(status.not_in(RETIRED), Projection.state[ON_BOOKS_FIELD].as_string() == "true"))
+
+
+async def _items(session: AsyncSession, company_id, *where) -> list[Projection]:
+    """Every item row (meeting ``where``) as the database holds it now, never as an
+    earlier read loaded it."""
     return list((await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type == "item"))).scalars())
+        Projection.company_id == company_id, Projection.entity_type == "item", *where)
+        .execution_options(populate_existing=True))).scalars())
 
 
-async def _posted_entries(session: AsyncSession, company_id) -> list[tuple[str, dict]]:
-    rows = (await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type == "journal_entry"))).scalars()
+async def _held_items(session: AsyncSession, company_id) -> list[Projection]:
+    """The item rows whose stock is on the books (in_stock), filtered in the read: every
+    lot holding value (held_value) is among them, and a lot sold long ago is never read."""
+    return [r for r in await _items(session, company_id, _in_stock_row()) if in_stock(r.state)]
+
+
+async def _posted_entries(session: AsyncSession, company_id, ids=None) -> list[tuple[str, dict]]:
+    """The lines of every posted journal entry, or of those among ``ids``."""
+    query = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "journal_entry")
+    if ids is not None:
+        query = query.where(Projection.entity_id.in_(list(ids)))
+    rows = (await session.execute(query)).scalars()
     return [(row.entity_id, entry) for row in rows if (row.state or {}).get("status") == "posted"
             for entry in row.state.get("entries") or []]
 
@@ -189,15 +233,101 @@ async def account_balances(session: AsyncSession, company_id, codes) -> dict[str
     return {code: _balance(entries, code) for code in codes}
 
 
-def _room(entries: list[tuple[str, dict]], items: list[Projection], code: str, currency: str,
-          sold: dict[str, float]) -> Decimal:
-    """What ``code`` holds beyond the value of the lots on hand that record it, less what
-    finalized invoices already recognized for the ones they have not shipped (``sold``,
-    from auto_je.recognized_unshipped)."""
-    balance = _balance(entries, code)
+def _stock_balance(settings: dict, entries: list[tuple[str, dict]], code: str) -> Decimal:
+    """The balance of ``code`` from the lines posted to it as stock (account_roles.
+    stock_line) only: cash, deposits, input tax or anything else on the same account is
+    not stock value and never counts towards it."""
+    return _balance([(je, e) for je, e in entries if stock_line(settings, e)], code)
+
+
+def _uncertain_lines(settings: dict, entries: list[tuple[str, dict]], codes) -> list[tuple[str, dict]]:
+    """The lines on ``codes`` that may have been stock but cannot be shown to
+    (account_roles.uncertain_stock_line)."""
+    return [(je, e) for je, e in entries if e.get("account") in codes and uncertain_stock_line(settings, e)]
+
+
+def uncertain_evidence(settings: dict, entries: list[tuple[str, dict]], codes, currency: str) -> list[dict]:
+    """The uncertain lines (_uncertain_lines) on each of ``codes``, in that order: the
+    account, their balance and the entries holding them. Evidence for the accountant to
+    review: what they were is not known, so they prove nothing about the stock either way."""
+    found = []
+    for code in codes:
+        lines = _uncertain_lines(settings, entries, {code})
+        if lines:
+            found.append({"account": code, "amount": float(round_money(_balance(lines, code), currency)),
+                          "entries": sorted({je for je, _ in lines})})
+    return found
+
+
+# The postings that record a payment, by the trigger kept on the entry when it was
+# posted: their lines moved cash, whatever roles their accounts served.
+PAYMENT_TRIGGER = "doc.payment."
+
+
+async def evidence_entries(session: AsyncSession, company_id, settings: dict,
+                           entries: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+    """``entries`` less every entry posted as a payment (PAYMENT_TRIGGER), read in one
+    query: what each was posted for is recorded with it, so a payment's lines are never
+    read as possible stock (_uncertain_lines) or explain a difference. An account being a
+    bank account today proves nothing of what an older line on it was for: any other
+    line that may have been stock stays evidence to review."""
+    ids = sorted({je for je, e in entries if uncertain_stock_line(settings, e)})
+    if not ids:
+        return entries
+    paid = set((await session.execute(select(LedgerEntry.entity_id).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == "acc.journal_entry.created",
+        LedgerEntry.entity_id.in_(ids),
+        LedgerEntry.metadata_["trigger"].as_string().startswith(PAYMENT_TRIGGER)))).scalars())
+    return [(je, e) for je, e in entries if je not in paid]
+
+
+def unexplained(settings: dict, entries: list[tuple[str, dict]], codes, gap: Decimal) -> Decimal:
+    """The part of ``gap`` (what ``codes`` hold as stock beyond the stock recorded on them,
+    negative when short) that no reading of their uncertain lines (_uncertain_lines) can
+    explain. Each such line may or may not have been stock, so the true gap lies anywhere
+    from ``gap`` plus every credit among them to ``gap`` plus every debit: a range reaching
+    zero leaves no difference, and otherwise only the end nearest zero is one. The one rule
+    placing (_place) and the books check (stock_off_books) both read a difference by."""
+    moves = [Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
+             for _, e in _uncertain_lines(settings, entries, set(codes))]
+    low = gap + sum((m for m in moves if m < 0), Decimal("0"))
+    high = gap + sum((m for m in moves if m > 0), Decimal("0"))
+    return high if high < 0 else low if low > 0 else Decimal("0")
+
+
+def stock_accounts(settings: dict, entries: list[tuple[str, dict]]) -> list[str]:
+    """Every account a line was posted to as stock (account_roles.stock_line), whatever
+    role it serves now or whether it can still take entries, in first-posted order."""
+    return list(dict.fromkeys(e["account"] for _, e in entries if e.get("account") and stock_line(settings, e)))
+
+
+async def stock_balances(session: AsyncSession, company_id, settings: dict, codes) -> dict[str, Decimal]:
+    """_stock_balance of each of ``codes``, read once."""
+    entries = await _posted_entries(session, company_id)
+    return {code: _stock_balance(settings, entries, code) for code in codes}
+
+
+async def stock_holders(session: AsyncSession, company_id, settings: dict, codes: set[str]) -> set[str]:
+    """Which of ``codes`` still hold stock: lines posted as stock leave a balance on the
+    account (_stock_balance), or a lot holding value records it."""
+    currency = settings.get("currency", "USD")
+    entries = await _posted_entries(session, company_id)
+    lots = {(r.state or {}).get(LOT_ACCOUNT_FIELD) for r in await _held_items(session, company_id) if held_value(r)}
+    return {code for code in codes
+            if code in lots or round_money(_stock_balance(settings, entries, code), currency)}
+
+
+def _room(settings: dict, entries: list[tuple[str, dict]], items: list[Projection], code: str, currency: str,
+          sold: dict[str, float], unresolved: dict[str, Decimal]) -> Decimal:
+    """What ``code`` holds as stock (_stock_balance) beyond the value of the lots on hand
+    that record it, less what finalized invoices already recognized for the ones they
+    have not shipped (``sold``, from auto_je.recognized_unshipped) and the difference a
+    placement left on it for the accountant (``unresolved``, from unresolved_differences)."""
+    balance = _stock_balance(settings, entries, code)
     recorded = sum((booked_value(r, currency) for r in items if (r.state or {}).get(LOT_ACCOUNT_FIELD) == code),
                    Decimal("0"))
-    return balance - recorded + round_money(sold.get(code, 0), currency)
+    return (balance - recorded + round_money(sold.get(code, 0), currency)
+            - unresolved.get(code, Decimal("0")))
 
 
 async def account_room(session: AsyncSession, company_id, code: str) -> Decimal:
@@ -209,10 +339,12 @@ async def account_rooms(session: AsyncSession, company_id, codes) -> dict[str, D
     """account_room for each of ``codes``, read once."""
     from celerp.services.auto_je import recognized_unshipped
 
-    currency = (await current_settings(session, company_id)).get("currency", "USD")
-    entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
-    sold = await recognized_unshipped(session, company_id)
-    return {code: round_money(_room(entries, items, code, currency, sold), currency) for code in codes}
+    settings = await current_settings(session, company_id)
+    currency = settings.get("currency", "USD")
+    entries, items = await _posted_entries(session, company_id), await _held_items(session, company_id)
+    sold, unresolved = await recognized_unshipped(session, company_id), await unresolved_differences(session, company_id)
+    return {code: round_money(_room(settings, entries, items, code, currency, sold, unresolved), currency)
+            for code in codes}
 
 
 def awaits_account(row: Projection) -> bool:
@@ -227,26 +359,37 @@ def unrecorded(items: list[Projection]) -> list[Projection]:
     return [r for r in items if awaits_account(r)]
 
 
-async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
+async def stock_off_books(session: AsyncSession, company_id, items: list[Projection] | None = None) -> list[dict]:
     """What the books check reports about stock: each lot on hand holding value that
-    records no inventory account, and each account lots are carried on whose balance differs from
-    the stock on hand recorded on it. Read only; nothing is booked to close a gap."""
+    records no inventory account, each account lots are carried on whose balance differs
+    from the stock on hand recorded on it beyond what a placement recorded there and what
+    its uncertain lines could explain (unexplained), those uncertain lines as evidence to
+    review (uncertain_evidence), and each difference a placement recorded, unresolved, for
+    the accountant (_place). ``items`` are the lots in stock (_held_items) when the caller
+    has already read them. Read only; nothing is booked to close a gap."""
     from celerp.services.auto_je import recognized_unshipped
 
     settings = await current_settings(session, company_id)
     if SCHEMA_KEY not in settings:
         return []
     currency = settings.get("currency", "USD")
-    entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
-    sold = await recognized_unshipped(session, company_id)
+    entries = await _posted_entries(session, company_id)
+    items = await _held_items(session, company_id) if items is None else items
+    sold, unresolved = await recognized_unshipped(session, company_id), await unresolved_differences(session, company_id)
     findings = [{"kind": "unplaced_lot", "entity_id": r.entity_id, "sku": (r.state or {}).get("sku")}
                 for r in sorted(unrecorded(items), key=lambda r: r.entity_id)]
-    for code in sorted({code for role in _INVENTORY for code in scope_codes(settings, role)}):
-        room = round_money(_room(entries, items, code, currency, sold), currency)
-        if room:
-            books = round_money(_balance(entries, code), currency)
+    codes = sorted({code for role in _INVENTORY for code in scope_codes(settings, role)})
+    evidence = await evidence_entries(session, company_id, settings, entries)
+    for code in codes:
+        room = round_money(_room(settings, entries, items, code, currency, sold, unresolved), currency)
+        if unexplained(settings, evidence, {code}, room):
+            books = round_money(_stock_balance(settings, entries, code), currency)
             findings.append({"kind": "stock_gap", "account": code, "books": float(books),
-                             "stock": float(books - room)})
+                             "stock": float(books - room - unresolved.get(code, Decimal("0")))})
+    findings += [{"kind": "uncertain_evidence", **found}
+                 for found in uncertain_evidence(settings, evidence, codes, currency)]
+    findings += [{"kind": "unresolved_difference", "account": code, "amount": float(amount)}
+                 for code, amount in sorted(unresolved.items())]
     return findings
 
 
@@ -288,7 +431,7 @@ def refuse_draft(state: dict, ref: str = "") -> None:
 AUTHORING_EVENT_TYPES: frozenset[str] = frozenset({
     "item.created", "item.updated", "item.patched", "item.pricing.set",
     "item.status.set", "item.recipe.set", "item.workflow.set",
-    RECORDED,
+    RECORDED, MOVED,
     "shop.sync.enabled", "shop.sync.disabled",
 })
 
@@ -346,19 +489,18 @@ def _legacy(items: list[Projection]) -> list[Projection]:
             if not (r.state or {}).get(LOT_ACCOUNT_FIELD) and _owned_stock(r) and not _draft(r.state or {})]
 
 
-async def unrecorded_lots(session: AsyncSession, company_id) -> list[dict]:
-    """Stock on hand that records no inventory account, oldest first."""
-    rows = sorted(unrecorded(await _items(session, company_id)), key=lambda r: (r.created_at is None, r.created_at))
-    return [{"item_id": r.entity_id, "sku": r.state.get("sku") or "", "name": r.state.get("name") or "",
-             "value": float(held_value(r))} for r in rows]
+def _record_key(item_id: str) -> str:
+    """The idempotency key of the event recording a lot's inventory account: once per lot."""
+    return f"lot-account:{item_id}"
 
 
-async def _record(session: AsyncSession, company_id, item_id: str, code: str, why: str, actor_id) -> None:
+async def _record(session: AsyncSession, company_id, item_id: str, code: str, why: str, actor_id,
+                  metadata: dict | None = None) -> None:
     from celerp.events.engine import emit_event
 
     await emit_event(session, company_id=company_id, entity_id=item_id, entity_type="item", event_type=RECORDED,
                      data={LOT_ACCOUNT_FIELD: code}, actor_id=actor_id, location_id=None, source="system",
-                     idempotency_key=f"lot-account:{item_id}", metadata_={"recorded_by": why})
+                     idempotency_key=_record_key(item_id), metadata_={"recorded_by": why, **(metadata or {})})
 
 
 async def books_from_elsewhere(session: AsyncSession, company_id, settings: dict) -> bool:
@@ -399,31 +541,434 @@ async def _locked(session: AsyncSession, company_id, roles: list[str]) -> tuple[
 
 
 async def _mark(session: AsyncSession, company_id) -> None:
-    """Mark the company upgraded. Older stock on hand still recording no inventory account
-    waits for the user, who is told where to place it."""
+    """Mark the company upgraded, then place any older stock still recording no inventory
+    account (_place)."""
     from celerp.services.company_lock import locked_company
 
     company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA}
     await session.flush()
+    await _place(session, company_id)
+
+
+def _notice(base: str, body: str = "body", **params) -> tuple[str, str, dict]:
+    """A notice's English title and body from the catalog keys ``base.title`` and
+    ``base.<body>``, and the i18n record each reader's language is shown from; a
+    ``problems`` param (refusals) reads in English as their messages."""
+    from ui.i18n import t
+
+    keys = {"title": f"{base}.title", "body": f"{base}.{body}"}
+    english = {name: " ".join(r["message"] for r in v) if name == "problems" else v for name, v in params.items()}
+    return t(keys["title"], "en"), t(keys["body"], "en", **english), {**keys, "params": params}
+
+
+UNMAPPED_NOTICE = "notice.older_stock_unmapped"
+
+
+async def _notify_unmapped(session: AsyncSession, company_id, variant: str, problems: list[dict]) -> None:
+    """Older stock waits because no inventory account can take it (``body_inventory``),
+    an inventory account that cannot take entries still holds value placing must move
+    off it (``body_held``), or retained earnings cannot take the adjustment it needs
+    (``body_retained``);
+    ``problems`` are the refusals (target_problem) naming each account and what is wrong
+    with it. Told once while it stands, kept current, and removed once the stock is
+    placed (_place)."""
     from celerp.notifications import service as notification_service
+
+    title, body, i18n = _notice(UNMAPPED_NOTICE, variant, problems=problems)
+    await notification_service.notify_standing(session, company_id, "accounting", title, body,
+                                               action_url=POSTING_ACCOUNTS_PATH, i18n=i18n)
+
+
+async def _notify_placed(session: AsyncSession, company_id, count: int) -> None:
+    """One plain notice for the person selling. It links those who manage accounting to
+    where the placement's reconciliation stands, with the accounts, amounts and journal
+    entries below it (older_stock_view); anyone else is shown it with no link
+    (notifications.service.link_for)."""
+    from celerp.notifications import service as notification_service
+
+    title, body, i18n = _notice("notice.older_stock_placed", "body", count=count)
+    await notification_service.create(session, company_id, "accounting", title, body,
+                                      action_url=RECONCILIATION_PATH, priority="high", i18n=i18n)
+
+
+FAILED_NOTICE = "notice.older_stock_failed"
+
+
+async def _notify_failed(session: AsyncSession, company_id, exc: Exception) -> None:
+    """Placing older stock failed for a reason no setting explains. Nothing was written;
+    the company is told, kept current while it stands, and the notice is removed once
+    the stock is placed (_place). The notice names the kind of error for a report
+    (failed_placement), never its text, which can carry company data. It is written in
+    the caller's transaction, so it stands exactly when what asked for the placement
+    commits."""
+    from celerp.notifications import service as notification_service
+
+    title, body, i18n = _notice(FAILED_NOTICE, error=type(exc).__name__)
+    await notification_service.notify_standing(session, company_id, "accounting", title, body,
+                                               action_url=OLDER_STOCK_PATH, i18n=i18n)
+
+
+async def _standing_notice(session: AsyncSession, company_id, base: str) -> dict | None:
+    """The i18n record of the company's standing notice ``base`` (notify_standing) with the
+    page it links to (``action_url``), or None when none stands. A standing notice is
+    removed once its condition ends, so one that stands, read or not, means the condition
+    holds now."""
+    from celerp.models.notification import Notification
+
+    row = (await session.execute(select(Notification.i18n, Notification.action_url).where(
+        Notification.company_id == company_id, Notification.category == "accounting",
+        Notification.title == _notice(base)[0]).limit(1))).first()
+    return None if row is None else {**(row.i18n or {}), "action_url": row.action_url}
+
+
+async def failed_placement(session: AsyncSession, company_id) -> dict | None:
+    """The standing failure to place older stock (_notify_failed): the kind of error, or
+    None when none stands."""
+    i18n = await _standing_notice(session, company_id, FAILED_NOTICE)
+    return {"error": (i18n.get("params") or {}).get("error") or ""} if i18n is not None else None
+
+
+async def _recorded(session: AsyncSession, company_id, item_ids: list[str]) -> set[str]:
+    """Those of ``item_ids`` whose inventory account is already recorded by an event
+    (_record), whatever their stored state shows: recording one again writes nothing."""
+    if not item_ids:
+        return set()
+    return set((await session.execute(select(LedgerEntry.entity_id).where(
+        LedgerEntry.company_id == company_id,
+        LedgerEntry.idempotency_key.in_([_record_key(i) for i in item_ids])))).scalars())
+
+
+def _hash(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _placement_id(company_id, item_ids: list[str]) -> str:
+    return _hash("\n".join([str(company_id), *item_ids]))
+
+
+PLACEMENT = "older_stock_placement"
+PLACED = "sys.older_stock.placed"
+CORRECTED = "sys.older_stock.corrected"
+# What a placement record holds per placement, summed per account in the Older stock summary.
+_PLACED_AMOUNTS = ("transferred", "recognized", "unresolved")
+
+
+def _placement_entity(pid: str) -> str:
+    return f"older-stock-placement:{pid}"
+
+
+def _placement_entry(pid: str, part: str) -> str:
+    return f"je:auto:older-stock-placed:{pid}:{part}"
+
+
+async def unresolved_differences(session: AsyncSession, company_id) -> dict[str, Decimal]:
+    """What placements recorded, per inventory account, as held beyond the stock and
+    left for the accountant to resolve (``_place``), summed in one grouped read."""
+    code, amount = Projection.state["account"].as_string(), Projection.state["unresolved"].as_numeric(28, 10)
+    rows = (await session.execute(select(code, func.sum(amount)).where(
+        Projection.company_id == company_id, Projection.entity_type == PLACEMENT, amount != 0).group_by(code))).all()
+    return {account: total.normalize() for account, total in rows if total}
+
+
+def _classify(moved: bool, gap: Decimal, provisional: Decimal, uncertain: bool) -> str:
+    """How a placement met the books. Never ``exact`` (nor ``transfer``) while cost an
+    invoice recognized on the lots is provisional: no entry says which account it left,
+    nor while lines that may have been stock (``uncertain``) leave the match unproven."""
+    if gap < 0:
+        return "opening_stock"
+    if gap > 0:
+        return "unresolved"
+    if provisional:
+        return "provisional"
+    if uncertain:
+        return "uncertain"
+    return "transfer" if moved else "exact"
+
+
+async def _place(session: AsyncSession, company_id) -> bool:
+    """Place every older lot of the company's own stock that records no inventory account
+    (``_legacy``) on one default account, under the caller's lock on the company, its
+    chart and its lots, everything in the caller's transaction.
+
+    The lots' value V is compared with what the inventory accounts hold together beyond
+    the stock recorded on them (``_room``, which counts what invoices recognized and have
+    not shipped): the usable current ones (purchased inventory, and opening inventory
+    when it can take entries and is not the same account) and every account either role
+    has served before (scope_list), which still holds what was booked to it. The
+    default account is a current one: the one holding exactly V, else the one holding
+    most, earlier in candidate order on a tie (opening inventory first when the stock is
+    from elsewhere, books_from_elsewhere, or purchased inventory never took an entry),
+    else, when none holds anything, purchased inventory. One entry moves what every
+    other account, current or former, holds beyond its stock onto the default account,
+    so no inventory is added and nothing on a former account is recognized again. Cost an
+    invoice recognized on lots no allocation or entry ties to one account
+    (auto_je.UNPLACED) was taken off the books already: it counts against V and is kept
+    on the record as ``provisional``. What the
+    accounts together hold short of V is recognized as opening stock, the way opening
+    stock is booked (post_opening_stock_delta); what they hold beyond V is written off
+    nowhere and is recorded on the default account as an unresolved difference. Lines
+    on these accounts, other than a payment's (evidence_entries), that may have been
+    stock but cannot be shown to (account_roles.uncertain_stock_line) prove nothing either
+    way: only the part of the difference no reading of them can explain (unexplained) is
+    recognized or left unresolved, nothing is ever booked for them, the default account is
+    chosen counting them as held, and they are shown to the accountant as evidence read
+    from the posted entries whenever asked (stock_off_books). A
+    placement record (sys.older_stock.placed) keeps the accounts' rooms, the value
+    transferred, recognized and left unresolved, and the entries, so each inventory
+    account holds its lots, less unshipped recognized cost, plus its unresolved
+    difference. The company is told (_notify_placed) and the dashboard shows it until
+    dismissed (``older_stock_placed``).
+
+    The default account is chosen only among the current inventory accounts that can
+    take entries; every account lines were posted to as stock (stock_accounts) is
+    counted, usable or not, so what it holds is never recognized again. Nothing is
+    placed, and the company is told which account to fix and why (_notify_unmapped),
+    when neither current inventory account can take entries, when one that cannot still
+    holds value that must be moved off it, or when retained earnings cannot take entries
+    while opening stock must be recognized. Placing records each lot on today's date, so a period-locked
+    today raises _Locked. A lot whose placement is already recorded (_recorded) is not
+    placed again. Returns whether lots were placed."""
+    from celerp.events.engine import emit_event
+    from celerp.notifications import service as notification_service
+    from celerp.services.auto_je import UNPLACED, _emit_auto_posted_je, _lot_line, recognized_unshipped
+    from celerp.services.company_lock import locked_company
+    from celerp.services.journal_accounts import lock_accounts
 
     await notification_service.mark_done(session, company_id, PERIOD_LOCK_PATH)
-    waiting = unrecorded(await _items(session, company_id))
-    if waiting:
-        await _notify_unplaced(session, company_id, len(waiting))
+    items = await _items(session, company_id)
+    pending = sorted(_legacy(items), key=lambda r: r.entity_id)
+    done = await _recorded(session, company_id, [r.entity_id for r in pending])
+    pending = [r for r in pending if r.entity_id not in done]
+    if not pending:
+        return False
+    company = await locked_company(session, company_id)
+    settings = dict(company.settings or {})
+    purchased, opening = AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value
+    retained = AccountRole.RETAINED_EARNINGS.value
+    roles = [purchased, opening, retained]
+    current = role_map(settings)
+    scope = list(dict.fromkeys(c for role in _INVENTORY for c in scope_list(settings, role)))
+    entries = await _posted_entries(session, company_id)
+    held = list(dict.fromkeys([*scope, *stock_accounts(settings, entries)]))
+    accounts = await lock_accounts(session, company_id, {current[r] for r in roles if current.get(r)} | set(held))
+    if accounts is None:
+        return False  # Accounting is not running: nothing can be booked or placed
+    problems = target_problems(roles, current, accounts)
+    p, ob = current.get(purchased), current.get(opening)
+    usable = list(dict.fromkeys(current[r] for r in (purchased, opening) if r not in problems))
+    if not usable:
+        await _notify_unmapped(session, company_id, "body_inventory", [problems[purchased], problems[opening]])
+        return False
+    counted = [c for c in dict.fromkeys([p, ob, *held]) if c and c in accounts and c not in usable]
+    opening_first = (await books_from_elsewhere(session, company_id, settings)
+                     or not any(e.get("account") == p for _, e in entries))
+    candidates = sorted(usable, key=lambda c: c != ob) if opening_first else usable
+    currency = settings.get("currency", "USD")
+    sold = await recognized_unshipped(session, company_id)
+    unresolved = await unresolved_differences(session, company_id)
+    room = {c: round_money(_room(settings, entries, items, c, currency, sold, unresolved), currency)
+            for c in candidates + counted}
+    readable = await evidence_entries(session, company_id, settings, entries)
+    evidence = uncertain_evidence(settings, readable, list(room), currency)
+    uncertain = {found["account"]: Decimal(str(found["amount"])) for found in evidence}
+    provisional = round_money(sold.get(UNPLACED, 0), currency)
+    value = round_money(sum((booked_value(r, currency) for r in pending), Decimal("0")), currency)
+    owed = value - provisional  # cost already taken off the books by invoices whose entries name no one account
+    most = max(candidates, key=lambda c: room[c] + uncertain.get(c, 0))
+    target = (next((c for c in candidates if room[c] == owed), None)
+              or (most if room[most] + uncertain.get(most, 0) > 0 else usable[0]))
+    moved = {c: room[c] for c in room if c != target and room[c]}
+    gap = round_money(unexplained(settings, readable, list(room), sum(room.values(), Decimal("0")) - owed), currency)
+    stuck = [problems[r] for r in (purchased, opening) if r in problems and current.get(r) in moved]
+    if stuck:
+        await _notify_unmapped(session, company_id, "body_held", stuck)
+        return False
+    if gap < 0 and retained in problems:
+        await _notify_unmapped(session, company_id, "body_retained", [problems[retained]])
+        return False
+    day = business_date_of(None, settings.get("timezone"))
+    if not await period_open(session, company_id, day):
+        raise _Locked
+    ids = [r.entity_id for r in pending]
+    pid = _placement_id(company_id, ids)
+    for item_id in ids:
+        await _record(session, company_id, item_id, target, PLACED_BY, None, {"placement": pid})
+    journal = []
+    if moved:
+        transferred = sum(moved.values(), Decimal("0"))
+        lines = ([_lot_line(settings, target, debit=float(transferred))] if transferred > 0 else [])
+        lines += [_lot_line(settings, c, debit=float(-v)) for c, v in moved.items() if v < 0]
+        lines += [_lot_line(settings, c, credit=float(v)) for c, v in moved.items() if v > 0]
+        lines += [_lot_line(settings, target, credit=float(-transferred))] if transferred < 0 else []
+        journal.append(_placement_entry(pid, "transfer"))
+        await _emit_auto_posted_je(
+            session, company_id=company_id, user_id=None, je_id=journal[-1],
+            idem_create=f"older-stock-placed:{pid}:transfer:c", idem_posted=f"older-stock-placed:{pid}:transfer:p",
+            memo="Older stock moved onto its inventory account", entries=lines,
+            metadata_={"trigger": "older_stock.placed", "placement": pid}, ts=day)
+    else:
+        transferred = Decimal("0")
+    if gap < 0:
+        journal.append(_placement_entry(pid, "opening"))
+        await post_opening_stock_delta(
+            session, company_id, {target: -gap}, onto_books=True, je_id=journal[-1],
+            idem=f"older-stock-placed:{pid}:opening", memo="Opening stock recognized for older stock",
+            metadata={"trigger": "older_stock.placed", "placement": pid, "classification": "opening_stock"},
+            actor_id=None, day=day)
+    await emit_event(
+        session, company_id=company_id, entity_id=_placement_entity(pid), entity_type=PLACEMENT,
+        event_type=PLACED, actor_id=None, location_id=None, source="system",
+        idempotency_key=_placement_entity(pid), metadata_={},
+        data={"placement": pid, "day": day, "count": len(ids), "value": float(value), "account": target,
+              "rooms": {c: float(v) for c, v in room.items()}, "transferred": float(transferred),
+              "recognized": float(max(-gap, Decimal("0"))), "unresolved": float(max(gap, Decimal("0"))),
+              "provisional": float(provisional),
+              "classification": _classify(bool(moved), gap, provisional, bool(evidence)),
+              "journal": journal})
+    company = await locked_company(session, company_id)
+    company.settings = {**(company.settings or {}), "older_stock_placed": pid}
+    for notice in (UNMAPPED_NOTICE, FAILED_NOTICE):
+        await notification_service.clear_standing(session, company_id, "accounting", _notice(notice)[0])
+    await _notify_placed(session, company_id, len(ids))
+    await session.flush()
+    return True
 
 
-async def _notify_unplaced(session: AsyncSession, company_id, count: int) -> None:
+async def place_older_stock(session: AsyncSession, company_id) -> bool:
+    """Place a company's older stock that still records no inventory account (_place),
+    on any start after the upgrade, whenever a writer brings such stock in
+    (place_company_stock), and whenever a posting account or period lock it waited on
+    changes.
+    A company not upgraded yet is left to the upgrade (normalize_legacy_inventory_origins),
+    and one with nothing to place is read once and never locked. Everything is written
+    in one savepoint: a period lock holding back the adjustment rolls it back whole and
+    tells the company (_notify_locked), to retry on a later start. Any other failure is
+    rolled back whole, logged and told (_notify_failed), so it never fails the start or
+    the posting-account change that asked for it. Returns whether lots were placed."""
+    if INVENTORY_ORIGIN_KEY not in await current_settings(session, company_id):
+        return False
+    if not _legacy(await _items(session, company_id)):
+        return False
+    try:
+        async with session.begin_nested():
+            await _locked(session, company_id, [AccountRole.INVENTORY_PURCHASED.value])
+            return await _place(session, company_id)
+    except _Locked:
+        await _notify_locked(session, company_id)
+        return False
+    except _Retry:
+        return False
+    except Exception as exc:
+        logger.exception("Older stock of company %s was not placed; retrying on the next start", company_id)
+        await _notify_failed(session, company_id, exc)
+        return False
+
+
+async def place_company_stock(session: AsyncSession, company_id, *, claim=frozenset(),
+                              opening: bool = False) -> bool:
+    """The one way a company's stock recording no inventory account is placed: at every
+    start, and by every writer that brings such lots in while Celerp runs (a batch import
+    of another system's items, a backup restored as a new company, a finalized
+    migration). Its posting accounts are first reconciled with its chart
+    (account_roles.reconcile_company, ``claim`` there), and a company left without an
+    account its workflows need gets one notice pointing at the fix. Only a company
+    running Accounting is placed: until then its books are not kept. An upgraded
+    company has its unplaced stock placed (place_older_stock); one whose chart was
+    seeded just now (``opening``) opens it (open_inventory_origins); any other is
+    upgraded (normalize_legacy_inventory_origins). Period-lock and posting-account holds
+    and their notices are theirs. Placing never fails the caller: a failure is rolled
+    back whole, logged and told (_notify_failed), and retried on the next trigger or
+    when the user tries again (place_unplaced_stock). Running it again changes nothing. Returns whether it
+    placed or marked anything."""
+    from celerp.modules.registry import uses_module
+    from celerp.services.account_roles import reconcile_company
+    from celerp.services.posting_readiness import notify_unmapped
+
+    if await reconcile_company(session, company_id, claim):
+        await notify_unmapped(session, company_id)
+    settings = await current_settings(session, company_id)
+    if not uses_module(settings, "celerp-accounting"):
+        return False
+    if INVENTORY_ORIGIN_KEY in settings:
+        place = place_older_stock
+    elif opening:
+        place = open_inventory_origins
+    else:
+        place = normalize_legacy_inventory_origins
+    try:
+        return await place(session, company_id)
+    except Exception as exc:
+        logger.exception("Older stock of company %s was not placed; retrying on the next start", company_id)
+        try:
+            async with session.begin_nested():
+                await _notify_failed(session, company_id, exc)
+        except Exception:
+            logger.exception("The failure to place older stock of company %s could not be told", company_id)
+        return False
+
+
+async def place_for_posting_account(session: AsyncSession, company_id) -> bool:
+    """A posting account older stock may wait on was just set: the notice asking for it
+    is withdrawn whatever placing then does (_place repeats it while an account is still
+    missing), and the stock is placed (place_older_stock)."""
     from celerp.notifications import service as notification_service
 
-    await notification_service.create(
-        session, company_id, "accounting", "Older stock needs an inventory account",
-        f"The books could not vouch for {count} older lot(s) in stock, so they record no inventory account "
-        "yet. Choose the account each one sits on under Settings > Accounting > Posting accounts.",
-        action_url=POSTING_ACCOUNTS_PATH, priority="high",
-        i18n={"title": "notice.older_stock_unplaced.title", "body": "notice.older_stock_unplaced.body",
-              "params": {"count": count}})
+    await notification_service.clear_standing(session, company_id, "accounting", _notice(UNMAPPED_NOTICE)[0])
+    return await place_older_stock(session, company_id)
+
+
+async def place_after_lock_change(session: AsyncSession, company_id) -> bool:
+    """The period lock was just changed: once it no longer covers today the notice
+    asking to move it is withdrawn, whatever placing then does (_notify_locked repeats
+    it while it still covers today), and the stock is placed (place_older_stock)."""
+    from celerp.notifications import service as notification_service
+
+    tz = (await current_settings(session, company_id)).get("timezone")
+    if await period_open(session, company_id, business_date_of(None, tz)):
+        await notification_service.mark_done(session, company_id, PERIOD_LOCK_PATH)
+    return await place_older_stock(session, company_id)
+
+
+# The refusals a request meets only because older stock it needs is not placed yet:
+# moving its cost (account_roles.LotOriginError) and moving it between accounts
+# (move_lot_accounts).
+PLACEABLE_REFUSALS = frozenset({"posting.older_stock.no_account", "older_stock.move.not_placed"})
+RERUN_AFTER_PLACING = "rerun_after_placing"
+
+
+def rerun_after_placing(endpoint):
+    """Mark a writer that OlderStockMiddleware may run again once its stock is placed: one
+    whose every effect up to such a refusal is a database write, which the refusal rolls
+    back. A writer that may send a notice, write a file or call out first is not marked."""
+    setattr(endpoint, RERUN_AFTER_PLACING, True)
+    return endpoint
+
+
+async def _unplaced(session: AsyncSession, company_id) -> list[Projection]:
+    """The company's stock awaiting placement (_legacy), read as stored now and without
+    loading the lots that record an account."""
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item",
+        Projection.state[LOT_ACCOUNT_FIELD].as_string().is_(None)).execution_options(
+            populate_existing=True))).scalars().all()
+    return _legacy(list(rows))
+
+
+async def place_unplaced_stock(session: AsyncSession, company_id) -> bool:
+    """Place the company's stock awaiting placement the one way (place_company_stock),
+    in the caller's transaction, when any still waits, and return whether none waits
+    now. For a request refused only because older stock was not placed yet
+    (PLACEABLE_REFUSALS, rolled back whole by celerp.middleware.OlderStockMiddleware,
+    which then runs it again) and for the user trying again after a failure. The caller
+    holds no lock, so placing takes the company, its accounts and its lots in that order,
+    as every placement does. Another request placing the same stock at the same time
+    waits on the company lock and then finds it placed (_recorded)."""
+    if await _unplaced(session, company_id):
+        await place_company_stock(session, company_id)
+    return not await _unplaced(session, company_id)
 
 
 async def period_open(session: AsyncSession, company_id, day: str) -> bool:
@@ -526,7 +1071,8 @@ async def consumed_facts(session: AsyncSession, company_id, marker: str,
     return found
 
 
-PERIOD_LOCK_PATH = "/settings/accounting?tab=period-lock"
+PERIOD_LOCK_PATH = f"{ACCOUNTING_SETTINGS_PATH}?tab=period-lock"
+LOCKED_NOTICE = "notice.older_stock_locked"
 
 
 class _Retry(Exception):
@@ -540,21 +1086,16 @@ class _Locked(_Retry):
 
 async def _notify_locked(session: AsyncSession, company_id) -> None:
     """Older stock left unplaced cannot be sold or moved until its account is known, so a
-    company whose upgrade a period lock holds back is told which lock and both ways on: choose
-    the account now, or move the lock for the next start. Once per lock date; the notice is
-    removed when the upgrade runs (_mark)."""
+    company whose upgrade a period lock holds back is told which lock and how to go on:
+    move the lock before today and the stock is placed at once (set_period_lock). One
+    notice kept current with the lock date; removed when the upgrade runs (_place)."""
     from celerp.notifications import service as notification_service
     from celerp.services.company_lock import locked_company
 
     day = str(((await locked_company(session, company_id)).settings or {}).get("lock_date") or "")
-    await notification_service.notify_once(
-        session, company_id, "accounting", "Older stock waits for an open period",
-        f"The books are locked through {day}, so older stock could not be placed on its inventory "
-        "account. Choose its inventory account under Older stock in Settings > Accounting > "
-        "Posting accounts, or move the period lock before today so the next start places it.",
-        action_url=PERIOD_LOCK_PATH,
-        i18n={"title": "notice.older_stock_locked.title", "body": "notice.older_stock_locked.body",
-              "params": {"day": day}})
+    title, body, i18n = _notice(LOCKED_NOTICE, day=day)
+    await notification_service.notify_standing(session, company_id, "accounting", title, body,
+                                               action_url=PERIOD_LOCK_PATH, i18n=i18n)
 
 
 async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) -> bool:
@@ -576,7 +1117,7 @@ async def normalize_legacy_inventory_origins(session: AsyncSession, company_id) 
     replays; when they carry V alone it stays off the books. No entry puts value back.
 
     When the books cannot vouch for the stock, nothing moves and the company is still
-    marked, leaving each older lot that has held stock for the user to place. A period
+    marked, and its older stock is placed on one default account (_place). A period
     lock, or a posting account the opening entry cannot use, that forbids a write rolls the whole savepoint back and leaves the company
     unmarked, to retry on a later start; a period lock is told to the company (_notify_locked). Running it again changes nothing. Returns
     whether the company was marked."""
@@ -611,7 +1152,7 @@ async def _normalize(session: AsyncSession, company_id, user_id) -> bool:
         return True
     production = await in_production(session, company_id)
     value = round_money(sum((v for _, v in held), Decimal("0")) + production, currency)
-    balance = await account_balances(session, company_id, (p, ob))
+    balance = await stock_balances(session, company_id, settings, (p, ob))
     if round_money(balance[p] + balance[ob], currency) < value:
         # an older release brought its opening inventory entry current only when the
         # balance sheet was opened: book what it would have, then compare
@@ -623,7 +1164,7 @@ async def _normalize(session: AsyncSession, company_id, user_id) -> bool:
             if exc.status_code == 422:
                 raise _Retry from exc
             raise
-        balance = await account_balances(session, company_id, (p, ob))
+        balance = await stock_balances(session, company_id, settings, (p, ob))
     books = round_money(balance[p] + balance[ob], currency)
     day = business_date_of(None, settings.get("timezone"))
     kept: list[Projection] = []
@@ -711,7 +1252,8 @@ async def _open(session: AsyncSession, company_id, user_id) -> bool:
     if not await period_open(session, company_id, business_date_of(None, settings.get("timezone"))):
         raise _Locked
     inventory = {code for role in _INVENTORY for code in scope_codes(settings, role)}
-    if any(e.get("account") in inventory for _, e in await _posted_entries(session, company_id)):
+    entries = await _posted_entries(session, company_id)
+    if any(e.get("account") in inventory and stock_line(settings, e) for _, e in entries):
         await _normalize(session, company_id, user_id)
         return True
     for row in sorted(pending, key=lambda r: r.entity_id):
@@ -956,8 +1498,6 @@ async def recognize_opening_lots(session: AsyncSession, company_id, item_ids, ac
     to roll back whole. With Accounting off nothing is recorded or booked: the stock is
     opening stock when Accounting is turned on (open_inventory_origins). The entry is
     keyed by the operation and the lots it booked, so a retry books nothing more."""
-    import hashlib
-
     from celerp.services.auto_je import entry_day
     from celerp.services.company_lock import locked_company
 
@@ -980,7 +1520,7 @@ async def recognize_opening_lots(session: AsyncSession, company_id, item_ids, ac
     day = await entry_day(session, company_id, at)
     for lot in lots:
         await _record(session, company_id, lot.entity_id, code, "opening stock", actor_id)
-    digest = hashlib.sha256("\n".join(lot.entity_id for lot in lots).encode()).hexdigest()[:16]
+    digest = _hash("\n".join(lot.entity_id for lot in lots))
     key = f"opening-stock:{operation_id}:{digest}"
     await post_opening_stock_delta(
         session, company_id, {code: value}, onto_books=True, je_id=f"je:auto:{key}", idem=key,
@@ -994,8 +1534,6 @@ async def remove_opening_lots(session: AsyncSession, company_id, item_ids, actor
     comes off the account it recorded against retained earnings, in one entry for the
     operation, so the books still equal the stock left. A lot that records no account
     has nothing booked to take off."""
-    import hashlib
-
     from celerp.services.auto_je import entry_day
     from celerp.services.company_lock import locked_company
 
@@ -1013,7 +1551,7 @@ async def remove_opening_lots(session: AsyncSession, company_id, item_ids, actor
         value, code = held_value(row), (row.state or {}).get(LOT_ACCOUNT_FIELD)
         if value is not None and code:
             values[code] = values.get(code, Decimal("0")) + value
-    digest = hashlib.sha256("\n".join(ids).encode()).hexdigest()[:16]
+    digest = _hash("\n".join(ids))
     key = f"opening-stock-removed:{operation_id}:{digest}"
     await post_opening_stock_delta(
         session, company_id, values, onto_books=False, je_id=f"je:auto:{key}", idem=key,
@@ -1021,73 +1559,656 @@ async def remove_opening_lots(session: AsyncSession, company_id, item_ids, actor
         actor_id=actor_id, day=await entry_day(session, company_id))
 
 
-async def choose_lot_account(session: AsyncSession, company_id, item_id: str, code: str, actor_id) -> None:
-    """Record the inventory account the user picked for older stock left unplaced (module
-    docstring). It must be an account that has held purchased or opening inventory, and
-    it must hold the lot's value beyond the stock already recorded on it; otherwise the
-    books themselves need reconciling, and nothing is moved to make the pick fit."""
+
+
+# --- Older stock placed automatically: moved in bulk, undone, its adjustment toggled ---
+
+
+def _refused(status: int, key: str, message: str, **params) -> HTTPException:
+    return HTTPException(status_code=status, detail=refusal(key, message, **params))
+
+
+def _sku(row: Projection) -> str:
+    return (row.state or {}).get("sku") or row.entity_id
+
+
+def _move_id(company_id, key: str) -> str:
+    return _hash(f"{company_id}:{key}")
+
+
+def _request_id(item_ids: list[str], code: str) -> str:
+    """What a move asks for: its account and its lots, in any order."""
+    return _hash(":".join([code, *sorted(set(item_ids))]))
+
+
+def _move_je(move_id: str) -> str:
+    return f"je:auto:older-stock-moved:{move_id}"
+
+
+async def _move_events(session: AsyncSession, company_id, move_id: str) -> list[LedgerEntry]:
+    """The lot events of move ``move_id``, one per lot it moved."""
+    rows = (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == MOVED,
+        LedgerEntry.idempotency_key.like(f"lot-move:{move_id}:%")).order_by(LedgerEntry.id))).scalars()
+    return [r for r in rows if (r.metadata_ or {}).get("move") == move_id]
+
+
+async def _je_state(session: AsyncSession, company_id, je_id: str) -> dict | None:
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    return _posted(row.state if row is not None else None)
+
+
+def _posted(state: dict | None) -> dict | None:
+    """A journal entry's state when it is posted, else None."""
+    return state if (state or {}).get("status") == "posted" else None
+
+
+def _debits(state: dict | None) -> float:
+    return round(sum(float(e.get("debit") or 0) for e in (state or {}).get("entries") or []), 2)
+
+
+async def _locked_lots(session: AsyncSession, company_id, item_ids) -> list[Projection]:
+    """The lots ``item_ids`` locked for update in id order, as the database holds them
+    now. A lot the company does not hold is refused (404)."""
+    ids = sorted(set(item_ids))
+    rows = list((await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item", Projection.entity_id.in_(ids))
+        .order_by(Projection.entity_id).with_for_update().execution_options(populate_existing=True))).scalars())
+    if len(rows) != len(ids):
+        raise _refused(404, "posting.older_stock.no_item", "Item not found.")
+    return rows
+
+
+async def _check_target(session: AsyncSession, company_id, code: str) -> None:
+    """Refuse (422) an account older stock cannot be moved onto, by the rule its account
+    picker lists by (posting_readiness.older_stock_move_problem)."""
+    from celerp.services.posting_readiness import older_stock_move_problem
+
+    problem = await older_stock_move_problem(session, company_id, code)
+    if problem == "not_in_chart":
+        raise _refused(422, "posting.older_stock.not_in_chart", f"Account {code} is not in the chart of accounts.",
+                       code=code)
+    if problem == "never_inventory":
+        raise _refused(422, "posting.older_stock.never_inventory",
+                       f"Account {code} is not an inventory account, so stock cannot be moved onto it.", code=code)
+    if problem == "cannot_take":
+        raise _refused(422, "older_stock.move.cannot_take",
+                       f"Account {code} is inactive or has accounts under it, so it cannot take entries.", code=code)
+
+
+async def _refuse_invoiced(session: AsyncSession, company_id, rows: list[Projection]) -> None:
+    """A lot a finalized invoice holds and has not shipped keeps its account: the invoice
+    recognized its cost there, and shipping relieves it from there."""
+    from celerp.services.auto_je import unshipped_claims
+
+    held = {r.entity_id: r for r in rows}
+    for claim in await unshipped_claims(session, company_id, costed=False, lots=sorted(held)):
+        if claim.lot_id in held:
+            sku = _sku(held[claim.lot_id])
+            raise _refused(409, "older_stock.move.invoiced",
+                           f"{sku} is on an invoice not yet shipped ({claim.doc_id}). Ship or void that invoice, "
+                           "then move the lot.", sku=sku, doc=claim.doc_id)
+
+
+async def _open_day(session: AsyncSession, company_id) -> str:
+    """Today's business day, refused (422) while the period holding it is locked."""
+    from celerp.events.engine import _check_period_lock
+    from celerp.services.auto_je import entry_day
+
+    day = await entry_day(session, company_id)
+    await _check_period_lock(session, company_id, {"ts": day})
+    return day
+
+
+async def _move(session: AsyncSession, company_id, moves: list[tuple[Projection, str, str]], move_id: str,
+                actor_id, day: str, undo_of: str | None = None, request: str | None = None) -> Decimal:
+    """Move each lot (row, from account, to account) and its value: one event per lot
+    and one entry, dated ``day``, debiting each account by what arrives and crediting
+    each by what leaves. ``request`` (_request_id) is kept on each event. Returns the
+    value moved."""
+    from celerp.events.engine import emit_event
+    from celerp.services.auto_je import _emit_auto_posted_je, _lot_line
+
+    settings = await current_settings(session, company_id)
+    currency = settings.get("currency", "USD")
+    net: dict[str, Decimal] = {}
+    total = Decimal("0")
+    for row, old, new in moves:
+        value = booked_value(row, currency)
+        await emit_event(session, company_id=company_id, entity_id=row.entity_id, entity_type="item",
+                         event_type=MOVED, data={LOT_ACCOUNT_FIELD: new, "from_account": old}, actor_id=actor_id,
+                         location_id=None, source="system", idempotency_key=f"lot-move:{move_id}:{row.entity_id}",
+                         metadata_={"move": move_id, **({"undo_of": undo_of} if undo_of else {}),
+                                    **({"request": request} if request else {})})
+        net[new], net[old] = net.get(new, Decimal("0")) + value, net.get(old, Decimal("0")) - value
+        total += value
+    lines = ([_lot_line(settings, c, debit=float(v)) for c, v in sorted(net.items()) if v > 0]
+             + [_lot_line(settings, c, credit=float(-v)) for c, v in sorted(net.items()) if v < 0])
+    if lines:
+        await _emit_auto_posted_je(
+            session, company_id=company_id, user_id=actor_id, je_id=_move_je(move_id),
+            idem_create=f"older-stock-moved:{move_id}:c", idem_posted=f"older-stock-moved:{move_id}:p",
+            memo="Older stock moved to another inventory account", entries=lines,
+            metadata_={"trigger": "older_stock.moved", "move": move_id}, ts=day)
+    return total
+
+
+async def move_lot_accounts(session: AsyncSession, company_id, item_ids: list[str], code: str, key: str | None,
+                            actor_id) -> dict:
+    """Move older lots ``item_ids`` placed automatically (_place) onto inventory account
+    ``code`` (_move_lots). Refused, writing nothing: no lots or too many."""
+    if not item_ids:
+        raise _refused(422, "older_stock.move.nothing_selected", "Select the lots to move.")
+    if len(item_ids) > MAX_MOVE:
+        raise _refused(422, "older_stock.move.too_many", f"Move at most {MAX_MOVE} lots at a time.", limit=MAX_MOVE)
+
+    async def chosen() -> list[str]:
+        return item_ids
+    return await _move_lots(session, company_id, chosen, _request_id(item_ids, code), code, key, actor_id)
+
+
+def _matching_summary(lots: list[dict]) -> dict:
+    """How many lots match, their value, and the selection: a fingerprint of each lot and
+    its version with the total value, which changes when any lot leaves, joins or changes."""
+    value = round(sum(lot["value"] for lot in lots), 2)
+    selection = _hash("\n".join([*sorted(f"{lot['item_id']}:{lot['version']}" for lot in lots), f"{value:.2f}"]))
+    return {"count": len(lots), "value": value, "selection": selection}
+
+
+async def move_matching_lots(session: AsyncSession, company_id, account: str | None, q: str | None,
+                             selection: str, code: str, key: str | None, actor_id) -> dict:
+    """Move every older lot the Older stock list shows for ``account`` and ``q``
+    (older_stock_lots) onto inventory account ``code`` as one move (_move_lots), however
+    many pages it spans. ``selection`` is the fingerprint of the lots the user saw
+    matching (_matching_summary): when the lots matching under the company lock differ,
+    refused (409) so nothing moves that was not confirmed. Refused, writing nothing: none
+    shown or too many."""
+    selection = (selection or "").strip()
+    if not selection:
+        raise _refused(422, "older_stock.move.nothing_selected", "Select the lots to move.")
+
+    async def matching() -> list[str]:
+        settings = await current_settings(session, company_id)
+        lots = await older_stock_lots(session, company_id, settings.get("currency", "USD"), account, q)
+        if len(lots) > MAX_MOVE:
+            raise _refused(422, "older_stock.move.too_many", f"Move at most {MAX_MOVE} lots at a time.",
+                           limit=MAX_MOVE)
+        now = _matching_summary(lots)
+        if now["selection"] != selection:
+            raise _refused(409, "older_stock.move.changed",
+                           f"The matching lots changed since the list was shown, so nothing was moved. "
+                           f"{now['count']} lots match now. Check them and confirm again.", count=now["count"])
+        return [lot["item_id"] for lot in lots]
+    request = _hash(":".join(["matching", code, account or "", (q or "").strip().lower(), selection]))
+    return await _move_lots(session, company_id, matching, request, code, key, actor_id)
+
+
+async def _move_lots(session: AsyncSession, company_id, lots, request: str, code: str, key: str | None,
+                     actor_id) -> dict:
+    """Move the older lots ``lots()`` names onto inventory account ``code``, their value
+    with them, in one entry dated today. ``lots`` is read once the company is locked.
+    ``key`` identifies the operation, so a request sent twice moves once and returns the
+    first result; the key reused for a different ``request`` is refused (409). A lot
+    already on ``code`` is skipped. Refused, writing nothing: no key, an account that is
+    not inventory or cannot take entries (_check_target), a lot not placed automatically
+    or no longer in stock, a lot an unshipped invoice holds, or a locked period. Returns
+    {"moved", "value", "code", "move_id"}."""
     from celerp.services.company_lock import lock_chart, locked_company
     from celerp.services.journal_accounts import lock_accounts
 
+    key = (key or "").strip()
+    if not key or len(key) > 64:
+        raise _refused(422, "older_stock.move.no_key",
+                       "This move carries no operation key, so it was not made. Reload the page and try again.")
     code = (code or "").strip()
     if not code:
         raise HTTPException(status_code=422, detail=no_account_chosen())
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found.")
+    move_id = _move_id(company_id, key)
+    await locked_company(session, company_id)
+    if done := await _move_events(session, company_id, move_id):
+        if any((e.metadata_ or {}).get("request") != request for e in done):
+            raise _refused(409, "older_stock.move.key_reused",
+                           "This operation key was already used for a different move, so nothing was moved. "
+                           "Reload the page and try again.")
+        return {"moved": len(done), "value": _debits(await _je_state(session, company_id, _move_je(move_id))),
+                "code": done[0].data[LOT_ACCOUNT_FIELD], "move_id": move_id}
     await lock_chart(session, company_id)
-    settings = dict(company.settings or {})
-    if not any(code in scope_codes(settings, role) for role in _INVENTORY):
-        raise HTTPException(status_code=422, detail=refusal(
-            "posting.older_stock.never_inventory",
-            f"Account {code} has never held inventory, so older stock cannot be in it.", code=code))
-    accounts = await lock_accounts(session, company_id, {code})
-    if accounts is None:
+    rows = await _locked_lots(session, company_id, await lots())
+    if await lock_accounts(session, company_id, {code}) is None:
         raise HTTPException(status_code=409, detail=needs_accounting())
-    if code not in accounts:
-        raise HTTPException(status_code=422, detail=refusal(
-            "posting.older_stock.not_in_chart", f"Account {code} is not in the chart of accounts.", code=code))
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id},
-                            with_for_update=True, populate_existing=True)
-    if row is None or row.entity_type != "item":
-        raise HTTPException(status_code=404, detail=refusal("posting.older_stock.no_item", "Item not found."))
-    if (row.state or {}).get(LOT_ACCOUNT_FIELD):
-        raise HTTPException(status_code=409, detail=refusal(
-            "posting.older_stock.already_recorded", "This stock already records its inventory account."))
-    if not awaits_account(row):
-        raise HTTPException(status_code=422, detail=refusal(
-            "posting.older_stock.not_waiting",
-            "This item holds no stock on the books, so there is nothing to place."))
+    await _check_target(session, company_id, code)
+    placed = set((await session.execute(select(LedgerEntry.entity_id).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
+        LedgerEntry.entity_id.in_([r.entity_id for r in rows]),
+        LedgerEntry.metadata_["placement"].as_string().is_not(None)))).scalars())
+    for row in rows:
+        if row.entity_id not in placed or not in_stock(row.state):
+            raise _refused(422, "older_stock.move.not_placed",
+                           f"{_sku(row)} was not placed automatically or is no longer in stock, so it cannot be "
+                           "moved here.", sku=_sku(row))
+    await _refuse_invoiced(session, company_id, rows)
+    day = await _open_day(session, company_id)
+    moves = [(r, r.state[LOT_ACCOUNT_FIELD], code) for r in rows if r.state.get(LOT_ACCOUNT_FIELD) != code]
+    value = await _move(session, company_id, moves, move_id, actor_id, day, request=request)
+    return {"moved": len(moves), "value": float(value), "code": code, "move_id": move_id}
+
+
+async def undo_lot_move(session: AsyncSession, company_id, move_id: str, actor_id) -> dict:
+    """Put the lots of move ``move_id`` back on the accounts they came from, their value
+    with them, in one entry dated today (move ``<move_id>:undo``). Once only, and only
+    while every lot is still where the move put it, free of unshipped invoices, and the
+    period is open; otherwise refused, writing nothing."""
+    from celerp.services.company_lock import lock_chart, locked_company
+
+    await locked_company(session, company_id)
+    events = await _move_events(session, company_id, move_id)
+    if not events:
+        raise _refused(404, "older_stock.undo.no_move", "This move was not found.")
+    undo_id = f"{move_id}:undo"
+    if await _move_events(session, company_id, undo_id):
+        raise _refused(409, "older_stock.undo.done", "This move was already undone.")
+    await lock_chart(session, company_id)
+    rows = {r.entity_id: r for r in await _locked_lots(session, company_id, [e.entity_id for e in events])}
+    for e in events:
+        row = rows[e.entity_id]
+        if (row.state or {}).get(LOT_ACCOUNT_FIELD) != e.data[LOT_ACCOUNT_FIELD] or not in_stock(row.state):
+            raise _refused(409, "older_stock.undo.moved_since",
+                           f"{_sku(row)} has moved since, so this move can no longer be undone.", sku=_sku(row))
+    await _refuse_invoiced(session, company_id, list(rows.values()))
+    day = await _open_day(session, company_id)
+    moves = [(rows[e.entity_id], e.data[LOT_ACCOUNT_FIELD], e.data["from_account"]) for e in events]
+    value = await _move(session, company_id, moves, undo_id, actor_id, day, undo_of=move_id)
+    return {"moved": len(moves), "value": float(value), "code": None, "move_id": undo_id}
+
+
+# How the accountant can correct what a placement did with its difference (_place):
+# book it against retained earnings the way opening stock is booked, or take a
+# recognized amount back off the books and leave it unresolved.
+CORRECTIONS = frozenset({"recognize", "unresolve"})
+
+
+async def _placement_lots(session: AsyncSession, company_id, pids: list[str]) -> dict[str, list[str]]:
+    """The lots each of placements ``pids`` recorded on its account, read in one query."""
+    placement = LedgerEntry.metadata_["placement"].as_string()
+    lots: dict[str, set[str]] = {pid: set() for pid in pids}
+    for item_id, pid in (await session.execute(select(LedgerEntry.entity_id, placement).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED, placement.in_(pids)))).all():
+        lots[pid].add(item_id)
+    return {pid: sorted(ids) for pid, ids in lots.items()}
+
+
+# What a correction posts and records, by its kind and whether it acts on a surplus.
+_CORRECTION_MEMOS = {
+    ("recognize", False): "Older stock difference booked against retained earnings",
+    ("unresolve", False): "Older stock opening stock taken back off the books, left unresolved",
+    ("recognize", True): "Older stock surplus written off against retained earnings as a prior-period correction",
+    ("unresolve", True): "Older stock surplus write-off undone, left unresolved",
+}
+_CORRECTION_KINDS = {("recognize", False): "recognize", ("unresolve", False): "unresolve",
+                     ("recognize", True): "write_off", ("unresolve", True): "write_off_undone"}
+
+
+async def correct_placements(session: AsyncSession, company_id, pids: list[str], kind: str, actor_id) -> int:
+    """Correct how placements ``pids`` treated their difference, all of them or none:
+    ``recognize`` books what each left unresolved against retained earnings, the way
+    opening stock is booked (post_opening_stock_delta); ``unresolve`` takes what each
+    recognized back off the books and leaves it unresolved for the accountant. On a
+    surplus (more on the books than the stock), which placing always leaves open,
+    ``recognize`` is the accountant's explicit write-off, a prior-period correction
+    recorded as ``write_off``, and ``unresolve`` undoes it (``write_off_undone``),
+    restoring the open difference. Each
+    correction is one entry dated today and one record on the placement
+    (sys.older_stock.corrected) moving the amount between recognized and unresolved, so
+    the account still holds its lots, less unshipped recognized cost, plus its unresolved
+    difference; that is checked again once booked. A placement with nothing to move is
+    skipped, so a correction sent twice books once. Refused, writing nothing: no
+    placements or too many, an unknown kind or placement, one that proved no difference
+    while its accounts hold lines that may have been stock (the books check's uncertain
+    evidence, stock_off_books), never booked
+    and each account named, a lot of a placement sold,
+    shipped, used up or moved since it was placed or held by an unshipped invoice, a
+    locked today, or an account out of line with its stock afterwards. Returns how many
+    placements were corrected."""
+    from celerp.events.engine import emit_event
+    from celerp.services.auto_je import unshipped_claims
+    from celerp.services.company_lock import locked_company
+    from celerp.services.journal_accounts import lock_accounts
+
+    pids = list(dict.fromkeys(pid for pid in pids if pid))
+    if not pids:
+        raise _refused(422, "older_stock.correct.nothing_selected", "Select the placements to correct.")
+    if len(pids) > MAX_MOVE:
+        raise _refused(422, "older_stock.correct.too_many", f"Correct at most {MAX_MOVE} placements at a time.",
+                       limit=MAX_MOVE)
+    if kind not in CORRECTIONS:
+        raise _refused(422, "older_stock.correct.no_kind",
+                       "Choose whether to book the difference against retained earnings or leave it unresolved.")
+    company = await locked_company(session, company_id)
+    records = {}
+    for pid in pids:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": _placement_entity(pid)},
+                                populate_existing=True)
+        if row is None or (row.state or {}).get("entity_type") != PLACEMENT:
+            raise _refused(404, "older_stock.correct.no_placement", "This placement was not found.")
+        records[pid] = dict(row.state)
+    settings = dict(company.settings or {})
     currency = settings.get("currency", "USD")
-    value = booked_value(row, currency)
-    inventory = sorted({c for role in _INVENTORY for c in scope_codes(settings, role)} | {code})
-    rooms = await account_rooms(session, company_id, inventory)
-    room = rooms[code]
-    if value > room:
-        held = max(room, Decimal("0"))
-        shortfall = value - held
-        others = [c for c in inventory if c != code]
-        holder = next((c for c in others if rooms[c] >= value), None)
-        source = next((c for c in others if rooms[c] >= shortfall), None)
-        if holder:
-            fix = refusal("posting.older_stock.fix_holder", f"Account {holder} holds it: choose {holder}.",
-                          holder=holder)
-        elif source:
-            fix = refusal("posting.older_stock.fix_move",
-                          f"Move {shortfall} from {source} to {code} with a journal entry, then choose {code} again.",
-                          amount=str(shortfall), source=source, code=code)
-        else:
-            # The stock was never recognised on any inventory account, so the entry that
-            # recognises it is the one the opening-stock path posts: inventory against
-            # retained earnings.
-            equity = role_map(settings).get(AccountRole.RETAINED_EARNINGS.value) or ""
-            fix = refusal("posting.older_stock.fix_reconcile",
-                          f"No inventory account holds it, so the books need reconciling: post a journal entry "
-                          f"Dr {code} {shortfall} / Cr {equity} {shortfall}, then choose {code} again.",
-                          amount=str(shortfall), code=code, equity=equity)
-        raise HTTPException(status_code=422, detail=refusal(
-            "posting.older_stock.short",
-            f"Account {code} does not hold this stock's value of {value}: beyond the stock already "
-            f"recorded on it, it holds {held}. {fix['message']}",
-            code=code, value=str(value), held=str(held), fix=fix))
-    await _record(session, company_id, item_id, code, "chosen", actor_id)
+    weighed = {c for state in records.values() if not (state.get("unresolved") or state.get("recognized"))
+               for c in state.get("rooms") or {}}
+    found = [f for f in await stock_off_books(session, company_id)
+             if f["kind"] == "uncertain_evidence" and f["account"] in weighed]
+    if found:
+        accounts = [refusal("older_stock.correct.uncertain_account",
+                            f"{f['account']} holds {f['amount']:.2f} on lines that may or may not have been "
+                            f"stock ({', '.join(f['entries'])}).",
+                            account=f["account"], amount=f["amount"], entries=", ".join(f["entries"]))
+                    for f in found]
+        raise _refused(409, "older_stock.correct.uncertain",
+                       " ".join(a["message"] for a in accounts) + " That is not a difference to book, so nothing "
+                       "was posted. Review those entries and post a journal entry if one is needed.",
+                       accounts=accounts)
+    codes = {state["account"] for state in records.values()}
+    retained = role_map(settings).get(AccountRole.RETAINED_EARNINGS.value)
+    if await lock_accounts(session, company_id, codes | ({retained} if retained else set())) is None:
+        raise HTTPException(status_code=409, detail=needs_accounting())
+    lots = await _placement_lots(session, company_id, pids)
+    rows = {r.entity_id: r for r in await _locked_lots(session, company_id, [i for ids in lots.values() for i in ids])}
+    held = {c.lot_id for c in await unshipped_claims(session, company_id, costed=False, lots=sorted(rows))}
+    for pid, ids in lots.items():
+        for item_id in ids:
+            row = rows[item_id]
+            if (item_id in held or not in_stock(row.state)
+                    or (row.state or {}).get(LOT_ACCOUNT_FIELD) != records[pid]["account"]):
+                raise _refused(409, "older_stock.correct.changed_since",
+                               f"{_sku(row)} was sold, shipped or moved since it was placed, so this placement can "
+                               "no longer be corrected here. Post a journal entry for the correction instead.",
+                               sku=_sku(row))
+    day = await _open_day(session, company_id)
+    corrected = 0
+    async with session.begin_nested():
+        before = await account_rooms(session, company_id, codes)
+        for pid, state in records.items():
+            recognized = Decimal(str(state.get("recognized") or 0))
+            unresolved = Decimal(str(state.get("unresolved") or 0))
+            # What is booked onto the books (taken off them when negative). Recognized and
+            # unresolved both move by it, so what the account holds beyond its stock stays.
+            delta = round_money(-(unresolved if kind == "recognize" else recognized), currency)
+            if not delta:
+                continue
+            surplus = (kind == "recognize") == (delta < 0)
+            n = len(state.get("corrections") or []) + 1
+            je_id = _placement_entry(pid, f"correction:{n}")
+            await post_opening_stock_delta(
+                session, company_id, {state["account"]: abs(delta)}, onto_books=delta > 0, je_id=je_id,
+                idem=f"older-stock-placed:{pid}:correction:{n}",
+                memo=_CORRECTION_MEMOS[kind, surplus],
+                metadata={"trigger": "older_stock.corrected", "placement": pid, "classification": "opening_stock"},
+                actor_id=actor_id, day=day)
+            await emit_event(
+                session, company_id=company_id, entity_id=_placement_entity(pid), entity_type=PLACEMENT,
+                event_type=CORRECTED, actor_id=actor_id, location_id=None, source="system",
+                idempotency_key=f"{_placement_entity(pid)}:correction:{n}", metadata_={},
+                data={"placement": pid, "kind": _CORRECTION_KINDS[kind, surplus], "day": day, "amount": float(delta),
+                      "recognized": float(recognized + delta), "unresolved": float(unresolved + delta),
+                      "journal": je_id})
+            corrected += 1
+        await session.flush()
+        if await account_rooms(session, company_id, codes) != before:
+            raise _refused(409, "older_stock.correct.unbalanced",
+                           "This correction would leave an inventory account out of line with its stock, so "
+                           "nothing was posted.")
+    return corrected
+
+
+OLDER_STOCK_PAGES = ("lots", "placements", "moves", "corrections")
+WAITING_NOTICES = (UNMAPPED_NOTICE, LOCKED_NOTICE, FAILED_NOTICE)
+
+
+async def _reconciliation(session: AsyncSession, company_id, off_books: list[dict],
+                          shown_on: dict[str, str]) -> dict:
+    """Where the older stock stands with the books, one of three states:
+
+    - ``action``: older stock waits for its inventory account (``waiting`` lots), each
+      standing notice saying why (WAITING_NOTICES, their i18n records under ``reasons``);
+      it cannot be sold or moved until someone fixes that.
+    - ``review``: everything is placed and sales go on, but something is still open
+      (``open``): per placement, newest first, a difference left unresolved or provisional
+      cost an invoice recognized on its lots before placing while that invoice still
+      holds them unshipped (_open_records); then lines that may have been stock
+      (``uncertain``, each with its account, amount and entries, and the placement it is
+      shown on, ``shown_on``), evidence only, which nothing books; then each inventory
+      account whose books differ from the stock recorded on it beyond all of that
+      (``stock_gap``, with what the books hold and the stock).
+    - ``reconciled``: nothing waits and nothing is open.
+
+    The uncertain lines and the gaps are ``off_books``, the books check as it stands
+    (stock_off_books), so the two never disagree."""
+    waiting = len(await _unplaced(session, company_id))
+    reasons = [i18n for base in WAITING_NOTICES if (i18n := await _standing_notice(session, company_id, base))]
+    records, held = await _open_records(session, company_id)
+    open_ = [{"placement": r["placement"], "account": r["account"], "kind": kind, "amount": float(amount)}
+             for r in records
+             for kind, amount in (("unresolved", r.get("unresolved") or 0),
+                                  ("provisional", (r.get("provisional") or 0) if r["placement"] in held else 0))
+             if amount]
+    open_ += [{**({"placement": shown_on[f["account"]]} if f["account"] in shown_on else {}), "kind": "uncertain",
+               "account": f["account"], "amount": f["amount"], "entries": f["entries"]}
+              for f in off_books if f["kind"] == "uncertain_evidence"]
+    if not waiting:  # stock waiting for its account is the gap until placed
+        open_ += [{"account": f["account"], "kind": "stock_gap", "amount": round(f["books"] - f["stock"], 2),
+                   "books": f["books"], "stock": f["stock"]}
+                  for f in off_books if f["kind"] == "stock_gap"]
+    state = "action" if waiting or reasons else "review" if open_ else "reconciled"
+    return {"state": state, "waiting": waiting, "reasons": reasons, "open": open_}
+
+
+async def _held_placements(session: AsyncSession, company_id, pids: list[str]) -> set[str]:
+    """Which of placements ``pids`` an unshipped invoice still holds a lot of
+    (auto_je.unshipped_claims on the lot's family), read in the same queries however many."""
+    from celerp.services.auto_je import _lot_families, unshipped_claims
+
+    lots = {pid: ids for pid, ids in (await _placement_lots(session, company_id, pids)).items() if ids}
+    if not lots:
+        return set()
+    claimed = {c.lot_id for c in await unshipped_claims(
+        session, company_id, costed=False, lots=sorted(set().union(*lots.values())))}
+    return {pid for pid, family in (await _lot_families(session, company_id, lots)).items() if family & claimed}
+
+
+async def _open_records(session: AsyncSession, company_id) -> tuple[list[dict], set[str]]:
+    """The placement records holding something open, newest first, and which of them an
+    unshipped invoice holds (_held_placements): those leaving a difference unresolved,
+    and those keeping provisional cost on lots they recorded while an invoice holds one.
+    Read only from those placements, never from every placement."""
+    placement = LedgerEntry.metadata_["placement"].as_string()
+    provisional = (await session.execute(select(placement).join(Projection, and_(
+        Projection.company_id == LedgerEntry.company_id, Projection.entity_type == PLACEMENT,
+        Projection.state["placement"].as_string() == placement)).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
+        Projection.state["provisional"].as_float() != 0).distinct())).scalars().all()
+    held = await _held_placements(session, company_id, list(provisional))
+    records = (await session.execute(_placement_records(company_id).where(or_(
+        Projection.state["unresolved"].as_float() != 0,
+        Projection.state["placement"].as_string().in_(sorted(held)))))).scalars().all()
+    return list(records), held
+
+
+async def _shown_on(session: AsyncSession, company_id, off_books: list[dict]) -> dict[str, str]:
+    """The placement each account's uncertain lines in ``off_books`` are shown on: the
+    newest that weighed the account (its ``rooms``). An account no placement weighed (an
+    inventory role pointed at it since) is shown on none. One read per account."""
+    shown = {}
+    for f in off_books:
+        if f["kind"] == "uncertain_evidence":
+            state = (await session.execute(_placement_records(company_id).where(
+                Projection.state["rooms"][f["account"]].as_float().is_not(None)).limit(1))).scalar()
+            if state:
+                shown[f["account"]] = state["placement"]
+    return shown
+
+
+def _uncertain_on(off_books: list[dict], shown_on: dict[str, str], pid: str) -> list[dict]:
+    """The uncertain lines in ``off_books`` shown on placement ``pid`` (_shown_on)."""
+    return [{k: f[k] for k in ("account", "amount", "entries")} for f in off_books
+            if f["kind"] == "uncertain_evidence" and shown_on.get(f["account"]) == pid]
+
+
+def _placement_records(company_id):
+    """The placement records (PLACEMENT) of ``company_id``, newest placement first."""
+    return (select(Projection.state).join(LedgerEntry, and_(
+        LedgerEntry.company_id == Projection.company_id, LedgerEntry.entity_id == Projection.entity_id,
+        LedgerEntry.event_type == PLACED)).where(Projection.company_id == company_id,
+                                                  Projection.entity_type == PLACEMENT)
+        .order_by(LedgerEntry.id.desc()))
+
+
+async def older_stock_lots(session: AsyncSession, company_id, currency: str, account: str | None = None,
+                           q: str | None = None, items: list[Projection] | None = None) -> list[dict]:
+    """The lots placed automatically still in stock, newest placement first, each with
+    its SKU, name, account, booked value, placement and version; filtered (_matching) to
+    ``account`` and to ``q`` in their SKU or name. Only the placements of lots in stock
+    now are read (_in_stock_row), with the item rows of ``items`` (_held_items) when the
+    caller has already read them."""
+    placement = LedgerEntry.metadata_["placement"].as_string()
+    recorded = (await session.execute(
+        select(LedgerEntry.entity_id, placement)
+        .join(Projection, and_(Projection.company_id == LedgerEntry.company_id,
+                               Projection.entity_id == LedgerEntry.entity_id))
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED, placement.is_not(None),
+               Projection.entity_type == "item", _in_stock_row())
+        .order_by(LedgerEntry.id.desc()))).all()
+    rows = {r.entity_id: r for r in (await _held_items(session, company_id) if items is None else items)}
+    return _matching([{"item_id": item_id, "sku": rows[item_id].state.get("sku") or "",
+                       "name": rows[item_id].state.get("name") or "",
+                       "account": rows[item_id].state.get(LOT_ACCOUNT_FIELD),
+                       "value": float(booked_value(rows[item_id], currency)), "placement": pid,
+                       "version": rows[item_id].version}
+                      for item_id, pid in recorded if item_id in rows and in_stock(rows[item_id].state)],
+                     account, q)
+
+
+def _matching(lots: list[dict], account: str | None, q: str | None) -> list[dict]:
+    needle = (q or "").strip().lower()
+    return [lot for lot in lots if (not account or lot["account"] == account)
+            and (not needle or needle in lot["sku"].lower() or needle in lot["name"].lower())]
+
+
+async def _count(session: AsyncSession, query) -> int:
+    return (await session.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+
+
+async def _placements_page(session: AsyncSession, company_id, offset: int, limit: int, off_books: list[dict],
+                           shown_on: dict[str, str]) -> tuple[list[dict], int]:
+    """A page of the placements, newest first, as their records hold them, each with the
+    uncertain lines of the books check (``off_books``) shown on it (_uncertain_on), and
+    how many there are."""
+    query = _placement_records(company_id)
+    return [{"pid": r["placement"], "day": r["day"], "count": r["count"], "account": r["account"],
+             "classification": r.get("classification"), "transferred": float(r.get("transferred") or 0),
+             "recognized": float(r.get("recognized") or 0), "unresolved": float(r.get("unresolved") or 0),
+             "provisional": float(r.get("provisional") or 0), "uncertain": _uncertain_on(off_books, shown_on, r["placement"]),
+             "journal": r.get("journal") or [], "corrections": r.get("corrections") or []}
+            for r in (await session.execute(query.offset(offset).limit(limit))).scalars()], \
+        await _count(session, query)
+
+
+async def _moves_page(session: AsyncSession, company_id, tz: str | None, offset: int,
+                      limit: int) -> tuple[list[dict], int]:
+    """A page of the moves, newest first, each with its day, account, how many lots it
+    moved, the value its entry moved, whether it was undone and what it undid, and how
+    many moves there are."""
+    move = LedgerEntry.metadata_["move"].as_string()
+    move_id = move.label("move_id")
+    query = (select(move_id, func.count().label("count"), func.max(LedgerEntry.id).label("last"))
+             .where(LedgerEntry.company_id == company_id, LedgerEntry.event_type == MOVED).group_by(move_id))
+    page = (await session.execute(query.order_by(func.max(LedgerEntry.id).desc()).offset(offset).limit(limit))).all()
+    last = {e.id: e for e in (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.id.in_([row.last for row in page])))).scalars()}
+    ids = [row.move_id for row in page]
+    journals = {eid: state for eid, state in (await session.execute(select(Projection.entity_id, Projection.state)
+                                                                     .where(Projection.company_id == company_id,
+                                                                            Projection.entity_id.in_(
+                                                                                [_move_je(m) for m in ids])))).all()}
+    undone = set((await session.execute(select(move).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == MOVED,
+        move.in_([f"{m}:undo" for m in ids])).distinct())).scalars())
+    return [{"move_id": row.move_id, "day": business_date_at(last[row.last].ts, tz),
+             "code": last[row.last].data[LOT_ACCOUNT_FIELD], "count": row.count,
+             "value": _debits(_posted(journals.get(_move_je(row.move_id)))),
+             "undone": f"{row.move_id}:undo" in undone, "undo_of": (last[row.last].metadata_ or {}).get("undo_of")}
+            for row in page], await _count(session, query)
+
+
+async def _corrections_page(session: AsyncSession, company_id, offset: int, limit: int) -> tuple[list[dict], int]:
+    """A page of the corrections, newest first, each with who made it, and how many there
+    are."""
+    from celerp.services.ledger_display import display_fields
+
+    query = select(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.event_type == CORRECTED)
+    page = (await session.execute(query.add_columns(Projection.state["account"].as_string()).outerjoin(
+        Projection, and_(Projection.company_id == LedgerEntry.company_id,
+                         Projection.entity_id == LedgerEntry.entity_id))
+        .order_by(LedgerEntry.id.desc()).offset(offset).limit(limit))).all()
+    shown = await display_fields([e for e, _ in page], company_id, session)
+    return [{"placement": e.data["placement"], "day": e.data["day"], "kind": e.data["kind"],
+             "amount": e.data["amount"], "journal": e.data["journal"], "account": code,
+             "actor_name": s["actor_name"]}
+            for (e, code), s in zip(page, shown)], await _count(session, query)
+
+
+async def older_stock_view(session: AsyncSession, company_id, account: str | None = None,
+                           q: str | None = None, offsets: dict[str, int] | None = None, limit: int = 50) -> dict:
+    """Settings > Accounting > Older stock: the lots placed automatically still in stock,
+    newest placement first (filtered to ``account`` and to ``q`` in their SKU or name),
+    each placement with its classification, what it transferred, recognized and left
+    unresolved and its journal entries, every move and every correction (with who made
+    it) newest first, a summary per inventory account, the accounts the lots sit on, the
+    accounts they can be moved to, a standing failure to place older stock
+    (failed_placement), and where the older stock stands with the books
+    (_reconciliation). Each list in OLDER_STOCK_PAGES is a page of ``limit`` rows from
+    its own offset, with its total under ``totals``; how many lots match the filters and
+    their value, which a move of every matching lot (move_matching_lots) takes, under
+    ``matching``. Placements, moves and corrections are paged in their queries; the lots
+    in stock are read once (_held_items), for the books check and for the lots, as the
+    summary and ``matching`` add up their booked values; lots no longer held are never read."""
+    from celerp.services.posting_readiness import older_stock_targets
+
+    settings = await current_settings(session, company_id)
+    currency, tz = settings.get("currency", "USD"), settings.get("timezone")
+    offsets = offsets or {}
+    items = await _held_items(session, company_id)
+    held = await older_stock_lots(session, company_id, currency, items=items)
+    summary: dict[str, dict] = {}
+
+    def _account(code: str) -> dict:
+        return summary.setdefault(code, {"account": code, "lots": 0, "value": 0.0, "transferred": 0.0,
+                                         "recognized": 0.0, "unresolved": 0.0})
+    for lot in held:
+        if lot["account"]:
+            _account(lot["account"])["lots"] += 1
+            _account(lot["account"])["value"] += lot["value"]
+    code = Projection.state["account"].as_string().label("code")
+    totals = select(code, *(func.coalesce(func.sum(Projection.state[f].as_float()), 0) for f in _PLACED_AMOUNTS)).where(
+        Projection.company_id == company_id, Projection.entity_type == PLACEMENT).group_by(code)
+    for code, *amounts in (await session.execute(totals)).all():
+        for f, amount in zip(_PLACED_AMOUNTS, amounts):
+            _account(code)[f] += float(amount)
+    for row in summary.values():
+        for f in ("value", *_PLACED_AMOUNTS):
+            row[f] = round(row[f], 2)
+    lots = _matching(held, account, q)
+    off_books = await stock_off_books(session, company_id, items)
+    shown_on = await _shown_on(session, company_id, off_books)
+    lists = {"lots": (lots[offsets.get("lots", 0):offsets.get("lots", 0) + limit], len(lots)),
+             "placements": await _placements_page(session, company_id, offsets.get("placements", 0), limit,
+                                                  off_books, shown_on),
+             "moves": await _moves_page(session, company_id, tz, offsets.get("moves", 0), limit),
+             "corrections": await _corrections_page(session, company_id, offsets.get("corrections", 0), limit)}
+    return {**{name: page for name, (page, _) in lists.items()},
+            "totals": {name: total for name, (_, total) in lists.items()}, "limit": limit,
+            "matching": _matching_summary(lots),
+            "summary": sorted(summary.values(), key=lambda r: r["account"]),
+            "accounts": sorted({lot["account"] for lot in held if lot["account"]}),
+            "failed": await failed_placement(session, company_id),
+            "reconciliation": await _reconciliation(session, company_id, off_books, shown_on),
+            **await older_stock_targets(session, company_id)}

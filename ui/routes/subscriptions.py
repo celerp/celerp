@@ -94,19 +94,19 @@ def _sub_table(subs: list[dict], direction: str) -> FT:
         name = s.get("ref_id") or s.get("doc_number") or s.get("name") or eid.split(":")[-1]
         contact = s.get("contact_name") or s.get("contact_company_name") or "-"
         freq = display_enum(s["frequency"], "subscription_frequency") if s.get("frequency") else "-"
-        next_run = s.get("next_run_date") or "-"
+        next_due = s.get("next_run_date") or "-"
         status = s.get("status", "draft")
         return Tr(
             Td(A(name, href=f"/subscriptions/{eid}")),
             Td(contact),
             Td(freq),
-            Td(next_run),
+            Td(next_due),
             Td(_status_badge(status)),
         )
 
     return Div(
         Table(
-            Thead(Tr(Th(t("th.name")), Th(t("th.contact")), Th(t("th.frequency")), Th(t("th.next_run")), Th(t("th.status"), style="text-align:center"))),
+            Thead(Tr(Th(t("th.name")), Th(t("th.contact")), Th(t("th.frequency")), Th(t("th.next_due")), Th(t("th.status"), style="text-align:center"))),
             Tbody(*[_row(s) for s in subs]),
             cls="data-table",
         ),
@@ -361,7 +361,7 @@ def setup_routes(app) -> None:
 
         company_taxes: list = []
         try:
-            company_taxes = await api.get_taxes(token)
+            company_taxes = await api.get_document_taxes(token, doc_type)
         except Exception:
             pass
 

@@ -44,7 +44,7 @@ from celerp.services.permissions import (
     role_has_permission,
 )
 from celerp.schemas.numbers import FiniteFloat
-from celerp.tax_regimes import get_regime, TAX_REGIMES
+from celerp.tax_regimes import TAX_REGIMES, configured, get_regime, purchasing_taxes, sales_taxes
 from celerp.services import company_lifecycle
 from celerp.services.currencies import require_phone
 from celerp.services.provisioning import provision_additional_company
@@ -58,18 +58,6 @@ from ui.i18n import t
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 logger = logging.getLogger(__name__)
-
-def _generic_taxes() -> list[dict]:
-    """The neutral tax list a company starts from until it configures its own."""
-    return copy.deepcopy(TAX_REGIMES["_default"]["taxes"])
-
-
-def _configured(settings: dict, key: str, default: list[dict]) -> list[dict]:
-    """The list saved under ``key``, an explicitly saved empty list included; a copy
-    of ``default`` only when nothing was ever saved."""
-    value = settings.get(key)
-    return value if value is not None else copy.deepcopy(default)
-
 
 async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict | None) -> None:
     """Seed the tax regime of the country in ``address`` into a company that has not
@@ -1217,7 +1205,7 @@ async def get_taxes(company_id=Depends(get_current_company_id), session: AsyncSe
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    return _configured(company.settings, "taxes", _generic_taxes())
+    return sales_taxes(company.settings)
 
 
 @router.patch("/me/taxes")
@@ -1258,7 +1246,7 @@ async def import_taxes_batch(
     res = BatchImportResult(created=0, skipped=0, errors=[])
 
     settings = dict(company.settings)
-    taxes = list(_configured(settings, "taxes", _generic_taxes()))
+    taxes = list(sales_taxes(settings))
     existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
 
     records = [rec.data for rec in (payload.records or [])]
@@ -1500,7 +1488,7 @@ def _purchasing_list(settings: dict, key: str, sales_key: str, default: list[dic
     existing = settings.get(key)
     if existing is not None:
         return existing
-    return copy.deepcopy(_configured(settings, sales_key, default))
+    return copy.deepcopy(configured(settings, sales_key, default))
 
 
 @router.get("/me/purchasing-taxes")
@@ -1511,7 +1499,7 @@ async def get_purchasing_taxes(
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    return _purchasing_list(company.settings, "purchasing_taxes", "taxes", _generic_taxes())
+    return purchasing_taxes(company.settings)
 
 
 @router.patch("/me/purchasing-taxes")
@@ -1543,7 +1531,7 @@ async def import_purchasing_taxes_batch(
     await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
     company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
-    taxes = list(_purchasing_list(company.settings, "purchasing_taxes", "taxes", _generic_taxes()))
+    taxes = list(purchasing_taxes(company.settings))
     existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()
@@ -1821,6 +1809,11 @@ async def enable_module(
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     company.settings, also_enabled = enable_for_company(company.settings, module_name)
+    if "celerp-accounting" in (module_name, *also_enabled):
+        from celerp.services.lot_origin import place_company_stock
+
+        await session.flush()
+        await place_company_stock(session, company_id)  # its books are kept from now on
     await commit_with_load_set(session)
     return {
         "ok": True, "name": module_name, "enabled": True,

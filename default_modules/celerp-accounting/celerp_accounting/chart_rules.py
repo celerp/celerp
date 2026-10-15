@@ -28,7 +28,7 @@ from celerp.services.account_roles import current_settings, role_map, scope_code
 from celerp.services.company_lock import lock_chart
 from celerp.services.lot_origin import account_balances
 from celerp_accounting.ledger_accounts import check_account_change
-from celerp_accounting.models import Account
+from celerp_accounting.models import Account, BankAccount
 
 # The account types the reports know how to sign and classify. This module is
 # authoritative; the chart of accounts screen holds a copy for its dropdown, and a
@@ -138,16 +138,41 @@ async def lock_accounts(session: AsyncSession, company_id: uuid.UUID, codes: set
     }
 
 
+def cash_accounts(accounts, banks, settings: dict) -> set[str]:
+    """The accounts that hold cash: every bank account, and every account at any
+    depth under the company's current cash and cash equivalents header, the header
+    included. A former header is not cash once the header has moved. Cycle-safe."""
+    codes = {b.chart_account_code for b in banks}
+    children: dict[str, list[str]] = {}
+    for a in accounts:
+        if a.parent_code:
+            children.setdefault(a.parent_code, []).append(a.code)
+    header = role_map(settings).get(AccountRole.CASH_AND_EQUIVALENTS.value)
+    stack = [header] if header else []
+    seen: set[str] = set()
+    while stack:
+        code = stack.pop()
+        if code in seen:
+            continue
+        seen.add(code)
+        codes.add(code)
+        stack.extend(children.get(code, ()))
+    return codes
+
+
 async def chart_accounts(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
     """Every account in the company's chart, in code order, as the posting-accounts
-    choices see it (``ChartAccess.list_accounts``)."""
+    choices see it (``ChartAccess.list_accounts``). ``cash`` marks an account that
+    holds cash (cash_accounts)."""
     rows = (await session.execute(
         select(Account).where(Account.company_id == company_id).order_by(Account.code)
     )).scalars().all()
+    banks = (await session.execute(select(BankAccount).where(BankAccount.company_id == company_id))).scalars().all()
+    cash = cash_accounts(rows, banks, await current_settings(session, company_id))
     parents = {r.parent_code for r in rows if r.parent_code}
     return [
-        {"code": r.code, "name": r.name, "account_type": r.account_type,
-         "is_active": r.is_active, "has_children": r.code in parents, "code_generated": r.code_generated}
+        {"code": r.code, "name": r.name, "account_type": r.account_type, "is_active": r.is_active,
+         "has_children": r.code in parents, "code_generated": r.code_generated, "cash": r.code in cash}
         for r in rows
     ]
 

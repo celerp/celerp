@@ -18,9 +18,10 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from celerp.accounting_roles import AccountRole
+from celerp_accounting.models import Account
 from celerp.models.accounting import UserCompany
 from celerp.models.company import User
 from celerp.models.notification import Notification
@@ -33,11 +34,27 @@ from test_helpers import TZ
 from test_mfg_wip_upgrade import _carried, _events, _facts, _job, _older_issue, _upgrade, in_production_slot  # noqa: F401
 from test_posting_roles_autoje import _unmap
 from test_posting_roles_lots import _lot
-from test_posting_roles_older_stock import _choose, _opening_entry, _restored, _without_accounting
+from test_posting_roles_older_stock import _restored, _without_accounting
 
 pytestmark = pytest.mark.asyncio
 
 RETAINED = AccountRole.RETAINED_EARNINGS.value
+
+
+async def _upgrade_while_placement_waits(session, auth) -> None:
+    """A start while neither inventory account can take entries, so older stock waits for
+    its inventory account; the accounts are then switched back on, which places nothing."""
+    codes = [await role(session, auth, r.value)
+             for r in (AccountRole.INVENTORY_PURCHASED, AccountRole.INVENTORY_OPENING)]
+
+    async def active(on: bool) -> None:
+        await session.execute(update(Account).where(
+            Account.company_id == auth["company_id"], Account.code.in_(codes)).values(is_active=on))
+        await session.commit()
+
+    await active(False)
+    await _upgrade(session)
+    await active(True)
 
 
 async def reconcile(client, auth, order: str, values: list[tuple[str, float]], account: str | None,
@@ -99,13 +116,13 @@ async def test_a_run_whose_books_disagree_is_reconciled_and_carries_on(client, s
 
 
 async def test_a_run_with_a_component_without_an_account_is_reconciled_and_carries_on(client, session, auth):
-    """The component an older run used up entirely left no lot on hand for Accounting to place,
-    so it has no inventory account and nothing says where its value is."""
+    """The component an older run used up entirely has no inventory account while placement
+    waits for the Purchased inventory account, so nothing says where its value is."""
     used = await older_release_lot(session, auth["company_id"], auth["user_id"], 40.0, qty=4)
     raw = await _item(client, auth, 100.0, qty=10)
     item, order = await _job(client, auth, raw)
     await _older_issue(session, auth, order, used, 4)
-    await _upgrade(session)
+    await _upgrade_while_placement_waits(session, auth)
     assert (await _facts(session, auth, order))["wip_unresolved"] == "component without an inventory account"
     re = await role(session, auth, RETAINED)
     # The run names what it still holds, though the used-up lot is no input of it.
@@ -134,7 +151,7 @@ async def test_a_value_beyond_what_the_history_records_is_refused(client, sessio
     raw = await _item(client, auth, 100.0, qty=10)
     _, order = await _job(client, auth, raw)
     await _older_issue(session, auth, order, used, 4)
-    await _upgrade(session)
+    await _upgrade_while_placement_waits(session, auth)
     re = await role(session, auth, RETAINED)
     before = await snapshot(session, auth, used, order)
 
@@ -163,7 +180,7 @@ async def test_stock_sold_before_it_is_on_hand_does_not_stop_reconciling_from_re
     raw = await _item(client, auth, 100.0, qty=10)
     _, order = await _job(client, auth, raw)
     await _older_issue(session, auth, order, used, 4)
-    await _upgrade(session)
+    await _upgrade_while_placement_waits(session, auth)
     re = await role(session, auth, RETAINED)
 
     r = await reconcile(client, auth, order, [(used, 40.0)], re)
@@ -195,10 +212,8 @@ async def test_a_run_on_books_from_elsewhere_is_reconciled_and_carries_on(client
     wip = await role(session, auth, WIP)
     assert await lines(session, auth, f"je:auto:{order}:reconcile:rec") == [(wip, (WIP,), 40.0, 0),
                                                                           (re, (RETAINED,), 0, 40.0)]
-    # The six still on the shelf are placed the way any restored stock is: on the account the
-    # restored books carry them on.
-    await _opening_entry(session, auth, 60.0)
-    assert (await _choose(client, auth, raw, "1130-OB")).status_code == 200
+    # The six still on the shelf were placed at the upgrade the way any restored stock is.
+    assert (await _state(session, auth, raw))[LOT_ACCOUNT_FIELD]
     await _carried(client, session, auth)
     await _carry_on(client, session, auth, raw, order, 100.0, _carried)
 

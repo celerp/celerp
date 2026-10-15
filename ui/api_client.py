@@ -5,15 +5,40 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import BinaryIO
 
 import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
+from celerp.services.auth import CALLER_HEADER
 from celerp.services.company_settings import BOOKS_KEYS, GENERAL
+from celerp.tax_regimes import doc_side
 from ui.i18n import current_lang, refusal_text, t
 
 logger = logging.getLogger(__name__)
+
+# The address of the visitor whose request the UI is serving, as the UI sees it.
+_caller: ContextVar[str | None] = ContextVar("celerp_caller", default=None)
+
+
+class CallerMiddleware:
+    """Pure ASGI middleware: records each request's client address, which every call
+    into the local API names in CALLER_HEADER so the API's rate limits count the visitor,
+    never the UI server. Taken from the connection, never from a header the browser sent."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        token = _caller.set((scope.get("client") or ("",))[0] or None)
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            _caller.reset(token)
 
 # The bulk transport carries the handful of long, finite local operations (backup
 # bootstrap/import, large attachment transfer) so they never hold an interactive
@@ -185,6 +210,8 @@ def _local_client(
     # The API answers in the language of the page that asked, so the messages it
     # returns read in the user's language.
     merged_headers.setdefault("Accept-Language", current_lang())
+    if caller := _caller.get():
+        merged_headers[CALLER_HEADER] = caller
     if token is not None:
         merged_headers["Authorization"] = f"Bearer {token}"
 
@@ -1019,6 +1046,12 @@ async def get_purchasing_taxes(token: str) -> list[dict]:
 async def patch_purchasing_taxes(token: str, taxes: list[dict]) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/purchasing-taxes", json={"taxes": taxes})).json()
+
+
+async def get_document_taxes(token: str, doc_type: str | None) -> list[dict]:
+    """The tax list a document of this type draws from: purchasing taxes for a purchase
+    document, sales taxes for any other."""
+    return await (get_purchasing_taxes(token) if doc_side(doc_type) == "purchase" else get_taxes(token))
 
 
 async def get_purchasing_payment_terms(token: str) -> list[dict]:
@@ -2344,15 +2377,16 @@ async def get_audit(token: str, entity_id: str) -> dict:
     return await get_list(token, entity_id)
 
 
-async def scan_list(token: str, entity_id: str, barcode: str, price_list: str | None = None,
-                    run_key: str | None = None) -> dict:
+async def scan_codes(token: str, kind: str, entity_id: str, barcode: str, price_list: str | None = None,
+                     run_key: str | None = None) -> dict:
+    """Post one batched scan run to a list or document (kind "lists" or "docs")."""
     body: dict = {"barcode": barcode}
     if price_list:
         body["price_list"] = price_list
     if run_key:
         body["run_key"] = run_key
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/scan", json=body)).json()
+        return _raise(await c.post(f"/{kind}/{entity_id}/scan", json=body)).json()
 
 
 async def set_audit_count(token: str, entity_id: str, item_id: str, counted_qty: float | None) -> dict:
@@ -3421,7 +3455,7 @@ async def set_period_lock(token: str, lock_date: str | None) -> dict:
 
 
 async def get_posting_accounts(token: str) -> dict:
-    """GET each posting role's account and status, and older stock with no provable inventory account."""
+    """GET each posting role's account and status, and the accounts older stock can sit on."""
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/posting-accounts")).json()
 
@@ -3432,10 +3466,47 @@ async def set_posting_account(token: str, role: str, code: str) -> dict:
         return _raise(await c.put(f"/accounting/posting-accounts/{role}", json={"code": code})).json()
 
 
-async def set_older_stock_account(token: str, item_id: str, code: str) -> dict:
-    """PUT the inventory account of older stock that records none."""
+async def get_older_stock(token: str, params: dict) -> dict:
+    """GET the older stock placed automatically, its placements and moves (filters ``account`` and ``q``)."""
     async with _api_client(token) as c:
-        return _raise(await c.put(f"/accounting/posting-accounts/older-stock/{item_id}", json={"code": code})).json()
+        return _raise(await c.get("/accounting/older-stock", params={k: v for k, v in params.items() if v})).json()
+
+
+async def move_older_stock(token: str, item_ids: list[str], code: str, key: str) -> dict:
+    """POST a bulk move of older lots to inventory account ``code``, recorded once per ``key``."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/older-stock/move",
+                                   json={"item_ids": item_ids, "code": code, "key": key})).json()
+
+
+async def move_all_older_stock(token: str, filters: dict, selection: str, code: str, key: str) -> dict:
+    """POST a move of every older lot matching ``filters`` (``account``, ``q``) to inventory
+    account ``code``, ``selection`` being the fingerprint of the lots the user confirmed,
+    recorded once per ``key``."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/older-stock/move-all", json={
+            "account": filters.get("account"), "q": filters.get("q"), "selection": selection, "code": code,
+            "key": key})).json()
+
+
+async def undo_older_stock_move(token: str, move_id: str) -> dict:
+    """POST the undo of an older-stock move."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/older-stock/moves/{move_id}/undo")).json()
+
+
+async def retry_older_stock(token: str) -> dict:
+    """POST another try at placing the older stock still awaiting an account."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/older-stock/retry")).json()
+
+
+async def correct_older_stock(token: str, placements: list[str], kind: str) -> dict:
+    """POST a correction of how older-stock placements treated their difference: ``recognize``
+    books it against retained earnings, ``unresolve`` leaves it unresolved."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/older-stock/corrections",
+                                   json={"placements": placements, "kind": kind})).json()
 
 
 async def close_fiscal_year(token: str, fiscal_year_end: str) -> dict:

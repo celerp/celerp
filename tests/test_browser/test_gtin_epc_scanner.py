@@ -19,6 +19,9 @@ Three browser-verified behaviours:
    documents (invoice/memo), not to inbound documents. At merge base the guard
    runs on ALL doc types, so an inbound bill wrongly blocks a repeated scan of the
    same item and only one line appears where two are required.
+
+4. A repeat scan of a splittable item raises its one line, and the line(s) the last
+   scan run touched keep the scanned highlight until the next run, which moves it.
 """
 from __future__ import annotations
 
@@ -86,6 +89,8 @@ def _scan(page, code: str) -> None:
     inp.click()
     inp.fill(code)
     inp.press("Enter")
+    page.locator("#scan-bar-add").click()
+    page.wait_for_function("() => !document.getElementById('scan-bar-input').disabled", timeout=8000)
 
 
 def _seed_name_decoy(api, tag: str, code: str) -> str:
@@ -175,3 +180,58 @@ def test_invoice_duplicate_blocked_inbound_allowed(page, ui_server, api):
     page.wait_for_timeout(2000)
     assert _sku_row_count(page, item["sku"]) == 2, \
         "an inbound bill must allow the same item to be scanned twice"
+
+
+def _scanned_skus(page) -> list[str]:
+    return page.evaluate(
+        """() => Array.from(document.querySelectorAll('#line-body tr.data-row--scanned'))"""
+        """.map(r => (r.querySelector('[data-name=\"sku\"]') || {}).value)""")
+
+
+def _scanned_border(page) -> list[str]:
+    """The computed outline of each highlighted row, as "<width> <style>"."""
+    return page.evaluate(
+        """() => Array.from(document.querySelectorAll('#line-body tr.data-row--scanned')).map(r => {"""
+        """ const c = getComputedStyle(r); return c.outlineWidth + ' ' + c.outlineStyle; })""")
+
+
+def test_scan_highlights_the_lines_the_last_run_touched(page, ui_server, api):
+    """Two scans of one splittable item are one row of quantity 2, highlighted; a scan of another
+    item moves the highlight to that row only, and the rows keep their order. The highlighted row
+    carries a 2px green border on screen and none in print, and no background tint: its cells are
+    coloured exactly like the plain row's.
+
+    RED at the base: every scan of a splittable lot is its own new line and no row carries the
+    scanned highlight."""
+    tag = uuid.uuid4().hex[:6]
+    first = _seed_item(api, tag + "a", barcode=str(uuid.uuid4().int)[:12])
+    second = _seed_item(api, tag + "b", barcode=str(uuid.uuid4().int)[:12])
+
+    _open_doc(page, ui_server, api, "invoice")
+    _scan(page, first["barcode"])
+    _wait_for_sku_row(page, first["sku"])
+    _scan(page, first["barcode"])
+    page.wait_for_function(
+        """(sku) => Array.from(document.querySelectorAll('#line-body tr')).some(r =>"""
+        """ (r.querySelector('[data-name=\"sku\"]') || {}).value === sku"""
+        """ && Number(r.querySelector('[data-name=\"quantity\"]').value) === 2)""",
+        arg=first["sku"], timeout=8000)
+    assert _sku_row_count(page, first["sku"]) == 1
+    assert _scanned_skus(page) == [first["sku"]]
+    assert _scanned_border(page) == ["2px solid"]
+    page.emulate_media(media="print")
+    assert [b.split()[1] for b in _scanned_border(page)] == ["none"]
+    page.emulate_media(media="screen")
+
+    _scan(page, second["barcode"])
+    _wait_for_sku_row(page, second["sku"])
+    page.wait_for_function("(sku) => document.querySelector('#line-body tr.data-row--scanned [data-name=\"sku\"]')"
+                           "?.value === sku", arg=second["sku"], timeout=8000)
+    assert _scanned_skus(page) == [second["sku"]]
+    order = page.evaluate("""() => Array.from(document.querySelectorAll('#line-body [data-name=\"sku\"]'))"""
+                          """.map(e => e.value).filter(Boolean)""")
+    assert order == [first["sku"], second["sku"]]
+    plain, scanned = page.evaluate(
+        """() => Array.from(document.querySelectorAll('#line-body tr')).filter(r => r.querySelector('[data-name=\"sku\"]')?.value)"""
+        """.map(r => Array.from(r.cells).map(c => getComputedStyle(c).backgroundColor))""")
+    assert scanned == plain

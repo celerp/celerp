@@ -13,15 +13,14 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
 from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
 from celerp.db import create_tables, engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import CodeConflictError
 from celerp.projections.engine import UnhandledEventsError
+from celerp.services.account_roles import PostingRoleError
 from celerp.services.auto_je import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 load_cloud_config()
@@ -43,7 +42,7 @@ from celerp.held_back import (
     module_start_step,
     unowned_error,
 )
-from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
+from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, OlderStockMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception, notify_refused
 from ui.i18n import I18nMiddleware, t
 
 from celerp.routers import auth, companies, company_backup, ledger, migrations
@@ -641,9 +640,6 @@ async def _serve(_app: FastAPI, held):
 logging.basicConfig(level=settings.log_level.upper())
 log = logging.getLogger(__name__)
 
-_storage_uri = settings.redis_url or "memory://"
-limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"], storage_uri=_storage_uri)
-
 _OPENAPI_TAGS = [
     {"name": "auth", "description": "Authenticate users and manage sessions and access tokens."},
     {"name": "companies", "description": "Manage companies, members, and roles."},
@@ -656,7 +652,7 @@ _OPENAPI_TAGS = [
     {"name": "manufacturing", "description": "Manage bills of materials and production orders."},
     {"name": "labels", "description": "Manage label templates, barcodes, and printing."},
     {"name": "crm", "description": "Manage contacts, pipeline, and activity."},
-    {"name": "subscriptions", "description": "Manage recurring billing and automatic invoicing."},
+    {"name": "subscriptions", "description": "Manage recurring billing templates and generate each document when it is due."},
     {"name": "connectors", "description": "Configure and operate external integrations."},
     {"name": "payments", "description": "Manage payment collection."},
     {"name": "backup", "description": "Export and import Celerp data."},
@@ -703,8 +699,8 @@ def _openapi_settings() -> dict:
 
 
 app = FastAPI(title="Celerp REST API", docs_url=None, redoc_url=None, lifespan=lifespan, **_openapi_settings())
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# Innermost, so a request it runs again passes every check below once more.
+app.add_middleware(OlderStockMiddleware)
 app.add_middleware(DrainMiddleware)
 app.add_middleware(RecoveryMaintenanceMiddleware)
 app.add_middleware(ModuleStartupMiddleware)
@@ -769,6 +765,19 @@ async def code_conflict_handler(_request: Request, exc: CodeConflictError):
 async def unhandled_events_handler(_request: Request, exc: UnhandledEventsError):
     # Every rebuild door (ledger, doctor, admin) is refused the same way before it changes anything.
     return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(PostingRoleError)
+async def posting_refused_handler(request: Request, exc: PostingRoleError):
+    # Those who manage accounting are notified of the roles refused (notify_refused);
+    # the refusal is returned whether or not that succeeds.
+    company_id = getattr(request.state, "company_id", None)
+    if company_id is not None:
+        try:
+            await notify_refused(company_id, [p["params"]["role"] for p in exc.detail["params"]["problems"]])
+        except Exception:
+            logging.getLogger(__name__).exception("Could not notify a refused posting")
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
 
 
 @app.exception_handler(UnbalancedJournalEntry)

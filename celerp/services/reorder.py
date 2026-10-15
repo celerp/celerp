@@ -38,8 +38,7 @@ _SAFETY = 0                  # extra safety buffer on the suggested reorder_poin
 
 # Daily-scan gating (mirror the connector scheduler idiom).
 _CHECK_INTERVAL_SECONDS = 3600      # loop wakes hourly
-_MIN_HOURS_BETWEEN_SCANS = 23       # at most one digest per company per day
-_SCAN_HOUR_UTC = 8                  # run the scan when the UTC hour matches
+_SCAN_HOUR_UTC = 8                  # a day's scan is due from this UTC hour on
 _EXPIRING_WINDOW_DAYS = 30          # expiring-lot look-ahead window
 
 # Outbound event types, where each stores its quantity in the ledger `data`, and its sign:
@@ -325,9 +324,9 @@ async def _send_combined_email(session: AsyncSession, company, title: str, secti
 async def reorder_alert_loop() -> None:
     """Background loop: once a day per company, run the proactive checks and alert.
 
-    Started from the API lifespan. Gates on hour-of-day + a per-company
-    ``reorder_last_scan_at`` so a restart can't double-fire and the digest lands
-    at most once per day.
+    Started from the API lifespan. Each hourly tick scans the companies ``_scan_due`` names
+    from their ``reorder_last_scan_at``, so the digest lands once a day whenever the app is
+    running and a restart can't double-fire.
     """
     from celerp.db import get_session_ctx
     from celerp.models.company import Company
@@ -354,17 +353,20 @@ async def reorder_alert_loop() -> None:
 
 
 def _scan_due(company, now: datetime) -> bool:
-    """True when this company is due for its daily scan at the current tick."""
-    if now.hour != _SCAN_HOUR_UTC:
-        return False
+    """True when this company is due for its daily scan at the current tick: no scan ran on
+    today's UTC date and the scan hour has passed, or the last scan is more than a day old.
+    A missing or unreadable stamp counts as no scan."""
+    last_dt = None
     last = (company.settings or {}).get("reorder_last_scan_at")
     if last:
         try:
             last_dt = datetime.fromisoformat(last)
-            if last_dt.tzinfo is None:
-                last_dt = last_dt.replace(tzinfo=timezone.utc)
-            if now - last_dt < timedelta(hours=_MIN_HOURS_BETWEEN_SCANS):
-                return False
         except (TypeError, ValueError):
             pass
-    return True
+    if last_dt is None:
+        return now.hour >= _SCAN_HOUR_UTC
+    if last_dt.tzinfo is None:
+        last_dt = last_dt.replace(tzinfo=timezone.utc)
+    if now - last_dt > timedelta(days=1):
+        return True
+    return last_dt.astimezone(timezone.utc).date() < now.date() and now.hour >= _SCAN_HOUR_UTC

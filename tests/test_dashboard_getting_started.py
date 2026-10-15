@@ -371,3 +371,25 @@ async def test_finish_setup_dismiss_api_failure_keeps_the_banner(ui):
 async def test_finish_setup_dismiss_needs_a_session(ui):
     r = await ui.post("/dashboard/finish-setup/dismiss")
     assert r.status_code == 302 and r.headers["location"] == "/login"
+
+
+# ── Older stock placed banner ──────────────────────────────────────────────────
+
+async def test_the_older_stock_banner_shows_until_dismissed(ui):
+    html = await _dashboard(ui, settings={"older_stock_placed": "p1"})
+    assert 'id="older-stock-banner"' in html
+    assert 'href="/settings/accounting?tab=older-stock"' in html
+    assert 'hx-post="/dashboard/older-stock/dismiss"' in html
+    assert 'id="older-stock-banner"' not in await _dashboard(ui, role="viewer", settings={"older_stock_placed": "p1"})
+    assert 'id="older-stock-banner"' not in await _dashboard(
+        ui, settings={"older_stock_placed": "p1", "older_stock_banner_dismissed": "p1"})
+    # A later placement shows it again.
+    assert 'id="older-stock-banner"' in await _dashboard(
+        ui, settings={"older_stock_placed": "p2", "older_stock_banner_dismissed": "p1"})
+    assert 'id="older-stock-banner"' not in await _dashboard(ui)
+
+    with _Dash(settings={"older_stock_placed": "p1"}) as dash:
+        r = await ui.post("/dashboard/older-stock/dismiss", cookies=authed_cookies(role="owner"))
+    assert r.status_code == 200
+    assert dash.patch_company.await_args.args[1] == {"older_stock_banner_dismissed": "p1"}
+    assert 'id="older-stock-banner"' not in r.text

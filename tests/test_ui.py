@@ -1676,8 +1676,8 @@ class TestDocsPage:
         assert r.status_code == 200
 
 
-class TestDocCatalogLookup:
-    """Test /docs/catalog-lookup returns sell_by and quantity."""
+class TestDocCatalogSearch:
+    """/docs/catalog-search result shape."""
 
     @pytest.mark.asyncio
     async def test_catalog_search_preserves_entity_id_from_id_field(self, ui_client):
@@ -1696,67 +1696,6 @@ class TestDocCatalogLookup:
         assert results[0]["entity_id"] == "item:abc", (
             f"entity_id was {results[0].get('entity_id')!r}; "
             "catalog-search must fall back to item['id'] when entity_id is absent"
-        )
-
-    @pytest.mark.asyncio
-    async def test_catalog_lookup_weight_item(self, ui_client):
-        item = {
-            "entity_id": "item:w1", "sku": "EM-001", "name": "Emerald",
-            "retail_price": 500, "sell_by": "carat", "quantity": 3.2,
-        }
-        with patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})):
-            r = await ui_client.get("/docs/catalog-lookup?sku=EM-001", cookies=_authed())
-        assert r.status_code == 200
-        data = r.json()
-        assert data["sku"] == "EM-001"
-        assert data["unit_price"] == 500
-        assert data["sell_by"] == "carat"
-        assert data["quantity"] == 3.2
-
-    @pytest.mark.asyncio
-    async def test_catalog_lookup_piece_item(self, ui_client):
-        item = {
-            "entity_id": "item:p1", "sku": "RNG-001", "name": "Ring",
-            "retail_price": 1200, "sell_by": "piece", "quantity": 1,
-        }
-        with patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})):
-            r = await ui_client.get("/docs/catalog-lookup?sku=RNG-001", cookies=_authed())
-        assert r.status_code == 200
-        data = r.json()
-        assert data["sell_by"] == "piece"
-        assert data["quantity"] == 1
-
-    @pytest.mark.asyncio
-    async def test_catalog_lookup_no_sell_by(self, ui_client):
-        item = {"entity_id": "item:n1", "sku": "X-001", "name": "Widget", "retail_price": 10}
-        with patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})):
-            r = await ui_client.get("/docs/catalog-lookup?sku=X-001", cookies=_authed())
-        assert r.status_code == 200
-        data = r.json()
-        assert data["sell_by"] is None
-
-    @pytest.mark.asyncio
-    async def test_catalog_lookup_fails_closed_on_cross_field_physical_collision(self, ui_client):
-        """RED at head: the document scanner resolves a barcode match first and returns
-        it immediately, bypassing the canonical shared Barcode/EPC namespace contract. A
-        code held as item A's barcode and item B's rfid_epc spans two distinct physical
-        items; the scanner must fail closed (409) exactly as /scanning/resolve does, never
-        silently select A."""
-        item_a = {"entity_id": "item:a", "sku": "AAA", "name": "Alpha", "retail_price": 10, "barcode": "123456"}
-        item_b = {"entity_id": "item:b", "sku": "BBB", "name": "Beta", "retail_price": 20, "rfid_epc": "123456"}
-
-        async def _list(_t, params=None):
-            params = params or {}
-            if params.get("barcode") == "123456":
-                return {"items": [item_a], "total": 1}
-            if params.get("rfid_epc") == "123456":
-                return {"items": [item_b], "total": 1}
-            return {"items": [], "total": 0}
-
-        with patch("ui.api_client.list_items", new=AsyncMock(side_effect=_list)):
-            r = await ui_client.get("/docs/catalog-lookup?sku=123456", cookies=_authed())
-        assert r.status_code == 409, (
-            f"a code on two physical items must fail closed, got {r.status_code}: {r.text}"
         )
 
 
@@ -10906,7 +10845,7 @@ class TestListScanInPlace:
         # A building list answers with the JSON scan result (scanned count, no failures, empty html so
         # the client refetches the editable tbody itself), never a full-page refresh.
         _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}], "failed": []}
-        with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
+        with patch("ui.api_client.scan_codes", new=AsyncMock(return_value=_res)), \
              patch("ui.api_client.get_list_page",
                    new=AsyncMock(return_value={"list": self._DRAFT, "version": 1})):
             r = await ui_client.post("/lists/list:1/scan", data={"barcode": "A1"}, cookies=_authed())
@@ -10947,7 +10886,7 @@ class TestListScanInPlace:
         _bad = "ዕቃ-99"
         _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}],
                 "failed": [{"code": _bad, "reason": "unknown_code", "label": f"{_bad}: no matching barcode or SKU"}]}
-        with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
+        with patch("ui.api_client.scan_codes", new=AsyncMock(return_value=_res)), \
              patch("ui.api_client.get_list_page",
                    new=AsyncMock(return_value={"list": self._DRAFT, "version": 1})):
             r = await ui_client.post("/lists/list:1/scan", data={"barcode": f"A1, {_bad}"}, cookies=_authed())
@@ -12576,25 +12515,6 @@ class TestCatalogConsolidationEndpoint:
         data = r.json()
         assert len(data) == 2                                    # NOT collapsed -> both lots offered
         assert {d["entity_id"] for d in data} == {"item:l1", "item:l2"}
-
-    @pytest.mark.asyncio
-    async def test_catalog_lookup_ambiguous_for_non_splittable_sku(self, ui_client):
-        items = [
-            {"sku": "DIA", "entity_id": "item:a", "name": "DIA", "quantity": 1, "allow_splitting": False, "sell_by": "piece"},
-            {"sku": "DIA", "entity_id": "item:b", "name": "DIA", "quantity": 1, "allow_splitting": False, "sell_by": "piece"},
-        ]
-
-        async def _list(_t, params):
-            return {"items": items if params.get("sku") == "DIA" else []}
-
-        with (
-            patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
-            patch("ui.api_client.list_items", new=AsyncMock(side_effect=_list)),
-        ):
-            r = await ui_client.get("/docs/catalog-lookup?sku=DIA", cookies=_authed())
-        assert r.status_code == 200
-        assert r.json().get("ambiguous") is True        # non-splittable -> chooser
 
 
 class TestReorderPlaceholderHelper:
@@ -14696,17 +14616,6 @@ class TestPriceLists:
         assert r.json() == result
 
     @pytest.mark.asyncio
-    async def test_catalog_lookup_passes_price_list(self, ui_client):
-        """Catalog lookup respects price_list query param."""
-        item = {"entity_id": "item:1", "sku": "TEST", "name": "Widget",
-                "retail_price": 100, "wholesale_price": 65, "sell_by": "piece", "quantity": 5}
-        with patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})):
-            r = await ui_client.get("/docs/catalog-lookup?sku=TEST&price_list=Wholesale", cookies=_authed())
-        assert r.status_code == 200
-        data = r.json()
-        assert data["unit_price"] == 65.0
-
-    @pytest.mark.asyncio
     async def test_doc_detail_shows_price_list_dropdown_above_lines(self, ui_client):
         """Doc detail page renders price list dropdown in the line items section."""
         doc = {**_BLANK_DOC, "price_list": "Wholesale"}
@@ -14769,15 +14678,6 @@ class TestBugFixesBatch25Mar:
         names = {f.name for f in fields(ItemListFilters)}
         assert "sku" in names
         assert "barcode" in names
-
-    def test_catalog_lookup_tries_barcode(self):
-        """Catalog lookup should try barcode match between SKU and general search."""
-        # This is a structural test - verify the catalog_lookup code path
-        import ast
-        import textwrap
-        from pathlib import Path
-        src = (Path(__file__).parent.parent / "ui/routes/documents.py").read_text()
-        assert "barcode" in src[src.index("doc_catalog_lookup"):src.index("doc_catalog_lookup") + 1500]
 
     @pytest.mark.asyncio
     async def test_split_keeps_parent_sku(self, ui_client):
@@ -15578,35 +15478,6 @@ class TestVendorDocCategoryColumn:
         }
         html = to_xml(_doc_detail(doc, item_categories={"electronics": "Electronics"}))
         assert ">Category<" not in html
-
-    def test_catalog_lookup_returns_category(self):
-        """Catalog lookup must return category field for autofill."""
-        from ui.routes.documents import _doc_detail
-        # This is a unit assertion that _extract includes category - checked via catalog lookup result shape.
-        # The actual route test is in TestDocCatalogLookup; here we confirm the field is in the extract dict.
-        import sys
-        # Access the private extract logic indirectly by checking catalog lookup response schema.
-        # The category field was added in the sub-agent task; verify it's returned.
-        from ui.routes.documents import _doc_detail as _fn
-        # Ensure _doc_detail accepts item_categories kwarg without error
-        doc = self._make_bill()
-        from fasthtml.common import to_xml
-        html = to_xml(_doc_detail(doc, item_categories={"electronics": "Electronics"}))
-        assert html  # Must not raise
-
-    @pytest.mark.asyncio
-    async def test_catalog_lookup_includes_category_in_response(self, ui_client):
-        """GET /docs/catalog-lookup must return category field."""
-        item = {
-            "entity_id": "item:cat-1", "sku": "CAT-001", "name": "Gadget",
-            "retail_price": 200, "sell_by": "piece", "quantity": 5,
-            "category": "Electronics", "hs_code": None,
-        }
-        with patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})):
-            r = await ui_client.get("/docs/catalog-lookup?sku=CAT-001", cookies=_authed())
-        assert r.status_code == 200
-        data = r.json()
-        assert data.get("category") == "Electronics"
 
 
 class TestVendorDocReceiveAsColumn:
@@ -17522,7 +17393,7 @@ class TestDraftStatusColumn:
             "discount": 0, "tax": 0, "subtotal": 100, "total": 100,
             "line_items": [
                 # Scan-added list lines carry the item's id in item_id only (see
-                # _scan_line_from_item); editable-UI lines set entity_id to the same item id.
+                # _scan_line); editable-UI lines set entity_id to the same item id.
                 {"item_id": "item:q1", "sku": "Q-A", "name": "Widget",
                  "description": "Widget", "quantity": 1, "unit_price": 100, "line_total": 100},
             ],
@@ -20126,7 +19997,7 @@ async def test_list_scan_proxy_preserves_run_conflict(ui_client):
     from ui.api_client import APIError
     msg = "This scan run was already recorded against a different batch."
     err = APIError(409, msg, data={"code": "scan_run_conflict", "detail": msg})
-    with patch("ui.api_client.scan_list", new=AsyncMock(side_effect=err)):
+    with patch("ui.api_client.scan_codes", new=AsyncMock(side_effect=err)):
         r = await ui_client.post(
             "/lists/list:L1/scan",
             data={"barcode": "ABC123", "run_key": "run-1"},
@@ -20144,7 +20015,7 @@ async def test_list_scan_proxy_plain_rejection_wraps_detail(ui_client):
     still returns JSON {detail: "..."} with the backend status - no machine code, so
     the scan bar shows the reason and keeps the field for a plain retry."""
     from ui.api_client import APIError
-    with patch("ui.api_client.scan_list",
+    with patch("ui.api_client.scan_codes",
                new=AsyncMock(side_effect=APIError(409, "This list is closed."))):
         r = await ui_client.post(
             "/lists/list:L1/scan",
@@ -20157,13 +20028,13 @@ async def test_list_scan_proxy_plain_rejection_wraps_detail(ui_client):
 
 @pytest.mark.asyncio
 async def test_list_scan_proxy_returns_fresh_version(ui_client):
-    """On a successful scan the proxy hands back the list's post-write projection
-    version, so the client's optimistic-lock token tracks the scan's write and a
-    later line save does not 409 on a stale version."""
-    scan = AsyncMock(return_value={"scanned": 1, "failed": []})
+    """On a successful scan the proxy hands back the version the scan's own write
+    produced, so the client's optimistic-lock token tracks it and a later line save
+    does not 409 on a stale version, never an earlier header read."""
+    scan = AsyncMock(return_value={"scanned": 1, "failed": [], "version": 4242})
     get = AsyncMock(return_value={"list": {"list_type": "quotation", "status": "draft"},
-                                  "version": 4242})
-    with patch("ui.api_client.scan_list", new=scan), patch("ui.api_client.get_list_page", new=get):
+                                  "version": 1})
+    with patch("ui.api_client.scan_codes", new=scan), patch("ui.api_client.get_list_page", new=get):
         r = await ui_client.post(
             "/lists/list:L1/scan",
             data={"barcode": "ABC123", "run_key": "run-1"},
@@ -20174,6 +20045,7 @@ async def test_list_scan_proxy_returns_fresh_version(ui_client):
     assert body["scanned"] == 1
     assert body["version"] == 4242
     assert body["html"] == ""
+    assert scan.await_args.args[1:3] == ("lists", "list:L1")
 
 
 def _inventory_nav_slots():

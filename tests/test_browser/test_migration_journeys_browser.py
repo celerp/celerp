@@ -37,6 +37,7 @@ from .test_migration_wizard_browser import (
 pytestmark = pytest.mark.browser
 
 _WAIT_MS = 60_000
+_BROWSER_ERROR_PAGE = "chrome-error://chromewebdata/"
 
 
 def _session_company(context) -> str:
@@ -104,6 +105,9 @@ def _lose_start_response(page, path: str) -> None:
         waited += 1
     page.unroute(f"**{path}")
     assert handled == [303], handled
+    # The aborted submit commits the browser's error page a moment later; a navigation
+    # started before that commit is interrupted by it.
+    page.wait_for_url(_BROWSER_ERROR_PAGE, timeout=_WAIT_MS)
     context.clear_cookies()
     if cookies:
         context.add_cookies(cookies)

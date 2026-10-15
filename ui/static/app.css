@@ -854,7 +854,7 @@ a:hover { text-decoration: underline; }
 .doc-lines--invoice td.col-desc .catalog-ac-input { background-color: #e2f4ef; }
 /* Audit lines are static text (no desc input), so the editable-cell gray fill above looks out of
    place. Drive the Description cell off a per-row variable instead so it matches the other cells:
-   white on a plain row, and the row-state tint on scanned/adjusted rows (the .data-row--* td rules
+   white on a plain row, and the row-state tint on audited/adjusted rows (the .data-row--* td rules
    set the same colour on every other cell but are outranked on this cell by the invoice selector).
    Hover tints come from the .data-row--*:hover td rules, which outrank this. */
 .doc-lines--audit td.col-desc { background: var(--audit-row-bg, transparent); }
@@ -3343,10 +3343,14 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .audit-actions { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
 .audit-count-input { max-width: 90px; }
 /* Scanned/accounted-for audit row: a clearly visible green tint (the prior near-white was
-   imperceptible), plus the green left rail. Persists until cleared via the bulk action. */
+   imperceptible), plus the green left rail. Persists until cleared via the bulk action. A line the
+   last scan run added or raised (.data-row--scanned) wears a green border only, no tint, until the
+   next run; the border is an inset outline so no column moves, and print omits it. */
 .data-row--audited td { background: rgba(14,165,122,0.14); }
 .data-row--audited:hover td { background: rgba(14,165,122,0.22); }
 .data-row--audited td:first-child { box-shadow: inset 4px 0 0 var(--c-green); }
+.data-row--scanned { outline: 2px solid var(--color-success); outline-offset: -2px; }
+@media print { .data-row--scanned { outline: none; } }
 .data-row--adjusted td { background: var(--c-blue-light); }
 .data-row--adjusted:hover td { background: var(--c-blue-bg); }
 .data-row--adjusted td:first-child { box-shadow: inset 3px 0 0 var(--c-blue); }
