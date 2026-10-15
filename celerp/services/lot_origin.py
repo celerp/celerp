@@ -473,15 +473,29 @@ async def _notify_placed(session: AsyncSession, company_id, *, count: int, code:
 FAILED_NOTICE = "notice.older_stock_failed"
 
 
-async def _notify_failed(session: AsyncSession, company_id) -> None:
+async def _notify_failed(session: AsyncSession, company_id, exc: Exception) -> None:
     """Placing older stock failed for a reason no setting explains. Nothing was written;
     the company is told, kept current while it stands, and the notice is removed once
-    the stock is placed (_place)."""
+    the stock is placed (_place). The notice names the kind of error for a report
+    (failed_placement), never its text, which can carry company data. It is written in
+    the caller's transaction, so it stands exactly when what asked for the placement
+    commits."""
     from celerp.notifications import service as notification_service
 
-    title, body, i18n = _notice(FAILED_NOTICE)
+    title, body, i18n = _notice(FAILED_NOTICE, error=type(exc).__name__)
     await notification_service.notify_standing(session, company_id, "accounting", title, body,
                                                action_url=OLDER_STOCK_PATH, i18n=i18n)
+
+
+async def failed_placement(session: AsyncSession, company_id) -> dict | None:
+    """The standing failure to place older stock (_notify_failed): the kind of error, or
+    None when none stands."""
+    from celerp.models.notification import Notification
+
+    i18n = (await session.execute(select(Notification.i18n).where(
+        Notification.company_id == company_id, Notification.category == "accounting",
+        Notification.title == _notice(FAILED_NOTICE)[0]).limit(1))).scalar()
+    return {"error": ((i18n or {}).get("params") or {}).get("error") or ""} if i18n is not None else None
 
 
 async def _recorded(session: AsyncSession, company_id, item_ids: list[str]) -> set[str]:
@@ -686,9 +700,9 @@ async def place_older_stock(session: AsyncSession, company_id) -> bool:
         return False
     except _Retry:
         return False
-    except Exception:
+    except Exception as exc:
         logger.exception("Older stock of company %s was not placed; retrying on the next start", company_id)
-        await _notify_failed(session, company_id)
+        await _notify_failed(session, company_id, exc)
         return False
 
 
@@ -704,8 +718,9 @@ async def place_company_stock(session: AsyncSession, company_id, *, claim=frozen
     company has its unplaced stock placed (place_older_stock); one whose chart was
     seeded just now (``opening``) opens it (open_inventory_origins); any other is
     upgraded (normalize_legacy_inventory_origins). Period-lock and posting-account holds
-    and their notices are theirs. Placing never fails the caller: a failure is logged
-    and retried on the next start. Running it again changes nothing. Returns whether it
+    and their notices are theirs. Placing never fails the caller: a failure is rolled
+    back whole, logged and told (_notify_failed), and retried on the next trigger or
+    when the user tries again (place_unplaced_stock). Running it again changes nothing. Returns whether it
     placed or marked anything."""
     from celerp.modules.registry import uses_module
     from celerp.services.account_roles import reconcile_company
@@ -724,8 +739,13 @@ async def place_company_stock(session: AsyncSession, company_id, *, claim=frozen
         place = normalize_legacy_inventory_origins
     try:
         return await place(session, company_id)
-    except Exception:
+    except Exception as exc:
         logger.exception("Older stock of company %s was not placed; retrying on the next start", company_id)
+        try:
+            async with session.begin_nested():
+                await _notify_failed(session, company_id, exc)
+        except Exception:
+            logger.exception("The failure to place older stock of company %s could not be told", company_id)
         return False
 
 
@@ -772,7 +792,7 @@ async def place_unplaced_stock(session: AsyncSession, company_id) -> bool:
     in the caller's transaction, when any still waits, and return whether none waits
     now. For a request refused only because older stock was not placed yet
     (PLACEABLE_REFUSALS, rolled back whole by celerp.middleware.OlderStockMiddleware,
-    which then runs it again). The caller
+    which then runs it again) and for the user trying again after a failure. The caller
     holds no lock, so placing takes the company, its accounts and its lots in that order,
     as every placement does. Another request placing the same stock at the same time
     waits on the company lock and then finds it placed (_recorded)."""
@@ -1628,7 +1648,8 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
     """Settings > Accounting > Older stock: the lots placed automatically still in stock,
     newest placement first (filtered to ``account`` and to ``q`` in their SKU or name),
     each placement with its adjustment, every move newest first, the accounts the lots
-    sit on, and the accounts they can be moved to."""
+    sit on, the accounts they can be moved to, and a standing failure to place older
+    stock (failed_placement)."""
     from celerp.services.posting_readiness import older_stock_targets
 
     settings = await current_settings(session, company_id)
@@ -1674,4 +1695,5 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
     for move in moves.values():
         move["undone"] = f"{move['move_id']}:undo" in moves
     return {"lots": lots, "placements": list(placements.values()), "moves": list(moves.values()),
-            "accounts": accounts, **await older_stock_targets(session, company_id)}
+            "accounts": accounts, "failed": await failed_placement(session, company_id),
+            **await older_stock_targets(session, company_id)}

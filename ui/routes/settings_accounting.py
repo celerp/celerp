@@ -14,7 +14,7 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.components.icons import import_icon
 from ui.api_client import APIError
-from ui.components.shell import base_shell, flash, page_header, page_title
+from ui.components.shell import base_shell, bug_report_url, flash, page_header, page_title
 from celerp.accounting_roles import account_label
 from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
 from ui.components.table import EMPTY, add_new_option, bulk_toolbar, searchable_select, display_enum, fmt_money
@@ -446,6 +446,24 @@ def _move_row(m: dict, currency: str) -> FT:
     )
 
 
+def _placement_failure(failed: dict | None) -> FT | None:
+    """A standing failure to place older stock: what it means, Try again, and a bug
+    report pre-filled with the kind of error only."""
+    if not failed:
+        return None
+    report = bug_report_url(area="Accounting",
+                            current=f"Older stock could not be placed ({failed.get('error') or 'unknown error'}).")
+    return Div(
+        H4(t("notice.older_stock_failed.title")),
+        P(t("older_stock.failed")),
+        Div(Button(t("btn.retry"), type="button", cls="btn btn--sm btn--primary",
+                   hx_post=f"{_OLDER_STOCK_URL}/retry", hx_target="#older-stock-card", hx_swap="outerHTML"),
+            A(t("nav.report_bug"), href=report, target="_blank", rel="noopener", cls="btn btn--sm btn--secondary"),
+            cls="form-actions"),
+        cls="error-banner mb-md",
+    )
+
+
 def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = "success") -> FT:
     """Settings > Accounting > Older stock: the lots placed automatically, a bulk move to
     another inventory account, each placement's adjustment and every move, newest first."""
@@ -474,6 +492,7 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
     return Div(
         flash(message, kind) if message else None,
         H3(t("older_stock.tab"), cls="section-title"),
+        _placement_failure(view.get("failed")),
         P(t("older_stock.hint"), cls="text-muted mb-md"),
         _older_stock_filters(filters, view.get("accounts", [])),
         bulk_toolbar("older-stock-table", [
@@ -512,7 +531,7 @@ async def _older_stock_action(request: Request, call) -> FT:
     filters = _older_stock_filters_of(request)
     try:
         view = await call(token)
-        message, kind = view.pop("message", ""), "success"
+        message, kind = view.pop("message", ""), view.pop("kind", "success")
         if any(filters.values()):
             view = await api.get_older_stock(token, filters)
     except APIError as e:
@@ -1237,6 +1256,16 @@ def setup_routes(app):
     async def older_stock_undo(request: Request, move_id: str):
         async def call(token):
             return {**await api.undo_older_stock_move(token, move_id), "message": t("older_stock.undo_done")}
+
+        return await _older_stock_action(request, call)
+
+    @app.post("/settings/accounting/older-stock/retry")
+    async def older_stock_retry(request: Request):
+        async def call(token):
+            view = await api.retry_older_stock(token)
+            if view.pop("result")["placed"]:
+                return {**view, "message": t("older_stock.placed_msg")}
+            return {**view, "message": t("older_stock.still_failed"), "kind": "error"}
 
         return await _older_stock_action(request, call)
 

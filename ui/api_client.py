@@ -3452,6 +3452,12 @@ async def undo_older_stock_move(token: str, move_id: str) -> dict:
         return _raise(await c.post(f"/accounting/older-stock/moves/{move_id}/undo")).json()
 
 
+async def retry_older_stock(token: str) -> dict:
+    """POST another try at placing the older stock still awaiting an account."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/older-stock/retry")).json()
+
+
 async def set_placement_adjustment(token: str, pid: str, booked: bool) -> dict:
     """POST whether a placement's adjustment against retained earnings stands (booked again) or is reversed."""
     async with _api_client(token) as c:

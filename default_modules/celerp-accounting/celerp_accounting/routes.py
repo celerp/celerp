@@ -4536,6 +4536,20 @@ async def undo_older_stock_move(
     return await older_stock_view(session, company_id)
 
 
+@router.post("/older-stock/retry")
+async def retry_older_stock(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Try placing the older stock still awaiting an account again, after a failure."""
+    from celerp.services.lot_origin import older_stock_view, place_unplaced_stock
+
+    placed = await place_unplaced_stock(session, company_id)
+    await session.commit()
+    return {**await older_stock_view(session, company_id), "result": {"placed": placed}}
+
+
 @router.post("/older-stock/placements/{pid}/adjustment")
 async def set_older_stock_adjustment(
     pid: str,

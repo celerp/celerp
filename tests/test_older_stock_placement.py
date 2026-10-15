@@ -733,6 +733,7 @@ async def test_older_stock_routes_need_manage_accounting(session, client, auth):
                                ("post", "/accounting/older-stock/move", {"item_ids": ["x"], "code": "1130-P",
                                                                          "key": "k"}),
                                ("post", "/accounting/older-stock/moves/m/undo", None),
+                               ("post", "/accounting/older-stock/retry", None),
                                ("post", "/accounting/older-stock/placements/p/adjustment", {"booked": False})):
         r = await getattr(client, method)(path, headers=headers, **({"json": body} if body else {}))
         assert r.status_code == 403, (path, r.status_code, r.text)

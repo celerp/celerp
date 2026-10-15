@@ -2097,6 +2097,11 @@ def _bug_report_url() -> str:
     return _BUG_REPORT_URL
 
 
+def bug_report_url(**fields: str) -> str:
+    """The bug report link (_bug_report_url) with more of the form's fields pre-filled."""
+    return _bug_report_url() + (f"&{urlencode(fields)}" if fields else "")
+
+
 def search_help(lang: str = "en", panel_id: str = "global-search-help-panel") -> FT:
     """Reusable (?) help affordance for a search box: a keyboard-focusable button
     that toggles a panel describing the query syntax with a worked example.
