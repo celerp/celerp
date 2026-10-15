@@ -57,6 +57,7 @@ _PUBLIC_API_PREFIXES = (
     "/pay",
     "/company-peers/verify",
     "/company-peers/contacts",
+    "/company-peers/products",
 )
 
 

@@ -14,6 +14,9 @@ from celerp.models.projections import Projection
 from celerp.services.currencies import require_currency_code
 
 CONTACT_CREATED = "crm.contact.created"
+_NULLABLE_CONTACT_FIELDS = frozenset({
+    "company_name", "email", "phone", "billing_address", "shipping_address", "currency",
+})
 
 
 class CRMImportRecord(BaseModel):
@@ -54,6 +57,7 @@ async def import_contact_records(
     records: Sequence[CRMImportRecord],
     *,
     match_identity: bool,
+    allow_null_updates: bool = False,
 ) -> ImportOutcome:
     """Create each imported contact, or update the contact it already is.
 
@@ -101,7 +105,8 @@ async def import_contact_records(
             if candidates:
                 contact_id = candidates.pop()
                 state = states[contact_id]
-                incoming = {k: v for k, v in rec.data.items() if v is not None}
+                incoming = {k: v for k, v in rec.data.items()
+                            if v is not None or (allow_null_updates and k in _NULLABLE_CONTACT_FIELDS)}
                 if "contact_type" in incoming:
                     incoming["contact_type"] = _imported_type(state.get("contact_type"), incoming["contact_type"])
                 changes = {k: {"old": state.get(k), "new": v} for k, v in incoming.items() if state.get(k) != v}

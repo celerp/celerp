@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, FiniteFloat
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,13 +20,13 @@ from celerp.services import peer_access
 
 router = APIRouter(prefix="/company-peers", tags=["company-peers"])
 
-Scope = Literal["contacts"]
+Scope = Literal["contacts", "products"]
 
 
 class GrantRequest(BaseModel):
     source_company_id: uuid.UUID
     label: str = Field(min_length=1, max_length=128)
-    scopes: set[Scope] = Field(min_length=1, max_length=1)
+    scopes: set[Scope] = Field(min_length=1, max_length=2)
     lifetime_days: int = Field(default=30, ge=1, le=90)
 
 
@@ -67,14 +67,15 @@ async def revoke_peer_grant(grant_id: uuid.UUID, ctx: AuthContext = Depends(user
 
 @router.get("/verify")
 async def verify_peer_grant(source_company_id: uuid.UUID,
+                            scope: Scope = "contacts",
                             authorization: str = Header(default=""),
                             session: AsyncSession = Depends(get_session)):
     scheme, _, credential = authorization.partition(" ")
     if scheme != "Peer" or not credential:
         raise HTTPException(401, "Invalid integration credentials")
     grant = await peer_access.authenticate(
-        session, credential, source_company_id=source_company_id, scope="contacts")
-    return {"company_id": str(grant.company_id), "scopes": ["contacts"]}
+        session, credential, source_company_id=source_company_id, scope=scope)
+    return {"company_id": str(grant.company_id), "scopes": list(grant.scopes)}
 
 
 class ContactData(BaseModel):
@@ -107,6 +108,43 @@ async def receive_peer_contact(body: PeerContactUpdate,
         session, key, source_company_id=body.source_company_id, scope="contacts")
     result = await receive_contact(
         session, grant=grant, source_entity_id=body.source_entity_id,
-        source_revision=body.source_revision, data=body.data.model_dump(exclude_none=True))
+        source_revision=body.source_revision, data=body.data.model_dump())
     await session.commit()
     return {"status": result}
+
+
+
+class ProductData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=255)
+    sku: str | None = Field(default=None, max_length=255)
+    description: str | None = Field(default=None, max_length=20000)
+    sell_by: str = Field(default="piece", min_length=1, max_length=128)
+    category: str | None = Field(default=None, max_length=255)
+    barcode: str | None = Field(default=None, max_length=255)
+    retail_price: FiniteFloat | None = Field(default=None, ge=0)
+    wholesale_price: FiniteFloat | None = Field(default=None, ge=0)
+
+
+class PeerProductUpdate(BaseModel):
+    source_company_id: uuid.UUID
+    source_entity_id: str = Field(min_length=1, max_length=512)
+    source_revision: int = Field(ge=1, le=2**63 - 1)
+    data: ProductData
+
+
+@router.post("/products")
+async def receive_peer_product(body: PeerProductUpdate,
+                               authorization: str = Header(default=""),
+                               session: AsyncSession = Depends(get_session)):
+    from celerp.services.peer_identity import receive_product
+    scheme, _, key = authorization.partition(" ")
+    if scheme != "Peer" or not key:
+        raise HTTPException(401, "Invalid integration credentials")
+    grant = await peer_access.authenticate(
+        session, key, source_company_id=body.source_company_id, scope="products")
+    outcome = await receive_product(
+        session, grant=grant, source_entity_id=body.source_entity_id,
+        source_revision=body.source_revision, data=body.data.model_dump())
+    await session.commit()
+    return {"status": outcome}
