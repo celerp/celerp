@@ -43,7 +43,7 @@ from celerp.held_back import (
     module_start_step,
     unowned_error,
 )
-from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
+from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, OlderStockMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from ui.i18n import I18nMiddleware, t
 
 from celerp.routers import auth, companies, company_backup, ledger, migrations
@@ -705,6 +705,8 @@ def _openapi_settings() -> dict:
 app = FastAPI(title="Celerp REST API", docs_url=None, redoc_url=None, lifespan=lifespan, **_openapi_settings())
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# Innermost, so a request it runs again passes every check below once more.
+app.add_middleware(OlderStockMiddleware)
 app.add_middleware(DrainMiddleware)
 app.add_middleware(RecoveryMaintenanceMiddleware)
 app.add_middleware(ModuleStartupMiddleware)

@@ -269,6 +269,7 @@ async def get_auth_context(
     from celerp.services.permissions import authorize_request, end_request
     authority = authorize_request(session, ctx.company_id, ctx.user.id, ctx.role)
     session.info[SIGNED_TOKEN] = token
+    request.state.company_id = ctx.company_id  # the company a refused request places stock for (OlderStockMiddleware)
     try:
         yield ctx
     finally:

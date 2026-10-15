@@ -1809,6 +1809,11 @@ async def enable_module(
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     company.settings, also_enabled = enable_for_company(company.settings, module_name)
+    if "celerp-accounting" in (module_name, *also_enabled):
+        from celerp.services.lot_origin import place_company_stock
+
+        await session.flush()
+        await place_company_stock(session, company_id)  # its books are kept from now on
     await commit_with_load_set(session)
     return {
         "ok": True, "name": module_name, "enabled": True,

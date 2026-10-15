@@ -321,6 +321,89 @@ class DrainMiddleware:
         await self.app(scope, receive, send)
 
 
+class OlderStockMiddleware:
+    """Run a write request once more after placing older stock it was refused for.
+
+    A request refused only because a lot it needs records no inventory account yet
+    (lot_origin.PLACEABLE_REFUSALS) has ended, rolled back, holding nothing. Its
+    company's stock is then placed the one way (lot_origin.place_unplaced_stock) in a
+    transaction of its own, and once none waits the request runs again, once, and its
+    answer is the one returned. Placing that cannot happen (a posting account or a
+    period lock holds it back, each with its own notice) returns the refusal as it was.
+    The company is the one the request was authorised for (auth.get_auth_context)."""
+
+    _REFUSED = (409, 422)
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("method", "") not in _WRITE_METHODS:
+            await self.app(scope, receive, send)
+            return
+        body, more = [], True
+        while more:
+            message = await receive()
+            if message["type"] != "http.request":
+                return  # the client went away before sending the request
+            body.append(message.get("body", b""))
+            more = message.get("more_body", False)
+        body = b"".join(body)
+        held = await self._run(scope, body, receive, send)
+        if held is None:
+            return
+        company_id = (scope.get("state") or {}).get("company_id")
+        if company_id is not None and _placeable(held) and await _placed(company_id):
+            await self._run(scope, body, receive, send, hold=False)
+            return
+        for message in held:
+            await send(message)
+
+    async def _run(self, scope: Scope, body: bytes, receive: Receive, send: Send, *,
+                   hold: bool = True) -> list[dict] | None:
+        """Run the request on ``body``. A refusal is kept and returned instead of sent
+        when ``hold``; anything else is sent as it comes and None returned."""
+        sent = False
+        held: list[dict] = []
+
+        async def replay() -> dict:
+            nonlocal sent
+            if sent:
+                return await receive()
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        async def keep(message: dict) -> None:
+            if held or (hold and message["type"] == "http.response.start" and message["status"] in self._REFUSED):
+                held.append(message)
+            else:
+                await send(message)
+
+        await self.app(scope, replay, keep)
+        return held or None
+
+
+def _placeable(held: list[dict]) -> bool:
+    """Whether a held refusal is one placing older stock can lift."""
+    from celerp.services.lot_origin import PLACEABLE_REFUSALS
+
+    try:
+        detail = json.loads(b"".join(m.get("body", b"") for m in held[1:])).get("detail")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(detail, dict) and detail.get("message_key") in PLACEABLE_REFUSALS
+
+
+async def _placed(company_id) -> bool:
+    from celerp.services.lot_origin import place_unplaced_stock
+
+    async with get_session_ctx() as session:
+        await session.rollback()  # nothing of the refused request is kept
+        placed = await place_unplaced_stock(session, company_id)
+        await session.commit()
+    return placed
+
+
 # The anonymous liveness probes, matched exactly: the only routes an unfinished
 # System Recovery still serves. Readiness is refused until the recovery converges,
 # so nothing routes traffic to an installation that answers only 503s. Never a

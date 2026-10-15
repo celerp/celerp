@@ -35,7 +35,9 @@ accountant; one placement record keeps all of it and the company is told
 the cost invoices recognized and have not shipped, plus the difference recorded on it.
 Every start and every writer that brings such stock in while Celerp runs (a batch
 import of another system's items, a restored backup, a finalized migration) places it
-the same way (place_company_stock). The user can move placed lots to another inventory
+the same way (place_company_stock), as does turning Accounting on and any request
+refused only because the stock it needs is not placed yet, which then runs again
+(place_unplaced_stock). The user can move placed lots to another inventory
 account in bulk, each move booking its value across (move_lot_accounts), undo a move
 (undo_lot_move), and reverse the adjustment or book it again (set_placement_adjustment).
 """
@@ -747,6 +749,36 @@ async def place_after_lock_change(session: AsyncSession, company_id) -> bool:
     if await period_open(session, company_id, business_date_of(None, tz)):
         await notification_service.mark_done(session, company_id, PERIOD_LOCK_PATH)
     return await place_older_stock(session, company_id)
+
+
+# The refusals a request meets only because older stock it needs is not placed yet:
+# moving its cost (account_roles.LotOriginError) and moving it between accounts
+# (move_lot_accounts).
+PLACEABLE_REFUSALS = frozenset({"posting.older_stock.no_account", "older_stock.move.not_placed"})
+
+
+async def _unplaced(session: AsyncSession, company_id) -> list[Projection]:
+    """The company's stock awaiting placement (_legacy), read as stored now and without
+    loading the lots that record an account."""
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item",
+        Projection.state[LOT_ACCOUNT_FIELD].as_string().is_(None)).execution_options(
+            populate_existing=True))).scalars().all()
+    return _legacy(list(rows))
+
+
+async def place_unplaced_stock(session: AsyncSession, company_id) -> bool:
+    """Place the company's stock awaiting placement the one way (place_company_stock),
+    in the caller's transaction, when any still waits, and return whether none waits
+    now. For a request refused only because older stock was not placed yet
+    (PLACEABLE_REFUSALS, rolled back whole by celerp.middleware.OlderStockMiddleware,
+    which then runs it again). The caller
+    holds no lock, so placing takes the company, its accounts and its lots in that order,
+    as every placement does. Another request placing the same stock at the same time
+    waits on the company lock and then finds it placed (_recorded)."""
+    if await _unplaced(session, company_id):
+        await place_company_stock(session, company_id)
+    return not await _unplaced(session, company_id)
 
 
 async def period_open(session: AsyncSession, company_id, day: str) -> bool:

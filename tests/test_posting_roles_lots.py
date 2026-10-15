@@ -129,7 +129,7 @@ async def test_a_split_lot_keeps_its_account_in_every_part(session, client, auth
 
 
 @pytest.mark.asyncio
-async def test_an_older_lot_with_no_provable_account_refuses_to_move_its_cost(session, client, auth):
+async def test_an_older_lot_is_placed_when_it_is_first_sold(session, client, auth):
     lot = await _lot(client, auth, 30.0)
     await _forget_origin(session, auth, lot)
     r = await client.post("/docs", headers=auth["headers"], json={
@@ -137,9 +137,8 @@ async def test_an_older_lot_with_no_provable_account_refuses_to_move_its_cost(se
         "line_items": [{"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})
     assert r.status_code == 200, r.text
     r = await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"])
-    assert r.status_code == 409, r.text
-    assert "has no inventory account yet" in r.json()["detail"]["message"]
-    assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, lot))[_FIELD] == "1130-OB"
 
 
 @pytest.mark.asyncio
@@ -272,7 +271,7 @@ async def test_manufacturing_relieves_inputs_on_their_account_and_books_output_w
 
 
 @pytest.mark.asyncio
-async def test_an_older_lot_waits_for_its_account_until_the_next_start_places_it(session, client, auth):
+async def test_an_older_lot_is_placed_on_the_account_that_carries_it_when_it_is_sold(session, client, auth):
     lot = await older_release_lot(session, auth["company_id"], auth["user_id"], 30.0, sku="OLD-2")
     await _remap(session, auth, await _new_inventory_account(client, auth), "inventory_purchased")
     # The older release's opening inventory entry carries it on 1130-OB.
@@ -282,17 +281,9 @@ async def test_an_older_lot_waits_for_its_account_until_the_next_start_places_it
         "line_items": [{"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})
     assert r.status_code == 200, r.text
     inv = r.json()["id"]
-    r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
-    assert r.status_code == 409, r.text
-    assert "OLD-2 has no inventory account yet" in r.json()["detail"]["message"]
-    assert r.headers["X-Celerp-Fix"] == "/settings/accounting?tab=posting-accounts"
-    await session.rollback()  # the refused request's work ends with it, as its own session would
 
-    from test_posting_roles_rollout import _startup
-
-    # The next start places it on the account that carries it, with nothing to book.
-    await _startup(session)
-    assert (await _state(session, auth, lot))[_FIELD] == "1130-OB"
+    # Selling it places it on the account that carries it, with nothing to book, and the sale goes through.
     r = await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
     assert r.status_code == 200, r.text
+    assert (await _state(session, auth, lot))[_FIELD] == "1130-OB"
     assert _credits(await _state(session, auth, f"je:auto:{inv}:fin")) == {"1130-OB": 30.0}
