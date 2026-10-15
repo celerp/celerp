@@ -281,6 +281,23 @@ async def test_a_credit_note_on_an_imported_invoice_reverses_each_revenue_accoun
 
 
 @pytest.mark.asyncio
+async def test_a_credit_note_on_an_imported_invoice_with_a_discount_line_reverses_the_discount_too(session):
+    """An invoice that sold 100 on 4000 and 20 on 400 and gave a 20 discount on 4010 nets 100.
+    Credited in full, every revenue account goes back to where it was, the discount
+    included: the discount account is credited back, never left out with the rest spread
+    over the other accounts."""
+    context = await _staged_context(session)
+    await _import_chart(context, _TWO_REVENUE_CHART)
+    invoice = await _imported_invoice(context, {"sales-a": "100.00", "sales-b": "-20.00", "sales": "20.00"})
+    assert await _credit_note_revenue(context, invoice, 100.0) == {"400": 20.0, "4000": 100.0, "4010": -20.0}
+    # Half of it moves each account half as far, to the cent.
+    assert await _credit_note_revenue(context, invoice, 50.0) == {"400": 10.0, "4000": 50.0, "4010": -10.0}
+    # Releasing an open credit takes it back off the same accounts.
+    assert await _credit_note_revenue(context, invoice, 100.0, release=100.0) == {
+        "400": -20.0, "4000": -100.0, "4010": 20.0}
+
+
+@pytest.mark.asyncio
 async def test_a_credit_note_on_an_imported_invoice_sold_on_an_account_sales_do_not_post_to(session):
     from celerp.services.account_roles import current_settings, role_map
 

@@ -607,10 +607,10 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
 
 
 async def _revenue_sold_on(session, company_id, doc_id: str, settings: dict) -> list[tuple[str, _Dec]]:
-    """Each account a document's live finalize entry credited revenue on, with its net
-    credit, in code order. A line names its revenue by its role, or one that carries no
-    role (an imported document's own lines) by its account being a revenue account in
-    the chart. Empty when it credited none."""
+    """Each account a document's live finalize entry moved revenue on, with its net credit
+    (below zero on a discount account the sale was debited to), in code order. A line names
+    its revenue by its role, or one that carries no role (an imported document's own lines)
+    by its account being a revenue account in the chart. Empty when it moved none."""
     lines = [e for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
              if _finalize_root(doc_id, f"je:auto:{doc_id}:{suffix}") is not None
              and (row.state or {}).get("status") == "posted"
@@ -622,7 +622,24 @@ async def _revenue_sold_on(session, company_id, doc_id: str, settings: dict) -> 
         typed = not e.get("account_roles") and chart.get(e["account"], {}).get("account_type") in ROLE_TYPES[R.SALES_REVENUE]
         if typed or line_has_role(settings, e, R.SALES_REVENUE):
             net[e["account"]] = net.get(e["account"], _Dec(0)) + to_decimal(e.get("credit")) - to_decimal(e.get("debit"))
-    return sorted((code, amount) for code, amount in net.items() if amount > 0)
+    return sorted((code, amount) for code, amount in net.items() if amount)
+
+
+def _revenue_shares(revenue, sold_on: list[tuple[str, _Dec]], currency: str) -> list[tuple[str, _Dec]]:
+    """``revenue`` spread over the accounts a sale moved revenue on, each in the proportion of
+    its net: a full credit returns every account to where it was, a discount account the
+    sale was debited to included (that one takes its share the other way). Each side is
+    split by allocate_pro_rata, so the shares sum to ``revenue`` exactly. A sale whose
+    revenue nets to nothing or less is spread over its credited accounts alone."""
+    credited = [(code, amount) for code, amount in sold_on if amount > 0]
+    debited = [(code, -amount) for code, amount in sold_on if amount < 0]
+    net = sum((amount for _, amount in sold_on), _Dec(0))
+    if not debited or net <= 0:
+        return list(zip([c for c, _ in credited], allocate_pro_rata(revenue, [a for _, a in credited], currency)))
+    gross = round_money(to_decimal(revenue) * sum((a for _, a in credited), _Dec(0)) / net, currency)
+    back = gross - round_money(revenue, currency)
+    return [*zip([c for c, _ in credited], allocate_pro_rata(gross, [a for _, a in credited], currency)),
+            *zip([c for c, _ in debited], (-share for share in allocate_pro_rata(back, [a for _, a in debited], currency)))]
 
 
 async def _credit_note_lines(session, company_id, doc: dict, base_currency: str, *,
@@ -643,13 +660,13 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
     acc = await resolve_many(session, company_id, [*roles, *([R.TAX_OUTPUT] if tax else [])])
 
     def side(amount: float, debit: bool) -> dict:
-        debit = debit != releasing
+        debit = (debit != releasing) != (amount < 0)
+        amount = abs(amount)
         return {"debit": amount if debit else 0.0, "credit": 0.0 if debit else amount}
 
     if sold_on:
-        shares = allocate_pro_rata(revenue, [amount for _, amount in sold_on], base_currency)
         entries = [_origin_line(settings, code, R.SALES_REVENUE, **side(to_stored_float(share), True))
-                   for (code, _), share in zip(sold_on, shares) if share]
+                   for code, share in _revenue_shares(revenue, sold_on, base_currency) if share]
     else:
         entries = [_line(acc[R.SALES_REVENUE], R.SALES_REVENUE, **side(revenue, True))]
     if tax:
