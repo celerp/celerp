@@ -473,6 +473,17 @@ def stock_line(settings: dict | None, entry: dict) -> bool:
     return bool(roles) and all(is_role(r) and AccountRole(r) in INVENTORY_VALUE_ROLES for r in roles)
 
 
+def uncertain_stock_line(settings: dict | None, entry: dict) -> bool:
+    """Whether a line may have moved stock value but cannot be shown to: posted before
+    lines recorded their roles, on an account that has served an inventory role and
+    another one too (line_roles). stock_line counts it as not stock; that never proves
+    the stock was never booked."""
+    if entry.get("account_roles") is not None:
+        return False
+    stock = [is_role(r) and AccountRole(r) in INVENTORY_VALUE_ROLES for r in line_roles(settings, entry)]
+    return any(stock) and not all(stock)
+
+
 async def stock_problems(session: AsyncSession, company_id, settings: dict, choices: dict[str, str]) -> list[dict]:
     """Why each role in ``choices`` ({role: code}) cannot be pointed at its account, with
     the company's ``settings`` as they are before the change: an inventory role never

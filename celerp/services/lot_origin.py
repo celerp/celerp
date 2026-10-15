@@ -81,6 +81,7 @@ from celerp.services.account_roles import (
     scope_list,
     stock_line,
     target_problems,
+    uncertain_stock_line,
 )
 from celerp.services.business_time import business_date_at, business_date_of
 from celerp.services.money import round_money
@@ -219,6 +220,12 @@ def _stock_balance(settings: dict, entries: list[tuple[str, dict]], code: str) -
     stock_line) only: cash, deposits, input tax or anything else on the same account is
     not stock value and never counts towards it."""
     return _balance([(je, e) for je, e in entries if stock_line(settings, e)], code)
+
+
+def _uncertain_balance(settings: dict, entries: list[tuple[str, dict]], code: str) -> Decimal:
+    """The balance of ``code`` from lines that may have been stock but cannot be shown to
+    (account_roles.uncertain_stock_line)."""
+    return _balance([(je, e) for je, e in entries if uncertain_stock_line(settings, e)], code)
 
 
 def stock_accounts(settings: dict, entries: list[tuple[str, dict]]) -> list[str]:
@@ -630,6 +637,11 @@ async def _place(session: AsyncSession, company_id) -> bool:
     accounts together hold short of V is recognized as opening stock, the way opening
     stock is booked (post_opening_stock_delta); what they hold beyond V is written off
     nowhere and is recorded on the default account as an unresolved difference. A
+    shortfall while any of these accounts carries lines that may have been stock but
+    cannot be shown to (account_roles.uncertain_stock_line) is not proof the stock was
+    never booked: nothing is recognized, the shortfall is recorded as a negative
+    unresolved difference for the accountant, and the default account is chosen
+    counting those lines as held. A
     placement record (sys.older_stock.placed) keeps the accounts' rooms, the value
     transferred, recognized and left unresolved, and the entries, so each inventory
     account holds its lots, less unshipped recognized cost, plus its unresolved
@@ -685,18 +697,23 @@ async def _place(session: AsyncSession, company_id) -> bool:
     unresolved = await unresolved_differences(session, company_id)
     room = {c: round_money(_room(settings, entries, items, c, currency, sold, unresolved), currency)
             for c in candidates + counted}
+    uncertain = {c: round_money(_uncertain_balance(settings, entries, c), currency) for c in held}
     provisional = round_money(sold.get(UNPLACED, 0), currency)
     value = round_money(sum((booked_value(r, currency) for r in pending), Decimal("0")), currency)
     owed = value - provisional  # cost already taken off the books by invoices whose entries name no one account
-    most = max(candidates, key=lambda c: room[c])
-    target = next((c for c in candidates if room[c] == owed), None) or (most if room[most] > 0 else usable[0])
+    most = max(candidates, key=lambda c: room[c] + uncertain.get(c, 0))
+    target = (next((c for c in candidates if room[c] == owed), None)
+              or (most if room[most] + uncertain.get(most, 0) > 0 else usable[0]))
     moved = {c: room[c] for c in room if c != target and room[c]}
     gap = round_money(sum(room.values(), Decimal("0")) - owed, currency)
+    # Lines that may have been stock leave a shortfall unproven: nothing is recognized
+    # for it, and it stays open for the accountant.
+    unproven = gap < 0 and any(uncertain.values())
     stuck = [problems[r] for r in (purchased, opening) if r in problems and current.get(r) in moved]
     if stuck:
         await _notify_unmapped(session, company_id, "body_held", stuck)
         return False
-    if gap < 0 and retained in problems:
+    if gap < 0 and not unproven and retained in problems:
         await _notify_unmapped(session, company_id, "body_retained", [problems[retained]])
         return False
     day = business_date_of(None, settings.get("timezone"))
@@ -721,7 +738,7 @@ async def _place(session: AsyncSession, company_id) -> bool:
             metadata_={"trigger": "older_stock.placed", "placement": pid}, ts=day)
     else:
         transferred = Decimal("0")
-    if gap < 0:
+    if gap < 0 and not unproven:
         journal.append(_placement_entry(pid, "opening"))
         await post_opening_stock_delta(
             session, company_id, {target: -gap}, onto_books=True, je_id=journal[-1],
@@ -734,9 +751,11 @@ async def _place(session: AsyncSession, company_id) -> bool:
         idempotency_key=_placement_entity(pid), metadata_={},
         data={"placement": pid, "day": day, "count": len(ids), "value": float(value), "account": target,
               "rooms": {c: float(v) for c, v in room.items()}, "transferred": float(transferred),
-              "recognized": float(max(-gap, Decimal("0"))), "unresolved": float(max(gap, Decimal("0"))),
+              "recognized": float(0 if unproven else max(-gap, Decimal("0"))),
+              "unresolved": float(gap if unproven else max(gap, Decimal("0"))),
               "provisional": float(provisional),
-              "classification": _classify(bool(moved), gap, provisional), "journal": journal})
+              "classification": "unresolved" if unproven else _classify(bool(moved), gap, provisional),
+              "journal": journal})
     company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), "older_stock_placed": pid}
     for notice in (UNMAPPED_NOTICE, FAILED_NOTICE):
