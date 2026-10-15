@@ -5123,7 +5123,7 @@
   "posting.problem.wrong_type": "{role} diatur ke akun {code} dengan tipe {type}; tipenya harus {types}.",
   "posting.problem.header": "{role} diatur ke akun {code}, sebuah akun induk; pilih akun di bawahnya.",
   "posting.problem.holds_inventory": "{role} tidak dapat diatur ke akun {code}: akun itu menyimpan persediaan. Pilih akun yang tidak menyimpan stok.",
-  "posting.problem.not_inventory": "{role} tidak dapat diatur ke akun {code}: akun itu menyimpan kas atau dipakai oleh akun posting lain, jadi bukan akun persediaan. Pilih akun persediaan.",
+  "posting.problem.not_inventory": "{role} tidak dapat diatur ke akun {code}: akun itu menyimpan kas, jadi bukan akun persediaan. Pilih akun persediaan.",
   "posting.refused": "{problems} Pilih akunnya di Pengaturan > Akuntansi > Akun posting.",
   "posting.continued_account_unusable": "Saldo ini dicatat pada akun {code}, yang saat ini tidak dapat menerimanya: {problem} Aktifkan kembali akun tersebut di bagan akun.",
   "posting.account_keeps_balance": "Akun {code} masih membawa {balance} untuk {role}, yang tetap bergerak di akun ini sampai dilunasi, jadi akun ini belum bisa dinonaktifkan.",

@@ -462,48 +462,48 @@ def target_problems(roles: list[str], current: dict[str, str], accounts: dict[st
     return problems
 
 
-def _stock_side(role) -> bool:
-    return AccountRole(role) in INVENTORY_VALUE_ROLES
+def stock_line(settings: dict | None, entry: dict) -> bool:
+    """Whether a journal line moved stock value: it carried roles when posted
+    (line_roles) and every one of them is an inventory role. A line posted for cash,
+    deposits, receivables, input tax or any other role, or for none, is not stock,
+    whatever account it sits on."""
+    roles = line_roles(settings, entry)
+    return bool(roles) and all(is_role(r) and AccountRole(r) in INVENTORY_VALUE_ROLES for r in roles)
 
 
-def stock_codes(settings: dict | None) -> set[str]:
-    """The accounts an inventory role points at now."""
-    return {code for role, code in role_map(settings).items() if is_role(role) and _stock_side(role)}
+async def stock_problems(session: AsyncSession, company_id, settings: dict, choices: dict[str, str]) -> list[dict]:
+    """Why each role in ``choices`` ({role: code}) cannot be pointed at its account, with
+    the company's ``settings`` as they are before the change: an inventory role never
+    takes an account that holds cash (a bank account, or one under the cash and cash
+    equivalents header), and any other role never takes an account that still holds
+    stock (lot_origin.stock_holders), since a line posted there before posting accounts
+    existed would then read as that role's and stop counting as stock. A role kept on
+    the account it already uses is never refused."""
+    from celerp.services.journal_accounts import chart_access
+    from celerp.services.lot_origin import stock_holders
 
-
-def not_stock(settings: dict | None, chart: list[dict]) -> set[str]:
-    """Accounts that hold something other than stock: cash, as the chart marks it (every
-    bank account and every account under the cash and cash equivalents header), and every
-    account a posting role outside inventory points at (receivable, deposit, input tax,
-    fixed assets and the rest). ``chart`` is the chart's rows (ChartAccess.list_accounts).
-    An inventory role is never set to one, and older stock is never counted from or
-    placed on one, even where an inventory role's history already names it."""
-    others = {code for role, code in role_map(settings).items() if is_role(role) and not _stock_side(role)}
-    return others | {row["code"] for row in chart if row.get("cash")}
-
-
-def barred(role: str, settings: dict | None, chart: list[dict], pending: set[str] = frozenset()) -> set[str]:
-    """The accounts ``role`` may not point at, so no account holds stock and something else
-    at once: for an inventory role every account that is not stock (not_stock), for any
-    other role every account an inventory role points at (stock_codes); plus ``pending``,
-    the accounts the other side is about to point at."""
-    return (not_stock(settings, chart) if _stock_side(role) else stock_codes(settings)) | set(pending)
-
-
-def stock_problem(role: str, code: str, settings: dict | None, chart: list[dict]) -> dict | None:
-    """The refusal for pointing ``role`` at ``code`` when ``settings`` (the roles as they
-    would be) bar it (barred), or None."""
-    if code not in barred(role, settings, chart):
-        return None
-    label = ROLE_LABELS[AccountRole(role)]
-    if _stock_side(role):
-        return refusal("posting.problem.not_inventory",
-                       f"{label} cannot be set to account {code}: that account holds cash or is used by another "
-                       "posting account, so it is not an inventory account. Choose an inventory account.",
-                       role=str(role), code=code)
-    return refusal("posting.problem.holds_inventory",
-                   f"{label} cannot be set to account {code}: that account holds inventory. "
-                   "Choose an account that holds no stock.", role=str(role), code=code)
+    current = role_map(settings)
+    changed = {role: code for role, code in choices.items() if current.get(role) != code}
+    stock = {role: code for role, code in changed.items() if AccountRole(role) in INVENTORY_VALUE_ROLES}
+    others = {role: code for role, code in changed.items() if role not in stock}
+    access = chart_access()
+    cash = ({row["code"] for row in await access.list_accounts(session, company_id) if row.get("cash")}
+            if stock and access else set())
+    holders = await stock_holders(session, company_id, settings, set(others.values())) if others else set()
+    problems = []
+    for role, code in changed.items():
+        label = ROLE_LABELS[AccountRole(role)]
+        if role in stock and code in cash:
+            problems.append(refusal(
+                "posting.problem.not_inventory",
+                f"{label} cannot be set to account {code}: that account holds cash, so it is not an inventory "
+                "account. Choose an inventory account.", role=str(role), code=code))
+        elif role in others and code in holders:
+            problems.append(refusal(
+                "posting.problem.holds_inventory",
+                f"{label} cannot be set to account {code}: that account holds inventory. "
+                "Choose an account that holds no stock.", role=str(role), code=code))
+    return problems
 
 
 async def resolve_many(session: AsyncSession, company_id, roles) -> dict[str, str]:
@@ -555,7 +555,7 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
     Existing balances stay where they were posted; the old account stays in the role's
     scope for historical readers."""
     from celerp.services.company_lock import lock_chart, locked_company
-    from celerp.services.journal_accounts import chart_access, lock_accounts
+    from celerp.services.journal_accounts import lock_accounts
 
     if not is_role(role):
         raise HTTPException(status_code=422, detail=unknown_role(role))
@@ -569,7 +569,8 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
             "Celerp couldn't find this company. It may have been deleted. Refresh the page."))
     # A child added under the account meanwhile would turn it into a header.
     await lock_chart(session, company_id)
-    settings = with_role(dict(company.settings or {}), role, code)
+    before = dict(company.settings or {})
+    settings = with_role(before, role, code)
     new_map = role_map(settings)
     # Exchange gain and loss are judged as a pair: moving one side can change what
     # the other side's account is allowed to be.
@@ -582,9 +583,9 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
         problem = target_problem(checked_role, new_map, accounts.get(new_map[checked_role]))
         if problem:
             raise HTTPException(status_code=422, detail=problem)
-    problem = stock_problem(role, code, settings, await chart_access().list_accounts(session, company_id))
-    if problem:
-        raise HTTPException(status_code=422, detail=problem)
+    problems = await stock_problems(session, company_id, before, {role: code})
+    if problems:
+        raise HTTPException(status_code=422, detail=problems[0])
     from celerp.services.company_settings import record_change
     record_change(settings, ROLES_KEY, user_id)
     company.settings = settings

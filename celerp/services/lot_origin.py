@@ -74,11 +74,11 @@ from celerp.services.account_roles import (
     continue_role,
     current_settings,
     lot_account,
-    not_stock,
     resolve_many,
     role_map,
     scope_codes,
     scope_list,
+    stock_line,
     target_problems,
 )
 from celerp.services.business_time import business_date_at, business_date_of
@@ -103,15 +103,6 @@ OFF_BOOKS = frozenset({"deleted", "void", "sold", "fulfilled", "merged", "draft"
 RETIRED = frozenset({"archived", "expired"})
 
 _INVENTORY = (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
-
-
-async def _not_stock(session: AsyncSession, company_id, settings: dict) -> set[str]:
-    """The accounts older stock is never counted from or placed on (account_roles.not_stock),
-    though an inventory role's history may name one; none while accounting is off."""
-    from celerp.services.journal_accounts import chart_access
-
-    access = chart_access()
-    return not_stock(settings, await access.list_accounts(session, company_id)) if access else set()
 
 # Inventory types that are goods the company holds: finished stock and the components
 # it makes things from, both bought onto and used off the inventory accounts.
@@ -220,13 +211,36 @@ async def account_balances(session: AsyncSession, company_id, codes) -> dict[str
     return {code: _balance(entries, code) for code in codes}
 
 
-def _room(entries: list[tuple[str, dict]], items: list[Projection], code: str, currency: str,
+def _stock_balance(settings: dict, entries: list[tuple[str, dict]], code: str) -> Decimal:
+    """The balance of ``code`` from the lines posted to it as stock (account_roles.
+    stock_line) only: cash, deposits, input tax or anything else on the same account is
+    not stock value and never counts towards it."""
+    return _balance([(je, e) for je, e in entries if stock_line(settings, e)], code)
+
+
+async def stock_balances(session: AsyncSession, company_id, settings: dict, codes) -> dict[str, Decimal]:
+    """_stock_balance of each of ``codes``, read once."""
+    entries = await _posted_entries(session, company_id)
+    return {code: _stock_balance(settings, entries, code) for code in codes}
+
+
+async def stock_holders(session: AsyncSession, company_id, settings: dict, codes: set[str]) -> set[str]:
+    """Which of ``codes`` still hold stock: lines posted as stock leave a balance on the
+    account (_stock_balance), or a lot holding value records it."""
+    currency = settings.get("currency", "USD")
+    entries = await _posted_entries(session, company_id)
+    lots = {(r.state or {}).get(LOT_ACCOUNT_FIELD) for r in await _items(session, company_id) if held_value(r)}
+    return {code for code in codes
+            if code in lots or round_money(_stock_balance(settings, entries, code), currency)}
+
+
+def _room(settings: dict, entries: list[tuple[str, dict]], items: list[Projection], code: str, currency: str,
           sold: dict[str, float], unresolved: dict[str, Decimal]) -> Decimal:
-    """What ``code`` holds beyond the value of the lots on hand that record it, less what
-    finalized invoices already recognized for the ones they have not shipped (``sold``,
-    from auto_je.recognized_unshipped) and the difference a placement left on it for the
-    accountant (``unresolved``, from unresolved_differences)."""
-    balance = _balance(entries, code)
+    """What ``code`` holds as stock (_stock_balance) beyond the value of the lots on hand
+    that record it, less what finalized invoices already recognized for the ones they
+    have not shipped (``sold``, from auto_je.recognized_unshipped) and the difference a
+    placement left on it for the accountant (``unresolved``, from unresolved_differences)."""
+    balance = _stock_balance(settings, entries, code)
     recorded = sum((booked_value(r, currency) for r in items if (r.state or {}).get(LOT_ACCOUNT_FIELD) == code),
                    Decimal("0"))
     return (balance - recorded + round_money(sold.get(code, 0), currency)
@@ -242,10 +256,12 @@ async def account_rooms(session: AsyncSession, company_id, codes) -> dict[str, D
     """account_room for each of ``codes``, read once."""
     from celerp.services.auto_je import recognized_unshipped
 
-    currency = (await current_settings(session, company_id)).get("currency", "USD")
+    settings = await current_settings(session, company_id)
+    currency = settings.get("currency", "USD")
     entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
     sold, unresolved = await recognized_unshipped(session, company_id), await unresolved_differences(session, company_id)
-    return {code: round_money(_room(entries, items, code, currency, sold, unresolved), currency) for code in codes}
+    return {code: round_money(_room(settings, entries, items, code, currency, sold, unresolved), currency)
+            for code in codes}
 
 
 def awaits_account(row: Projection) -> bool:
@@ -276,11 +292,10 @@ async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
     sold, unresolved = await recognized_unshipped(session, company_id), await unresolved_differences(session, company_id)
     findings = [{"kind": "unplaced_lot", "entity_id": r.entity_id, "sku": (r.state or {}).get("sku")}
                 for r in sorted(unrecorded(items), key=lambda r: r.entity_id)]
-    excluded = await _not_stock(session, company_id, settings)
-    for code in sorted({code for role in _INVENTORY for code in scope_codes(settings, role)} - excluded):
-        room = round_money(_room(entries, items, code, currency, sold, unresolved), currency)
+    for code in sorted({code for role in _INVENTORY for code in scope_codes(settings, role)}):
+        room = round_money(_room(settings, entries, items, code, currency, sold, unresolved), currency)
         if room:
-            books = round_money(_balance(entries, code), currency)
+            books = round_money(_stock_balance(settings, entries, code), currency)
             findings.append({"kind": "stock_gap", "account": code, "books": float(books),
                              "stock": float(books - room - unresolved.get(code, Decimal("0")))})
     findings += [{"kind": "unresolved_difference", "account": code, "amount": float(amount)}
@@ -613,17 +628,16 @@ async def _place(session: AsyncSession, company_id) -> bool:
     retained = AccountRole.RETAINED_EARNINGS.value
     roles = [purchased, opening, retained]
     current = role_map(settings)
-    excluded = await _not_stock(session, company_id, settings)
-    scope = [c for c in dict.fromkeys(c for role in _INVENTORY for c in scope_list(settings, role)) if c not in excluded]
+    scope = list(dict.fromkeys(c for role in _INVENTORY for c in scope_list(settings, role)))
     accounts = await lock_accounts(session, company_id, {current[r] for r in roles if current.get(r)} | set(scope))
     if accounts is None:
         return False  # Accounting is not running: nothing can be booked or placed
     problems = target_problems(roles, current, accounts)
-    if purchased in problems or current[purchased] in excluded:
+    if purchased in problems:
         await _notify_unmapped(session, company_id, purchased)
         return False
     p, ob = current[purchased], current.get(opening)
-    usable = [p] + ([ob] if opening not in problems and ob not in excluded and ob != p else [])
+    usable = [p] + ([ob] if opening not in problems and ob != p else [])
     former = [c for c in scope if c not in (p, ob) and c in accounts]
     entries = await _posted_entries(session, company_id)
     opening_first = (await books_from_elsewhere(session, company_id, settings)
@@ -632,7 +646,7 @@ async def _place(session: AsyncSession, company_id) -> bool:
     currency = settings.get("currency", "USD")
     sold = await recognized_unshipped(session, company_id)
     unresolved = await unresolved_differences(session, company_id)
-    room = {c: round_money(_room(entries, items, c, currency, sold, unresolved), currency)
+    room = {c: round_money(_room(settings, entries, items, c, currency, sold, unresolved), currency)
             for c in candidates + former}
     provisional = round_money(sold.get(UNPLACED, 0), currency)
     value = round_money(sum((booked_value(r, currency) for r in pending), Decimal("0")), currency)
@@ -996,7 +1010,7 @@ async def _normalize(session: AsyncSession, company_id, user_id) -> bool:
         return True
     production = await in_production(session, company_id)
     value = round_money(sum((v for _, v in held), Decimal("0")) + production, currency)
-    balance = await account_balances(session, company_id, (p, ob))
+    balance = await stock_balances(session, company_id, settings, (p, ob))
     if round_money(balance[p] + balance[ob], currency) < value:
         # an older release brought its opening inventory entry current only when the
         # balance sheet was opened: book what it would have, then compare
@@ -1008,7 +1022,7 @@ async def _normalize(session: AsyncSession, company_id, user_id) -> bool:
             if exc.status_code == 422:
                 raise _Retry from exc
             raise
-        balance = await account_balances(session, company_id, (p, ob))
+        balance = await stock_balances(session, company_id, settings, (p, ob))
     books = round_money(balance[p] + balance[ob], currency)
     day = business_date_of(None, settings.get("timezone"))
     kept: list[Projection] = []
@@ -1095,9 +1109,9 @@ async def _open(session: AsyncSession, company_id, user_id) -> bool:
         return True
     if not await period_open(session, company_id, business_date_of(None, settings.get("timezone"))):
         raise _Locked
-    inventory = ({code for role in _INVENTORY for code in scope_codes(settings, role)}
-                 - await _not_stock(session, company_id, settings))
-    if any(e.get("account") in inventory for _, e in await _posted_entries(session, company_id)):
+    inventory = {code for role in _INVENTORY for code in scope_codes(settings, role)}
+    entries = await _posted_entries(session, company_id)
+    if any(e.get("account") in inventory and stock_line(settings, e) for _, e in entries):
         await _normalize(session, company_id, user_id)
         return True
     for row in sorted(pending, key=lambda r: r.entity_id):
@@ -1458,16 +1472,16 @@ async def _locked_lots(session: AsyncSession, company_id, item_ids) -> list[Proj
     return rows
 
 
-def _check_target(settings: dict, code: str, account: dict | None, excluded: set[str]) -> None:
+def _check_target(settings: dict, code: str, account: dict | None) -> None:
     """Older stock may be moved onto an account that has held inventory, or onto an asset
     account no other posting account uses (a new inventory account), as long as it can
-    take entries; never onto one that is not stock (``excluded``, _not_stock)."""
+    take entries."""
     if account is None:
         raise _refused(422, "posting.older_stock.not_in_chart", f"Account {code} is not in the chart of accounts.",
                        code=code)
     inventory = {c for role in _INVENTORY for c in scope_codes(settings, role)}
     others = {c for role, c in role_map(settings).items() if role not in _INVENTORY}
-    if code in excluded or (code not in inventory and (code in others or account.get("account_type") != "asset")):
+    if code not in inventory and (code in others or account.get("account_type") != "asset"):
         raise _refused(422, "posting.older_stock.never_inventory",
                        f"Account {code} is not an inventory account, so stock cannot be moved onto it.", code=code)
     if not account.get("is_active", True) or account.get("has_children"):
@@ -1571,7 +1585,7 @@ async def move_lot_accounts(session: AsyncSession, company_id, item_ids: list[st
     accounts = await lock_accounts(session, company_id, {code})
     if accounts is None:
         raise HTTPException(status_code=409, detail=needs_accounting())
-    _check_target(settings, code, accounts.get(code), await _not_stock(session, company_id, settings))
+    _check_target(settings, code, accounts.get(code))
     placed = set((await session.execute(select(LedgerEntry.entity_id).where(
         LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
         LedgerEntry.entity_id.in_([r.entity_id for r in rows]),

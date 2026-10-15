@@ -36,9 +36,10 @@ from sqlalchemy import select
 from celerp.models.projections import Projection
 from celerp.services.auto_je import _emit_auto_posted_je
 from celerp.services.company_lock import locked_company
-from celerp.services.posting_readiness import older_stock_targets, panel
 from stock_books import assert_books_carry_stock
-from test_older_stock_placement import _accounts, _entries, _lines, _off_books, _older_company, _today, _written_down
+from test_older_stock_placement import (
+    _accounts, _entries, _lines, _notices, _off_books, _older_company, _today, _written_down,
+)
 from test_posting_roles_lots import _new_inventory_account
 from test_posting_roles_older_stock import _events, _net, _settings
 from test_posting_roles_rollout import _startup
@@ -203,7 +204,35 @@ async def _bank(client, auth) -> str:
     return r.json()["chart_account_code"]
 
 
-async def test_cash_and_receivables_are_refused_as_inventory_and_never_counted_as_its_room(session, client, auth):
+async def _role(client, auth, role: str, code: str):
+    return await client.put(f"/accounting/posting-accounts/{role}", headers=auth["headers"], json={"code": code})
+
+
+async def _unlocked(session, auth) -> None:
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {k: v for k, v in company.settings.items() if k != "lock_date"}
+    await session.commit()
+
+
+async def _given(session, auth, **roles: str) -> None:
+    """Posting accounts as an older release or a hand edit left them, with no check run."""
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {**company.settings, "posting_roles": {**(company.settings.get("posting_roles") or {}), **roles}}
+    await session.commit()
+
+
+async def _sold(client, auth, item_id: str):
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "total": 50.0,
+        "line_items": [{"entity_id": item_id, "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})
+    assert r.status_code == 200, r.text
+    return await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"])
+
+
+async def test_cash_sales_and_receivables_on_any_account_are_never_counted_as_stock(session, client, auth):
+    """Only lines posted for an inventory role are stock: a bank is refused as an
+    inventory account, a receivable once used as purchased inventory keeps its sales,
+    and none of it is moved or recognized."""
     lots = await _older_company(session, client, auth, _LOTS)
     await _split(session, auth, 60000.0)  # 1130-P 60,000, 1130-OB 40,000
     await _posted(session, auth, "1111", "4100", 5000.0, "Cash sale")
@@ -213,33 +242,15 @@ async def test_cash_and_receivables_are_refused_as_inventory_and_never_counted_a
     bank = await _bank(client, auth)
 
     for role in ("inventory_purchased", "inventory_opening"):
-        for code in ("1111", bank, "1120"):
-            r = await client.put(f"/accounting/posting-accounts/{role}", headers=auth["headers"],
-                                 json={"code": code})
+        for code in ("1111", bank):
+            r = await _role(client, auth, role, code)
             assert r.status_code == 422, (role, code, r.text)
             detail = r.json()["detail"]
             assert detail["message_key"] == "posting.problem.not_inventory", detail
-            assert code in detail["message"] and "—" not in detail["message"]
-    for role in ("default_deposit", "receivable", "tax_input", "fixed_assets"):
-        for code in ("1130-P", "1130-OB"):
-            r = await client.put(f"/accounting/posting-accounts/{role}", headers=auth["headers"],
-                                 json={"code": code})
-            assert r.status_code == 422, (role, code, r.text)
-            detail = r.json()["detail"]
-            assert detail["message_key"] == "posting.problem.holds_inventory", detail
-            assert code in detail["message"] and "—" not in detail["message"]
-    settings = await _settings(session, auth)
-    scopes = settings["posting_role_scopes"]
-    assert scopes["inventory_purchased"] == ["1130-P"] and scopes["inventory_opening"] == ["1130-OB"]
-    assert {"1130-P", "1130-OB"}.isdisjoint(
-        settings["posting_roles"][r] for r in ("default_deposit", "receivable", "tax_input", "fixed_assets"))
-    offered = {r["role"]: {c["code"] for c in r["candidates"]} for r in (await panel(session, auth["company_id"]))["roles"]}
-    assert not {"1111", bank, "1120"} & (offered["inventory_purchased"] | offered["inventory_opening"])
-    assert {"1111", bank} <= offered["default_deposit"]
-    assert not {"1130-P", "1130-OB"} & (offered["default_deposit"] | offered["tax_input"] | offered["fixed_assets"])
-    company = await locked_company(session, auth["company_id"])
-    company.settings = {k: v for k, v in company.settings.items() if k != "lock_date"}
-    await session.commit()
+            assert code in detail["message"] and "\u2014" not in detail["message"]
+    assert (await _role(client, auth, "inventory_purchased", "1120")).status_code == 200
+    assert (await _role(client, auth, "inventory_purchased", "1130-P")).status_code == 200
+    await _unlocked(session, auth)
     await _posted(session, auth, bank, "4100", 2000.0, "Cash sale into the second bank")
     await _startup(session)
 
@@ -247,16 +258,15 @@ async def test_cash_and_receivables_are_refused_as_inventory_and_never_counted_a
     assert await _net(session, auth, "1111", bank, "1120", "1130-P", "1130-OB") == (
         5000.0, 2000.0, 3000.0, 100000.0, 0.0)
     (record,) = await _records(session, auth)
-    assert record["rooms"] == {"1130-P": 60000.0, "1130-OB": 40000.0}
+    assert record["rooms"] == {"1130-P": 60000.0, "1130-OB": 40000.0, "1120": 0.0}
     assert (record["transferred"], record["recognized"], record["unresolved"]) == (40000.0, 0.0, 0.0)
     assert await _off_books(session, auth) == []
 
 
-async def test_a_bank_or_receivable_already_in_the_inventory_history_is_ignored_and_keeps_its_balance(
-        session, client, auth):
+async def test_a_bank_or_receivable_already_in_the_inventory_history_keeps_its_balance(session, client, auth):
     """A company whose purchased inventory history already names a bank account and a
-    receivable (written before such a choice was refused) places its older stock on its
-    inventory accounts only."""
+    receivable, as an older release could leave it, places its older stock from the
+    lines posted as stock only: the cash and the sales stay where they are."""
     lots = await _older_company(session, client, auth, _LOTS)
     await _split(session, auth, 60000.0)  # 1130-P 60,000, 1130-OB 40,000
     await _posted(session, auth, "1111", "4100", 5000.0, "Cash sale")
@@ -276,16 +286,98 @@ async def test_a_bank_or_receivable_already_in_the_inventory_history_is_ignored_
     assert _lines(entry) == {"1130-P": (40000.0, 0.0), "1130-OB": (0.0, 40000.0)}
     _no_equity([entry])
     assert await _net(session, auth, "1111", "1120", "1130-P", "1130-OB") == (5000.0, 3000.0, 100000.0, 0.0)
-    targets = await older_stock_targets(session, auth["company_id"])
-    assert [c["code"] for c in targets["candidates"]] == ["1130-OB", "1130-P"]
-    r = await client.post("/accounting/older-stock/move", headers=auth["headers"], json={
-        "item_ids": lots[:1], "code": "1111", "key": "move-onto-cash"})
-    assert r.status_code == 422 and "never_inventory" in r.text
-    assert await _net(session, auth, "1111", "1130-P") == (5000.0, 100000.0)
     (record,) = await _records(session, auth)
-    assert record["rooms"] == {"1130-P": 60000.0, "1130-OB": 40000.0}
+    assert record["rooms"] == {"1130-P": 60000.0, "1130-OB": 40000.0, "1111": 0.0, "1120": 0.0}
     assert (record["transferred"], record["recognized"], record["unresolved"]) == (40000.0, 0.0, 0.0)
     assert await _off_books(session, auth) == []
+
+
+async def test_prepaid_rent_on_an_account_once_used_as_purchased_inventory_is_never_swept(session, client, auth):
+    lots = await _older_company(session, client, auth, _LOTS)
+    await _settings(session, auth, lock_date=_today())
+    await _startup(session)
+    await _unlocked(session, auth)
+    await _posted(session, auth, "1140", "1111", 3000.0, "Prepaid rent")  # classified when posted: not stock
+    await _settings(session, auth, lock_date=_today())
+    assert (await _role(client, auth, "inventory_purchased", "1140")).status_code == 200
+    assert (await _role(client, auth, "inventory_purchased", "1130-P")).status_code == 200
+    await _unlocked(session, auth)
+    await _startup(session)
+
+    assert set(await _accounts(session, auth, lots)) == {"1130-OB"}
+    assert await _net(session, auth, "1140", "1130-P", "1130-OB") == (3000.0, 0.0, 100000.0)
+    (record,) = await _records(session, auth)
+    assert (record["transferred"], record["recognized"], record["unresolved"]) == (0.0, 0.0, 0.0)
+    assert await _off_books(session, auth) == []
+
+
+async def test_a_deposit_account_already_on_purchased_inventory_still_places_and_sells(session, client, auth):
+    """Settings an older release left with the deposit account on purchased inventory do
+    not stop older stock being placed or sold, and deposits taken there are never stock."""
+    lots = await _older_company(session, client, auth, _LOTS)
+    await _given(session, auth, default_deposit="1130-P")
+    await _startup(session)
+
+    assert set(await _accounts(session, auth, lots)) == {"1130-OB"}
+    assert await _notices(session, auth, "Older stock waits for a posting account") == []
+    assert (await _sold(client, auth, lots[0])).status_code == 200
+    await _posted(session, auth, "1130-P", "4100", 700.0, "Deposit taken")
+    assert await _net(session, auth, "1130-P") == (700.0,)
+    assert await _off_books(session, auth) == []
+    assert (await _role(client, auth, "tax_input", "1150")).status_code == 200
+
+
+@pytest.mark.parametrize("change", ["cash_header_over_inventory", "inventory_under_cash", "bank_on_purchased"])
+async def test_a_change_outside_the_inventory_accounts_never_stops_placement(session, client, auth, change):
+    lots = await _older_company(session, client, auth, _LOTS)
+    await _settings(session, auth, lock_date=_today())
+    await _startup(session)
+    if change == "cash_header_over_inventory":
+        r = await _role(client, auth, "cash_and_equivalents", "1100")
+    elif change == "inventory_under_cash":
+        r = await client.patch("/accounting/accounts/1130", headers=auth["headers"], json={"parent_code": "1110"})
+    else:
+        r = await client.post("/accounting/bank-accounts", headers=auth["headers"], json={
+            "bank_name": "Linked bank", "bank_type": "checking", "currency": "USD", "account_number": "0003",
+            "account_code": "1130-P"})
+    assert r.status_code == 200, r.text
+    await _unlocked(session, auth)
+    await _startup(session)
+
+    assert set(await _accounts(session, auth, lots)) == {"1130-OB"}
+    assert (await _sold(client, auth, lots[0])).status_code == 200
+    assert await _off_books(session, auth) == []
+
+
+async def test_an_account_still_holding_stock_is_refused_for_any_other_posting_account(session, client, auth):
+    """Lots placed on opening inventory stay there after opening inventory moves on, and
+    older value stays on a former purchased account until placed: neither account can
+    then take deposits, input tax, receivables or fixed assets."""
+    lots = await _older_company(session, client, auth, _LOTS)
+    await _new_inventory_account(client, auth, "1135")
+    await _posted(session, auth, "1135", "1130-OB", 20000.0, "Goods moved to 1135")
+    await _settings(session, auth, lock_date=_today())
+    await _startup(session)
+    assert (await _role(client, auth, "inventory_purchased", "1135")).status_code == 200
+    assert (await _role(client, auth, "inventory_purchased", "1130-P")).status_code == 200
+    for role in ("tax_input", "default_deposit", "receivable", "fixed_assets"):
+        r = await _role(client, auth, role, "1135")
+        assert r.status_code == 422, (role, r.text)
+        detail = r.json()["detail"]
+        assert detail["message_key"] == "posting.problem.holds_inventory", detail
+        assert "1135" in detail["message"] and "\u2014" not in detail["message"]
+    await _unlocked(session, auth)
+    await _startup(session)
+    (record,) = await _records(session, auth)
+    assert (record["transferred"], record["recognized"]) == (20000.0, 0.0)
+
+    await _new_inventory_account(client, auth, "1136")
+    assert (await _role(client, auth, "inventory_opening", "1136")).status_code == 200
+    held = set(await _accounts(session, auth, lots))
+    assert held == {"1130-OB"}
+    r = await _role(client, auth, "default_deposit", "1130-OB")
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "posting.problem.holds_inventory"
+    assert (await _role(client, auth, "default_deposit", "1135")).status_code == 200  # emptied by the placement
 
 
 async def test_stock_the_accounts_hold_exactly_is_placed_with_no_entry(session, client, auth):

@@ -30,12 +30,10 @@ from celerp.accounting_roles import (
     ROLE_GROUPS,
     ROLE_LABELS,
     ROLE_TYPES,
-    ROLES_KEY,
     SCHEMA_KEY,
     SCOPES_KEY,
     SEEDED_TARGETS,
     SOURCE_CONTROLS_KEY,
-    INVENTORY_VALUE_ROLES,
     AccountRole,
     allowed_types,
     is_role,
@@ -48,10 +46,8 @@ from celerp.services.account_roles import (
     current_settings,
     role_map,
     scope_list,
-    barred,
-    not_stock,
     source_controls,
-    stock_problem,
+    stock_problems,
     target_problems,
     unmapped_roles,
     with_role,
@@ -174,12 +170,9 @@ def _candidate_types(role: str) -> frozenset[str]:
     return ROLE_TYPES[AccountRole(role)]
 
 
-def _fits(role: str, account: dict, barred_codes: set[str]) -> bool:
-    """Whether ``account`` can be offered for ``role``; never one in ``barred_codes``
-    (account_roles.barred)."""
+def _fits(role: str, account: dict) -> bool:
     return (account.get("is_active", True) and account.get("account_type") in _candidate_types(role)
-            and not (AccountRole(role) in POSTABLE_ROLES and account.get("has_children"))
-            and account["code"] not in barred_codes)
+            and not (AccountRole(role) in POSTABLE_ROLES and account.get("has_children")))
 
 
 def _brief(account: dict) -> dict:
@@ -187,7 +180,7 @@ def _brief(account: dict) -> dict:
     return {k: account[k] for k in ("code", "name", "account_type", "code_generated")}
 
 
-def _ranked(role: str, chart: dict[str, dict], controls: list[str], barred_codes: set[str]) -> list[dict]:
+def _ranked(role: str, chart: dict[str, dict], controls: list[str]) -> list[dict]:
     """Accounts that can serve ``role``: the source's controls first, then accounts whose
     name shares a word with the role's, then by code. The order only helps the user find
     one; it never chooses."""
@@ -197,7 +190,7 @@ def _ranked(role: str, chart: dict[str, dict], controls: list[str], barred_codes
         named = bool(words & set(str(account.get("name") or "").lower().split()))
         return (account["code"] not in controls, not named, account["code"])
 
-    return [_brief(a) for a in sorted((a for a in chart.values() if _fits(role, a, barred_codes)), key=rank)]
+    return [_brief(a) for a in sorted((a for a in chart.values() if _fits(role, a)), key=rank)]
 
 
 def _proposals(chart: dict[str, dict]) -> dict[str, dict]:
@@ -224,9 +217,7 @@ async def readiness(session: AsyncSession, company_id) -> list[dict] | None:
     Each row: role, label, group, required (a workflow the company uses needs it),
     current and current_account (the code already set, and that chart account), controls (the source books' control accounts),
     preselect (the single suitable control, when there is exactly one), candidates
-    (suitable chart accounts, ranked) and proposal (the account to add instead). No role
-    is offered an account it is barred from (account_roles.barred), counting what the
-    other side of stock is preselected for."""
+    (suitable chart accounts, ranked) and proposal (the account to add instead)."""
     chart = await _chart(session, company_id)
     if chart is None:
         return None
@@ -234,31 +225,17 @@ async def readiness(session: AsyncSession, company_id) -> list[dict] | None:
     needed = set(needed_roles(await used_groups(session, company_id, settings)))
     current = role_map(settings)
     proposals = _proposals(chart)
-    accounts = list(chart.values())
-
-    def offered(role: AccountRole, pending: set[str]) -> tuple[str | None, list[dict]]:
-        controls = source_controls(settings, role.value)
-        barred_codes = barred(role.value, settings, accounts, pending)
-        fitting = [c for c in controls if c in chart and _fits(role.value, chart[c], barred_codes)]
-        return (fitting[0] if len(controls) == 1 and fitting else None,
-                _ranked(role.value, chart, controls, barred_codes))
-
-    def preselected(roles, pending: set[str]) -> set[str]:
-        return {offered(r, pending)[0] for r in roles if not current.get(r.value)} - {None}
-
-    # An account preselected for inventory is never offered to another role, nor the reverse.
-    stock = preselected([r for r in AccountRole if r in INVENTORY_VALUE_ROLES], set())
-    other = preselected([r for r in AccountRole if r not in INVENTORY_VALUE_ROLES], stock)
     rows = []
     for role in AccountRole:
-        preselect, candidates = offered(role, other if role in INVENTORY_VALUE_ROLES else stock)
+        controls = source_controls(settings, role.value)
+        fitting = [c for c in controls if c in chart and _fits(role.value, chart[c])]
         code = current.get(role.value) or None
         rows.append({
             "role": role.value, "label": ROLE_LABELS[role], "group": _GROUP_OF[role.value],
             "required": role.value in needed, "current": code,
             "current_account": _brief(chart[code]) if code in chart else None,
-            "controls": source_controls(settings, role.value), "preselect": preselect,
-            "candidates": candidates, "proposal": proposals[role.value],
+            "controls": controls, "preselect": fitting[0] if len(controls) == 1 and fitting else None,
+            "candidates": _ranked(role.value, chart, controls), "proposal": proposals[role.value],
         })
     return rows
 
@@ -365,12 +342,11 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
             chart[account["code"]] = {**account, "is_active": True, "has_children": False}
     held = await lock_accounts(session, company_id, set(final.values())) or {}
     trial = {**role_map(company.settings), **final}
-    trial_settings = {**(company.settings or {}), ROLES_KEY: trial}
     for role, code in final.items():
-        problem = (target_problem(role, trial, held.get(code))
-                   or stock_problem(role, code, trial_settings, list(chart.values())))
+        problem = target_problem(role, trial, held.get(code))
         if problem:
             problems.append(problem)
+    problems += await stock_problems(session, company_id, dict(company.settings or {}), final)
     if problems:
         raise _refused(problems)
     settings = {**(company.settings or {}), SCHEMA_KEY: POSTING_ROLES_SCHEMA}
@@ -400,11 +376,11 @@ def _status(role: str, current: dict[str, str], chart: dict[str, dict], required
 
 
 def _older_stock(settings: dict, chart: dict[str, dict]) -> dict:
-    """The accounts that have held purchased or opening inventory, less any that is not
-    stock (account_roles.not_stock), for the screens that place stock on one, the retained earnings account a write-off of a surplus posts to
+    """The accounts that have held purchased or opening inventory, for the screens that
+    place stock on one, the retained earnings account a write-off of a surplus posts to
     (None while unmapped), and the company currency."""
-    held = ({c for role in (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
-             for c in scope_list(settings, role)} - not_stock(settings, list(chart.values())))
+    held = {c for role in (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
+            for c in scope_list(settings, role)}
     retained = role_map(settings).get(AccountRole.RETAINED_EARNINGS.value)
     return {"currency": str(settings.get("currency") or "USD").upper(),
             "candidates": [_brief(chart[c]) for c in sorted(held) if c in chart],
@@ -438,6 +414,6 @@ async def panel(session: AsyncSession, company_id) -> dict | None:
             "code_generated": bool((chart.get(code) or {}).get("code_generated")) if code else False,
             "status": status, "problem": problem,
             "earlier": [c for c in scope_list(settings, role.value) if c != code],
-            "candidates": _ranked(role.value, chart, [], barred(role.value, settings, list(chart.values()))),
+            "candidates": _ranked(role.value, chart, []),
         })
     return {"roles": rows, "older_stock": _older_stock(settings, chart)}

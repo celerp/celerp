@@ -5123,7 +5123,7 @@
   "posting.problem.wrong_type": "{role} est défini sur le compte {code}, de type {type} ; il doit être de type {types}.",
   "posting.problem.header": "{role} est défini sur le compte {code}, un compte de regroupement ; choisissez un compte en dessous.",
   "posting.problem.holds_inventory": "{role} ne peut pas être défini sur le compte {code} : ce compte contient du stock. Choisissez un compte sans stock.",
-  "posting.problem.not_inventory": "{role} ne peut pas être défini sur le compte {code} : ce compte contient de la trésorerie ou est utilisé par un autre compte de comptabilisation, ce n'est donc pas un compte de stock. Choisissez un compte de stock.",
+  "posting.problem.not_inventory": "{role} ne peut pas être défini sur le compte {code} : ce compte contient de la trésorerie, ce n'est donc pas un compte de stock. Choisissez un compte de stock.",
   "posting.refused": "{problems} Choisissez le compte dans Paramètres > Comptabilité > Comptes d'imputation.",
   "posting.continued_account_unusable": "Ce solde est tenu sur le compte {code}, qui ne peut pas le recevoir pour l'instant : {problem} Rendez ce compte à nouveau utilisable dans le plan comptable.",
   "posting.account_keeps_balance": "Le compte {code} porte encore {balance} au titre de {role}, qui continue d'être mouvementé sur ce compte jusqu'à son apurement ; il ne peut donc pas encore être désactivé.",

@@ -5123,7 +5123,7 @@
   "posting.problem.wrong_type": "{role} está asignada a la cuenta {code}, de tipo {type}; debe ser de tipo {types}.",
   "posting.problem.header": "{role} está asignada a la cuenta {code}, una cuenta de agrupación; elija una cuenta dentro de ella.",
   "posting.problem.holds_inventory": "{role} no se puede asignar a la cuenta {code}: esa cuenta guarda inventario. Elija una cuenta sin existencias.",
-  "posting.problem.not_inventory": "{role} no se puede asignar a la cuenta {code}: esa cuenta guarda efectivo o la usa otra cuenta contable, así que no es una cuenta de inventario. Elija una cuenta de inventario.",
+  "posting.problem.not_inventory": "{role} no se puede asignar a la cuenta {code}: esa cuenta guarda efectivo, así que no es una cuenta de inventario. Elija una cuenta de inventario.",
   "posting.refused": "{problems} Elija la cuenta en Ajustes > Contabilidad > Cuentas de contabilización.",
   "posting.continued_account_unusable": "Este saldo se lleva en la cuenta {code}, que ahora no puede recibirlo: {problem} Vuelva a habilitar esa cuenta en el plan de cuentas.",
   "posting.account_keeps_balance": "La cuenta {code} todavía lleva {balance} de {role}, que sigue moviéndose en esta cuenta hasta que se liquide, por lo que aún no se puede desactivar.",

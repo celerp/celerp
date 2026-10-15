@@ -429,13 +429,24 @@ async def creator_run(session, run_id):
 
 def posting_choices_from(readiness: list[dict]) -> dict:
     """The posting accounts a user finishing a migration would pick: for each needed
-    role not already settled, the first account offered, or the proposed one to add."""
+    role not already settled, the first account offered, or the proposed one to add.
+    Like a user, it keeps stock and everything else apart: an inventory role takes an
+    account another inventory role already uses, and any other role skips those."""
+    from celerp.accounting_roles import INVENTORY_VALUE_ROLES
+
+    stock_roles = {r.value for r in INVENTORY_VALUE_ROLES}
+    stock = {row["current"] or row["preselect"] for row in readiness if row["role"] in stock_roles} - {None}
     roles, add_accounts = {}, []
     for row in readiness:
         if not row["required"] or row["current"] or row["preselect"]:
             continue
-        if row["candidates"]:
-            roles[row["role"]] = row["candidates"][0]["code"]
+        codes = [c["code"] for c in row["candidates"]]
+        if row["role"] in stock_roles:
+            codes = [c for c in codes if c in stock] + [c for c in codes if c not in stock]
+        else:
+            codes = [c for c in codes if c not in stock]
+        if codes:
+            roles[row["role"]] = codes[0]
         else:
             add_accounts.append({**row["proposal"], "role": row["role"]})
     return {"roles": roles, "add_accounts": add_accounts}
