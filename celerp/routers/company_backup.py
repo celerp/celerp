@@ -16,6 +16,8 @@ restores one through the start-company routes with its email and password.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
 import secrets
 import uuid
@@ -24,7 +26,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
@@ -94,6 +96,41 @@ async def download_backup(run_id: uuid.UUID | None = None, ctx: AuthContext = De
         return _error(exc)
     return FileResponse(dest, media_type="application/octet-stream", filename=filename,
                         background=BackgroundTask(dest.unlink, missing_ok=True))
+
+
+class SendCompanyHandoff(BaseModel):
+    operation_id: uuid.UUID
+    key: str = Field(min_length=43, max_length=43)
+    firm_name: str = Field(min_length=1, max_length=160)
+    recipient: str = Field(min_length=3, max_length=320)
+    reply_to: str = Field(min_length=3, max_length=320)
+    note: str = Field(default="", max_length=1500)
+
+
+@router.post("/send-handoff")
+async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(user_owner),
+                       session: AsyncSession = Depends(get_session)):
+    from celerp.services.company_handoff_sender import HandoffSendError, send_company_backup
+    try:
+        secret = base64.urlsafe_b64decode(payload.key + "=")
+    except (ValueError, binascii.Error):
+        raise HTTPException(status_code=422, detail="Invalid handoff key") from None
+    if (len(secret) != 32 or
+            base64.urlsafe_b64encode(secret).decode().rstrip("=") != payload.key):
+        raise HTTPException(status_code=422, detail="Invalid handoff key")
+    await session.rollback()  # snapshot uses its own consistent transaction
+    async def export(destination: Path):
+        await cb.export_company_snapshot(ctx.company_id, destination)
+    try:
+        return await send_company_backup(
+            export=export, company_id=ctx.company_id, operation_id=payload.operation_id,
+            secret=secret, firm_name=payload.firm_name,
+            recipient=payload.recipient, reply_to=payload.reply_to, note=payload.note,
+        )
+    except cb.BackupError as exc:
+        return _error(exc)
+    except HandoffSendError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
 
 
 # ── Restore ──────────────────────────────────────────────────────────────────

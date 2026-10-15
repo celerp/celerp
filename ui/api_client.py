@@ -3942,6 +3942,14 @@ async def company_backup_read(token: str | None, filename: str, content: BinaryI
     return _raise(r).json()
 
 
+async def company_backup_send_handoff(token: str, payload: dict) -> dict:
+    """Owner-authorized export and encrypted handoff on the canonical backup API."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=httpx.Timeout(900, connect=10.0), bulk=True) as c:
+            response = await c.post("/company-backups/send-handoff", json=payload)
+    return _raise(response).json()
+
+
 async def company_backup_staged(token: str | None, upload_token: str, mode: str | None = None) -> dict:
     """The preview of a backup already uploaded, checked again."""
     async with _local_error_mapping():

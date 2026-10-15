@@ -679,3 +679,78 @@ async def test_preview_offers_prepare_for_disabled_module(routed_ui, real_engine
     assert f'action="{base}/prepare"' in page and f'action="{base}/restore"' not in page
     assert re.search(r'name="consent"[^>]*value="acme-widgets"', page)
     assert 'value="celerp-labels"' not in page
+
+async def test_handoff_link_uses_existing_backup_preview(ui, real_engine, real_client, monkeypatch, tmp_path):
+    """A handoff is staged for the canonical backup importer, not restored directly."""
+    from celerp.services.company_handoff_links import handoff_page_link
+    from ui.routes import company_backup as page
+
+    _, _, tok = await _setup(real_engine)
+    backup = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    link = handoff_page_link(uuid.uuid4(), bytes(range(32)))
+    called = []
+
+    async def retrieve(value, destination):
+        called.append(value)
+        destination.write_bytes(backup)
+
+    monkeypatch.setattr(page, "download_company_handoff", retrieve)
+    before = await _company_ids(real_engine)
+    r = await ui.post("/settings/restore-backup/read", data={"handoff_link": link})
+    assert r.status_code == 200, r.text
+    assert "Alpha Trading" in _page(r)
+    assert await _company_ids(real_engine) == before
+    assert called == [link]
+    assert link not in r.text
+    assert not list(tmp_path.glob("celerp-handoff-*"))
+
+
+async def test_invalid_handoff_link_is_not_downloaded(ui, real_engine, monkeypatch):
+    from ui.routes import company_backup as page
+
+    _, _, tok = await _setup(real_engine)
+    ui.cookies.set("celerp_token", tok)
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("Invalid link must not reach the network")
+    monkeypatch.setattr(page, "download_company_handoff", unexpected)
+    before = await _company_ids(real_engine)
+    r = await ui.post("/settings/restore-backup/read", data={
+        "handoff_link": "https://evil.example/handoffs/abcd/open#" + "A" * 43,
+    })
+    assert r.status_code == 200
+    assert "Check the link or request a new copy" in _page(r)
+    assert await _company_ids(real_engine) == before
+
+
+async def test_company_handoff_send_form_retries_original_operation(ui, real_engine, monkeypatch):
+    from ui.routes.company_backup import SEND
+    from ui import api_client as api
+    from celerp.services.company_handoff_links import handoff_page_link
+
+    _, _, tok = await _setup(real_engine)
+    ui.cookies.set("celerp_token", tok)
+    r = await ui.get(SEND)
+    assert r.status_code == 200, r.text
+    initial = _hidden(_page(r))
+    assert len(initial["key"]) == 43
+    payload = {**initial, "firm_name": "Example Accounting", "recipient": "client@example.com",
+               "reply_to": "firm@example.com", "note": "Your books"}
+    calls = []
+
+    async def send(token, body):
+        calls.append((token, body))
+        if len(calls) == 1:
+            raise api.APIError(502, "Delivery not confirmed")
+        secret = base64.urlsafe_b64decode(body["key"] + "=")
+        return {"id": str(uuid.uuid4()), "link": handoff_page_link(uuid.uuid4(), secret)}
+
+    monkeypatch.setattr(api, "company_backup_send_handoff", send)
+    refused = await ui.post(SEND, data=payload)
+    assert refused.status_code == 502
+    assert _hidden(_page(refused))["key"] == initial["key"]
+    assert _hidden(_page(refused))["operation_id"] == initial["operation_id"]
+    sent = await ui.post(SEND, data=payload)
+    assert sent.status_code == 200 and "Company copy sent" in _page(sent)
+    assert [call[1]["operation_id"] for call in calls] == [initial["operation_id"]] * 2
+    assert all(call[1]["key"] == initial["key"] for call in calls)
