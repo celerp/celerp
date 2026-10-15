@@ -12217,9 +12217,10 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     own writer rules (`admit`, returning a (reason, label) refusal or None). A code any rule
     refuses is reported and skipped, never aborting the run."""
     from celerp_inventory.projections import held_elsewhere
-    from celerp_inventory.services import HIDDEN_STATUSES, duplicate_barcode_detail, resolve_items_by_codes
+    from celerp_inventory.services import HIDDEN_STATUSES, duplicate_barcode_detail, load_item_index
 
-    resolved = await resolve_items_by_codes(session, company_id, codes)
+    inventory = await load_item_index(session, company_id)
+    resolved = inventory.resolve(codes)
     unit_map = await _get_unit_map(session, company_id)
     locked = state.get("status") == FINALIZED
     now = datetime.now(timezone.utc).isoformat()
@@ -12228,16 +12229,15 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     tagged: set[str] = set()  # lots read by RFID tag in this run
     pools: dict[str, tuple[set[str], float]] = {}
 
-    async def product_pool(lot: Projection) -> tuple[set[str], float]:
+    def product_pool(lot: Projection) -> tuple[set[str], float]:
         """Every lot of the lot's product this record may draw on (in use, stocked, not held for
-        another record; pieces that may not be split included) and what they hold together, read
-        once per product. Lines on the product code's representative and on each lot's own code all
-        draw on this one stock."""
+        another record; pieces that may not be split included) and what they hold together, taken
+        from the run's one inventory load by SKU. Lines on the product code's representative and on
+        each lot's own code all draw on this one stock."""
         sku = str(lot.state.get("sku") or "")
         if sku not in pools:
-            res = (await resolve_items_by_codes(session, company_id, [sku])).get(sku) if sku else None
-            stock = [m for m in (res.matches if res is not None else [])
-                     if (m.state or {}).get("sku") == sku and is_stock_type(m.state or {})
+            stock = [m for m in inventory.lots_of(sku)
+                     if is_stock_type(m.state or {})
                      and str((m.state or {}).get("status") or "").lower() not in HIDDEN_STATUSES | {"draft"}
                      and not held_elsewhere(m.state or {}, entity_id, None, state.get("source_memo_id"))]
             pools[sku] = ({m.entity_id for m in stock}, sum(float((m.state or {}).get("quantity") or 0) for m in stock))
@@ -12312,7 +12312,7 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
                 # product's stock together never takes more than the product has.
                 taken, available = line["quantity"], float(on_hand or 0)
                 if taken <= available:
-                    pool_ids, available = await product_pool(lot)
+                    pool_ids, available = product_pool(lot)
                     taken = sum(float(l.get("quantity") or 0) for l in placed
                                 if (l.get("item_id") or l.get("entity_id")) in pool_ids)
                 if taken > available:

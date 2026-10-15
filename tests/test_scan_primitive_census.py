@@ -18,7 +18,7 @@ _RETIRED = (
 # through a catalog lookup.
 _RETIRED_PROSE = ("scan Enter", "catalog lookup", "Resolve one typed or scanned code")
 # The scan endpoints reach inventory through its service interface, never its routes file.
-_SCAN_RESOLVER_NAMES = ("HIDDEN_STATUSES", "resolve_items_by_codes", "duplicate_barcode_detail")
+_SCAN_RESOLVER_NAMES = ("HIDDEN_STATUSES", "load_item_index", "duplicate_barcode_detail")
 
 
 def _git_grep(*args: str) -> list[str]:

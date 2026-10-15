@@ -4158,8 +4158,8 @@ def _resolve_from_candidates(matches: dict[str, list]) -> "ResolveResult":
     fails closed (``duplicate_physical`` True, ``one`` None), never silently picking one;
     a single physical item resolves (kind "barcode" when a barcode matched, else
     "rfid_epc"). Only with NO physical match do the product identifiers resolve - gtin
-    then sku - each to its N lots. Shared by both the single and the batch resolver so
-    they disambiguate identically."""
+    then sku - each to its N lots. Every resolution goes through ItemIndex.resolve, so the
+    single-code and many-code callers disambiguate identically."""
     for tier in IDENTIFIER_TIERS:
         found: dict = {}
         for field in tier:
@@ -4184,7 +4184,7 @@ def duplicate_barcode_detail(code: str) -> str:
 # `duplicate_physical`, and by sku (a numeric sku may equal a barcode) it re-enters
 # resolution through the fallback. Scope is `merged` ONLY: reserved/memo_out/sold/
 # archived/expired must still resolve. PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES is
-# applied to every identifier candidate set, in both resolvers, and shared with
+# applied to every identifier candidate set by load_item_index, and shared with
 # Doctor's physical-code conflict report.
 
 
@@ -4205,74 +4205,53 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
     code = (code or "").strip()
     if not code:
         return ResolveResult("none", [])
-    epc_code = normalize_rfid_epc(code)
+    return (await load_item_index(session, company_id)).resolve([code])[code]
+
+
+@dataclass(frozen=True)
+class ItemIndex:
+    """One load of a company's items, indexed by every identifier, so a caller resolving many
+    codes (a 200-code scan run) and reading each product's lots reads inventory once. Items
+    out of use (PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES) are left out of every index."""
+    by_barcode: dict[str, list]
+    by_rfid_epc: dict[str, list]
+    by_gtin: dict[str, list]
+    by_sku: dict[str, list]
+
+    def resolve(self, codes) -> dict[str, ResolveResult]:
+        """One ResolveResult per distinct non-blank code, by :func:`resolve_item_by_code`'s rule.
+        EPC is looked up in its normalized (upper-cased) form."""
+        out: dict[str, ResolveResult] = {}
+        for code in {(c or "").strip() for c in codes} - {""}:
+            out[code] = _resolve_from_candidates({
+                "barcode": self.by_barcode.get(code, []),
+                "rfid_epc": self.by_rfid_epc.get(normalize_rfid_epc(code), []),
+                "gtin": self.by_gtin.get(code, []),
+                "sku": self.by_sku.get(code, []),
+            })
+        return out
+
+    def lots_of(self, sku: str) -> list:
+        """Every lot carrying exactly this SKU, whatever other item uses the same text as a
+        barcode, EPC or GTIN."""
+        return list(self.by_sku.get(sku, [])) if sku else []
+
+
+async def load_item_index(session: AsyncSession, company_id) -> ItemIndex:
+    """Load every item projection of the company once and index it (:class:`ItemIndex`)."""
     rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
             Projection.entity_type == "item",
         )
     )).scalars().all()
-
-    def _live(r) -> bool:
-        return str((r.state or {}).get("status") or "").lower() not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
-
-    def _by(key, wanted):
-        return [r for r in rows if str((r.state or {}).get(key) or "") == wanted and _live(r)]
-
-    return _resolve_from_candidates({
-        "barcode": _by("barcode", code),
-        "rfid_epc": _by("rfid_epc", epc_code),
-        "gtin": _by("gtin", code),
-        "sku": _by("sku", code),
-    })
-
-
-async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> dict[str, "ResolveResult"]:
-    """Batch form of :func:`resolve_item_by_code`: resolve many codes against ONE inventory load.
-
-    A per-code caller (a 200-code scan run) would otherwise load every item projection once per
-    code. This loads them once, indexes by every identifier, and returns one ResolveResult per
-    distinct code - the SAME shared-namespace disambiguation rule as the single-code path
-    (physical barcode + RFID EPC gathered before product GTIN/SKU, fail-closed on a cross-field
-    or multi-lot physical collision), so callers behave identically. EPC is indexed and looked
-    up in its normalized (upper-cased) form.
-    """
-    wanted = {(c or "").strip() for c in codes if (c or "").strip()}
-    if not wanted:
-        return {}
-    rows = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "item",
-        )
-    )).scalars().all()
-    by_barcode: dict[str, list] = {}
-    by_rfid_epc: dict[str, list] = {}
-    by_gtin: dict[str, list] = {}
-    by_sku: dict[str, list] = {}
+    index = ItemIndex({}, {}, {}, {})
     for r in rows:
         st = r.state or {}
         if str(st.get("status") or "").lower() in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
             continue
-        bc = str(st.get("barcode") or "")
-        epc = str(st.get("rfid_epc") or "")
-        gtin = str(st.get("gtin") or "")
-        sku = str(st.get("sku") or "")
-        if bc:
-            by_barcode.setdefault(bc, []).append(r)
-        if epc:
-            by_rfid_epc.setdefault(epc, []).append(r)
-        if gtin:
-            by_gtin.setdefault(gtin, []).append(r)
-        if sku:
-            by_sku.setdefault(sku, []).append(r)
-    out: dict[str, ResolveResult] = {}
-    for code in wanted:
-        epc_code = normalize_rfid_epc(code)
-        out[code] = _resolve_from_candidates({
-            "barcode": by_barcode.get(code, []),
-            "rfid_epc": by_rfid_epc.get(epc_code, []),
-            "gtin": by_gtin.get(code, []),
-            "sku": by_sku.get(code, []),
-        })
-    return out
+        for key, bucket in (("barcode", index.by_barcode), ("rfid_epc", index.by_rfid_epc),
+                            ("gtin", index.by_gtin), ("sku", index.by_sku)):
+            if value := str(st.get(key) or ""):
+                bucket.setdefault(value, []).append(r)
+    return index

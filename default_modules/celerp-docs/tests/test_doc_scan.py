@@ -206,7 +206,8 @@ async def test_doc_scan_reports_unknown_code(client):
 
 async def test_doc_scan_reports_ambiguous_and_collision(client, monkeypatch):
     import celerp_inventory.services as inv
-    from celerp_inventory.services import ResolveResult, resolve_items_by_codes as _real
+    from celerp_inventory.services import ResolveResult
+    real = inv.ItemIndex.resolve
 
     t = await _register(client)
     bc, _ = _codes()
@@ -214,14 +215,14 @@ async def test_doc_scan_reports_ambiguous_and_collision(client, monkeypatch):
     await _item(client, t, "AMB", allow_splitting=False)
     await _item(client, t, "COL", barcode=bc)
 
-    async def _collide(session, company_id, codes):
-        base = await _real(session, company_id, codes)
+    def _collide(index, codes):
+        base = real(index, codes)
         got = base.get(bc)
         if got is not None and got.kind == "barcode":
             base[bc] = ResolveResult("barcode", list(got.matches) * 2)
         return base
 
-    monkeypatch.setattr(inv, "resolve_items_by_codes", _collide)
+    monkeypatch.setattr(inv.ItemIndex, "resolve", _collide)
     doc = await _doc(client, t)
 
     body = (await _scan(client, t, doc, f"AMB,{bc}")).json()
@@ -653,6 +654,55 @@ async def test_selling_scan_names_the_holder_of_a_reserved_lot_before_the_produc
     body = (await _scan(client, t, doc, newer_bc)).json()
     assert body["scanned"] == 0 and _reasons(body) == {newer_bc: "unavailable"}, body
     assert holder_number in body["failed"][0]["label"]
+
+
+async def test_selling_scan_cap_draws_on_the_product_even_when_its_sku_is_another_items_barcode(client):
+    """The stock a product's lines draw on is every lot carrying its SKU, whatever other item happens
+    to use that SKU as a barcode."""
+    t = await _register(client)
+    older_bc, newer_bc = _codes()
+    shared = "7070" + older_bc[:6]
+    await _item(client, t, shared, qty=15, allow_splitting=True, barcode=older_bc, gtin="96385074")
+    await _item(client, t, shared, qty=5, allow_splitting=True, barcode=newer_bc, gtin="96385074")
+    await _item(client, t, "OTHER", qty=1, barcode=shared)
+    doc = await _doc(client, t)
+
+    body = (await _scan(client, t, doc, ",".join(["96385074"] * 20))).json()
+    assert body["scanned"] == 20 and body["failed"] == [], body
+    body = (await _scan(client, t, doc, newer_bc)).json()
+    assert _reasons(body) == {newer_bc: "insufficient_stock"}, body
+    assert body["failed"][0]["label"] == f"{shared}: insufficient stock - 21 on this document, available 20"
+
+
+async def test_a_scan_run_reads_inventory_once_however_many_products_it_names(client, _db_engine):
+    """One scan run loads the company's items once and draws every product's stock from that load."""
+    from contextlib import contextmanager
+    from sqlalchemy import event
+
+    t = await _register(client)
+    for sku in ("ONE-A", "ONE-B", "ONE-C"):
+        await _item(client, t, sku, qty=3, allow_splitting=True)
+    doc = await _doc(client, t)
+    loads: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if "FROM projections" in statement and "entity_id" not in statement.split("WHERE", 1)[-1] \
+                and "item" in repr(parameters):
+            loads.append(statement)
+
+    @contextmanager
+    def listening():
+        event.listen(_db_engine.sync_engine, "before_cursor_execute", record)
+        try:
+            yield
+        finally:
+            event.remove(_db_engine.sync_engine, "before_cursor_execute", record)
+
+    with listening():
+        body = (await _scan(client, t, doc, "ONE-A,ONE-B,ONE-C,ONE-A")).json()
+
+    assert body["scanned"] == 4, body
+    assert len(loads) == 1, loads
 
 
 async def test_repeat_refusal_names_the_line_already_holding_the_piece(client):

@@ -186,22 +186,22 @@ async def _quotation(client, t) -> str:
 @pytest.mark.asyncio
 async def test_scan_batch_resolves_in_one_inventory_load(client, monkeypatch):
     """A batch of N codes resolves against ONE inventory load, not one per code: scanning routes the
-    whole run through the batch resolver and never the per-code resolver (the N+1 that a 200-code run
-    would otherwise trigger). Barcode precedence and ambiguity are unchanged - the batch resolver is
+    whole run through one item index and never the per-code resolver (the N+1 that a 200-code run
+    would otherwise trigger). Barcode precedence and ambiguity are unchanged - the index resolves by
     the same rule, loaded once."""
     import celerp_inventory.services as inv
     calls = {"batch": 0, "single": 0}
-    real_batch, real_single = inv.resolve_items_by_codes, inv.resolve_item_by_code
+    real_batch, real_single = inv.load_item_index, inv.resolve_item_by_code
 
-    async def _batch(session, company_id, codes):
+    async def _batch(session, company_id):
         calls["batch"] += 1
-        return await real_batch(session, company_id, codes)
+        return await real_batch(session, company_id)
 
     async def _single(session, company_id, code):
         calls["single"] += 1
         return await real_single(session, company_id, code)
 
-    monkeypatch.setattr(inv, "resolve_items_by_codes", _batch)
+    monkeypatch.setattr(inv, "load_item_index", _batch)
     monkeypatch.setattr(inv, "resolve_item_by_code", _single)
 
     t = await _register(client)
@@ -224,19 +224,20 @@ async def test_scan_batch_resolves_in_one_inventory_load(client, monkeypatch):
 async def test_scan_duplicate_barcode_is_reported_not_silently_picked(client, monkeypatch):
     """A barcode present on more than one lot - only reachable for legacy data predating the
     per-company barcode unique index - is reported with the single duplicate-barcode message and
-    never silently checked off to one arbitrary lot. The batch resolver is patched to surface the
+    never silently checked off to one arbitrary lot. The item index is patched to surface the
     duplicate for one code; every other code resolves normally."""
     import celerp_inventory.services as inv
-    from celerp_inventory.services import ResolveResult, resolve_items_by_codes as _real
+    from celerp_inventory.services import ResolveResult
+    real = inv.ItemIndex.resolve
 
-    async def _dup(session, company_id, codes):
-        base = await _real(session, company_id, codes)
+    def _dup(index, codes):
+        base = real(index, codes)
         got = base.get("880001")
         if got is not None and got.kind == "barcode":
             base["880001"] = ResolveResult("barcode", list(got.matches) * 2)  # legacy: same barcode, two lots
         return base
 
-    monkeypatch.setattr(inv, "resolve_items_by_codes", _dup)
+    monkeypatch.setattr(inv.ItemIndex, "resolve", _dup)
 
     t = await _register(client)
     loc = await _location(client, t)
