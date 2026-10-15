@@ -284,23 +284,29 @@ def default_tax(taxes: list[dict], doc_type: str | None) -> dict | None:
     return next((x for x in taxes_for(taxes, doc_type) if x.get("is_default")), None)
 
 
+def _tax_name_key(name) -> str:
+    """A tax name as a lookup key: the same name in another case or with spaces around it
+    is the same tax."""
+    return str(name or "").strip().casefold()
+
+
 def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> str | None:
     """The name of the first tax in ``applied`` (each a ``code`` and ``rate``) a document of
     this type cannot carry, else None. A tax takes its side from the company's tax lists by
-    name, the document's own side's list deciding a name both lists hold. On a sale a negative
-    rate is always refused: it is tax withheld on a purchase, and a sale has no output tax to
-    net it against."""
+    name, ignoring case and surrounding spaces, the document's own side's list deciding a name
+    both lists hold. On a sale a negative rate is always refused: it is tax withheld on a
+    purchase, and a sale has no output tax to net it against."""
     side = doc_side(doc_type)
     other = sales_taxes(settings) if side == "purchase" else purchasing_taxes(settings)
-    sides = {x.get("name"): x.get("tax_type") or "both"
+    sides = {_tax_name_key(x.get("name")): x.get("tax_type") or "both"
              for x in [*other, *side_taxes(settings, doc_type)]}
     for tax in applied:
-        code = str(tax.get("code") or "")
+        code = str(tax.get("code") or "").strip()
         try:
             rate = float(tax.get("rate") or 0)
         except (TypeError, ValueError):
             rate = 0.0  # an unreadable rate is refused where the money is computed
-        tax_side = "purchase" if side == "sales" and rate < 0 else sides.get(code, "both")
+        tax_side = "purchase" if side == "sales" and rate < 0 else sides.get(_tax_name_key(code), "both")
         if tax_side not in (side, "both"):
             return code or f"{rate:g}%"
     return None

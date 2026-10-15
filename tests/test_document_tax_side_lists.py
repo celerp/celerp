@@ -184,3 +184,26 @@ async def test_a_supplier_credit_note_takes_the_purchasing_taxes(client):
 async def test_the_supplier_credit_note_editor_offers_purchasing_taxes(ui_client):
     html = await _editor(ui_client, "debit_note")
     assert [x["name"] for x in _offered(html)] == ["Input VAT"]
+
+
+@pytest.mark.asyncio
+async def test_a_tax_name_written_differently_keeps_its_side(client):
+    """A sales-only tax typed in another case or with spaces around it is still that tax:
+    a bill refuses it like the exact name, and a sale refuses a purchase-only one."""
+    h = await _company(client)
+    sales = [{"name": "Output VAT", "rate": 7.0, "tax_type": "sales", "is_default": True}]
+    purchasing = [{"name": "Input VAT", "rate": 10.0, "tax_type": "purchase", "is_default": True}]
+    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": sales})).status_code == 200
+    assert (await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": purchasing})).status_code == 200
+
+    def body(doc_type: str, code: str, rate: float) -> dict:
+        return {"doc_type": doc_type, "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100,
+                                                       "taxes": [{"code": code, "rate": rate}]}]}
+
+    for code in ("Output VAT", "output vat", "Output VAT ", " OUTPUT VAT"):
+        r = await client.post("/docs", headers=h, json=body("bill", code, 7.0))
+        assert r.status_code == 422 and code.strip() in r.text, (code, r.text)
+    for code in ("input vat", "Input VAT  "):
+        r = await client.post("/docs", headers=h, json=body("invoice", code, 10.0))
+        assert r.status_code == 422, (code, r.text)
+    assert (await client.post("/docs", headers=h, json=body("bill", "input vat", 10.0))).status_code == 200
