@@ -220,11 +220,23 @@ async def test_cash_and_receivables_are_refused_as_inventory_and_never_counted_a
             detail = r.json()["detail"]
             assert detail["message_key"] == "posting.problem.not_inventory", detail
             assert code in detail["message"] and "—" not in detail["message"]
-    scopes = (await _settings(session, auth))["posting_role_scopes"]
+    for role in ("default_deposit", "receivable", "tax_input", "fixed_assets"):
+        for code in ("1130-P", "1130-OB"):
+            r = await client.put(f"/accounting/posting-accounts/{role}", headers=auth["headers"],
+                                 json={"code": code})
+            assert r.status_code == 422, (role, code, r.text)
+            detail = r.json()["detail"]
+            assert detail["message_key"] == "posting.problem.holds_inventory", detail
+            assert code in detail["message"] and "—" not in detail["message"]
+    settings = await _settings(session, auth)
+    scopes = settings["posting_role_scopes"]
     assert scopes["inventory_purchased"] == ["1130-P"] and scopes["inventory_opening"] == ["1130-OB"]
+    assert {"1130-P", "1130-OB"}.isdisjoint(
+        settings["posting_roles"][r] for r in ("default_deposit", "receivable", "tax_input", "fixed_assets"))
     offered = {r["role"]: {c["code"] for c in r["candidates"]} for r in (await panel(session, auth["company_id"]))["roles"]}
     assert not {"1111", bank, "1120"} & (offered["inventory_purchased"] | offered["inventory_opening"])
     assert {"1111", bank} <= offered["default_deposit"]
+    assert not {"1130-P", "1130-OB"} & (offered["default_deposit"] | offered["tax_input"] | offered["fixed_assets"])
     company = await locked_company(session, auth["company_id"])
     company.settings = {k: v for k, v in company.settings.items() if k != "lock_date"}
     await session.commit()

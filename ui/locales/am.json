@@ -5120,6 +5120,7 @@
   "posting.problem.inactive": "{role} ወደ ሒሳብ {code} ተዘጋጅቷል፣ ይህ ሒሳብ ንቁ አይደለም።",
   "posting.problem.wrong_type": "{role} የ{type} ዓይነት ወደሆነው ሒሳብ {code} ተዘጋጅቷል፤ የ{types} ዓይነት መሆን አለበት።",
   "posting.problem.header": "{role} ወደ ርዕስ ሒሳብ {code} ተዘጋጅቷል፤ ከሥሩ ያለ ሒሳብ ይምረጡ።",
+  "posting.problem.holds_inventory": "{role} ወደ ሒሳብ {code} ሊዘጋጅ አይችልም፤ ይህ ሒሳብ ክምችት ይይዛል። ክምችት የማይይዝ ሒሳብ ይምረጡ።",
   "posting.problem.not_inventory": "{role} ወደ ሒሳብ {code} ሊዘጋጅ አይችልም፤ ይህ ሒሳብ ጥሬ ገንዘብ ይይዛል ወይም በሌላ የመመዝገቢያ ሒሳብ ጥቅም ላይ ውሏል፣ ስለዚህ የክምችት ሒሳብ አይደለም። የክምችት ሒሳብ ይምረጡ።",
   "posting.refused": "{problems} ሒሳቡን በቅንብሮች > ሒሳብ አያያዝ > የመመዝገቢያ ሒሳቦች ውስጥ ይምረጡ።",
   "posting.continued_account_unusable": "ይህ ቀሪ ሒሳብ በሒሳብ {code} ላይ ተይዟል፣ ይህም አሁን ሊቀበለው አይችልም፦ {problem} ያንን ሒሳብ በሒሳቦች ሰንጠረዥ ውስጥ እንደገና ጥቅም ላይ የሚውል ያድርጉት።",

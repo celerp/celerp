@@ -5122,6 +5122,7 @@
   "posting.problem.inactive": "{role} ist auf Konto {code} gesetzt, das inaktiv ist.",
   "posting.problem.wrong_type": "{role} ist auf Konto {code} vom Typ {type} gesetzt; es muss vom Typ {types} sein.",
   "posting.problem.header": "{role} ist auf Konto {code} gesetzt, ein Sammelkonto; wählen Sie ein Konto darunter.",
+  "posting.problem.holds_inventory": "{role} kann nicht auf Konto {code} gesetzt werden: Dieses Konto führt Bestand. Wählen Sie ein Konto ohne Bestand.",
   "posting.problem.not_inventory": "{role} kann nicht auf Konto {code} gesetzt werden: Dieses Konto führt Zahlungsmittel oder wird von einem anderen Buchungskonto verwendet und ist daher kein Bestandskonto. Wählen Sie ein Bestandskonto.",
   "posting.refused": "{problems} Wählen Sie das Konto unter Einstellungen > Buchhaltung > Buchungskonten.",
   "posting.continued_account_unusable": "Dieser Saldo wird auf Konto {code} geführt, das ihn derzeit nicht aufnehmen kann: {problem} Machen Sie dieses Konto im Kontenplan wieder nutzbar.",

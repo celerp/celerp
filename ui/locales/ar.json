@@ -5122,6 +5122,7 @@
   "posting.problem.inactive": "{role} مضبوط على الحساب {code}، وهو غير نشط.",
   "posting.problem.wrong_type": "{role} مضبوط على الحساب {code} من النوع {type}؛ ويجب أن يكون من النوع {types}.",
   "posting.problem.header": "{role} مضبوط على الحساب {code}، وهو حساب رئيسي؛ اختر حسابًا تحته.",
+  "posting.problem.holds_inventory": "لا يمكن ضبط {role} على الحساب {code}: هذا الحساب يحتفظ بالمخزون. اختر حسابًا لا يحتفظ بمخزون.",
   "posting.problem.not_inventory": "لا يمكن ضبط {role} على الحساب {code}: هذا الحساب يحتفظ بالنقد أو يستخدمه حساب ترحيل آخر، لذا فهو ليس حساب مخزون. اختر حساب مخزون.",
   "posting.refused": "{problems} اختر الحساب من إعدادات > محاسبة > حسابات الترحيل.",
   "posting.continued_account_unusable": "يُحتفظ بهذا الرصيد في الحساب {code}، الذي لا يمكنه استقباله الآن: {problem} أعد تفعيل هذا الحساب في دليل الحسابات.",

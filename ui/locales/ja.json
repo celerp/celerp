@@ -5120,6 +5120,7 @@
   "posting.problem.inactive": "{role} は勘定 {code} に設定されていますが、この勘定は無効です。",
   "posting.problem.wrong_type": "{role} は種類 {type} の勘定 {code} に設定されています。種類は {types} である必要があります。",
   "posting.problem.header": "{role} は集計勘定 {code} に設定されています。その下の勘定を選択してください。",
+  "posting.problem.holds_inventory": "{role} を勘定 {code} に設定できません。この勘定は在庫を保有しています。在庫を保有しない勘定を選択してください。",
   "posting.problem.not_inventory": "{role} を勘定 {code} に設定できません。この勘定は現金を保有しているか、別の転記勘定で使われているため、棚卸資産勘定ではありません。棚卸資産勘定を選択してください。",
   "posting.refused": "{problems} 設定 > 会計 > 転記勘定 で勘定を選択してください。",
   "posting.continued_account_unusable": "この残高は勘定 {code} に記録されていますが、現在この勘定では受け付けられません: {problem} 勘定科目表でこの勘定を再び使用できるようにしてください。",

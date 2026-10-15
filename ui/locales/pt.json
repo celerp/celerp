@@ -5122,6 +5122,7 @@
   "posting.problem.inactive": "{role} está definida para a conta {code}, que está inativa.",
   "posting.problem.wrong_type": "{role} está definida para a conta {code}, do tipo {type}; ela deve ser do tipo {types}.",
   "posting.problem.header": "{role} está definida para a conta {code}, uma conta sintética; escolha uma conta abaixo dela.",
+  "posting.problem.holds_inventory": "{role} não pode ser definida para a conta {code}: essa conta guarda estoque. Escolha uma conta sem estoque.",
   "posting.problem.not_inventory": "{role} não pode ser definida para a conta {code}: essa conta guarda caixa ou é usada por outra conta de lançamento, portanto não é uma conta de estoque. Escolha uma conta de estoque.",
   "posting.refused": "{problems} Escolha a conta em Configurações > Contabilidade > Contas de lançamento.",
   "posting.continued_account_unusable": "Este saldo é mantido na conta {code}, que não pode recebê-lo agora: {problem} Torne essa conta utilizável novamente no plano de contas.",

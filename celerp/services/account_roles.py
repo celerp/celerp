@@ -462,6 +462,15 @@ def target_problems(roles: list[str], current: dict[str, str], accounts: dict[st
     return problems
 
 
+def _stock_side(role) -> bool:
+    return AccountRole(role) in INVENTORY_VALUE_ROLES
+
+
+def stock_codes(settings: dict | None) -> set[str]:
+    """The accounts an inventory role points at now."""
+    return {code for role, code in role_map(settings).items() if is_role(role) and _stock_side(role)}
+
+
 def not_stock(settings: dict | None, chart: list[dict]) -> set[str]:
     """Accounts that hold something other than stock: cash, as the chart marks it (every
     bank account and every account under the cash and cash equivalents header), and every
@@ -469,21 +478,32 @@ def not_stock(settings: dict | None, chart: list[dict]) -> set[str]:
     fixed assets and the rest). ``chart`` is the chart's rows (ChartAccess.list_accounts).
     An inventory role is never set to one, and older stock is never counted from or
     placed on one, even where an inventory role's history already names it."""
-    others = {code for role, code in role_map(settings).items()
-              if is_role(role) and AccountRole(role) not in INVENTORY_VALUE_ROLES}
+    others = {code for role, code in role_map(settings).items() if is_role(role) and not _stock_side(role)}
     return others | {row["code"] for row in chart if row.get("cash")}
 
 
+def barred(role: str, settings: dict | None, chart: list[dict], pending: set[str] = frozenset()) -> set[str]:
+    """The accounts ``role`` may not point at, so no account holds stock and something else
+    at once: for an inventory role every account that is not stock (not_stock), for any
+    other role every account an inventory role points at (stock_codes); plus ``pending``,
+    the accounts the other side is about to point at."""
+    return (not_stock(settings, chart) if _stock_side(role) else stock_codes(settings)) | set(pending)
+
+
 def stock_problem(role: str, code: str, settings: dict | None, chart: list[dict]) -> dict | None:
-    """The refusal for pointing inventory ``role`` at ``code`` when that account is not
-    stock (not_stock), or None."""
-    if AccountRole(role) not in INVENTORY_VALUE_ROLES or code not in not_stock(settings, chart):
+    """The refusal for pointing ``role`` at ``code`` when ``settings`` (the roles as they
+    would be) bar it (barred), or None."""
+    if code not in barred(role, settings, chart):
         return None
     label = ROLE_LABELS[AccountRole(role)]
-    return refusal("posting.problem.not_inventory",
-                   f"{label} cannot be set to account {code}: that account holds cash or is used by another "
-                   "posting account, so it is not an inventory account. Choose an inventory account.",
-                   role=str(role), code=code)
+    if _stock_side(role):
+        return refusal("posting.problem.not_inventory",
+                       f"{label} cannot be set to account {code}: that account holds cash or is used by another "
+                       "posting account, so it is not an inventory account. Choose an inventory account.",
+                       role=str(role), code=code)
+    return refusal("posting.problem.holds_inventory",
+                   f"{label} cannot be set to account {code}: that account holds inventory. "
+                   "Choose an account that holds no stock.", role=str(role), code=code)
 
 
 async def resolve_many(session: AsyncSession, company_id, roles) -> dict[str, str]:

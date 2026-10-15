@@ -5120,6 +5120,7 @@
   "posting.problem.inactive": "{role} is set to account {code}, which is inactive.",
   "posting.problem.wrong_type": "{role} is set to account {code}, of type {type}; it must be of type {types}.",
   "posting.problem.header": "{role} is set to account {code}, a header account; choose an account under it.",
+  "posting.problem.holds_inventory": "{role} cannot be set to account {code}: that account holds inventory. Choose an account that holds no stock.",
   "posting.problem.not_inventory": "{role} cannot be set to account {code}: that account holds cash or is used by another posting account, so it is not an inventory account. Choose an inventory account.",
   "posting.refused": "{problems} Choose the account in Settings > Accounting > Posting accounts.",
   "posting.continued_account_unusable": "This balance is kept on account {code}, which cannot take it now: {problem} Make that account usable again in the chart of accounts.",
