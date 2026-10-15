@@ -359,3 +359,35 @@ async def test_stock_exclusion_guard_checks_full_document_page(monkeypatch):
     monkeypatch.setattr("celerp.db.get_session_ctx", session_factory)
     assert await peer._excluded_stock_document(cid) == "doc:1000"
     assert pages == 2
+
+
+@pytest.mark.asyncio
+async def test_distinct_source_locations_cannot_share_one_receiving_location(client, session):
+    from celerp.services.peer_identity import resolve_peer_location
+
+    token = await _register(client)
+    company = uuid.UUID(_company_id(token))
+    created = await client.post("/companies/me/locations", headers=_h(token), json={
+        "name": "Paired Site", "type": "warehouse"})
+    assert created.status_code == 200, created.text
+    grant = SimpleNamespace(company_id=company, source_company_id=uuid.uuid4())
+    first_id, second_id = str(uuid.uuid4()), str(uuid.uuid4())
+    first_target = await resolve_peer_location(
+        session, grant=grant, source_id=first_id,
+        name="Paired Site", location_type="warehouse")
+    assert first_target == created.json()["id"]
+    await session.commit()
+
+    assert await resolve_peer_location(
+        session, grant=grant, source_id=first_id,
+        name="Paired Site", location_type="warehouse") == first_target
+    with pytest.raises(HTTPException) as refused:
+        await resolve_peer_location(
+            session, grant=grant, source_id=second_id,
+            name="Paired Site", location_type="warehouse")
+    assert refused.value.status_code == 409
+    await session.rollback()
+    mappings = (await session.execute(select(CompanyPeerIdentity).where(
+        CompanyPeerIdentity.company_id == company,
+        CompanyPeerIdentity.entity_type == "location"))).scalars().all()
+    assert len(mappings) == 1 and mappings[0].source_entity_id == first_id

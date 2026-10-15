@@ -121,7 +121,6 @@ async def resolve_peer_location(session: AsyncSession, *, grant, source_id: str,
         raise HTTPException(409, "Configure a matching inventory location before syncing counts")
     conflict = await session.scalar(select(CompanyPeerIdentity.id).where(
         CompanyPeerIdentity.company_id == grant.company_id,
-        CompanyPeerIdentity.source_company_id != grant.source_company_id,
         CompanyPeerIdentity.entity_type == "location",
         CompanyPeerIdentity.target_entity_id == str(target.id)).limit(1))
     if conflict is not None:
