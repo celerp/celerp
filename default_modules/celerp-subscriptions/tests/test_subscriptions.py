@@ -608,7 +608,10 @@ async def test_doctor_refuses_to_post_into_a_locked_period(client, session, auth
     await session.commit()
 
     r = await client.post("/admin/doctor?checks=missing_jes&fix=true", headers=auth["headers"])
-    assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("error.period_locked", "en", date="2099-12-31")
+    assert r.status_code == 200, r.text
+    missing = r.json()["results"][0]
+    assert missing["fixed"] == 0
+    assert [(d["doc_id"], d["doc_number"], d["blocked_reason"]) for d in missing["details"]] == [
+        (doc_id, "INV-OLD-4", t("error.period_locked", "en", date="2099-12-31"))]
     await session.rollback()
     assert await _journal_entries(session, client, auth["headers"], doc_id) == []
