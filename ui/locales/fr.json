@@ -5492,6 +5492,7 @@
   "accounting.statement_attachment_not_found": "Cette ligne de relevé n'a pas cette pièce jointe. Rechargez la ligne pour voir ses pièces jointes, puis retirez l'une d'elles.",
   "accounting.statement_attachment_not_removed": "Le fichier joint n'a pas pu être supprimé, il est donc toujours sur la ligne. Réessayez de le retirer dans un instant.",
   "location.not_found": "{value} n'est pas un emplacement de cette entreprise. Choisissez un emplacement dans Paramètres > Stock > Emplacements, ou ajoutez-le d'abord.",
+  "location.ship_from_not_found": "Le lieu d'expédition n'est pas l'un des emplacements de cette entreprise. Choisissez un emplacement dans Paramètres > Stock > Emplacements, ou ajoutez-le d'abord.",
   "erase.locked_period": "Rien n'a été effacé. {count} des articles sélectionnés ont un historique daté du {lock_date} ou avant, période où les livres sont verrouillés. Déverrouillez la période dans Settings > Accounting, effacez-les, puis verrouillez à nouveau la période.",
   "demo.not_sample_fixture": "Rien n'a été effacé. {count} des articles sélectionnés contiennent des enregistrements qui ne sont pas des données d'exemple, ils ne sont donc pas supprimés comme exemples. Ouvrez chaque article et utilisez plutôt Delete, Archive ou Write Off Stock.",
   "accounting.reversal_date_invalid": "Choisissez une date de contrepassation au format YYYY-MM-DD, à la date de l'écriture contrepassée ({entry_date}) ou après.",

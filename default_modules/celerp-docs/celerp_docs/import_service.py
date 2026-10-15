@@ -23,6 +23,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.journal_accounts import require_line_destinations
+from celerp.services.locations import require_ship_from
 from celerp_docs.doc_money import assert_issuable_taxes
 from celerp_docs.doc_projections import UNISSUED_STATUSES
 from celerp_docs.routes import (
@@ -180,6 +181,7 @@ async def create_imported_doc(
     if auto_je.imported_issue_kind(rec.data) is not None:
         _require_doc_rate_http(rec.data, base_currency)
     await check_imported_snapshot(session, company_id, rec.entity_id, rec.data, base_currency)
+    await require_ship_from(session, company_id, rec.data.get("from_location_id"))
     if str(rec.data.get("status") or "draft") not in UNISSUED_STATUSES:
         assert_issuable_taxes(settings, rec.data)
     treatment = import_treatment(rec.entity_id, rec.data, post_ledger=post_ledger)

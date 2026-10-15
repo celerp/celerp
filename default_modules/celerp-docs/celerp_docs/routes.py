@@ -37,7 +37,7 @@ from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
-from celerp.services.locations import require_company_location
+from celerp.services.locations import require_company_location, require_ship_from
 from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
 from celerp.services.account_roles import current_settings, is_consigned, lineage, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
@@ -1706,7 +1706,7 @@ async def create_doc(
     # the lines are checked as the last of them left the items, and numbering is serialized.
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
     company = await locked_company(session, company_id)
-    await require_company_location(session, company_id, payload.from_location_id)
+    await require_ship_from(session, company_id, payload.from_location_id)
 
     # Locked, so the total checked is the one the invoice's last writer left.
     inv = await credit_note_original(session, company_id, payload.model_dump(), for_update=True)
@@ -1961,7 +1961,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         await credit_note_original(session, company_id, {
             **row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}})
     if "from_location_id" in fields_changed:
-        await require_company_location(session, company_id, (fields_changed["from_location_id"] or {}).get("new"))
+        await require_ship_from(session, company_id, (fields_changed["from_location_id"] or {}).get("new"))
     # Taxes change only on a draft; a finalized document's line edits leave them as posted.
     if is_draft and {"doc_type", "doc_taxes", "line_items", "tax_rate"} & fields_changed.keys():
         _taxed = {**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}}

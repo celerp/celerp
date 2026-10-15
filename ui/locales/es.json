@@ -5492,6 +5492,7 @@
   "accounting.statement_attachment_not_found": "Esta línea del extracto no tiene ese adjunto. Vuelva a cargar la línea para ver sus adjuntos y luego quite uno de ellos.",
   "accounting.statement_attachment_not_removed": "No se pudo eliminar el archivo adjunto, así que sigue en la línea. Intente quitarlo de nuevo en un momento.",
   "location.not_found": "{value} no es una ubicación de esta empresa. Elija una ubicación en Configuración > Inventario > Ubicaciones o créela allí primero.",
+  "location.ship_from_not_found": "La ubicación de envío no es una de las ubicaciones de esta empresa. Elija una ubicación en Configuración > Inventario > Ubicaciones, o agréguela allí primero.",
   "erase.locked_period": "No se borró nada. {count} de los artículos seleccionados tienen historial con fecha igual o anterior al {lock_date}, cuando los libros están bloqueados. Desbloquee el periodo en Settings > Accounting, bórrelos y vuelva a bloquear el periodo.",
   "demo.not_sample_fixture": "No se borró nada. {count} de los artículos seleccionados tienen registros que no son datos de ejemplo, así que no se eliminan como ejemplos. Abra cada artículo y use Delete, Archive o Write Off Stock en su lugar.",
   "accounting.reversal_date_invalid": "Elija una fecha de reversión con el formato YYYY-MM-DD, igual o posterior a la fecha del asiento que revierte ({entry_date}).",

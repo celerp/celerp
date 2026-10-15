@@ -5492,6 +5492,7 @@
   "accounting.statement_attachment_not_found": "Esta linha do extrato não tem esse anexo. Recarregue a linha para ver os anexos dela e depois remova um deles.",
   "accounting.statement_attachment_not_removed": "O arquivo anexo não pôde ser excluído, então ainda está na linha. Tente removê-lo novamente em instantes.",
   "location.not_found": "{value} não é um local desta empresa. Escolha um local em Configurações > Estoque > Locais ou adicione-o lá primeiro.",
+  "location.ship_from_not_found": "O local de envio não é um dos locais desta empresa. Escolha um local em Configurações > Estoque > Locais, ou adicione-o lá primeiro.",
   "erase.locked_period": "Nada foi apagado. {count} dos itens selecionados têm histórico com data igual ou anterior a {lock_date}, quando os livros estão bloqueados. Desbloqueie o período em Settings > Accounting, apague-os e depois bloqueie o período novamente.",
   "demo.not_sample_fixture": "Nada foi apagado. {count} dos itens selecionados têm registros que não são dados de exemplo, por isso não são removidos como exemplos. Abra cada item e use Delete, Archive ou Write Off Stock.",
   "accounting.reversal_date_invalid": "Escolha uma data de estorno no formato YYYY-MM-DD, igual ou posterior à data do lançamento estornado ({entry_date}).",

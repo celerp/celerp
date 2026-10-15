@@ -5492,6 +5492,7 @@
   "accounting.statement_attachment_not_found": "Diese Auszugszeile hat keinen solchen Anhang. Laden Sie die Zeile neu, um ihre Anhänge zu sehen, und entfernen Sie dann einen davon.",
   "accounting.statement_attachment_not_removed": "Die Anhangsdatei konnte nicht gelöscht werden, daher ist sie noch an der Zeile. Versuchen Sie es gleich noch einmal.",
   "location.not_found": "{value} ist kein Standort dieses Unternehmens. Wählen Sie einen Standort unter Einstellungen > Lagerbestand > Standorte oder legen Sie ihn dort zuerst an.",
+  "location.ship_from_not_found": "Der Versandstandort ist kein Standort dieses Unternehmens. Wählen Sie einen Standort unter Einstellungen > Lagerbestand > Standorte oder legen Sie ihn dort zuerst an.",
   "erase.locked_period": "Es wurde nichts gelöscht. {count} der ausgewählten Artikel haben einen Verlauf am oder vor dem {lock_date}, bis zu dem die Bücher gesperrt sind. Entsperren Sie den Zeitraum unter Settings > Accounting, löschen Sie sie und sperren Sie den Zeitraum danach wieder.",
   "demo.not_sample_fixture": "Es wurde nichts gelöscht. {count} der ausgewählten Artikel enthalten Datensätze, die keine Beispieldaten sind, und werden daher nicht als Beispiele entfernt. Öffnen Sie jeden Artikel und verwenden Sie stattdessen Delete, Archive oder Write Off Stock.",
   "accounting.reversal_date_invalid": "Wählen Sie ein Stornodatum im Format YYYY-MM-DD, am oder nach dem Datum der Buchung, die storniert wird ({entry_date}).",

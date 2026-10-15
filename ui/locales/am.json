@@ -5492,6 +5492,7 @@
   "accounting.statement_attachment_not_found": "ይህ የመግለጫ መስመር እንደዚህ ያለ አባሪ የለውም። አባሪዎቹን ለማየት መስመሩን እንደገና ይጫኑ፣ ከዚያ ከእነሱ አንዱን ያስወግዱ።",
   "accounting.statement_attachment_not_removed": "የአባሪው ፋይል ሊሰረዝ ስላልቻለ አሁንም በመስመሩ ላይ ነው። ትንሽ ቆይተው እንደገና ለማስወገድ ይሞክሩ።",
   "location.not_found": "{value} የዚህ ኩባንያ ቦታ አይደለም። ከቅንጅቶች > ክምችት > ቦታዎች ቦታ ይምረጡ ወይም መጀመሪያ እዚያ ያክሉት።",
+  "location.ship_from_not_found": "የመላኪያ መነሻ ቦታው የዚህ ኩባንያ ቦታ አይደለም። ከቅንጅቶች > ክምችት > ቦታዎች ቦታ ይምረጡ ወይም መጀመሪያ እዚያ ያክሉት።",
   "erase.locked_period": "ምንም አልተሰረዘም። ከተመረጡት ዕቃዎች {count} መጻሕፍቱ በተቆለፉበት {lock_date} ወይም ከዚያ በፊት የተመዘገበ ታሪክ አላቸው። በSettings > Accounting ውስጥ ጊዜውን ይክፈቱ፣ ይሰርዟቸው፣ ከዚያ ጊዜውን እንደገና ይቆልፉ።",
   "demo.not_sample_fixture": "ምንም አልተሰረዘም። ከተመረጡት ዕቃዎች {count} የናሙና ውሂብ ያልሆኑ መዝገቦችን ይዘዋል፣ ስለዚህ እንደ ናሙና አይወገዱም። እያንዳንዱን ዕቃ ይክፈቱ እና በምትኩ Delete፣ Archive ወይም Write Off Stock ይጠቀሙ።",
   "accounting.reversal_date_invalid": "የመቀልበሻ ቀንን በ YYYY-MM-DD ቅርጸት ይምረጡ፣ ከሚቀለበሰው መዝገብ ቀን ({entry_date}) ጀምሮ ወይም በኋላ።",

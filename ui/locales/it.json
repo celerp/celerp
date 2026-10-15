@@ -5492,6 +5492,7 @@
   "accounting.statement_attachment_not_found": "Questa riga dell'estratto non ha questo allegato. Ricarica la riga per vedere i suoi allegati, poi rimuovine uno.",
   "accounting.statement_attachment_not_removed": "Il file allegato non è stato eliminato, quindi è ancora sulla riga. Riprova a rimuoverlo tra un momento.",
   "location.not_found": "{value} non è una sede di questa azienda. Scegli una sede in Impostazioni > Inventario > Sedi o aggiungila prima lì.",
+  "location.ship_from_not_found": "La sede di spedizione non è una sede di questa azienda. Scegli una sede in Impostazioni > Inventario > Sedi o aggiungila prima lì.",
   "erase.locked_period": "Non è stato cancellato nulla. {count} degli articoli selezionati hanno una cronologia datata al {lock_date} o prima, quando i libri sono bloccati. Sblocca il periodo in Settings > Accounting, cancellali, poi blocca di nuovo il periodo.",
   "demo.not_sample_fixture": "Non è stato cancellato nulla. {count} degli articoli selezionati contengono registrazioni che non sono dati di esempio, quindi non vengono rimossi come esempi. Apri ogni articolo e usa invece Delete, Archive o Write Off Stock.",
   "accounting.reversal_date_invalid": "Scegli una data di storno nel formato YYYY-MM-DD, uguale o successiva alla data della scrittura stornata ({entry_date}).",
