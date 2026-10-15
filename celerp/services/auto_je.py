@@ -4476,7 +4476,8 @@ async def create_for_mfg_movement(
 
 
 # Memo prefix per list-adjustment kind; the full memo is "<prefix> <list_id>".
-_ADJUST_MEMO = {"audit": "Inventory audit adjustment", "writeoff": "Inventory write-off"}
+_ADJUST_MEMO = {"audit": "Inventory audit adjustment", "writeoff": "Inventory write-off",
+                "writeoff_cost": "Inventory write-off cost correction"}
 
 
 def _list_adjustment_je_id(list_id: str, kind: str, cycle: int) -> str:
