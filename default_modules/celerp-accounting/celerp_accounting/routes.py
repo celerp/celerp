@@ -33,6 +33,7 @@ from celerp_accounting.chart_rules import (
     checked_account_code,
     checked_account_name,
     checked_account_type,
+    cash_accounts,
     checked_code_length,
     parent_problem,
     posting_targets,
@@ -4219,28 +4220,6 @@ async def _get_recon_and_line(
 # Cash flow statement
 # ---------------------------------------------------------------------------
 
-def _cash_codes(accounts, banks, settings: dict) -> set[str]:
-    """The accounts that hold cash: every bank account, and every account at any
-    depth under the company's current cash and cash equivalents header, the header
-    included. A former header is not cash once the header has moved. Cycle-safe."""
-    codes = {b.chart_account_code for b in banks}
-    children: dict[str, list[str]] = {}
-    for a in accounts:
-        if a.parent_code:
-            children.setdefault(a.parent_code, []).append(a.code)
-    header = role_map(settings).get(AccountRole.CASH_AND_EQUIVALENTS.value)
-    stack = [header] if header else []
-    seen: set[str] = set()
-    while stack:
-        code = stack.pop()
-        if code in seen:
-            continue
-        seen.add(code)
-        codes.add(code)
-        stack.extend(children.get(code, ()))
-    return codes
-
-
 def _cash_flow_category(account_map: dict[str, Account], code: str) -> str:
     """The account's own section, else the nearest parent account's, else operating.
     Cycle-safe."""
@@ -4313,7 +4292,7 @@ async def cash_flow(
     banks = (
         await session.execute(select(BankAccount).where(BankAccount.company_id == company_id))
     ).scalars().all()
-    cash_codes = _cash_codes(accounts, banks, await current_settings(session, company_id))
+    cash_codes = cash_accounts(accounts, banks, await current_settings(session, company_id))
 
     base = await _base_currency(session, company_id)
     posted = await _je_rows(session, company_id)

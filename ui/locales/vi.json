@@ -5122,6 +5122,7 @@
   "posting.problem.inactive": "{role} được đặt là tài khoản {code}, tài khoản này đang ngừng hoạt động.",
   "posting.problem.wrong_type": "{role} được đặt là tài khoản {code}, loại {type}; tài khoản phải thuộc loại {types}.",
   "posting.problem.header": "{role} được đặt là tài khoản {code}, một tài khoản tổng hợp; hãy chọn một tài khoản bên dưới nó.",
+  "posting.problem.not_inventory": "Không thể đặt {role} là tài khoản {code}: tài khoản này giữ tiền mặt hoặc đang được một tài khoản hạch toán khác sử dụng, nên không phải tài khoản hàng tồn kho. Hãy chọn một tài khoản hàng tồn kho.",
   "posting.refused": "{problems} Hãy chọn tài khoản trong Cài đặt > Kế toán > Tài khoản ghi sổ.",
   "posting.continued_account_unusable": "Số dư này được giữ trên tài khoản {code}, hiện không thể nhận số dư: {problem} Hãy cho phép dùng lại tài khoản đó trong hệ thống tài khoản.",
   "posting.account_keeps_balance": "Tài khoản {code} vẫn còn {balance} của {role}, số dư này tiếp tục được ghi trên tài khoản này cho đến khi tất toán, nên chưa thể tắt tài khoản.",

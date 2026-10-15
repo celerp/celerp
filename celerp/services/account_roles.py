@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import (
     CONSIGNOR_FIELD,
     CONSIGNOR_PAYABLE_FIELD,
+    INVENTORY_VALUE_ROLES,
     LOT_ACCOUNT_FIELD,
     POSTING_ACCOUNTS_PATH,
     POSTING_ROLES_SCHEMA,
@@ -461,6 +462,30 @@ def target_problems(roles: list[str], current: dict[str, str], accounts: dict[st
     return problems
 
 
+def not_stock(settings: dict | None, chart: list[dict]) -> set[str]:
+    """Accounts that hold something other than stock: cash, as the chart marks it (every
+    bank account and every account under the cash and cash equivalents header), and every
+    account a posting role outside inventory points at (receivable, deposit, input tax,
+    fixed assets and the rest). ``chart`` is the chart's rows (ChartAccess.list_accounts).
+    An inventory role is never set to one, and older stock is never counted from or
+    placed on one, even where an inventory role's history already names it."""
+    others = {code for role, code in role_map(settings).items()
+              if is_role(role) and AccountRole(role) not in INVENTORY_VALUE_ROLES}
+    return others | {row["code"] for row in chart if row.get("cash")}
+
+
+def stock_problem(role: str, code: str, settings: dict | None, chart: list[dict]) -> dict | None:
+    """The refusal for pointing inventory ``role`` at ``code`` when that account is not
+    stock (not_stock), or None."""
+    if AccountRole(role) not in INVENTORY_VALUE_ROLES or code not in not_stock(settings, chart):
+        return None
+    label = ROLE_LABELS[AccountRole(role)]
+    return refusal("posting.problem.not_inventory",
+                   f"{label} cannot be set to account {code}: that account holds cash or is used by another "
+                   "posting account, so it is not an inventory account. Choose an inventory account.",
+                   role=str(role), code=code)
+
+
 async def resolve_many(session: AsyncSession, company_id, roles) -> dict[str, str]:
     """The current target of every role one economic entry needs, from one read.
 
@@ -510,7 +535,7 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
     Existing balances stay where they were posted; the old account stays in the role's
     scope for historical readers."""
     from celerp.services.company_lock import lock_chart, locked_company
-    from celerp.services.journal_accounts import lock_accounts
+    from celerp.services.journal_accounts import chart_access, lock_accounts
 
     if not is_role(role):
         raise HTTPException(status_code=422, detail=unknown_role(role))
@@ -537,6 +562,9 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
         problem = target_problem(checked_role, new_map, accounts.get(new_map[checked_role]))
         if problem:
             raise HTTPException(status_code=422, detail=problem)
+    problem = stock_problem(role, code, settings, await chart_access().list_accounts(session, company_id))
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
     from celerp.services.company_settings import record_change
     record_change(settings, ROLES_KEY, user_id)
     company.settings = settings

@@ -5122,6 +5122,7 @@
   "posting.problem.inactive": "{role} è impostato sul conto {code}, che è inattivo.",
   "posting.problem.wrong_type": "{role} è impostato sul conto {code}, di tipo {type}; deve essere di tipo {types}.",
   "posting.problem.header": "{role} è impostato sul conto {code}, un conto di raggruppamento; scegliere un conto al suo interno.",
+  "posting.problem.not_inventory": "{role} non può essere impostato sul conto {code}: quel conto contiene liquidità o è usato da un altro conto di registrazione, quindi non è un conto di magazzino. Scegliere un conto di magazzino.",
   "posting.refused": "{problems} Scegliere il conto in Impostazioni > Contabilità > Conti di registrazione.",
   "posting.continued_account_unusable": "Questo saldo è tenuto sul conto {code}, che ora non può riceverlo: {problem} Rendere di nuovo utilizzabile quel conto nel piano dei conti.",
   "posting.account_keeps_balance": "Il conto {code} riporta ancora {balance} di {role}, che continua a muoversi su questo conto finché non viene azzerato, quindi non può ancora essere disattivato.",

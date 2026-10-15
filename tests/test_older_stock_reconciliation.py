@@ -36,6 +36,7 @@ from sqlalchemy import select
 from celerp.models.projections import Projection
 from celerp.services.auto_je import _emit_auto_posted_je
 from celerp.services.company_lock import locked_company
+from celerp.services.posting_readiness import older_stock_targets, panel
 from stock_books import assert_books_carry_stock
 from test_older_stock_placement import _accounts, _entries, _lines, _off_books, _older_company, _today, _written_down
 from test_posting_roles_lots import _new_inventory_account
@@ -192,6 +193,86 @@ async def test_stock_split_across_three_accounts_is_short_only_of_what_all_three
     (record,) = await _records(session, auth)
     assert (record["transferred"], record["recognized"], record["unresolved"]) == (50000.0, 20000.0, 0.0)
     assert record["classification"] == "opening_stock"
+    assert await _off_books(session, auth) == []
+
+
+async def _bank(client, auth) -> str:
+    r = await client.post("/accounting/bank-accounts", headers=auth["headers"], json={
+        "bank_name": "Second bank", "account_number": "0002", "bank_type": "checking", "currency": "USD"})
+    assert r.status_code == 200, r.text
+    return r.json()["chart_account_code"]
+
+
+async def test_cash_and_receivables_are_refused_as_inventory_and_never_counted_as_its_room(session, client, auth):
+    lots = await _older_company(session, client, auth, _LOTS)
+    await _split(session, auth, 60000.0)  # 1130-P 60,000, 1130-OB 40,000
+    await _posted(session, auth, "1111", "4100", 5000.0, "Cash sale")
+    await _posted(session, auth, "1120", "4100", 3000.0, "Credit sale")
+    await _settings(session, auth, lock_date=_today())
+    await _startup(session)  # posting accounts set; the stock waits on the lock
+    bank = await _bank(client, auth)
+
+    for role in ("inventory_purchased", "inventory_opening"):
+        for code in ("1111", bank, "1120"):
+            r = await client.put(f"/accounting/posting-accounts/{role}", headers=auth["headers"],
+                                 json={"code": code})
+            assert r.status_code == 422, (role, code, r.text)
+            detail = r.json()["detail"]
+            assert detail["message_key"] == "posting.problem.not_inventory", detail
+            assert code in detail["message"] and "—" not in detail["message"]
+    scopes = (await _settings(session, auth))["posting_role_scopes"]
+    assert scopes["inventory_purchased"] == ["1130-P"] and scopes["inventory_opening"] == ["1130-OB"]
+    offered = {r["role"]: {c["code"] for c in r["candidates"]} for r in (await panel(session, auth["company_id"]))["roles"]}
+    assert not {"1111", bank, "1120"} & (offered["inventory_purchased"] | offered["inventory_opening"])
+    assert {"1111", bank} <= offered["default_deposit"]
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {k: v for k, v in company.settings.items() if k != "lock_date"}
+    await session.commit()
+    await _posted(session, auth, bank, "4100", 2000.0, "Cash sale into the second bank")
+    await _startup(session)
+
+    assert set(await _accounts(session, auth, lots)) == {"1130-P"}
+    assert await _net(session, auth, "1111", bank, "1120", "1130-P", "1130-OB") == (
+        5000.0, 2000.0, 3000.0, 100000.0, 0.0)
+    (record,) = await _records(session, auth)
+    assert record["rooms"] == {"1130-P": 60000.0, "1130-OB": 40000.0}
+    assert (record["transferred"], record["recognized"], record["unresolved"]) == (40000.0, 0.0, 0.0)
+    assert await _off_books(session, auth) == []
+
+
+async def test_a_bank_or_receivable_already_in_the_inventory_history_is_ignored_and_keeps_its_balance(
+        session, client, auth):
+    """A company whose purchased inventory history already names a bank account and a
+    receivable (written before such a choice was refused) places its older stock on its
+    inventory accounts only."""
+    lots = await _older_company(session, client, auth, _LOTS)
+    await _split(session, auth, 60000.0)  # 1130-P 60,000, 1130-OB 40,000
+    await _posted(session, auth, "1111", "4100", 5000.0, "Cash sale")
+    await _posted(session, auth, "1120", "4100", 3000.0, "Credit sale")
+    await _settings(session, auth, lock_date=_today())
+    await _startup(session)  # posting accounts set; the stock waits on the lock
+    company = await locked_company(session, auth["company_id"])
+    scopes = dict(company.settings["posting_role_scopes"])
+    scopes["inventory_purchased"] = ["1111", "1120", *scopes["inventory_purchased"]]
+    company.settings = {k: v for k, v in {**company.settings, "posting_role_scopes": scopes}.items()
+                        if k != "lock_date"}
+    await session.commit()
+    await _startup(session)
+
+    assert set(await _accounts(session, auth, lots)) == {"1130-P"}
+    (entry,) = await _placement_entries(session, auth)
+    assert _lines(entry) == {"1130-P": (40000.0, 0.0), "1130-OB": (0.0, 40000.0)}
+    _no_equity([entry])
+    assert await _net(session, auth, "1111", "1120", "1130-P", "1130-OB") == (5000.0, 3000.0, 100000.0, 0.0)
+    targets = await older_stock_targets(session, auth["company_id"])
+    assert [c["code"] for c in targets["candidates"]] == ["1130-OB", "1130-P"]
+    r = await client.post("/accounting/older-stock/move", headers=auth["headers"], json={
+        "item_ids": lots[:1], "code": "1111", "key": "move-onto-cash"})
+    assert r.status_code == 422 and "never_inventory" in r.text
+    assert await _net(session, auth, "1111", "1130-P") == (5000.0, 100000.0)
+    (record,) = await _records(session, auth)
+    assert record["rooms"] == {"1130-P": 60000.0, "1130-OB": 40000.0}
+    assert (record["transferred"], record["recognized"], record["unresolved"]) == (40000.0, 0.0, 0.0)
     assert await _off_books(session, auth) == []
 
 

@@ -74,6 +74,7 @@ from celerp.services.account_roles import (
     continue_role,
     current_settings,
     lot_account,
+    not_stock,
     resolve_many,
     role_map,
     scope_codes,
@@ -102,6 +103,15 @@ OFF_BOOKS = frozenset({"deleted", "void", "sold", "fulfilled", "merged", "draft"
 RETIRED = frozenset({"archived", "expired"})
 
 _INVENTORY = (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
+
+
+async def _not_stock(session: AsyncSession, company_id, settings: dict) -> set[str]:
+    """The accounts older stock is never counted from or placed on (account_roles.not_stock),
+    though an inventory role's history may name one; none while accounting is off."""
+    from celerp.services.journal_accounts import chart_access
+
+    access = chart_access()
+    return not_stock(settings, await access.list_accounts(session, company_id)) if access else set()
 
 # Inventory types that are goods the company holds: finished stock and the components
 # it makes things from, both bought onto and used off the inventory accounts.
@@ -266,7 +276,8 @@ async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
     sold, unresolved = await recognized_unshipped(session, company_id), await unresolved_differences(session, company_id)
     findings = [{"kind": "unplaced_lot", "entity_id": r.entity_id, "sku": (r.state or {}).get("sku")}
                 for r in sorted(unrecorded(items), key=lambda r: r.entity_id)]
-    for code in sorted({code for role in _INVENTORY for code in scope_codes(settings, role)}):
+    excluded = await _not_stock(session, company_id, settings)
+    for code in sorted({code for role in _INVENTORY for code in scope_codes(settings, role)} - excluded):
         room = round_money(_room(entries, items, code, currency, sold, unresolved), currency)
         if room:
             books = round_money(_balance(entries, code), currency)
@@ -602,16 +613,17 @@ async def _place(session: AsyncSession, company_id) -> bool:
     retained = AccountRole.RETAINED_EARNINGS.value
     roles = [purchased, opening, retained]
     current = role_map(settings)
-    scope = list(dict.fromkeys(c for role in _INVENTORY for c in scope_list(settings, role)))
+    excluded = await _not_stock(session, company_id, settings)
+    scope = [c for c in dict.fromkeys(c for role in _INVENTORY for c in scope_list(settings, role)) if c not in excluded]
     accounts = await lock_accounts(session, company_id, {current[r] for r in roles if current.get(r)} | set(scope))
     if accounts is None:
         return False  # Accounting is not running: nothing can be booked or placed
     problems = target_problems(roles, current, accounts)
-    if purchased in problems:
+    if purchased in problems or current[purchased] in excluded:
         await _notify_unmapped(session, company_id, purchased)
         return False
     p, ob = current[purchased], current.get(opening)
-    usable = [p] + ([ob] if opening not in problems and ob != p else [])
+    usable = [p] + ([ob] if opening not in problems and ob not in excluded and ob != p else [])
     former = [c for c in scope if c not in (p, ob) and c in accounts]
     entries = await _posted_entries(session, company_id)
     opening_first = (await books_from_elsewhere(session, company_id, settings)
@@ -1083,7 +1095,8 @@ async def _open(session: AsyncSession, company_id, user_id) -> bool:
         return True
     if not await period_open(session, company_id, business_date_of(None, settings.get("timezone"))):
         raise _Locked
-    inventory = {code for role in _INVENTORY for code in scope_codes(settings, role)}
+    inventory = ({code for role in _INVENTORY for code in scope_codes(settings, role)}
+                 - await _not_stock(session, company_id, settings))
     if any(e.get("account") in inventory for _, e in await _posted_entries(session, company_id)):
         await _normalize(session, company_id, user_id)
         return True
@@ -1445,16 +1458,16 @@ async def _locked_lots(session: AsyncSession, company_id, item_ids) -> list[Proj
     return rows
 
 
-def _check_target(settings: dict, code: str, account: dict | None) -> None:
+def _check_target(settings: dict, code: str, account: dict | None, excluded: set[str]) -> None:
     """Older stock may be moved onto an account that has held inventory, or onto an asset
     account no other posting account uses (a new inventory account), as long as it can
-    take entries."""
+    take entries; never onto one that is not stock (``excluded``, _not_stock)."""
     if account is None:
         raise _refused(422, "posting.older_stock.not_in_chart", f"Account {code} is not in the chart of accounts.",
                        code=code)
     inventory = {c for role in _INVENTORY for c in scope_codes(settings, role)}
     others = {c for role, c in role_map(settings).items() if role not in _INVENTORY}
-    if code not in inventory and (code in others or account.get("account_type") != "asset"):
+    if code in excluded or (code not in inventory and (code in others or account.get("account_type") != "asset")):
         raise _refused(422, "posting.older_stock.never_inventory",
                        f"Account {code} is not an inventory account, so stock cannot be moved onto it.", code=code)
     if not account.get("is_active", True) or account.get("has_children"):
@@ -1558,7 +1571,7 @@ async def move_lot_accounts(session: AsyncSession, company_id, item_ids: list[st
     accounts = await lock_accounts(session, company_id, {code})
     if accounts is None:
         raise HTTPException(status_code=409, detail=needs_accounting())
-    _check_target(settings, code, accounts.get(code))
+    _check_target(settings, code, accounts.get(code), await _not_stock(session, company_id, settings))
     placed = set((await session.execute(select(LedgerEntry.entity_id).where(
         LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
         LedgerEntry.entity_id.in_([r.entity_id for r in rows]),
