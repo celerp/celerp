@@ -1616,28 +1616,39 @@ async def move_lot_accounts(session: AsyncSession, company_id, item_ids: list[st
     return await _move_lots(session, company_id, chosen, _request_id(item_ids, code), code, key, actor_id)
 
 
-async def move_matching_lots(session: AsyncSession, company_id, account: str | None, q: str | None, count: int,
-                             code: str, key: str | None, actor_id) -> dict:
+def _matching_summary(lots: list[dict]) -> dict:
+    """How many lots match, their value, and the selection: a fingerprint of each lot and
+    its version with the total value, which changes when any lot leaves, joins or changes."""
+    value = round(sum(lot["value"] for lot in lots), 2)
+    selection = _hash("\n".join([*sorted(f"{lot['item_id']}:{lot['version']}" for lot in lots), f"{value:.2f}"]))
+    return {"count": len(lots), "value": value, "selection": selection}
+
+
+async def move_matching_lots(session: AsyncSession, company_id, account: str | None, q: str | None,
+                             selection: str, code: str, key: str | None, actor_id) -> dict:
     """Move every older lot the Older stock list shows for ``account`` and ``q``
     (older_stock_lots) onto inventory account ``code`` as one move (_move_lots), however
-    many pages it spans. ``count`` is how many the user saw matching: when a different
-    number matches now, refused (409) so nothing moves that was not confirmed. Refused,
-    writing nothing: none shown or too many."""
-    if count <= 0:
+    many pages it spans. ``selection`` is the fingerprint of the lots the user saw
+    matching (_matching_summary): when the lots matching under the company lock differ,
+    refused (409) so nothing moves that was not confirmed. Refused, writing nothing: none
+    shown or too many."""
+    selection = (selection or "").strip()
+    if not selection:
         raise _refused(422, "older_stock.move.nothing_selected", "Select the lots to move.")
-    if count > MAX_MOVE:
-        raise _refused(422, "older_stock.move.too_many", f"Move at most {MAX_MOVE} lots at a time.", limit=MAX_MOVE)
 
     async def matching() -> list[str]:
         settings = await current_settings(session, company_id)
-        lots = [lot["item_id"] for lot in await older_stock_lots(
-            session, company_id, settings.get("currency", "USD"), account, q)]
-        if len(lots) != count:
+        lots = await older_stock_lots(session, company_id, settings.get("currency", "USD"), account, q)
+        if len(lots) > MAX_MOVE:
+            raise _refused(422, "older_stock.move.too_many", f"Move at most {MAX_MOVE} lots at a time.",
+                           limit=MAX_MOVE)
+        now = _matching_summary(lots)
+        if now["selection"] != selection:
             raise _refused(409, "older_stock.move.changed",
-                           f"{len(lots)} lots match now, not the {count} shown, so nothing was moved. Look at the "
-                           "list again and confirm.", count=len(lots), shown=count)
-        return lots
-    request = _hash(":".join(["matching", code, account or "", (q or "").strip().lower(), str(count)]))
+                           f"The matching lots changed since the list was shown, so nothing was moved. "
+                           f"{now['count']} lots match now. Check them and confirm again.", count=now["count"])
+        return [lot["item_id"] for lot in lots]
+    request = _hash(":".join(["matching", code, account or "", (q or "").strip().lower(), selection]))
     return await _move_lots(session, company_id, matching, request, code, key, actor_id)
 
 
@@ -1883,7 +1894,7 @@ def _placement_records(company_id):
 async def older_stock_lots(session: AsyncSession, company_id, currency: str, account: str | None = None,
                            q: str | None = None) -> list[dict]:
     """The lots placed automatically still in stock, newest placement first, each with
-    its SKU, name, account, booked value and placement; filtered (_matching) to
+    its SKU, name, account, booked value, placement and version; filtered (_matching) to
     ``account`` and to ``q`` in their SKU or name."""
     recorded = (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.metadata_["placement"].as_string())
                                       .where(LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
@@ -1895,7 +1906,8 @@ async def older_stock_lots(session: AsyncSession, company_id, currency: str, acc
     return _matching([{"item_id": item_id, "sku": rows[item_id].state.get("sku") or "",
                        "name": rows[item_id].state.get("name") or "",
                        "account": rows[item_id].state.get(LOT_ACCOUNT_FIELD),
-                       "value": float(booked_value(rows[item_id], currency)), "placement": pid}
+                       "value": float(booked_value(rows[item_id], currency)), "placement": pid,
+                       "version": rows[item_id].version}
                       for item_id, pid in recorded if item_id in rows and in_stock(rows[item_id].state)],
                      account, q)
 
@@ -2012,7 +2024,7 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
              "corrections": await _corrections_page(session, company_id, offsets.get("corrections", 0), limit)}
     return {**{name: page for name, (page, _) in lists.items()},
             "totals": {name: total for name, (_, total) in lists.items()}, "limit": limit,
-            "matching": {"count": len(lots), "value": round(sum(lot["value"] for lot in lots), 2)},
+            "matching": _matching_summary(lots),
             "summary": sorted(summary.values(), key=lambda r: r["account"]),
             "accounts": sorted({lot["account"] for lot in held if lot["account"]}),
             "failed": await failed_placement(session, company_id),

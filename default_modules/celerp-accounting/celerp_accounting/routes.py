@@ -4469,7 +4469,7 @@ class OlderStockMoveIn(BaseModel):
 class OlderStockMoveAllIn(BaseModel):
     account: str | None = None
     q: str | None = None
-    count: int = 0
+    selection: str = Field(default="", max_length=64)
     code: str = ""
     key: str | None = None
 
@@ -4527,10 +4527,11 @@ async def move_all_older_stock(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Move every older lot matching the Older stock filters (``account``, ``q``) onto
-    another inventory account as one move, ``count`` being how many the user confirmed."""
+    another inventory account as one move, ``selection`` being the fingerprint of the lots
+    the user confirmed."""
     from celerp.services.lot_origin import move_matching_lots, older_stock_view
 
-    result = await move_matching_lots(session, company_id, payload.account, payload.q, payload.count, payload.code,
+    result = await move_matching_lots(session, company_id, payload.account, payload.q, payload.selection, payload.code,
                                       payload.key, user.id)
     await session.commit()
     return {**await older_stock_view(session, company_id), "result": result}

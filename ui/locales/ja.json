@@ -4296,7 +4296,7 @@
   "older_stock.move.not_placed": "{sku} は自動で割り当てられていないか在庫がもうないため、ここでは移動できません。",
   "older_stock.move.nothing_selected": "移動するロットを選択してください。",
   "older_stock.move.too_many": "一度に移動できるのは {limit} ロットまでです。",
-  "older_stock.move.changed": "現在一致するのは {count} 件で、表示された {shown} 件ではないため、何も移動していません。一覧を確認してから再度確定してください。",
+  "older_stock.move.changed": "一覧を表示した後に該当するロットが変わったため、何も移動していません。現在 {count} 件のロットが該当します。確認してからもう一度確定してください。",
   "older_stock.move_to": "移動先の棚卸資産勘定",
   "older_stock.moved": "{n} ロットを {code} へ移動しました。",
   "older_stock.move_all": "一致するロット {n} 件をすべて移動（金額 {value}）",

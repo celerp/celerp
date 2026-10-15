@@ -4296,7 +4296,7 @@
   "older_stock.move.not_placed": "{sku} tidak ditempatkan secara otomatis atau sudah tidak ada di stok, jadi tidak dapat dipindahkan di sini.",
   "older_stock.move.nothing_selected": "Pilih lot yang akan dipindahkan.",
   "older_stock.move.too_many": "Pindahkan paling banyak {limit} lot sekaligus.",
-  "older_stock.move.changed": "Sekarang {count} lot cocok, bukan {shown} yang ditampilkan, jadi tidak ada yang dipindahkan. Lihat daftar lagi dan konfirmasi.",
+  "older_stock.move.changed": "Lot yang cocok berubah sejak daftar ditampilkan, jadi tidak ada yang dipindahkan. Sekarang {count} lot cocok. Periksa lalu konfirmasi lagi.",
   "older_stock.move_to": "Akun persediaan tujuan",
   "older_stock.moved": "{n} lot dipindahkan ke {code}.",
   "older_stock.move_all": "Pindahkan semua {n} lot yang cocok (nilai {value})",

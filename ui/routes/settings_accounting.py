@@ -417,8 +417,8 @@ def _move_target(view: dict, **attrs) -> FT:
 
 def _move_all_form(view: dict, filters: dict) -> FT | None:
     """Move every lot matching the filters, on every page, as one move: the button states
-    how many and their value, and asks before moving. The count rides along so the server
-    refuses if a different number matches by then."""
+    how many and their value, and asks before moving. The selection's fingerprint rides
+    along so the server refuses if the lots matching differ by then."""
     matching = view.get("matching") or {}
     n = int(matching.get("count") or 0)
     if not n:
@@ -426,7 +426,7 @@ def _move_all_form(view: dict, filters: dict) -> FT | None:
     value = fmt_money(matching.get("value") or 0, view.get("currency"))
     return Form(
         _move_target(view),
-        Input(type="hidden", name="count", value=str(n)),
+        Input(type="hidden", name="selection", value=matching.get("selection") or ""),
         operation_key_input(),
         Button(t("older_stock.move_all", n=n, value=value), type="submit", cls="btn btn--sm btn--secondary"),
         id="older-stock-move-all", cls="filter-bar",
@@ -1411,11 +1411,10 @@ def setup_routes(app):
         """Move every lot matching the filters the page shows (in the URL) as one move."""
         form = await request.form()
         filters = _older_stock_filters_of(request)
-        count = str(form.get("count", "")).strip()
 
         async def call(token):
             view = await api.move_all_older_stock(token, {k: filters[k] for k in ("account", "q") if k in filters},
-                                                  int(count) if count.isdigit() else 0,
+                                                  str(form.get("selection", "")).strip(),
                                                   str(form.get("code", "")).strip(), required_operation_key(form))
             done = view.pop("result")
             return {**view, "message": t("older_stock.moved", n=done["moved"], code=done["code"])}

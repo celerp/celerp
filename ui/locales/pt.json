@@ -4296,7 +4296,7 @@
   "older_stock.move.not_placed": "{sku} não foi atribuído automaticamente ou não está mais em estoque, então não pode ser transferido aqui.",
   "older_stock.move.nothing_selected": "Selecione os lotes a transferir.",
   "older_stock.move.too_many": "Transfira no máximo {limit} lotes por vez.",
-  "older_stock.move.changed": "Agora {count} lotes correspondem, não os {shown} exibidos, então nada foi movido. Veja a lista novamente e confirme.",
+  "older_stock.move.changed": "Os lotes correspondentes mudaram desde que a lista foi exibida, então nada foi movido. Agora {count} lotes correspondem. Verifique-os e confirme novamente.",
   "older_stock.move_to": "Conta de estoque de destino",
   "older_stock.moved": "{n} lotes transferidos para {code}.",
   "older_stock.move_all": "Mover todos os {n} lotes correspondentes (valor {value})",

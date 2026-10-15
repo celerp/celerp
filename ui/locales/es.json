@@ -4296,7 +4296,7 @@
   "older_stock.move.not_placed": "{sku} no se asignó automáticamente o ya no está en existencia, así que no se puede traspasar aquí.",
   "older_stock.move.nothing_selected": "Seleccione los lotes que desea traspasar.",
   "older_stock.move.too_many": "Traspase como máximo {limit} lotes a la vez.",
-  "older_stock.move.changed": "Ahora coinciden {count} lotes, no los {shown} mostrados, así que no se movió nada. Revise la lista y confirme.",
+  "older_stock.move.changed": "Los lotes que coinciden cambiaron desde que se mostró la lista, así que no se movió nada. Ahora coinciden {count} lotes. Revísalos y vuelve a confirmar.",
   "older_stock.move_to": "Cuenta de inventario de destino",
   "older_stock.moved": "{n} lotes traspasados a {code}.",
   "older_stock.move_all": "Mover los {n} lotes coincidentes (valor {value})",

@@ -4296,7 +4296,7 @@
   "older_stock.move.not_placed": "{sku} was not placed automatically or is no longer in stock, so it cannot be moved here.",
   "older_stock.move.nothing_selected": "Select the lots to move.",
   "older_stock.move.too_many": "Move at most {limit} lots at a time.",
-  "older_stock.move.changed": "{count} lots match now, not the {shown} shown, so nothing was moved. Look at the list again and confirm.",
+  "older_stock.move.changed": "The matching lots changed since the list was shown, so nothing was moved. {count} lots match now. Check them and confirm again.",
   "older_stock.move_to": "Inventory account to move to",
   "older_stock.moved": "Moved {n} lots to {code}.",
   "older_stock.move_all": "Move all {n} matching lots (value {value})",

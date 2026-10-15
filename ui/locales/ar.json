@@ -4296,7 +4296,7 @@
   "older_stock.move.not_placed": "لم يوضع {sku} تلقائيًا أو لم يعد في المخزون، لذا لا يمكن نقله هنا.",
   "older_stock.move.nothing_selected": "حدد الدفعات المراد نقلها.",
   "older_stock.move.too_many": "انقل {limit} دفعة كحد أقصى في المرة الواحدة.",
-  "older_stock.move.changed": "يطابق الآن {count} دفعة وليس {shown} كما عُرض، لذا لم يُنقل شيء. راجع القائمة مرة أخرى ثم أكّد.",
+  "older_stock.move.changed": "تغيرت الدفعات المطابقة منذ عرض القائمة، لذلك لم يتم نقل أي شيء. تتطابق الآن {count} دفعة. راجعها وأكد مرة أخرى.",
   "older_stock.move_to": "حساب المخزون المراد النقل إليه",
   "older_stock.moved": "تم نقل {n} دفعات إلى {code}.",
   "older_stock.move_all": "نقل جميع الدفعات المطابقة وعددها {n} (القيمة {value})",

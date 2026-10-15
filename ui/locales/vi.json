@@ -4296,7 +4296,7 @@
   "older_stock.move.not_placed": "{sku} không được đưa vào tự động hoặc không còn trong kho nên không thể chuyển tại đây.",
   "older_stock.move.nothing_selected": "Chọn các lô cần chuyển.",
   "older_stock.move.too_many": "Mỗi lần chuyển tối đa {limit} lô.",
-  "older_stock.move.changed": "Hiện có {count} lô phù hợp, không phải {shown} lô đã hiển thị, nên chưa chuyển gì. Hãy xem lại danh sách và xác nhận.",
+  "older_stock.move.changed": "Các lô phù hợp đã thay đổi kể từ khi danh sách được hiển thị, nên không có gì được chuyển. Hiện có {count} lô phù hợp. Hãy kiểm tra và xác nhận lại.",
   "older_stock.move_to": "Tài khoản hàng tồn kho đích",
   "older_stock.moved": "Đã chuyển {n} lô sang {code}.",
   "older_stock.move_all": "Chuyển tất cả {n} lô phù hợp (giá trị {value})",

@@ -798,9 +798,9 @@ async def test_undo_puts_lots_back_once_and_refuses_after_a_later_move(session, 
 # --- Moving every matching lot ------------------------------------------------------------
 
 
-async def _move_all(client, auth, count: int, code: str, key: str | None = None, **filters):
+async def _move_all(client, auth, selection: str, code: str, key: str | None = None, **filters):
     return await client.post("/accounting/older-stock/move-all", headers=auth["headers"], json={
-        **filters, "count": count, "code": code, "key": key or uuid.uuid4().hex})
+        **filters, "selection": selection, "code": code, "key": key or uuid.uuid4().hex})
 
 
 async def test_the_move_targets_listed_are_exactly_the_accounts_a_move_accepts(session, client, auth):
@@ -835,11 +835,13 @@ async def test_moving_all_matching_lots_moves_every_page_as_one_undoable_move(se
     await _startup(session)
     view = await _view(client, auth, q="OLD-000")
     assert len(view["lots"]) == 50
-    assert view["matching"] == {"count": 100, "value": 100.0}
-    assert (await _view(client, auth))["matching"] == {"count": 120, "value": 140.0}
+    shown = view["matching"]
+    assert (shown["count"], shown["value"]) == (100, 100.0)
+    every = (await _view(client, auth))["matching"]
+    assert (every["count"], every["value"]) == (120, 140.0) and every["selection"] != shown["selection"]
 
     key = uuid.uuid4().hex
-    r = await _move_all(client, auth, 100, "1130-P", key=key, q="OLD-000")
+    r = await _move_all(client, auth, shown["selection"], "1130-P", key=key, q="OLD-000")
     assert r.status_code == 200, r.text
     result = r.json()["result"]
     assert (result["moved"], result["value"], result["code"]) == (100, 100.0, "1130-P")
@@ -849,7 +851,7 @@ async def test_moving_all_matching_lots_moves_every_page_as_one_undoable_move(se
 
     # Sent again, the same move is answered and nothing more moves.
     events = await _events(session, auth)
-    again = await _move_all(client, auth, 100, "1130-P", key=key, q="OLD-000")
+    again = await _move_all(client, auth, shown["selection"], "1130-P", key=key, q="OLD-000")
     assert again.status_code == 200, again.text
     assert again.json()["result"]["move_id"] == result["move_id"]
     assert await _events(session, auth) == events
@@ -864,15 +866,17 @@ async def test_moving_all_matching_lots_moves_every_page_as_one_undoable_move(se
 async def test_moving_all_matching_lots_is_refused_when_the_lots_matching_changed(session, client, auth):
     lots = await _older_company(session, client, auth, [1.0] * 3)
     await _startup(session)
+    selection = (await _view(client, auth))["matching"]["selection"]
     events = await _events(session, auth)
-    detail = _refused(await _move_all(client, auth, 2, "1130-P", account="1130-OB"), 409,
+    detail = _refused(await _move_all(client, auth, "0" * 64, "1130-P", account="1130-OB"), 409,
                       "older_stock.move.changed")
-    assert detail["params"] == {"count": 3, "shown": 2}
-    _refused(await _move_all(client, auth, 0, "1130-P", q="nothing"), 422, "older_stock.move.nothing_selected")
-    _refused(await _move_all(client, auth, 10001, "1130-P"), 422, "older_stock.move.too_many")
-    _refused(await _move_all(client, auth, 3, "1120"), 422, "posting.older_stock.never_inventory")
+    assert detail["params"] == {"count": 3}
+    _refused(await _move_all(client, auth, "", "1130-P", q="nothing"), 422, "older_stock.move.nothing_selected")
+    with patch("celerp.services.lot_origin.MAX_MOVE", 2):
+        _refused(await _move_all(client, auth, selection, "1130-P"), 422, "older_stock.move.too_many")
+    _refused(await _move_all(client, auth, selection, "1120"), 422, "posting.older_stock.never_inventory")
     r = await client.post("/accounting/older-stock/move-all", headers=auth["headers"],
-                          json={"count": 3, "code": "1130-P"})
+                          json={"selection": selection, "code": "1130-P"})
     _refused(r, 422, "older_stock.move.no_key")
     assert await _events(session, auth) == events
     assert await _accounts(session, auth, lots) == ["1130-OB"] * 3
@@ -917,6 +921,39 @@ async def test_the_older_stock_view_reads_one_page_in_a_fixed_number_of_queries(
     assert sorted(many) == sorted(few), (few, many)
 
 
+async def _renamed(client, auth, item_id: str, old: str, new: str) -> None:
+    r = await client.patch(f"/items/{item_id}", headers=auth["headers"],
+                           json={"fields_changed": {"name": {"old": old, "new": new}}})
+    assert r.status_code == 200, r.text
+
+
+async def test_moving_all_is_refused_when_one_lot_left_the_filter_and_another_joined(session, client, auth):
+    """The same count and value matching is not the same lots: the move confirmed for
+    two lots is refused once one of them leaves the filter and another joins, nothing
+    moves, and the list shown again can be confirmed."""
+    lots = await _older_company(session, client, auth, [1.0] * 3)
+    await _startup(session)
+    for lot in lots[:2]:
+        await _renamed(client, auth, lot, "Older lot", "Shelf A")
+    shown = (await _view(client, auth, q="shelf a"))["matching"]
+    assert (shown["count"], shown["value"]) == (2, 2.0)
+
+    await _renamed(client, auth, lots[1], "Shelf A", "Older lot")
+    await _renamed(client, auth, lots[2], "Older lot", "Shelf A")
+    events = await _events(session, auth)
+    detail = _refused(await _move_all(client, auth, shown["selection"], "1130-P", q="shelf a"), 409,
+                      "older_stock.move.changed")
+    assert detail["params"] == {"count": 2}
+    assert await _events(session, auth) == events
+    assert await _accounts(session, auth, lots) == ["1130-OB"] * 3
+
+    now = (await _view(client, auth, q="shelf a"))["matching"]
+    assert (now["count"], now["value"]) == (2, 2.0) and now["selection"] != shown["selection"]
+    r = await _move_all(client, auth, now["selection"], "1130-P", q="shelf a")
+    assert r.status_code == 200, r.text
+    assert await _accounts(session, auth, lots) == ["1130-P", "1130-OB", "1130-P"]
+
+
 async def test_older_stock_routes_need_manage_accounting(session, client, auth):
     from celerp.models.accounting import UserCompany
     from celerp.models.company import User
@@ -932,7 +969,7 @@ async def test_older_stock_routes_need_manage_accounting(session, client, auth):
     for method, path, body in (("get", "/accounting/older-stock", None),
                                ("post", "/accounting/older-stock/move", {"item_ids": ["x"], "code": "1130-P",
                                                                          "key": "k"}),
-                               ("post", "/accounting/older-stock/move-all", {"count": 1, "code": "1130-P",
+                               ("post", "/accounting/older-stock/move-all", {"selection": "s", "code": "1130-P",
                                                                              "key": "k"}),
                                ("post", "/accounting/older-stock/moves/m/undo", None),
                                ("post", "/accounting/older-stock/retry", None),
@@ -960,10 +997,10 @@ _VIEW = {
     "accounts": ["1130-OB"],
     "currency": "USD",
     "totals": {"lots": 120},
-    "matching": {"count": 120, "value": 4321.5},
+    "matching": {"count": 120, "value": 4321.5, "selection": "sel-120"},
 }
 _EMPTY = {**_VIEW, "lots": [], "placements": [], "moves": [], "accounts": [], "totals": {},
-          "matching": {"count": 0, "value": 0.0}}
+          "matching": {"count": 0, "value": 0.0, "selection": "sel-0"}}
 
 
 @pytest.fixture
@@ -1079,7 +1116,7 @@ async def test_moving_all_matching_lots_states_count_and_value_and_asks_first(ui
     assert "Move all 120 matching lots (value $4,321.50)" in form
     assert "hx-confirm" in form and "You can undo it from Moves." in form
     assert "/settings/accounting/older-stock/move-all?q=OLD" in body
-    assert 'name="count" value="120"' in form and 'name="idempotency_key"' in form
+    assert 'name="selection" value="sel-120"' in form and 'name="idempotency_key"' in form
     body, _ = await _tab(ui_client, _EMPTY)
     assert 'id="older-stock-move-all"' not in body
 
@@ -1088,10 +1125,29 @@ async def test_moving_all_matching_lots_states_count_and_value_and_asks_first(ui
     with patch("ui.api_client.move_all_older_stock", new=move), \
          patch("ui.api_client.get_older_stock", new=AsyncMock(return_value=_VIEW)):
         r = await ui_client.post("/settings/accounting/older-stock/move-all?q=OLD", cookies=_cookies(),
-                                 data={"count": "120", "code": "1130-P", "idempotency_key": "op-3"})
+                                 data={"selection": "sel-120", "code": "1130-P", "idempotency_key": "op-3"})
     assert r.status_code == 200
-    assert move.await_args.args[1:] == ({"q": "OLD"}, 120, "1130-P", "op-3")
+    assert move.await_args.args[1:] == ({"q": "OLD"}, "sel-120", "1130-P", "op-3")
     assert "Moved 120 lots to 1130-P." in r.content.decode()
+
+
+async def test_a_changed_selection_shows_the_new_matching_lots_to_confirm(ui_client):
+    """Refused because the lots matching changed, the card says so and offers the move
+    again for the lots matching now, carrying their selection."""
+    from ui.api_client import APIError
+
+    detail = {"message": "The matching lots changed since the list was shown, so nothing was moved. "
+                         "121 lots match now. Check them and confirm again.",
+              "message_key": "older_stock.move.changed", "params": {"count": 121}}
+    now = {**_VIEW, "matching": {"count": 121, "value": 4400.0, "selection": "sel-121"}}
+    with patch("ui.api_client.move_all_older_stock", new=AsyncMock(side_effect=APIError(409, "changed", detail))), \
+         patch("ui.api_client.get_older_stock", new=AsyncMock(return_value=now)):
+        r = await ui_client.post("/settings/accounting/older-stock/move-all?q=OLD", cookies=_cookies(),
+                                 data={"selection": "sel-120", "code": "1130-P", "idempotency_key": "op-4"})
+    body = r.content.decode()
+    assert r.status_code == 200 and "121 lots match now" in body
+    (form,) = [f.split("</form>")[0] for f in body.split("<form") if 'id="older-stock-move-all"' in f]
+    assert "Move all 121 matching lots (value $4,400.00)" in form and 'name="selection" value="sel-121"' in form
 
 
 def test_older_stock_notices_translate():

@@ -4296,7 +4296,7 @@
   "older_stock.move.not_placed": "{sku} non è stato assegnato automaticamente o non è più in magazzino, quindi non si può spostare qui.",
   "older_stock.move.nothing_selected": "Seleziona i lotti da spostare.",
   "older_stock.move.too_many": "Sposta al massimo {limit} lotti alla volta.",
-  "older_stock.move.changed": "Ora corrispondono {count} lotti, non i {shown} mostrati, quindi non è stato spostato nulla. Rivedi l'elenco e conferma.",
+  "older_stock.move.changed": "I lotti corrispondenti sono cambiati da quando è stato mostrato l'elenco, quindi non è stato spostato nulla. Ora corrispondono {count} lotti. Controllali e conferma di nuovo.",
   "older_stock.move_to": "Conto di magazzino di destinazione",
   "older_stock.moved": "{n} lotti spostati su {code}.",
   "older_stock.move_all": "Sposta tutti i {n} lotti corrispondenti (valore {value})",
