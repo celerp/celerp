@@ -845,6 +845,15 @@ async def place_after_lock_change(session: AsyncSession, company_id) -> bool:
 # moving its cost (account_roles.LotOriginError) and moving it between accounts
 # (move_lot_accounts).
 PLACEABLE_REFUSALS = frozenset({"posting.older_stock.no_account", "older_stock.move.not_placed"})
+RERUN_AFTER_PLACING = "rerun_after_placing"
+
+
+def rerun_after_placing(endpoint):
+    """Mark a writer that OlderStockMiddleware may run again once its stock is placed: one
+    whose every effect up to such a refusal is a database write, which the refusal rolls
+    back. A writer that may send a notice, write a file or call out first is not marked."""
+    setattr(endpoint, RERUN_AFTER_PLACING, True)
+    return endpoint
 
 
 async def _unplaced(session: AsyncSession, company_id) -> list[Projection]:

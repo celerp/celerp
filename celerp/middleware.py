@@ -10,7 +10,7 @@ from contextvars import ContextVar
 from typing import Callable
 
 from sqlalchemy import event
-from sqlalchemy.orm import Session
+from sqlalchemy.engine import Engine
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -334,10 +334,11 @@ class OlderStockMiddleware:
     transaction of its own, and once none waits the request runs again, once, and its
     answer is the one returned. Placing that cannot happen (a posting account or a
     period lock holds it back, each with its own notice) returns the refusal as it was.
-    A request that committed any write before it was refused (_COMMITTED) is never run
-    again, so nothing it wrote is written twice; the stock is still placed and the
-    refusal returned. The company is the one the request was authorised for
-    (auth.get_auth_context)."""
+    Only a writer marked lot_origin.rerun_after_placing runs again, as nothing it does
+    before such a refusal reaches outside the database; and not when it committed any
+    write before it was refused (_COMMITTED), so nothing it wrote is written twice. Any
+    other has its stock placed and its refusal returned. The company is the one the
+    request was authorised for (auth.get_auth_context)."""
 
     _REFUSED = (409, 422)
 
@@ -364,7 +365,8 @@ class OlderStockMiddleware:
         if held is None:
             return
         company_id = (scope.get("state") or {}).get("company_id")
-        if company_id is not None and _placeable(held) and await _placed(company_id) and not committed:
+        if (company_id is not None and _placeable(held) and await _placed(company_id) and not committed
+                and _reruns(scope)):
             await self._run(scope, body, receive, send, hold=False)
             return
         for message in held:
@@ -394,30 +396,44 @@ class OlderStockMiddleware:
         return held or None
 
 
-# Set while OlderStockMiddleware runs a request the first time: a commit that wrote
-# anything appends to it, so the request is known to have kept a write. A savepoint
-# released inside the request is not a commit; only the outermost transaction counts.
+# Set while OlderStockMiddleware runs a request the first time: a commit on any
+# connection that ran a statement other than a read appends to it, so the request is
+# known to have kept a write, whether through a session's objects, a text or Core
+# statement, or a connection of its own. A released savepoint is not a commit; a
+# write inside one rolled back still counts, which only ever keeps a request from
+# running again.
 _COMMITTED: ContextVar[list | None] = ContextVar("older_stock_committed", default=None)
+_WROTE = "older_stock_wrote"
+_READS = frozenset({"SELECT", "SHOW", "SAVEPOINT", "RELEASE", "ROLLBACK", "BEGIN", "COMMIT", "SET"})
 
 
-@event.listens_for(Session, "after_flush")
-def _flushed(session: Session, _context) -> None:
-    if _COMMITTED.get() is not None and (session.new or session.dirty or session.deleted):
-        session.info["older_stock_wrote"] = True
+@event.listens_for(Engine, "begin")
+def _began(conn) -> None:
+    conn.info.pop(_WROTE, None)
 
 
-@event.listens_for(Session, "after_commit")
-def _committed(session: Session) -> None:
-    if session.in_nested_transaction():
-        return
-    if session.info.pop("older_stock_wrote", False) and (committed := _COMMITTED.get()) is not None:
+@event.listens_for(Engine, "after_cursor_execute")
+def _executed(conn, _cursor, statement: str, _parameters, _context, _executemany) -> None:
+    if _COMMITTED.get() is not None and (statement.split(None, 1) or ["SELECT"])[0].upper() not in _READS:
+        conn.info[_WROTE] = True
+
+
+@event.listens_for(Engine, "commit")
+def _committed(conn) -> None:
+    if conn.info.pop(_WROTE, False) and (committed := _COMMITTED.get()) is not None:
         committed.append(True)
 
 
-@event.listens_for(Session, "after_transaction_end")
-def _ended(session: Session, transaction) -> None:
-    if transaction.parent is None:  # committed (counted above), rolled back or closed
-        session.info.pop("older_stock_wrote", None)
+@event.listens_for(Engine, "rollback")
+def _rolled_back(conn) -> None:
+    conn.info.pop(_WROTE, None)
+
+
+def _reruns(scope: Scope) -> bool:
+    """Whether the request's writer may run again (lot_origin.rerun_after_placing)."""
+    from celerp.services.lot_origin import RERUN_AFTER_PLACING
+
+    return getattr(scope.get("endpoint"), RERUN_AFTER_PLACING, False)
 
 
 def _placeable(held: list[dict]) -> bool:

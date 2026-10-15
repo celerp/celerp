@@ -43,7 +43,7 @@ from celerp.services.account_roles import current_settings, is_consigned, lineag
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.goods_cost import negative_cost_error
 from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
-from celerp.services.lot_origin import in_stock, is_stock_type
+from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_placing
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.payments import recorded_unmatched, return_unmatched
 from celerp.tax_regimes import default_tax, sales_taxes
@@ -2525,6 +2525,7 @@ async def finalize_document(
 
 
 @router.post("/{entity_id}/finalize")
+@rerun_after_placing
 async def finalize_doc(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),

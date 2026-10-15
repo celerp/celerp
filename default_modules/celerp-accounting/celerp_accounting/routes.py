@@ -45,6 +45,7 @@ from celerp_accounting.models import Account, BankAccount, BankStatementLine, Re
 from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, refusal
 from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
+from celerp.services.lot_origin import rerun_after_placing
 from celerp.services.attachments import (
     company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
 )
@@ -4501,6 +4502,7 @@ async def get_older_stock(
 
 
 @router.post("/older-stock/move")
+@rerun_after_placing
 async def move_older_stock(
     payload: OlderStockMoveIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
