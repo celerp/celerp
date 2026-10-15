@@ -58,6 +58,8 @@ _PUBLIC_API_PREFIXES = (
     "/company-peers/verify",
     "/company-peers/contacts",
     "/company-peers/products",
+    "/company-peers/documents",
+    "/company-peers/attachments",
 )
 
 

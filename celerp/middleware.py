@@ -101,6 +101,9 @@ class MaxBodySizeMiddleware:
         )):
             from celerp.services.company_backup import MAX_UPLOAD_BYTES
             limit = MAX_UPLOAD_BYTES + 256 * 1024  # account for multipart framing
+        elif scope.get("path") == "/company-peers/attachments":
+            from celerp.services.attachments import MAX_FILE_BYTES
+            limit = MAX_FILE_BYTES + 256 * 1024
 
         headers = dict(scope.get("headers", []))
         cl = headers.get(b"content-length")

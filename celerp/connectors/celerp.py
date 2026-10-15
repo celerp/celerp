@@ -36,7 +36,7 @@ def _target_url(ctx: ConnectorContext, entity: str = "contacts") -> str:
         valid = False
     if not valid:
         raise ValueError("The receiving Celerp address is invalid")
-    if entity not in ("contacts", "products"):
+    if entity not in ("contacts", "products", "documents", "attachments"):
         raise ValueError("Unsupported peer entity")
     return raw.rstrip("/") + "/company-peers/" + entity
 
@@ -65,6 +65,54 @@ async def _read_products(company_id: uuid.UUID, after: str, since=None) -> list[
     return await _read_projection_page(company_id, after, since, "item")
 
 
+async def _read_documents(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
+    """Attach source refund entries, preserving their original order and accounting dates."""
+    from celerp.db import get_session_ctx
+    from celerp.models.ledger import LedgerEntry
+
+    async with get_session_ctx() as session:
+        query = select(Projection.entity_id, Projection.version, Projection.state).where(
+            Projection.company_id == company_id, Projection.entity_type == "doc",
+            Projection.entity_id > after,
+        )
+        if since is not None:
+            query = query.where(Projection.updated_at >= since)
+        rows = (await session.execute(
+            query.order_by(Projection.entity_id).limit(_PAGE))).all()
+        out = [(str(eid), int(version), dict(state or {}))
+               for eid, version, state in rows]
+        with_refunds = [
+            entity_id for entity_id, _, state in out
+            if any((p.get("refund_count") or p.get("refunded"))
+                   for p in (state.get("payments") or []) if isinstance(p, dict))
+        ]
+        if not with_refunds:
+            return out
+        refunds = (await session.execute(select(
+            LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data,
+        ).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id.in_(with_refunds),
+            LedgerEntry.event_type.in_(("doc.payment.refunded", "doc.payment.refund_reversed")),
+        ).order_by(LedgerEntry.id).limit(1001))).all()
+        if len(refunds) > 1000:
+            raise ValueError("Source refund history exceeds the per-run reconciliation limit")
+        by_doc: dict[str, list[dict]] = {}
+        for event_id, entity_id, event_type, data in refunds:
+            kind = "reversed" if event_type == "doc.payment.refund_reversed" else "refunded"
+            by_doc.setdefault(str(entity_id), []).append({
+                **({"kind": "reversed"} if kind == "reversed" else {}),
+                "event_id": event_id,
+                "payment_index": (data or {}).get("payment_index"),
+                "refund_number": (data or {}).get("refund_number"),
+                "amount": (data or {}).get("amount"),
+                **({"reversal_date": (data or {}).get("reversal_date")} if kind == "reversed"
+                   else {"refund_date": (data or {}).get("refund_date")}),
+            })
+        return [(eid, revision, {**state, "payment_events": by_doc.get(eid, [])})
+                for eid, revision, state in out]
+
+
 
 class CelerpConnector(ConnectorBase):
     name = "celerp"
@@ -85,9 +133,10 @@ class CelerpConnector(ConnectorBase):
         """Shared incremental delivery; entity-specific data never bypasses validation."""
         from celerp.connectors.sync_runner import _last_success_watermark
 
-        if kind not in ("contacts", "products"):
+        if kind not in ("contacts", "products", "documents"):
             raise ValueError("Unsupported peer entity")
-        entity = SyncEntity.CONTACTS if kind == "contacts" else SyncEntity.PRODUCTS
+        entity = {"contacts": SyncEntity.CONTACTS, "products": SyncEntity.PRODUCTS,
+                  "documents": SyncEntity.DOCUMENTS}[kind]
         result = SyncResult(entity=entity, direction=SyncDirection.OUTBOUND,
                             errors=[], attention=[])
         target = _target_url(ctx, kind)
@@ -95,9 +144,10 @@ class CelerpConnector(ConnectorBase):
             raise ValueError("No scoped receiving credential is connected")
         company_id = uuid.UUID(ctx.company_id)
         since = await _last_success_watermark(ctx.company_id, self.name, kind + "_out")
-        fields = _FIELDS if kind == "contacts" else (
-            "name", "sku", "description", "sell_by", "category",
-            "barcode", "retail_price", "wholesale_price")
+        fields = (_FIELDS if kind == "contacts" else
+                  ("name", "sku", "description", "sell_by", "category",
+                   "barcode", "retail_price", "wholesale_price") if kind == "products"
+                  else None)
         after = ""
         async with RateLimitedClient(public_only=True) as client:
             while True:
@@ -105,7 +155,8 @@ class CelerpConnector(ConnectorBase):
                 if not page:
                     break
                 for entity_id, revision, state in page:
-                    label = "Contact" if kind == "contacts" else "Product"
+                    label = {"contacts": "Contact", "products": "Product",
+                             "documents": "Document"}[kind]
                     reason = None
                     if type(revision) is not int or revision < 1:
                         reason = "Contact version unavailable" if kind == "contacts" else "Product state needs review"
@@ -114,8 +165,19 @@ class CelerpConnector(ConnectorBase):
                         continue
                     elif state.get("deleted") or state.get("merged_into"):
                         reason = "Deleted contact needs review" if kind == "contacts" else "Product state needs review"
-                    data = {key: state.get(key) for key in fields}
-                    if reason is None and (not isinstance(data.get("name"), str) or not data["name"].strip()):
+                    if kind == "documents":
+                        from celerp.services.peer_documents import _FIELDS as doc_fields
+                        data = {key: state[key] for key in doc_fields if key in state}
+                        if state.get("accounting_sync_excluded"):
+                            result.skipped += 1
+                            continue
+                        data.setdefault("status", "draft")
+                        from celerp.services.peer_documents import requires_stock_movement
+                        if state.get("status", "draft") != "draft" and requires_stock_movement(state):
+                            reason = "Inventory-linked document requires full copy or shared access"
+                    else:
+                        data = {key: state.get(key) for key in fields}
+                    if reason is None and kind != "documents" and (not isinstance(data.get("name"), str) or not data["name"].strip()):
                         reason = "Contact name unavailable" if kind == "contacts" else "Product name missing"
                     if reason is not None:
                         result.errors.append(reason)
@@ -153,3 +215,10 @@ class CelerpConnector(ConnectorBase):
 
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
         return await self._send_outbound(ctx, "products", _read_products)
+
+    async def sync_documents_out(self, ctx: ConnectorContext) -> SyncResult:
+        return await self._send_outbound(ctx, "documents", _read_documents)
+
+    async def sync_attachments_out(self, ctx: ConnectorContext) -> SyncResult:
+        from celerp.services.peer_attachment_sync import sync_document_attachments
+        return await sync_document_attachments(self, ctx)

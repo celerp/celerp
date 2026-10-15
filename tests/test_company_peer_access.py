@@ -97,11 +97,12 @@ def test_unimplemented_peer_operations_cannot_be_pre_authorized():
     from pydantic import ValidationError
     from celerp.routers.company_peers import GrantRequest
 
-    assert SCOPES == frozenset({"contacts", "products"})
+    assert SCOPES == frozenset({"contacts", "products", "documents"})
     target = uuid.uuid4()
     common = {"source_company_id": target, "label": "Reviewed contact-only access"}
     assert GrantRequest(**common, scopes={"contacts"}).scopes == {"contacts"}
     assert GrantRequest(**common, scopes={"products", "contacts"}).scopes == {"products", "contacts"}
+    assert GrantRequest(**common, scopes={"documents"}).scopes == {"documents"}
     for dormant in ("items", "invoices", "payments", "inventory", "attachments"):
         with pytest.raises(ValidationError):
             GrantRequest(**common, scopes={dormant})

@@ -2112,8 +2112,9 @@ def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: st
     asyncio.create_task(_run())
 
 
-@router.post("/{entity_id}/send")
-async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def mark_doc_sent(session: AsyncSession, company_id, entity_id: str, user,
+                        payload: DocSendBody, *, source: str = "api"):
+    """Canonical sent transition, caller owns commit and any email side effect."""
     # Lock the doc row so the closed-check below is race-safe against a concurrent
     # close: without it, send and close both read a non-closed memo unlocked and
     # both commit, letting doc.sent silently un-close the memo the close settled.
@@ -2121,7 +2122,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     key, digest = _operation("send", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.sent",
                                    entity_id=entity_id, digest=digest)) is not None:
-        return done
+        return row, None, done
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail=t("documents.err_send_void"))
     if row.state.get("status") == "closed":
@@ -2134,9 +2135,19 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
         raise HTTPException(status_code=409, detail=t("documents.err_send_type"))
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.sent",
-        data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
+        data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source=source,
         idempotency_key=key, metadata_={"request": digest},
     )
+
+    return row, entry, None
+
+
+@router.post("/{entity_id}/send")
+async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    row, entry, prior = await mark_doc_sent(session, company_id, entity_id, user, payload)
+    if prior is not None:
+        return prior
+    doc_type = row.state.get("doc_type", "")
 
     sent_to = payload.sent_to
     view_url = pay_url = None
@@ -2536,8 +2547,9 @@ async def finalize_doc(
     return await finalize_document(entity_id, company_id, user, session, commit=True)
 
 
-@router.post("/{entity_id}/void")
-async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, user,
+                        session: AsyncSession, *, commit: bool = True,
+                        role: str | None = None, settings: dict | None = None) -> dict:
     preview = await _get_doc(session, company_id, entity_id)
     linked = (str(preview.state.get("original_doc_id") or "")
               if preview.state.get("doc_type") == "debit_note" and preview.state.get("source_return") else "")
@@ -2599,6 +2611,8 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
             "the bill would leave that entry standing. To cancel the bill, revert it to draft."))
 
     if row.state.get("doc_type") == "debit_note" and row.state.get("source_return"):
+        if role is None or settings is None:
+            raise HTTPException(status_code=403, detail=t("acct.not_authorized"))
         assert_role_permission(settings, role, "fulfill_documents")
         await _undo_supplier_return(session, company_id, user.id, entity_id, row.state)
     event_data = payload.model_dump(exclude_none=True)
@@ -2617,9 +2631,15 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
         idempotency_key=key, metadata_={"request": digest},
     )
     await _settle_moved_cost(session, company_id, user.id, entity_id, row.state, f"void-{entry.id}", "doc.voided")
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id}
 
+
+@router.post("/{entity_id}/void")
+async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await void_document(entity_id, payload, company_id, user, session,
+                               commit=True, role=role, settings=settings)
 
 async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: dict, tag: str, trigger: str) -> None:
     """Once an invoice stops standing (void, back to draft), settle any cost it still
@@ -3905,7 +3925,7 @@ async def apply_payment_refund(session, company_id, entity_id: str, row: Project
 
 async def reverse_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict,
                                  refund: dict, *, reversal_date: str, books: PaymentBooks, actor_id,
-                                 source: str, idempotency_key: str):
+                                 source: str, idempotency_key: str, metadata_: dict | None = None):
     """Undo *refund*, the data of a doc.payment.refunded event of *payment* on the locked
     document *row*, when the money it gave back came back: emit
     doc.payment.refund_reversed and post the lines that give *refund*'s amount back
@@ -3923,6 +3943,7 @@ async def reverse_payment_refund(session, company_id, entity_id: str, row: Proje
         data={"payment_index": index, "refund_number": number, "amount": refund["amount"],
               "refund_id": refund.get("refund_id"), "reversal_date": reversal_date},
         actor_id=actor_id, location_id=None, source=source, idempotency_key=idempotency_key,
+        metadata_=metadata_ or {},
     )
     if getattr(entry, "was_deduped", False):
         return entry

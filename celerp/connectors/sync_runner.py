@@ -31,14 +31,18 @@ _SYNC_METHODS = {
     "contacts_out": "sync_contacts_out",
     "invoices_out": "sync_invoices_out",
     "inventory_out": "sync_inventory_out",
+    "documents_out": "sync_documents_out",
+    "attachments_out": "sync_attachments_out",
 }
-_OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out", "contacts_out"}
+_OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out", "contacts_out", "documents_out", "attachments_out"}
 CONNECTOR_RESET_ENTITY = "__connector_reset__"
 _OUTBOUND_ENTITY_METHODS = {
     "products_out": "sync_products_out",
     "contacts_out": "sync_contacts_out",
     "invoices_out": "sync_invoices_out",
     "inventory_out": "sync_inventory_out",
+    "documents_out": "sync_documents_out",
+    "attachments_out": "sync_attachments_out",
 }
 
 

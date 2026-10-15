@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, File, Form, UploadFile
 from pydantic import BaseModel, Field, ConfigDict, FiniteFloat
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,13 +20,13 @@ from celerp.services import peer_access
 
 router = APIRouter(prefix="/company-peers", tags=["company-peers"])
 
-Scope = Literal["contacts", "products"]
+Scope = Literal["contacts", "products", "documents"]
 
 
 class GrantRequest(BaseModel):
     source_company_id: uuid.UUID
     label: str = Field(min_length=1, max_length=128)
-    scopes: set[Scope] = Field(min_length=1, max_length=2)
+    scopes: set[Scope] = Field(min_length=1, max_length=3)
     lifetime_days: int = Field(default=30, ge=1, le=90)
 
 
@@ -148,3 +148,58 @@ async def receive_peer_product(body: PeerProductUpdate,
         source_revision=body.source_revision, data=body.data.model_dump())
     await session.commit()
     return {"status": outcome}
+
+
+class PeerDocumentUpdate(BaseModel):
+    source_company_id: uuid.UUID
+    source_entity_id: str = Field(min_length=1, max_length=512)
+    source_revision: int = Field(ge=1, le=2**63 - 1)
+    data: dict
+
+
+@router.post("/documents")
+async def receive_peer_document(body: PeerDocumentUpdate,
+                                authorization: str = Header(default=""),
+                                session: AsyncSession = Depends(get_session)):
+    from celerp.services.peer_documents import receive_draft_document
+    scheme, _, credential = authorization.partition(" ")
+    if scheme != "Peer" or not credential:
+        raise HTTPException(401, "Invalid integration credentials")
+    grant = await peer_access.authenticate(
+        session, credential, source_company_id=body.source_company_id,
+        scope="documents")
+    outcome = await receive_draft_document(
+        session, grant=grant, source_entity_id=body.source_entity_id,
+        source_revision=body.source_revision, data=body.data)
+    await session.commit()
+    return {"status": outcome}
+
+
+
+@router.post("/attachments")
+async def receive_peer_attachment(
+    source_company_id: uuid.UUID = Form(),
+    source_document_id: str = Form(min_length=1, max_length=512),
+    source_file_id: str = Form(min_length=1, max_length=255),
+    sha256_hex: str = Form(min_length=64, max_length=64),
+    file: UploadFile = File(),
+    document_tag: str | None = Form(default=None, max_length=128),
+    description: str | None = Form(default=None, max_length=4096),
+    authorization: str = Header(default=""),
+    session: AsyncSession = Depends(get_session),
+):
+    from celerp.services.peer_attachments import receive_attachment
+
+    scheme, _, credential = authorization.partition(" ")
+    if scheme != "Peer" or not credential:
+        raise HTTPException(401, "Invalid integration credentials")
+    grant = await peer_access.authenticate(
+        session, credential, source_company_id=source_company_id,
+        scope="documents",
+    )
+    status = await receive_attachment(
+        session, grant=grant, source_doc_id=source_document_id,
+        source_file_id=source_file_id, sha256_hex=sha256_hex, file=file,
+        document_tag=document_tag, description=description,
+    )
+    return {"status": status}
