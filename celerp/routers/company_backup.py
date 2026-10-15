@@ -235,10 +235,15 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str =
             raise cb.BackupError(413, t(cb.TOO_LARGE_UPLOAD)) from None
         preview = await _preview(session, stage, token, mode, user_id, current_company_id)
         if handoff_copy_id or handoff_proof:
+            from celerp.services.company_handoff_transfer import (
+                HandoffDownloadError, verify_company_handoff,
+            )
             try:
+                await verify_company_handoff(
+                    handoff_copy_id, handoff_proof, files.stage_facts(stage).get("sha256"))
                 files.bind_handoff(stage, handoff_copy_id, handoff_proof)
-            except (TypeError, ValueError):
-                raise cb.BackupError(422, "Invalid company handoff") from None
+            except (TypeError, ValueError, HandoffDownloadError):
+                raise cb.BackupError(422, "This archive does not match the company handoff") from None
         return preview
     except BaseException:
         files.discard_stage(stage)

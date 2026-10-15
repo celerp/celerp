@@ -38,6 +38,38 @@ def _validated_object_url(value: object, copy_id) -> str:
     return value
 
 
+async def verify_company_handoff(copy_id: str | None, proof_hash: str | None,
+                                 backup_sha256: str | None) -> None:
+    """Confirm the staged archive belongs to this independently delivered copy."""
+    try:
+        identifier = uuid.UUID(copy_id or "")
+        if str(identifier) != copy_id:
+            raise ValueError
+    except (ValueError, TypeError):
+        raise HandoffDownloadError("Invalid company handoff") from None
+    for value in (proof_hash, backup_sha256):
+        if (not isinstance(value, str) or len(value) != 64
+                or any(ch not in "0123456789abcdef" for ch in value)):
+            raise HandoffDownloadError("Invalid company handoff")
+    try:
+        async with httpx.AsyncClient(follow_redirects=False,
+                                     timeout=httpx.Timeout(15, connect=5)) as client:
+            response = await client.post(
+                f"https://relay.celerp.com/handoffs/{identifier}/verify",
+                json={"proof": proof_hash, "backup_sha256": backup_sha256},
+            )
+    except (httpx.HTTPError, TimeoutError) as exc:
+        raise HandoffDownloadError("Company handoff verification is unavailable") from exc
+    if response.status_code != 200:
+        raise HandoffDownloadError("This archive does not match the company handoff")
+    try:
+        confirmed = response.json().get("verified") is True
+    except (ValueError, AttributeError):
+        confirmed = False
+    if not confirmed:
+        raise HandoffDownloadError("Company handoff verification was not confirmed")
+
+
 async def download_company_handoff(link: str, destination: Path) -> None:
     """Authenticate a ciphertext download before publishing the staged restore input.
 
