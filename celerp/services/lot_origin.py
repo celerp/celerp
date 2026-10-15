@@ -50,7 +50,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
@@ -569,7 +569,10 @@ def _placement_id(company_id, item_ids: list[str]) -> str:
 
 
 PLACEMENT = "older_stock_placement"
+PLACED = "sys.older_stock.placed"
 CORRECTED = "sys.older_stock.corrected"
+# What a placement record holds per placement, summed per account in the Older stock summary.
+_PLACED_AMOUNTS = ("transferred", "recognized", "unresolved")
 
 
 def _placement_entity(pid: str) -> str:
@@ -727,7 +730,7 @@ async def _place(session: AsyncSession, company_id) -> bool:
             actor_id=None, day=day)
     await emit_event(
         session, company_id=company_id, entity_id=_placement_entity(pid), entity_type=PLACEMENT,
-        event_type="sys.older_stock.placed", actor_id=None, location_id=None, source="system",
+        event_type=PLACED, actor_id=None, location_id=None, source="system",
         idempotency_key=_placement_entity(pid), metadata_={},
         data={"placement": pid, "day": day, "count": len(ids), "value": float(value), "account": target,
               "rooms": {c: float(v) for c, v in room.items()}, "transferred": float(transferred),
@@ -1492,7 +1495,12 @@ async def _move_events(session: AsyncSession, company_id, move_id: str) -> list[
 
 async def _je_state(session: AsyncSession, company_id, je_id: str) -> dict | None:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
-    return row.state if row is not None and (row.state or {}).get("status") == "posted" else None
+    return _posted(row.state if row is not None else None)
+
+
+def _posted(state: dict | None) -> dict | None:
+    """A journal entry's state when it is posted, else None."""
+    return state if (state or {}).get("status") == "posted" else None
 
 
 def _debits(state: dict | None) -> float:
@@ -1825,35 +1833,42 @@ OLDER_STOCK_PAGES = ("lots", "placements", "moves", "corrections")
 WAITING_NOTICES = (UNMAPPED_NOTICE, LOCKED_NOTICE, FAILED_NOTICE)
 
 
-async def _reconciliation(session: AsyncSession, company_id, placements: list[dict],
-                          recorded: list[LedgerEntry]) -> dict:
+async def _reconciliation(session: AsyncSession, company_id) -> dict:
     """Where the older stock stands with the books, one of three states:
 
     - ``action``: older stock waits for its inventory account (``waiting`` lots), each
       standing notice saying why (WAITING_NOTICES, their i18n records under ``reasons``);
       it cannot be sold or moved until someone fixes that.
     - ``review``: everything is placed and sales go on, but a placement is still open
-      (``open``): a difference left unresolved, or provisional cost an invoice recognized
-      on its lots before placing while that invoice still holds them unshipped.
-    - ``reconciled``: nothing waits and nothing is open.
-
-    ``placements`` and ``recorded`` (the lots each placement recorded) as older_stock_view
-    reads them."""
+      (``open``), newest first: a difference left unresolved, or provisional cost an
+      invoice recognized on its lots before placing while that invoice still holds them
+      unshipped.
+    - ``reconciled``: nothing waits and nothing is open."""
     from celerp.services.auto_je import unshipped_claims
 
     waiting = len(await _unplaced(session, company_id))
     reasons = [i18n for base in WAITING_NOTICES if (i18n := await _standing_notice(session, company_id, base))]
-    lots: dict[str, list[str]] = {}
-    for e in recorded:
-        lots.setdefault(e.metadata_["placement"], []).append(e.entity_id)
-    held = {p["pid"] for p in placements if p["provisional"] and await unshipped_claims(
-        session, company_id, costed=False, lots=sorted(lots.get(p["pid"], [])))}
-    open_ = [{"placement": p["pid"], "account": p["account"], "kind": kind, "amount": amount}
-             for p in placements
-             for kind, amount in (("unresolved", p["unresolved"]),
-                                  ("provisional", p["provisional"] if p["pid"] in held else 0.0)) if amount]
+    records = (await session.execute(_placement_records(company_id).where(or_(
+        Projection.state["unresolved"].as_float() != 0, Projection.state["provisional"].as_float() != 0))
+    )).scalars().all()
+    held = {r["placement"] for r in records if r.get("provisional") and await unshipped_claims(
+        session, company_id, costed=False, lots=await _placement_lots(session, company_id, r["placement"]))}
+    open_ = [{"placement": r["placement"], "account": r["account"], "kind": kind, "amount": float(amount)}
+             for r in records
+             for kind, amount in (("unresolved", r.get("unresolved") or 0),
+                                  ("provisional", (r.get("provisional") or 0) if r["placement"] in held else 0))
+             if amount]
     state = "action" if waiting or reasons else "review" if open_ else "reconciled"
     return {"state": state, "waiting": waiting, "reasons": reasons, "open": open_}
+
+
+def _placement_records(company_id):
+    """The placement records (PLACEMENT) of ``company_id``, newest placement first."""
+    return (select(Projection.state).join(LedgerEntry, and_(
+        LedgerEntry.company_id == Projection.company_id, LedgerEntry.entity_id == Projection.entity_id,
+        LedgerEntry.event_type == PLACED)).where(Projection.company_id == company_id,
+                                                  Projection.entity_type == PLACEMENT)
+        .order_by(LedgerEntry.id.desc()))
 
 
 async def older_stock_lots(session: AsyncSession, company_id, currency: str, account: str | None = None,
@@ -1861,24 +1876,86 @@ async def older_stock_lots(session: AsyncSession, company_id, currency: str, acc
     """The lots placed automatically still in stock, newest placement first, each with
     its SKU, name, account, booked value and placement; filtered (_matching) to
     ``account`` and to ``q`` in their SKU or name."""
-    recorded = (await session.execute(select(LedgerEntry).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
-        LedgerEntry.metadata_["placement"].as_string().is_not(None)).order_by(LedgerEntry.id.desc()))).scalars().all()
+    recorded = (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.metadata_["placement"].as_string())
+                                      .where(LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
+                                             LedgerEntry.metadata_["placement"].as_string().is_not(None))
+                                      .order_by(LedgerEntry.id.desc()))).all()
     rows = {r.entity_id: r for r in (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "item",
-        Projection.entity_id.in_([e.entity_id for e in recorded])))).scalars()}
-    return _matching([{"item_id": e.entity_id, "sku": rows[e.entity_id].state.get("sku") or "",
-                       "name": rows[e.entity_id].state.get("name") or "",
-                       "account": rows[e.entity_id].state.get(LOT_ACCOUNT_FIELD),
-                       "value": float(booked_value(rows[e.entity_id], currency)),
-                       "placement": e.metadata_["placement"]}
-                      for e in recorded if e.entity_id in rows and in_stock(rows[e.entity_id].state)], account, q)
+        Projection.entity_id.in_([item_id for item_id, _ in recorded])))).scalars()}
+    return _matching([{"item_id": item_id, "sku": rows[item_id].state.get("sku") or "",
+                       "name": rows[item_id].state.get("name") or "",
+                       "account": rows[item_id].state.get(LOT_ACCOUNT_FIELD),
+                       "value": float(booked_value(rows[item_id], currency)), "placement": pid}
+                      for item_id, pid in recorded if item_id in rows and in_stock(rows[item_id].state)],
+                     account, q)
 
 
 def _matching(lots: list[dict], account: str | None, q: str | None) -> list[dict]:
     needle = (q or "").strip().lower()
     return [lot for lot in lots if (not account or lot["account"] == account)
             and (not needle or needle in lot["sku"].lower() or needle in lot["name"].lower())]
+
+
+async def _count(session: AsyncSession, query) -> int:
+    return (await session.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+
+
+async def _placements_page(session: AsyncSession, company_id, offset: int, limit: int) -> tuple[list[dict], int]:
+    """A page of the placements, newest first, as their records hold them, and how many
+    there are."""
+    query = _placement_records(company_id)
+    return [{"pid": r["placement"], "day": r["day"], "count": r["count"], "account": r["account"],
+             "classification": r.get("classification"), "transferred": float(r.get("transferred") or 0),
+             "recognized": float(r.get("recognized") or 0), "unresolved": float(r.get("unresolved") or 0),
+             "provisional": float(r.get("provisional") or 0), "journal": r.get("journal") or [],
+             "corrections": r.get("corrections") or []}
+            for r in (await session.execute(query.offset(offset).limit(limit))).scalars()], \
+        await _count(session, query)
+
+
+async def _moves_page(session: AsyncSession, company_id, tz: str | None, offset: int,
+                      limit: int) -> tuple[list[dict], int]:
+    """A page of the moves, newest first, each with its day, account, how many lots it
+    moved, the value its entry moved, whether it was undone and what it undid, and how
+    many moves there are."""
+    move = LedgerEntry.metadata_["move"].as_string()
+    move_id = move.label("move_id")
+    query = (select(move_id, func.count().label("count"), func.max(LedgerEntry.id).label("last"))
+             .where(LedgerEntry.company_id == company_id, LedgerEntry.event_type == MOVED).group_by(move_id))
+    page = (await session.execute(query.order_by(func.max(LedgerEntry.id).desc()).offset(offset).limit(limit))).all()
+    last = {e.id: e for e in (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.id.in_([row.last for row in page])))).scalars()}
+    ids = [row.move_id for row in page]
+    journals = {eid: state for eid, state in (await session.execute(select(Projection.entity_id, Projection.state)
+                                                                     .where(Projection.company_id == company_id,
+                                                                            Projection.entity_id.in_(
+                                                                                [_move_je(m) for m in ids])))).all()}
+    undone = set((await session.execute(select(move).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == MOVED,
+        move.in_([f"{m}:undo" for m in ids])).distinct())).scalars())
+    return [{"move_id": row.move_id, "day": business_date_at(last[row.last].ts, tz),
+             "code": last[row.last].data[LOT_ACCOUNT_FIELD], "count": row.count,
+             "value": _debits(_posted(journals.get(_move_je(row.move_id)))),
+             "undone": f"{row.move_id}:undo" in undone, "undo_of": (last[row.last].metadata_ or {}).get("undo_of")}
+            for row in page], await _count(session, query)
+
+
+async def _corrections_page(session: AsyncSession, company_id, offset: int, limit: int) -> tuple[list[dict], int]:
+    """A page of the corrections, newest first, each with who made it, and how many there
+    are."""
+    from celerp.services.ledger_display import display_fields
+
+    query = select(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.event_type == CORRECTED)
+    page = (await session.execute(query.add_columns(Projection.state["account"].as_string()).outerjoin(
+        Projection, and_(Projection.company_id == LedgerEntry.company_id,
+                         Projection.entity_id == LedgerEntry.entity_id))
+        .order_by(LedgerEntry.id.desc()).offset(offset).limit(limit))).all()
+    shown = await display_fields([e for e, _ in page], company_id, session)
+    return [{"placement": e.data["placement"], "day": e.data["day"], "kind": e.data["kind"],
+             "amount": e.data["amount"], "journal": e.data["journal"], "account": code,
+             "actor_name": s["actor_name"]}
+            for (e, code), s in zip(page, shown)], await _count(session, query)
 
 
 async def older_stock_view(session: AsyncSession, company_id, account: str | None = None,
@@ -1893,78 +1970,42 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
     (_reconciliation). Each list in OLDER_STOCK_PAGES is a page of ``limit`` rows from
     its own offset, with its total under ``totals``; how many lots match the filters and
     their value, which a move of every matching lot (move_matching_lots) takes, under
-    ``matching``."""
-    from celerp.services.ledger_display import display_fields
+    ``matching``. Placements, moves and corrections are paged in their queries; the lots
+    are read once in full, as the summary and ``matching`` add up their booked values."""
     from celerp.services.posting_readiness import older_stock_targets
 
     settings = await current_settings(session, company_id)
     currency, tz = settings.get("currency", "USD"), settings.get("timezone")
-    recorded = (await session.execute(select(LedgerEntry).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
-        LedgerEntry.metadata_["placement"].as_string().is_not(None)).order_by(LedgerEntry.id.desc()))).scalars().all()
-    records = {(r or {}).get("placement"): r for r in (await session.execute(select(Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == PLACEMENT))).scalars()}
-    placements: dict[str, dict] = {}
-    for e in recorded:
-        pid = e.metadata_["placement"]
-        if pid not in placements:
-            record = records.get(pid) or {}
-            placements[pid] = {"pid": pid, "day": business_date_at(e.ts, tz), "count": 0,
-                               "account": record.get("account") or e.data[LOT_ACCOUNT_FIELD],
-                               "classification": record.get("classification"),
-                               "transferred": float(record.get("transferred") or 0),
-                               "recognized": float(record.get("recognized") or 0),
-                               "unresolved": float(record.get("unresolved") or 0),
-                               "provisional": float(record.get("provisional") or 0),
-                               "journal": record.get("journal") or [],
-                               "corrections": record.get("corrections") or []}
-        placements[pid]["count"] += 1
-    lots = await older_stock_lots(session, company_id, currency)
-    accounts = sorted({lot["account"] for lot in lots if lot["account"]})
+    offsets = offsets or {}
+    held = await older_stock_lots(session, company_id, currency)
     summary: dict[str, dict] = {}
 
     def _account(code: str) -> dict:
         return summary.setdefault(code, {"account": code, "lots": 0, "value": 0.0, "transferred": 0.0,
                                          "recognized": 0.0, "unresolved": 0.0})
-    for lot in lots:
+    for lot in held:
         if lot["account"]:
             _account(lot["account"])["lots"] += 1
             _account(lot["account"])["value"] += lot["value"]
-    for p in placements.values():
-        for f in ("transferred", "recognized", "unresolved"):
-            _account(p["account"])[f] += p[f]
+    code = Projection.state["account"].as_string().label("code")
+    totals = select(code, *(func.coalesce(func.sum(Projection.state[f].as_float()), 0) for f in _PLACED_AMOUNTS)).where(
+        Projection.company_id == company_id, Projection.entity_type == PLACEMENT).group_by(code)
+    for code, *amounts in (await session.execute(totals)).all():
+        for f, amount in zip(_PLACED_AMOUNTS, amounts):
+            _account(code)[f] += float(amount)
     for row in summary.values():
-        for f in ("value", "transferred", "recognized", "unresolved"):
+        for f in ("value", *_PLACED_AMOUNTS):
             row[f] = round(row[f], 2)
-    corrected = (await session.execute(select(LedgerEntry).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.event_type == CORRECTED)
-        .order_by(LedgerEntry.id.desc()))).scalars().all()
-    corrections = [{"placement": e.data["placement"], "day": e.data["day"], "kind": e.data["kind"],
-                    "amount": e.data["amount"], "journal": e.data["journal"],
-                    "account": (records.get(e.data["placement"]) or {}).get("account"),
-                    "actor_name": shown["actor_name"]}
-                   for e, shown in zip(corrected, await display_fields(corrected, company_id, session))]
-    lots = _matching(lots, account, q)
-    events = (await session.execute(select(LedgerEntry).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.event_type == MOVED)
-        .order_by(LedgerEntry.id.desc()))).scalars().all()
-    moves: dict[str, dict] = {}
-    for e in events:
-        m = (e.metadata_ or {}).get("move")
-        if m not in moves:
-            moves[m] = {"move_id": m, "day": business_date_at(e.ts, tz), "code": e.data[LOT_ACCOUNT_FIELD],
-                        "count": 0, "value": _debits(await _je_state(session, company_id, _move_je(m))),
-                        "undone": False, "undo_of": (e.metadata_ or {}).get("undo_of")}
-        moves[m]["count"] += 1
-    for move in moves.values():
-        move["undone"] = f"{move['move_id']}:undo" in moves
-    lists = {"lots": lots, "placements": list(placements.values()), "moves": list(moves.values()),
-             "corrections": corrections}
-    offsets = offsets or {}
-    return {**{name: full[offsets.get(name, 0):offsets.get(name, 0) + limit] for name, full in lists.items()},
-            "totals": {name: len(full) for name, full in lists.items()}, "limit": limit,
+    lots = _matching(held, account, q)
+    lists = {"lots": (lots[offsets.get("lots", 0):offsets.get("lots", 0) + limit], len(lots)),
+             "placements": await _placements_page(session, company_id, offsets.get("placements", 0), limit),
+             "moves": await _moves_page(session, company_id, tz, offsets.get("moves", 0), limit),
+             "corrections": await _corrections_page(session, company_id, offsets.get("corrections", 0), limit)}
+    return {**{name: page for name, (page, _) in lists.items()},
+            "totals": {name: total for name, (_, total) in lists.items()}, "limit": limit,
             "matching": {"count": len(lots), "value": round(sum(lot["value"] for lot in lots), 2)},
             "summary": sorted(summary.values(), key=lambda r: r["account"]),
-            "accounts": accounts, "failed": await failed_placement(session, company_id),
-            "reconciliation": await _reconciliation(session, company_id, list(placements.values()), recorded),
+            "accounts": sorted({lot["account"] for lot in held if lot["account"]}),
+            "failed": await failed_placement(session, company_id),
+            "reconciliation": await _reconciliation(session, company_id),
             **await older_stock_targets(session, company_id)}

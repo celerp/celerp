@@ -878,6 +878,45 @@ async def test_moving_all_matching_lots_is_refused_when_the_lots_matching_change
     assert await _accounts(session, auth, lots) == ["1130-OB"] * 3
 
 
+# --- Reading the Older stock tab in pages ----------------------------------------------------
+
+
+async def _reads(db_engine, client, auth, **params) -> tuple[dict, list[int]]:
+    """The view, and the rows each query reading it returned."""
+    from sqlalchemy import event
+
+    fetched: list[int] = []
+
+    def counted(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            fetched.append(cursor.rowcount)
+
+    event.listen(db_engine.sync_engine, "after_cursor_execute", counted)
+    try:
+        view = await _view(client, auth, **params)
+    finally:
+        event.remove(db_engine.sync_engine, "after_cursor_execute", counted)
+    return view, fetched
+
+
+async def test_the_older_stock_view_reads_one_page_in_a_fixed_number_of_queries(session, client, auth, _db_engine):
+    """Each list is read a page at a time by the database, and a move's value comes with
+    its page, not one lookup per move: more lots, moves and corrections read no more
+    queries and no more rows."""
+    lots = await _older_company(session, client, auth, [1.0] * 30, short=3.0)
+    await _startup(session)
+    for lot in lots[:3]:
+        assert (await _move(client, auth, [lot], "1130-P")).status_code == 200
+    small, few = await _reads(_db_engine, client, auth, limit=2)
+    for lot in lots[3:12]:
+        assert (await _move(client, auth, [lot], "1130-P")).status_code == 200
+    large, many = await _reads(_db_engine, client, auth, limit=2)
+    assert len(large["moves"]) == 2 and large["totals"]["moves"] == 12 and small["totals"]["moves"] == 3
+    assert len(large["lots"]) == 2 and large["totals"]["lots"] == 30
+    assert len(many) == len(few), (few, many)
+    assert sorted(many) == sorted(few), (few, many)
+
+
 async def test_older_stock_routes_need_manage_accounting(session, client, auth):
     from celerp.models.accounting import UserCompany
     from celerp.models.company import User
