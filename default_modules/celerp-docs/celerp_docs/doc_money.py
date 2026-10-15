@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
+from celerp.services.auto_je import refuse_negative_output_tax
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.tax_regimes import doc_side, misplaced_tax
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
@@ -53,6 +54,16 @@ def assert_taxes_fit_side(settings: dict, doc_type: str | None, state: dict, lin
     if name is not None:
         key = "documents.err_tax_purchase_only" if doc_side(doc_type) == "sales" else "documents.err_tax_sales_only"
         raise HTTPException(status_code=422, detail=t(key, tax=name))
+
+
+def assert_issuable_taxes(settings: dict, state: dict) -> None:
+    """Refuse a document issued with a tax for the other side (assert_taxes_fit_side), and a
+    sale or customer credit note whose taxes come to less than zero (409). Every way a
+    document is issued checks it: finalize, whatever made the draft, and an import of an
+    issued document."""
+    assert_taxes_fit_side(settings, state.get("doc_type"), state, state.get("line_items") or [])
+    if doc_side(state.get("doc_type")) == "sales":
+        refuse_negative_output_tax(state)
 
 
 def _line_amount(line: dict):

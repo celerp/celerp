@@ -32,7 +32,7 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import assert_taxes_fit_side, document_money
+from celerp_docs.doc_money import assert_issuable_taxes, assert_taxes_fit_side, document_money
 from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services import auto_je
@@ -2387,10 +2387,10 @@ async def finalize_document(
         return {"event_id": None, "already_finalized": True}
     if not (row.state.get("line_items") or []):
         raise HTTPException(status_code=422, detail="Add at least one line item before finalizing this document.")
+    assert_issuable_taxes((_company.settings or {}) if _company else {}, row.state)
     if row.state.get("doc_type") in _BILL_POSTED:
         await require_line_destinations(session, company_id, row.state["line_items"])
     if row.state.get("doc_type") == "invoice":
-        auto_je.refuse_negative_output_tax(row.state)
         await _refuse_unsellable_lots(session, company_id, entity_id, row.state)
         await _refuse_unfillable_invoice_lines(session, company_id, entity_id, row.state,
                                                (_company.settings or {}) if _company else {})
