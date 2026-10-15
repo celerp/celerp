@@ -29,6 +29,7 @@ from celerp.models.projections import Projection
 from company_backup_support import download, restore
 from migration_support import maker, real_client, real_engine  # noqa: F401
 from test_consignment_in_sale import _consign
+from test_helpers import TZ
 from test_older_stock_placement import _PLACED, _accounts, _move, _off_books, _placements, _today, _view
 from test_posting_roles_older_stock import _older_release, _settings
 from test_posting_roles_rollout import _startup
@@ -207,7 +208,8 @@ async def _restored_company(real_client, real_engine, monkeypatch, *, upgraded: 
             await _settings(s, source, **{INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA})
         _, consigned = await _consign(real_client, s, source, qty=2, cost_price=4.0)
         if locked:
-            await _settings(s, source, lock_date=_today())
+            # _today is the day in TZ, so the books are locked through the company's own today
+            await _settings(s, source, timezone=TZ, lock_date=_today())
     r = await restore(real_client, tok, await download(real_client, tok), mode="new_company")
     assert r.status_code == 201, r.text
     restored = {"company_id": uuid.UUID(r.json()["company_id"]),
