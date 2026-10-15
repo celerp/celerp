@@ -4465,6 +4465,14 @@ class OlderStockMoveIn(BaseModel):
     key: str | None = None
 
 
+class OlderStockMoveAllIn(BaseModel):
+    account: str | None = None
+    q: str | None = None
+    count: int = 0
+    code: str = ""
+    key: str | None = None
+
+
 class PlacementCorrectionIn(BaseModel):
     placements: list[str] = []
     kind: str = ""
@@ -4504,6 +4512,24 @@ async def move_older_stock(
     from celerp.services.lot_origin import move_lot_accounts, older_stock_view
 
     result = await move_lot_accounts(session, company_id, payload.item_ids, payload.code, payload.key, user.id)
+    await session.commit()
+    return {**await older_stock_view(session, company_id), "result": result}
+
+
+@router.post("/older-stock/move-all")
+async def move_all_older_stock(
+    payload: OlderStockMoveAllIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Move every older lot matching the Older stock filters (``account``, ``q``) onto
+    another inventory account as one move, ``count`` being how many the user confirmed."""
+    from celerp.services.lot_origin import move_matching_lots, older_stock_view
+
+    result = await move_matching_lots(session, company_id, payload.account, payload.q, payload.count, payload.code,
+                                      payload.key, user.id)
     await session.commit()
     return {**await older_stock_view(session, company_id), "result": result}
 

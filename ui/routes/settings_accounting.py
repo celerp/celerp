@@ -22,7 +22,7 @@ from ui.components.table import (EMPTY, add_new_option, bulk_toolbar, searchable
                                  server_pager)
 
 from ui.components.posting_accounts import account_picker
-from ui.components.operation_key import operation_key_attrs, required_operation_key
+from ui.components.operation_key import operation_key_attrs, operation_key_input, required_operation_key
 from ui.routes.accounting_import import ACCOUNT_TYPES
 
 # The cash flow sections an account may be pinned to. The accounting API owns this
@@ -409,6 +409,32 @@ def _older_lot_row(lot: dict, currency: str) -> FT:
     )
 
 
+def _move_target(view: dict, **attrs) -> FT:
+    """The account picker for a move: the accounts the move accepts (``targets``)."""
+    return searchable_select("code", [(c["code"], account_label(c)) for c in view.get("targets", [])],
+                             placeholder=t("posting.choose"), aria_label=t("older_stock.move_to"), **attrs)
+
+
+def _move_all_form(view: dict, filters: dict) -> FT | None:
+    """Move every lot matching the filters, on every page, as one move: the button states
+    how many and their value, and asks before moving. The count rides along so the server
+    refuses if a different number matches by then."""
+    matching = view.get("matching") or {}
+    n = int(matching.get("count") or 0)
+    if not n:
+        return None
+    value = fmt_money(matching.get("value") or 0, view.get("currency"))
+    return Form(
+        _move_target(view),
+        Input(type="hidden", name="count", value=str(n)),
+        operation_key_input(),
+        Button(t("older_stock.move_all", n=n, value=value), type="submit", cls="btn btn--sm btn--secondary"),
+        id="older-stock-move-all", cls="filter-bar",
+        hx_confirm=t("older_stock.move_all_confirm", n=n, value=value),
+        hx_post=_older_stock_url(filters, "/move-all"), hx_target="#older-stock-card", hx_swap="outerHTML",
+    )
+
+
 def _older_stock_url(filters: dict, path: str = "", **changes) -> str:
     """An Older stock URL keeping the filters and pages shown, with ``changes`` applied:
     the tab itself, or an action at ``path`` whose answer re-renders the same view."""
@@ -564,10 +590,8 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
     lots, placements, moves = view.get("lots", []), view.get("placements", []), view.get("moves", [])
     summary, corrections = view.get("summary", []), view.get("corrections", [])
     totals, limit = view.get("totals", {}), view.get("limit") or 50
-    candidates, retained = view.get("candidates", []), _retained(view)
-    target = searchable_select("code", [(c["code"], account_label(c)) for c in candidates],
-                               placeholder=t("posting.choose"), aria_label=t("older_stock.move_to"),
-                               cls="bulk-field")
+    retained = _retained(view)
+    target = _move_target(view, cls="bulk-field")
 
     def pager(name: str) -> FT | str:
         return server_pager(int(filters.get(f"{name}_offset") or 0), limit, totals.get(name, 0),
@@ -606,6 +630,7 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
             fields=[target]),
         lot_table,
         pager("lots"),
+        _move_all_form(view, filters),
         H4(t("older_stock.placements"), cls="mt-md"),
         bulk_toolbar("older-stock-placements", [
             {"value": "recognize", "label": t("older_stock.book_difference"), "method": "post",
@@ -1376,6 +1401,22 @@ def setup_routes(app):
         async def call(token):
             view = await api.move_older_stock(token, list(dict.fromkeys(form.getlist("selected"))),
                                               str(form.get("code", "")).strip(), required_operation_key(form))
+            done = view.pop("result")
+            return {**view, "message": t("older_stock.moved", n=done["moved"], code=done["code"])}
+
+        return await _older_stock_action(request, call)
+
+    @app.post("/settings/accounting/older-stock/move-all")
+    async def older_stock_move_all(request: Request):
+        """Move every lot matching the filters the page shows (in the URL) as one move."""
+        form = await request.form()
+        filters = _older_stock_filters_of(request)
+        count = str(form.get("count", "")).strip()
+
+        async def call(token):
+            view = await api.move_all_older_stock(token, {k: filters[k] for k in ("account", "q") if k in filters},
+                                                  int(count) if count.isdigit() else 0,
+                                                  str(form.get("code", "")).strip(), required_operation_key(form))
             done = view.pop("result")
             return {**view, "message": t("older_stock.moved", n=done["moved"], code=done["code"])}
 

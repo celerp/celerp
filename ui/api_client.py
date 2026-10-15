@@ -3446,6 +3446,15 @@ async def move_older_stock(token: str, item_ids: list[str], code: str, key: str)
                                    json={"item_ids": item_ids, "code": code, "key": key})).json()
 
 
+async def move_all_older_stock(token: str, filters: dict, count: int, code: str, key: str) -> dict:
+    """POST a move of every older lot matching ``filters`` (``account``, ``q``) to inventory
+    account ``code``, ``count`` being how many the user confirmed, recorded once per ``key``."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/older-stock/move-all", json={
+            "account": filters.get("account"), "q": filters.get("q"), "count": count, "code": code,
+            "key": key})).json()
+
+
 async def undo_older_stock_move(token: str, move_id: str) -> dict:
     """POST the undo of an older-stock move."""
     async with _api_client(token) as c:

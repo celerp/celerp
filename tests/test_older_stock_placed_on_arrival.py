@@ -148,7 +148,7 @@ async def test_a_lot_placed_on_arrival_can_be_moved_in_bulk_and_the_move_undone(
     lot, = await _snapshots(client, auth, (40.0, None))
     (placed,) = await _accounts(session, auth, [lot])
     view = await _view(client, auth)
-    target = next(c["code"] for c in view["candidates"] if c["code"] != placed)
+    target = next(c["code"] for c in view["targets"] if c["code"] != placed)
 
     r = await _move(client, auth, [lot], target)
     assert r.status_code == 200, r.text

@@ -795,6 +795,89 @@ async def test_undo_puts_lots_back_once_and_refuses_after_a_later_move(session, 
              "older_stock.undo.no_move")
 
 
+# --- Moving every matching lot ------------------------------------------------------------
+
+
+async def _move_all(client, auth, count: int, code: str, key: str | None = None, **filters):
+    return await client.post("/accounting/older-stock/move-all", headers=auth["headers"], json={
+        **filters, "count": count, "code": code, "key": key or uuid.uuid4().hex})
+
+
+async def test_the_move_targets_listed_are_exactly_the_accounts_a_move_accepts(session, client, auth):
+    """One rule decides both: the picker never offers an account the move refuses, nor
+    leaves out one it takes (a new inventory account), and a bank is neither."""
+    from celerp_accounting.models import Account
+    from test_older_stock_reconciliation import _bank
+
+    lots = await _older_company(session, client, auth, [10.0])
+    await _startup(session)
+    await _new_inventory_account(client, auth, "1131")
+    await _new_inventory_account(client, auth, "1132")
+    await session.execute(update(Account).where(Account.company_id == auth["company_id"], Account.code == "1132")
+                          .values(is_active=False))
+    await session.commit()
+    bank = await _bank(client, auth)
+    listed = {a["code"] for a in (await _view(client, auth))["targets"]}
+    assert {"1130-OB", "1130-P", "1131"} <= listed
+    assert not {bank, "1132", "1120", "1130"} & listed
+    codes = (await session.execute(select(Account.code).where(Account.company_id == auth["company_id"]))).scalars()
+    accepted = set()
+    for code in sorted(codes):
+        r = await _move(client, auth, lots, code)
+        assert r.status_code in (200, 422), (code, r.text)
+        if r.status_code == 200:
+            accepted.add(code)
+    assert accepted == listed
+
+
+async def test_moving_all_matching_lots_moves_every_page_as_one_undoable_move(session, client, auth):
+    lots = await _older_company(session, client, auth, [1.0] * 100 + [2.0] * 20)
+    await _startup(session)
+    view = await _view(client, auth, q="OLD-000")
+    assert len(view["lots"]) == 50
+    assert view["matching"] == {"count": 100, "value": 100.0}
+    assert (await _view(client, auth))["matching"] == {"count": 120, "value": 140.0}
+
+    key = uuid.uuid4().hex
+    r = await _move_all(client, auth, 100, "1130-P", key=key, q="OLD-000")
+    assert r.status_code == 200, r.text
+    result = r.json()["result"]
+    assert (result["moved"], result["value"], result["code"]) == (100, 100.0, "1130-P")
+    assert await _accounts(session, auth, lots) == ["1130-P"] * 100 + ["1130-OB"] * 20
+    (entry,) = await _entries(session, auth, "je:auto:older-stock-moved:")
+    assert _lines(entry) == {"1130-P": (100.0, 0.0), "1130-OB": (0.0, 100.0)}
+
+    # Sent again, the same move is answered and nothing more moves.
+    events = await _events(session, auth)
+    again = await _move_all(client, auth, 100, "1130-P", key=key, q="OLD-000")
+    assert again.status_code == 200, again.text
+    assert again.json()["result"]["move_id"] == result["move_id"]
+    assert await _events(session, auth) == events
+
+    # One undo puts every lot back.
+    r = await client.post(f"/accounting/older-stock/moves/{result['move_id']}/undo", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    assert await _accounts(session, auth, lots) == ["1130-OB"] * 120
+    assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 140.0)
+
+
+async def test_moving_all_matching_lots_is_refused_when_the_lots_matching_changed(session, client, auth):
+    lots = await _older_company(session, client, auth, [1.0] * 3)
+    await _startup(session)
+    events = await _events(session, auth)
+    detail = _refused(await _move_all(client, auth, 2, "1130-P", account="1130-OB"), 409,
+                      "older_stock.move.changed")
+    assert detail["params"] == {"count": 3, "shown": 2}
+    _refused(await _move_all(client, auth, 0, "1130-P", q="nothing"), 422, "older_stock.move.nothing_selected")
+    _refused(await _move_all(client, auth, 10001, "1130-P"), 422, "older_stock.move.too_many")
+    _refused(await _move_all(client, auth, 3, "1120"), 422, "posting.older_stock.never_inventory")
+    r = await client.post("/accounting/older-stock/move-all", headers=auth["headers"],
+                          json={"count": 3, "code": "1130-P"})
+    _refused(r, 422, "older_stock.move.no_key")
+    assert await _events(session, auth) == events
+    assert await _accounts(session, auth, lots) == ["1130-OB"] * 3
+
+
 async def test_older_stock_routes_need_manage_accounting(session, client, auth):
     from celerp.models.accounting import UserCompany
     from celerp.models.company import User
@@ -810,6 +893,8 @@ async def test_older_stock_routes_need_manage_accounting(session, client, auth):
     for method, path, body in (("get", "/accounting/older-stock", None),
                                ("post", "/accounting/older-stock/move", {"item_ids": ["x"], "code": "1130-P",
                                                                          "key": "k"}),
+                               ("post", "/accounting/older-stock/move-all", {"count": 1, "code": "1130-P",
+                                                                             "key": "k"}),
                                ("post", "/accounting/older-stock/moves/m/undo", None),
                                ("post", "/accounting/older-stock/retry", None),
                                ("post", "/accounting/older-stock/corrections", {"placements": ["p"],
@@ -831,12 +916,15 @@ _VIEW = {
                     "journal": ["je:auto:older-stock-placed:p1:opening"], "corrections": []}],
     "moves": [{"move_id": "m1", "day": "2026-10-14", "code": "1130-P", "count": 1, "value": 5.0, "undone": False,
                "undo_of": None}],
-    "candidates": [{"code": "1130-OB", "name": "Inventory opening", "account_type": "asset"},
+    "targets": [{"code": "1130-OB", "name": "Inventory opening", "account_type": "asset"},
                    {"code": "1130-P", "name": "Inventory purchased", "account_type": "asset"}],
     "accounts": ["1130-OB"],
     "currency": "USD",
+    "totals": {"lots": 120},
+    "matching": {"count": 120, "value": 4321.5},
 }
-_EMPTY = {**_VIEW, "lots": [], "placements": [], "moves": [], "accounts": []}
+_EMPTY = {**_VIEW, "lots": [], "placements": [], "moves": [], "accounts": [], "totals": {},
+          "matching": {"count": 0, "value": 0.0}}
 
 
 @pytest.fixture
@@ -944,6 +1032,27 @@ async def test_the_bulk_move_re_renders_the_card_with_a_flash(ui_client):
     body = r.content.decode()
     assert r.status_code == 200 and 'id="older-stock-card"' in body
     assert "OLD-1 is on an invoice not yet shipped (doc:1)." in body
+
+
+async def test_moving_all_matching_lots_states_count_and_value_and_asks_first(ui_client):
+    body, _ = await _tab(ui_client, _VIEW, query="&q=OLD")
+    (form,) = [f.split("</form>")[0] for f in body.split("<form") if 'id="older-stock-move-all"' in f]
+    assert "Move all 120 matching lots (value $4,321.50)" in form
+    assert "hx-confirm" in form and "You can undo it from Moves." in form
+    assert "/settings/accounting/older-stock/move-all?q=OLD" in body
+    assert 'name="count" value="120"' in form and 'name="idempotency_key"' in form
+    body, _ = await _tab(ui_client, _EMPTY)
+    assert 'id="older-stock-move-all"' not in body
+
+    moved = {**_VIEW, "result": {"moved": 120, "value": 4321.5, "code": "1130-P", "move_id": "m3"}}
+    move = AsyncMock(return_value=moved)
+    with patch("ui.api_client.move_all_older_stock", new=move), \
+         patch("ui.api_client.get_older_stock", new=AsyncMock(return_value=_VIEW)):
+        r = await ui_client.post("/settings/accounting/older-stock/move-all?q=OLD", cookies=_cookies(),
+                                 data={"count": "120", "code": "1130-P", "idempotency_key": "op-3"})
+    assert r.status_code == 200
+    assert move.await_args.args[1:] == ({"q": "OLD"}, 120, "1130-P", "op-3")
+    assert "Moved 120 lots to 1130-P." in r.content.decode()
 
 
 def test_older_stock_notices_translate():

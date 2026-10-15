@@ -384,21 +384,51 @@ def _status(role: str, current: dict[str, str], chart: dict[str, dict], required
     return ("inactive" if not account.get("is_active", True) else "wrong_type"), problem
 
 
+_STOCK_ROLES = (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
+
+
 def _older_stock(settings: dict, chart: dict[str, dict]) -> dict:
     """The accounts that have held purchased or opening inventory, for the screens that
     place stock on one, the retained earnings account a write-off of a surplus posts to
     (None while unmapped), and the company currency."""
-    held = {c for role in (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
-            for c in scope_list(settings, role)}
+    held = {c for role in _STOCK_ROLES for c in scope_list(settings, role)}
     retained = role_map(settings).get(AccountRole.RETAINED_EARNINGS.value)
     return {"currency": str(settings.get("currency") or "USD").upper(),
             "candidates": [_brief(chart[c]) for c in sorted(held) if c in chart],
             "retained": _brief(chart[retained]) if retained in chart else None}
 
 
+def _move_problem(settings: dict, account: dict) -> str | None:
+    """Why older stock cannot be moved onto ``account`` (a chart row as _chart reads it),
+    or None. It may go onto an account that has held inventory, or onto an asset account
+    that holds no cash and that no other posting account uses (a new inventory account),
+    as long as it can take entries."""
+    code = account["code"]
+    held = {c for role in _STOCK_ROLES for c in scope_list(settings, role)}
+    others = {c for role, c in role_map(settings).items() if role not in _STOCK_ROLES}
+    if account.get("cash") or (code not in held and (code in others or account.get("account_type") != "asset")):
+        return "never_inventory"
+    if not account.get("is_active", True) or account.get("has_children"):
+        return "cannot_take"
+    return None
+
+
 async def older_stock_targets(session: AsyncSession, company_id) -> dict:
-    """_older_stock for a company, read now (none listed while accounting is not running)."""
-    return _older_stock(await current_settings(session, company_id), await _chart(session, company_id) or {})
+    """The accounts older stock can be moved onto (``targets``, each one _move_problem
+    accepts), the retained earnings account and the company currency (_older_stock), read
+    now. No targets while accounting is not running."""
+    settings, chart = await current_settings(session, company_id), await _chart(session, company_id) or {}
+    held = _older_stock(settings, chart)
+    return {"currency": held["currency"], "retained": held["retained"],
+            "targets": [_brief(a) for a in chart.values() if _move_problem(settings, a) is None]}
+
+
+async def older_stock_move_problem(session: AsyncSession, company_id, code: str) -> str | None:
+    """Why older stock cannot be moved onto account ``code`` now: ``not_in_chart``,
+    ``never_inventory`` or ``cannot_take`` (_move_problem), or None. The one rule the move
+    and its account picker (older_stock_targets) share."""
+    settings, chart = await current_settings(session, company_id), await _chart(session, company_id) or {}
+    return "not_in_chart" if code not in chart else _move_problem(settings, chart[code])
 
 
 async def panel(session: AsyncSession, company_id) -> dict | None:

@@ -1511,19 +1511,19 @@ async def _locked_lots(session: AsyncSession, company_id, item_ids) -> list[Proj
     return rows
 
 
-def _check_target(settings: dict, code: str, account: dict | None) -> None:
-    """Older stock may be moved onto an account that has held inventory, or onto an asset
-    account no other posting account uses (a new inventory account), as long as it can
-    take entries."""
-    if account is None:
+async def _check_target(session: AsyncSession, company_id, code: str) -> None:
+    """Refuse (422) an account older stock cannot be moved onto, by the rule its account
+    picker lists by (posting_readiness.older_stock_move_problem)."""
+    from celerp.services.posting_readiness import older_stock_move_problem
+
+    problem = await older_stock_move_problem(session, company_id, code)
+    if problem == "not_in_chart":
         raise _refused(422, "posting.older_stock.not_in_chart", f"Account {code} is not in the chart of accounts.",
                        code=code)
-    inventory = {c for role in _INVENTORY for c in scope_codes(settings, role)}
-    others = {c for role, c in role_map(settings).items() if role not in _INVENTORY}
-    if code not in inventory and (code in others or account.get("account_type") != "asset"):
+    if problem == "never_inventory":
         raise _refused(422, "posting.older_stock.never_inventory",
                        f"Account {code} is not an inventory account, so stock cannot be moved onto it.", code=code)
-    if not account.get("is_active", True) or account.get("has_children"):
+    if problem == "cannot_take":
         raise _refused(422, "older_stock.move.cannot_take",
                        f"Account {code} is inactive or has accounts under it, so it cannot take entries.", code=code)
 
@@ -1587,21 +1587,56 @@ async def _move(session: AsyncSession, company_id, moves: list[tuple[Projection,
 
 async def move_lot_accounts(session: AsyncSession, company_id, item_ids: list[str], code: str, key: str | None,
                             actor_id) -> dict:
-    """Move older lots placed automatically (_place) onto inventory account ``code``,
-    their value with them, in one entry dated today. ``key`` identifies the operation, so
-    a request sent twice moves once and returns the first result; the key reused for a
-    different account or selection is refused (409). A lot already on ``code`` is
-    skipped. Refused, writing nothing: no lots or too many, no key, an
-    account that is not inventory or cannot take entries, a lot not placed
-    automatically or no longer in stock, a lot an unshipped invoice holds, or a locked
-    period. Returns {"moved", "value", "code", "move_id"}."""
-    from celerp.services.company_lock import lock_chart, locked_company
-    from celerp.services.journal_accounts import lock_accounts
-
+    """Move older lots ``item_ids`` placed automatically (_place) onto inventory account
+    ``code`` (_move_lots). Refused, writing nothing: no lots or too many."""
     if not item_ids:
         raise _refused(422, "older_stock.move.nothing_selected", "Select the lots to move.")
     if len(item_ids) > MAX_MOVE:
         raise _refused(422, "older_stock.move.too_many", f"Move at most {MAX_MOVE} lots at a time.", limit=MAX_MOVE)
+
+    async def chosen() -> list[str]:
+        return item_ids
+    return await _move_lots(session, company_id, chosen, _request_id(item_ids, code), code, key, actor_id)
+
+
+async def move_matching_lots(session: AsyncSession, company_id, account: str | None, q: str | None, count: int,
+                             code: str, key: str | None, actor_id) -> dict:
+    """Move every older lot the Older stock list shows for ``account`` and ``q``
+    (older_stock_lots) onto inventory account ``code`` as one move (_move_lots), however
+    many pages it spans. ``count`` is how many the user saw matching: when a different
+    number matches now, refused (409) so nothing moves that was not confirmed. Refused,
+    writing nothing: none shown or too many."""
+    if count <= 0:
+        raise _refused(422, "older_stock.move.nothing_selected", "Select the lots to move.")
+    if count > MAX_MOVE:
+        raise _refused(422, "older_stock.move.too_many", f"Move at most {MAX_MOVE} lots at a time.", limit=MAX_MOVE)
+
+    async def matching() -> list[str]:
+        settings = await current_settings(session, company_id)
+        lots = [lot["item_id"] for lot in await older_stock_lots(
+            session, company_id, settings.get("currency", "USD"), account, q)]
+        if len(lots) != count:
+            raise _refused(409, "older_stock.move.changed",
+                           f"{len(lots)} lots match now, not the {count} shown, so nothing was moved. Look at the "
+                           "list again and confirm.", count=len(lots), shown=count)
+        return lots
+    request = _hash(":".join(["matching", code, account or "", (q or "").strip().lower(), str(count)]))
+    return await _move_lots(session, company_id, matching, request, code, key, actor_id)
+
+
+async def _move_lots(session: AsyncSession, company_id, lots, request: str, code: str, key: str | None,
+                     actor_id) -> dict:
+    """Move the older lots ``lots()`` names onto inventory account ``code``, their value
+    with them, in one entry dated today. ``lots`` is read once the company is locked.
+    ``key`` identifies the operation, so a request sent twice moves once and returns the
+    first result; the key reused for a different ``request`` is refused (409). A lot
+    already on ``code`` is skipped. Refused, writing nothing: no key, an account that is
+    not inventory or cannot take entries (_check_target), a lot not placed automatically
+    or no longer in stock, a lot an unshipped invoice holds, or a locked period. Returns
+    {"moved", "value", "code", "move_id"}."""
+    from celerp.services.company_lock import lock_chart, locked_company
+    from celerp.services.journal_accounts import lock_accounts
+
     key = (key or "").strip()
     if not key or len(key) > 64:
         raise _refused(422, "older_stock.move.no_key",
@@ -1609,8 +1644,8 @@ async def move_lot_accounts(session: AsyncSession, company_id, item_ids: list[st
     code = (code or "").strip()
     if not code:
         raise HTTPException(status_code=422, detail=no_account_chosen())
-    move_id, request = _move_id(company_id, key), _request_id(item_ids, code)
-    company = await locked_company(session, company_id)
+    move_id = _move_id(company_id, key)
+    await locked_company(session, company_id)
     if done := await _move_events(session, company_id, move_id):
         if any((e.metadata_ or {}).get("request") != request for e in done):
             raise _refused(409, "older_stock.move.key_reused",
@@ -1618,13 +1653,11 @@ async def move_lot_accounts(session: AsyncSession, company_id, item_ids: list[st
                            "Reload the page and try again.")
         return {"moved": len(done), "value": _debits(await _je_state(session, company_id, _move_je(move_id))),
                 "code": done[0].data[LOT_ACCOUNT_FIELD], "move_id": move_id}
-    settings = dict(company.settings or {})
     await lock_chart(session, company_id)
-    rows = await _locked_lots(session, company_id, item_ids)
-    accounts = await lock_accounts(session, company_id, {code})
-    if accounts is None:
+    rows = await _locked_lots(session, company_id, await lots())
+    if await lock_accounts(session, company_id, {code}) is None:
         raise HTTPException(status_code=409, detail=needs_accounting())
-    _check_target(settings, code, accounts.get(code))
+    await _check_target(session, company_id, code)
     placed = set((await session.execute(select(LedgerEntry.entity_id).where(
         LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
         LedgerEntry.entity_id.in_([r.entity_id for r in rows]),
@@ -1823,6 +1856,31 @@ async def _reconciliation(session: AsyncSession, company_id, placements: list[di
     return {"state": state, "waiting": waiting, "reasons": reasons, "open": open_}
 
 
+async def older_stock_lots(session: AsyncSession, company_id, currency: str, account: str | None = None,
+                           q: str | None = None) -> list[dict]:
+    """The lots placed automatically still in stock, newest placement first, each with
+    its SKU, name, account, booked value and placement; filtered (_matching) to
+    ``account`` and to ``q`` in their SKU or name."""
+    recorded = (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
+        LedgerEntry.metadata_["placement"].as_string().is_not(None)).order_by(LedgerEntry.id.desc()))).scalars().all()
+    rows = {r.entity_id: r for r in (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item",
+        Projection.entity_id.in_([e.entity_id for e in recorded])))).scalars()}
+    return _matching([{"item_id": e.entity_id, "sku": rows[e.entity_id].state.get("sku") or "",
+                       "name": rows[e.entity_id].state.get("name") or "",
+                       "account": rows[e.entity_id].state.get(LOT_ACCOUNT_FIELD),
+                       "value": float(booked_value(rows[e.entity_id], currency)),
+                       "placement": e.metadata_["placement"]}
+                      for e in recorded if e.entity_id in rows and in_stock(rows[e.entity_id].state)], account, q)
+
+
+def _matching(lots: list[dict], account: str | None, q: str | None) -> list[dict]:
+    needle = (q or "").strip().lower()
+    return [lot for lot in lots if (not account or lot["account"] == account)
+            and (not needle or needle in lot["sku"].lower() or needle in lot["name"].lower())]
+
+
 async def older_stock_view(session: AsyncSession, company_id, account: str | None = None,
                            q: str | None = None, offsets: dict[str, int] | None = None, limit: int = 50) -> dict:
     """Settings > Accounting > Older stock: the lots placed automatically still in stock,
@@ -1833,7 +1891,9 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
     accounts they can be moved to, a standing failure to place older stock
     (failed_placement), and where the older stock stands with the books
     (_reconciliation). Each list in OLDER_STOCK_PAGES is a page of ``limit`` rows from
-    its own offset, with its total under ``totals``."""
+    its own offset, with its total under ``totals``; how many lots match the filters and
+    their value, which a move of every matching lot (move_matching_lots) takes, under
+    ``matching``."""
     from celerp.services.ledger_display import display_fields
     from celerp.services.posting_readiness import older_stock_targets
 
@@ -1859,15 +1919,7 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
                                "journal": record.get("journal") or [],
                                "corrections": record.get("corrections") or []}
         placements[pid]["count"] += 1
-    rows = {r.entity_id: r for r in (await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type == "item",
-        Projection.entity_id.in_([e.entity_id for e in recorded])))).scalars()}
-    lots = [{"item_id": e.entity_id, "sku": rows[e.entity_id].state.get("sku") or "",
-             "name": rows[e.entity_id].state.get("name") or "",
-             "account": rows[e.entity_id].state.get(LOT_ACCOUNT_FIELD), "value": float(booked_value(rows[e.entity_id],
-                                                                                                    currency)),
-             "placement": e.metadata_["placement"]}
-            for e in recorded if e.entity_id in rows and in_stock(rows[e.entity_id].state)]
+    lots = await older_stock_lots(session, company_id, currency)
     accounts = sorted({lot["account"] for lot in lots if lot["account"]})
     summary: dict[str, dict] = {}
 
@@ -1892,9 +1944,7 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
                     "account": (records.get(e.data["placement"]) or {}).get("account"),
                     "actor_name": shown["actor_name"]}
                    for e, shown in zip(corrected, await display_fields(corrected, company_id, session))]
-    needle = (q or "").strip().lower()
-    lots = [lot for lot in lots if (not account or lot["account"] == account)
-            and (not needle or needle in lot["sku"].lower() or needle in lot["name"].lower())]
+    lots = _matching(lots, account, q)
     events = (await session.execute(select(LedgerEntry).where(
         LedgerEntry.company_id == company_id, LedgerEntry.event_type == MOVED)
         .order_by(LedgerEntry.id.desc()))).scalars().all()
@@ -1913,6 +1963,7 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
     offsets = offsets or {}
     return {**{name: full[offsets.get(name, 0):offsets.get(name, 0) + limit] for name, full in lists.items()},
             "totals": {name: len(full) for name, full in lists.items()}, "limit": limit,
+            "matching": {"count": len(lots), "value": round(sum(lot["value"] for lot in lots), 2)},
             "summary": sorted(summary.values(), key=lambda r: r["account"]),
             "accounts": accounts, "failed": await failed_placement(session, company_id),
             "reconciliation": await _reconciliation(session, company_id, list(placements.values()), recorded),
