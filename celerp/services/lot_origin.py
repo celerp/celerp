@@ -547,7 +547,10 @@ async def _place(session: AsyncSession, company_id) -> bool:
     (opening inventory first when the stock is from elsewhere, books_from_elsewhere, or
     purchased inventory never took an entry), else, when none holds anything, purchased
     inventory. One entry moves what every other account
-    holds beyond its stock onto the default account, so no inventory is added. What the
+    holds beyond its stock onto the default account, so no inventory is added. Cost an
+    invoice recognized on lots no allocation or entry ties to one account
+    (auto_je.UNPLACED) was taken off the books already: it counts against V and is kept
+    on the record as ``provisional``. What the
     accounts together hold short of V is recognized as opening stock, the way opening
     stock is booked (post_opening_stock_delta); what they hold beyond V is written off
     nowhere and is recorded on the default account as an unresolved difference. A
@@ -564,7 +567,7 @@ async def _place(session: AsyncSession, company_id) -> bool:
     placed again. Returns whether lots were placed."""
     from celerp.events.engine import emit_event
     from celerp.notifications import service as notification_service
-    from celerp.services.auto_je import _emit_auto_posted_je, _lot_line, recognized_unshipped
+    from celerp.services.auto_je import UNPLACED, _emit_auto_posted_je, _lot_line, recognized_unshipped
     from celerp.services.company_lock import locked_company
     from celerp.services.journal_accounts import lock_accounts
 
@@ -598,11 +601,13 @@ async def _place(session: AsyncSession, company_id) -> bool:
     sold = await recognized_unshipped(session, company_id)
     unresolved = await unresolved_differences(session, company_id)
     room = {c: round_money(_room(entries, items, c, currency, sold, unresolved), currency) for c in candidates}
+    provisional = round_money(sold.get(UNPLACED, 0), currency)
     value = round_money(sum((booked_value(r, currency) for r in pending), Decimal("0")), currency)
+    owed = value - provisional  # cost already taken off the books by invoices whose entries name no one account
     most = max(candidates, key=lambda c: room[c])
-    target = next((c for c in candidates if room[c] == value), None) or (most if room[most] > 0 else p)
+    target = next((c for c in candidates if room[c] == owed), None) or (most if room[most] > 0 else p)
     moved = {c: room[c] for c in candidates if c != target and room[c]}
-    gap = round_money(sum(room.values(), Decimal("0")) - value, currency)
+    gap = round_money(sum(room.values(), Decimal("0")) - owed, currency)
     if gap < 0 and retained in problems:
         await _notify_unmapped(session, company_id, retained)
         return False
@@ -642,6 +647,7 @@ async def _place(session: AsyncSession, company_id) -> bool:
         data={"placement": pid, "day": day, "count": len(ids), "value": float(value), "account": target,
               "rooms": {c: float(v) for c, v in room.items()}, "transferred": float(transferred),
               "recognized": float(max(-gap, Decimal("0"))), "unresolved": float(max(gap, Decimal("0"))),
+              "provisional": float(provisional),
               "classification": _classify(bool(moved), gap), "journal": journal})
     company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), "older_stock_placed": pid}

@@ -3097,14 +3097,27 @@ async def _shipments(session, company_id, doc_ids) -> _Shipments:
     return result
 
 
+UNPLACED = ""
+"""The key cost recognized on older stock not placed yet is read under, when neither
+the allocation nor the entry that took it says which account it left (_read_books with
+``pending``). Placing the stock puts it on the account placing records (lot_origin._place)."""
+
+
 @dataclass
 class _Books:
-    """What reading many invoices' recognized cost needs, read once (_read_books)."""
+    """What reading many invoices' recognized cost needs, read once (_read_books).
+
+    ``relieved`` names, per invoice whose allocation leaves a lot's account out (one an
+    older release finalized), the one inventory account its finalize entry took the cost
+    from. ``pending`` reads goods awaiting placement under UNPLACED instead of refusing
+    them, for readers that only report or count."""
 
     recognized: dict[str, RecognizedCogs]
     shipments: _Shipments
     repriced: dict[tuple[str, str], dict[int, float]]
     payable_codes: frozenset
+    relieved: dict[str, str] = field(default_factory=dict)
+    pending: bool = False
 
 
 async def credited_quantities(session, company_id, doc_ids) -> dict[str, dict[int, float]]:
@@ -3180,10 +3193,23 @@ def _less_credited(allocations: dict, credited: dict[int, float]) -> dict:
     return out
 
 
-async def _read_books(session, company_id, doc_ids, legacy: dict[str, dict] | None = None) -> _Books:
+def _relieved_account(settings: dict, row: Projection | None, recognized: RecognizedCogs) -> str | None:
+    """The one inventory account an invoice's finalize entry ``row`` took the cost of the
+    allocated lots naming no account from: the only account it relieved beyond those the
+    allocation names, else the only account it relieved. None when that is not one account."""
+    relief = {code for code, amount in _inventory_relief(settings, [row] if row is not None else []).items()
+              if amount > 0.005}
+    named = {lot["account"] for alloc in recognized.allocations.values() for lot in alloc.get("lots") or []
+             if lot.get("account")}
+    left = relief - named
+    return next(iter(left)) if len(left) == 1 else (next(iter(relief)) if len(relief) == 1 else None)
+
+
+async def _read_books(session, company_id, doc_ids, legacy: dict[str, dict] | None = None, *,
+                      pending: bool = False) -> _Books:
     """The recognitions, shipments and cost corrections of ``doc_ids``, less the goods
     credit notes credited on them, with every lot they name loaded into the session, in a
-    fixed number of queries. ``legacy`` as for _recognitions."""
+    fixed number of queries. ``legacy`` as for _recognitions, ``pending`` as for _Books."""
     recognized = await _recognitions(session, company_id, doc_ids, legacy)
     for doc_id, per in (await credited_quantities(session, company_id, recognized)).items():
         recognized[doc_id] = RecognizedCogs(
@@ -3192,9 +3218,23 @@ async def _read_books(session, company_id, doc_ids, legacy: dict[str, dict] | No
     shipments = await _shipments(session, company_id, set(recognized))
     await _load_rows(session, company_id, {lot["lot_entity_id"] for r in recognized.values()
                                            for alloc in r.allocations.values() for lot in alloc.get("lots") or []})
+    settings = await current_settings(session, company_id)
+    bare = {doc_id: r for doc_id, r in recognized.items()
+            if any(not lot.get("account") for alloc in r.allocations.values() for lot in alloc.get("lots") or [])}
+    entries = await _load_rows(session, company_id, {r.je_id for r in bare.values()})
+    relieved = {doc_id: code for doc_id, r in bare.items()
+                if (code := _relieved_account(settings, entries.get(r.je_id), r)) is not None}
     return _Books(recognized=recognized, shipments=shipments, repriced=await _repricings(session, company_id),
-                  payable_codes=frozenset(scope_codes(await current_settings(session, company_id),
-                                                      R.CONSIGNOR_PAYABLE)))
+                  payable_codes=frozenset(scope_codes(settings, R.CONSIGNOR_PAYABLE)),
+                  relieved=relieved, pending=pending)
+
+
+async def _sold_key(session, company_id, lot_id: str, state: dict, books: _Books) -> str:
+    """sold_lot_key of a lot, or UNPLACED for goods of the company's own awaiting
+    placement when ``books`` reads them (``pending``)."""
+    if books.pending and not is_consigned(state) and not state.get(LOT_ACCOUNT_FIELD):
+        return UNPLACED
+    return await sold_lot_key(session, company_id, lot_id, state)
 
 
 async def _recognized_by_account(
@@ -3226,7 +3266,7 @@ async def _recognized_by_account(
             raise ValueError(t("error.cogs_line_unknown"))
         cost = lot_cost_of_sale(lot.state or {})
         if cost:
-            _add(shipped, {await sold_lot_key(session, company_id, lot.entity_id, lot.state or {}): cost})
+            _add(shipped, {await _sold_key(session, company_id, lot.entity_id, lot.state or {}, books): cost})
         shipped_qty[idx] = shipped_qty.get(idx, 0.0) + float((lot.state or {}).get("quantity") or 0)
     for lot, qty in books.shipments.back.get(doc_id, []):
         idx = _line(lot)
@@ -3240,7 +3280,7 @@ async def _recognized_by_account(
             alloc.get("provisional_qty") or 0)
         if int(idx) not in shipped_qty and int(idx) not in back_qty:
             _add(held.setdefault(int(idx), {}), await _allocation_by_account(
-                session, company_id, alloc, amount + repriced.get(int(idx), 0.0), books.payable_codes))
+                session, company_id, alloc, amount + repriced.get(int(idx), 0.0), books, doc_id))
             unshipped_qty[int(idx)] = allocated
             continue
         if int(idx) not in shipped_qty:
@@ -3248,7 +3288,7 @@ async def _recognized_by_account(
         unshipped = allocated - shipped_qty.get(int(idx), 0.0) - back_qty.get(int(idx), 0.0)
         if allocated > 0 and unshipped > 1e-9:
             _add(held.setdefault(int(idx), {}), await _allocation_by_account(
-                session, company_id, alloc, amount * unshipped / allocated, books.payable_codes))
+                session, company_id, alloc, amount * unshipped / allocated, books, doc_id))
             unshipped_qty[int(idx)] = unshipped
     return shipped, held, unshipped_qty
 
@@ -3365,7 +3405,7 @@ def _hold_order(state: dict | None, doc_id: str) -> int:
 
 async def unshipped_claims(session, company_id, *, exclude: str | None = None,
                            states: dict[str, dict] | None = None, costed: bool = True,
-                           lots=None) -> list[UnshippedClaim]:
+                           lots=None, unplaced: bool = False) -> list[UnshippedClaim]:
     """Every claim finalized invoices hold on goods still on hand (UnshippedClaim), in
     the order the invoices were finalized, leaving out the invoice ``exclude``. A lot in
     ``states`` ({lot id: state}) is read as holding that state instead of its own, which
@@ -3375,6 +3415,9 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
     invoice finalized before cost snapshots existed holds the goods its lines name.
     Given ``lots``, only the claims on goods of their family are read, from only the
     invoices that may hold them (_open_invoices), which is every claim on those lots.
+    ``unplaced`` (and not ``costed``) reads goods of an older release awaiting placement
+    under the account their invoice's finalize entry relieved, else UNPLACED, instead of
+    refusing them; posting paths leave it off, so they still refuse unplaced goods.
 
     Claims follow the goods, never a label: an invoice holds the lots its lines were
     allocated and the lots their goods went to, whatever SKU any of them or the line names.
@@ -3388,7 +3431,8 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
     cost for its unshipped goods is shared over those lots by their allocated cost. Goods
     no longer in stock claim nothing: they left stock some other way."""
     open_docs = await _open_invoices(session, company_id, exclude=exclude, lots=lots)
-    books = await _read_books(session, company_id, open_docs, legacy=None if costed else open_docs)
+    books = await _read_books(session, company_id, open_docs, legacy=None if costed else open_docs,
+                              pending=unplaced or not costed)
     held_where = await _held_where(session, company_id, {
         lot["lot_entity_id"] for recognized in books.recognized.values()
         for alloc in recognized.allocations.values() for lot in alloc.get("lots") or []})
@@ -3419,7 +3463,7 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
                     left -= qty
                     used[member.entity_id] = used.get(member.entity_id, 0.0) + qty
                     if costed:
-                        key = key or await _allocated_lot_key(session, company_id, lot, books.payable_codes)
+                        key = key or await _allocated_lot_key(session, company_id, lot, books, doc_id)
                     taken.append((member.entity_id, qty, key, qty * float(lot.get("unit_cost") or 0), float(value)))
             # A lot set aside at no cost still holds its claim: the goods move with it
             # when another invoice ships them, at a cost of nothing.
@@ -3603,10 +3647,14 @@ async def recognized_unshipped(session, company_id) -> dict[str, float]:
     A lot counts at most once, however many invoices costed it: each claim, in the order
     the invoices were finalized, counts only up to what the lot still holds after the
     claims before it, so goods two invoices costed, or that left stock another way,
-    still show as a gap."""
+    still show as a gap.
+
+    Goods an older release left with no account are read as unshipped_claims reads them
+    with ``unplaced``, so placing that stock (lot_origin._place) and the books check can
+    count them before the stock is placed."""
     left: dict[str, float] = {}
     total: dict[str, float] = {}
-    for claim in await unshipped_claims(session, company_id):
+    for claim in await unshipped_claims(session, company_id, unplaced=True):
         room = left.setdefault(claim.lot_id, claim.on_hand)
         take = max(0.0, min(claim.amount, room))
         left[claim.lot_id] = room - take
@@ -3913,7 +3961,8 @@ async def _lots_booked_at_fulfilment(
     return [lot for lot in lots if lot.entity_id in shipped]
 
 
-async def _allocation_by_account(session, company_id, alloc: dict, amount: float, payable_codes) -> dict[str, float]:
+async def _allocation_by_account(session, company_id, alloc: dict, amount: float, books: _Books,
+                                 doc_id: str) -> dict[str, float]:
     """``amount`` of a line's finalize allocation, split over the accounts its lots are
     costed against (sold_lot_key), by each lot's share of the allocated cost. A lot
     allocated while on consignment and bought since is costed against the inventory it
@@ -3923,20 +3972,25 @@ async def _allocation_by_account(session, company_id, alloc: dict, amount: float
         return {}
     parts: dict[str, float] = {}
     for lot in lots:
-        code = await _allocated_lot_key(session, company_id, lot, payable_codes)
+        code = await _allocated_lot_key(session, company_id, lot, books, doc_id)
         parts[code] = parts.get(code, 0.0) + float(lot.get("qty") or 0) * float(lot.get("unit_cost") or 0)
     return _shares(parts, amount, await company_currency(session, company_id))
 
 
-async def _allocated_lot_key(session, company_id, lot: dict, payable_codes) -> str:
-    """The account an allocated lot is costed against (sold_lot_key), the one recorded
-    in the allocation unless it is a consignor payable."""
+async def _allocated_lot_key(session, company_id, lot: dict, books: _Books, doc_id: str) -> str:
+    """The account an allocated lot of invoice ``doc_id`` is costed against: the one
+    recorded in the allocation unless it is a consignor payable; for goods of the
+    company's own allocated with no account (an older release), the account the
+    invoice's finalize entry took their cost from (_Books.relieved); else the lot's own
+    (_sold_key)."""
     code = lot.get("account")
-    if not code or code in payable_codes:
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": lot["lot_entity_id"]})
-        code = await sold_lot_key(session, company_id, lot["lot_entity_id"],
-                                  (row.state or {}) if row is not None else {})
-    return code
+    if code and code not in books.payable_codes:
+        return code
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": lot["lot_entity_id"]})
+    state = (row.state or {}) if row is not None else {}
+    if not code and not is_consigned(state) and doc_id in books.relieved:
+        return books.relieved[doc_id]
+    return await _sold_key(session, company_id, lot["lot_entity_id"], state, books)
 
 
 async def create_for_doc_cogs_adjustment(
