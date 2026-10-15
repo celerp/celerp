@@ -80,7 +80,9 @@ _DYNAMIC_KEY_SITES = {
     "celerp/services/lot_origin.py": [
         "older_stock.move.cannot_take", "older_stock.move.invoiced", "older_stock.move.no_key",
         "older_stock.move.nothing_selected", "older_stock.move.not_placed", "older_stock.move.too_many",
-        "older_stock.no_adjustment", "older_stock.undo.done", "older_stock.undo.moved_since",
+        "older_stock.correct.changed_since", "older_stock.correct.no_kind",
+        "older_stock.correct.no_placement", "older_stock.correct.nothing_selected", "older_stock.correct.too_many",
+        "older_stock.correct.unbalanced", "older_stock.undo.done", "older_stock.undo.moved_since",
         "older_stock.undo.no_move", "posting.older_stock.never_inventory", "posting.older_stock.no_item",
         "posting.older_stock.not_in_chart",
     ],

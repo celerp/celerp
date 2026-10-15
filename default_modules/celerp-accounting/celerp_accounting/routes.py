@@ -4486,8 +4486,9 @@ class OlderStockMoveIn(BaseModel):
     key: str | None = None
 
 
-class PlacementAdjustmentIn(BaseModel):
-    booked: bool
+class PlacementCorrectionIn(BaseModel):
+    placements: list[str] = []
+    kind: str = ""
 
 
 @router.get("/older-stock")
@@ -4550,21 +4551,21 @@ async def retry_older_stock(
     return {**await older_stock_view(session, company_id), "result": {"placed": placed}}
 
 
-@router.post("/older-stock/placements/{pid}/adjustment")
-async def set_older_stock_adjustment(
-    pid: str,
-    payload: PlacementAdjustmentIn,
+@router.post("/older-stock/corrections")
+async def correct_older_stock(
+    payload: PlacementCorrectionIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
     user=Depends(get_current_user),
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Reverse a placement's adjustment against retained earnings, or book it again."""
-    from celerp.services.lot_origin import older_stock_view, set_placement_adjustment
+    """Correct how placements treated their difference: book it against retained
+    earnings, or leave it unresolved."""
+    from celerp.services.lot_origin import correct_placements, older_stock_view
 
-    await set_placement_adjustment(session, company_id, pid, payload.booked, user.id)
+    corrected = await correct_placements(session, company_id, payload.placements, payload.kind, user.id)
     await session.commit()
-    return await older_stock_view(session, company_id)
+    return {**await older_stock_view(session, company_id), "result": {"corrected": corrected}}
 
 
 class CloseYearPayload(BaseModel):

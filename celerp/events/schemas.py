@@ -1246,6 +1246,19 @@ class SysOlderStockPlaced(BaseModel):
     journal: list[str]
 
 
+class SysOlderStockCorrected(BaseModel):
+    # A correction of how a placement treated its difference (lot_origin.correct_placements):
+    # ``amount`` booked onto the books (off them when negative), and what the placement
+    # has recognized and left unresolved after it.
+    placement: str
+    kind: str
+    day: str
+    amount: float
+    recognized: float
+    unresolved: float
+    journal: str
+
+
 # Subscription schemas - open/permissive since subscription data is user-defined
 class SubCreated(BaseModel):
     model_config = {"extra": "allow"}
@@ -1535,6 +1548,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "sys.backup.created": SysBackupCreated,
     "sys.migration.applied": SysMigrationApplied,
     "sys.older_stock.placed": SysOlderStockPlaced,
+    "sys.older_stock.corrected": SysOlderStockCorrected,
 
     # Lists
     "list.created": ListCreated,

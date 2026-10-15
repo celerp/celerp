@@ -141,3 +141,4 @@ class EventType(StrEnum):
     SYS_BACKUP_CREATED = "sys.backup.created"
     SYS_MIGRATION_APPLIED = "sys.migration.applied"
     SYS_OLDER_STOCK_PLACED = "sys.older_stock.placed"
+    SYS_OLDER_STOCK_CORRECTED = "sys.older_stock.corrected"

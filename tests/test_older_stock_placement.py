@@ -8,7 +8,8 @@ purchased inventory. What the inventory accounts hold short of the stock is reco
 as opening stock, what they hold beyond it is left unresolved for the accountant
 (test_older_stock_reconciliation), and the company is told. From
 Settings > Accounting > Older stock the lots can be moved to another inventory account
-in bulk, each move undone, and the adjustment reversed or booked again.
+in bulk, each move undone, and a placement's difference corrected
+(test_older_stock_correction).
 
 The stock comes in the way a demo company's does, through the batch import, and is then
 made to look as an older release left it: no lot records an account and the company
@@ -139,7 +140,7 @@ async def _entries(session, auth, prefix: str) -> list[dict]:
 
 
 async def _placements(session, auth) -> list[dict]:
-    return [e for e in await _entries(session, auth, "je:auto:older-stock-placed:") if ":t" not in e["id"][-4:]]
+    return [e for e in await _entries(session, auth, "je:auto:older-stock-placed:") if ":correction:" not in e["id"]]
 
 
 def _lines(je: dict) -> dict[str, tuple[float, float]]:
@@ -691,32 +692,6 @@ async def test_undo_puts_lots_back_once_and_refuses_after_a_later_move(session, 
              "older_stock.undo.no_move")
 
 
-async def test_the_placement_adjustment_can_be_reversed_and_booked_again(session, client, auth):
-    lots = await _older_company(session, client, auth, [30.0], short=10.0)
-    await _startup(session)
-    (placement,) = (await _view(client, auth))["placements"]
-    assert placement["adjustment"] == 10.0 and placement["booked"] is True and placement["count"] == 1
-    path = f"/accounting/older-stock/placements/{placement['pid']}/adjustment"
-
-    r = await client.post(path, headers=auth["headers"], json={"booked": False})
-    assert r.status_code == 200, r.text
-    assert r.json()["placements"][0]["booked"] is False
-    assert await _net(session, auth, "1130-OB") == (20.0,)
-    events = await _events(session, auth)
-    assert (await client.post(path, headers=auth["headers"], json={"booked": False})).status_code == 200
-    assert await _events(session, auth) == events
-
-    r = await client.post(path, headers=auth["headers"], json={"booked": True})
-    assert r.status_code == 200, r.text
-    assert await _net(session, auth, "1130-OB") == (30.0,)
-    toggles = await _entries(session, auth, f"je:auto:older-stock-placed:{placement['pid']}:opening:t")
-    assert [_lines(t) for t in toggles] == [{"3200": (10.0, 0.0), "1130-OB": (0.0, 10.0)},
-                                            {"1130-OB": (10.0, 0.0), "3200": (0.0, 10.0)}]
-    assert await _accounts(session, auth, lots) == ["1130-OB"]
-    _refused(await client.post("/accounting/older-stock/placements/nothing/adjustment", headers=auth["headers"],
-                               json={"booked": False}), 404, "older_stock.no_adjustment")
-
-
 async def test_older_stock_routes_need_manage_accounting(session, client, auth):
     from celerp.models.accounting import UserCompany
     from celerp.models.company import User
@@ -734,7 +709,8 @@ async def test_older_stock_routes_need_manage_accounting(session, client, auth):
                                                                          "key": "k"}),
                                ("post", "/accounting/older-stock/moves/m/undo", None),
                                ("post", "/accounting/older-stock/retry", None),
-                               ("post", "/accounting/older-stock/placements/p/adjustment", {"booked": False})):
+                               ("post", "/accounting/older-stock/corrections", {"placements": ["p"],
+                                                                                "kind": "recognize"})):
         r = await getattr(client, method)(path, headers=headers, **({"json": body} if body else {}))
         assert r.status_code == 403, (path, r.status_code, r.text)
 
@@ -747,8 +723,9 @@ _VIEW = {
               "placement": "p1"},
              {"item_id": "item:old-2", "sku": "OLD-2", "name": "", "account": "1130-OB", "value": 1234.5,
               "placement": "p1"}],
-    "placements": [{"pid": "p1", "day": "2026-10-14", "count": 2, "account": "1130-OB", "adjustment": 10.0,
-                    "booked": True}],
+    "placements": [{"pid": "p1", "day": "2026-10-14", "count": 2, "account": "1130-OB",
+                    "classification": "opening_stock", "transferred": 0.0, "recognized": 10.0, "unresolved": 0.0,
+                    "journal": ["je:auto:older-stock-placed:p1:opening"], "corrections": []}],
     "moves": [{"move_id": "m1", "day": "2026-10-14", "code": "1130-P", "count": 1, "value": 5.0, "undone": False,
                "undo_of": None}],
     "candidates": [{"code": "1130-OB", "name": "Inventory opening", "account_type": "asset"},
@@ -796,7 +773,8 @@ async def test_the_older_stock_tab_lists_placed_lots_and_its_empty_state(ui_clie
     assert 'id="bulkbar-older-stock-table"' in body and "/settings/accounting/older-stock/move" in body
     assert "Move to account" in body
     assert "/settings/accounting/older-stock/moves/m1/undo" in body
-    assert "/settings/accounting/older-stock/placements/p1/adjustment" in body
+    assert "/settings/accounting/older-stock/corrections" in body and "Leave unresolved" in body
+    assert "Book against retained earnings" not in body  # nothing is left unresolved to book
     assert ">—<" not in body  # an empty value shows "--", never a dash glyph
 
     body, _ = await _tab(ui_client, _EMPTY)
@@ -845,7 +823,10 @@ def test_older_stock_notices_translate():
             "older_stock.move.nothing_selected", "older_stock.move.too_many", "older_stock.move.no_key",
             "older_stock.move.not_placed", "older_stock.move.invoiced", "older_stock.move.key_reused",
             "notice.older_stock_locked.body", "notice.older_stock_failed.title", "notice.older_stock_failed.body", "older_stock.undo.done",
-            "older_stock.undo.moved_since", "older_stock.undo.no_move", "older_stock.no_adjustment",
+            "older_stock.undo.moved_since", "older_stock.undo.no_move", "older_stock.book_difference",
+            "older_stock.leave_unresolved", "older_stock.corrected_msg", "older_stock.correct.nothing_selected",
+            "older_stock.correct.too_many", "older_stock.correct.no_kind", "older_stock.correct.no_placement",
+            "older_stock.correct.changed_since", "older_stock.correct.unbalanced",
             "inventory.account_moved_since")
     for lang in _LOCALES:
         catalog = json.loads((locales / f"{lang}.json").read_text(encoding="utf-8"))

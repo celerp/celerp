@@ -3458,11 +3458,12 @@ async def retry_older_stock(token: str) -> dict:
         return _raise(await c.post("/accounting/older-stock/retry")).json()
 
 
-async def set_placement_adjustment(token: str, pid: str, booked: bool) -> dict:
-    """POST whether a placement's adjustment against retained earnings stands (booked again) or is reversed."""
+async def correct_older_stock(token: str, placements: list[str], kind: str) -> dict:
+    """POST a correction of how older-stock placements treated their difference: ``recognize``
+    books it against retained earnings, ``unresolve`` leaves it unresolved."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/older-stock/placements/{pid}/adjustment",
-                                   json={"booked": booked})).json()
+        return _raise(await c.post("/accounting/older-stock/corrections",
+                                   json={"placements": placements, "kind": kind})).json()
 
 
 async def close_fiscal_year(token: str, fiscal_year_end: str) -> dict:

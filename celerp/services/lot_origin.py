@@ -39,7 +39,7 @@ the same way (place_company_stock), as does turning Accounting on and any reques
 refused only because the stock it needs is not placed yet, which then runs again
 (place_unplaced_stock). The user can move placed lots to another inventory
 account in bulk, each move booking its value across (move_lot_accounts), undo a move
-(undo_lot_move), and reverse the adjustment or book it again (set_placement_adjustment).
+(undo_lot_move), and correct how a placement treated its difference (correct_placements).
 """
 
 from __future__ import annotations
@@ -1600,54 +1600,116 @@ async def undo_lot_move(session: AsyncSession, company_id, move_id: str, actor_i
     return {"moved": len(moves), "value": float(value), "code": None, "move_id": undo_id}
 
 
-def _placement_je(pid: str) -> str:
-    return _placement_entry(pid, "opening")
+# How the accountant can correct what a placement did with its difference (_place):
+# book it against retained earnings the way opening stock is booked, or take a
+# recognized amount back off the books and leave it unresolved.
+CORRECTIONS = frozenset({"recognize", "unresolve"})
 
 
-async def _toggles(session: AsyncSession, company_id, pid: str) -> int:
-    """How many times placement ``pid``'s adjustment was reversed or booked again."""
-    rows = (await session.execute(select(Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
-        Projection.entity_id.like(f"{_placement_je(pid)}:t%")))).scalars()
-    return sum(1 for state in rows if (state or {}).get("status") == "posted")
+async def _placement_lots(session: AsyncSession, company_id, pid: str) -> list[str]:
+    """The lots placement ``pid`` recorded on its account."""
+    return sorted(set((await session.execute(select(LedgerEntry.entity_id).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
+        LedgerEntry.metadata_["placement"].as_string() == pid))).scalars()))
 
 
-def _adjusted_line(state: dict) -> dict:
-    """The inventory line of a placement's adjustment: the one not on retained earnings."""
-    retained = AccountRole.RETAINED_EARNINGS.value
-    return next(e for e in state["entries"] if retained not in (e.get("account_roles") or []))
-
-
-async def set_placement_adjustment(session: AsyncSession, company_id, pid: str, booked: bool, actor_id) -> None:
-    """Reverse the adjustment placement ``pid`` booked (``booked`` false) or book it again
-    (true), each as its own entry dated today; asking for what already holds books
-    nothing. Refused (404) for a placement that booked no adjustment."""
-    from celerp.services.auto_je import entry_day
+async def correct_placements(session: AsyncSession, company_id, pids: list[str], kind: str, actor_id) -> int:
+    """Correct how placements ``pids`` treated their difference, all of them or none:
+    ``recognize`` books what each left unresolved against retained earnings, the way
+    opening stock is booked (post_opening_stock_delta); ``unresolve`` takes what each
+    recognized back off the books and leaves it unresolved for the accountant. Each
+    correction is one entry dated today and one record on the placement
+    (sys.older_stock.corrected) moving the amount between recognized and unresolved, so
+    the account still holds its lots, less unshipped recognized cost, plus its unresolved
+    difference; that is checked again once booked. A placement with nothing to move is
+    skipped, so a correction sent twice books once. Refused, writing nothing: no
+    placements or too many, an unknown kind or placement, a lot of a placement sold,
+    shipped, used up or moved since it was placed or held by an unshipped invoice, a
+    locked today, or an account out of line with its stock afterwards. Returns how many
+    placements were corrected."""
+    from celerp.events.engine import emit_event
+    from celerp.services.auto_je import unshipped_claims
     from celerp.services.company_lock import locked_company
+    from celerp.services.journal_accounts import lock_accounts
 
-    await locked_company(session, company_id)
-    state = await _je_state(session, company_id, _placement_je(pid))
-    if state is None:
-        raise _refused(404, "older_stock.no_adjustment", "This placement booked no adjustment.")
-    n = await _toggles(session, company_id, pid)
-    if (n % 2 == 0) == booked:
-        return
-    line = _adjusted_line(state)
-    onto = float(line.get("debit") or 0) > 0
-    amount = Decimal(str(line.get("debit") or line.get("credit") or 0))
-    await post_opening_stock_delta(
-        session, company_id, {line["account"]: amount}, onto_books=onto if booked else not onto,
-        je_id=f"{_placement_je(pid)}:t{n + 1}", idem=f"older-stock-placed:{pid}:t{n + 1}",
-        memo="Older stock adjustment booked again" if booked else "Older stock adjustment reversed",
-        metadata={"trigger": "older_stock.adjustment", "placement": pid}, actor_id=actor_id,
-        day=await entry_day(session, company_id))
+    pids = list(dict.fromkeys(pid for pid in pids if pid))
+    if not pids:
+        raise _refused(422, "older_stock.correct.nothing_selected", "Select the placements to correct.")
+    if len(pids) > MAX_MOVE:
+        raise _refused(422, "older_stock.correct.too_many", f"Correct at most {MAX_MOVE} placements at a time.",
+                       limit=MAX_MOVE)
+    if kind not in CORRECTIONS:
+        raise _refused(422, "older_stock.correct.no_kind",
+                       "Choose whether to book the difference against retained earnings or leave it unresolved.")
+    company = await locked_company(session, company_id)
+    records = {}
+    for pid in pids:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": _placement_entity(pid)},
+                                populate_existing=True)
+        if row is None or (row.state or {}).get("entity_type") != PLACEMENT:
+            raise _refused(404, "older_stock.correct.no_placement", "This placement was not found.")
+        records[pid] = dict(row.state)
+    settings = dict(company.settings or {})
+    currency = settings.get("currency", "USD")
+    codes = {state["account"] for state in records.values()}
+    retained = role_map(settings).get(AccountRole.RETAINED_EARNINGS.value)
+    if await lock_accounts(session, company_id, codes | ({retained} if retained else set())) is None:
+        raise HTTPException(status_code=409, detail=needs_accounting())
+    lots = {pid: await _placement_lots(session, company_id, pid) for pid in pids}
+    rows = {r.entity_id: r for r in await _locked_lots(session, company_id, [i for ids in lots.values() for i in ids])}
+    held = {c.lot_id for c in await unshipped_claims(session, company_id, costed=False, lots=sorted(rows))}
+    for pid, ids in lots.items():
+        for item_id in ids:
+            row = rows[item_id]
+            if (item_id in held or not in_stock(row.state)
+                    or (row.state or {}).get(LOT_ACCOUNT_FIELD) != records[pid]["account"]):
+                raise _refused(409, "older_stock.correct.changed_since",
+                               f"{_sku(row)} was sold, shipped or moved since it was placed, so this placement can "
+                               "no longer be corrected here. Post a journal entry for the correction instead.",
+                               sku=_sku(row))
+    day = await _open_day(session, company_id)
+    corrected = 0
+    async with session.begin_nested():
+        before = await account_rooms(session, company_id, codes)
+        for pid, state in records.items():
+            recognized = Decimal(str(state.get("recognized") or 0))
+            unresolved = Decimal(str(state.get("unresolved") or 0))
+            # What is booked onto the books (taken off them when negative). Recognized and
+            # unresolved both move by it, so what the account holds beyond its stock stays.
+            delta = round_money(-(unresolved if kind == "recognize" else recognized), currency)
+            if not delta:
+                continue
+            n = len(state.get("corrections") or []) + 1
+            je_id = _placement_entry(pid, f"correction:{n}")
+            await post_opening_stock_delta(
+                session, company_id, {state["account"]: abs(delta)}, onto_books=delta > 0, je_id=je_id,
+                idem=f"older-stock-placed:{pid}:correction:{n}",
+                memo=("Older stock difference booked against retained earnings" if kind == "recognize"
+                      else "Older stock opening stock taken back off the books, left unresolved"),
+                metadata={"trigger": "older_stock.corrected", "placement": pid, "classification": "opening_stock"},
+                actor_id=actor_id, day=day)
+            await emit_event(
+                session, company_id=company_id, entity_id=_placement_entity(pid), entity_type=PLACEMENT,
+                event_type="sys.older_stock.corrected", actor_id=actor_id, location_id=None, source="system",
+                idempotency_key=f"{_placement_entity(pid)}:correction:{n}", metadata_={},
+                data={"placement": pid, "kind": kind, "day": day, "amount": float(delta),
+                      "recognized": float(recognized + delta), "unresolved": float(unresolved + delta),
+                      "journal": je_id})
+            corrected += 1
+        await session.flush()
+        if await account_rooms(session, company_id, codes) != before:
+            raise _refused(409, "older_stock.correct.unbalanced",
+                           "This correction would leave an inventory account out of line with its stock, so "
+                           "nothing was posted.")
+    return corrected
 
 
 async def older_stock_view(session: AsyncSession, company_id, account: str | None = None,
                            q: str | None = None) -> dict:
     """Settings > Accounting > Older stock: the lots placed automatically still in stock,
     newest placement first (filtered to ``account`` and to ``q`` in their SKU or name),
-    each placement with its adjustment, every move newest first, the accounts the lots
+    each placement with what it recognized and left unresolved and its corrections,
+    every move newest first, the accounts the lots
     sit on, the accounts they can be moved to, and a standing failure to place older
     stock (failed_placement)."""
     from celerp.services.posting_readiness import older_stock_targets
@@ -1657,16 +1719,21 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
     recorded = (await session.execute(select(LedgerEntry).where(
         LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
         LedgerEntry.metadata_["placement"].as_string().is_not(None)).order_by(LedgerEntry.id.desc()))).scalars().all()
+    records = {(r or {}).get("placement"): r for r in (await session.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == PLACEMENT))).scalars()}
     placements: dict[str, dict] = {}
     for e in recorded:
         pid = e.metadata_["placement"]
         if pid not in placements:
-            state = await _je_state(session, company_id, _placement_je(pid))
-            line = _adjusted_line(state) if state else {}
+            record = records.get(pid) or {}
             placements[pid] = {"pid": pid, "day": business_date_at(e.ts, tz), "count": 0,
-                               "account": e.data[LOT_ACCOUNT_FIELD],
-                               "adjustment": round(float(line.get("debit") or 0) - float(line.get("credit") or 0), 2),
-                               "booked": state is not None and await _toggles(session, company_id, pid) % 2 == 0}
+                               "account": record.get("account") or e.data[LOT_ACCOUNT_FIELD],
+                               "classification": record.get("classification"),
+                               "transferred": float(record.get("transferred") or 0),
+                               "recognized": float(record.get("recognized") or 0),
+                               "unresolved": float(record.get("unresolved") or 0),
+                               "journal": record.get("journal") or [],
+                               "corrections": record.get("corrections") or []}
         placements[pid]["count"] += 1
     rows = {r.entity_id: r for r in (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "item",

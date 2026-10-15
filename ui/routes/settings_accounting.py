@@ -404,26 +404,24 @@ def _older_lot_row(lot: dict, currency: str) -> FT:
     )
 
 
+def _correction(pid: str, kind: str, label: str) -> FT:
+    return Button(label, type="button", cls="btn btn--xs btn--secondary",
+                  hx_post=f"{_OLDER_STOCK_URL}/corrections", hx_vals=json.dumps({"placements": pid, "kind": kind}),
+                  hx_target="#older-stock-card", hx_swap="outerHTML")
+
+
 def _placement_row(p: dict, currency: str) -> FT:
-    """A placement and its adjustment against retained earnings, which can be reversed
-    and booked again."""
-    action = EMPTY
-    if p["adjustment"]:
-        booked = bool(p["booked"])
-        action = Button(t("older_stock.reverse_adjustment") if booked else t("older_stock.book_adjustment"),
-                        type="button", cls="btn btn--xs btn--secondary",
-                        hx_post=f"{_OLDER_STOCK_URL}/placements/{p['pid']}/adjustment",
-                        hx_vals=json.dumps({"booked": "false" if booked else "true"}),
-                        hx_target="#older-stock-card", hx_swap="outerHTML")
-    status = (t("older_stock.adjustment_booked") if p["booked"] else t("older_stock.adjustment_reversed")) \
-        if p["adjustment"] else EMPTY
+    """A placement with what it recognized as opening stock and what it left unresolved,
+    each correctable the other way (lot_origin.correct_placements)."""
+    actions = ([_correction(p["pid"], "recognize", t("older_stock.book_difference"))] if p["unresolved"] else []) \
+        + ([_correction(p["pid"], "unresolve", t("older_stock.leave_unresolved"))] if p["recognized"] else [])
     return Tr(
         Td(p["day"], cls="cell--center"),
         Td(str(p["count"]), cls="cell--number"),
         Td(p["account"] or EMPTY),
-        Td(fmt_money(p["adjustment"], currency) if p["adjustment"] else EMPTY, cls="cell--number"),
-        Td(status),
-        Td(action, cls="cell--actions"),
+        Td(fmt_money(p["recognized"], currency) if p["recognized"] else EMPTY, cls="cell--number"),
+        Td(fmt_money(p["unresolved"], currency) if p["unresolved"] else EMPTY, cls="cell--number"),
+        Td(*(actions or [EMPTY]), cls="cell--actions"),
     )
 
 
@@ -466,7 +464,8 @@ def _placement_failure(failed: dict | None) -> FT | None:
 
 def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = "success") -> FT:
     """Settings > Accounting > Older stock: the lots placed automatically, a bulk move to
-    another inventory account, each placement's adjustment and every move, newest first."""
+    another inventory account, each placement's recognized and unresolved difference with
+    its correction, and every move, newest first."""
     from urllib.parse import urlencode
 
     currency = view.get("currency")
@@ -503,7 +502,8 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
         Div(Table(
             Thead(Tr(Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_lots"), cls="cell--number"),
                      Th(t("older_stock.col_account")),
-                     Th(t("older_stock.col_adjustment"), cls="cell--number"), Th(t("th.status")), Th(""))),
+                     Th(t("older_stock.col_recognized"), cls="cell--number"),
+                     Th(t("older_stock.col_unresolved"), cls="cell--number"), Th(""))),
             Tbody(*[_placement_row(p, currency) for p in placements]),
             cls="data-table", id="older-stock-placements",
         ), cls="table-scroll-wrap") if placements else P(t("older_stock.no_placements"), cls="hint"),
@@ -1269,14 +1269,16 @@ def setup_routes(app):
 
         return await _older_stock_action(request, call)
 
-    @app.post("/settings/accounting/older-stock/placements/{pid}/adjustment")
-    async def older_stock_adjustment(request: Request, pid: str):
-        booked = str((await request.form()).get("booked", "")).lower() == "true"
+    @app.post("/settings/accounting/older-stock/corrections")
+    async def older_stock_correct(request: Request):
+        """Correct how the chosen placements treated their difference."""
+        form = await request.form()
 
         async def call(token):
-            view = await api.set_placement_adjustment(token, pid, booked)
-            return {**view, "message": t("older_stock.adjustment_booked_msg" if booked
-                                         else "older_stock.adjustment_reversed_msg")}
+            view = await api.correct_older_stock(token, list(dict.fromkeys(form.getlist("placements"))),
+                                                 str(form.get("kind", "")).strip())
+            view.pop("result", None)
+            return {**view, "message": t("older_stock.corrected_msg")}
 
         return await _older_stock_action(request, call)
 
