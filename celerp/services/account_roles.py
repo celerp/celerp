@@ -484,6 +484,15 @@ def uncertain_stock_line(settings: dict | None, entry: dict) -> bool:
     return any(stock) and not all(stock)
 
 
+async def cash_accounts(session: AsyncSession, company_id) -> set[str]:
+    """The chart's accounts that hold cash: a bank account, or one under the cash and
+    cash equivalents header. None when accounting is not running."""
+    from celerp.services.journal_accounts import chart_access
+
+    access = chart_access()
+    return {row["code"] for row in await access.list_accounts(session, company_id) if row.get("cash")} if access else set()
+
+
 async def stock_problems(session: AsyncSession, company_id, settings: dict, choices: dict[str, str]) -> list[dict]:
     """Why each role in ``choices`` ({role: code}) cannot be pointed at its account, with
     the company's ``settings`` as they are before the change: an inventory role never
@@ -492,16 +501,13 @@ async def stock_problems(session: AsyncSession, company_id, settings: dict, choi
     stock (lot_origin.stock_holders), since a line posted there before posting accounts
     existed would then read as that role's and stop counting as stock. A role kept on
     the account it already uses is never refused."""
-    from celerp.services.journal_accounts import chart_access
     from celerp.services.lot_origin import stock_holders
 
     current = role_map(settings)
     changed = {role: code for role, code in choices.items() if current.get(role) != code}
     stock = {role: code for role, code in changed.items() if AccountRole(role) in INVENTORY_VALUE_ROLES}
     others = {role: code for role, code in changed.items() if role not in stock}
-    access = chart_access()
-    cash = ({row["code"] for row in await access.list_accounts(session, company_id) if row.get("cash")}
-            if stock and access else set())
+    cash = await cash_accounts(session, company_id) if stock else set()
     holders = await stock_holders(session, company_id, settings, set(others.values())) if others else set()
     problems = []
     for role, code in changed.items():

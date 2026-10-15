@@ -276,7 +276,8 @@ async def test_cash_sales_and_receivables_on_any_account_are_never_counted_as_st
 async def test_a_bank_or_receivable_already_in_the_inventory_history_keeps_its_balance(session, client, auth):
     """A company whose purchased inventory history already names a bank account and a
     receivable, as an older release could leave it, places its older stock from the
-    lines posted as stock only: the cash and the sales stay where they are."""
+    lines posted as stock only: the cash and the sales stay where they are. The bank
+    holds cash, so its lines are never possible stock; the receivable's are evidence."""
     lots = await _older_company(session, client, auth, _LOTS)
     await _split(session, auth, 60000.0)  # 1130-P 60,000, 1130-OB 40,000
     await _posted(session, auth, "1111", "4100", 5000.0, "Cash sale")
@@ -299,7 +300,7 @@ async def test_a_bank_or_receivable_already_in_the_inventory_history_keeps_its_b
     (record,) = await _records(session, auth)
     assert record["rooms"] == {"1130-P": 60000.0, "1130-OB": 40000.0, "1111": 0.0, "1120": 0.0}
     assert (record["transferred"], record["recognized"], record["unresolved"]) == (40000.0, 0.0, 0.0)
-    assert _evidence(await _off_books(session, auth)) == [("1111", 5000.0), ("1120", 3000.0)]
+    assert _evidence(await _off_books(session, auth)) == [("1120", 3000.0)]
 
 
 async def test_prepaid_rent_on_an_account_once_used_as_purchased_inventory_is_never_swept(session, client, auth):

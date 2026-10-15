@@ -164,6 +164,99 @@ async def test_untagged_stock_on_an_account_only_inventory_served_is_still_count
     assert await _off_books(session, auth) == []
 
 
+async def _uncertain_x(session, client, auth) -> list[str]:
+    """1130-X served purchased inventory and input tax and holds an untagged 50 beside a
+    lot of 30 its opening entry covers: the 50 is uncertain evidence. Returns the 1130-X
+    entries."""
+    r = await client.post("/accounting/accounts", headers=auth["headers"], json={
+        "code": "1130-X", "name": "Account 1130-X", "account_type": "asset", "parent_code": "1100"})
+    assert r.status_code == 200, r.text
+    await _historical(client, auth, "1130-X", 50.0)
+    await _older_books(session, client, auth, {"inventory_opening": ["1130-OB"],
+                                                "inventory_purchased": ["1130-X", "1130-P"],
+                                                "tax_input": ["1130-X"]})
+    await _startup(session)
+    return await _sources(session, auth, "1130-X")
+
+
+async def _set_status(session, auth, je_id: str, status: str) -> None:
+    session.expire_all()
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": je_id})
+    row.state = {**row.state, "status": status}
+    await session.commit()
+
+
+async def test_uncertain_evidence_follows_the_ledger_when_its_entry_is_voided_and_restored(session, client, auth):
+    """The evidence is read from the posted entries each time, never from what placing
+    saw: voiding the 1130-X entry the review names reconciles, and the entry posted
+    again is evidence again."""
+    (je,) = await _uncertain_x(session, client, auth)
+    view = await _view(client, auth)
+    assert view["reconciliation"]["state"] == "review"
+    r = await client.post(f"/accounting/journal-entries/{je}/void", headers=auth["headers"], json={"reason": "review"})
+    assert r.status_code == 200, r.text
+    view = await _view(client, auth)
+    assert view["reconciliation"] == {"state": "reconciled", "waiting": 0, "reasons": [], "open": []}
+    assert view["placements"][0]["uncertain"] == []
+    assert await _off_books(session, auth) == []
+
+    await _set_status(session, auth, je, "posted")
+    view = await _view(client, auth)
+    assert view["reconciliation"]["state"] == "review"
+    assert [(o["account"], o["kind"], o["amount"], o["entries"]) for o in view["reconciliation"]["open"]] == [
+        ("1130-X", "uncertain", 50.0, [je])]
+    assert view["placements"][0]["uncertain"] == [{"account": "1130-X", "amount": 50.0, "entries": [je]}]
+
+
+async def test_a_bank_account_is_never_possible_stock_evidence(session, client, auth):
+    """Bank account 1111 holds an untagged 5000 cash sale and older data put it in
+    purchased inventory's history beside its cash role: it holds cash, so its lines are
+    never read as possible stock, listed for review, or swept onto inventory."""
+    from test_older_stock_reconciliation import _posted
+    await _imported(session, client, auth, [30.0])
+    await _older_release(session, auth)
+    await _posted(session, auth, "1111", "4100", 5000.0, "Cash sale")
+    await _untagged(session, auth)
+    from celerp.services.company_lock import locked_company
+    company = await locked_company(session, auth["company_id"])
+    scopes = {k: list(v) for k, v in (company.settings.get(SCOPES_KEY) or {}).items()}
+    scopes.setdefault("inventory_purchased", []).append("1111")
+    company.settings = {**company.settings, SCOPES_KEY: scopes}
+    await session.commit()
+    await _marked(session, auth)
+    await _startup(session)
+    view = await _view(client, auth)
+    assert view["reconciliation"]["state"] == "reconciled", view["reconciliation"]
+    assert all(p["uncertain"] == [] for p in view["placements"])
+    assert await _off_books(session, auth) == []
+    assert (await _net(session, auth, "1111"))[0] == 5000.0
+
+
+async def test_refusing_to_book_uncertain_evidence_names_every_account(session, client, auth):
+    """Uncertain lines on 1130-X and 1130-Y: the refusal names both, each with its amount
+    and entries, not only the first."""
+    for code in ("1130-X", "1130-Y"):
+        r = await client.post("/accounting/accounts", headers=auth["headers"], json={
+            "code": code, "name": f"Account {code}", "account_type": "asset", "parent_code": "1100"})
+        assert r.status_code == 200, r.text
+    await _historical(client, auth, "1130-X", 50.0)
+    await _historical(client, auth, "1130-Y", 20.0)
+    await _older_books(session, client, auth, {"inventory_opening": ["1130-OB"],
+                                                "inventory_purchased": ["1130-X", "1130-Y", "1130-P"],
+                                                "tax_input": ["1130-X", "1130-Y"]})
+    await _startup(session)
+    (placement,) = (await _view(client, auth))["placements"]
+    for kind in ("recognize", "unresolve"):
+        r = await client.post("/accounting/older-stock/corrections", headers=auth["headers"],
+                              json={"placements": [placement["pid"]], "kind": kind})
+        assert r.status_code == 409, r.text
+        message = r.json()["detail"]["message"]
+        assert "1130-X holds 50.00" in message and "1130-Y holds 20.00" in message, message
+        for code in ("1130-X", "1130-Y"):
+            for je in await _sources(session, auth, code):
+                assert je in message
+
+
 async def test_the_tab_shows_uncertain_evidence_with_no_booking_and_confirms_every_booking(ui_client):
     """Uncertain evidence is a plain line naming its account, amount and entry, with no
     action; booking a shortfall against retained earnings asks first, naming the account."""

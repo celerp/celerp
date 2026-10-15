@@ -1233,7 +1233,9 @@ class SysOlderStockPlaced(BaseModel):
     # on, what each inventory account held beyond its stock before (rooms), the value
     # moved onto the account, recognized as opening stock or left unresolved, the cost
     # invoices recognized on the lots before with no entry naming its account
-    # (provisional), and the journal entries that booked it.
+    # (provisional), the entries holding lines that may have been stock on those accounts
+    # (evidence_entries, read again each time they are shown), and the journal entries
+    # that booked it.
     placement: str
     day: str
     count: int
@@ -1244,6 +1246,7 @@ class SysOlderStockPlaced(BaseModel):
     recognized: float
     unresolved: float
     provisional: float
+    evidence_entries: list[str]
     classification: str
     journal: list[str]
 
