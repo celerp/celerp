@@ -77,6 +77,7 @@ from celerp.services.account_roles import (
     resolve_many,
     role_map,
     scope_codes,
+    scope_list,
     target_problems,
 )
 from celerp.services.business_time import business_date_at, business_date_of
@@ -554,15 +555,17 @@ async def _place(session: AsyncSession, company_id) -> bool:
     (``_legacy``) on one default account, under the caller's lock on the company, its
     chart and its lots, everything in the caller's transaction.
 
-    The lots' value V is compared with what the usable inventory accounts (purchased
-    inventory, and opening inventory when it can take entries and is not the same
-    account) hold together beyond the stock recorded on them (``_room``, which counts
-    what invoices recognized and have not shipped). The default account is the one
-    holding exactly V, else the one holding most, earlier in candidate order on a tie
-    (opening inventory first when the stock is from elsewhere, books_from_elsewhere, or
-    purchased inventory never took an entry), else, when none holds anything, purchased
-    inventory. One entry moves what every other account
-    holds beyond its stock onto the default account, so no inventory is added. Cost an
+    The lots' value V is compared with what the inventory accounts hold together beyond
+    the stock recorded on them (``_room``, which counts what invoices recognized and have
+    not shipped): the usable current ones (purchased inventory, and opening inventory
+    when it can take entries and is not the same account) and every account either role
+    has served before (scope_list), which still holds what was booked to it. The
+    default account is a current one: the one holding exactly V, else the one holding
+    most, earlier in candidate order on a tie (opening inventory first when the stock is
+    from elsewhere, books_from_elsewhere, or purchased inventory never took an entry),
+    else, when none holds anything, purchased inventory. One entry moves what every
+    other account, current or former, holds beyond its stock onto the default account,
+    so no inventory is added and nothing on a former account is recognized again. Cost an
     invoice recognized on lots no allocation or entry ties to one account
     (auto_je.UNPLACED) was taken off the books already: it counts against V and is kept
     on the record as ``provisional``. What the
@@ -599,7 +602,8 @@ async def _place(session: AsyncSession, company_id) -> bool:
     retained = AccountRole.RETAINED_EARNINGS.value
     roles = [purchased, opening, retained]
     current = role_map(settings)
-    accounts = await lock_accounts(session, company_id, {current[r] for r in roles if current.get(r)})
+    scope = list(dict.fromkeys(c for role in _INVENTORY for c in scope_list(settings, role)))
+    accounts = await lock_accounts(session, company_id, {current[r] for r in roles if current.get(r)} | set(scope))
     if accounts is None:
         return False  # Accounting is not running: nothing can be booked or placed
     problems = target_problems(roles, current, accounts)
@@ -608,6 +612,7 @@ async def _place(session: AsyncSession, company_id) -> bool:
         return False
     p, ob = current[purchased], current.get(opening)
     usable = [p] + ([ob] if opening not in problems and ob != p else [])
+    former = [c for c in scope if c not in (p, ob) and c in accounts]
     entries = await _posted_entries(session, company_id)
     opening_first = (await books_from_elsewhere(session, company_id, settings)
                      or not any(e.get("account") == p for _, e in entries))
@@ -615,13 +620,14 @@ async def _place(session: AsyncSession, company_id) -> bool:
     currency = settings.get("currency", "USD")
     sold = await recognized_unshipped(session, company_id)
     unresolved = await unresolved_differences(session, company_id)
-    room = {c: round_money(_room(entries, items, c, currency, sold, unresolved), currency) for c in candidates}
+    room = {c: round_money(_room(entries, items, c, currency, sold, unresolved), currency)
+            for c in candidates + former}
     provisional = round_money(sold.get(UNPLACED, 0), currency)
     value = round_money(sum((booked_value(r, currency) for r in pending), Decimal("0")), currency)
     owed = value - provisional  # cost already taken off the books by invoices whose entries name no one account
     most = max(candidates, key=lambda c: room[c])
     target = next((c for c in candidates if room[c] == owed), None) or (most if room[most] > 0 else p)
-    moved = {c: room[c] for c in candidates if c != target and room[c]}
+    moved = {c: room[c] for c in room if c != target and room[c]}
     gap = round_money(sum(room.values(), Decimal("0")) - owed, currency)
     if gap < 0 and retained in problems:
         await _notify_unmapped(session, company_id, retained)

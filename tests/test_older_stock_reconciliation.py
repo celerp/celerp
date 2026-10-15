@@ -13,6 +13,10 @@ value with what the two accounts hold together beyond the stock recorded on them
   account, unresolved, for the accountant;
 - exactly the stock: the lots are placed and nothing is booked.
 
+Every account that has served either role takes part, current or former: an account
+purchased inventory has since moved off still holds what was booked to it, and that
+value is moved onto the default account, never recognized again.
+
 After each, every inventory account holds exactly the lots recorded on it, less the
 cost invoices recognized and have not shipped, plus any unresolved difference
 recorded on it (stock_books.assert_books_carry_stock).
@@ -31,9 +35,11 @@ from sqlalchemy import select
 
 from celerp.models.projections import Projection
 from celerp.services.auto_je import _emit_auto_posted_je
+from celerp.services.company_lock import locked_company
 from stock_books import assert_books_carry_stock
-from test_older_stock_placement import _accounts, _entries, _lines, _off_books, _older_company, _written_down
-from test_posting_roles_older_stock import _events, _net
+from test_older_stock_placement import _accounts, _entries, _lines, _off_books, _older_company, _today, _written_down
+from test_posting_roles_lots import _new_inventory_account
+from test_posting_roles_older_stock import _events, _net, _settings
 from test_posting_roles_rollout import _startup
 
 pytestmark = pytest.mark.asyncio
@@ -66,6 +72,21 @@ async def _records(session, auth) -> list[dict]:
     return [r.state for r in (await session.execute(select(Projection).where(
         Projection.company_id == auth["company_id"],
         Projection.entity_type == "older_stock_placement"))).scalars()]
+
+
+async def _purchased_moved_while_waiting(session, client, auth, code: str) -> None:
+    """Purchased inventory pointed at a new account ``code`` in Settings while the older
+    stock waits on a period lock over today, then the lock lifted; the stock is placed on
+    the next start."""
+    await _settings(session, auth, lock_date=_today())
+    await _startup(session)
+    await _new_inventory_account(client, auth, code)
+    r = await client.put("/accounting/posting-accounts/inventory_purchased", headers=auth["headers"],
+                         json={"code": code})
+    assert r.status_code == 200, r.text
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {k: v for k, v in company.settings.items() if k != "lock_date"}
+    await session.commit()
 
 
 def _no_equity(entries: list[dict]) -> None:
@@ -131,6 +152,47 @@ async def test_stock_the_accounts_hold_more_than_is_kept_as_an_unresolved_differ
     assert record["classification"] == "unresolved"
     assert await _off_books(session, auth) == [
         {"kind": "unresolved_difference", "account": "1130-OB", "amount": 30000.0}]
+
+
+async def test_value_left_on_a_former_purchased_account_is_moved_not_recognized_again(session, client, auth):
+    lots = await _older_company(session, client, auth, _LOTS)
+    await _split(session, auth, 60000.0)  # 1130-P 60,000, 1130-OB 40,000
+    await _purchased_moved_while_waiting(session, client, auth, "1131")
+    assert set(await _accounts(session, auth, lots)) == {None}
+    await _startup(session)
+
+    assert set(await _accounts(session, auth, lots)) == {"1130-OB"}
+    (entry,) = await _placement_entries(session, auth)
+    assert _lines(entry) == {"1130-OB": (60000.0, 0.0), "1130-P": (0.0, 60000.0)}
+    _no_equity([entry])
+    assert await assert_books_carry_stock(session, auth["company_id"]) == {
+        "1130-P": Decimal("0.00"), "1130-OB": Decimal("100000.00"), "1131": Decimal("0.00")}
+    (record,) = await _records(session, auth)
+    assert (record["account"], record["transferred"], record["recognized"], record["unresolved"]) == (
+        "1130-OB", 60000.0, 0.0, 0.0)
+    assert record["classification"] == "transfer"
+    assert record["rooms"] == {"1131": 0.0, "1130-OB": 40000.0, "1130-P": 60000.0}
+    assert await _off_books(session, auth) == []
+
+
+async def test_stock_split_across_three_accounts_is_short_only_of_what_all_three_hold(session, client, auth):
+    lots = await _older_company(session, client, auth, _LOTS)
+    await _split(session, auth, 30000.0)  # 1130-P 30,000, 1130-OB 70,000
+    await _purchased_moved_while_waiting(session, client, auth, "1131")
+    await _posted(session, auth, "1131", "1130-OB", 20000.0, "Goods movements booked on the new account")
+    await _written_down(session, auth, "1130-OB", 20000.0)  # 30,000 + 20,000 + 30,000 for 100,000
+    await _startup(session)
+
+    assert set(await _accounts(session, auth, lots)) == {"1130-OB"}
+    transfer, recognized = await _placement_entries(session, auth)
+    assert _lines(transfer) == {"1130-OB": (50000.0, 0.0), "1131": (0.0, 20000.0), "1130-P": (0.0, 30000.0)}
+    assert _lines(recognized) == {"1130-OB": (20000.0, 0.0), "3200": (0.0, 20000.0)}
+    assert await assert_books_carry_stock(session, auth["company_id"]) == {
+        "1130-P": Decimal("0.00"), "1130-OB": Decimal("100000.00"), "1131": Decimal("0.00")}
+    (record,) = await _records(session, auth)
+    assert (record["transferred"], record["recognized"], record["unresolved"]) == (50000.0, 20000.0, 0.0)
+    assert record["classification"] == "opening_stock"
+    assert await _off_books(session, auth) == []
 
 
 async def test_stock_the_accounts_hold_exactly_is_placed_with_no_entry(session, client, auth):
