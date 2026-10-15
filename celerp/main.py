@@ -652,7 +652,7 @@ _OPENAPI_TAGS = [
     {"name": "manufacturing", "description": "Manage bills of materials and production orders."},
     {"name": "labels", "description": "Manage label templates, barcodes, and printing."},
     {"name": "crm", "description": "Manage contacts, pipeline, and activity."},
-    {"name": "subscriptions", "description": "Manage recurring billing and automatic invoicing."},
+    {"name": "subscriptions", "description": "Manage recurring billing templates and generate each document when it is due."},
     {"name": "connectors", "description": "Configure and operate external integrations."},
     {"name": "payments", "description": "Manage payment collection."},
     {"name": "backup", "description": "Export and import Celerp data."},

@@ -73,7 +73,7 @@ card in the notifications panel.
 - Connect Shopify, WooCommerce, QuickBooks, Xero
 - Manufacturing - BOMs, production orders, merge/split/transform
 - CRM - contacts, pipeline, memos, activity feed
-- Recurring subscriptions with automatic invoicing
+- Recurring subscriptions: generate each invoice or purchase order when it is due
 - CSV import/export everything - idempotent, audited, column-mapped
 - Multi-company from one install
 - Role-based permissions - five access levels (viewer, operator, manager, admin, owner) for controlled employee access
@@ -102,7 +102,7 @@ Every business domain is a self-contained module. The full set ships with the do
 | `celerp-docs` | Invoices, POs, quotations, credit notes, receipts |
 | `celerp-accounting` | Chart of accounts, journal entries, P&L, balance sheet |
 | `celerp-reports` | AR/AP aging, sales, purchases, inventory valuation |
-| `celerp-subscriptions` | Recurring billing, auto-invoice generation |
+| `celerp-subscriptions` | Recurring billing templates; generate each document when it is due |
 | `celerp-manufacturing` | BOMs, production orders, merge/split/transform |
 | `celerp-labels` | Label printing, barcode generation |
 | `celerp-verticals` | Industry presets - configure for your business type on first run |

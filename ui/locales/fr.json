@@ -1541,7 +1541,7 @@
   "th.module": "Module",
   "th.name": "Nom",
   "th.next": "Suivant #",
-  "th.next_run": "Prochaine exécution",
+  "th.next_due": "Prochaine échéance",
   "th.notes": "Remarques",
   "th.number": "Numéro",
   "th.opening": "Ouverture",

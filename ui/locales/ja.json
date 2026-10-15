@@ -1541,7 +1541,7 @@
   "th.module": "モジュール",
   "th.name": "名前",
   "th.next": "次 ＃",
-  "th.next_run": "次の実行",
+  "th.next_due": "次回期日",
   "th.notes": "注意事項",
   "th.number": "番号",
   "th.opening": "期首",
