@@ -12182,8 +12182,9 @@ async def scan_list(
                                                currency=state.get("currency"), price_config=price_config))
     scanned = len(results) - len(failed)
     version = row.version
-    if scanned:
-        fields = {"line_items": lines}
+    # A run is recorded whatever it placed, so its retry returns this answer (_scan_replay).
+    if scanned or payload.run_key:
+        fields = {"line_items": lines} if scanned else {}
         if payload.run_key:
             fields[SCAN_RUNS_FIELD] = _record_scan_run(state, payload, codes, results, failed)
         entry = await _set_list_fields(session, company_id, entity_id, user, fields)
@@ -12451,10 +12452,11 @@ async def scan_doc(
         admit=admit)
     scanned = len(results) - len(failed)
     version = row.version
-    if scanned:
+    # A run is recorded whatever it placed, so its retry returns this answer (_scan_replay).
+    if scanned or payload.run_key:
         runs = _record_scan_run(state, payload, codes, results, failed) if payload.run_key else None
         written = await write_doc_patch(session, company_id, role, settings, user, entity_id,
-                                        DocPatch(fields_changed={"line_items": {"new": lines}},
+                                        DocPatch(fields_changed={"line_items": {"new": lines}} if scanned else {},
                                                  expected_version=row.version), scan_runs=runs)
         await session.commit()
         version = written["version"]

@@ -456,6 +456,28 @@ async def test_doc_scan_resubmit_replays(client):
     assert again.json()["results"] == first.json()["results"]
 
 
+@pytest.mark.parametrize("on", ["doc", "list"])
+async def test_a_retried_run_that_placed_nothing_replays_its_first_answer(client, on):
+    """A run whose every code failed is recorded too: retried after one of its codes became an
+    item, it returns its first answer and adds nothing, as a run that placed lines does."""
+    t = await _register(client)
+    record = await _doc(client, t) if on == "doc" else await _quotation_list(client, t)
+    path = f"/{'docs' if on == 'doc' else 'lists'}/{record}/scan"
+    body = {"barcode": "LATE1,LATE2", "run_key": "run-none"}
+
+    first = await client.post(path, headers=_h(t), json=body)
+    assert first.status_code == 200, first.text
+    assert first.json()["scanned"] == 0 and len(first.json()["failed"]) == 2
+    await _item(client, t, "LATE1")
+    again = await client.post(path, headers=_h(t), json=body)
+    assert again.status_code == 200, again.text
+    assert again.json()["duplicate"] is True and again.json()["scanned"] == 0
+    assert again.json()["results"] == first.json()["results"]
+    assert again.json()["failed"] == first.json()["failed"]
+    read = await client.get(f"/{'docs' if on == 'doc' else 'lists'}/{record}", headers=_h(t))
+    assert read.json().get("line_items") == []
+
+
 async def test_doc_scan_reused_key_conflicts(client):
     t = await _register(client)
     await _item(client, t, "K1")
