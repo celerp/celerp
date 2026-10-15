@@ -30,7 +30,7 @@ from test_mfg_outstanding_demand import _credit
 from test_older_stock_placement import _accounts, _marked
 from test_older_stock_reconciliation import _posted, _records
 from test_posting_roles_lots import _sell
-from test_posting_roles_older_stock import _as_older_release, _placement
+from test_posting_roles_older_stock import _as_older_release, _placement, _received
 from test_posting_roles_rollout import _startup
 
 pytestmark = pytest.mark.asyncio
@@ -165,3 +165,36 @@ async def test_an_invoice_relieving_one_account_ships_cleanly_after_its_goods_ar
 
     await _ship(client, auth, inv, lots[0])
     await assert_settled(client, session, auth)
+
+
+
+async def _reconciliation(client, auth) -> dict:
+    r = await client.get("/accounting/older-stock", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_cost_invoices_recognized_on_unplaced_stock_keeps_the_placement_under_review(session, client, auth):
+    """An older release invoiced goods from two accounts in one invoice, so its entry names
+    no one account their cost left: that cost is provisional. The placement is never
+    called exact while it stands, the view names it, and the company stays under review,
+    with sales going on, until the invoice ships."""
+    lots = await _stock(client, auth, 100.0, 100.0)
+    received = await _received(session, auth, 50.0)
+    inv = await _sell(client, auth, (lots[0], 1), (received, 1))
+    await _as_older_release(session, auth, await _items(session, auth), [inv])
+    await _marked(session, auth)
+    await _startup(session)
+
+    (record,) = [r for r in await _records(session, auth) if r["provisional"]]
+    assert (record["provisional"], record["classification"]) == (150.0, "provisional")
+    view = await _reconciliation(client, auth)
+    (placement,) = [p for p in view["placements"] if p["pid"] == record["placement"]]
+    assert (placement["provisional"], placement["classification"]) == (150.0, "provisional")
+    assert view["reconciliation"]["state"] == "review"
+    assert view["reconciliation"]["open"] == [
+        {"placement": record["placement"], "account": record["account"], "kind": "provisional", "amount": 150.0}]
+
+    await _ship(client, auth, inv, lots[0], received)
+    assert (await _reconciliation(client, auth))["reconciliation"] == {"state": "reconciled", "waiting": 0,
+                                                                      "reasons": [], "open": []}

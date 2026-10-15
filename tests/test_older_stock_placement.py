@@ -431,6 +431,54 @@ async def test_a_placement_that_fails_keeps_the_posting_account_change_and_tells
     assert notice.body == i18n.t("notice.older_stock_failed.body", "en")
 
 
+# --- Where reconciliation stands ---------------------------------------------------------
+
+
+async def test_stock_the_books_hold_exactly_is_reconciled(session, client, auth):
+    await _older_company(session, client, auth, [30.0, 20.0])
+    await _startup(session)
+    (placement,) = (await _view(client, auth))["placements"]
+    assert (placement["classification"], placement["provisional"]) == ("exact", 0.0)
+    assert (await _view(client, auth))["reconciliation"] == {"state": "reconciled", "waiting": 0, "reasons": [],
+                                                            "open": []}
+
+
+async def test_an_unresolved_difference_is_named_for_review_until_it_is_corrected(session, client, auth):
+    await _imported(session, client, auth, [30.0])
+    await _older_release(session, auth)
+    await _written_down(session, auth, "1130-OB", 30.0)
+    await _books_over(session, client, auth)  # 1130-P carries 40 for 30 of stock
+    await _startup(session)
+    (placement,) = (await _view(client, auth))["placements"]
+    assert (await _view(client, auth))["reconciliation"] == {"state": "review", "waiting": 0, "reasons": [], "open": [
+        {"placement": placement["pid"], "account": "1130-P", "kind": "unresolved", "amount": 10.0}]}
+
+    r = await client.post("/accounting/older-stock/corrections", headers=auth["headers"],
+                          json={"placements": [placement["pid"]], "kind": "recognize"})
+    assert r.status_code == 200, r.text
+    assert (await _view(client, auth))["reconciliation"]["state"] == "reconciled"
+
+
+async def test_older_stock_waiting_for_a_setting_needs_action_naming_why(session, client, auth):
+    await _waiting_for_retained(session, client, auth)
+    reconciliation = (await _view(client, auth))["reconciliation"]
+    assert (reconciliation["state"], reconciliation["waiting"], reconciliation["open"]) == ("action", 1, [])
+    (reason,) = reconciliation["reasons"]
+    assert reason["body"] == "notice.older_stock_unmapped.body_retained"
+    assert [p["message_key"] for p in reason["params"]["problems"]] == ["posting.problem.unset"]
+
+
+async def test_older_stock_that_failed_to_place_needs_action_naming_the_failure(session, client, auth):
+    await _waiting_for_retained(session, client, auth)
+    with patch("celerp.services.lot_origin.post_opening_stock_delta", AsyncMock(side_effect=RuntimeError("boom"))):
+        r = await client.put("/accounting/posting-accounts/retained_earnings", headers=auth["headers"],
+                             json={"code": "3210"})
+    assert r.status_code == 200, r.text
+    reconciliation = (await _view(client, auth))["reconciliation"]
+    assert (reconciliation["state"], reconciliation["waiting"]) == ("action", 1)
+    assert [reason["body"] for reason in reconciliation["reasons"]] == ["notice.older_stock_failed.body"]
+
+
 async def test_a_lot_whose_account_is_already_recorded_is_not_reported_placed_again(session, client, auth):
     """A lot whose stored state lost its account while the event recording it stands is
     not placed again: nothing is written for it and no second placed notice is sent."""
@@ -779,6 +827,34 @@ async def test_the_older_stock_tab_lists_placed_lots_and_its_empty_state(ui_clie
     body, _ = await _tab(ui_client, _EMPTY)
     assert "No older stock was placed automatically." in body
     assert "No moves yet." in body
+
+
+async def test_the_older_stock_tab_opens_with_where_reconciliation_stands(ui_client):
+    """The state comes first: what waits and the setting to fix, or each open difference
+    with the way to review it, or that everything is reconciled."""
+    waiting = {"state": "action", "waiting": 3, "open": [], "reasons": [{
+        "title": "notice.older_stock_unmapped.title", "body": "notice.older_stock_unmapped.body_retained",
+        "action_url": "/settings/accounting?tab=posting-accounts",
+        "params": {"problems": [{"message": "Retained earnings is not set.", "message_key": "posting.problem.unset",
+                                 "params": {"role": "Retained earnings"}}]}}]}
+    body, _ = await _tab(ui_client, {**_EMPTY, "reconciliation": waiting})
+    summary = body.split('id="older-stock-reconciliation"')[1].split("</div>")[0]
+    assert body.index('id="older-stock-reconciliation"') < body.index('id="older-stock-table"')
+    assert "Action required" in summary and "3 older stock items have no inventory account yet." in summary
+    assert "Retained earnings" in summary and 'href="/settings/accounting?tab=posting-accounts"' in summary
+
+    review = {"state": "review", "waiting": 0, "reasons": [], "open": [
+        {"placement": "p1", "account": "1130-P", "kind": "unresolved", "amount": 10.0},
+        {"placement": "p2", "account": "1130-OB", "kind": "provisional", "amount": 150.0}]}
+    body, _ = await _tab(ui_client, {**_VIEW, "reconciliation": review})
+    summary = body.split('id="older-stock-reconciliation"')[1].split("</div>")[0]
+    assert "Review needed" in summary and "sales continue normally" in summary
+    assert "1130-P: a difference of $10.00 is unresolved." in summary
+    assert "1130-OB: $150.00 of cost" in summary and 'href="#older-stock-placements"' in summary
+
+    body, _ = await _tab(ui_client, {**_VIEW, "reconciliation": {"state": "reconciled", "waiting": 0,
+                                                                  "reasons": [], "open": []}})
+    assert "All older stock is placed and matches the books." in body
 
 
 async def test_the_older_stock_tab_shows_an_api_failure_as_an_error(ui_client):

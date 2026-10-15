@@ -523,15 +523,24 @@ async def _notify_failed(session: AsyncSession, company_id, exc: Exception) -> N
                                                action_url=OLDER_STOCK_PATH, i18n=i18n)
 
 
+async def _standing_notice(session: AsyncSession, company_id, base: str) -> dict | None:
+    """The i18n record of the company's standing notice ``base`` (notify_standing) with the
+    page it links to (``action_url``), or None when none stands. A standing notice is
+    removed once its condition ends, so one that stands, read or not, means the condition
+    holds now."""
+    from celerp.models.notification import Notification
+
+    row = (await session.execute(select(Notification.i18n, Notification.action_url).where(
+        Notification.company_id == company_id, Notification.category == "accounting",
+        Notification.title == _notice(base)[0]).limit(1))).first()
+    return None if row is None else {**(row.i18n or {}), "action_url": row.action_url}
+
+
 async def failed_placement(session: AsyncSession, company_id) -> dict | None:
     """The standing failure to place older stock (_notify_failed): the kind of error, or
     None when none stands."""
-    from celerp.models.notification import Notification
-
-    i18n = (await session.execute(select(Notification.i18n).where(
-        Notification.company_id == company_id, Notification.category == "accounting",
-        Notification.title == _notice(FAILED_NOTICE)[0]).limit(1))).scalar()
-    return {"error": ((i18n or {}).get("params") or {}).get("error") or ""} if i18n is not None else None
+    i18n = await _standing_notice(session, company_id, FAILED_NOTICE)
+    return {"error": (i18n.get("params") or {}).get("error") or ""} if i18n is not None else None
 
 
 async def _recorded(session: AsyncSession, company_id, item_ids: list[str]) -> set[str]:
@@ -579,11 +588,15 @@ async def unresolved_differences(session: AsyncSession, company_id) -> dict[str,
     return found
 
 
-def _classify(moved: bool, gap: Decimal) -> str:
+def _classify(moved: bool, gap: Decimal, provisional: Decimal) -> str:
+    """How a placement met the books. Never ``exact`` (nor ``transfer``) while cost an
+    invoice recognized on the lots is provisional: no entry says which account it left."""
     if gap < 0:
         return "opening_stock"
     if gap > 0:
         return "unresolved"
+    if provisional:
+        return "provisional"
     return "transfer" if moved else "exact"
 
 
@@ -715,7 +728,7 @@ async def _place(session: AsyncSession, company_id) -> bool:
               "rooms": {c: float(v) for c, v in room.items()}, "transferred": float(transferred),
               "recognized": float(max(-gap, Decimal("0"))), "unresolved": float(max(gap, Decimal("0"))),
               "provisional": float(provisional),
-              "classification": _classify(bool(moved), gap), "journal": journal})
+              "classification": _classify(bool(moved), gap, provisional), "journal": journal})
     company = await locked_company(session, company_id)
     company.settings = {**(company.settings or {}), "older_stock_placed": pid}
     for notice in (UNMAPPED_NOTICE, FAILED_NOTICE):
@@ -951,6 +964,7 @@ async def consumed_facts(session: AsyncSession, company_id, marker: str,
 
 
 PERIOD_LOCK_PATH = "/settings/accounting?tab=period-lock"
+LOCKED_NOTICE = "notice.older_stock_locked"
 
 
 class _Retry(Exception):
@@ -971,7 +985,7 @@ async def _notify_locked(session: AsyncSession, company_id) -> None:
     from celerp.services.company_lock import locked_company
 
     day = str(((await locked_company(session, company_id)).settings or {}).get("lock_date") or "")
-    title, body, i18n = _notice("notice.older_stock_locked", day=day)
+    title, body, i18n = _notice(LOCKED_NOTICE, day=day)
     await notification_service.notify_standing(session, company_id, "accounting", title, body,
                                                action_url=PERIOD_LOCK_PATH, i18n=i18n)
 
@@ -1770,6 +1784,38 @@ async def correct_placements(session: AsyncSession, company_id, pids: list[str],
 
 
 OLDER_STOCK_PAGES = ("lots", "placements", "moves", "corrections")
+WAITING_NOTICES = (UNMAPPED_NOTICE, LOCKED_NOTICE, FAILED_NOTICE)
+
+
+async def _reconciliation(session: AsyncSession, company_id, placements: list[dict],
+                          recorded: list[LedgerEntry]) -> dict:
+    """Where the older stock stands with the books, one of three states:
+
+    - ``action``: older stock waits for its inventory account (``waiting`` lots), each
+      standing notice saying why (WAITING_NOTICES, their i18n records under ``reasons``);
+      it cannot be sold or moved until someone fixes that.
+    - ``review``: everything is placed and sales go on, but a placement is still open
+      (``open``): a difference left unresolved, or provisional cost an invoice recognized
+      on its lots before placing while that invoice still holds them unshipped.
+    - ``reconciled``: nothing waits and nothing is open.
+
+    ``placements`` and ``recorded`` (the lots each placement recorded) as older_stock_view
+    reads them."""
+    from celerp.services.auto_je import unshipped_claims
+
+    waiting = len(await _unplaced(session, company_id))
+    reasons = [i18n for base in WAITING_NOTICES if (i18n := await _standing_notice(session, company_id, base))]
+    lots: dict[str, list[str]] = {}
+    for e in recorded:
+        lots.setdefault(e.metadata_["placement"], []).append(e.entity_id)
+    held = {p["pid"] for p in placements if p["provisional"] and await unshipped_claims(
+        session, company_id, costed=False, lots=sorted(lots.get(p["pid"], [])))}
+    open_ = [{"placement": p["pid"], "account": p["account"], "kind": kind, "amount": amount}
+             for p in placements
+             for kind, amount in (("unresolved", p["unresolved"]),
+                                  ("provisional", p["provisional"] if p["pid"] in held else 0.0)) if amount]
+    state = "action" if waiting or reasons else "review" if open_ else "reconciled"
+    return {"state": state, "waiting": waiting, "reasons": reasons, "open": open_}
 
 
 async def older_stock_view(session: AsyncSession, company_id, account: str | None = None,
@@ -1779,8 +1825,9 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
     each placement with its classification, what it transferred, recognized and left
     unresolved and its journal entries, every move and every correction (with who made
     it) newest first, a summary per inventory account, the accounts the lots sit on, the
-    accounts they can be moved to, and a standing failure to place older stock
-    (failed_placement). Each list in OLDER_STOCK_PAGES is a page of ``limit`` rows from
+    accounts they can be moved to, a standing failure to place older stock
+    (failed_placement), and where the older stock stands with the books
+    (_reconciliation). Each list in OLDER_STOCK_PAGES is a page of ``limit`` rows from
     its own offset, with its total under ``totals``."""
     from celerp.services.ledger_display import display_fields
     from celerp.services.posting_readiness import older_stock_targets
@@ -1803,6 +1850,7 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
                                "transferred": float(record.get("transferred") or 0),
                                "recognized": float(record.get("recognized") or 0),
                                "unresolved": float(record.get("unresolved") or 0),
+                               "provisional": float(record.get("provisional") or 0),
                                "journal": record.get("journal") or [],
                                "corrections": record.get("corrections") or []}
         placements[pid]["count"] += 1
@@ -1862,4 +1910,5 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
             "totals": {name: len(full) for name, full in lists.items()}, "limit": limit,
             "summary": sorted(summary.values(), key=lambda r: r["account"]),
             "accounts": accounts, "failed": await failed_placement(session, company_id),
+            "reconciliation": await _reconciliation(session, company_id, list(placements.values()), recorded),
             **await older_stock_targets(session, company_id)}

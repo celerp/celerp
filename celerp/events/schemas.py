@@ -1231,8 +1231,9 @@ class SysMigrationApplied(BaseModel):
 class SysOlderStockPlaced(BaseModel):
     # One placement of older stock (lot_origin._place): the account its lots were placed
     # on, what each inventory account held beyond its stock before (rooms), the value
-    # moved onto the account, recognized as opening stock or left unresolved, and the
-    # journal entries that booked it.
+    # moved onto the account, recognized as opening stock or left unresolved, the cost
+    # invoices recognized on the lots before with no entry naming its account
+    # (provisional), and the journal entries that booked it.
     placement: str
     day: str
     count: int
@@ -1242,6 +1243,7 @@ class SysOlderStockPlaced(BaseModel):
     transferred: float
     recognized: float
     unresolved: float
+    provisional: float
     classification: str
     journal: list[str]
 

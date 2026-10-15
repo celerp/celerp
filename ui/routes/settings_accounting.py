@@ -16,6 +16,7 @@ from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.shell import base_shell, bug_report_url, flash, page_header, page_title
 from celerp.accounting_roles import account_label
+from celerp.services.lot_origin import OLDER_STOCK_PATH
 from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
 from ui.components.table import (EMPTY, add_new_option, bulk_toolbar, searchable_select, display_enum, fmt_money,
                                  server_pager)
@@ -414,7 +415,7 @@ def _older_stock_url(filters: dict, path: str = "", **changes) -> str:
     from urllib.parse import urlencode
 
     query = urlencode({k: v for k, v in {**filters, **changes}.items() if v not in ("", None)})
-    base = f"{_OLDER_STOCK_URL}{path}" if path else "/settings/accounting?tab=older-stock"
+    base = f"{_OLDER_STOCK_URL}{path}" if path else OLDER_STOCK_PATH
     return base + ("&" if "?" in base else "?") + query if query else base
 
 
@@ -509,6 +510,32 @@ def _move_row(m: dict, currency: str, filters: dict) -> FT:
     )
 
 
+_RECONCILIATION_BANNER = {"action": "error-banner", "review": "info-banner", "reconciled": "success-banner"}
+
+
+def _reconciliation_summary(rec: dict | None, currency: str | None) -> FT | None:
+    """Where the older stock stands with the books (lot_origin._reconciliation): the state,
+    why stock waits with a link to the setting to fix, or each open difference with the
+    way to review it in the placements below."""
+    if not rec:
+        return None
+    state = rec["state"]
+    reasons = [Li(refusal_text({"message": "", "message_key": r.get("body", ""), "params": r.get("params") or {}}),
+                  " ", A(t("older_stock.state.fix"), href=r["action_url"])
+                  if r.get("action_url") not in (None, OLDER_STOCK_PATH) else None)
+               for r in rec.get("reasons") or []]
+    opened = [Li(t(f"older_stock.open.{o['kind']}", account=o["account"], amount=fmt_money(o["amount"], currency)))
+              for o in rec.get("open") or []]
+    return Div(
+        H4(t(f"older_stock.state.{state}")),
+        P(t(f"older_stock.state.{state}_hint", n=rec.get("waiting") or 0)),
+        Ul(*reasons, *opened) if reasons or opened else None,
+        A(t("older_stock.state.review_placements"), href="#older-stock-placements", cls="btn btn--sm btn--secondary")
+        if state == "review" else None,
+        cls=f"{_RECONCILIATION_BANNER[state]} mb-md", id="older-stock-reconciliation",
+    )
+
+
 def _placement_failure(failed: dict | None) -> FT | None:
     """A standing failure to place older stock: what it means, Try again, and a bug
     report pre-filled with the kind of error only."""
@@ -563,6 +590,7 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
     return Div(
         flash(message, kind) if message else None,
         H3(t("older_stock.tab"), cls="section-title"),
+        _reconciliation_summary(view.get("reconciliation"), currency),
         _placement_failure(view.get("failed")),
         P(t("older_stock.hint"), cls="text-muted mb-md"),
         H4(t("older_stock.summary")) if summary else None,
