@@ -4,9 +4,11 @@
 
 A placement recognizes what the inventory accounts held short of the stock as opening
 stock, and leaves what they held beyond it unresolved for the accountant
-(test_older_stock_reconciliation). The accountant can correct either treatment: book an
-unresolved difference against retained earnings the way opening stock is booked, or
-take a recognized amount back off the books and leave it unresolved instead. Each
+(test_older_stock_reconciliation). A surplus stays open until the accountant writes it
+off against retained earnings as a prior-period correction, and a write-off is undone
+in one step. The accountant can correct either treatment: book an unresolved difference
+against retained earnings the way opening stock is booked, or take a recognized amount
+back off the books and leave it unresolved instead. Each
 correction is one balanced entry dated today, the placement record follows it, and
 every inventory account still holds its lots less unshipped recognized cost plus its
 unresolved difference. A placement whose lots were sold, shipped or moved since, or a
@@ -87,25 +89,58 @@ async def test_recognized_opening_stock_can_be_left_unresolved_and_booked_again(
     assert len(lots) == 1
 
 
-async def test_an_unresolved_surplus_can_be_booked_against_retained_earnings(session, client, auth):
+async def _rooms(session, auth) -> dict:
+    session.expire_all()
+    return await lot_origin.account_rooms(session, auth["company_id"], {"1130-P", "1130-OB"})
+
+
+async def test_a_surplus_stays_open_until_written_off_and_the_write_off_can_be_undone(session, client, auth):
     lots = await _imported(session, client, auth, [30.0])
     await _older_release(session, auth)
     await _written_down(session, auth, "1130-OB", 30.0)
     await _books_over(session, client, auth)  # 1130-P carries 40 for 30 of stock
     await _startup(session)
-    (placement,) = (await _view(client, auth))["placements"]
-    assert placement["unresolved"] == 10.0 and placement["classification"] == "unresolved"
+    view = await _view(client, auth)
+    (placement,) = view["placements"]
+    pid = placement["pid"]
 
-    r = await _correct(client, auth, "recognize", placement["pid"])
+    # Placing never writes a surplus off: it stays open on the record and on the books.
+    assert placement["unresolved"] == 10.0 and placement["recognized"] == 0.0
+    assert placement["classification"] == "unresolved" and placement["corrections"] == []
+    assert await _corrections(session, auth, pid) == []
+    assert await _net(session, auth, "1130-P") == (40.0,)
+    assert await _off_books(session, auth) == [{"kind": "unresolved_difference", "account": "1130-P",
+                                                "amount": 10.0}]
+    assert await _rooms(session, auth) == {"1130-P": 0, "1130-OB": 0}
+    assert view["retained"]["code"] == "3200"  # the account a write-off posts to, named before it is chosen
+
+    r = await _correct(client, auth, "recognize", pid)
 
     assert r.status_code == 200, r.text
     (after,) = r.json()["placements"]
     assert after["unresolved"] == 0.0 and after["recognized"] == -10.0
     assert after["classification"] == "unresolved"  # what the placement found stays on its record
+    assert [c["kind"] for c in after["corrections"]] == ["write_off"]
+    assert [c["kind"] for c in r.json()["corrections"]] == ["write_off"]
     assert await _net(session, auth, "1130-P") == (30.0,)
     assert await _off_books(session, auth) == []
-    assert [_lines(je) for je in await _corrections(session, auth, placement["pid"])] == [
-        {"3200": (10.0, 0.0), "1130-P": (0.0, 10.0)}]
+    assert await _rooms(session, auth) == {"1130-P": 0, "1130-OB": 0}
+    (write_off,) = await _corrections(session, auth, pid)
+    assert _lines(write_off) == {"3200": (10.0, 0.0), "1130-P": (0.0, 10.0)}
+    assert "prior-period correction" in write_off["memo"]
+
+    r = await _correct(client, auth, "unresolve", pid)
+
+    assert r.status_code == 200, r.text
+    (undone,) = r.json()["placements"]
+    assert undone["unresolved"] == 10.0 and undone["recognized"] == 0.0
+    assert [c["kind"] for c in undone["corrections"]] == ["write_off", "write_off_undone"]
+    assert await _net(session, auth, "1130-P") == (40.0,)
+    assert await _off_books(session, auth) == [{"kind": "unresolved_difference", "account": "1130-P",
+                                                "amount": 10.0}]
+    assert await _rooms(session, auth) == {"1130-P": 0, "1130-OB": 0}
+    assert [_lines(je) for je in await _corrections(session, auth, pid)] == [
+        {"3200": (10.0, 0.0), "1130-P": (0.0, 10.0)}, {"1130-P": (10.0, 0.0), "3200": (0.0, 10.0)}]
     assert len(lots) == 1
 
 

@@ -375,11 +375,14 @@ def _status(role: str, current: dict[str, str], chart: dict[str, dict], required
 
 def _older_stock(settings: dict, chart: dict[str, dict]) -> dict:
     """The accounts that have held purchased or opening inventory, for the screens that
-    place stock on one, and the company currency."""
+    place stock on one, the retained earnings account a write-off of a surplus posts to
+    (None while unmapped), and the company currency."""
     held = {c for role in (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
             for c in scope_list(settings, role)}
+    retained = role_map(settings).get(AccountRole.RETAINED_EARNINGS.value)
     return {"currency": str(settings.get("currency") or "USD").upper(),
-            "candidates": [_brief(chart[c]) for c in sorted(held) if c in chart]}
+            "candidates": [_brief(chart[c]) for c in sorted(held) if c in chart],
+            "retained": _brief(chart[retained]) if retained in chart else None}
 
 
 async def older_stock_targets(session: AsyncSession, company_id) -> dict:

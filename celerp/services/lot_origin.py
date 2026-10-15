@@ -1616,11 +1616,26 @@ async def _placement_lots(session: AsyncSession, company_id, pid: str) -> list[s
         LedgerEntry.metadata_["placement"].as_string() == pid))).scalars()))
 
 
+# What a correction posts and records, by its kind and whether it acts on a surplus.
+_CORRECTION_MEMOS = {
+    ("recognize", False): "Older stock difference booked against retained earnings",
+    ("unresolve", False): "Older stock opening stock taken back off the books, left unresolved",
+    ("recognize", True): "Older stock surplus written off against retained earnings as a prior-period correction",
+    ("unresolve", True): "Older stock surplus write-off undone, left unresolved",
+}
+_CORRECTION_KINDS = {("recognize", False): "recognize", ("unresolve", False): "unresolve",
+                     ("recognize", True): "write_off", ("unresolve", True): "write_off_undone"}
+
+
 async def correct_placements(session: AsyncSession, company_id, pids: list[str], kind: str, actor_id) -> int:
     """Correct how placements ``pids`` treated their difference, all of them or none:
     ``recognize`` books what each left unresolved against retained earnings, the way
     opening stock is booked (post_opening_stock_delta); ``unresolve`` takes what each
-    recognized back off the books and leaves it unresolved for the accountant. Each
+    recognized back off the books and leaves it unresolved for the accountant. On a
+    surplus (more on the books than the stock), which placing always leaves open,
+    ``recognize`` is the accountant's explicit write-off, a prior-period correction
+    recorded as ``write_off``, and ``unresolve`` undoes it (``write_off_undone``),
+    restoring the open difference. Each
     correction is one entry dated today and one record on the placement
     (sys.older_stock.corrected) moving the amount between recognized and unresolved, so
     the account still holds its lots, less unshipped recognized cost, plus its unresolved
@@ -1682,20 +1697,20 @@ async def correct_placements(session: AsyncSession, company_id, pids: list[str],
             delta = round_money(-(unresolved if kind == "recognize" else recognized), currency)
             if not delta:
                 continue
+            surplus = (kind == "recognize") == (delta < 0)
             n = len(state.get("corrections") or []) + 1
             je_id = _placement_entry(pid, f"correction:{n}")
             await post_opening_stock_delta(
                 session, company_id, {state["account"]: abs(delta)}, onto_books=delta > 0, je_id=je_id,
                 idem=f"older-stock-placed:{pid}:correction:{n}",
-                memo=("Older stock difference booked against retained earnings" if kind == "recognize"
-                      else "Older stock opening stock taken back off the books, left unresolved"),
+                memo=_CORRECTION_MEMOS[kind, surplus],
                 metadata={"trigger": "older_stock.corrected", "placement": pid, "classification": "opening_stock"},
                 actor_id=actor_id, day=day)
             await emit_event(
                 session, company_id=company_id, entity_id=_placement_entity(pid), entity_type=PLACEMENT,
                 event_type=CORRECTED, actor_id=actor_id, location_id=None, source="system",
                 idempotency_key=f"{_placement_entity(pid)}:correction:{n}", metadata_={},
-                data={"placement": pid, "kind": kind, "day": day, "amount": float(delta),
+                data={"placement": pid, "kind": _CORRECTION_KINDS[kind, surplus], "day": day, "amount": float(delta),
                       "recognized": float(recognized + delta), "unresolved": float(unresolved + delta),
                       "journal": je_id})
             corrected += 1

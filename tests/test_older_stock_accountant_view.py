@@ -127,6 +127,27 @@ async def test_the_tab_shows_the_accountant_view_with_pagers_and_bulk_correction
     assert "je:auto:older-stock-placed:p1:correction:1" in body
 
 
+_RETAINED = {"code": "3200", "name": "Retained Earnings", "account_type": "equity", "code_generated": False}
+_SURPLUS = {"pid": "p2", "day": "2026-10-15", "count": 1, "account": "1130-P", "classification": "unresolved",
+            "transferred": 0.0, "recognized": 0.0, "unresolved": 30000.0, "journal": [], "corrections": []}
+
+
+async def test_a_surplus_shows_as_a_plain_line_with_a_write_off_that_names_its_account(ui_client):
+    written_off = {**_SURPLUS, "pid": "p3", "recognized": -500.0, "unresolved": 0.0}
+    view = {**_PAGED, "placements": [_SURPLUS, written_off], "retained": _RETAINED,
+            "corrections": [{"placement": "p3", "day": "2026-10-15", "kind": "write_off", "amount": -500.0,
+                             "journal": "je:auto:older-stock-placed:p3:correction:1", "actor_name": "Owner A"}]}
+
+    body, _ = await _tab(ui_client, view)
+
+    assert "$30,000.00 more on the books than the stock" in body
+    assert ">Write off<" in body and "Undo write-off" in body
+    assert ("Write off $30,000.00 against 3200 Retained Earnings as a prior-period correction? "
+            "You can undo it.") in body
+    assert "Written off against retained earnings" in body
+    assert "Book against retained earnings" not in body.split('id="older-stock-placements"')[1].split("</table>")[0]
+
+
 async def test_the_tab_ignores_a_page_it_cannot_read(ui_client):
     _, get = await _tab(ui_client, _PAGED, query="&lots_offset=-3&limit=abc&moves_offset=2")
 

@@ -426,19 +426,33 @@ def _correction_url(filters: dict, kind: str) -> str:
     return _older_stock_url(filters, "/corrections", kind=kind)
 
 
-def _correction(pid: str, kind: str, label: str, filters: dict) -> FT:
+def _correction(pid: str, kind: str, label: str, filters: dict, confirm: str | None = None) -> FT:
     return Button(label, type="button", cls="btn btn--xs btn--secondary",
                   hx_post=_correction_url(filters, kind), hx_vals=json.dumps({"selected": pid}),
-                  hx_target="#older-stock-card", hx_swap="outerHTML")
+                  hx_target="#older-stock-card", hx_swap="outerHTML", hx_confirm=confirm)
 
 
-def _placement_row(p: dict, currency: str, filters: dict) -> FT:
+def _retained(view: dict) -> str:
+    """The account a write-off posts to, as users read it (the role while it is unmapped)."""
+    return account_label(view.get("retained")) or role_label("retained_earnings", "Retained earnings")
+
+
+def _placement_row(p: dict, currency: str, filters: dict, retained: str) -> FT:
     """A placement: its classification, what it transferred between accounts, recognized as
     opening stock and left unresolved, the journal entries it posted, and the correction
-    each difference allows (lot_origin.correct_placements)."""
-    actions = ([_correction(p["pid"], "recognize", t("older_stock.book_difference"), filters)]
-               if p["unresolved"] else []) \
-        + ([_correction(p["pid"], "unresolve", t("older_stock.leave_unresolved"), filters)] if p["recognized"] else [])
+    each difference allows (lot_origin.correct_placements). A surplus stays open as a plain
+    line with one explicit write-off, confirmed naming the account it posts to, and a
+    write-off is undone in one click."""
+    surplus = fmt_money(p["unresolved"], currency) if p["unresolved"] > 0 else None
+    actions = ([Div(t("older_stock.surplus", amount=surplus)),
+                _correction(p["pid"], "recognize", t("older_stock.write_off"), filters,
+                            t("older_stock.write_off_confirm", amount=surplus, account=retained))] if surplus else []) \
+        + ([_correction(p["pid"], "recognize", t("older_stock.book_difference"), filters)]
+           if p["unresolved"] < 0 else []) \
+        + ([_correction(p["pid"], "unresolve", t("older_stock.leave_unresolved"), filters)]
+           if p["recognized"] > 0 else []) \
+        + ([_correction(p["pid"], "unresolve", t("older_stock.undo_write_off"), filters)]
+           if p["recognized"] < 0 else [])
     return Tr(
         Td(Input(type="checkbox", cls="bulk-select", name="selected", value=p["pid"]), cls="col-checkbox"),
         Td(p["day"], cls="cell--center"),
@@ -523,7 +537,7 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
     lots, placements, moves = view.get("lots", []), view.get("placements", []), view.get("moves", [])
     summary, corrections = view.get("summary", []), view.get("corrections", [])
     totals, limit = view.get("totals", {}), view.get("limit") or 50
-    candidates = view.get("candidates", [])
+    candidates, retained = view.get("candidates", []), _retained(view)
     target = searchable_select("code", [(c["code"], account_label(c)) for c in candidates],
                                placeholder=t("posting.choose"), aria_label=t("older_stock.move_to"),
                                cls="bulk-field")
@@ -566,16 +580,17 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
         pager("lots"),
         H4(t("older_stock.placements"), cls="mt-md"),
         bulk_toolbar("older-stock-placements", [
-            {"value": k, "label": label, "method": "post", "url": _correction_url(filters, k),
-             "target": "#older-stock-card"}
-            for k, label in (("recognize", t("older_stock.book_difference")),
-                             ("unresolve", t("older_stock.leave_unresolved")))]) if placements else None,
+            {"value": "recognize", "label": t("older_stock.book_difference"), "method": "post",
+             "url": _correction_url(filters, "recognize"), "target": "#older-stock-card",
+             "confirm": t("older_stock.bulk_recognize_confirm", n="{n}", account=retained)},
+            {"value": "unresolve", "label": t("older_stock.leave_unresolved"), "method": "post",
+             "url": _correction_url(filters, "unresolve"), "target": "#older-stock-card"}]) if placements else None,
         table("older-stock-placements", [
             select_all, Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_lots"), **number),
             Th(t("older_stock.col_account")), Th(t("older_stock.col_classification")),
             Th(t("older_stock.col_transferred"), **number), Th(t("older_stock.col_recognized"), **number),
             Th(t("older_stock.col_unresolved"), **number), Th(t("older_stock.col_journal")), Th("")],
-            [_placement_row(p, currency, filters) for p in placements])
+            [_placement_row(p, currency, filters, retained) for p in placements])
         if placements else P(t("older_stock.no_placements"), cls="hint"),
         pager("placements"),
         H4(t("older_stock.moves"), cls="mt-md"),
