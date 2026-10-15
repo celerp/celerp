@@ -87,6 +87,8 @@ EXCLUDED_TABLES = {
     "user_companies": "people and their roles belong to the installation",
     "connector_configs": "connector credentials",
     "connector_sources": "connector links to outside services",
+    "company_peer_grants": "company integration credentials",
+    "company_peer_identities": "company integration identity mappings",
     "marketplace_configs": "marketplace connection settings and credentials",
     "sync_runs": "connector sync history",
     "outbound_queue": "messages waiting to leave this installation",
@@ -1548,7 +1550,8 @@ def _chosen_name(name: str) -> str:
 
 async def restore_company(path: Path, *, mode: str, user_id=None, current_company_id=None,
                           owner_account: dict | None = None, plan_fingerprint: str | None = None,
-                          company_name: str | None = None, caller: str | None = None) -> RestoreResult:
+                          company_name: str | None = None, caller: str | None = None,
+                          retain_peer_identities: bool = False) -> RestoreResult:
     """Restore a backup file as a new company and commit it.
 
     ``settings`` and ``new_company`` restore it for the signed-in ``user_id`` as the
@@ -1664,6 +1667,10 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     raise BackupError(422, t(UNSAVABLE)) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
             await _check_replay(session, new_id)
+            if retain_peer_identities:
+                from celerp.services.peer_identity import seed_restored_identities
+                await seed_restored_identities(
+                    session, target_company=new_id, source_company=uuid.UUID(source), id_map=id_map)
             if _same_lineage(mode, current_company_id, source):
                 await _rebind_actors(session, new_id)
             await _turn_off_shop_sync(session, new_id, user.id)

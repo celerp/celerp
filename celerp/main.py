@@ -45,7 +45,7 @@ from celerp.held_back import (
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, OlderStockMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception, notify_refused
 from ui.i18n import I18nMiddleware, t
 
-from celerp.routers import auth, companies, company_backup, ledger, migrations
+from celerp.routers import auth, companies, company_backup, company_peers, ledger, migrations
 from celerp.routers import health, notifications, system, events as events_router_mod
 from celerp.routers import stars as stars_router_mod
 from celerp.importers.sinks import register_sink
@@ -801,6 +801,7 @@ app.include_router(events_router_mod.router)
 app.include_router(search_router_mod.router, tags=["search"])
 app.include_router(migrations.router)
 app.include_router(company_backup.router)
+app.include_router(company_peers.router)
 register_sink(CORE_SINK)
 
 # Backup router — always registered; individual endpoints gate on cloud connection.

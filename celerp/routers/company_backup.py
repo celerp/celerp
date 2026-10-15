@@ -380,7 +380,8 @@ async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_own
             result = await cb.restore_company(stage, mode=payload.mode, user_id=ctx.user.id,
                                               current_company_id=ctx.company_id,
                                               plan_fingerprint=payload.plan_fingerprint,
-                                              company_name=payload.company_name)
+                                              company_name=payload.company_name,
+                                              retain_peer_identities=files._receipt(stage) is not None)
         except cb.BackupError as exc:
             return _error(exc, stage)
         files.finish_stage(stage, result.company_id)
@@ -498,7 +499,8 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
                                                               expected_snonce=None))
     try:
         result = await cb.restore_company(stage, mode="bootstrap", owner_account=account,
-                                          company_name=payload.company_name, caller=request_caller(request))
+                                          company_name=payload.company_name, caller=request_caller(request),
+                                          retain_peer_identities=files._receipt(stage) is not None)
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
@@ -546,7 +548,8 @@ async def start_company_restore(request: Request, payload: StartCompanyRestoreIn
     try:
         result = await cb.restore_company(stage, mode=_START_COMPANY, user_id=user.id,
                                           plan_fingerprint=payload.plan_fingerprint,
-                                          company_name=payload.company_name)
+                                          company_name=payload.company_name,
+                                          retain_peer_identities=files._receipt(stage) is not None)
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)

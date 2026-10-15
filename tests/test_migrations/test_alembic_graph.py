@@ -44,7 +44,7 @@ RELEASE_HEAD = "o2d3e4f5a6b7"
 # generated account codes, then import reversibility, then per-user notice reads.
 RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1", "t7i8j9k0l1m2",
                  "u8j9k0l1m2n3", "c7f1a2b3d4e5", "d8e9f0a1b2c3", "e9f0a1b2c3d4", "v0m1n2o3p4q5",
-                 "w1n2o3p4q5r6"]
+                 "w1n2o3p4q5r6", "x2p3q4r5s6t7"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.
@@ -90,6 +90,50 @@ def test_this_release_runs_in_order_after_the_last_release():
     script = ScriptDirectory.from_config(build_alembic_config())
     walked = [r.revision for r in script.walk_revisions(base=RELEASE_HEAD, head="heads")]
     assert list(reversed(walked)) == [RELEASE_HEAD, *RELEASE_CHAIN]
+
+
+@pytest.mark.parametrize("table", ["company_peer_grants", "company_peer_identities"])
+def test_peer_downgrade_preserves_persisted_records(table):
+    with throwaway_db("peer_rollback") as (_, sync_url):
+        upgrade_to(sync_url, head_rev())
+        eng = create_engine(sync_url)
+        company_id = str(uuid.uuid4())
+        try:
+            with eng.begin() as conn:
+                conn.execute(text(
+                    "INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                    "VALUES (:id, 'Peer', 'peer', '{}', true, now())"),
+                    {"id": company_id})
+                if table == "company_peer_grants":
+                    conn.execute(text(
+                        "INSERT INTO company_peer_grants "
+                        "(id, company_id, source_company_id, token_hash, label, scopes, "
+                        "created_at, expires_at) VALUES "
+                        "(:id, :company, :source, :digest, 'Firm', '[\"contacts\"]', "
+                        "now(), now() + interval '1 day')"), {
+                            "id": str(uuid.uuid4()), "company": company_id,
+                            "source": str(uuid.uuid4()), "digest": "a" * 64,
+                        })
+                else:
+                    conn.execute(text(
+                        "INSERT INTO company_peer_identities "
+                        "(id, company_id, source_company_id, entity_type, source_entity_id, "
+                        "source_key_hash, target_entity_id, last_revision) "
+                        "VALUES (:id, :company, :source, 'contact', 'old', :digest, 'contact:new', 1)"), {
+                            "id": str(uuid.uuid4()), "company": company_id,
+                            "source": str(uuid.uuid4()), "digest": "b" * 64,
+                        })
+        finally:
+            eng.dispose()
+        with pytest.raises(RuntimeError, match="Cannot downgrade while company integrations exist"):
+            _downgrade_to(sync_url, "w1n2o3p4q5r6")
+        eng = create_engine(sync_url)
+        try:
+            with eng.connect() as conn:
+                assert conn.execute(text(f"SELECT count(*) FROM {table}")).scalar_one() == 1
+                assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == head_rev()
+        finally:
+            eng.dispose()
 
 
 def _without_instance_meta(schema: dict[str, set]) -> dict[str, set]:

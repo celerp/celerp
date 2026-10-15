@@ -301,6 +301,12 @@ def test_every_anonymous_api_page_is_reached_through_connect_or_named_as_ui_only
     assert reached & ui_only == set()
 
 
+def test_accountant_grant_management_is_not_reached_through_connect(client):
+    """Only the signed sync calls go to the API port; granting a key needs sign-in."""
+    for path in ("/company-peers/grants", "/company-peers/grants/x/revoke"):
+        assert client._local_port_for(path) == client._ui_port
+
+
 def test_stop_sets_running_false(client):
     """stop() sets _running=False."""
     client._running = True

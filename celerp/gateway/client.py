@@ -48,9 +48,16 @@ _REAP_GRACE = 5 * 60       # seconds
 # socket is wedged (a stalled or backpressured peer). Bound every send so it surfaces as an
 # error instead of pinning the proxy task holding a relay slot forever.
 _SEND_DEADLINE = 30        # seconds
-# Anonymous API-app pages a visitor opens from a link: shared documents and pay links.
+# Anonymous API-app pages reached from outside: shared documents and pay links a visitor
+# opens, and the sync calls an accountant's installation signs with its company key
+# (granting that key needs sign-in, so /company-peers/grants stays on the UI server).
 # Matched on a segment boundary, so /payments or /shared-thing stay on the UI server.
-_PUBLIC_API_PREFIXES = ("/share", "/pay")
+_PUBLIC_API_PREFIXES = (
+    "/share",
+    "/pay",
+    "/company-peers/verify",
+    "/company-peers/contacts",
+)
 
 
 class _SharedProxyTransport(httpx.AsyncHTTPTransport):
@@ -175,9 +182,9 @@ class GatewayClient:
         /api/, which are UI-server endpoints (HTMX fragments, image/barcode
         previews, item & bulk actions), NOT the internal data API. The API
         server is an internal backend the UI calls server-side via api_client.
-        The exceptions are the anonymous API-app pages a visitor opens from a link
+        The exceptions are the anonymous API-app pages reached from outside
         (_PUBLIC_API_PREFIXES): routed to the UI server they 404, so every shared
-        document and every pay link would be dead.
+        document, every pay link and every accountant sync call would be dead.
         """
         if any(path == p or path.startswith(p + "/") for p in _PUBLIC_API_PREFIXES):
             return self._api_port

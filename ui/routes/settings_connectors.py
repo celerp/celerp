@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 
 from fasthtml.common import *
@@ -38,8 +39,18 @@ def _store_url_error(store_url: str, platform: str) -> str | None:
         allow_http = store_url.startswith("http://") and bool(os.environ.get("CELERP_ALLOW_HTTP_STORE"))
         if not (store_url.startswith("https://") or allow_http):
             return "connectors.store_url_must_use_https"
-    elif platform == "woocommerce":
+    elif platform in ("woocommerce", "celerp"):
         return "connectors.store_url_required"
+    if platform == "celerp" and store_url:
+        try:
+            origin = urlsplit(store_url)
+            if (origin.scheme != "https" or origin.hostname is None
+                    or origin.port not in (None, 443) or origin.username is not None
+                    or origin.password is not None or origin.path not in ("", "/")
+                    or origin.query or origin.fragment):
+                return "connectors.store_url_must_use_https"
+        except ValueError:
+            return "connectors.store_url_must_use_https"
     return None
 
 _CONNECTOR_ICONS: dict[str, str] = {
@@ -47,6 +58,7 @@ _CONNECTOR_ICONS: dict[str, str] = {
     "woocommerce": "🛒",
     "quickbooks": "📊",
     "xero": "📗",
+    "celerp": "📚",
 }
 
 _DEFAULT_FREQUENCY: dict[str, SyncFrequency] = {
@@ -336,7 +348,7 @@ def _local_connector_entry(platform: str) -> dict:
         "id": platform,
         "name": connector.display_name,
         "category": category,
-        "auth_type": "api_key" if platform == "woocommerce" else "oauth",
+        "auth_type": "api_key" if platform in ("woocommerce", "celerp") else "oauth",
         "connected": False,
         "entities": [
             getattr(entity, "value", entity)
@@ -413,6 +425,7 @@ _ENTITY_LABELS: dict[str, str] = {
     "products_out": "connectors.entity_products_out",
     "invoices_out": "connectors.entity_invoices_out",
     "inventory_out": "connectors.entity_inventory_out",
+    "contacts_out": "dashboard.contacts",
 }
 
 
@@ -423,7 +436,7 @@ def _entity_label(entity: str, lang: str = "en") -> str:
     return t(key, lang) if key else entity
 
 _ENTITY_ORDER = ["products", "orders", "contacts", "inventory", "invoices",
-                 "products_out", "invoices_out", "inventory_out"]
+                 "products_out", "invoices_out", "inventory_out", "contacts_out"]
 
 
 async def _entity_runs(company_id: str, connector: str) -> dict:
@@ -866,12 +879,13 @@ def _connector_card(
         )
         action_area = Div(
             Form(
-                Input(name="store_url", placeholder="https://mystore.com",
+                Input(name="store_url", placeholder="https://accountant.example.com" if cid == "celerp" else "https://mystore.com",
                       cls="input input--sm", style="flex:1;min-width:200px;"),
-                Input(name="consumer_key", placeholder=t("connectors.consumer_key_placeholder", lang),
-                      cls="input input--sm", style="width:160px;"),
-                Input(name="consumer_secret", placeholder=t("connectors.consumer_secret_placeholder", lang),
-                      type="password", cls="input input--sm", style="width:160px;"),
+                Input(name="consumer_key", placeholder="Receiving company key" if cid == "celerp" else t("connectors.consumer_key_placeholder", lang),
+                      type="password" if cid == "celerp" else "text",
+                      cls="input input--sm", style="width:200px;"),
+                *([Input(name="consumer_secret", placeholder=t("connectors.consumer_secret_placeholder", lang),
+                         type="password", cls="input input--sm", style="width:160px;")] if cid != "celerp" else []),
                 Button(t("connectors.connect", lang),
                        type="submit", cls="btn btn--sm btn--primary"),
                 hx_post=f"/settings/connectors/{cid}/connect-apikey",
@@ -1465,7 +1479,9 @@ def setup_routes(app):
         consumer_key = form.get("consumer_key", "").strip()
         consumer_secret = form.get("consumer_secret", "").strip()
 
-        if not consumer_key or not consumer_secret:
+        if platform not in ("woocommerce", "celerp"):
+            return Span(t("connectors.unknown_connector", lang, platform=platform))
+        if not consumer_key or (platform == "woocommerce" and not consumer_secret):
             return Div(
                 Span(t("connectors.missing_credentials", lang),
                      cls="flash flash--warning"),
