@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from decimal import Context, Decimal
 from pathlib import Path
 
+from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1683,7 +1684,8 @@ async def reopen_restored(company_id, *, user_id=None, owner_account: dict | Non
     """The company a finished restore opened, for a retry whose response was lost: for the
     signed-in ``user_id``, or for the first owner's ``owner_account`` on a fresh
     installation, when they are still an active member of it and it is active. None
-    otherwise."""
+    otherwise. A wrong password for ``owner_account`` is refused (401) as sign-in refuses
+    it, so the owner can try again with the same upload."""
     if not _is_uuid(company_id):
         return None
     async with AsyncSession(bind=celerp.db.engine) as session:
@@ -1692,7 +1694,7 @@ async def reopen_restored(company_id, *, user_id=None, owner_account: dict | Non
             user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
             if not password_attempts.check(owner_account["email"], owner_account["password"],
                                            user and user.auth_hash, caller):
-                return None
+                raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
             user_id = user.id
         if (company is None or not company.is_active or user_id is None
                 or not await _is_member(session, uuid.UUID(str(user_id)), company.id)):

@@ -348,4 +348,4 @@ async def test_concurrent_wrong_passwords_reopening_a_restore_check_only_the_fre
 
     got = await asyncio.gather(*[reopen(i) for i in range(12)])
     assert len(checks) == 5, got
-    assert sorted(map(str, got)) == ["429"] * 7 + ["None"] * 5
+    assert sorted(map(str, got)) == ["401"] * 5 + ["429"] * 7

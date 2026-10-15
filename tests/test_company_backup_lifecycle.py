@@ -162,8 +162,14 @@ async def test_bootstrap_repeat_reports_opened_existing(real_client, real_engine
     assert again.status_code == 200, again.text
     assert again.json()["outcome"] == "opened_existing"
     assert again.json()["company_id"] == first.json()["company_id"]
+    # A wrong password says so, in the sign-in's words, and keeps the upload: the right
+    # password then still opens the company.
+    from ui.i18n import t
     wrong = await real_client.post("/company-backups/bootstrap/restore", json={**body, "password": "otherpw1234"})
-    assert wrong.status_code == 409
+    assert (wrong.status_code, wrong.json()["detail"]) == (401, t("auth.invalid_credentials"))
+    retry = await real_client.post("/company-backups/bootstrap/restore", json=body)
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["company_id"] == first.json()["company_id"]
 
 
 # ── E3: what travels with a backup, stated as policy ─────────────────────────

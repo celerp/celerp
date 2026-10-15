@@ -4285,7 +4285,8 @@ async def test_bootstrap_restore_failure_creates_no_owner(real_engine, real_clie
 
 async def test_bootstrap_retry_after_success_returns_same_company(real_engine, real_client, tmp_path, monkeypatch,
                                                                   code_config):
-    """Retrying a successful fresh-install restore returns the same company; other credentials are refused."""
+    """Retrying a successful fresh-install restore returns the same company; other credentials are refused
+    as sign-in refuses them."""
     _r_env(tmp_path, monkeypatch)
     data = await _r_fresh(real_engine, real_client)
     r = await _r_bread(real_client, data, code_config)
@@ -4297,7 +4298,7 @@ async def test_bootstrap_retry_after_success_returns_same_company(real_engine, r
     assert again.json()["company_id"] == first["company_id"] and again.json()["outcome"] == "opened_existing"
     assert again.json()["access_token"]
     other = await _r_brestore(real_client, upload_token, code_config, email="other@example.com")
-    assert other.status_code == 409, other.text
+    assert (other.status_code, other.json()["detail"]) == (401, t("auth.invalid_credentials")), other.text
     assert await count(real_engine, "users") == 1 and await count(real_engine, "companies") == 1
 
 
