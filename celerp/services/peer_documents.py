@@ -143,6 +143,23 @@ async def receive_draft_document(
     if "line_items" in incoming:
         _reject_line_attributes(mapped_lines)
         incoming["line_items"] = mapped_lines
+    if source_status != "draft":
+        from celerp.models.projections import Projection
+        from celerp.services.units import is_non_stock_line
+
+        for line in mapped_lines:
+            item_id = line.get("item_id")
+            if not item_id and str(line.get("entity_id") or "").startswith("item:"):
+                item_id = line["entity_id"]
+            if not item_id:
+                continue
+            item = await session.get(Projection, (grant.company_id, item_id))
+            if (item is None or item.entity_type != "item"
+                    or not is_non_stock_line(
+                        (item.state or {}).get("inventory_type"),
+                        (item.state or {}).get("sell_by"))):
+                raise HTTPException(
+                    409, "Inventory-linked documents require canonical stock operations")
 
     company = await session.get(Company, grant.company_id)
     if company is None or not company.is_active or company.is_migration_staged:

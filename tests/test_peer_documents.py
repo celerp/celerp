@@ -483,3 +483,68 @@ async def test_real_service_invoice_mirror_posts_once_in_second_company(client, 
             source_revision=source_revision, data={**payload, "notes": "Changed receipt"},
         )
     assert conflicting.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_issued_service_label_cannot_mask_mapped_stock_item(monkeypatch):
+    from celerp_docs import import_service
+    from celerp.models.projections import Projection
+
+    class StockSession(_Session):
+        async def get(self, model, identifier):
+            if model is Projection:
+                return SimpleNamespace(entity_type="item", state={
+                    "inventory_type": "stocked", "sell_by": "piece"})
+            return await super().get(model, identifier)
+
+    async def claimed(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target", mapping=None)
+    async def mapped(*args, **kwargs):
+        return "item:target"
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("A mislabeled stock line must not reach the importer")
+
+    monkeypatch.setattr(documents, "claim_peer_revision", claimed)
+    monkeypatch.setattr(documents, "_map_identity", mapped)
+    monkeypatch.setattr(import_service, "import_doc_records", forbidden)
+    with pytest.raises(HTTPException) as exc:
+        await documents.receive_draft_document(
+            StockSession(), grant=_grant(), source_entity_id="doc:source",
+            source_revision=1, data={
+                "doc_type": "invoice", "status": "final", "currency": "USD",
+                "line_items": [{
+                    "name": "Service", "item_id": "item:source",
+                    "inventory_type": "service", "sell_by": "service",
+                    "quantity": 1, "unit_price": 40,
+                }],
+            })
+    assert exc.value.status_code == 409
+    assert "stock operations" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_issued_service_line_rejects_missing_mapped_item(monkeypatch):
+    from celerp_docs import import_service
+
+    async def claimed(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target", mapping=None)
+    async def mapped(*args, **kwargs):
+        return "item:missing"
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("An unavailable item must not be imported")
+
+    monkeypatch.setattr(documents, "claim_peer_revision", claimed)
+    monkeypatch.setattr(documents, "_map_identity", mapped)
+    monkeypatch.setattr(import_service, "import_doc_records", forbidden)
+    with pytest.raises(HTTPException) as exc:
+        await documents.receive_draft_document(
+            _Session(), grant=_grant(), source_entity_id="doc:source",
+            source_revision=1, data={
+                "doc_type": "bill", "status": "final", "currency": "USD",
+                "line_items": [{
+                    "name": "Service", "item_id": "item:source",
+                    "inventory_type": "service", "sell_by": "service",
+                    "quantity": 1, "unit_price": 25,
+                }],
+            })
+    assert exc.value.status_code == 409
