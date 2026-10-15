@@ -230,6 +230,26 @@ async def test_the_caller_the_ui_names_counts_only_over_loopback(client, clock):
     assert tries == [401] * 20 + [429]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared", ["127.0.0.1", "::1"])
+async def test_a_shared_local_address_never_holds_up_another_accounts_sign_in(client, session, clock, shared):
+    """The desktop user, Connect and any proxy on this machine all reach the UI from a
+    loopback address, so it names no one visitor: failures from it never hold up an account
+    with no failures of its own, while each account still slows after its own five."""
+    from celerp.services.session_tracker import clear
+
+    await _two_logins(client, session)
+    tries = [(await _ask(client, "/auth/login", f"a{i}@test.example", "wrong-pw", shared)).status_code
+             for i in range(30)]
+    assert tries == [401] * 30
+    assert (await _ask(client, "/auth/login", "v@test.example", "pwvalid1", shared)).status_code == 200
+    await clear(session)
+    assert (await _ask(client, "/auth/login", "w@test.example", "pwvalid1", shared)).status_code == 200
+    tries = [(await _ask(client, "/auth/login", "a0@test.example", "wrong-pw", shared)).status_code
+             for i in range(5)]
+    assert tries == [401] * 4 + [429]
+
+
 _ROUTES = {
     "/auth/login": lambda e, p: {"json": {"email": e, "password": p}},
     "/auth/login-force": lambda e, p: {"json": {"email": e, "password": p}},

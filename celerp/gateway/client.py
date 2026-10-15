@@ -966,6 +966,10 @@ class GatewayClient:
         # the same local app), but the original path is forwarded verbatim so the
         # local server performs its own decoding.
         port = self._local_port_for(policy_path)
+        # The local server takes a forwarding address from this machine as the visitor's,
+        # but the one the relay copies names an edge server or whatever the visitor typed.
+        # Without it every proxied visitor arrives from loopback, which names no one.
+        headers = {k: v for k, v in headers.items() if k.lower() != "x-forwarded-for"}
 
         url = f"http://127.0.0.1:{port}{raw_path}"
         if query:

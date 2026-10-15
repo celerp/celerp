@@ -102,7 +102,9 @@ def verify_password(plain: str, hashed: str) -> bool:
 # Failed password checks slow the next try down, never shut anyone out: an account takes
 # FREE_ACCOUNT_FAILURES from every caller together and a caller FREE_CALLER_FAILURES across
 # every account, then each further failure doubles the wait from one second up to
-# MAX_WAIT_SECONDS. A key quiet for FORGET_AFTER_SECONDS starts again.
+# MAX_WAIT_SECONDS. A key quiet for FORGET_AFTER_SECONDS starts again. A loopback caller
+# names no one visitor (the desktop user, Connect and any proxy on this machine all arrive
+# from it), so it has no budget of its own; the account's budget still holds.
 FREE_ACCOUNT_FAILURES = 5
 FREE_CALLER_FAILURES = 20
 MAX_WAIT_SECONDS = 300
@@ -149,7 +151,7 @@ class PasswordAttempts:
         *email* names from *caller*; no hash never matches. 429 with Retry-After, and the
         password left unread, while the account or the caller must wait."""
         keys = [(_account(email), FREE_ACCOUNT_FAILURES)]
-        if caller:
+        if caller and not _is_loopback(caller):
             keys.append((f"caller|{caller}", FREE_CALLER_FAILURES))
         now = _clock()
         with self._lock:
@@ -169,7 +171,7 @@ class PasswordAttempts:
             return False
         with self._lock:
             self._tallies.pop(keys[0][0], None)
-            if caller and (tally := self._tallies.get(keys[1][0])):
+            if len(keys) > 1 and (tally := self._tallies.get(keys[1][0])):
                 tally.failures = max(tally.failures - 1, 0)
         return True
 
@@ -385,16 +387,25 @@ async def signed_request_context(session: AsyncSession) -> AuthContext | None:
     return await validate_access_token(session, token) if isinstance(token, str) else None
 
 
+def _is_loopback(address: str) -> bool:
+    try:
+        return ip_address(address).is_loopback
+    except ValueError:
+        return False
+
+
 def _counted_as(address: str) -> str:
     """The caller an address counts as: an IPv6 address by its /64, which one visitor holds
-    whole, so stepping through it is not a new caller each time."""
+    whole, so stepping through it is not a new caller each time. A loopback address stays
+    itself."""
     try:
         ip = ip_address(address)
     except ValueError:
         return address
-    if ip.version == 6 and ip.ipv4_mapped is None:
+    ip = getattr(ip, "ipv4_mapped", None) or ip
+    if ip.version == 6 and not ip.is_loopback:
         return str(ip_network(f"{ip}/64", strict=False))
-    return str(getattr(ip, "ipv4_mapped", None) or ip)
+    return str(ip)
 
 
 def request_caller(request: Request) -> str:
@@ -402,11 +413,7 @@ def request_caller(request: Request) -> str:
     where it comes from the UI server, so no one reaching the API from elsewhere can name
     an address of their choosing."""
     host = request.client.host if request.client else ""
-    try:
-        loopback = ip_address(host).is_loopback
-    except ValueError:
-        loopback = False
-    return _counted_as((request.headers.get(CALLER_HEADER) or host) if loopback else host)
+    return _counted_as((request.headers.get(CALLER_HEADER) or host) if _is_loopback(host) else host)
 
 
 async def get_current_user(ctx: AuthContext = Depends(get_auth_context)) -> User:
