@@ -22,6 +22,7 @@ from celerp.accounting_roles import (
     INVENTORY_VALUE_ROLES,
     LANDED_ROLE_BY_KIND,
     LOT_ACCOUNT_FIELD,
+    ROLE_TYPES,
     AccountRole,
     refusal,
 )
@@ -52,6 +53,7 @@ from celerp.services.business_time import business_date_of
 from celerp.services.company_lock import lock_company
 from celerp.services.document_lines import line_item_id
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
+from celerp.services.journal_accounts import lock_accounts
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value, in_stock, is_stock_type, recorded_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, received_share, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
@@ -594,36 +596,52 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     )
 
 
-async def _recognized_account(session, company_id, doc_id: str, role, settings: dict) -> str | None:
-    """The one account a document's live finalize entry posted ``role`` on, or None when
-    it posted none or more than one there."""
-    codes = {e["account"] for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
+async def _revenue_sold_on(session, company_id, doc_id: str, settings: dict) -> list[tuple[str, _Dec]]:
+    """Each account a document's live finalize entry credited revenue on, with its net
+    credit, in code order. A line names its revenue by its role, or one that carries no
+    role (an imported document's own lines) by its account being a revenue account in
+    the chart. Empty when it credited none."""
+    lines = [e for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
              if _finalize_root(doc_id, f"je:auto:{doc_id}:{suffix}") is not None
              and (row.state or {}).get("status") == "posted"
-             for e in (row.state or {}).get("entries") or [] if line_has_role(settings, e, role)}
-    return next(iter(codes)) if len(codes) == 1 else None
+             for e in (row.state or {}).get("entries") or []]
+    roleless = {e["account"] for e in lines if not e.get("account_roles")}
+    chart = (await lock_accounts(session, company_id, roleless) if roleless else None) or {}
+    net: dict[str, _Dec] = {}
+    for e in lines:
+        typed = not e.get("account_roles") and chart.get(e["account"], {}).get("account_type") in ROLE_TYPES[R.SALES_REVENUE]
+        if typed or line_has_role(settings, e, R.SALES_REVENUE):
+            net[e["account"]] = net.get(e["account"], _Dec(0)) + to_decimal(e.get("credit")) - to_decimal(e.get("debit"))
+    return sorted((code, amount) for code, amount in net.items() if amount > 0)
 
 
 async def _credit_note_lines(session, company_id, doc: dict, base_currency: str, *,
                              releasing: bool = False) -> list[dict] | None:
     """A credit note's issue lines (Dr revenue and output tax, Cr receivable, each on the
     account its invoice recognized it on), or with *releasing* the same lines the other
-    way round. None when it carries no amount."""
+    way round. Revenue goes back on the accounts the invoice sold on, in the proportions
+    it credited them (an imported invoice can split its sale over several). None when it
+    carries no amount."""
     total, tax, revenue = _sale_totals(doc, base_currency)
     if not total:
         return None
     settings = await current_settings(session, company_id)
     original = str(doc.get("original_doc_id") or "")
     ar = await party_origin(session, company_id, original, R.RECEIVABLE, settings) if original else None
-    sales = await _recognized_account(session, company_id, original, R.SALES_REVENUE, settings) if original else None
-    roles = [r for r, have in ((R.RECEIVABLE, ar), (R.SALES_REVENUE, sales)) if not have]
+    sold_on = await _revenue_sold_on(session, company_id, original, settings) if original else []
+    roles = [r for r, have in ((R.RECEIVABLE, ar), (R.SALES_REVENUE, sold_on)) if not have]
     acc = await resolve_many(session, company_id, [*roles, *([R.TAX_OUTPUT] if tax else [])])
 
     def side(amount: float, debit: bool) -> dict:
         debit = debit != releasing
         return {"debit": amount if debit else 0.0, "credit": 0.0 if debit else amount}
 
-    entries = [_line(sales or acc[R.SALES_REVENUE], R.SALES_REVENUE, **side(revenue, True))]
+    if sold_on:
+        shares = allocate_pro_rata(revenue, [amount for _, amount in sold_on], base_currency)
+        entries = [_origin_line(settings, code, R.SALES_REVENUE, **side(to_stored_float(share), True))
+                   for (code, _), share in zip(sold_on, shares) if share]
+    else:
+        entries = [_line(acc[R.SALES_REVENUE], R.SALES_REVENUE, **side(revenue, True))]
     if tax:
         entries.append(_line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, **side(tax, True)))
     entries.append(_origin_line(settings, ar, R.RECEIVABLE, **side(total, False)) if ar
