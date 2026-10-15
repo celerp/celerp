@@ -1363,7 +1363,7 @@ async def _po_line_suggestions(token: str, doc: dict) -> dict[str, str]:
 async def _company_doc_taxes(token: str, doc_type: str) -> list[dict]:
     """The company's rated taxes for this document type's side, as doc_taxes dicts for a new document."""
     try:
-        taxes = await api.get_taxes(token)
+        taxes = await api.get_document_taxes(token, doc_type)
     except Exception:
         return []
     return [
@@ -2418,7 +2418,7 @@ celerpUpdateBulkAlloc();
             pass
         company_taxes: list[dict] = []
         try:
-            company_taxes = await api.get_taxes(token)
+            company_taxes = await api.get_document_taxes(token, doc_type)
         except Exception:
             pass
         # Fetch bank accounts for payment section
@@ -4532,7 +4532,7 @@ celerpUpdateBulkAlloc();
             pass
         company_taxes: list[dict] = []
         try:
-            company_taxes = await api.get_taxes(token)
+            company_taxes = await api.get_document_taxes(token, lst["doc_type"])
         except Exception:
             pass
 

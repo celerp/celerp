@@ -255,9 +255,20 @@ def sales_taxes(settings: dict) -> list[dict]:
     return configured(settings, "taxes", generic_taxes())
 
 
+def purchasing_taxes(settings: dict) -> list[dict]:
+    """The company's purchasing taxes: what it saved, else a copy of its sales taxes."""
+    return configured(settings, "purchasing_taxes", sales_taxes(settings))
+
+
 def doc_side(doc_type: str | None) -> str:
     """The side a document's taxes apply to: "purchase" for a purchase document, else "sales"."""
     return "purchase" if doc_type in PURCHASE_DOC_TYPES else "sales"
+
+
+def side_taxes(settings: dict, doc_type: str | None) -> list[dict]:
+    """The tax list a document of this type draws from: purchasing taxes for a purchase
+    document, sales taxes for any other."""
+    return purchasing_taxes(settings) if doc_side(doc_type) == "purchase" else sales_taxes(settings)
 
 
 def taxes_for(taxes: list[dict], doc_type: str | None) -> list[dict]:
@@ -275,11 +286,13 @@ def default_tax(taxes: list[dict], doc_type: str | None) -> dict | None:
 def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> str | None:
     """The name of the first tax in ``applied`` (each a ``code`` and ``rate``) a document of
     this type cannot carry, else None. A tax takes its side from the company's tax lists by
-    name. On a sale a negative rate is always refused: it is tax withheld on a purchase, and
-    a sale has no output tax to net it against."""
+    name, the document's own side's list deciding a name both lists hold. On a sale a negative
+    rate is always refused: it is tax withheld on a purchase, and a sale has no output tax to
+    net it against."""
     side = doc_side(doc_type)
+    other = sales_taxes(settings) if side == "purchase" else purchasing_taxes(settings)
     sides = {x.get("name"): x.get("tax_type") or "both"
-             for x in [*(settings.get("purchasing_taxes") or []), *sales_taxes(settings)]}
+             for x in [*other, *side_taxes(settings, doc_type)]}
     for tax in applied:
         code = str(tax.get("code") or "")
         try:

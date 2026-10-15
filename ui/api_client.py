@@ -13,6 +13,7 @@ import httpx
 from celerp.capacity import REQUEST_DB_POOL_SIZE
 from celerp.services.auth import CALLER_HEADER
 from celerp.services.company_settings import BOOKS_KEYS, GENERAL
+from celerp.tax_regimes import doc_side
 from ui.i18n import current_lang, refusal_text, t
 
 logger = logging.getLogger(__name__)
@@ -1045,6 +1046,12 @@ async def get_purchasing_taxes(token: str) -> list[dict]:
 async def patch_purchasing_taxes(token: str, taxes: list[dict]) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/purchasing-taxes", json={"taxes": taxes})).json()
+
+
+async def get_document_taxes(token: str, doc_type: str | None) -> list[dict]:
+    """The tax list a document of this type draws from: purchasing taxes for a purchase
+    document, sales taxes for any other."""
+    return await (get_purchasing_taxes(token) if doc_side(doc_type) == "purchase" else get_taxes(token))
 
 
 async def get_purchasing_payment_terms(token: str) -> list[dict]:

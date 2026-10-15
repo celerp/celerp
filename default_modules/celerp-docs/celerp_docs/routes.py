@@ -46,7 +46,7 @@ from celerp.services.journal_accounts import require_destinations, require_line_
 from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_placing
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.payments import recorded_unmatched, return_unmatched
-from celerp.tax_regimes import default_tax, sales_taxes
+from celerp.tax_regimes import default_tax, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed, splitting_off
@@ -12467,7 +12467,7 @@ async def scan_doc(
     price_list = line_price_list(doc_type, payload.price_list)
     priced = sb.priced and (not is_cost_list_name(price_list) or role_has_permission(settings, role, "view_inventory_costs"))
     currency = state.get("currency")
-    tax = default_tax(sales_taxes(settings), doc_type)
+    tax = default_tax(side_taxes(settings, doc_type), doc_type)
     existing = [dict(l) for l in (state.get("line_items") or [])]
     known = line_id_counts(existing)
 

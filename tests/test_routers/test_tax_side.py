@@ -151,5 +151,6 @@ async def test_a_new_invoice_from_items_starts_with_sales_taxes_only(monkeypatch
         return TAX_REGIMES["TH"]["taxes"]
 
     monkeypatch.setattr(documents.api, "get_taxes", _taxes)
+    monkeypatch.setattr(documents.api, "get_purchasing_taxes", _taxes)
     assert [t["code"] for t in await documents._company_doc_taxes("tok", "invoice")] == ["VAT 7%"]
     assert [t["code"] for t in await documents._company_doc_taxes("tok", "bill")] == ["VAT 7%", "WHT 3%", "WHT 5%"]

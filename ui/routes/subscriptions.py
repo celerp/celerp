@@ -361,7 +361,7 @@ def setup_routes(app) -> None:
 
         company_taxes: list = []
         try:
-            company_taxes = await api.get_taxes(token)
+            company_taxes = await api.get_document_taxes(token, doc_type)
         except Exception:
             pass
 

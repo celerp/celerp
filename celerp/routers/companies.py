@@ -44,7 +44,7 @@ from celerp.services.permissions import (
     role_has_permission,
 )
 from celerp.schemas.numbers import FiniteFloat
-from celerp.tax_regimes import TAX_REGIMES, configured, generic_taxes, get_regime, sales_taxes
+from celerp.tax_regimes import TAX_REGIMES, configured, get_regime, purchasing_taxes, sales_taxes
 from celerp.services import company_lifecycle
 from celerp.services.currencies import require_phone
 from celerp.services.provisioning import provision_additional_company
@@ -1499,7 +1499,7 @@ async def get_purchasing_taxes(
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    return _purchasing_list(company.settings, "purchasing_taxes", "taxes", generic_taxes())
+    return purchasing_taxes(company.settings)
 
 
 @router.patch("/me/purchasing-taxes")
@@ -1531,7 +1531,7 @@ async def import_purchasing_taxes_batch(
     await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
     company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
-    taxes = list(_purchasing_list(company.settings, "purchasing_taxes", "taxes", generic_taxes()))
+    taxes = list(purchasing_taxes(company.settings))
     existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()
