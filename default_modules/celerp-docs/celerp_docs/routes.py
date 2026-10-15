@@ -32,7 +32,7 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import assert_issuable_taxes, assert_taxes_fit_side, document_money
+from celerp_docs.doc_money import assert_issuable_taxes, assert_taxes_fit_side, document_money, money_from_lines
 from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services import auto_je
@@ -53,7 +53,7 @@ from celerp.services.line_measures import line_label, splitting_allowed, splitti
 from celerp.services.document_lines import (
     assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
-    reserved_refusal, shipped_elsewhere, strip_line_ids,
+    shipped_elsewhere, strip_line_ids,
 )
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
@@ -1782,16 +1782,7 @@ async def create_doc(
     # Compute the money from the lines and header inputs when no total is given, by the same rule
     # every later edit applies (header discount before tax, shipping in the total).
     if not payload.total and payload.line_items:
-        currency = data.get("currency", "USD")
-        lines = [
-            {**li_data, "line_total": to_stored_float(round_money(
-                to_decimal(li_model.line_total) if li_model.line_total is not None
-                else to_decimal(li_model.quantity) * to_decimal(li_model.unit_price),
-                currency))}
-            for li_data, li_model in zip(data["line_items"], payload.line_items)
-        ]
-        data.update(document_money(data, lines, currency, keep_unrated_tax=True))
-        data["line_items"] = lines
+        data.update(money_from_lines(data, data.get("currency", "USD")))
     assert_taxes_fit_side(settings, payload.doc_type, data, data.get("line_items") or [])
 
     if contact is not None:
