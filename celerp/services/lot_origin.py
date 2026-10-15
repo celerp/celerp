@@ -266,20 +266,6 @@ async def evidence_entries(session: AsyncSession, company_id, settings: dict,
     return [(je, e) for je, e in entries if je not in paid]
 
 
-async def live_uncertain(session: AsyncSession, company_id, settings: dict, records: list[dict],
-                         currency: str) -> list[list[dict]]:
-    """Each placement's uncertain evidence (uncertain_evidence) as the books hold it now,
-    in the order of ``records``: the lines of the entries that held it when placed
-    (``evidence_entries``) still posted and not a payment (evidence_entries), on the
-    accounts it weighed (``rooms``). An entry voided since drops out, and one posted again
-    comes back. Read in the same few queries however many placements."""
-    ids = {je for r in records for je in r.get("evidence_entries") or []}
-    entries = (await evidence_entries(session, company_id, settings, await _posted_entries(session, company_id, ids))
-               if ids else [])
-    return [uncertain_evidence(settings, [(je, e) for je, e in entries if je in set(r.get("evidence_entries") or [])],
-                               list(r.get("rooms") or {}), currency) for r in records]
-
-
 def unexplained(settings: dict, entries: list[tuple[str, dict]], codes, gap: Decimal) -> Decimal:
     """The part of ``gap`` (what ``codes`` hold as stock beyond the stock recorded on them,
     negative when short) that no reading of their uncertain lines (_uncertain_lines) can
@@ -663,15 +649,11 @@ def _placement_entry(pid: str, part: str) -> str:
 
 async def unresolved_differences(session: AsyncSession, company_id) -> dict[str, Decimal]:
     """What placements recorded, per inventory account, as held beyond the stock and
-    left for the accountant to resolve (``_place``)."""
-    rows = (await session.execute(select(Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == PLACEMENT))).scalars()
-    found: dict[str, Decimal] = {}
-    for state in rows:
-        amount = Decimal(str((state or {}).get("unresolved") or 0))
-        if amount:
-            found[state["account"]] = found.get(state["account"], Decimal("0")) + amount
-    return found
+    left for the accountant to resolve (``_place``), summed in one grouped read."""
+    code, amount = Projection.state["account"].as_string(), Projection.state["unresolved"].as_numeric(28, 10)
+    rows = (await session.execute(select(code, func.sum(amount)).where(
+        Projection.company_id == company_id, Projection.entity_type == PLACEMENT, amount != 0).group_by(code))).all()
+    return {account: total.normalize() for account, total in rows if total}
 
 
 def _classify(moved: bool, gap: Decimal, provisional: Decimal, uncertain: bool) -> str:
@@ -716,10 +698,9 @@ async def _place(session: AsyncSession, company_id) -> bool:
     way: only the part of the difference no reading of them can explain (unexplained) is
     recognized or left unresolved, nothing is ever booked for them, the default account is
     chosen counting them as held, and they are shown to the accountant as evidence read
-    from the posted entries whenever asked (live_uncertain). A
+    from the posted entries whenever asked (stock_off_books). A
     placement record (sys.older_stock.placed) keeps the accounts' rooms, the value
-    transferred, recognized and left unresolved, the entries holding uncertain lines
-    (``evidence_entries``), and the entries, so each inventory
+    transferred, recognized and left unresolved, and the entries, so each inventory
     account holds its lots, less unshipped recognized cost, plus its unresolved
     difference. The company is told (_notify_placed) and the dashboard shows it until
     dismissed (``older_stock_placed``).
@@ -828,7 +809,6 @@ async def _place(session: AsyncSession, company_id) -> bool:
               "rooms": {c: float(v) for c, v in room.items()}, "transferred": float(transferred),
               "recognized": float(max(-gap, Decimal("0"))), "unresolved": float(max(gap, Decimal("0"))),
               "provisional": float(provisional),
-              "evidence_entries": sorted({je for found in evidence for je in found["entries"]}),
               "classification": _classify(bool(moved), gap, provisional, bool(evidence)),
               "journal": journal})
     company = await locked_company(session, company_id)
@@ -1866,7 +1846,8 @@ async def correct_placements(session: AsyncSession, company_id, pids: list[str],
     difference; that is checked again once booked. A placement with nothing to move is
     skipped, so a correction sent twice books once. Refused, writing nothing: no
     placements or too many, an unknown kind or placement, one that proved no difference
-    while its accounts hold lines that may have been stock (live_uncertain), never booked
+    while its accounts hold lines that may have been stock (the books check's uncertain
+    evidence, stock_off_books), never booked
     and each account named, a lot of a placement sold,
     shipped, used up or moved since it was placed or held by an unshipped invoice, a
     locked today, or an account out of line with its stock afterwards. Returns how many
@@ -1895,18 +1876,20 @@ async def correct_placements(session: AsyncSession, company_id, pids: list[str],
         records[pid] = dict(row.state)
     settings = dict(company.settings or {})
     currency = settings.get("currency", "USD")
-    weighed = [state for state in records.values() if not (state.get("unresolved") or state.get("recognized"))]
-    for found in await live_uncertain(session, company_id, settings, weighed, currency):
-        if found:
-            accounts = [refusal("older_stock.correct.uncertain_account",
-                                f"{f['account']} holds {f['amount']:.2f} on lines that may or may not have been "
-                                f"stock ({', '.join(f['entries'])}).",
-                                account=f["account"], amount=f["amount"], entries=", ".join(f["entries"]))
-                        for f in found]
-            raise _refused(409, "older_stock.correct.uncertain",
-                           " ".join(a["message"] for a in accounts) + " That is not a difference to book, so nothing "
-                           "was posted. Review those entries and post a journal entry if one is needed.",
-                           accounts=accounts)
+    weighed = {c for state in records.values() if not (state.get("unresolved") or state.get("recognized"))
+               for c in state.get("rooms") or {}}
+    found = [f for f in await stock_off_books(session, company_id)
+             if f["kind"] == "uncertain_evidence" and f["account"] in weighed]
+    if found:
+        accounts = [refusal("older_stock.correct.uncertain_account",
+                            f"{f['account']} holds {f['amount']:.2f} on lines that may or may not have been "
+                            f"stock ({', '.join(f['entries'])}).",
+                            account=f["account"], amount=f["amount"], entries=", ".join(f["entries"]))
+                    for f in found]
+        raise _refused(409, "older_stock.correct.uncertain",
+                       " ".join(a["message"] for a in accounts) + " That is not a difference to book, so nothing "
+                       "was posted. Review those entries and post a journal entry if one is needed.",
+                       accounts=accounts)
     codes = {state["account"] for state in records.values()}
     retained = role_map(settings).get(AccountRole.RETAINED_EARNINGS.value)
     if await lock_accounts(session, company_id, codes | ({retained} if retained else set())) is None:
@@ -1964,38 +1947,40 @@ OLDER_STOCK_PAGES = ("lots", "placements", "moves", "corrections")
 WAITING_NOTICES = (UNMAPPED_NOTICE, LOCKED_NOTICE, FAILED_NOTICE)
 
 
-async def _reconciliation(session: AsyncSession, company_id, records: list[dict],
-                          uncertain: dict[str, list[dict]]) -> dict:
+async def _reconciliation(session: AsyncSession, company_id, off_books: list[dict],
+                          shown_on: dict[str, str]) -> dict:
     """Where the older stock stands with the books, one of three states:
 
     - ``action``: older stock waits for its inventory account (``waiting`` lots), each
       standing notice saying why (WAITING_NOTICES, their i18n records under ``reasons``);
       it cannot be sold or moved until someone fixes that.
     - ``review``: everything is placed and sales go on, but something is still open
-      (``open``): per placement, newest first, a difference left unresolved, provisional
+      (``open``): per placement, newest first, a difference left unresolved or provisional
       cost an invoice recognized on its lots before placing while that invoice still
-      holds them unshipped, or lines that may have been stock (``uncertain``, each with
-      its account, amount and entries, from ``uncertain``, _uncertain_by_placement),
-      evidence only, which nothing books; then each inventory account whose books differ
-      from the stock recorded on it beyond all of that (``stock_gap``, with what the books
-      hold and the stock), exactly as the books check finds it (stock_off_books).
+      holds them unshipped (_open_records); then lines that may have been stock
+      (``uncertain``, each with its account, amount and entries, and the placement it is
+      shown on, ``shown_on``), evidence only, which nothing books; then each inventory
+      account whose books differ from the stock recorded on it beyond all of that
+      (``stock_gap``, with what the books hold and the stock).
     - ``reconciled``: nothing waits and nothing is open.
 
-    ``records`` are the placement records, newest first (_placement_records)."""
+    The uncertain lines and the gaps are ``off_books``, the books check as it stands
+    (stock_off_books), so the two never disagree."""
     waiting = len(await _unplaced(session, company_id))
     reasons = [i18n for base in WAITING_NOTICES if (i18n := await _standing_notice(session, company_id, base))]
-    held = await _held_placements(session, company_id, [r["placement"] for r in records if r.get("provisional")])
+    records, held = await _open_records(session, company_id)
     open_ = [{"placement": r["placement"], "account": r["account"], "kind": kind, "amount": float(amount)}
              for r in records
              for kind, amount in (("unresolved", r.get("unresolved") or 0),
                                   ("provisional", (r.get("provisional") or 0) if r["placement"] in held else 0))
              if amount]
-    open_ += [{"placement": pid, "kind": "uncertain", **found}
-              for pid, evidence in uncertain.items() for found in evidence]
+    open_ += [{**({"placement": shown_on[f["account"]]} if f["account"] in shown_on else {}), "kind": "uncertain",
+               "account": f["account"], "amount": f["amount"], "entries": f["entries"]}
+              for f in off_books if f["kind"] == "uncertain_evidence"]
     if not waiting:  # stock waiting for its account is the gap until placed
         open_ += [{"account": f["account"], "kind": "stock_gap", "amount": round(f["books"] - f["stock"], 2),
                    "books": f["books"], "stock": f["stock"]}
-                  for f in await stock_off_books(session, company_id) if f["kind"] == "stock_gap"]
+                  for f in off_books if f["kind"] == "stock_gap"]
     state = "action" if waiting or reasons else "review" if open_ else "reconciled"
     return {"state": state, "waiting": waiting, "reasons": reasons, "open": open_}
 
@@ -2013,19 +1998,42 @@ async def _held_placements(session: AsyncSession, company_id, pids: list[str]) -
     return {pid for pid, family in (await _lot_families(session, company_id, lots)).items() if family & claimed}
 
 
-async def _uncertain_by_placement(session: AsyncSession, company_id, records: list[dict]) -> dict[str, list[dict]]:
-    """Each placement's uncertain evidence (live_uncertain); ``records`` newest first, and
-    an account two placements found it on is shown once, on the newer."""
-    if not records:
-        return {}
-    settings = await current_settings(session, company_id)
-    currency = settings.get("currency", "USD")
-    seen, found = set(), {}
-    for r, live in zip(records, await live_uncertain(session, company_id, settings, records, currency)):
-        evidence = [f for f in live if f["account"] not in seen]
-        seen.update(f["account"] for f in evidence)
-        found[r["placement"]] = evidence
-    return found
+async def _open_records(session: AsyncSession, company_id) -> tuple[list[dict], set[str]]:
+    """The placement records holding something open, newest first, and which of them an
+    unshipped invoice holds (_held_placements): those leaving a difference unresolved,
+    and those keeping provisional cost on lots they recorded while an invoice holds one.
+    Read only from those placements, never from every placement."""
+    placement = LedgerEntry.metadata_["placement"].as_string()
+    provisional = (await session.execute(select(placement).join(Projection, and_(
+        Projection.company_id == LedgerEntry.company_id, Projection.entity_type == PLACEMENT,
+        Projection.state["placement"].as_string() == placement)).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
+        Projection.state["provisional"].as_float() != 0).distinct())).scalars().all()
+    held = await _held_placements(session, company_id, list(provisional))
+    records = (await session.execute(_placement_records(company_id).where(or_(
+        Projection.state["unresolved"].as_float() != 0,
+        Projection.state["placement"].as_string().in_(sorted(held)))))).scalars().all()
+    return list(records), held
+
+
+async def _shown_on(session: AsyncSession, company_id, off_books: list[dict]) -> dict[str, str]:
+    """The placement each account's uncertain lines in ``off_books`` are shown on: the
+    newest that weighed the account (its ``rooms``). An account no placement weighed (an
+    inventory role pointed at it since) is shown on none. One read per account."""
+    shown = {}
+    for f in off_books:
+        if f["kind"] == "uncertain_evidence":
+            state = (await session.execute(_placement_records(company_id).where(
+                Projection.state["rooms"][f["account"]].as_float().is_not(None)).limit(1))).scalar()
+            if state:
+                shown[f["account"]] = state["placement"]
+    return shown
+
+
+def _uncertain_on(off_books: list[dict], shown_on: dict[str, str], pid: str) -> list[dict]:
+    """The uncertain lines in ``off_books`` shown on placement ``pid`` (_shown_on)."""
+    return [{k: f[k] for k in ("account", "amount", "entries")} for f in off_books
+            if f["kind"] == "uncertain_evidence" and shown_on.get(f["account"]) == pid]
 
 
 def _placement_records(company_id):
@@ -2068,15 +2076,16 @@ async def _count(session: AsyncSession, query) -> int:
     return (await session.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
 
 
-async def _placements_page(session: AsyncSession, company_id, offset: int, limit: int,
-                           uncertain: dict[str, list[dict]]) -> tuple[list[dict], int]:
-    """A page of the placements, newest first, as their records hold them, each with its
-    ``uncertain`` evidence (_uncertain_by_placement), and how many there are."""
+async def _placements_page(session: AsyncSession, company_id, offset: int, limit: int, off_books: list[dict],
+                           shown_on: dict[str, str]) -> tuple[list[dict], int]:
+    """A page of the placements, newest first, as their records hold them, each with the
+    uncertain lines of the books check (``off_books``) shown on it (_uncertain_on), and
+    how many there are."""
     query = _placement_records(company_id)
     return [{"pid": r["placement"], "day": r["day"], "count": r["count"], "account": r["account"],
              "classification": r.get("classification"), "transferred": float(r.get("transferred") or 0),
              "recognized": float(r.get("recognized") or 0), "unresolved": float(r.get("unresolved") or 0),
-             "provisional": float(r.get("provisional") or 0), "uncertain": uncertain[r["placement"]],
+             "provisional": float(r.get("provisional") or 0), "uncertain": _uncertain_on(off_books, shown_on, r["placement"]),
              "journal": r.get("journal") or [], "corrections": r.get("corrections") or []}
             for r in (await session.execute(query.offset(offset).limit(limit))).scalars()], \
         await _count(session, query)
@@ -2165,11 +2174,11 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
         for f in ("value", *_PLACED_AMOUNTS):
             row[f] = round(row[f], 2)
     lots = _matching(held, account, q)
-    records = (await session.execute(_placement_records(company_id))).scalars().all()
-    uncertain = await _uncertain_by_placement(session, company_id, records)
+    off_books = await stock_off_books(session, company_id)
+    shown_on = await _shown_on(session, company_id, off_books)
     lists = {"lots": (lots[offsets.get("lots", 0):offsets.get("lots", 0) + limit], len(lots)),
              "placements": await _placements_page(session, company_id, offsets.get("placements", 0), limit,
-                                                  uncertain),
+                                                  off_books, shown_on),
              "moves": await _moves_page(session, company_id, tz, offsets.get("moves", 0), limit),
              "corrections": await _corrections_page(session, company_id, offsets.get("corrections", 0), limit)}
     return {**{name: page for name, (page, _) in lists.items()},
@@ -2178,5 +2187,5 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
             "summary": sorted(summary.values(), key=lambda r: r["account"]),
             "accounts": sorted({lot["account"] for lot in held if lot["account"]}),
             "failed": await failed_placement(session, company_id),
-            "reconciliation": await _reconciliation(session, company_id, records, uncertain),
+            "reconciliation": await _reconciliation(session, company_id, off_books, shown_on),
             **await older_stock_targets(session, company_id)}

@@ -386,6 +386,63 @@ async def test_voiding_the_only_possible_evidence_leaves_a_gap_to_review_never_r
     assert [o["kind"] for o in view["reconciliation"]["open"]] == ["stock_gap"]
 
 
+async def test_unvoiding_an_older_sale_restores_its_lines_as_they_were_recorded(session, client, auth):
+    """An older sale's untagged entry relieved 30 from 1130-OB, which served opening
+    inventory and input tax, so it is possible stock evidence. Voiding the sale and then
+    unvoiding it puts the same entry back: its lines keep no roles, never today's, so the
+    review and the books check read the same 40 as before the void."""
+    (lot,) = await _imported(session, client, auth, [30.0])
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "contact_name": "Buyer",
+        "line_items": [{"entity_id": lot, "name": "Older lot", "quantity": 1, "unit_price": 100.0}]})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    assert (await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])).status_code == 200
+    await _older_books(session, client, auth, {"inventory_opening": ["1130-OB"], "tax_input": ["1130-OB"]}, 40.0)
+    await _startup(session)
+    before = await _off_books(session, auth)
+    assert [(f["kind"], f["account"], f["amount"]) for f in before] == [("uncertain_evidence", "1130-OB", 40.0)]
+    assert (await client.post(f"/docs/{doc}/void", headers=auth["headers"], json={"reason": "x"})).status_code == 200
+    assert (await client.post(f"/docs/{doc}/unvoid", headers=auth["headers"], json={})).status_code == 200
+    await _startup(session)
+    (restored,) = await _je_ids(session, auth, f"je:auto:{doc}:fin:unvoid:")
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": restored})
+    assert [e.get("account_roles") for e in row.state["entries"]] == [None] * 4
+    after = await _off_books(session, auth)
+    assert [(f["kind"], f["account"], f["amount"]) for f in after] == [("uncertain_evidence", "1130-OB", 40.0)]
+    view = await _view(client, auth)
+    assert view["reconciliation"]["state"] == "review"
+    assert [(o["kind"], o["amount"]) for o in view["reconciliation"]["open"]] == [("uncertain", 40.0)]
+    assert await _net(session, auth, "1130-OB") == (40.0,)
+
+
+async def test_an_inventory_role_pointed_at_an_account_later_reviews_its_history(session, client, auth):
+    """1130-T held an untagged 50 while it served input tax only, so placing the older lot
+    weighed nothing on it and the review reconciles. Pointing purchased inventory at 1130-T
+    afterwards makes that 50 possible stock: the books check names it, and the review
+    names the same evidence, on no placement, instead of staying reconciled."""
+    r = await client.post("/accounting/accounts", headers=auth["headers"], json={
+        "code": "1130-T", "name": "Account 1130-T", "account_type": "asset", "parent_code": "1100"})
+    assert r.status_code == 200, r.text
+    await _historical(client, auth, "1130-T", 50.0)
+    await _older_books(session, client, auth, {"inventory_opening": ["1130-OB"], "tax_input": ["1130-T"]})
+    await _startup(session)
+    assert await _off_books(session, auth) == []
+    assert (await _view(client, auth))["reconciliation"]["state"] == "reconciled"
+    r = await client.put("/accounting/posting-accounts/inventory_purchased", headers=auth["headers"],
+                         json={"code": "1130-T"})
+    assert r.status_code == 200, r.text
+    await _startup(session)
+    sources = await _sources(session, auth, "1130-T")
+    assert await _off_books(session, auth) == [
+        {"kind": "uncertain_evidence", "account": "1130-T", "amount": 50.0, "entries": sources}]
+    view = await _view(client, auth)
+    assert view["reconciliation"]["state"] == "review"
+    assert view["reconciliation"]["open"] == [
+        {"kind": "uncertain", "account": "1130-T", "amount": 50.0, "entries": sources}]
+    assert all(p["uncertain"] == [] for p in view["placements"])
+
+
 async def _bank(session, auth, code: str) -> None:
     """``code`` made a bank account, as a later release or an import may have made it."""
     from celerp_accounting.models import BankAccount
@@ -434,8 +491,9 @@ async def _more_placements(session, auth, n: int, start: int, evidence: list[str
 
 
 async def test_the_older_stock_view_reads_the_same_number_of_times_however_many_placements(session, client, auth):
-    """The view's page, review and summary come from grouped reads: 60 placements and 150
-    take the same queries, and the evidence they share is shown once, on the newest."""
+    """The view's page, review and summary come from grouped reads and the visible page:
+    60 placements and 150 take the same queries and read the same rows, and the evidence
+    they share is shown once, on the newest."""
     from sqlalchemy import event
 
     from celerp.services.lot_origin import older_stock_view
@@ -448,15 +506,25 @@ async def test_the_older_stock_view_reads_the_same_number_of_times_however_many_
     def _count(conn, cursor, statement, parameters, context, executemany):
         statements.append(statement)
 
-    async def _read() -> tuple[int, dict]:
+    execute, rows = session.execute, []
+
+    async def _counted(*args, **kwargs):
+        frozen = (await execute(*args, **kwargs)).freeze()
+        rows.append(len(frozen().all()))
+        return frozen()
+
+    async def _read() -> tuple[tuple[int, int], dict]:
         session.expire_all()
         statements.clear()
+        rows.clear()
         event.listen(session.bind.sync_engine, "before_cursor_execute", _count)
+        session.execute = _counted
         try:
             view = await older_stock_view(session, auth["company_id"])
         finally:
+            del session.execute
             event.remove(session.bind.sync_engine, "before_cursor_execute", _count)
-        return len(statements), view
+        return (len(statements), sum(rows)), view
 
     await _more_placements(session, auth, 59, 0, sources)
     few, view = await _read()

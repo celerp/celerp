@@ -558,7 +558,8 @@ async def emit_event(
     if kwargs["event_type"] == "acc.journal_entry.created":
         from celerp.services.journal_accounts import prepare_journal_entry
 
-        await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"])
+        await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"],
+                                    restored=bool((kwargs.get("metadata_") or {}).get("restores")))
 
     # Enforce the line rules on every document and List write. Extract the post-change
     # line set by DATA SHAPE so every writer (create, patch, shared_import, update,
