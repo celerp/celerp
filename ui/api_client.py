@@ -2971,6 +2971,15 @@ async def bulk_payment(token: str, doc_ids: list[str], amount: float, payment_da
         })).json()
 
 
+async def bulk_accounting_sync(
+    token: str, entity_ids: list[str], excluded: bool, operation_id: str,
+) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/docs/accounting-sync/bulk", json={
+            "entity_ids": entity_ids, "excluded": excluded, "operation_id": operation_id,
+        })).json()
+
+
 # ---------------------------------------------------------------------------
 # Sprint 6a: Activity feed
 # ---------------------------------------------------------------------------
