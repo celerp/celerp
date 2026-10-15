@@ -28,7 +28,8 @@ def test_event_type_values() -> None:
     assert EventType.ITEM_SUPPLIER_RETURN_UNDONE == "item.supplier_return_undone"
     assert EventType.DOC_SUPPLIER_RETURN_UNDONE == "doc.supplier_return_undone"
     assert EventType.ITEM_INVENTORY_ACCOUNT_MOVED == "item.inventory_account.moved"
-    assert len(EventType) == 121
+    assert EventType.SYS_OLDER_STOCK_PLACED == "sys.older_stock.placed"
+    assert len(EventType) == 122
 
 
 def test_log_level_default_is_info() -> None:
