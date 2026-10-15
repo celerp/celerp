@@ -853,7 +853,7 @@ def activate_payload(
     if include_handoff:
         try:
             from celerp.services.company_backup_files import pending_handoffs
-            pending = pending_handoffs(reported=True)
+            pending = pending_handoffs()
         except OSError:
             pending = []
         if pending:

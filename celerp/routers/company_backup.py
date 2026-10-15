@@ -380,8 +380,6 @@ async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_own
         except cb.BackupError as exc:
             return _error(exc, stage)
         files.finish_stage(stage, result.company_id)
-    from celerp.services.company_handoff_receipts import report_completed_handoff
-    await report_completed_handoff(stage)
     return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
                                                     expected_snonce=ctx.snonce))
 
@@ -491,8 +489,6 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
         result = await cb.reopen_restored(files.restored_company(stage), owner_account=account)
         if result is None:
             raise HTTPException(status_code=409, detail=t("company_backup.upload_expired"))
-        from celerp.services.company_handoff_receipts import report_completed_handoff
-        await report_completed_handoff(stage)
         return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                               expected_snonce=None))
     try:
@@ -502,8 +498,6 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
-    from celerp.services.company_handoff_receipts import report_completed_handoff
-    await report_completed_handoff(stage)
     response = _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                               expected_snonce=None))
     if required:
@@ -553,7 +547,5 @@ async def start_company_restore(request: Request, payload: StartCompanyRestoreIn
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
-    from celerp.services.company_handoff_receipts import report_completed_handoff
-    await report_completed_handoff(stage)
     return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                           expected_snonce=None))

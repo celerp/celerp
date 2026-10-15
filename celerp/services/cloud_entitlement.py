@@ -278,8 +278,6 @@ async def sync_existing_entitlement(
         return None
     local_iid = await asyncio.to_thread(ensure_instance_id)
     pending_verifier = settings.activation_verifier or ""
-    from celerp.services.company_handoff_receipts import retry_completed_handoffs
-    await retry_completed_handoffs()
 
     async def _sync(client):
         bearer, authenticated_iid = await fetch_relay_auth(
