@@ -4326,6 +4326,7 @@
   "older_stock.open.unresolved": "{account}: uma diferença de {amount} está sem resolver.",
   "older_stock.open.provisional": "{account}: {amount} de custo reconhecido por faturas antes da atribuição é provisório até que essas faturas sejam enviadas.",
   "older_stock.open.uncertain": "{account}: {amount} em linhas que podem ou não ter sido estoque ({entries}). Nada foi lançado por elas; revise esses lançamentos.",
+  "older_stock.open.stock_gap": "{account}: os livros registram {books} como estoque nesta conta, mas o estoque registrado nela vale {stock}. Nada foi lançado para fechar a diferença; revise os lançamentos desta conta.",
   "older_stock.surplus": "{amount} a mais nos livros do que no estoque",
   "older_stock.tab": "Estoque antigo",
   "older_stock.undo.done": "Esta transferência já foi desfeita.",

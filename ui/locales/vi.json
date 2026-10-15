@@ -4326,6 +4326,7 @@
   "older_stock.open.unresolved": "{account}: chênh lệch {amount} chưa được xử lý.",
   "older_stock.open.provisional": "{account}: {amount} chi phí mà hóa đơn ghi nhận trước khi đưa vào là tạm tính cho đến khi các hóa đơn đó được giao.",
   "older_stock.open.uncertain": "{account}: {amount} trên các dòng có thể là hàng tồn kho hoặc không ({entries}). Không có gì được ghi sổ cho chúng; hãy xem lại các bút toán này.",
+  "older_stock.open.stock_gap": "{account}: sổ sách ghi nhận {books} hàng tồn kho trên tài khoản này, nhưng hàng tồn kho ghi trên tài khoản có giá trị {stock}. Không có bút toán nào được ghi để bù chênh lệch; hãy xem lại các bút toán trên tài khoản này.",
   "older_stock.surplus": "Sổ sách nhiều hơn tồn kho {amount}",
   "older_stock.tab": "Hàng tồn cũ",
   "older_stock.undo.done": "Lần chuyển này đã được hoàn tác.",

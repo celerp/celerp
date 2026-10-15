@@ -4326,6 +4326,7 @@
   "older_stock.open.unresolved": "{account} : un écart de {amount} n'est pas résolu.",
   "older_stock.open.provisional": "{account} : {amount} de coût constaté par des factures avant l'affectation reste provisoire jusqu'à l'expédition de ces factures.",
   "older_stock.open.uncertain": "{account} : {amount} sur des lignes qui ont pu être du stock ou non ({entries}). Rien n'a été comptabilisé pour elles ; vérifiez ces écritures.",
+  "older_stock.open.stock_gap": "{account} : les livres portent {books} de stock sur ce compte, mais le stock enregistré sur ce compte vaut {stock}. Rien n'a été comptabilisé pour combler l'écart ; vérifiez les écritures de ce compte.",
   "older_stock.surplus": "{amount} de plus dans les comptes que dans le stock",
   "older_stock.tab": "Stock ancien",
   "older_stock.undo.done": "Ce transfert a déjà été annulé.",

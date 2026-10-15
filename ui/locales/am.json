@@ -4326,6 +4326,7 @@
   "older_stock.open.unresolved": "{account}: የ{amount} ልዩነት አልተፈታም።",
   "older_stock.open.provisional": "{account}: ከአቀማመጥ በፊት ደረሰኞች የመዘገቡት {amount} ወጪ እነዚያ ደረሰኞች እስኪላኩ ድረስ ጊዜያዊ ነው።",
   "older_stock.open.uncertain": "{account}: ክምችት ሊሆኑ ወይም ላይሆኑ በሚችሉ መስመሮች ላይ {amount} ({entries})። ለእነሱ ምንም አልተመዘገበም፤ እነዚህን ምዝገባዎች ይገምግሙ።",
+  "older_stock.open.stock_gap": "{account}: መዝገቦቹ በዚህ ሂሳብ ላይ {books} እንደ ክምችት ይይዛሉ፣ ነገር ግን በዚህ ሂሳብ ላይ የተመዘገበው ክምችት ዋጋ {stock} ነው። ልዩነቱን ለመዝጋት ምንም አልተመዘገበም፤ በዚህ ሂሳብ ላይ ያሉትን ግቤቶች ይገምግሙ።",
   "older_stock.surplus": "{amount} በመዝገብ ላይ ከክምችቱ በላይ",
   "older_stock.tab": "የቆየ ክምችት",
   "older_stock.undo.done": "ይህ ዝውውር አስቀድሞ ተቀልብሷል።",

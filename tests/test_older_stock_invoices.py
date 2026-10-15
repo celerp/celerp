@@ -27,7 +27,7 @@ from celerp.services.auto_je import recognized_unshipped
 from stock_books import assert_settled
 from test_cost_restatement import _set_cost
 from test_mfg_outstanding_demand import _credit
-from test_older_stock_placement import _accounts, _marked
+from test_older_stock_placement import _accounts, _marked, _off_books
 from test_older_stock_reconciliation import _posted, _records
 from test_posting_roles_lots import _sell
 from test_posting_roles_older_stock import _as_older_release, _placement, _received
@@ -178,7 +178,8 @@ async def test_cost_invoices_recognized_on_unplaced_stock_keeps_the_placement_un
     """An older release invoiced goods from two accounts in one invoice, so its entry names
     no one account their cost left: that cost is provisional. The placement is never
     called exact while it stands, the view names it, and the company stays under review,
-    with sales going on, until the invoice ships."""
+    with sales going on. Once the invoice ships, the review shows what the books check
+    finds on each account, never reconciled while an account is out of line."""
     lots = await _stock(client, auth, 100.0, 100.0)
     received = await _received(session, auth, 50.0)
     inv = await _sell(client, auth, (lots[0], 1), (received, 1))
@@ -196,5 +197,8 @@ async def test_cost_invoices_recognized_on_unplaced_stock_keeps_the_placement_un
         {"placement": record["placement"], "account": record["account"], "kind": "provisional", "amount": 150.0}]
 
     await _ship(client, auth, inv, lots[0], received)
-    assert (await _reconciliation(client, auth))["reconciliation"] == {"state": "reconciled", "waiting": 0,
-                                                                      "reasons": [], "open": []}
+    gaps = [f for f in await _off_books(session, auth) if f["kind"] == "stock_gap"]
+    rec = (await _reconciliation(client, auth))["reconciliation"]
+    assert rec["open"] == [{"account": f["account"], "kind": "stock_gap", "amount": round(f["books"] - f["stock"], 2),
+                            "books": f["books"], "stock": f["stock"]} for f in gaps]
+    assert rec["state"] == ("review" if gaps else "reconciled")

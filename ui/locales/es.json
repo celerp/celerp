@@ -4326,6 +4326,7 @@
   "older_stock.open.unresolved": "{account}: una diferencia de {amount} está sin resolver.",
   "older_stock.open.provisional": "{account}: {amount} de costo que las facturas reconocieron antes de la asignación es provisional hasta que esas facturas se envíen.",
   "older_stock.open.uncertain": "{account}: {amount} en líneas que pueden haber sido existencias o no ({entries}). No se registró nada por ellas; revise estos asientos.",
+  "older_stock.open.stock_gap": "{account}: los libros registran {books} como existencias en esta cuenta, pero las existencias asignadas a ella valen {stock}. No se registró nada para cerrar la diferencia; revise los asientos de esta cuenta.",
   "older_stock.surplus": "{amount} más en los libros que en el inventario",
   "older_stock.tab": "Existencias antiguas",
   "older_stock.undo.done": "Este traspaso ya se deshizo.",

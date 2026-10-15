@@ -562,7 +562,8 @@ def _reconciliation_summary(rec: dict | None, currency: str | None) -> FT | None
                   if r.get("action_url") not in (None, OLDER_STOCK_PATH) else None)
                for r in rec.get("reasons") or []]
     opened = [Li(_uncertain_text(o, currency) if o["kind"] == "uncertain" else
-                 t(f"older_stock.open.{o['kind']}", account=o["account"], amount=fmt_money(o["amount"], currency)))
+                 t(f"older_stock.open.{o['kind']}", account=o["account"], amount=fmt_money(o["amount"], currency),
+                   **{k: fmt_money(o[k], currency) for k in ("books", "stock") if k in o}))
               for o in rec.get("open") or []]
     return Div(
         H4(t(f"older_stock.state.{state}")),

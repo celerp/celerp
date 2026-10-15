@@ -3421,18 +3421,39 @@ _LOT_LINKS = ("split_from", "merged_into")
 async def _lot_family(session, company_id, lot_ids) -> set[str]:
     """``lot_ids`` and every lot joined to them by a split or a merge, either way: the
     only lots whose goods an invoice holding one of them can hold (_held_where)."""
-    family: set[str] = set()
-    frontier = {str(i) for i in lot_ids if i}
+    return (await _lot_families(session, company_id, {None: lot_ids}))[None]
+
+
+async def _lot_families(session, company_id, groups: dict) -> dict:
+    """_lot_family of each group of lots ({key: lot ids}), read in the queries one family
+    of all of them takes: each split or merge found on the way is kept as a link, and
+    each group follows the links from its own lots."""
+    links: dict[str, set[str]] = {}
+    reached: set[str] = set()
+    frontier = {str(i) for ids in groups.values() for i in ids if i}
     while frontier:
-        family |= frontier
+        reached |= frontier
         rows = (await session.execute(_select(Projection).where(
             Projection.company_id == company_id, Projection.entity_type == "item",
             or_(Projection.entity_id.in_(sorted(frontier)),
                 *(Projection.state[key].as_string().in_(sorted(frontier)) for key in _LOT_LINKS))))).scalars().all()
-        found = {r.entity_id for r in rows} | {str((r.state or {})[k]) for r in rows
-                                               for k in _LOT_LINKS if (r.state or {}).get(k)}
-        frontier = found - family
-    return family
+        found = {r.entity_id for r in rows}
+        for r in rows:
+            for other in ((r.state or {}).get(k) for k in _LOT_LINKS):
+                if other:
+                    links.setdefault(r.entity_id, set()).add(str(other))
+                    links.setdefault(str(other), set()).add(r.entity_id)
+                    found.add(str(other))
+        frontier = found - reached
+    families = {}
+    for key, ids in groups.items():
+        family, todo = set(), [str(i) for i in ids if i]
+        while todo:
+            if (lot := todo.pop()) not in family:
+                family.add(lot)
+                todo += links.get(lot, ())
+        families[key] = family
+    return families
 
 
 async def _open_invoices(session, company_id, *, exclude: str | None, lots=None) -> dict[str, dict]:

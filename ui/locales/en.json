@@ -4326,6 +4326,7 @@
   "older_stock.open.unresolved": "{account}: a difference of {amount} is unresolved.",
   "older_stock.open.provisional": "{account}: {amount} of cost that invoices recognized before placement is provisional until those invoices ship.",
   "older_stock.open.uncertain": "{account}: {amount} on lines that may or may not have been stock ({entries}). Nothing was booked for them; review these entries.",
+  "older_stock.open.stock_gap": "{account}: the books hold {books} as stock on this account, but the stock recorded on it is worth {stock}. Nothing was booked to close the difference; review the entries on this account.",
   "older_stock.surplus": "{amount} more on the books than the stock",
   "older_stock.tab": "Older stock",
   "older_stock.undo.done": "This move was already undone.",

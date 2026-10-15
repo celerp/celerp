@@ -208,16 +208,21 @@ async def test_uncertain_evidence_follows_the_ledger_when_its_entry_is_voided_an
     assert view["placements"][0]["uncertain"] == [{"account": "1130-X", "amount": 50.0, "entries": [je]}]
 
 
-async def test_a_bank_account_is_never_possible_stock_evidence(session, client, auth):
-    """Bank account 1111 holds an untagged 5000 cash sale and older data put it in
-    purchased inventory's history beside its cash role: it holds cash, so its lines are
-    never read as possible stock, listed for review, or swept onto inventory."""
-    from test_older_stock_reconciliation import _posted
+async def _cash_sale_in_stock_history(session, client, auth, trigger: str) -> list[str]:
+    """Bank account 1111 holds an untagged 5000 cash sale posted by ``trigger``, and older
+    data put 1111 in purchased inventory's history beside its cash role; one lot of 30 is
+    covered by its opening entry. Returns the 1111 entries."""
+    from celerp.services.auto_je import _emit_auto_posted_je
+    from celerp.services.company_lock import locked_company
     await _imported(session, client, auth, [30.0])
     await _older_release(session, auth)
-    await _posted(session, auth, "1111", "4100", 5000.0, "Cash sale")
+    je = f"je:{uuid.uuid4()}"
+    await _emit_auto_posted_je(
+        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=je, idem_create=f"{je}:c",
+        idem_posted=f"{je}:p", memo="Cash sale", metadata_={"trigger": trigger},
+        entries=[{"account": "1111", "debit": 5000.0, "credit": 0.0}, {"account": "4100", "debit": 0.0, "credit": 5000.0}])
+    await session.commit()
     await _untagged(session, auth)
-    from celerp.services.company_lock import locked_company
     company = await locked_company(session, auth["company_id"])
     scopes = {k: list(v) for k, v in (company.settings.get(SCOPES_KEY) or {}).items()}
     scopes.setdefault("inventory_purchased", []).append("1111")
@@ -225,11 +230,36 @@ async def test_a_bank_account_is_never_possible_stock_evidence(session, client, 
     await session.commit()
     await _marked(session, auth)
     await _startup(session)
+    return [je]
+
+
+async def test_a_payment_on_a_bank_account_is_never_possible_stock_evidence(session, client, auth):
+    """The cash sale was posted as a payment received: its posting says it moved cash, so
+    its lines are never read as possible stock, listed for review, or swept onto
+    inventory."""
+    await _cash_sale_in_stock_history(session, client, auth, "doc.payment.received")
     view = await _view(client, auth)
     assert view["reconciliation"]["state"] == "reconciled", view["reconciliation"]
     assert all(p["uncertain"] == [] for p in view["placements"])
     assert await _off_books(session, auth) == []
+    assert await _placements(session, auth) == []
     assert (await _net(session, auth, "1111"))[0] == 5000.0
+
+
+async def test_an_untagged_entry_on_a_bank_account_with_stock_history_is_reviewed_never_swept(session, client, auth):
+    """The same 5000 posted by hand says nothing of what it was for, and 1111 being a bank
+    account today does not prove it: it is uncertain evidence for the accountant, and
+    nothing is moved or recognized for it."""
+    sources = await _cash_sale_in_stock_history(session, client, auth, "manual")
+    view = await _view(client, auth)
+    assert view["reconciliation"]["state"] == "review", view["reconciliation"]
+    assert [(o["account"], o["kind"], o["amount"], o["entries"]) for o in view["reconciliation"]["open"]] == [
+        ("1111", "uncertain", 5000.0, sources)]
+    assert await _off_books(session, auth) == [
+        {"kind": "uncertain_evidence", "account": "1111", "amount": 5000.0, "entries": sources}]
+    assert await _placements(session, auth) == []
+    assert (await _net(session, auth, "1111"))[0] == 5000.0
+    await assert_books_carry_stock(session, auth["company_id"])
 
 
 async def test_a_lot_whose_stock_evidence_is_uncertain_still_sells(session, client, auth):
@@ -296,3 +326,156 @@ async def test_the_tab_shows_uncertain_evidence_with_no_booking_and_confirms_eve
     row_s = body.split('value="pl-s"')[1].split("</tr>")[0]
     assert "Book against retained earnings" in row_s
     assert 'hx-confirm="Book $20.00 against 3200' in row_s
+
+
+async def _je_ids(session, auth, prefix: str) -> list[str]:
+    session.expire_all()
+    return sorted((await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry",
+        Projection.entity_id.like(f"{prefix}%")))).scalars())
+
+
+async def test_voiding_the_only_possible_evidence_leaves_a_gap_to_review_never_reconciled(session, client, auth):
+    """The lot of 30 came with no opening entry, and its one possible piece of evidence is
+    an untagged journal of 30 on 1130-X, which served purchased inventory and input tax,
+    so placing books nothing. Voiding that journal does not reconcile the older stock:
+    the books no longer hold the stock recorded on 1130-P, and the review says so with
+    the same gap the books check reports. Selling the lot recognizes its cost once, books
+    no opening stock again, and the gap stays open."""
+    r = await client.post("/accounting/accounts", headers=auth["headers"], json={
+        "code": "1130-X", "name": "Account 1130-X", "account_type": "asset", "parent_code": "1100"})
+    assert r.status_code == 200, r.text
+    await _historical(client, auth, "1130-X", 30.0)
+    (lot,) = await _older_books(session, client, auth, {"inventory_opening": ["1130-OB"],
+                                                         "inventory_purchased": ["1130-X", "1130-P"],
+                                                         "tax_input": ["1130-X"]})
+    for opening in await _sources(session, auth, "1130-OB"):
+        await _set_status(session, auth, opening, "void")
+    await _startup(session)
+    assert await _placements(session, auth) == []
+    (placement,) = (await _view(client, auth))["placements"]
+    assert (placement["classification"], placement["account"]) == ("uncertain", "1130-P")
+    (je,) = await _sources(session, auth, "1130-X")
+    r = await client.post(f"/accounting/journal-entries/{je}/void", headers=auth["headers"], json={"reason": "review"})
+    assert r.status_code == 200, r.text
+    gap = {"kind": "stock_gap", "account": "1130-P", "books": 0.0, "stock": 30.0}
+    assert await _off_books(session, auth) == [gap]
+    view = await _view(client, auth)
+    assert view["reconciliation"]["state"] == "review", view["reconciliation"]
+    assert view["reconciliation"]["open"] == [{"account": "1130-P", "kind": "stock_gap", "amount": -30.0,
+                                               "books": 0.0, "stock": 30.0}]
+    assert view["placements"][0]["uncertain"] == []
+
+    placed = await _je_ids(session, auth, "je:auto:older-stock-placed:")
+    retained = (await _net(session, auth, "3200"))[0]
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "contact_name": "Buyer",
+        "line_items": [{"entity_id": lot, "name": "Older lot", "quantity": 1, "unit_price": 100.0}]})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    r = await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    await _startup(session)
+    assert await _je_ids(session, auth, "je:auto:older-stock-placed:") == placed
+    assert (await _net(session, auth, "3200"))[0] == retained
+    session.expire_all()
+    fin = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": f"je:auto:{doc}:fin"})
+    assert sum(e.get("debit") or 0 for e in fin.state["entries"] if e["account"].startswith("5")) == 30.0
+    view = await _view(client, auth)
+    assert view["reconciliation"]["state"] == "review"
+    assert [o["kind"] for o in view["reconciliation"]["open"]] == ["stock_gap"]
+
+
+async def _bank(session, auth, code: str) -> None:
+    """``code`` made a bank account, as a later release or an import may have made it."""
+    from celerp_accounting.models import BankAccount
+    session.add(BankAccount(company_id=auth["company_id"], chart_account_code=code, bank_name="Bank",
+                            account_number="****0001", bank_type="checking", currency="USD"))
+    await session.commit()
+
+
+async def test_an_account_made_a_bank_account_later_still_holds_its_possible_stock(session, client, auth):
+    """1130-OB served opening inventory and deposits before lines recorded their roles, and
+    is a bank account today. Being one now says nothing of what its untagged opening 30
+    was for, so the 30 stays uncertain evidence to review: no shortfall is read and no
+    opening stock is booked for the lot."""
+    await _older_books(session, client, auth, {"inventory_opening": ["1130-OB"], "default_deposit": ["1130-OB"]})
+    await _bank(session, auth, "1130-OB")
+    before = await _net(session, auth, "1130-OB", "1130-P", "3200")
+    await _startup(session)
+    assert await _net(session, auth, "1130-OB", "1130-P", "3200") == before == (30.0, 0.0, -30.0)
+    assert await _placements(session, auth) == []
+    sources = await _sources(session, auth, "1130-OB")
+    view = await _view(client, auth)
+    (placement,) = view["placements"]
+    assert (placement["classification"], placement["recognized"]) == ("uncertain", 0.0)
+    assert placement["uncertain"] == [{"account": "1130-OB", "amount": 30.0, "entries": sources}]
+    assert view["reconciliation"]["state"] == "review"
+    assert await _off_books(session, auth) == [
+        {"kind": "uncertain_evidence", "account": "1130-OB", "amount": 30.0, "entries": sources}]
+
+
+async def _more_placements(session, auth, n: int, start: int, evidence: list[str]) -> None:
+    """``n`` further placement records on 1130-OB, each weighing the same entries, half of
+    them keeping provisional cost."""
+    from celerp.events.engine import emit_event
+    from celerp.services.lot_origin import PLACED, PLACEMENT
+    for i in range(start, start + n):
+        pid = f"extra-{i:04d}"
+        await emit_event(
+            session, company_id=auth["company_id"], entity_id=f"older-stock-placement:{pid}", entity_type=PLACEMENT,
+            event_type=PLACED, actor_id=None, location_id=None, source="system",
+            idempotency_key=f"older-stock-placement:{pid}", metadata_={},
+            data={"placement": pid, "day": "2026-10-15", "count": 1, "value": 30.0, "account": "1130-OB",
+                  "rooms": {"1130-OB": 0.0}, "transferred": 0.0, "recognized": 0.0, "unresolved": 0.0,
+                  "provisional": 5.0 if i % 2 else 0.0, "evidence_entries": evidence,
+                  "classification": "uncertain", "journal": []})
+    await session.commit()
+
+
+async def test_the_older_stock_view_reads_the_same_number_of_times_however_many_placements(session, client, auth):
+    """The view's page, review and summary come from grouped reads: 60 placements and 150
+    take the same queries, and the evidence they share is shown once, on the newest."""
+    from sqlalchemy import event
+
+    from celerp.services.lot_origin import older_stock_view
+
+    await _older_books(session, client, auth, {"inventory_opening": ["1130-OB"], "tax_input": ["1130-OB"]})
+    await _startup(session)
+    sources = await _sources(session, auth, "1130-OB")
+    statements: list[str] = []
+
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    async def _read() -> tuple[int, dict]:
+        session.expire_all()
+        statements.clear()
+        event.listen(session.bind.sync_engine, "before_cursor_execute", _count)
+        try:
+            view = await older_stock_view(session, auth["company_id"])
+        finally:
+            event.remove(session.bind.sync_engine, "before_cursor_execute", _count)
+        return len(statements), view
+
+    await _more_placements(session, auth, 59, 0, sources)
+    few, view = await _read()
+    await _more_placements(session, auth, 90, 59, sources)
+    many, more = await _read()
+    assert (view["totals"]["placements"], more["totals"]["placements"]) == (60, 150)
+    assert len(view["placements"]) == len(more["placements"]) == 50
+    for shown in (view, more):
+        newest, *rest = shown["placements"]
+        assert newest["uncertain"] == [{"account": "1130-OB", "amount": 30.0, "entries": sources}]
+        assert all(p["uncertain"] == [] for p in rest)
+        assert shown["reconciliation"]["state"] == "review"
+        assert [(o["kind"], o["account"], o["amount"]) for o in shown["reconciliation"]["open"]] == [
+            ("uncertain", "1130-OB", 30.0)]
+    assert many == few, (few, many)
+
+
+async def test_the_tab_shows_a_stock_gap_with_what_the_books_and_the_stock_hold(ui_client):
+    body, _ = await _tab(ui_client, {**_VIEW, "reconciliation": {"state": "review", "waiting": 0, "reasons": [], "open": [
+        {"account": "1130-P", "kind": "stock_gap", "amount": -30.0, "books": 0.0, "stock": 30.0}]}})
+    banner = body.split('id="older-stock-reconciliation"')[1].split("</div>")[0]
+    assert "1130-P: the books hold $0.00 as stock on this account, but the stock recorded on it is worth $30.00" in banner

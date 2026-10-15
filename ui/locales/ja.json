@@ -4326,6 +4326,7 @@
   "older_stock.open.unresolved": "{account}: {amount} の差額が未解決です。",
   "older_stock.open.provisional": "{account}: 割り当て前に請求書が計上した原価 {amount} は、それらの請求書が出荷されるまで暫定です。",
   "older_stock.open.uncertain": "{account}: 在庫だったかどうか分からない明細に {amount} があります ({entries})。これらについては何も計上していません。仕訳を確認してください。",
+  "older_stock.open.stock_gap": "{account}: 帳簿ではこの勘定に在庫として {books} が計上されていますが、この勘定に記録された在庫の価額は {stock} です。差額を埋める仕訳は計上されていません。この勘定の仕訳を確認してください。",
   "older_stock.surplus": "帳簿が在庫より {amount} 多い",
   "older_stock.tab": "旧在庫",
   "older_stock.undo.done": "この移動はすでに取り消されています。",

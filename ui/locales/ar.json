@@ -4326,6 +4326,7 @@
   "older_stock.open.unresolved": "{account}: فرق قدره {amount} غير مسوّى.",
   "older_stock.open.provisional": "{account}: تكلفة قدرها {amount} أثبتتها الفواتير قبل الوضع تبقى مؤقتة حتى يتم شحن تلك الفواتير.",
   "older_stock.open.uncertain": "{account}: {amount} في سطور قد تكون مخزونًا أو لا ({entries}). لم يُقيد شيء لها؛ راجع هذه القيود.",
+  "older_stock.open.stock_gap": "{account}: تُظهر الدفاتر {books} كمخزون في هذا الحساب، لكن قيمة المخزون المسجل عليه {stock}. لم يُقيَّد شيء لسد الفرق؛ راجع القيود على هذا الحساب.",
   "older_stock.surplus": "{amount} زيادة في الدفاتر عن المخزون",
   "older_stock.tab": "المخزون القديم",
   "older_stock.undo.done": "تم التراجع عن هذا النقل بالفعل.",

@@ -4326,6 +4326,7 @@
   "older_stock.open.unresolved": "{account}: Eine Differenz von {amount} ist offen.",
   "older_stock.open.provisional": "{account}: {amount} an Kosten, die Rechnungen vor der Zuordnung erfasst haben, sind vorläufig, bis diese Rechnungen versendet sind.",
   "older_stock.open.uncertain": "{account}: {amount} auf Zeilen, die Bestand gewesen sein können oder nicht ({entries}). Dafür wurde nichts gebucht; prüfen Sie diese Buchungen.",
+  "older_stock.open.stock_gap": "{account}: Die Bücher führen auf diesem Konto {books} als Bestand, der darauf erfasste Bestand ist jedoch {stock} wert. Zum Ausgleich der Differenz wurde nichts gebucht; prüfen Sie die Buchungen auf diesem Konto.",
   "older_stock.surplus": "{amount} mehr in den Büchern als im Bestand",
   "older_stock.tab": "Älterer Bestand",
   "older_stock.undo.done": "Diese Umbuchung wurde bereits rückgängig gemacht.",

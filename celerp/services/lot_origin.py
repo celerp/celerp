@@ -72,7 +72,6 @@ from celerp.models.projections import Projection
 from celerp.projections.engine import Transition
 from celerp.services.account_roles import (
     PostingRoleError,
-    cash_accounts,
     continue_role,
     current_settings,
     lot_account,
@@ -245,24 +244,40 @@ def uncertain_evidence(settings: dict, entries: list[tuple[str, dict]], codes, c
     return found
 
 
-async def evidence_accounts(session: AsyncSession, company_id, codes) -> list[str]:
-    """``codes`` less every account holding cash (account_roles.cash_accounts), in order:
-    a bank account's lines are cash whatever roles older data says it served, so they
-    are never read as possible stock (_uncertain_lines) or explain a difference."""
-    cash = await cash_accounts(session, company_id)
-    return [code for code in codes if code not in cash]
+# The postings that record a payment, by the trigger kept on the entry when it was
+# posted: their lines moved cash, whatever roles their accounts served.
+PAYMENT_TRIGGER = "doc.payment."
 
 
-async def live_uncertain(session: AsyncSession, company_id, settings: dict, record: dict, currency: str) -> list[dict]:
-    """A placement's uncertain evidence (uncertain_evidence) as the books hold it now: the
-    lines of the entries that held it when placed (``evidence_entries``) still posted, on
-    the accounts it weighed (``rooms``) that hold no cash. An entry voided since drops
-    out, and one posted again comes back."""
-    ids = record.get("evidence_entries") or []
+async def evidence_entries(session: AsyncSession, company_id, settings: dict,
+                           entries: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+    """``entries`` less every entry posted as a payment (PAYMENT_TRIGGER), read in one
+    query: what each was posted for is recorded with it, so a payment's lines are never
+    read as possible stock (_uncertain_lines) or explain a difference. An account being a
+    bank account today proves nothing of what an older line on it was for: any other
+    line that may have been stock stays evidence to review."""
+    ids = sorted({je for je, e in entries if uncertain_stock_line(settings, e)})
     if not ids:
-        return []
-    codes = await evidence_accounts(session, company_id, list(record.get("rooms") or {}))
-    return uncertain_evidence(settings, await _posted_entries(session, company_id, ids), codes, currency)
+        return entries
+    paid = set((await session.execute(select(LedgerEntry.entity_id).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == "acc.journal_entry.created",
+        LedgerEntry.entity_id.in_(ids),
+        LedgerEntry.metadata_["trigger"].as_string().startswith(PAYMENT_TRIGGER)))).scalars())
+    return [(je, e) for je, e in entries if je not in paid]
+
+
+async def live_uncertain(session: AsyncSession, company_id, settings: dict, records: list[dict],
+                         currency: str) -> list[list[dict]]:
+    """Each placement's uncertain evidence (uncertain_evidence) as the books hold it now,
+    in the order of ``records``: the lines of the entries that held it when placed
+    (``evidence_entries``) still posted and not a payment (evidence_entries), on the
+    accounts it weighed (``rooms``). An entry voided since drops out, and one posted again
+    comes back. Read in the same few queries however many placements."""
+    ids = {je for r in records for je in r.get("evidence_entries") or []}
+    entries = (await evidence_entries(session, company_id, settings, await _posted_entries(session, company_id, ids))
+               if ids else [])
+    return [uncertain_evidence(settings, [(je, e) for je, e in entries if je in set(r.get("evidence_entries") or [])],
+                               list(r.get("rooms") or {}), currency) for r in records]
 
 
 def unexplained(settings: dict, entries: list[tuple[str, dict]], codes, gap: Decimal) -> Decimal:
@@ -361,15 +376,15 @@ async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
     findings = [{"kind": "unplaced_lot", "entity_id": r.entity_id, "sku": (r.state or {}).get("sku")}
                 for r in sorted(unrecorded(items), key=lambda r: r.entity_id)]
     codes = sorted({code for role in _INVENTORY for code in scope_codes(settings, role)})
-    evidence = await evidence_accounts(session, company_id, codes)
+    evidence = await evidence_entries(session, company_id, settings, entries)
     for code in codes:
         room = round_money(_room(settings, entries, items, code, currency, sold, unresolved), currency)
-        if unexplained(settings, entries, {code} & set(evidence), room):
+        if unexplained(settings, evidence, {code}, room):
             books = round_money(_stock_balance(settings, entries, code), currency)
             findings.append({"kind": "stock_gap", "account": code, "books": float(books),
                              "stock": float(books - room - unresolved.get(code, Decimal("0")))})
     findings += [{"kind": "uncertain_evidence", **found}
-                 for found in uncertain_evidence(settings, entries, evidence, currency)]
+                 for found in uncertain_evidence(settings, evidence, codes, currency)]
     findings += [{"kind": "unresolved_difference", "account": code, "amount": float(amount)}
                  for code, amount in sorted(unresolved.items())]
     return findings
@@ -696,7 +711,7 @@ async def _place(session: AsyncSession, company_id) -> bool:
     accounts together hold short of V is recognized as opening stock, the way opening
     stock is booked (post_opening_stock_delta); what they hold beyond V is written off
     nowhere and is recorded on the default account as an unresolved difference. Lines
-    on these accounts, other than one holding cash (evidence_accounts), that may have been
+    on these accounts, other than a payment's (evidence_entries), that may have been
     stock but cannot be shown to (account_roles.uncertain_stock_line) prove nothing either
     way: only the part of the difference no reading of them can explain (unexplained) is
     recognized or left unresolved, nothing is ever booked for them, the default account is
@@ -758,8 +773,8 @@ async def _place(session: AsyncSession, company_id) -> bool:
     unresolved = await unresolved_differences(session, company_id)
     room = {c: round_money(_room(settings, entries, items, c, currency, sold, unresolved), currency)
             for c in candidates + counted}
-    readable = await evidence_accounts(session, company_id, list(room))
-    evidence = uncertain_evidence(settings, entries, readable, currency)
+    readable = await evidence_entries(session, company_id, settings, entries)
+    evidence = uncertain_evidence(settings, readable, list(room), currency)
     uncertain = {found["account"]: Decimal(str(found["amount"])) for found in evidence}
     provisional = round_money(sold.get(UNPLACED, 0), currency)
     value = round_money(sum((booked_value(r, currency) for r in pending), Decimal("0")), currency)
@@ -768,7 +783,7 @@ async def _place(session: AsyncSession, company_id) -> bool:
     target = (next((c for c in candidates if room[c] == owed), None)
               or (most if room[most] + uncertain.get(most, 0) > 0 else usable[0]))
     moved = {c: room[c] for c in room if c != target and room[c]}
-    gap = round_money(unexplained(settings, entries, readable, sum(room.values(), Decimal("0")) - owed), currency)
+    gap = round_money(unexplained(settings, readable, list(room), sum(room.values(), Decimal("0")) - owed), currency)
     stuck = [problems[r] for r in (purchased, opening) if r in problems and current.get(r) in moved]
     if stuck:
         await _notify_unmapped(session, company_id, "body_held", stuck)
@@ -1815,11 +1830,14 @@ async def undo_lot_move(session: AsyncSession, company_id, move_id: str, actor_i
 CORRECTIONS = frozenset({"recognize", "unresolve"})
 
 
-async def _placement_lots(session: AsyncSession, company_id, pid: str) -> list[str]:
-    """The lots placement ``pid`` recorded on its account."""
-    return sorted(set((await session.execute(select(LedgerEntry.entity_id).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED,
-        LedgerEntry.metadata_["placement"].as_string() == pid))).scalars()))
+async def _placement_lots(session: AsyncSession, company_id, pids: list[str]) -> dict[str, list[str]]:
+    """The lots each of placements ``pids`` recorded on its account, read in one query."""
+    placement = LedgerEntry.metadata_["placement"].as_string()
+    lots: dict[str, set[str]] = {pid: set() for pid in pids}
+    for item_id, pid in (await session.execute(select(LedgerEntry.entity_id, placement).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.event_type == RECORDED, placement.in_(pids)))).all():
+        lots[pid].add(item_id)
+    return {pid: sorted(ids) for pid, ids in lots.items()}
 
 
 # What a correction posts and records, by its kind and whether it acts on a surplus.
@@ -1877,10 +1895,8 @@ async def correct_placements(session: AsyncSession, company_id, pids: list[str],
         records[pid] = dict(row.state)
     settings = dict(company.settings or {})
     currency = settings.get("currency", "USD")
-    for state in records.values():
-        if state.get("unresolved") or state.get("recognized"):
-            continue
-        found = await live_uncertain(session, company_id, settings, state, currency)
+    weighed = [state for state in records.values() if not (state.get("unresolved") or state.get("recognized"))]
+    for found in await live_uncertain(session, company_id, settings, weighed, currency):
         if found:
             accounts = [refusal("older_stock.correct.uncertain_account",
                                 f"{f['account']} holds {f['amount']:.2f} on lines that may or may not have been "
@@ -1895,7 +1911,7 @@ async def correct_placements(session: AsyncSession, company_id, pids: list[str],
     retained = role_map(settings).get(AccountRole.RETAINED_EARNINGS.value)
     if await lock_accounts(session, company_id, codes | ({retained} if retained else set())) is None:
         raise HTTPException(status_code=409, detail=needs_accounting())
-    lots = {pid: await _placement_lots(session, company_id, pid) for pid in pids}
+    lots = await _placement_lots(session, company_id, pids)
     rows = {r.entity_id: r for r in await _locked_lots(session, company_id, [i for ids in lots.values() for i in ids])}
     held = {c.lot_id for c in await unshipped_claims(session, company_id, costed=False, lots=sorted(rows))}
     for pid, ids in lots.items():
@@ -1948,35 +1964,53 @@ OLDER_STOCK_PAGES = ("lots", "placements", "moves", "corrections")
 WAITING_NOTICES = (UNMAPPED_NOTICE, LOCKED_NOTICE, FAILED_NOTICE)
 
 
-async def _reconciliation(session: AsyncSession, company_id) -> dict:
+async def _reconciliation(session: AsyncSession, company_id, records: list[dict],
+                          uncertain: dict[str, list[dict]]) -> dict:
     """Where the older stock stands with the books, one of three states:
 
     - ``action``: older stock waits for its inventory account (``waiting`` lots), each
       standing notice saying why (WAITING_NOTICES, their i18n records under ``reasons``);
       it cannot be sold or moved until someone fixes that.
-    - ``review``: everything is placed and sales go on, but a placement is still open
-      (``open``), newest first: a difference left unresolved, provisional cost an
-      invoice recognized on its lots before placing while that invoice still holds them
-      unshipped, or lines that may have been stock (``uncertain``, each with its account,
-      amount and entries), evidence only, which nothing books.
-    - ``reconciled``: nothing waits and nothing is open."""
-    from celerp.services.auto_je import unshipped_claims
+    - ``review``: everything is placed and sales go on, but something is still open
+      (``open``): per placement, newest first, a difference left unresolved, provisional
+      cost an invoice recognized on its lots before placing while that invoice still
+      holds them unshipped, or lines that may have been stock (``uncertain``, each with
+      its account, amount and entries, from ``uncertain``, _uncertain_by_placement),
+      evidence only, which nothing books; then each inventory account whose books differ
+      from the stock recorded on it beyond all of that (``stock_gap``, with what the books
+      hold and the stock), exactly as the books check finds it (stock_off_books).
+    - ``reconciled``: nothing waits and nothing is open.
 
+    ``records`` are the placement records, newest first (_placement_records)."""
     waiting = len(await _unplaced(session, company_id))
     reasons = [i18n for base in WAITING_NOTICES if (i18n := await _standing_notice(session, company_id, base))]
-    records = (await session.execute(_placement_records(company_id))).scalars().all()
-    held = {r["placement"] for r in records if r.get("provisional") and await unshipped_claims(
-        session, company_id, costed=False, lots=await _placement_lots(session, company_id, r["placement"]))}
+    held = await _held_placements(session, company_id, [r["placement"] for r in records if r.get("provisional")])
     open_ = [{"placement": r["placement"], "account": r["account"], "kind": kind, "amount": float(amount)}
              for r in records
              for kind, amount in (("unresolved", r.get("unresolved") or 0),
                                   ("provisional", (r.get("provisional") or 0) if r["placement"] in held else 0))
              if amount]
     open_ += [{"placement": pid, "kind": "uncertain", **found}
-              for pid, evidence in (await _uncertain_by_placement(session, company_id, records)).items()
-              for found in evidence]
+              for pid, evidence in uncertain.items() for found in evidence]
+    if not waiting:  # stock waiting for its account is the gap until placed
+        open_ += [{"account": f["account"], "kind": "stock_gap", "amount": round(f["books"] - f["stock"], 2),
+                   "books": f["books"], "stock": f["stock"]}
+                  for f in await stock_off_books(session, company_id) if f["kind"] == "stock_gap"]
     state = "action" if waiting or reasons else "review" if open_ else "reconciled"
     return {"state": state, "waiting": waiting, "reasons": reasons, "open": open_}
+
+
+async def _held_placements(session: AsyncSession, company_id, pids: list[str]) -> set[str]:
+    """Which of placements ``pids`` an unshipped invoice still holds a lot of
+    (auto_je.unshipped_claims on the lot's family), read in the same queries however many."""
+    from celerp.services.auto_je import _lot_families, unshipped_claims
+
+    lots = {pid: ids for pid, ids in (await _placement_lots(session, company_id, pids)).items() if ids}
+    if not lots:
+        return set()
+    claimed = {c.lot_id for c in await unshipped_claims(
+        session, company_id, costed=False, lots=sorted(set().union(*lots.values())))}
+    return {pid for pid, family in (await _lot_families(session, company_id, lots)).items() if family & claimed}
 
 
 async def _uncertain_by_placement(session: AsyncSession, company_id, records: list[dict]) -> dict[str, list[dict]]:
@@ -1987,9 +2021,8 @@ async def _uncertain_by_placement(session: AsyncSession, company_id, records: li
     settings = await current_settings(session, company_id)
     currency = settings.get("currency", "USD")
     seen, found = set(), {}
-    for r in records:
-        evidence = [f for f in await live_uncertain(session, company_id, settings, r, currency)
-                    if f["account"] not in seen]
+    for r, live in zip(records, await live_uncertain(session, company_id, settings, records, currency)):
+        evidence = [f for f in live if f["account"] not in seen]
         seen.update(f["account"] for f in evidence)
         found[r["placement"]] = evidence
     return found
@@ -2035,11 +2068,11 @@ async def _count(session: AsyncSession, query) -> int:
     return (await session.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
 
 
-async def _placements_page(session: AsyncSession, company_id, offset: int, limit: int) -> tuple[list[dict], int]:
-    """A page of the placements, newest first, as their records hold them, and how many
-    there are."""
+async def _placements_page(session: AsyncSession, company_id, offset: int, limit: int,
+                           uncertain: dict[str, list[dict]]) -> tuple[list[dict], int]:
+    """A page of the placements, newest first, as their records hold them, each with its
+    ``uncertain`` evidence (_uncertain_by_placement), and how many there are."""
     query = _placement_records(company_id)
-    uncertain = await _uncertain_by_placement(session, company_id, (await session.execute(query)).scalars().all())
     return [{"pid": r["placement"], "day": r["day"], "count": r["count"], "account": r["account"],
              "classification": r.get("classification"), "transferred": float(r.get("transferred") or 0),
              "recognized": float(r.get("recognized") or 0), "unresolved": float(r.get("unresolved") or 0),
@@ -2132,8 +2165,11 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
         for f in ("value", *_PLACED_AMOUNTS):
             row[f] = round(row[f], 2)
     lots = _matching(held, account, q)
+    records = (await session.execute(_placement_records(company_id))).scalars().all()
+    uncertain = await _uncertain_by_placement(session, company_id, records)
     lists = {"lots": (lots[offsets.get("lots", 0):offsets.get("lots", 0) + limit], len(lots)),
-             "placements": await _placements_page(session, company_id, offsets.get("placements", 0), limit),
+             "placements": await _placements_page(session, company_id, offsets.get("placements", 0), limit,
+                                                  uncertain),
              "moves": await _moves_page(session, company_id, tz, offsets.get("moves", 0), limit),
              "corrections": await _corrections_page(session, company_id, offsets.get("corrections", 0), limit)}
     return {**{name: page for name, (page, _) in lists.items()},
@@ -2142,5 +2178,5 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
             "summary": sorted(summary.values(), key=lambda r: r["account"]),
             "accounts": sorted({lot["account"] for lot in held if lot["account"]}),
             "failed": await failed_placement(session, company_id),
-            "reconciliation": await _reconciliation(session, company_id),
+            "reconciliation": await _reconciliation(session, company_id, records, uncertain),
             **await older_stock_targets(session, company_id)}

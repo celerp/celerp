@@ -4326,6 +4326,7 @@
   "older_stock.open.unresolved": "{account}: una differenza di {amount} è in sospeso.",
   "older_stock.open.provisional": "{account}: {amount} di costo rilevato dalle fatture prima dell'assegnazione è provvisorio finché quelle fatture non vengono spedite.",
   "older_stock.open.uncertain": "{account}: {amount} su righe che potrebbero essere state magazzino o no ({entries}). Non è stato registrato nulla per esse; verifica queste scritture.",
+  "older_stock.open.stock_gap": "{account}: i libri registrano {books} come magazzino su questo conto, ma il magazzino registrato su di esso vale {stock}. Non è stato registrato nulla per chiudere la differenza; controlla le scritture su questo conto.",
   "older_stock.surplus": "{amount} in più nei libri rispetto alle scorte",
   "older_stock.tab": "Scorte precedenti",
   "older_stock.undo.done": "Questo spostamento è già stato annullato.",
