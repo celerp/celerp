@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -43,6 +44,7 @@ from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.physical_codes import physical_code_conflicts
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 ALL_CHECKS = [
     "missing_jes",
@@ -64,6 +66,31 @@ ALL_CHECKS = [
 
 
 # --- Individual checks ---
+
+_UNEXPECTED_ERROR = (
+    "This could not be repaired because of an unexpected error, which is recorded in the "
+    "server log. The other repairs in this run were kept."
+)
+
+
+async def _repair_one(session: AsyncSession, detail: dict, label: str, emit) -> bool:
+    """Run one repair on its own savepoint: a refusal or an unexpected error is reported on
+    *detail* and undoes only that repair's writes, never the run's other repairs. An
+    unexpected error is logged with *label* and the exception, never shown in the reply."""
+    try:
+        async with session.begin_nested():
+            await emit()
+    except HTTPException as exc:
+        detail["blocked_reason"] = str(exc.detail)
+        return False
+    except ValueError as exc:
+        detail["blocked_reason"] = str(exc)
+        return False
+    except Exception:
+        logger.exception("Doctor could not repair %s", label)
+        detail["blocked_reason"] = _UNEXPECTED_ERROR
+        return False
+    return True
 
 async def _documents_with_posting_event(
     session: AsyncSession, company_id,
@@ -208,17 +235,19 @@ async def _check_missing_jes(
         return problem is not None
 
     async def _repaired(detail: dict, emit) -> bool:
-        """Post one document's entry on its own savepoint: a refusal is reported on that
-        document and undoes only its own writes, never the run's other repairs."""
-        try:
-            async with session.begin_nested():
-                await emit()
-        except HTTPException as exc:
-            detail["blocked_reason"] = str(exc.detail)
+        return await _repair_one(
+            session, detail, f"the {detail['trigger']} entry of document {detail['doc_id']}", emit,
+        )
+
+    def _waits_on_sale(detail: dict, sale: dict | None) -> bool:
+        """A payment entry clears the receivable its document's sale entry raises, so it is
+        held back while that sale entry is missing and refused in this run."""
+        if sale is None or not sale.get("blocked_reason"):
             return False
-        except ValueError as exc:
-            detail["blocked_reason"] = str(exc)
-            return False
+        detail["blocked_reason"] = (
+            f"Waits on the sale entry of {sale['doc_number']}, which could not be posted. "
+            "Resolve that first; this payment entry is repaired on the next run."
+        )
         return True
 
     for doc in docs:
@@ -234,8 +263,9 @@ async def _check_missing_jes(
 
         if doc_type == "invoice":
             fin_key = je_idempotency_key(entity_id, "invoice.finalized", "c")
+            sale = None
             if fin_key not in existing_keys and entity_id in posted_by["invoice"]:
-                detail = {"doc_id": entity_id, "doc_number": doc_number, "trigger": "finalize", "total": total}
+                detail = sale = {"doc_id": entity_id, "doc_number": doc_number, "trigger": "finalize", "total": total}
                 missing.append(detail)
                 if not await _blocked(detail, state, finalized_entry_day(state)) and fix and await _repaired(
                     detail, lambda: _emit_finalize_je(session, company_id, user_id, entity_id, state),
@@ -273,7 +303,8 @@ async def _check_missing_jes(
                         "payment_index": idx,
                     }
                     missing.append(detail)
-                    if not await _blocked(detail, state, _payment_day(state, pay), payment=pay) \
+                    if not _waits_on_sale(detail, sale) \
+                            and not await _blocked(detail, state, _payment_day(state, pay), payment=pay) \
                             and fix and await _repaired(detail, lambda: _emit_payment_je(
                         session, company_id, user_id, entity_id,
                         float(pay.get("amount") or 0), state,
@@ -293,7 +324,8 @@ async def _check_missing_jes(
                         "payment_index": 0,
                     }
                     missing.append(detail)
-                    if not await _blocked(detail, state, _payment_day(state, None)) \
+                    if not _waits_on_sale(detail, sale) \
+                            and not await _blocked(detail, state, _payment_day(state, None)) \
                             and fix and await _repaired(detail, lambda: _emit_payment_je(
                         session, company_id, user_id, entity_id,
                         amount_paid, state, payment_index=0,
@@ -362,20 +394,15 @@ async def _check_uncaused_recognition_jes(
             continue
         if not fix:
             continue
-        try:
-            async with session.begin_nested():
-                await emit_event(
-                    session, company_id=company_id, entity_id=je_id,
-                    entity_type="journal_entry", event_type="acc.journal_entry.voided",
-                    data=je_void_data("Doctor: no finalize or receipt on the document", je.state),
-                    actor_id=user_id, location_id=None, source="doctor",
-                    idempotency_key=f"doctor:void-uncaused:{je_id}",
-                    metadata_={"voided_by": "doctor", "doc_id": doc_id},
-                )
-        except HTTPException as exc:
-            detail["blocked_reason"] = str(exc.detail)
-            continue
-        fixed += 1
+        if await _repair_one(session, detail, f"entry {je_id} of document {doc_id}", lambda: emit_event(
+            session, company_id=company_id, entity_id=je_id,
+            entity_type="journal_entry", event_type="acc.journal_entry.voided",
+            data=je_void_data("Doctor: no finalize or receipt on the document", je.state),
+            actor_id=user_id, location_id=None, source="doctor",
+            idempotency_key=f"doctor:void-uncaused:{je_id}",
+            metadata_={"voided_by": "doctor", "doc_id": doc_id},
+        )):
+            fixed += 1
 
     return {
         "check": "uncaused_recognition_jes",
