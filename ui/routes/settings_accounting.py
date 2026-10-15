@@ -17,7 +17,8 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, bug_report_url, flash, page_header, page_title
 from celerp.accounting_roles import account_label
 from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
-from ui.components.table import EMPTY, add_new_option, bulk_toolbar, searchable_select, display_enum, fmt_money
+from ui.components.table import (EMPTY, add_new_option, bulk_toolbar, searchable_select, display_enum, fmt_money,
+                                 server_pager)
 
 from ui.components.posting_accounts import account_picker
 from ui.components.operation_key import operation_key_attrs, required_operation_key
@@ -371,6 +372,9 @@ def _posting_accounts_tab(data: dict) -> FT:
 
 
 _OLDER_STOCK_URL = "/settings/accounting/older-stock"
+# The lists GET /accounting/older-stock pages, each from its own ``<name>_offset``.
+_OLDER_STOCK_PAGES = ("lots", "placements", "moves", "corrections")
+_OLDER_STOCK_MAX_PAGE = 500
 # Above this many accounts a choice of account is searchable (GDR 2i).
 _SEARCHABLE_AFTER = 10
 
@@ -404,28 +408,75 @@ def _older_lot_row(lot: dict, currency: str) -> FT:
     )
 
 
-def _correction(pid: str, kind: str, label: str) -> FT:
+def _older_stock_url(filters: dict, path: str = "", **changes) -> str:
+    """An Older stock URL keeping the filters and pages shown, with ``changes`` applied:
+    the tab itself, or an action at ``path`` whose answer re-renders the same view."""
+    from urllib.parse import urlencode
+
+    query = urlencode({k: v for k, v in {**filters, **changes}.items() if v not in ("", None)})
+    base = f"{_OLDER_STOCK_URL}{path}" if path else "/settings/accounting?tab=older-stock"
+    return base + ("&" if "?" in base else "?") + query if query else base
+
+
+def _money(value, currency: str) -> FT | str:
+    return fmt_money(value, currency) if value else EMPTY
+
+
+def _correction_url(filters: dict, kind: str) -> str:
+    return _older_stock_url(filters, "/corrections", kind=kind)
+
+
+def _correction(pid: str, kind: str, label: str, filters: dict) -> FT:
     return Button(label, type="button", cls="btn btn--xs btn--secondary",
-                  hx_post=f"{_OLDER_STOCK_URL}/corrections", hx_vals=json.dumps({"placements": pid, "kind": kind}),
+                  hx_post=_correction_url(filters, kind), hx_vals=json.dumps({"selected": pid}),
                   hx_target="#older-stock-card", hx_swap="outerHTML")
 
 
-def _placement_row(p: dict, currency: str) -> FT:
-    """A placement with what it recognized as opening stock and what it left unresolved,
-    each correctable the other way (lot_origin.correct_placements)."""
-    actions = ([_correction(p["pid"], "recognize", t("older_stock.book_difference"))] if p["unresolved"] else []) \
-        + ([_correction(p["pid"], "unresolve", t("older_stock.leave_unresolved"))] if p["recognized"] else [])
+def _placement_row(p: dict, currency: str, filters: dict) -> FT:
+    """A placement: its classification, what it transferred between accounts, recognized as
+    opening stock and left unresolved, the journal entries it posted, and the correction
+    each difference allows (lot_origin.correct_placements)."""
+    actions = ([_correction(p["pid"], "recognize", t("older_stock.book_difference"), filters)]
+               if p["unresolved"] else []) \
+        + ([_correction(p["pid"], "unresolve", t("older_stock.leave_unresolved"), filters)] if p["recognized"] else [])
     return Tr(
+        Td(Input(type="checkbox", cls="bulk-select", name="selected", value=p["pid"]), cls="col-checkbox"),
         Td(p["day"], cls="cell--center"),
         Td(str(p["count"]), cls="cell--number"),
         Td(p["account"] or EMPTY),
-        Td(fmt_money(p["recognized"], currency) if p["recognized"] else EMPTY, cls="cell--number"),
-        Td(fmt_money(p["unresolved"], currency) if p["unresolved"] else EMPTY, cls="cell--number"),
+        Td(display_enum(p["classification"], "older_stock_classification") if p.get("classification") else EMPTY),
+        Td(_money(p["transferred"], currency), cls="cell--number"),
+        Td(_money(p["recognized"], currency), cls="cell--number"),
+        Td(_money(p["unresolved"], currency), cls="cell--number"),
+        Td(*([Div(j, cls="cell--mono") for j in p["journal"]] or [EMPTY])),
         Td(*(actions or [EMPTY]), cls="cell--actions"),
+        cls="data-row",
     )
 
 
-def _move_row(m: dict, currency: str) -> FT:
+def _summary_row(s: dict, currency: str) -> FT:
+    return Tr(
+        Td(s["account"]),
+        Td(str(s["lots"]), cls="cell--number"),
+        Td(_money(s["value"], currency), cls="cell--number"),
+        Td(_money(s["transferred"], currency), cls="cell--number"),
+        Td(_money(s["recognized"], currency), cls="cell--number"),
+        Td(_money(s["unresolved"], currency), cls="cell--number"),
+    )
+
+
+def _correction_row(c: dict, currency: str) -> FT:
+    return Tr(
+        Td(c["day"], cls="cell--center"),
+        Td(t(f"older_stock.kind.{c['kind']}")),
+        Td(c.get("account") or EMPTY),
+        Td(fmt_money(c["amount"], currency), cls="cell--number"),
+        Td(c["journal"], cls="cell--mono"),
+        Td(c.get("actor_name") or EMPTY),
+    )
+
+
+def _move_row(m: dict, currency: str, filters: dict) -> FT:
     """A move, undoable until a later move takes one of its lots elsewhere."""
     if m.get("undo_of"):
         action = Span(t("older_stock.undo_of"), cls="text-muted")
@@ -433,7 +484,7 @@ def _move_row(m: dict, currency: str) -> FT:
         action = Span(t("older_stock.undone"), cls="text-muted")
     else:
         action = Button(t("btn.undo"), type="button", cls="btn btn--xs btn--secondary",
-                        hx_post=f"{_OLDER_STOCK_URL}/moves/{m['move_id']}/undo",
+                        hx_post=_older_stock_url(filters, f"/moves/{m['move_id']}/undo"),
                         hx_target="#older-stock-card", hx_swap="outerHTML")
     return Tr(
         Td(m["day"], cls="cell--center"),
@@ -463,63 +514,98 @@ def _placement_failure(failed: dict | None) -> FT | None:
 
 
 def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = "success") -> FT:
-    """Settings > Accounting > Older stock: the lots placed automatically, a bulk move to
-    another inventory account, each placement's recognized and unresolved difference with
-    its correction, and every move, newest first."""
-    from urllib.parse import urlencode
-
+    """Settings > Accounting > Older stock: each inventory account with its lots and what
+    placements transferred, recognized and left unresolved; the lots placed automatically
+    with a bulk move to another inventory account; each placement with its classification,
+    journal entries and correction, one at a time or in bulk; every move; and every
+    correction with who made it. Newest first, each list paged on its own."""
     currency = view.get("currency")
     lots, placements, moves = view.get("lots", []), view.get("placements", []), view.get("moves", [])
-    query = urlencode({k: v for k, v in filters.items() if v})
-    move_url = f"{_OLDER_STOCK_URL}/move" + (f"?{query}" if query else "")
+    summary, corrections = view.get("summary", []), view.get("corrections", [])
+    totals, limit = view.get("totals", {}), view.get("limit") or 50
     candidates = view.get("candidates", [])
     target = searchable_select("code", [(c["code"], account_label(c)) for c in candidates],
                                placeholder=t("posting.choose"), aria_label=t("older_stock.move_to"),
                                cls="bulk-field")
+
+    def pager(name: str) -> FT | str:
+        return server_pager(int(filters.get(f"{name}_offset") or 0), limit, totals.get(name, 0),
+                            lambda o, n: _older_stock_url(filters, **{f"{name}_offset": o, "limit": n}))
+
+    def table(table_id: str, head: list, rows: list, **attrs) -> FT:
+        return Div(Table(Thead(Tr(*head)), Tbody(*rows), cls="data-table", id=table_id, **attrs),
+                   cls="table-scroll-wrap")
+
+    select_all = Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")), cls="col-checkbox")
+    number = {"cls": "cell--number"}
     if lots:
-        table = Table(
-            Thead(Tr(Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")),
-                        cls="col-checkbox"),
-                     Th(t("th.sku")), Th(t("th.name")), Th(t("older_stock.col_account")),
-                     Th(t("older_stock.col_value"), cls="cell--number"))),
-            Tbody(*[_older_lot_row(lot, currency) for lot in lots]),
-            cls="data-table", id="older-stock-table", **operation_key_attrs(),
-        )
+        lot_table = table("older-stock-table", [
+            select_all, Th(t("th.sku")), Th(t("th.name")), Th(t("older_stock.col_account")),
+            Th(t("older_stock.col_value"), **number)],
+            [_older_lot_row(lot, currency) for lot in lots], **operation_key_attrs())
     else:
-        table = P(t("older_stock.no_match") if any(filters.values()) else t("older_stock.empty"),
-                  cls="hint", id="older-stock-table")
+        lot_table = P(t("older_stock.no_match") if filters.get("account") or filters.get("q")
+                      else t("older_stock.empty"), cls="hint", id="older-stock-table")
     return Div(
         flash(message, kind) if message else None,
         H3(t("older_stock.tab"), cls="section-title"),
         _placement_failure(view.get("failed")),
         P(t("older_stock.hint"), cls="text-muted mb-md"),
+        H4(t("older_stock.summary")) if summary else None,
+        table("older-stock-summary", [
+            Th(t("older_stock.col_account")), Th(t("older_stock.col_lots"), **number),
+            Th(t("older_stock.col_value"), **number), Th(t("older_stock.col_transferred"), **number),
+            Th(t("older_stock.col_recognized"), **number), Th(t("older_stock.col_unresolved"), **number)],
+            [_summary_row(s, currency) for s in summary]) if summary else None,
         _older_stock_filters(filters, view.get("accounts", [])),
         bulk_toolbar("older-stock-table", [
-            {"value": "move", "label": t("older_stock.move"), "method": "post", "url": move_url,
-             "target": "#older-stock-card", "fields": True}], fields=[target]),
-        Div(table, cls="table-scroll-wrap"),
+            {"value": "move", "label": t("older_stock.move"), "method": "post",
+             "url": _older_stock_url(filters, "/move"), "target": "#older-stock-card", "fields": True}],
+            fields=[target]),
+        lot_table,
+        pager("lots"),
         H4(t("older_stock.placements"), cls="mt-md"),
-        Div(Table(
-            Thead(Tr(Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_lots"), cls="cell--number"),
-                     Th(t("older_stock.col_account")),
-                     Th(t("older_stock.col_recognized"), cls="cell--number"),
-                     Th(t("older_stock.col_unresolved"), cls="cell--number"), Th(""))),
-            Tbody(*[_placement_row(p, currency) for p in placements]),
-            cls="data-table", id="older-stock-placements",
-        ), cls="table-scroll-wrap") if placements else P(t("older_stock.no_placements"), cls="hint"),
+        bulk_toolbar("older-stock-placements", [
+            {"value": k, "label": label, "method": "post", "url": _correction_url(filters, k),
+             "target": "#older-stock-card"}
+            for k, label in (("recognize", t("older_stock.book_difference")),
+                             ("unresolve", t("older_stock.leave_unresolved")))]) if placements else None,
+        table("older-stock-placements", [
+            select_all, Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_lots"), **number),
+            Th(t("older_stock.col_account")), Th(t("older_stock.col_classification")),
+            Th(t("older_stock.col_transferred"), **number), Th(t("older_stock.col_recognized"), **number),
+            Th(t("older_stock.col_unresolved"), **number), Th(t("older_stock.col_journal")), Th("")],
+            [_placement_row(p, currency, filters) for p in placements])
+        if placements else P(t("older_stock.no_placements"), cls="hint"),
+        pager("placements"),
         H4(t("older_stock.moves"), cls="mt-md"),
-        Div(Table(
-            Thead(Tr(Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_lots"), cls="cell--number"),
-                     Th(t("older_stock.col_to")), Th(t("older_stock.col_value"), cls="cell--number"), Th(""))),
-            Tbody(*[_move_row(m, currency) for m in moves]),
-            cls="data-table", id="older-stock-moves",
-        ), cls="table-scroll-wrap") if moves else P(t("older_stock.no_moves"), cls="hint"),
+        table("older-stock-moves", [
+            Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_lots"), **number),
+            Th(t("older_stock.col_to")), Th(t("older_stock.col_value"), **number), Th("")],
+            [_move_row(m, currency, filters) for m in moves]) if moves else P(t("older_stock.no_moves"), cls="hint"),
+        pager("moves"),
+        H4(t("older_stock.corrections"), cls="mt-md"),
+        table("older-stock-corrections", [
+            Th(t("th.date"), cls="cell--center"), Th(t("older_stock.col_correction")),
+            Th(t("older_stock.col_account")), Th(t("older_stock.col_amount"), **number),
+            Th(t("older_stock.col_journal")), Th(t("older_stock.col_by"))],
+            [_correction_row(c, currency) for c in corrections])
+        if corrections else P(t("older_stock.no_corrections"), cls="hint"),
+        pager("corrections"),
         cls="settings-card", id="older-stock-card",
     )
 
 
 def _older_stock_filters_of(request: Request) -> dict:
-    return {k: request.query_params.get(k, "").strip() for k in ("account", "q")}
+    """The filters and pages the Older stock tab shows, read from the URL (GDR 2m). A page
+    value that is not a whole number in range is left out, so the first page shows."""
+    params = request.query_params
+    filters = {k: v for k in ("account", "q") if (v := params.get(k, "").strip())}
+    for key in (*(f"{name}_offset" for name in _OLDER_STOCK_PAGES), "limit"):
+        raw = params.get(key, "").strip()
+        if raw.isdigit() and (key != "limit" or 1 <= int(raw) <= _OLDER_STOCK_MAX_PAGE):
+            filters[key] = raw
+    return filters
 
 
 async def _older_stock_action(request: Request, call) -> FT:
@@ -1271,12 +1357,13 @@ def setup_routes(app):
 
     @app.post("/settings/accounting/older-stock/corrections")
     async def older_stock_correct(request: Request):
-        """Correct how the chosen placements treated their difference."""
+        """Correct how the ticked placements (one, from its row, or many, from the bulk
+        toolbar) treated their difference; ``kind`` rides in the URL."""
         form = await request.form()
 
         async def call(token):
-            view = await api.correct_older_stock(token, list(dict.fromkeys(form.getlist("placements"))),
-                                                 str(form.get("kind", "")).strip())
+            view = await api.correct_older_stock(token, list(dict.fromkeys(form.getlist("selected"))),
+                                                 request.query_params.get("kind", "").strip())
             view.pop("result", None)
             return {**view, "message": t("older_stock.corrected_msg")}
 

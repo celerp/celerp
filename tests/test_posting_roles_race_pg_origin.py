@@ -223,7 +223,7 @@ async def test_two_starts_at_once_place_the_stock_once(committed_engine, own_cli
             LedgerEntry.company_id == cid, LedgerEntry.event_type == RECORDED))).scalars().all()
         notices = (await s.execute(select(Notification).where(
             Notification.company_id == cid,
-            Notification.title == "Older stock placed on an inventory account"))).scalars().all()
+            Notification.title == "Existing inventory is ready"))).scalars().all()
     assert recorded.count(held) == 1 and recorded.count(sold) == 1
     assert len(notices) == 1
     entries = [k for k, v in (await _rows(committed_engine, cid, "journal_entry")).items()

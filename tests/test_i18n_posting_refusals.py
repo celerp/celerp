@@ -27,7 +27,7 @@ KEYS = ["posting.problem.unset", "posting.problem.not_in_chart", "posting.proble
         "posting.continued_account_unusable", "posting.type_or",
         "notice.posting_unmapped.title", "notice.posting_unmapped.body",
         "notice.older_stock_placed.title", "notice.older_stock_placed.body",
-        "notice.older_stock_placed.body_adjusted", "notice.older_stock_unmapped.title",
+        "notice.older_stock_unmapped.title",
         "notice.older_stock_unmapped.body_purchased", "notice.older_stock_unmapped.body_retained",
         "notice.older_stock_moved.title", "notice.older_stock_moved.body",
         "notice.mfg_reconcile_needed.title", "notice.mfg_reconcile_needed.body",

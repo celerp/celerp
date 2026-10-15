@@ -50,7 +50,7 @@ from ui import i18n
 pytestmark = pytest.mark.asyncio
 
 _FIELD = "inventory_account_code"
-_PLACED = "Older stock placed on an inventory account"
+_PLACED = "Existing inventory is ready"
 _UNMAPPED = "Older stock waits for a posting account"
 _TAB = "/settings/accounting?tab=older-stock"
 _LOCALES = ("am", "ar", "de", "en", "es", "fr", "id", "it", "ja", "pt", "th", "vi")
@@ -203,7 +203,7 @@ async def test_thousands_of_imported_older_lots_are_placed_in_one_start(session,
     assert _lines(entry) == {"1130-OB": (10.0, 0.0), "3200": (0.0, 10.0)}
     (notice,) = await _notices(session, auth, _PLACED)
     assert notice.priority == "high" and notice.action_url == _TAB
-    assert "2000" in notice.body and "1130-OB" in notice.body and _today() in notice.body
+    assert "2000 older stock items" in notice.body
     assert await _net(session, auth, "1130-OB") == (2000.0,)
     assert await _off_books(session, auth) == []
 
@@ -219,7 +219,7 @@ async def test_a_migrated_company_places_its_stock_on_opening_inventory(session,
     assert await _placements(session, auth) == []
     assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 50.0)
     (notice,) = await _notices(session, auth, _PLACED)
-    assert "2 older lots" in notice.body and "1130-OB" in notice.body and "adjustment" not in notice.body
+    assert "2 older stock items" in notice.body
     assert await _off_books(session, auth) == []
 
 
@@ -774,7 +774,8 @@ async def test_the_older_stock_tab_lists_placed_lots_and_its_empty_state(ui_clie
     assert "Move to account" in body
     assert "/settings/accounting/older-stock/moves/m1/undo" in body
     assert "/settings/accounting/older-stock/corrections" in body and "Leave unresolved" in body
-    assert "Book against retained earnings" not in body  # nothing is left unresolved to book
+    rows = body.split('id="older-stock-placements"')[1].split("</table>")[0]
+    assert "Book against retained earnings" not in rows  # nothing is left unresolved to book
     assert ">—<" not in body  # an empty value shows "--", never a dash glyph
 
     body, _ = await _tab(ui_client, _EMPTY)
@@ -817,7 +818,7 @@ async def test_the_bulk_move_re_renders_the_card_with_a_flash(ui_client):
 def test_older_stock_notices_translate():
     locales = Path(__file__).resolve().parents[1] / "ui" / "locales"
     keys = ("notice.older_stock_placed.title", "notice.older_stock_placed.body",
-            "notice.older_stock_placed.body_adjusted", "notice.older_stock_unmapped.title",
+            "notice.older_stock_unmapped.title",
             "notice.older_stock_unmapped.body_purchased", "notice.older_stock_unmapped.body_retained",
             "event.item.inventory_account.moved", "older_stock.tab", "older_stock.move",
             "older_stock.move.nothing_selected", "older_stock.move.too_many", "older_stock.move.no_key",
@@ -826,13 +827,19 @@ def test_older_stock_notices_translate():
             "older_stock.undo.moved_since", "older_stock.undo.no_move", "older_stock.book_difference",
             "older_stock.leave_unresolved", "older_stock.corrected_msg", "older_stock.correct.nothing_selected",
             "older_stock.correct.too_many", "older_stock.correct.no_kind", "older_stock.correct.no_placement",
-            "older_stock.correct.changed_since", "older_stock.correct.unbalanced",
+            "older_stock.correct.changed_since", "older_stock.correct.unbalanced", "older_stock.summary",
+            "older_stock.col_transferred", "older_stock.col_classification", "older_stock.col_journal",
+            "older_stock.col_by", "older_stock.col_amount", "older_stock.col_correction", "older_stock.corrections", "older_stock.no_corrections",
+            "older_stock.kind.recognize", "older_stock.kind.unresolve", "enum.older_stock_classification.exact",
+            "enum.older_stock_classification.transfer", "enum.older_stock_classification.opening_stock",
+            "enum.older_stock_classification.unresolved",
             "inventory.account_moved_since")
     for lang in _LOCALES:
         catalog = json.loads((locales / f"{lang}.json").read_text(encoding="utf-8"))
         missing = [k for k in keys if not catalog.get(k)]
         assert missing == [], (lang, missing)
         assert "notice.older_stock_unplaced.body" not in catalog, lang
+        assert "notice.older_stock_placed.body_adjusted" not in catalog, lang
         for key in keys:
             assert "—" not in catalog[key], (lang, key)
     en = json.loads((locales / "en.json").read_text(encoding="utf-8"))

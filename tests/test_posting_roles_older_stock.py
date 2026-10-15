@@ -183,15 +183,15 @@ async def _placement(session, auth, part: str = "opening") -> dict | None:
     return row.state if row is not None else None
 
 
-async def _told_placed(session, auth, code: str) -> None:
+async def _told_placed(session, auth) -> None:
     from celerp.models.notification import Notification
 
     session.expire_all()
     (notice,) = (await session.execute(select(Notification).where(
         Notification.company_id == auth["company_id"],
-        Notification.title == "Older stock placed on an inventory account"))).scalars().all()
+        Notification.title == "Existing inventory is ready"))).scalars().all()
     assert notice.action_url == "/settings/accounting?tab=older-stock" and notice.priority == "high"
-    assert code in notice.body
+    assert "Sales and shipments can continue normally." in notice.body
 
 
 async def _events(session, auth) -> int:
@@ -454,7 +454,7 @@ async def test_accounts_holding_more_than_the_stock_are_placed_with_the_differen
     assert await _net(session, auth, "1130-P", "1130-OB") == (40.0, 0.0)
     assert await unresolved_differences(session, auth["company_id"]) == {"1130-P": Decimal("10")}
     assert await _marked(session, auth)
-    await _told_placed(session, auth, "1130-P")
+    await _told_placed(session, auth)
 
 
 async def test_an_opening_entry_short_of_the_stock_is_brought_current_then_moved(session, client, auth):
@@ -550,7 +550,7 @@ async def test_a_company_the_books_cannot_vouch_for_is_placed(session, client, a
         assert entry is None
     assert await _net(session, auth, "1130-P", "1130-OB") == books
     assert await _marked(session, auth)
-    await _told_placed(session, auth, code)
+    await _told_placed(session, auth)
 
 
 async def test_stock_already_on_a_third_inventory_account_places_the_rest_on_opening_inventory(

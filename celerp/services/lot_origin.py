@@ -458,14 +458,12 @@ async def _notify_unmapped(session: AsyncSession, company_id, role: str) -> None
                                                action_url=POSTING_ACCOUNTS_PATH, i18n=i18n)
 
 
-async def _notify_placed(session: AsyncSession, company_id, *, count: int, code: str, value: Decimal,
-                         held: Decimal, delta: Decimal, equity: str | None, currency: str, day: str) -> None:
+async def _notify_placed(session: AsyncSession, company_id, count: int) -> None:
+    """One plain notice for the person selling; the accounts, amounts and journal entries
+    are on Settings > Accounting > Older stock (older_stock_view)."""
     from celerp.notifications import service as notification_service
 
-    params = {"count": count, "code": code, "value": str(value), "currency": currency, "day": day}
-    if delta:
-        params |= {"held": str(held), "amount": str(abs(delta)), "equity": equity}
-    title, body, i18n = _notice("notice.older_stock_placed", "body_adjusted" if delta else "body", **params)
+    title, body, i18n = _notice("notice.older_stock_placed", "body", count=count)
     await notification_service.create(session, company_id, "accounting", title, body,
                                       action_url=OLDER_STOCK_PATH, priority="high", i18n=i18n)
 
@@ -519,6 +517,7 @@ def _placement_id(company_id, item_ids: list[str]) -> str:
 
 
 PLACEMENT = "older_stock_placement"
+CORRECTED = "sys.older_stock.corrected"
 
 
 def _placement_entity(pid: str) -> str:
@@ -669,9 +668,7 @@ async def _place(session: AsyncSession, company_id) -> bool:
     company.settings = {**(company.settings or {}), "older_stock_placed": pid}
     for notice in (UNMAPPED_NOTICE, FAILED_NOTICE):
         await notification_service.clear_standing(session, company_id, "accounting", _notice(notice)[0])
-    await _notify_placed(session, company_id, count=len(ids), code=target, value=value, held=value + gap,
-                         delta=-gap if gap < 0 else Decimal("0"), equity=current.get(retained),
-                         currency=currency, day=day)
+    await _notify_placed(session, company_id, len(ids))
     await session.flush()
     return True
 
@@ -1690,7 +1687,7 @@ async def correct_placements(session: AsyncSession, company_id, pids: list[str],
                 actor_id=actor_id, day=day)
             await emit_event(
                 session, company_id=company_id, entity_id=_placement_entity(pid), entity_type=PLACEMENT,
-                event_type="sys.older_stock.corrected", actor_id=actor_id, location_id=None, source="system",
+                event_type=CORRECTED, actor_id=actor_id, location_id=None, source="system",
                 idempotency_key=f"{_placement_entity(pid)}:correction:{n}", metadata_={},
                 data={"placement": pid, "kind": kind, "day": day, "amount": float(delta),
                       "recognized": float(recognized + delta), "unresolved": float(unresolved + delta),
@@ -1704,14 +1701,20 @@ async def correct_placements(session: AsyncSession, company_id, pids: list[str],
     return corrected
 
 
+OLDER_STOCK_PAGES = ("lots", "placements", "moves", "corrections")
+
+
 async def older_stock_view(session: AsyncSession, company_id, account: str | None = None,
-                           q: str | None = None) -> dict:
+                           q: str | None = None, offsets: dict[str, int] | None = None, limit: int = 50) -> dict:
     """Settings > Accounting > Older stock: the lots placed automatically still in stock,
     newest placement first (filtered to ``account`` and to ``q`` in their SKU or name),
-    each placement with what it recognized and left unresolved and its corrections,
-    every move newest first, the accounts the lots
-    sit on, the accounts they can be moved to, and a standing failure to place older
-    stock (failed_placement)."""
+    each placement with its classification, what it transferred, recognized and left
+    unresolved and its journal entries, every move and every correction (with who made
+    it) newest first, a summary per inventory account, the accounts the lots sit on, the
+    accounts they can be moved to, and a standing failure to place older stock
+    (failed_placement). Each list in OLDER_STOCK_PAGES is a page of ``limit`` rows from
+    its own offset, with its total under ``totals``."""
+    from celerp.services.ledger_display import display_fields
     from celerp.services.posting_readiness import older_stock_targets
 
     settings = await current_settings(session, company_id)
@@ -1745,6 +1748,29 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
              "placement": e.metadata_["placement"]}
             for e in recorded if e.entity_id in rows and in_stock(rows[e.entity_id].state)]
     accounts = sorted({lot["account"] for lot in lots if lot["account"]})
+    summary: dict[str, dict] = {}
+
+    def _account(code: str) -> dict:
+        return summary.setdefault(code, {"account": code, "lots": 0, "value": 0.0, "transferred": 0.0,
+                                         "recognized": 0.0, "unresolved": 0.0})
+    for lot in lots:
+        if lot["account"]:
+            _account(lot["account"])["lots"] += 1
+            _account(lot["account"])["value"] += lot["value"]
+    for p in placements.values():
+        for f in ("transferred", "recognized", "unresolved"):
+            _account(p["account"])[f] += p[f]
+    for row in summary.values():
+        for f in ("value", "transferred", "recognized", "unresolved"):
+            row[f] = round(row[f], 2)
+    corrected = (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == CORRECTED)
+        .order_by(LedgerEntry.id.desc()))).scalars().all()
+    corrections = [{"placement": e.data["placement"], "day": e.data["day"], "kind": e.data["kind"],
+                    "amount": e.data["amount"], "journal": e.data["journal"],
+                    "account": (records.get(e.data["placement"]) or {}).get("account"),
+                    "actor_name": shown["actor_name"]}
+                   for e, shown in zip(corrected, await display_fields(corrected, company_id, session))]
     needle = (q or "").strip().lower()
     lots = [lot for lot in lots if (not account or lot["account"] == account)
             and (not needle or needle in lot["sku"].lower() or needle in lot["name"].lower())]
@@ -1761,6 +1787,11 @@ async def older_stock_view(session: AsyncSession, company_id, account: str | Non
         moves[m]["count"] += 1
     for move in moves.values():
         move["undone"] = f"{move['move_id']}:undo" in moves
-    return {"lots": lots, "placements": list(placements.values()), "moves": list(moves.values()),
+    lists = {"lots": lots, "placements": list(placements.values()), "moves": list(moves.values()),
+             "corrections": corrections}
+    offsets = offsets or {}
+    return {**{name: full[offsets.get(name, 0):offsets.get(name, 0) + limit] for name, full in lists.items()},
+            "totals": {name: len(full) for name, full in lists.items()}, "limit": limit,
+            "summary": sorted(summary.values(), key=lambda r: r["account"]),
             "accounts": accounts, "failed": await failed_placement(session, company_id),
             **await older_stock_targets(session, company_id)}

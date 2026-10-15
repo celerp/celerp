@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 from typing import Any
 
@@ -4495,14 +4495,22 @@ class PlacementCorrectionIn(BaseModel):
 async def get_older_stock(
     account: str | None = None,
     q: str | None = None,
+    lots_offset: int = Query(0, ge=0),
+    placements_offset: int = Query(0, ge=0),
+    moves_offset: int = Query(0, ge=0),
+    corrections_offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
     _: None = require_permission("manage_accounting"),
 ) -> dict:
-    """Older stock placed automatically: its lots, placements, moves and move targets."""
+    """Older stock placed automatically: a page of its lots, placements, moves and
+    corrections, a summary per inventory account, and the move targets."""
     from celerp.services.lot_origin import older_stock_view
 
-    return await older_stock_view(session, company_id, account, q)
+    offsets = {"lots": lots_offset, "placements": placements_offset, "moves": moves_offset,
+               "corrections": corrections_offset}
+    return await older_stock_view(session, company_id, account, q, offsets, limit)
 
 
 @router.post("/older-stock/move")
