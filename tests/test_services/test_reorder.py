@@ -30,22 +30,35 @@ from celerp.services.reorder import (
 # ── Pure predicate ────────────────────────────────────────────────────────────
 
 def test_scan_due_gating():
-    """The daily loop runs at most once per company per day, at the configured UTC hour."""
+    """A company is scanned once a day: on the first tick at or after the scan hour when
+    none ran that UTC day, or on any tick once the last scan is more than a day old."""
     from types import SimpleNamespace
     from datetime import datetime, timedelta, timezone
     from celerp.services.reorder import _scan_due, _SCAN_HOUR_UTC
+
+    def due(now, last=None):
+        settings = {} if last is None else {"reorder_last_scan_at": last.isoformat()}
+        return _scan_due(SimpleNamespace(settings=settings), now)
+
     at_hour = datetime(2026, 7, 5, _SCAN_HOUR_UTC, 0, tzinfo=timezone.utc)
-    off_hour = at_hour.replace(hour=(_SCAN_HOUR_UTC + 1) % 24)
-    # Wrong hour -> never due.
-    assert _scan_due(SimpleNamespace(settings={}), off_hour) is False
-    # Right hour, never scanned -> due.
-    assert _scan_due(SimpleNamespace(settings={}), at_hour) is True
-    # Right hour but scanned <23h ago -> not due (debounce).
-    recent = (at_hour - timedelta(hours=2)).isoformat()
-    assert _scan_due(SimpleNamespace(settings={"reorder_last_scan_at": recent}), at_hour) is False
-    # Right hour, scanned >23h ago -> due again.
-    old = (at_hour - timedelta(hours=25)).isoformat()
-    assert _scan_due(SimpleNamespace(settings={"reorder_last_scan_at": old}), at_hour) is True
+    afternoon = at_hour.replace(hour=14)
+    before_hour = at_hour - timedelta(hours=1)
+    # Never scanned: due from the scan hour on, not before it.
+    assert due(at_hour) is True
+    assert due(afternoon) is True
+    assert due(before_hour) is False
+    # Scanned yesterday: due at any tick from the scan hour on, not only during it.
+    assert due(afternoon, at_hour - timedelta(days=1)) is True
+    assert due(afternoon, afternoon - timedelta(hours=20)) is True
+    # Scanned today already: not due again that day (the once-a-day debounce).
+    assert due(afternoon, afternoon - timedelta(hours=3)) is False
+    assert due(afternoon, afternoon) is False
+    # Scanned yesterday late, ticking before today's scan hour: not due yet.
+    assert due(before_hour, before_hour - timedelta(hours=5)) is False
+    # Last scan more than a day old: due even before the scan hour.
+    assert due(before_hour, before_hour - timedelta(hours=25)) is True
+    # A stamp that cannot be read counts as no scan.
+    assert _scan_due(SimpleNamespace(settings={"reorder_last_scan_at": "not a date"}), afternoon) is True
 
 
 def test_new_fields_in_default_schema():
@@ -327,3 +340,76 @@ async def test_one_failing_company_does_not_stop_the_daily_scan(committed_engine
     async with factory() as s:
         stamped = [(await s.get(Company, cid)).settings.get("reorder_last_scan_at") for cid in scanned]
     assert stamped[0] is None and stamped[1] is not None
+
+
+async def _notices_after_tick(committed_engine, monkeypatch, now, settings: dict, loops: int = 1) -> int:
+    """Run ``loops`` alert loops side by side for one tick at ``now`` over a company with one
+    alerting item, and return how many notices the company got."""
+    import asyncio
+    from contextlib import asynccontextmanager
+    from datetime import datetime
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    import celerp.db
+    from celerp.services import reorder
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    cid = uuid.uuid4()
+    async with factory() as s:
+        s.add(Company(id=cid, name="TickCo", slug=f"tick-{cid.hex[:8]}", settings=settings))
+        await s.commit()
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    async def _detect(session, company):
+        return [{"entity_id": "item:low", "name": "Low"}]
+
+    @asynccontextmanager
+    async def _session_ctx():
+        async with factory() as s:
+            yield s
+
+    async def _stop(_seconds):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(reorder, "_CHECKS", (reorder._AlertCheck(None, "test_alerted_ids", "Test", _detect, str),))
+    monkeypatch.setattr(reorder, "datetime", _Clock)
+    monkeypatch.setattr(celerp.db, "get_session_ctx", _session_ctx)
+    monkeypatch.setattr(reorder.asyncio, "sleep", _stop)
+    results = await asyncio.gather(*(reorder.reorder_alert_loop() for _ in range(loops)), return_exceptions=True)
+    assert all(isinstance(r, asyncio.CancelledError) for r in results)
+    async with factory() as s:
+        return await _notif_count(s, cid)
+
+
+@pytest.mark.asyncio
+async def test_a_scan_due_since_yesterday_fires_on_an_afternoon_tick(committed_engine, monkeypatch):
+    """An app that is not running during the scan hour still gets its daily alerts: the last
+    scan was yesterday and the first tick today is at 14:00 UTC."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 7, 5, 14, 0, tzinfo=timezone.utc)
+    yesterday = {"reorder_last_scan_at": (now - timedelta(days=1)).isoformat()}
+    assert await _notices_after_tick(committed_engine, monkeypatch, now, yesterday) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_scan_earlier_today_holds_the_next_until_tomorrow(committed_engine, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 7, 5, 14, 0, tzinfo=timezone.utc)
+    earlier = {"reorder_last_scan_at": (now - timedelta(hours=3)).isoformat()}
+    assert await _notices_after_tick(committed_engine, monkeypatch, now, earlier) == 0
+
+
+@pytest.mark.asyncio
+async def test_two_loops_on_the_same_tick_send_one_notice(committed_engine, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 7, 5, 14, 0, tzinfo=timezone.utc)
+    yesterday = {"reorder_last_scan_at": (now - timedelta(days=1)).isoformat()}
+    assert await _notices_after_tick(committed_engine, monkeypatch, now, yesterday, loops=2) == 1
