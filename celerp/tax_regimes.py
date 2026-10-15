@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import copy
 
-from celerp.services.list_behavior import PURCHASE_DOC_TYPES
+from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
 
 _T = dict  # type alias for readability
 
@@ -261,8 +261,9 @@ def purchasing_taxes(settings: dict) -> list[dict]:
 
 
 def doc_side(doc_type: str | None) -> str:
-    """The side a document's taxes apply to: "purchase" for a purchase document, else "sales"."""
-    return "purchase" if doc_type in PURCHASE_DOC_TYPES else "sales"
+    """The side a document's taxes apply to: "purchase" for a supplier document
+    (SUPPLIER_DOC_TYPES), else "sales"."""
+    return "purchase" if doc_type in SUPPLIER_DOC_TYPES else "sales"
 
 
 def side_taxes(settings: dict, doc_type: str | None) -> list[dict]:

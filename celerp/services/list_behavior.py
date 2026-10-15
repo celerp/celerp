@@ -133,9 +133,16 @@ class ScanBehavior:
 # It belongs to the record it was scanned on: a conversion or a copy starts without it.
 SCAN_RUNS_FIELD = "scan_runs"
 
-# Document types that buy goods in: a line added to one is priced at what the goods cost and
-# takes only a tax that applies to purchases.
-PURCHASE_DOC_TYPES: frozenset[str] = frozenset({"purchase_order", "subscription_po", "bill", "consignment_in"})
+# Document types whose counterparty is a supplier, the one classification of a document's
+# side (tax_regimes.doc_side): its contact is a vendor, a line added to one is priced at what
+# the goods cost, and it takes the purchasing taxes. Every other document is on the sales side
+# and its contact is a customer.
+SUPPLIER_DOC_TYPES: frozenset[str] = frozenset({"purchase_order", "subscription_po", "bill", "consignment_in",
+                                                "debit_note"})
+
+# Supplier documents that buy goods in; a supplier credit note sends them back, so it scans
+# as goods going out.
+PURCHASE_DOC_TYPES: frozenset[str] = SUPPLIER_DOC_TYPES - {"debit_note"}
 
 # Every document type's scan; a type not listed scans as a sale. A shipping document is a list
 # type and scans through LIST_BEHAVIOR.

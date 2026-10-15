@@ -122,3 +122,65 @@ async def test_a_tax_both_lists_name_takes_its_side_from_the_documents_own_list(
     assert (await client.post("/docs", headers=h, json=body("invoice", "GST", 5.0))).status_code == 200
     r = await client.post("/docs", headers=h, json=body("invoice", "WHT", 3.0))
     assert r.status_code == 422 and "WHT" in r.text, r.text
+
+
+def test_every_document_type_has_one_side():
+    """A document's side is its counterparty's: every supplier document, the supplier
+    credit note included, is on the purchase side, every other document on the sales
+    side. Goods moving in is a separate fact: a supplier credit note sends them back."""
+    from celerp.services.list_behavior import PURCHASE_DOC_TYPES, SUPPLIER_DOC_TYPES
+    from celerp.tax_regimes import doc_side
+    from celerp_docs.sequences import _PREFIX_BY_DOC_TYPE
+
+    supplier = {"purchase_order", "subscription_po", "bill", "consignment_in", "debit_note"}
+    assert SUPPLIER_DOC_TYPES == supplier
+    assert {d for d in _PREFIX_BY_DOC_TYPE if doc_side(d) == "purchase"} == supplier
+    assert PURCHASE_DOC_TYPES == supplier - {"debit_note"}
+
+
+@pytest.mark.asyncio
+async def test_a_supplier_credit_note_takes_the_purchasing_taxes(client):
+    """A supplier credit note against a bill carries the bill's purchasing taxes, refuses a
+    sales-only one, and a scanned line takes the purchasing default at cost."""
+    r = await client.post("/auth/register", json={
+        "company_name": "Supplier Credit Co", "email": f"sc-{uuid.uuid4().hex[:8]}@test.example",
+        "name": "Admin", "password": "pwvalid1"})
+    h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    sales = [{"name": "Output VAT", "rate": 7.0, "tax_type": "sales", "is_default": True}]
+    purchasing = [{"name": "Input VAT", "rate": 10.0, "tax_type": "purchase", "is_default": True},
+                  {"name": "WHT 3%", "rate": -3.0, "tax_type": "purchase"}]
+    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": sales})).status_code == 200
+    assert (await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": purchasing})).status_code == 200
+    assert (await client.post("/items", headers=h, json={
+        "status": "available", "sku": "SCN-SKU", "name": "Returned", "sell_by": "piece", "quantity": 5,
+        "retail_price": 20, "cost_price": 8})).status_code == 200
+
+    def line(code: str, rate: float) -> dict:
+        return {"description": "Service", "quantity": 1, "unit_price": 1000.0, "taxes": [{"code": code, "rate": rate}]}
+
+    bill = (await client.post("/docs", headers=h, json={"doc_type": "bill", "line_items": [line("Input VAT", 10.0)]}))
+    assert bill.status_code == 200, bill.text
+    assert (await client.post(f"/docs/{bill.json()['id']}/finalize", headers=h)).status_code == 200
+
+    def note(*lines) -> dict:
+        return {"doc_type": "debit_note", "original_doc_id": bill.json()["id"], "line_items": list(lines)}
+
+    for code, rate in (("Input VAT", 10.0), ("WHT 3%", -3.0)):
+        r = await client.post("/docs", headers=h, json=note(line(code, rate)))
+        assert r.status_code == 200, (code, r.text)
+    r = await client.post("/docs", headers=h, json=note(line("Output VAT", 7.0)))
+    assert r.status_code == 422 and "Output VAT" in r.text, r.text
+
+    doc_id = (await client.post("/docs", headers=h, json=note())).json()["id"]
+    r = await client.post(f"/docs/{doc_id}/scan", headers=h,
+                          json={"barcode": "SCN-SKU", "run_key": f"run-{uuid.uuid4().hex[:8]}"})
+    assert r.status_code == 200 and r.json()["scanned"] == 1, r.text
+    (scanned,) = (await client.get(f"/docs/{doc_id}", headers=h)).json()["line_items"]
+    assert [(x["code"], x["rate"]) for x in scanned["taxes"]] == [("Input VAT", 10.0)]
+    assert scanned["unit_price"] == 8
+
+
+@pytest.mark.asyncio
+async def test_the_supplier_credit_note_editor_offers_purchasing_taxes(ui_client):
+    html = await _editor(ui_client, "debit_note")
+    assert [x["name"] for x in _offered(html)] == ["Input VAT"]

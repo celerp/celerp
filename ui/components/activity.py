@@ -15,7 +15,7 @@ from decimal import Decimal, InvalidOperation
 
 from fasthtml.common import *
 from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA, cost_columns
-from celerp.services.list_behavior import SCAN_RUNS_FIELD
+from celerp.services.list_behavior import SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES
 from celerp.services.pricing import PRICE_LISTS_FALLBACK
 from celerp.services.units import line_receive_kind
 from ui.i18n import t, get_lang, category_label, doc_type_label, field_label, price_list_label
@@ -827,8 +827,7 @@ def format_timestamp(ts: str) -> str:
 
 def _is_vendor_doc(entry: dict) -> bool:
     """True when the entry's document is one the company pays (a bill, PO, ...)."""
-    from celerp_docs.doc_constants import VENDOR_DOC_TYPES
-    return str(entry.get("entity_doc_type") or "") in VENDOR_DOC_TYPES
+    return str(entry.get("entity_doc_type") or "") in SUPPLIER_DOC_TYPES
 
 
 def _event_display(entry: dict) -> tuple[str, str]:

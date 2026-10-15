@@ -428,7 +428,7 @@ logger = logging.getLogger(__name__)
 # Lists constants
 # ---------------------------------------------------------------------------
 from celerp.services.list_behavior import (
-    behavior as _list_behavior, status_key as _list_status_key,
+    behavior as _list_behavior, status_key as _list_status_key, SUPPLIER_DOC_TYPES,
     LIST_TYPES as _REG_LIST_TYPES, LIST_STATUSES as _LIST_STATUSES, DRAFT as _LD, FINALIZED as _LF, CLOSED as _LC,
 )
 
@@ -2705,8 +2705,7 @@ celerpUpdateBulkAlloc();
         elif field in ("contact_id", "commission_contact_id", "contact_company_name"):
             # Commission agents are always vendors; the party is a vendor on purchase-side
             # documents and a customer everywhere else.
-            from celerp_docs.doc_constants import VENDOR_DOC_TYPES
-            is_vendor = field == "commission_contact_id" or doc.get("doc_type", "") in VENDOR_DOC_TYPES
+            is_vendor = field == "commission_contact_id" or doc.get("doc_type", "") in SUPPLIER_DOC_TYPES
             input_el = await _contact_picker(
                 token, resource="doc", entity_id=entity_id, field=field,
                 value=value if field == "commission_contact_id" else str(doc.get("contact_id") or ""),
@@ -2777,10 +2776,9 @@ celerpUpdateBulkAlloc();
         if value == "__new__":
             from starlette.responses import Response as _R
             # Route to vendors page for vendor doc types and commission contacts
-            from celerp_docs.doc_constants import VENDOR_DOC_TYPES
             try:
                 doc = await api.get_doc(token, entity_id)
-                is_vendor_context = field == "commission_contact_id" or doc.get("doc_type") in VENDOR_DOC_TYPES
+                is_vendor_context = field == "commission_contact_id" or doc.get("doc_type") in SUPPLIER_DOC_TYPES
             except APIError:
                 is_vendor_context = field == "commission_contact_id"
             target = "/contacts/vendors" if is_vendor_context else "/contacts/customers"

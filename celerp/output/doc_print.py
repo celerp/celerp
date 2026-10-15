@@ -23,6 +23,7 @@ from celerp.output.branding import BRAND_TEXT as _BRAND_LABEL, brand_url as _bra
 from celerp.output.document_context import prepare_document_output
 from celerp.services.doc_balance import is_awaiting_payment, outstanding_balance
 from celerp.services.line_measures import line_identifier as _line_identifier, measure_sublines, qty_label
+from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
 from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
 from celerp.services.units import DEFAULT_UNITS, build_unit_map
 
@@ -449,7 +450,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         totals_rows.append(Tr(Td("Total", cls="label"), Td(_money(grand_total), cls="amount"), cls="grand"))
         totals_section = Div(Table(*totals_rows), cls="dp-totals")
 
-    is_purchasing = doc_type in ("bill", "purchase_order", "consignment_in")
+    is_purchasing = doc_type in SUPPLIER_DOC_TYPES
     contact_primary = contact_company or contact_name
     contact_person = contact_name if contact_company and contact_name and contact_name != contact_company else ""
     billing_person = "" if billing_attn else contact_person

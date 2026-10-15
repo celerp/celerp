@@ -17,7 +17,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS
-from celerp.services.list_behavior import PURCHASE_DOC_TYPES
+from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
 from celerp.services.money import round_rate
 
 # Price list names treated as cost (restricted to manager+ and never derivable).
@@ -83,9 +83,9 @@ def price_keys_in(values: dict, price_lists: list[dict] = ()) -> set[str]:
 
 
 def line_price_list(doc_type: str | None, price_list: str | None) -> str:
-    """The list a line added to a document is priced from: a purchase document prices at cost
+    """The list a line added to a document is priced from: a supplier document prices at cost
     (resolve_price reads ``cost_price``), any other at the chosen list, else the default."""
-    if doc_type in PURCHASE_DOC_TYPES:
+    if doc_type in SUPPLIER_DOC_TYPES:
         return COST_PRICE_LIST_NAME
     return price_list or DEFAULT_PRICE_LIST_NAME
 

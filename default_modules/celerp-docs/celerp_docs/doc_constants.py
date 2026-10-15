@@ -77,11 +77,6 @@ SALES_PRICED_DOC_TYPES: frozenset[str] = frozenset({
     "invoice", "proforma", "quotation", "credit_note", "memo", "subscription_invoice",
 })
 
-# Purchase-side document types: their contact is a vendor (vendor or both), every
-# other document's contact is a customer (customer or both).
-VENDOR_DOC_TYPES: frozenset[str] = frozenset({"purchase_order", "bill", "consignment_in", "subscription_po",
-                                              "debit_note"})
-
 # Older records named their counterparty customer_id/customer_name (transfers: receiver).
 # Writes take them as the contact fields, and replay folds stored ones the same way.
 LEGACY_CONTACT_FIELDS: dict[str, str] = {
