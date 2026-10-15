@@ -64,6 +64,7 @@ from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_pas
 from celerp.services.company_settings import SET_BY_KEYS
 from celerp.services.company_backup_files import private_file
 from celerp.services.company_lock import hold_company, lock_company, locked_company
+from celerp.services.lot_origin import place_company_stock
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
 from celerp.services.provisioning import create_install_owner, provision_restored_company
 from ui.i18n import t
@@ -1549,7 +1550,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
     caller's companies, else the preview's name. Restoring a backup that was already
     restored here opens that company for its members, unrenamed (outcome
     ``opened_existing``, or ``opened_existing_team_added`` when it gave its team access),
-    never reactivating it when it is deactivated."""
+    never reactivating it when it is deactivated. Restored stock recording no inventory
+    account is placed before the commit (lot_origin.place_company_stock)."""
     if mode not in MODES:
         raise ValueError(f"Unknown restore mode: {mode}")
     if mode == "bootstrap" and not (isinstance(owner_account, dict)
@@ -1655,6 +1657,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             if _same_lineage(mode, current_company_id, source):
                 await _rebind_actors(session, new_id)
             await _turn_off_shop_sync(session, new_id, user.id)
+            await place_company_stock(session, new_id)
             team = await _add_team(session, new_id, plan.team_to_add) if plan.team_to_add else 0
             await session.commit()
         except BaseException:

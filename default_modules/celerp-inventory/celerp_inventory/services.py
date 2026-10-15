@@ -45,7 +45,14 @@ from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import allocate_pro_rata, round_basis, to_decimal
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
-from celerp.services.lot_origin import DELETED, book_lot_value, is_deleted, recognize_opening_lots, self_booked
+from celerp.services.lot_origin import (
+    DELETED,
+    book_lot_value,
+    is_deleted,
+    place_company_stock,
+    recognize_opening_lots,
+    self_booked,
+)
 from celerp.importers.tabular import SYSTEM_SKIP_COLS, CsvImportSpec, cell_error_code, finite_float
 from celerp.services.item_erasure import erased_from_connector
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
@@ -4063,8 +4070,10 @@ async def commit_import_batch(
 ) -> BatchImportResult:
     """Write an item import batch and commit it for the raw-batch route. The stock its local
     creates bring in is booked as opening stock; a snapshot of another system's item keeps the
-    books it came with. Only a migration run writes source "migration", whose lots keep the
-    books of the system they came from, so a caller claiming it is refused."""
+    books it came with, and the lots it brings in are placed at once like any stock recording
+    no inventory account (lot_origin.place_company_stock). Only a migration run writes source
+    "migration", whose lots keep the books of the system they came from, so a caller claiming
+    it is refused."""
     claimed = next((rec for rec in body.records if rec.source == "migration"), None)
     if claimed is not None:
         raise HTTPException(status_code=422, detail=refusal(
@@ -4081,6 +4090,9 @@ async def commit_import_batch(
         [done.entity_id for rec, done in zip(body.records, outcome.records, strict=True)
          if done.status == "created" and rec.event_type == "item.created"],
         user.id, batch_id)
+    if any(done.status == "created" and rec.event_type == "item.snapshot"
+           for rec, done in zip(body.records, outcome.records, strict=True)):
+        await place_company_stock(session, company_id)
     await session.commit()
     return BatchImportResult(**outcome.route_counts(cap_rejections=False), batch_id=batch_id)
 

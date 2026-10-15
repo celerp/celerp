@@ -26,10 +26,13 @@ turned on.
 
 Stock the books cannot vouch for this way (a company whose books came from elsewhere,
 such as a migration, a bundle import or a restored backup, or whose two accounts do not
-add up to the stock) is placed at start, every lot of it, on one default inventory
+add up to the stock) is placed as it arrives, every lot of it, on one default inventory
 account: the one the books show holding it, else purchased inventory. Any difference
 between what that account holds and the stock is booked in one dated adjustment against
-retained earnings, and the company is told (place_older_stock). The user can move placed
+retained earnings, and the company is told (place_older_stock). Every start and every
+writer that brings such stock in while Celerp runs (a batch import of another system's
+items, a restored backup, a finalized migration) places it the same way
+(place_company_stock). The user can move placed
 lots to another inventory account in bulk, each move booking its value across
 (move_lot_accounts), undo a move (undo_lot_move), and reverse the adjustment or book it
 again (set_placement_adjustment).
@@ -574,7 +577,9 @@ async def _place(session: AsyncSession, company_id) -> bool:
 
 async def place_older_stock(session: AsyncSession, company_id) -> bool:
     """Place a company's older stock that still records no inventory account (_place),
-    on any start after the upgrade and whenever a posting account it waited for is set.
+    on any start after the upgrade, whenever a writer brings such stock in
+    (place_company_stock), and whenever a posting account or period lock it waited on
+    changes.
     A company not upgraded yet is left to the upgrade (normalize_legacy_inventory_origins),
     and one with nothing to place is read once and never locked. Everything is written
     in one savepoint: a period lock holding back the adjustment rolls it back whole and
@@ -597,6 +602,43 @@ async def place_older_stock(session: AsyncSession, company_id) -> bool:
     except Exception:
         logger.exception("Older stock of company %s was not placed; retrying on the next start", company_id)
         await _notify_failed(session, company_id)
+        return False
+
+
+async def place_company_stock(session: AsyncSession, company_id, *, claim=frozenset(),
+                              opening: bool = False) -> bool:
+    """The one way a company's stock recording no inventory account is placed: at every
+    start, and by every writer that brings such lots in while Celerp runs (a batch import
+    of another system's items, a backup restored as a new company, a finalized
+    migration). Its posting accounts are first reconciled with its chart
+    (account_roles.reconcile_company, ``claim`` there), and a company left without an
+    account its workflows need gets one notice pointing at the fix. Only a company
+    running Accounting is placed: until then its books are not kept. An upgraded
+    company has its unplaced stock placed (place_older_stock); one whose chart was
+    seeded just now (``opening``) opens it (open_inventory_origins); any other is
+    upgraded (normalize_legacy_inventory_origins). Period-lock and posting-account holds
+    and their notices are theirs. Placing never fails the caller: a failure is logged
+    and retried on the next start. Running it again changes nothing. Returns whether it
+    placed or marked anything."""
+    from celerp.modules.registry import uses_module
+    from celerp.services.account_roles import reconcile_company
+    from celerp.services.posting_readiness import notify_unmapped
+
+    if await reconcile_company(session, company_id, claim):
+        await notify_unmapped(session, company_id)
+    settings = await current_settings(session, company_id)
+    if not uses_module(settings, "celerp-accounting"):
+        return False
+    if INVENTORY_ORIGIN_KEY in settings:
+        place = place_older_stock
+    elif opening:
+        place = open_inventory_origins
+    else:
+        place = normalize_legacy_inventory_origins
+    try:
+        return await place(session, company_id)
+    except Exception:
+        logger.exception("Older stock of company %s was not placed; retrying on the next start", company_id)
         return False
 
 

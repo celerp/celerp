@@ -189,9 +189,11 @@ async def record_source_control(session: AsyncSession, company_id, role, code: s
 
 
 class LotOriginError(HTTPException):
-    """A lot from before lots recorded their inventory account is not placed yet
-    (celerp.services.lot_origin.place_older_stock), so its cost cannot move. Placement
-    waits only on a posting account setting or a period lock, each with its own notice."""
+    """A lot recording no inventory account is not placed yet, so its cost cannot move.
+    Such stock is placed as it arrives (celerp.services.lot_origin.place_company_stock):
+    at start, and by the import, restore or migration that brings it in while Celerp
+    runs. Placement then waits only on a posting account setting or a period lock, each
+    with its own notice."""
 
     def __init__(self, sku: str):
         super().__init__(

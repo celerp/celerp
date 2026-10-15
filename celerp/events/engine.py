@@ -338,7 +338,8 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
     inventory account when it is booked as opening stock (lot_origin.draft_boundary,
     lot_origin.recognize_opening_lots). Stock a migration brings in keeps the account its
     source books held it in. Nothing else is guessed: a snapshot of another system's item
-    records none until its stock is placed. Only a move changes it (lot_origin.
+    records none until its stock is placed, which the writer bringing it in does at once
+    (lot_origin.place_company_stock). Only a move changes it (lot_origin.
     move_lot_accounts), and only from the account the mover read, so a move made on a stale
     read is refused rather than applied over a later one; its entry moves the value with it."""
     from celerp.accounting_roles import LOT_ACCOUNT_FIELD, refusal

@@ -746,7 +746,10 @@ async def test_each_installation_state_category_excluded(real_engine, real_clien
         assert marker.encode() not in b"".join(parts.values())
         new = await _bk_restore_new(real_client, tok, data)
         expected = 1 if table == "user_companies" else 0
-        assert await count(real_engine, table, "company_id::text = :c", c=new) == expected
+        # The restore tells the new company what it still needs (its posting accounts,
+        # say); only the source's own notices stay behind.
+        where = "company_id::text = :c" + (" AND title = :m" if table == "notifications" else "")
+        assert await count(real_engine, table, where, c=new, m=marker) == expected
     finally:
         await _bk_sql(real_engine, "DELETE FROM outbound_queue WHERE company_id = :c", c=str(cid))
 

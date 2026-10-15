@@ -320,32 +320,21 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     created (e.g. first-run with no modules, then preset applied), and a deactivated
     company then works when it is reactivated. A chart seeded by an older release gets
     the accounts seeded since, where it is provably Celerp's own (_add_seeded_accounts).
-    Then every company's posting accounts are
-    reconciled with its chart (account_roles.reconcile_company), and a company left
-    without an account its workflows need gets one notice pointing at the fix. Stock from
-    before lots recorded their inventory account is then placed once, in one savepoint per
-    company and only once the company runs Accounting (until then its books are not
-    kept, so placing would strand its sold and archived stock): as opening stock when Accounting is being turned on now
-    (lot_origin.open_inventory_origins), otherwise by the upgrade of older books, which
-    also decides whether stock an older release archived is still on them
-    (lot_origin.normalize_legacy_inventory_origins). Older stock an upgraded company
-    still holds unplaced, held back by a posting account or a period lock, is placed on
-    every later start once that is fixed (lot_origin.place_older_stock). A company that fails to upgrade
-    keeps none of that work, is logged, and is retried on the next start. A company
+    Then every company's posting accounts are reconciled with its chart, a company left
+    without an account its workflows need gets one notice pointing at the fix, and its
+    stock recording no inventory account is placed (lot_origin.place_company_stock, the
+    same entry every writer bringing such stock in while Celerp runs uses): as opening
+    stock when Accounting is being turned on now, otherwise by the upgrade of older
+    books, and on every later start once a posting account or period lock holding it
+    back is fixed. A company that fails keeps none of that work, is logged, and is
+    retried on the next start. A company
     staged for a migration is left alone: its chart and posting accounts come from the
     imported books when the migration is finalized.
     """
-    from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, UNGUESSED_ROLES
+    from celerp.accounting_roles import UNGUESSED_ROLES
     from celerp.models.company import Company
-    from celerp.modules.registry import uses_module
     from celerp.services import migrations
-    from celerp.services.account_roles import current_settings, reconcile_company
-    from celerp.services.lot_origin import (
-        normalize_legacy_inventory_origins,
-        open_inventory_origins,
-        place_older_stock,
-    )
-    from celerp.services.posting_readiness import notify_unmapped
+    from celerp.services.lot_origin import place_company_stock
     from sqlalchemy import select as _select
 
     unseeded = set((await session.execute(
@@ -360,21 +349,7 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
             claim = UNGUESSED_ROLES
         else:
             claim = await _add_seeded_accounts(session, company_id)
-        if await reconcile_company(session, company_id, claim):
-            await notify_unmapped(session, company_id)
-        settings = await current_settings(session, company_id)
-        if not uses_module(settings, "celerp-accounting"):
-            continue
-        if INVENTORY_ORIGIN_KEY in settings:
-            place = place_older_stock
-        elif company_id in unseeded:
-            place = open_inventory_origins
-        else:
-            place = normalize_legacy_inventory_origins
-        try:
-            await place(session, company_id)
-        except Exception:
-            logger.exception("Older stock of company %s was not placed; retrying on the next start", company_id)
+        await place_company_stock(session, company_id, claim=claim, opening=company_id in unseeded)
 
 
 def _account_to_dict(acc: Account) -> dict:

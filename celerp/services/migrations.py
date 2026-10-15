@@ -88,6 +88,7 @@ from celerp.services import posting_readiness
 from celerp.services.auth import first_usable_company_link, normalize_role
 from celerp.services.company_files import delete_company_data
 from celerp.services.company_lock import lock_company
+from celerp.services.lot_origin import place_company_stock
 from celerp.services.csv_export import csv_safe
 from celerp.services.permissions import role_has_permission
 from celerp.services.provisioning import add_missing_required_defaults
@@ -1008,7 +1009,8 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
     """Re-check verification under the company lock, then set the posting accounts
     (``posting_readiness.apply_choices`` with ``posting_accounts``), install the source's
     lock date and activate the company in one commit, so the company never becomes normal
-    without its lock or the accounts its workflows post to."""
+    without its lock or the accounts its workflows post to. Migrated stock recording no
+    inventory account is placed in the same commit (lot_origin.place_company_stock)."""
     await _lock_run(session, run)
     if run.status != _S.READY_TO_FINALIZE:
         raise _illegal("finalize", run)
@@ -1030,6 +1032,7 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
             write_period_lock(company, run.source_lock_date.isoformat(), run.created_by_user_id)
         company.is_active = True
         company.is_migration_staged = False
+        await place_company_stock(session, run.company_id)
         run.reconciliation = report
         run.status = _S.COMPLETED.value
         run.current_phase = _P.READY_TO_FINALIZE.value
