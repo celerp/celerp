@@ -1141,3 +1141,69 @@ async def test_doctor_reports_missing_foreign_rate_as_blocked_instead_of_posting
     detail = next(d for d in finding["details"] if d["doc_id"] == entity_id)
     assert "rate" in detail["blocked_reason"].lower()
     assert "enter the exchange rate" in detail["blocked_reason"].lower()
+
+
+async def _drop_document_entries(session, company_id, doc_id: str) -> None:
+    """The document's entries removed, as a release that never posted them left it."""
+    from sqlalchemy import delete, select
+
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    jes = list((await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        Projection.entity_id.like(f"je:auto:{doc_id}:%")))).scalars())
+    assert jes
+    await session.execute(delete(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(jes)))
+    await session.execute(delete(Projection).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(jes)))
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_doctor_repairs_each_document_on_its_own_and_names_the_ones_it_cannot(client, session):
+    """One invoice whose missing entry the posting tax check refuses (its tax is now a
+    purchase tax only) is reported by number with the reason; every other missing entry in
+    the same run is still repaired and kept."""
+    token = await _register(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(token))).json()["id"])
+    both = [{"name": "Service tax", "rate": 5.0, "tax_type": "both", "is_default": False}]
+    for path in ("/companies/me/taxes", "/companies/me/purchasing-taxes"):
+        assert (await client.patch(path, headers=_h(token), json={"taxes": both})).status_code == 200
+    docs = []
+    for taxed in (False, True, False):
+        line = {"description": "Service", "quantity": 1, "unit_price": 1000.0}
+        if taxed:
+            line["taxes"] = [{"code": "Service tax", "rate": 5.0, "order": 0}]
+        r = await client.post("/docs", headers=_h(token), json={
+            "doc_type": "invoice", "contact_name": "C", "line_items": [line]})
+        assert r.status_code == 200, r.text
+        assert (await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(token))).status_code == 200
+        docs.append(r.json()["id"])
+    for doc in docs:
+        await _drop_document_entries(session, company_id, doc)
+    purchase = [{"name": "Service tax", "rate": 5.0, "tax_type": "purchase", "is_default": False}]
+    for path in ("/companies/me/taxes", "/companies/me/purchasing-taxes"):
+        assert (await client.patch(path, headers=_h(token), json={"taxes": purchase})).status_code == 200
+    blocked_number = (await client.get(f"/docs/{docs[1]}", headers=_h(token))).json()["doc_number"]
+
+    for fix in ("false", "true"):
+        r = await client.post(f"/admin/doctor?checks=missing_jes&fix={fix}", headers=_h(token))
+        assert r.status_code == 200, r.text
+        missing = next(c for c in r.json()["results"] if c["check"] == "missing_jes")
+        blocked = [d for d in missing["details"] if d.get("blocked_reason")]
+        assert [(d["doc_id"], d["doc_number"]) for d in blocked] == [(docs[1], blocked_number)]
+        assert "Service tax is a purchase tax" in blocked[0]["blocked_reason"]
+        assert missing["auto_fixable"] is False
+        assert missing["fixed"] == (2 if fix == "true" else 0)
+
+    session.expire_all()
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    posted = set((await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry"))).scalars())
+    assert [any(je.startswith(f"je:auto:{doc}:") for je in posted) for doc in docs] == [True, False, True]
+    r = await client.post("/admin/doctor?fix=true", headers=_h(token))
+    assert r.status_code == 200, r.text
