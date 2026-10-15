@@ -118,6 +118,23 @@ async def test_refund_events_use_original_books_and_idempotent_canonical_reversa
     assert conflict.value.status_code == 409
 
 
+@pytest.mark.parametrize("source_rate,target_rate,expected", [
+    (1.25, 1.25, True),
+    (1.25, 1.30, False),
+    (1.25, None, False),
+    (None, 1.25, False),
+    (None, None, True),
+])
+def test_existing_payment_exchange_rate_must_match(source_rate, target_rate, expected):
+    from celerp.services.peer_payments import _same_payment
+
+    payment = _source_payment()
+    payment.pop("status")
+    payment["conversion_rate"] = source_rate
+    stored = {**payment, "conversion_rate": target_rate}
+    assert _same_payment(stored, payment, "USD") is expected
+
+
 def test_refund_history_validates_identity_and_effective_balance():
     from celerp.services.peer_payments import validate_source_refunds
     event = {"event_id": 9, "payment_index": 0, "refund_number": 0,

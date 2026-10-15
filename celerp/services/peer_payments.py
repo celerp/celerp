@@ -24,9 +24,15 @@ def _payment_key(source_company, doc_id: str, index: int) -> str:
 def _same_payment(target: dict, source: dict, currency: str) -> bool:
     try:
         money_equal = round_money(target.get("amount"), currency) == round_money(source.get("amount"), currency)
+        source_rate = source.get("conversion_rate")
+        target_rate = target.get("conversion_rate")
+        rate_equal = (source_rate is None and target_rate is None) or (
+            source_rate is not None and target_rate is not None
+            and to_decimal(source_rate) == to_decimal(target_rate)
+        )
     except (ValueError, ArithmeticError, TypeError):
         return False
-    return (money_equal and target.get("status", "active") == "active"
+    return (money_equal and rate_equal and target.get("status", "active") == "active"
             and all((target.get(k) or None) == (source.get(k) or None)
                     for k in ("payment_date", "bank_account", "reference", "method", "currency"))
             and to_decimal(target.get("refunded") or 0) >= 0)
