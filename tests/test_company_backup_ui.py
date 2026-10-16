@@ -751,13 +751,17 @@ async def test_company_handoff_send_form_retries_original_operation(ui, real_eng
         secret = base64.urlsafe_b64decode(body["key"] + "=")
         return {"id": str(uuid.uuid4()), "link": handoff_page_link(uuid.uuid4(), secret)}
 
+    async def no_activity(token):
+        raise api.APIError(502, "Cloud unavailable")
+
     monkeypatch.setattr(api, "company_backup_send_handoff", send)
+    monkeypatch.setattr(api, "company_backup_handoffs", no_activity)
     refused = await ui.post(SEND, data=payload)
     assert refused.status_code == 502
     assert _hidden(_page(refused))["key"] == initial["key"]
     assert _hidden(_page(refused))["operation_id"] == initial["operation_id"]
     sent = await ui.post(SEND, data=payload)
-    assert sent.status_code == 200 and "Company copy sent" in _page(sent)
+    assert sent.status_code == 200 and "Sent to client@example.com." in _page(sent)
     assert [call[1]["operation_id"] for call in calls] == [initial["operation_id"]] * 2
     assert all(call[1]["key"] == initial["key"] for call in calls)
 
@@ -809,3 +813,72 @@ async def test_switch_to_migrated_company_before_send(ui, real_engine):
     assert other.status_code == 302 and other.headers["location"] == "/"
     encoded = await ui.get(f"/switch-company/{first}?next=%2F%2Fevil.example")
     assert encoded.status_code == 302 and encoded.headers["location"] == "/"
+
+
+async def _sent_page(ui, real_engine, monkeypatch, *, activity):
+    """Send a company copy through the form; *activity* answers the copies-sent lookup."""
+    from ui.routes.company_backup import SEND
+    from ui import api_client as api
+    from celerp.services.company_handoff_links import handoff_page_link
+
+    _, _, tok = await _setup(real_engine, name="Ready page books")
+    ui.cookies.set("celerp_token", tok)
+    form = _hidden(_page(await ui.get(SEND)))
+    copy_id = str(uuid.uuid4())
+    link = handoff_page_link(uuid.UUID(copy_id), base64.urlsafe_b64decode(form["key"] + "="))
+
+    async def send(token, body):
+        return {"id": copy_id, "link": link}
+
+    async def handoffs(token):
+        return activity(copy_id)
+
+    monkeypatch.setattr(api, "company_backup_send_handoff", send)
+    monkeypatch.setattr(api, "company_backup_handoffs", handoffs)
+    sent = await ui.post(SEND, data={**form, "firm_name": "Example Accounting",
+                                     "recipient": "client@example.com",
+                                     "reply_to": "firm@example.com", "note": ""})
+    assert sent.status_code == 200, sent.text
+    return sent, link
+
+
+async def test_sent_page_has_copy_and_next_steps(ui, real_engine, monkeypatch):
+    from ui.routes.company_backup import DOWNLOAD, HANDOFFS
+    from ui.routes.migrations import COMPANY
+
+    raw, link = await _sent_page(ui, real_engine, monkeypatch, activity=lambda copy_id: {"items": [
+        {"id": copy_id, "status": "sent", "opened": False, "downloaded": False,
+         "company_opened": False, "expires_at": "2026-10-30T09:00:00+00:00"}]})
+    page, raw = _page(raw), raw.text
+    assert "<h1" in page and "Sent to client@example.com." in page
+    # The three actions, in the journey's order.
+    copy_at = raw.index(f'data-copy-text="{link}"')
+    download_at = page.index(f'href="{DOWNLOAD}"')
+    another_at = page.index(f'href="{COMPANY.base}"')
+    assert "Copy link" in raw[copy_at:copy_at + 300]
+    assert _link(page, DOWNLOAD, "Download copy") and _link(page, COMPANY.base, "Move another company")
+    assert raw.index("Copy link") < raw.index("Download copy") < raw.index("Move another company")
+    assert download_at < another_at
+    # Next steps: what the client gets, when the link expires, where to watch, how to resend.
+    assert ("client@example.com receives an email from Example Accounting with the link. "
+            "Opening it gives them their own Celerp with this company in it.") in page
+    assert any(f"The link expires on {d}." in page for d in _dates("2026-10-30T09:00:00+00:00"))
+    assert _link(page, HANDOFFS, "Company copies")
+    assert "See when they open it in Company copies." in re.sub(r"<[^>]+>", "", page)
+    assert "To send a new link, send the company copy again." in page
+
+
+async def test_company_copy_ready_state(ui, real_engine, monkeypatch):
+    """Without the copies-sent lookup the page still states the 14-day rule, never a guessed date."""
+    from ui import api_client as api
+
+    def unavailable(copy_id):
+        raise api.APIError(502, "Cloud unavailable")
+
+    raw, link = await _sent_page(ui, real_engine, monkeypatch, activity=unavailable)
+    page, raw = _page(raw), raw.text
+    assert "Sent to client@example.com." in page
+    assert f'data-copy-text="{link}"' in raw
+    assert "The link expires 14 days after it was sent." in page
+    assert "The link expires on" not in page
+    assert "Company copy sent" not in page
