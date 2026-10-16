@@ -161,6 +161,9 @@ class FakeMigrationAPI:
         self.export_sends: list[dict] = []
         self.export_adds: list[tuple[str, dict]] = []
         self.export_refusal: tuple[int, str] | None = None
+        self.move_requests: list[dict] = []    # newest first, as the API lists them
+        self.move_sends: list[dict] = []
+        self.move_refusal: tuple[int, str] | None = None
         self._n = 0
 
     def add_run(self, status: str, **kw) -> str:
@@ -220,6 +223,8 @@ class FakeMigrationAPI:
                 return _json(201, {"run_id": run_id})
             return _json(201, {"access_token": make_test_token("owner"),
                                "refresh_token": "refresh-new", "run_id": run_id})
+        if path.startswith("/migrations/move-requests"):
+            return self._move_request(method, path, json.loads(body) if body else {})
         if path.startswith("/migrations/export-requests"):
             return self._export_request(method, path, json.loads(body) if body else {})
         m = re.fullmatch(r"/migrations/([0-9a-f-]{36})(/[a-z/-]+)?", path)
@@ -277,6 +282,34 @@ class FakeMigrationAPI:
         self.export_adds.append((row["id"], data))
         self._n += 1
         return _json(200, {"draft_token": f"drafttoken{self._n:04d}secretvalue", "checklist": self.draft_view})
+
+
+    def _move_request(self, method: str, path: str, data: dict) -> httpx.Response:
+        if method == "GET" and path == "/migrations/move-requests":
+            return _json(200, {"items": self.move_requests})
+        if self.move_refusal is not None:
+            return _json(self.move_refusal[0], {"detail": self.move_refusal[1]})
+        if method == "POST" and path == "/migrations/move-requests":
+            self.move_sends.append(data)
+            row = _move_request(client_name=data["client_name"])
+            self.move_requests.insert(0, row)
+            return _json(201, {"id": row["id"], "status": row["status"]})
+        m = re.fullmatch(r"/migrations/move-requests/([0-9a-f-]{36})/withdraw", path)
+        row = next((r for r in self.move_requests if m and r["id"] == m.group(1)), None)
+        if row is None:
+            return _json(404, {"detail": "Move request not found."})
+        row.update(status="withdrawn", stored=False)
+        return _json(200, {"status": "withdrawn"})
+
+
+def _move_request(**kw) -> dict:
+    """One move request as the API lists it."""
+    return {"id": str(uuid.uuid4()), "operation_id": str(uuid.uuid4()), "firm_name": "Example Accounting",
+            "client_name": "Client Ltd", "source": "xero", "status": "received", "note": "",
+            "created_at": "2026-10-17T08:00:00+00:00", "submitted_at": "2026-10-17T08:01:00+00:00",
+            "updated_at": None, "stored": True,
+            "files": [{"id": uuid.uuid4().hex, "name": "General Ledger.txt", "size": 20,
+                       "received_at": "2026-10-17T08:00:30+00:00"}], **kw}
 
 
 def _export_request(**kw) -> dict:
@@ -896,6 +929,93 @@ async def test_only_the_owner_asks_for_exports_and_failures_are_said(ui, router,
     assert r.status_code == 200 and "does not hold the key" in _page(r)
     router.overrides[("GET", "/migrations/export-requests")] = _respond(502, {"detail": "Cloud unreachable"})
     assert "Cloud unreachable" in _page(await ui.get(REQUESTS))
+
+
+# ---------------------------------------------------------------------------
+# Asking Celerp's team to move a client
+# ---------------------------------------------------------------------------
+
+MOVES = "/setup/new-company/migrate/move-requests"
+
+
+async def test_a_firm_asks_celerp_to_move_a_client_from_the_open_export_set(ui, router, fake_api, monkeypatch):
+    _export_set_sources(monkeypatch)
+    router.overrides[("GET", "/company-backups/sender")] = _respond(
+        200, {"firm_name": "Example Accounting", "reply_to": "firm@example.com"})
+    _owner(ui)
+    page = _page(await ui.get("/setup/new-company/migrate"))
+    section = re.search(r'<div[^>]*id="move-requests"[^>]*>', page).group(0)
+    assert _attr(section, "hx-get") == MOVES and _attr(section, "hx-trigger") == "load"
+    assert 'id="move-requests"' not in _page(await ui.get("/setup/migrate"))      # no firm before setup
+
+    panel = _page(await ui.get(MOVES))
+    assert panel.startswith('<div id="move-requests"')
+    assert "Ask Celerp to move this client" in panel
+    # What happens to the files is said before anything is sent.
+    assert "Celerp's team reads these files" in panel and "30 days" in panel
+    assert "No move requests yet." in panel
+    assert _attr(_inputs(panel, "firm_name")[0], "value") == "Example Accounting"
+    assert _attr(_inputs(panel, "reply_to")[0], "value") == "firm@example.com"
+    operation = _attr(_inputs(panel, "operation_id")[0], "value")
+    assert str(uuid.UUID(operation)) == operation
+    form = re.search(r'<form[^>]*id="move-request-form"[^>]*>', panel).group(0)
+    assert _attr(form, "hx-post") == MOVES and _attr(form, "hx-target") == "#move-requests"
+
+    typed = {"operation_id": operation, "client_name": "Client Ltd", "firm_name": "Example Accounting",
+             "reply_to": "firm@example.com"}
+    fake_api.move_refusal = (422, "Add the export files on this page first, then ask us to move this client.")
+    failed = _page(await ui.post(MOVES, data=typed))
+    assert "Add the export files on this page first" in failed
+    assert _attr(_inputs(failed, "operation_id")[0], "value") == operation      # a retry is the same send
+    assert _attr(_inputs(failed, "client_name")[0], "value") == "Client Ltd"
+    fake_api.move_refusal = (428, "Sign in to a free Celerp account to ask us to move a client.")
+    needed = _page(await ui.post(MOVES, data=typed))
+    assert 'id="celerp-account-panel"' in needed and "move-send" in needed
+    fake_api.move_refusal = None
+
+    ui.cookies.set(DRAFT_COOKIE, "drafttoken0001secretvalue", path="/setup/new-company/migrate")
+    sent = _page(await ui.post(MOVES, data=typed))
+    assert fake_api.move_sends == [{**typed, "draft_token": "drafttoken0001secretvalue"}]
+    assert "Sent to the Celerp team. We will reply to firm@example.com." in sent
+    assert _attr(_inputs(sent, "operation_id")[0], "value") != operation        # the next send is new
+
+    older = _move_request(client_name="Older Client", status="declined", note="The ledger does not balance.",
+                          created_at="2026-10-01T08:00:00+00:00", stored=False)
+    working = _move_request(client_name="Second Client", status="in_progress", note="Started on the 2023 books.",
+                            created_at="2026-10-17T09:00:00+00:00")
+    fake_api.move_requests = [working, *fake_api.move_requests, older]
+    panel = _page(await ui.get(MOVES))
+    assert panel.index("Second Client") < panel.index("Client Ltd") < panel.index("Older Client")   # newest first
+    assert "In progress" in panel and "Declined" in panel and "Received" in panel
+    assert "Started on the 2023 books." in panel and "The ledger does not balance." in panel
+    assert "General Ledger.txt" in panel and "cannot be undone" in panel
+    withdraw = f"{MOVES}/{working['id']}/withdraw"
+    assert f'hx-post="{withdraw}"' in panel
+    assert f'hx-post="{MOVES}/{older["id"]}/withdraw"' not in panel              # a closed request stays
+
+    withdrawn = _page(await ui.post(withdraw))
+    assert withdrawn.startswith('<div id="move-requests"') and working["status"] == "withdrawn"
+    assert "Move request withdrawn. Its files were deleted." in withdrawn
+
+
+async def test_only_the_owner_asks_celerp_to_move_a_client(ui, router, fake_api, monkeypatch):
+    _export_set_sources(monkeypatch)
+    for role in ("admin", "viewer"):
+        _owner(ui, role)
+        router.calls.clear()
+        for r in (await ui.get(MOVES), await ui.post(MOVES, data={"client_name": "x"}),
+                  await ui.post(f"{MOVES}/{uuid.uuid4()}/withdraw")):
+            assert "Only the company owner can move a company into Celerp." in _page(r), role
+        assert router.migration_calls() == [], role
+
+    _owner(ui)
+    fake_api.move_requests = [_move_request(status="returned", stored=False)]
+    fake_api.move_refusal = (409, "This request is returned, so it cannot be withdrawn")
+    r = await ui.post(f"{MOVES}/{fake_api.move_requests[0]['id']}/withdraw")
+    assert r.status_code == 200 and "cannot be withdrawn" in _page(r)
+    assert "Move request not found." in _page(await ui.post(f"{MOVES}/not-a-uuid/withdraw"))
+    router.overrides[("GET", "/migrations/move-requests")] = _respond(502, {"detail": "Cloud unreachable"})
+    assert "Cloud unreachable" in _page(await ui.get(MOVES))
 
 
 # ---------------------------------------------------------------------------
