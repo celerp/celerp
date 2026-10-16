@@ -45,14 +45,17 @@ _KEY = re.compile(r"[A-Za-z0-9:._-]+")
 
 @dataclass(frozen=True)
 class JournalLine:
-    """One line. A line that ``moves_recognized`` takes back what the module's own
-    journals put on ``account`` (the old side of a reclass); any other line is a new
-    destination and must be an account the chart accepts for new postings."""
+    """One line. A line that ``moves_recognized`` takes back what was put on
+    ``account`` before (the old side of a reclass): by the module's own journals, or,
+    with ``recognized_in``, by that posted journal (a bill line the module took over).
+    Any other line is a new destination and must be an account the chart accepts for
+    new postings."""
     account: str
     debit: Decimal = Decimal(0)
     credit: Decimal = Decimal(0)
     role: str | None = None
     moves_recognized: bool = False
+    recognized_in: str | None = None
 
 
 @dataclass(frozen=True)
@@ -187,20 +190,26 @@ def _amount(value) -> Decimal:
     return Decimal(str(value or 0))
 
 
-async def _recognized_balances(session, company_id, module: str, codes: set[str]) -> dict[str, Decimal]:
-    """Debit minus credit the module's posted journals hold on each of ``codes``."""
+async def _recognized_balances(session, company_id, module: str,
+                               keys: set[tuple[str, str | None]]) -> dict[tuple[str, str | None], Decimal]:
+    """Debit minus credit recognized on each (account, recognizing journal) key: with no
+    journal, what the module's posted journals put there themselves; with one, what that
+    posted journal holds there plus what the module's journals already moved from it."""
+    named = {je for _, je in keys if je}
     rows = (await session.execute(
-        select(Projection.state).where(
+        select(Projection.entity_id, Projection.state).where(
             Projection.company_id == company_id,
             Projection.entity_type == "journal_entry",
-            Projection.entity_id.startswith(f"je:mod:{module}:"),
             Projection.state["status"].as_string() == "posted",
-        ))).scalars()
-    balances = dict.fromkeys(codes, Decimal(0))
-    for state in rows:
+            Projection.entity_id.startswith(f"je:mod:{module}:") | Projection.entity_id.in_(named),
+        ))).all()
+    balances = dict.fromkeys(keys, Decimal(0))
+    for entity_id, state in rows:
+        own = entity_id.startswith(f"je:mod:{module}:")
         for entry in state.get("entries") or []:
-            if entry.get("account") in balances:
-                balances[entry["account"]] += _amount(entry.get("debit")) - _amount(entry.get("credit"))
+            key = (entry.get("account"), entry.get("recognized_in") if own else entity_id)
+            if key in balances:
+                balances[key] += _amount(entry.get("debit")) - _amount(entry.get("credit"))
     return balances
 
 
@@ -215,16 +224,18 @@ async def _check_accounts(session, company_id, module: str, lines: list[JournalL
         return
     codes = {ln.account for ln in moving}
     accounts = await lock_accounts(session, company_id, codes)
-    balances = await _recognized_balances(session, company_id, module, codes)
-    for code in sorted(codes):
+    keys = {(ln.account, ln.recognized_in) for ln in moving}
+    balances = await _recognized_balances(session, company_id, module, keys)
+    for code, je in sorted(keys, key=lambda k: (k[0], k[1] or "")):
         if code not in accounts:
             raise _refuse(422, "posting.destination.not_in_chart",
                           f"Account {code} is not in the chart of accounts.", code=code)
-        net = sum((_amount(ln.debit) - _amount(ln.credit) for ln in moving if ln.account == code), Decimal(0))
-        held = balances[code]
+        net = sum((_amount(ln.debit) - _amount(ln.credit) for ln in moving
+                   if (ln.account, ln.recognized_in) == (code, je)), Decimal(0))
+        held = balances[(code, je)]
         if (net < 0 and held + net < 0) or (net > 0 and held + net > 0):
             raise _refuse(422, "module_journal.moves_more_than_recognized",
-                          f"This moves more off account {code} than the module recorded there.", code=code)
+                          f"This moves more off account {code} than was recorded there.", code=code)
 
 
 def _intent_hash(operation: str, date: str, lines: list[JournalLine], source: JournalSource, intent: dict) -> str:
@@ -257,6 +268,8 @@ async def post_journal(session, *, company_id, user_id, module: str, key: str, o
         entry = {"account": ln.account, "debit": _amount(ln.debit), "credit": _amount(ln.credit)}
         if ln.role:
             entry["account_roles"] = [ln.role]
+        if ln.recognized_in:
+            entry["recognized_in"] = ln.recognized_in
         entries.append(entry)
     from celerp.services.auto_je import _emit_auto_posted_je
 
