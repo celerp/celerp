@@ -3897,6 +3897,7 @@
   "migration.err_cutover_before_start": "Ihre Daten beginnen am {date}. Wählen Sie einen Stichtag an oder nach diesem Tag.",
   "migration.err_cutover_after_end": "Ihre Daten enden am {date}. Wählen Sie einen Stichtag an oder vor diesem Tag.",
   "migration.err_cutover_before_first": "Der Stichtag liegt vor Ihrer ersten Buchung in dieser Geschäftsdatei. Wählen Sie ein späteres Datum.",
+  "migration.err_starting_balances_undated": "Diese Geschäftsdatei hat Anfangssalden, aber keine datierte Buchung, daher hat die vollständige Historie keinen Tag, an dem die Bücher beginnen. Wählen Sie den Stichtag und das Datum, ab dem Ihre Anfangssalden gelten.",
   "migration.err_source_deleted": "Die Datei für diesen Import wurde gelöscht. Verwerfen Sie diesen Import und laden Sie die Datei erneut hoch.",
   "migration.err_source_changed": "Die Datei für diesen Import hat sich nach der Prüfung geändert. Verwerfen Sie diesen Import und laden Sie die Datei erneut hoch.",
   "migration.err_verification_stale": "Die Kontrolle passt nicht mehr zur importierten Datei. Klicken Sie auf Erneut prüfen, um sie erneut auszuführen.",

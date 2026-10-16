@@ -434,7 +434,7 @@ def _cutover_case(tmp_path, *records: Obj):
     for adj in manifest.bundle.inventory_adjustments:
         qty, value = carried_stock.get(adj.item_external_id, (Decimal(0), Decimal(0)))
         carried_stock[adj.item_external_id] = (qty + adj.quantity, value + adj.value)
-    assert carried_stock == {item: held for item, held in stock(book.moves).items() if any(held)}
+    assert carried_stock == {item: held for item, held in stock(book, book.moves).items() if any(held)}
     return manifest, ledger
 
 

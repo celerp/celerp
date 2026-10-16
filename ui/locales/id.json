@@ -3897,6 +3897,7 @@
   "migration.err_cutover_before_start": "Catatan Anda dimulai pada {date}. Pilih tanggal peralihan pada atau setelah hari itu.",
   "migration.err_cutover_after_end": "Catatan Anda berakhir pada {date}. Pilih tanggal peralihan pada atau sebelum hari itu.",
   "migration.err_cutover_before_first": "Tanggal peralihan sebelum transaksi pertama Anda di file bisnis ini. Pilih tanggal yang lebih akhir.",
+  "migration.err_starting_balances_undated": "File bisnis ini memiliki saldo awal tetapi tidak ada transaksi bertanggal, sehingga riwayat lengkap tidak punya hari untuk memulai pembukuan. Pilih Peralihan dan tanggal berlakunya saldo awal Anda.",
   "migration.err_source_deleted": "File untuk impor ini sudah dihapus. Buang impor ini lalu unggah file lagi.",
   "migration.err_source_changed": "File untuk impor ini berubah setelah diperiksa. Buang impor ini lalu unggah file lagi.",
   "migration.err_verification_stale": "Pemeriksaan tidak lagi cocok dengan file yang diimpor. Klik Periksa lagi untuk menjalankannya lagi.",

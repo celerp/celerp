@@ -3897,6 +3897,7 @@
   "migration.err_cutover_before_start": "Your records start on {date}. Choose a cutover date on or after that day.",
   "migration.err_cutover_after_end": "Your records end on {date}. Choose a cutover date on or before that day.",
   "migration.err_cutover_before_first": "The cutover date is before your first transaction in this business file. Choose a later date.",
+  "migration.err_starting_balances_undated": "This business file has starting balances but no dated transactions, so Full history has no day to start the books on. Choose Cutover and the date your starting balances apply from.",
   "migration.err_source_deleted": "The file for this import has been deleted. Discard this import and upload the file again.",
   "migration.err_source_changed": "The file for this import changed after it was checked. Discard this import and upload the file again.",
   "migration.err_verification_stale": "The check no longer matches the imported file. Click Check again to run it again.",

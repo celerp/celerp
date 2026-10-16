@@ -3897,6 +3897,7 @@
   "migration.err_cutover_before_start": "記録は {date} から始まっています。その日以降の移行日を選んでください。",
   "migration.err_cutover_after_end": "記録は {date} で終わっています。その日以前の移行日を選んでください。",
   "migration.err_cutover_before_first": "移行日がこのビジネスファイルの最初の取引より前です。もっと後の日付を選んでください。",
+  "migration.err_starting_balances_undated": "このビジネスファイルには開始残高がありますが、日付のある取引がないため、全履歴では帳簿を始める日がありません。移行日方式を選び、開始残高が適用される日付を指定してください。",
   "migration.err_source_deleted": "このインポートのファイルは削除されています。このインポートを破棄して、ファイルをもう一度アップロードしてください。",
   "migration.err_source_changed": "このインポートのファイルは確認後に変更されました。このインポートを破棄して、ファイルをもう一度アップロードしてください。",
   "migration.err_verification_stale": "検証結果がインポートしたファイルと一致しなくなりました。「もう一度検証する」をクリックして再実行してください。",

@@ -6,8 +6,10 @@ Documents are written by the same import service as the document batch route and
 settlements by the same payment service as the record-payment route. An issued
 document posts the entry its source books carry, on the accounts its lines name,
 in place of Celerp's default posting. An issued document arrives unpaid; its paid
-state comes from the settlements imported after it and from the credit and debit
-notes applied to it. A debit note has no Celerp document: its entry posts on the
+state comes from the settlements imported after it, from the credit and debit notes
+applied to it, and from the amount its source books record as paid before they
+started, which settles it on its own control account since the starting balances
+already carry that money. A debit note has no Celerp document: its entry posts on the
 bill it notes as a journal fallback, applied to the bill as a payment. A sold line
 that carries its cost of sales posts it too, from inventory.
 
@@ -369,7 +371,8 @@ async def _post_document(
     items: dict[str, str], imported: dict[str, str], outcome: RecordOutcome,
 ) -> RecordOutcome:
     """Post an issued document's entry, record the receipts and deliveries that moved its
-    goods, and apply a credit note to its invoice. An invoice's entry carries the cost of
+    goods, apply a credit note to its invoice, and record what was paid on it before the
+    source books started. An invoice's entry carries the cost of
     sales each line booked, so later deliveries, returns and cost corrections true it up."""
     if not _posts(record):
         return outcome
@@ -394,6 +397,15 @@ async def _post_document(
                     context.session, context.company_id, outcome.entity_id, imported[applies_to],
                     _money(record.total, _currency(record, base)), payment_date=_date(record), actor_id=context.user_id,
                     source="migration", idempotency_key=context.idempotency_key(record, "applied"),
+                )
+            if paid := record.metadata.get("paid_at_start"):
+                await apply_doc_payment(
+                    context.session, context.company_id, outcome.entity_id,
+                    {"amount": _money(Decimal(paid), _currency(record, base)), "payment_date": _date(record),
+                     "bank_account": await _party_account(context, record), "method": "starting_balance", "conversion_rate": _rate(record, base)},
+                    source="migration", actor_id=context.user_id,
+                    idempotency_key=context.idempotency_key(record, "paid_at_start"), commit=False,
+                    moves_cash=False,
                 )
     except Exception as exc:
         return RecordOutcome("", "failed", f"{label}: {getattr(exc, 'detail', exc)}")

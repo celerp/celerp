@@ -32,9 +32,10 @@ CREDIT_TYPES = frozenset({"liability", "equity", "revenue"})
 
 
 def _stock_from_source(book: Book) -> dict[str, tuple[Decimal, Decimal]]:
-    """Quantity and base value held per item after every stock movement in the book, in the
-    order stock moved, receipts first on a day: goods received carry their share of the bill
-    line's net, goods delivered their share of the cost of sales the invoice line booked."""
+    """Quantity and base value held per item from its starting balance and after every stock
+    movement in the book, in the order stock moved, receipts first on a day: goods received
+    carry their share of the bill line's net, goods delivered their share of the cost of
+    sales the invoice line booked."""
     code = book.base_code or ""
     events: list[tuple] = []
     for key, movement in book.movements.items():
@@ -53,7 +54,7 @@ def _stock_from_source(book: Book) -> dict[str, tuple[Decimal, Decimal]]:
             lines = [(line.item, sign * line.quantity, i) for i, line in enumerate(doc.lines) if line.item]
             if lines:
                 events.append((doc.date, doc.source_type not in INBOUND, key, doc, lines))
-    held: dict[str, tuple[Decimal, Decimal]] = {}
+    held: dict[str, tuple[Decimal, Decimal]] = dict(book.starting_stock())
     taken: dict[tuple[str, int], Decimal] = defaultdict(lambda: ZERO)
     for _, _, _, doc, lines in sorted(events, key=lambda e: e[:3]):
         for item, quantity, index in lines:

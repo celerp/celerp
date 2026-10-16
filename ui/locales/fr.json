@@ -3897,6 +3897,7 @@
   "migration.err_cutover_before_start": "Vos enregistrements commencent le {date}. Choisissez une date de bascule à partir de ce jour.",
   "migration.err_cutover_after_end": "Vos enregistrements se terminent le {date}. Choisissez une date de bascule au plus tard ce jour-là.",
   "migration.err_cutover_before_first": "La date de bascule est antérieure à votre première opération dans ce fichier. Choisissez une date plus tardive.",
+  "migration.err_starting_balances_undated": "Ce fichier contient des soldes d'ouverture mais aucune opération datée, l'historique complet n'a donc aucun jour où commencer les livres. Choisissez la bascule et la date à partir de laquelle vos soldes d'ouverture s'appliquent.",
   "migration.err_source_deleted": "Le fichier de cet import a été supprimé. Abandonnez cet import et envoyez à nouveau le fichier.",
   "migration.err_source_changed": "Le fichier de cet import a changé après sa vérification. Abandonnez cet import et envoyez à nouveau le fichier.",
   "migration.err_verification_stale": "Le contrôle ne correspond plus au fichier importé. Cliquez sur Vérifier à nouveau pour le relancer.",

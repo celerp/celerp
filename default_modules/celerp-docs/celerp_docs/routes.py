@@ -3629,9 +3629,10 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     path and across connections, so two recorders on one doc are ordered at the row
     and cannot compute a duplicate or colliding payment_index.
 
-    The money moves through ``bank_account``, which must be able to hold it. Only
-    an imported debit note passes ``moves_cash=False``: it settles its bill against
-    the bill's own payable account, so no money moves.
+    The money moves through ``bank_account``, which must be able to hold it. Only a
+    migration passes ``moves_cash=False``, for an imported debit note and for the
+    amount a document was paid before its source books started: each settles the
+    document against its own receivable or payable account, so no money moves.
 
     *books* is the (base currency, document rate) the payment posts on when the caller
     already holds them - an online payment keeps the books its payment page opened with,

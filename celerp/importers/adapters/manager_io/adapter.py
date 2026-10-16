@@ -17,7 +17,7 @@ from celerp.importers.adapters.base import (
     SourceScan,
 )
 from celerp.importers.adapters.manager_io import attachments
-from celerp.importers.adapters.manager_io.book import Book, read_book
+from celerp.importers.adapters.manager_io.book import MERGED_CONTROLS, STARTING_TYPES, Book, read_book
 from celerp.importers.adapters.manager_io.ledger import Ledger, Posting, build_ledger
 from celerp.importers.adapters.manager_io.mappings import SOURCE_SYSTEM, build_bundle, carried
 from celerp.importers.adapters.manager_io.reconcile import expectations_from
@@ -33,9 +33,12 @@ from ui.i18n import t
 
 MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 MAPPED = (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS)
-# Records carried only through others: the default location holds all stock, and unit
-# costs price the cost of sales on each invoice.
-NOT_CARRIED = frozenset({"DefaultInventoryLocation", "ExchangeRate", "InventoryUnitCost", "LockDate"})
+# Records carried only through others: the default location holds all stock, unit costs
+# price the cost of sales on each invoice, starting balances post as one journal, a sub
+# account arrives as the account each line places on it, and the customer, supplier and
+# inventory control accounts fold into receivables, payables and inventory.
+NOT_CARRIED = frozenset({"DefaultInventoryLocation", "ExchangeRate", "InventoryUnitCost", "LockDate", "SubAccount",
+                         *STARTING_TYPES, *MERGED_CONTROLS})
 
 
 def _single(artifacts: ArtifactSet) -> Artifact:

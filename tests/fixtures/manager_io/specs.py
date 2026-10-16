@@ -78,6 +78,15 @@ T = {name: uuid.UUID(guid) for name, guid in {
     "ControlAccountForCapitalAccounts": "95b9d17d-f5f8-4722-a89d-456fa0906e13",
     "ControlAccountForBankAccounts": "c97264e3-eed6-4afd-8d2c-e1c1a00b4dc1",
     "ControlAccountForCustomers": "7a57978e-583d-4997-86c7-c557de0e7fdd",
+    "ControlAccountForSuppliers": "78e7aefb-9dff-4ae5-981e-4165b14fd963",
+    "ControlAccountForInventoryItems": "acc019f7-9bb9-4d8e-ba66-0956916b4247",
+    "ControlAccountForEmployees": "fb804fba-df12-4628-ae54-df7a67d67f1b",
+    "ControlAccountForFixedAssets": "014742b2-fc31-4ded-90b5-2e0d437a1589",
+    "ControlAccountForFixedAssetsAccumulatedDepreciation": "c2e88cf8-4d05-4bec-8c42-fdef424faf1a",
+    "ControlAccountForIntangibleAssets": "8ed99282-8ec3-4505-8846-0507bd0d0f70",
+    "ControlAccountForIntangibleAssetsAccumulatedAmortization": "47995ee3-b2c9-4799-ace3-768f7514c644",
+    "ControlAccountForInvestments": "fb2c120e-6b30-47cb-a61e-14f0189bec06",
+    "ControlAccountForSpecialAccounts": "6af7e809-1de3-4a09-923f-27ad786ed837",
     "BalanceSheetAccountStartingBalance": "db53bb26-6d7d-4170-8373-7d09f9638960",
     "BankOrCashAccountStartingBalance": "0c1000da-6cc3-4448-8245-6f1eeccab8d6",
     "CapitalAccountStartingBalance": "c29b5c78-58d1-4678-9f38-ea0b8b21e4cf",
@@ -768,9 +777,21 @@ STARTING_CUTOVER = date(2026, 1, 15)
 
 
 def holder_objects() -> list[Obj]:
-    """One holder of each kind, a capital sub-account, and a custom control account for
-    capital accounts and for bank accounts."""
+    """One holder of each kind with the built-in account Manager adds once that kind is used,
+    a capital sub-account, and a custom control account for capital accounts and for bank
+    accounts."""
     return [
+        obj("BalanceSheetCapitalAccountsAccount", None, {1: "Capital accounts"}),
+        obj("BalanceSheetSpecialAccountsAccount", None, {1: "Special accounts"}),
+        obj("BalanceSheetEmployeeClearingAccount", None, {1: "Employee clearing account"}),
+        obj("BalanceSheetExpenseClaimsAccount", None, {1: "Expense claims"}),
+        obj("BalanceSheetFixedAssetsAtCostAccount", None, {1: "Fixed assets, at cost"}),
+        obj("BalanceSheetFixedAssetsAccumulatedDepreciationAccount", None,
+            {1: "Fixed assets, accumulated depreciation"}),
+        obj("BalanceSheetIntangibleAssetsAtCostAccount", None, {1: "Intangible assets, at cost"}),
+        obj("BalanceSheetIntangibleAssetsAccumulatedAmortizationAccount", None,
+            {1: "Intangible assets, accumulated amortization"}),
+        obj("BalanceSheetInvestmentsAccount", None, {1: "Investments"}),
         obj("ControlAccountForBankAccounts", "BCTRL", {1: "Bank accounts", 17: "1000", 3: T["Assets"], 16: 1}),
         obj("ControlAccountForCapitalAccounts", "PCTRL", {1: "Partner capital", 17: "3100", 3: k("OWNER_FUNDS"),
                                                           16: 1}),
@@ -788,29 +809,57 @@ def holder_objects() -> list[Obj]:
     ]
 
 
+def control_objects() -> list[Obj]:
+    """A custom control account of every other kind, none of them used: each arrives as an
+    empty account, except the customer, supplier and inventory controls, which fold into
+    receivables, payables and inventory."""
+    assets, liabilities = T["Assets"], T["Liabilities"]
+    return [
+        obj("ControlAccountForEmployees", "EMPCTRL", {1: "Staff clearing", 17: "2700", 3: liabilities}),
+        obj("ControlAccountForSpecialAccounts", "SPECCTRL", {1: "Related parties", 17: "2600", 3: liabilities}),
+        obj("ControlAccountForFixedAssets", "FACTRL", {1: "Vehicles at cost", 17: "1600", 3: assets}),
+        obj("ControlAccountForFixedAssetsAccumulatedDepreciation", "FADCTRL",
+            {1: "Vehicles depreciation", 17: "1610", 3: assets}),
+        obj("ControlAccountForIntangibleAssets", "IACTRL", {1: "Licences at cost", 17: "1700", 3: assets}),
+        obj("ControlAccountForIntangibleAssetsAccumulatedAmortization", "IAACTRL",
+            {1: "Licences amortization", 17: "1710", 3: assets}),
+        obj("ControlAccountForInvestments", "INVCTRL", {1: "Listed funds", 17: "1800", 3: assets}),
+        obj("ControlAccountForCustomers", "CUSCTRL", {1: "Export debtors", 17: "1160", 3: assets}),
+        obj("ControlAccountForSuppliers", "SUPCTRL", {1: "Import creditors", 17: "2160", 3: liabilities}),
+        obj("ControlAccountForInventoryItems", "STKCTRL", {1: "Stock in transit", 17: "1360", 3: assets}),
+    ]
+
+
 def starting_balance_objects() -> list[Obj]:
     """A business that starts from balances, then trades with its holders. Hand-worked
     figures, debit positive:
 
     Starting balances: equipment 1000, bank loan -400, operating bank 500, owner capital
     -900, director loan -150, Staff One -60, van 800 at cost and -200 depreciated, patent
-    300 at cost and -30 amortized, 5 widgets @ 12 = 60, index fund 250, and 70 of the 100
-    invoice INV-0 already received. Debits 2910, credits 1810: retained earnings -1100.
+    300 at cost and -30 amortized, 5 widgets @ 12 = 60, index fund 250, 70 of the 100
+    invoice INV-0 already received and all 40 of the bill BILL-0 already paid. Debits
+    2950, credits 1810: retained earnings -1140.
 
     Then: drawings 50 and wages 60 paid from the bank (HJ1, HJ2), the second partner pays
     in 100 (HJ3), the van is fitted out for 100 (HJ4), the director lends 40 more (HR1),
     the owner is repaid 20 of expenses (HP1) and the customer pays the last 30 of INV-0
     (HR2). Operating bank 440, owner capital - drawings 50, second partner -100, director
-    loan -190, Staff One 0, Owner 20, van 900 at cost, sales -100, receivable 0."""
+    loan -190, Staff One 0, Owner 20, van 900 at cost, sales -100, office expenses 40,
+    receivable 0, payable 0."""
     opb, ca = k("OPB"), k("CA")
     objects = [o if o.key != opb else Obj(opb, o.content_type, {**o.fields, 12: k("BCTRL")})
                for o in _stocked_masters()]
     return [
         *objects,
         *holder_objects(),
+        *control_objects(),
         obj("SalesInvoice", "INVSB", {1: date(2025, 12, 20), 2: "INV-0", 3: ca, 49: [
             {2: k("S1"), 17: "Opening work", 18: D("1"), 19: D("100")},
         ]}),
+        obj("PurchaseInvoice", "BILLSB", {1: date(2025, 12, 21), 2: "BILL-0", 3: k("SA"), 23: [
+            {2: k("OFF"), 17: "Opening supplies", 18: D("1"), 19: D("40")},
+        ]}),
+        obj("PurchaseInvoiceStartingBalance", "SBBILL", {1: k("BILLSB"), 2: D("40")}),
         obj("BalanceSheetAccountStartingBalance", "SBEQ", {1: k("EQUIP"), 3: D("1000")}),
         obj("BalanceSheetAccountStartingBalance", "SBLN", {1: k("LOAN"), 2: 1, 3: D("400")}),
         obj("BankOrCashAccountStartingBalance", "SBBK", {1: opb, 2: D("500")}),

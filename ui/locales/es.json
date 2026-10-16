@@ -3897,6 +3897,7 @@
   "migration.err_cutover_before_start": "Sus registros empiezan el {date}. Elija una fecha de corte igual o posterior a ese día.",
   "migration.err_cutover_after_end": "Sus registros terminan el {date}. Elija una fecha de corte igual o anterior a ese día.",
   "migration.err_cutover_before_first": "La fecha de corte es anterior a su primera transacción en este archivo. Elija una fecha posterior.",
+  "migration.err_starting_balances_undated": "Este archivo tiene saldos iniciales pero ninguna transacción con fecha, así que el historial completo no tiene un día en que empezar los libros. Elija Corte y la fecha desde la que se aplican sus saldos iniciales.",
   "migration.err_source_deleted": "El archivo de esta importación se ha eliminado. Descarte esta importación y vuelva a subir el archivo.",
   "migration.err_source_changed": "El archivo de esta importación cambió después de revisarse. Descarte esta importación y vuelva a subir el archivo.",
   "migration.err_verification_stale": "La comprobación ya no coincide con el archivo importado. Haga clic en Comprobar de nuevo para repetirla.",

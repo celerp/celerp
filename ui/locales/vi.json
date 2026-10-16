@@ -3897,6 +3897,7 @@
   "migration.err_cutover_before_start": "Dữ liệu của bạn bắt đầu từ {date}. Hãy chọn ngày chuyển đổi từ ngày đó trở đi.",
   "migration.err_cutover_after_end": "Dữ liệu của bạn kết thúc vào {date}. Hãy chọn ngày chuyển đổi không muộn hơn ngày đó.",
   "migration.err_cutover_before_first": "Ngày chuyển đổi sớm hơn giao dịch đầu tiên trong tệp doanh nghiệp này. Hãy chọn ngày muộn hơn.",
+  "migration.err_starting_balances_undated": "Tệp doanh nghiệp này có số dư đầu kỳ nhưng không có giao dịch nào có ngày, nên chế độ toàn bộ lịch sử không có ngày để bắt đầu sổ sách. Hãy chọn Chuyển đổi và ngày mà số dư đầu kỳ của bạn áp dụng.",
   "migration.err_source_deleted": "Tệp của lần nhập này đã bị xóa. Hãy hủy lần nhập này và tải tệp lên lại.",
   "migration.err_source_changed": "Tệp của lần nhập này đã thay đổi sau khi được kiểm tra. Hãy hủy lần nhập này và tải tệp lên lại.",
   "migration.err_verification_stale": "Kết quả kiểm tra không còn khớp với tệp đã nhập. Hãy bấm Kiểm tra lại để chạy lại.",

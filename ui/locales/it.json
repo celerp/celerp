@@ -3897,6 +3897,7 @@
   "migration.err_cutover_before_start": "I tuoi record iniziano il {date}. Scegli una data di passaggio pari o successiva a quel giorno.",
   "migration.err_cutover_after_end": "I tuoi record finiscono il {date}. Scegli una data di passaggio pari o precedente a quel giorno.",
   "migration.err_cutover_before_first": "La data di passaggio è precedente alla tua prima transazione in questo file. Scegli una data successiva.",
+  "migration.err_starting_balances_undated": "Questo file ha saldi iniziali ma nessuna transazione datata, quindi la cronologia completa non ha un giorno da cui iniziare i libri. Scegli il passaggio e la data da cui valgono i tuoi saldi iniziali.",
   "migration.err_source_deleted": "Il file di questa importazione è stato eliminato. Scarta questa importazione e carica di nuovo il file.",
   "migration.err_source_changed": "Il file di questa importazione è cambiato dopo il controllo. Scarta questa importazione e carica di nuovo il file.",
   "migration.err_verification_stale": "Il controllo non corrisponde più al file importato. Fai clic su Verifica di nuovo per ripeterlo.",

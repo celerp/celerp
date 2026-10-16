@@ -3897,6 +3897,7 @@
   "migration.err_cutover_before_start": "መዝገቦችዎ በ{date} ይጀምራሉ። በዚያ ቀን ወይም ከዚያ በኋላ ያለ የሽግግር ቀን ይምረጡ።",
   "migration.err_cutover_after_end": "መዝገቦችዎ በ{date} ያበቃሉ። በዚያ ቀን ወይም ከዚያ በፊት ያለ የሽግግር ቀን ይምረጡ።",
   "migration.err_cutover_before_first": "የሽግግር ቀኑ በዚህ የንግድ ፋይል ውስጥ ካለው የመጀመሪያ ግብይትዎ በፊት ነው። ቆየት ያለ ቀን ይምረጡ።",
+  "migration.err_starting_balances_undated": "ይህ የንግድ ፋይል የመነሻ ቀሪ ሂሳቦች አሉት ግን ቀን ያለው ግብይት የለውም፣ ስለዚህ ሙሉ ታሪክ መዝገቦቹን የሚጀምርበት ቀን የለውም። ሽግግርን እና የመነሻ ቀሪ ሂሳቦችዎ የሚጸኑበትን ቀን ይምረጡ።",
   "migration.err_source_deleted": "የዚህ ማስገባት ፋይል ተሰርዟል። ይህን ማስገባት ሰርዘው ፋይሉን እንደገና ይስቀሉ።",
   "migration.err_source_changed": "የዚህ ማስገባት ፋይል ከተፈተሸ በኋላ ተቀይሯል። ይህን ማስገባት ሰርዘው ፋይሉን እንደገና ይስቀሉ።",
   "migration.err_verification_stale": "ፍተሻው ከገባው ፋይል ጋር ከእንግዲህ አይዛመድም። እንደገና ለማሄድ እንደገና ፈትሽ የሚለውን ይጫኑ።",

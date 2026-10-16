@@ -25,6 +25,10 @@ and quantity, or an invoice or bill flagged to move its own stock. An invoice or
 with neither moves no stock. An inventory item sold posts the cost of sales Manager
 books from what it owns on the invoice date, bills counted whether or not their goods
 have arrived; the goods delivered for it leave stock at that same cost.
+
+Starting balances post as one journal the day before the first dated record, offset to
+retained earnings, with the stock the business started with as an opening position per
+item; a cutover folds both into its opening.
 """
 
 from __future__ import annotations
@@ -36,7 +40,8 @@ from decimal import Decimal
 
 from celerp.importers.adapters.base import MigrationDecisions, ScanError
 from celerp.importers.adapters.manager_io.book import (
-    AP, AR, FX_GAIN, INVENTORY, INVENTORY_PURCHASES, Book, Document, Movement, Settlement, line_account,
+    AP, AR, FX_GAIN, INVENTORY, INVENTORY_PURCHASES, RETAINED, STARTING, Book, Document, Journal, JournalLine,
+    Movement, Settlement, line_account,
 )
 from celerp.importers.schema import CIFMode
 from celerp.services.money import round_money
@@ -80,6 +85,7 @@ class Ledger:
     settlement_amounts: dict[str, Decimal] = field(default_factory=dict)             # imported
     opening: list[Posting] = field(default_factory=list)
     opening_stock: dict[str, tuple[Decimal, Decimal]] = field(default_factory=dict)
+    starting_stock: dict[str, tuple[Decimal, Decimal]] = field(default_factory=dict)   # imported, full history
     moves: list[Movement] = field(default_factory=list)           # imported stock movements
     unrealized: dict | None = None                                 # foreign balances revalued, reported only
 
@@ -210,6 +216,8 @@ def _states(book: Book, keys: set[str]) -> dict[str, DocumentState]:
             note = book.documents[key]
             paid[note.applies_to] += note.total
             paid[key] += note.total
+    for key, amount in book.starting_paid().items():
+        paid[key] += amount
     states = {}
     for key in keys & set(book.documents):
         total = book.documents[key].total
@@ -218,9 +226,10 @@ def _states(book: Book, keys: set[str]) -> dict[str, DocumentState]:
     return states
 
 
-def stock(moves: list[Movement]) -> dict[str, tuple[Decimal, Decimal]]:
-    """Quantity and base value held per item after the given stock movements."""
-    held: dict[str, tuple[Decimal, Decimal]] = {}
+def stock(book: Book, moves: list[Movement]) -> dict[str, tuple[Decimal, Decimal]]:
+    """Quantity and base value held per item after the stock the business started with and
+    the given stock movements."""
+    held = book.starting_stock()
     for movement in moves:
         for line in movement.lines:
             qty, value = held.get(line.item, (ZERO, ZERO))
@@ -232,7 +241,7 @@ def holding_stock(book: Book) -> set[str]:
     """Items still holding quantity or value after every stock movement. An inactive item
     among them is imported as available: archiving it would hide its stock from the
     inventory valuation."""
-    return {item for item, (qty, value) in stock(book.moves).items() if qty or value}
+    return {item for item, (qty, value) in stock(book, book.moves).items() if qty or value}
 
 
 def _check_cutover(book: Book, cutover: date | None) -> date:
@@ -311,10 +320,29 @@ def _carried(book: Book, records: set[str], cutover: date) -> set[str]:
     return carried | {k for k in pre if k in book.documents and book.documents[k].applies_to in carried}
 
 
+def _install_starting(book: Book, cutover: date | None) -> None:
+    """Starting balances post as one journal, offset to retained earnings the way Manager's
+    own balance sheet does. It stands the day before the first dated record, or with none on a
+    cutover date. With no dated record Full history has no day to start on."""
+    lines = [line for sb in book.live_starting() for line in sb.lines]
+    if not lines and not book.starting_stock():
+        return
+    day = book.starting_date or cutover
+    if day is None:
+        raise ScanError(t("migration.err_starting_balances_undated"))
+    lines.append((RETAINED, -sum((amount for _, amount, _ in lines), ZERO), None))
+    book.journals[STARTING] = Journal(STARTING, day, None, "Starting balances.", None, [
+        JournalLine(account, contact, max(amount, ZERO), max(-amount, ZERO), None, max(amount, ZERO),
+                    max(-amount, ZERO)) for account, amount, contact in lines if amount], Decimal(1))
+    book.names[STARTING] = "StartingBalances"
+
+
 def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
     """The postings and imported records for one migration. The book must carry no blockers."""
-    records = {k for _, k in book.dated_records()}
+    book.journals.pop(STARTING, None)                              # installed per migration, for its mode
     cutover = _check_cutover(book, decisions.cutover_date) if decisions.mode == CIFMode.CUTOVER else None
+    _install_starting(book, cutover)
+    records = {k for _, k in book.dated_records()}
     ledger = Ledger(book, cutover)
     ledger.postings = _postings(book, records)
     ledger.states = _states(book, records)
@@ -350,10 +378,11 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
                                   native=native[(account, contact)] if (contact or account) in holders else amount)
                           for (account, contact), amount in sorted(balance.items(), key=lambda kv: (kv[0][0], kv[0][1] or ""))
                           if amount]
-        before = stock([m for m in book.moves if m.date <= cutover])
+        before = stock(book, [m for m in book.moves if m.date <= cutover])
         ledger.opening_stock = {item: held for item, held in sorted(before.items()) if held[0] or held[1]}
         ledger.moves = [m for m in book.moves if m.date > cutover]
     else:
         ledger.moves = list(book.moves)
+        ledger.starting_stock = {item: held for item, held in sorted(book.starting_stock().items())}
     ledger.unrealized = _unrealized(book, ledger.postings)
     return ledger

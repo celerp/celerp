@@ -76,6 +76,35 @@ _BUILTIN = _fields(read=(1,),                       # a built-in account: the na
                    f3=ignored("The heading the built-in account is listed under. Its role fixes its account "
                               "type, whatever heading holds it."),
                    f10=ignored("The account's position under its heading, for the order statements list it in."))
+_POSITION = ignored("The account's position under its heading, for the order statements list it in.")
+_CASH_FLOW = ignored("The cash flow statement section the account is listed in. Celerp places an account on its cash "
+                     "flow statement by the account's type.")
+# The built-in account a kind of holder (capital account, employee, fixed asset...) reports under.
+_HOLDER_BUILTIN = _fields(read=(1, 12), f3=_BUILTIN[3], f11=_POSITION)
+_DIVISION = lost("division", "The division the record is reported under is not carried. Celerp has no divisions.")
+_ACCOUNT_CUSTOM = lost("custom fields", "Custom field values are not carried. Celerp accounts have no custom fields.")
+_ASSET_DESCRIPTION = lost("description", "The asset's description is not carried. The account keeps its name "
+                                          "and code.")
+_ASSET_RATE = lost("depreciation rate", "The depreciation or amortization rate is not carried. Celerp carries the "
+                                        "entries Manager booked, not a schedule.", DECIMAL)
+_ASSET_EXPENSE = lost("custom expense account", "The account the asset's depreciation or amortization is charged "
+                                                "to is not carried. The entries Manager booked keep their accounts.")
+
+
+def _asset(refs: tuple[int, ...], rate: int, expense: tuple[int, int], custom: tuple[int, int],
+           division: int) -> Schema:
+    """A fixed or intangible asset: name, disposed flag, code, controls and disposal account and
+    date are read; the rest is left behind."""
+    out = _fields(read=(1, 6, 10), refs=refs, days=(7,)) | {2: _ASSET_DESCRIPTION, rate: _ASSET_RATE}
+    return out | {division: _DIVISION} | {n: _ASSET_EXPENSE for n in expense} | {n: _ACCOUNT_CUSTOM for n in custom}
+
+
+def _control(inactive: int, cash_flow: tuple[int, ...]) -> Schema:
+    """A custom control account: its name, heading, code and inactive flag."""
+    return _fields(read=(1, 17, inactive), refs=(3,), f16=_POSITION) | {n: _CASH_FLOW for n in cash_flow}
+
+
+_SIDED = _fields(read=(2,), refs=(1,), numbers=(3,))  # a starting balance with a debit or credit side
 _LINE_DESCRIPTION = ignored("Whether the form shows the line description column. Each line's description is "
                             "carried as it is.")
 _CUSTOM_FIELDS = Field(nested={1: REF, 2: READ})     # (custom field, value); values other than the telephone are lost
@@ -122,7 +151,51 @@ SCHEMAS: dict[str, Schema] = {
     "ProfitAndLossStatementAccountCurrencyGainsLosses": _BUILTIN,
     "ProfitAndLossStatementAccountInventoryPurchases": _BUILTIN,
     "ProfitAndLossStatementAccountInventorySales": _BUILTIN,
+    **{name: _HOLDER_BUILTIN for name in (
+        "BalanceSheetCapitalAccountsAccount", "BalanceSheetEmployeeClearingAccount", "BalanceSheetExpenseClaimsAccount",
+        "BalanceSheetFixedAssetsAtCostAccount", "BalanceSheetFixedAssetsAccumulatedDepreciationAccount",
+        "BalanceSheetIntangibleAssetsAtCostAccount", "BalanceSheetIntangibleAssetsAccumulatedAmortizationAccount")},
+    # Special accounts can sit under any heading, which sets their type.
+    "BalanceSheetSpecialAccountsAccount": _fields(read=(1, 12), refs=(3,), f11=_POSITION,
+                                                  **{f"f{n}": _CASH_FLOW for n in (13, 14, 15, 16)}),
+    "BalanceSheetInvestmentsAccount": _fields(read=(1, 2), f3=_BUILTIN[3], f4=_CASH_FLOW, f5=_POSITION),
     "TaxCode": _fields(read=(1, 5, 6, 10, 11), refs=(7,), numbers=(4,)),
+    # Accounts Manager keeps a balance for under a control account, and custom control accounts.
+    "CapitalAccount": _fields(read=(1, 8, 11), refs=(10,), f12=_DIVISION, f9=_ACCOUNT_CUSTOM, f13=_ACCOUNT_CUSTOM),
+    "SubAccount": _fields(read=(1,)),
+    "SpecialAccount": _fields(read=(1, 10, 11), refs=(5, 6, 7), f12=_DIVISION, f13=_ACCOUNT_CUSTOM,
+                              f14=_ACCOUNT_CUSTOM),
+    "Employee": _fields(read=(1, 9, 14), refs=(7, 15), f16=_DIVISION, f8=_ACCOUNT_CUSTOM, f17=_ACCOUNT_CUSTOM,
+                        f2=lost("address", "The employee's address is not carried. Celerp keeps the employee as an "
+                                           "account."),
+                        f3=lost("email", "The employee's email is not carried. Celerp keeps the employee as an "
+                                         "account.")),
+    "ExpenseClaimsPayer": _fields(read=(1, 6), f7=_DIVISION),
+    "FixedAsset": _asset((14, 18, 19), 17, (20, 21), (9, 23), 22),
+    "IntangibleAsset": _asset((12, 16, 17), 15, (18, 19), (9, 21), 20),
+    "Investment": _fields(read=(1, 2, 3), refs=(7,), f8=_ACCOUNT_CUSTOM, f9=_ACCOUNT_CUSTOM),
+    **{name: _control(18, ()) for name in (
+        "ControlAccountForBankAccounts", "ControlAccountForCapitalAccounts", "ControlAccountForFixedAssets",
+        "ControlAccountForFixedAssetsAccumulatedDepreciation", "ControlAccountForIntangibleAssets",
+        "ControlAccountForIntangibleAssetsAccumulatedAmortization", "ControlAccountForInvestments",
+        "ControlAccountForInventoryItems")},
+    "ControlAccountForEmployees": _control(18, (19,)),
+    "ControlAccountForCustomers": _control(19, (18,)),
+    "ControlAccountForSuppliers": _control(19, (18,)),
+    "ControlAccountForSpecialAccounts": _control(22, (18, 19, 20, 21)),
+    # Starting balances.
+    **{name: _SIDED for name in ("BalanceSheetAccountStartingBalance", "CapitalAccountStartingBalance",
+                                 "SpecialAccountStartingBalance", "EmployeeStartingBalance")},
+    "BankOrCashAccountStartingBalance": _fields(refs=(1,), numbers=(2,)),
+    "FixedAssetStartingBalance": _fields(refs=(1,), numbers=(2, 3)),
+    "IntangibleAssetStartingBalance": _fields(refs=(1,), numbers=(2, 3)),
+    "InventoryItemStartingBalance": _fields(read=(2, 4, 5, 6, 7), refs=(1,), numbers=(8,),
+                                            f3=_lines(_fields(refs=(1,), numbers=(2,)))),
+    "InvestmentStartingBalance": _fields(refs=(1,), numbers=(2,),
+                                         f3=lost("market price", "The investment's market price is not carried. "
+                                                                 "Celerp carries what it cost.", DECIMAL)),
+    "SalesInvoiceStartingBalance": _fields(refs=(1,), numbers=(2,)),
+    "PurchaseInvoiceStartingBalance": _fields(refs=(1,), numbers=(2,)),
     "Customer": _fields(read=(1, 2, 3, 4, 13, 15, 19), refs=(14,), f12=_CUSTOM_FIELDS),
     "Supplier": _fields(read=(1, 2, 3, 7, 10, 12, 16), refs=(11,), f9=_CUSTOM_FIELDS),
     "InventoryItem": _fields(read=(1, 10, 11, 13, 31, 32, 38), numbers=(2, 3)),
@@ -172,6 +245,13 @@ _OBSOLETE: dict[str, tuple[int, ...]] = {
     "ProfitAndLossStatementAccount": (2, 9),
     "BankOrCashAccount": (2, 5, 6, 7, 8, 11, 14, 15, 25, 26, 27, 28, 39),
     "TaxCode": (3, 8, 9, 12),
+    "CapitalAccount": (2, 3, 4, 5, 6, 7),
+    "SpecialAccount": (2, 3, 4, 8, 9, 15, 16),
+    "Employee": (4, 5, 6, 10, 11, 12, 13, 18, 19),
+    "ExpenseClaimsPayer": (4, 5),
+    "FixedAsset": (3, 4, 5, 8, 11, 12, 13, 15, 16, 25),
+    "IntangibleAsset": (4, 8, 11, 13, 14, 22),
+    "Investment": (4, 5, 6, 10),
     "Customer": (4, 5, 6, 7, 8, 9, 10, 11, 17, 18, 23, 24, 31, 32),
     "Supplier": (3, 4, 5, 6, 8, 14, 15, 17, 20, 21),
     "InventoryItem": (5, 6, 7, 8, 14, 21, 22, 23, 24, 25, 26, 27),
