@@ -18,7 +18,7 @@ async def test_handoff_export_is_owned_and_company_scoped(real_engine, real_clie
     bearer = await token(real_engine, user, company_id)
     captures = []
 
-    async def export(cid, destination):
+    async def export(cid, destination, provenance=None):
         captures.append(("export", cid))
         destination.write_bytes(b"synthetic company archive")
 
@@ -131,7 +131,7 @@ async def test_send_link_without_connect_is_refused_with_account_needed(real_eng
     bearer = await token(real_engine, user, company_id)
     exported = []
 
-    async def export(cid, destination):
+    async def export(cid, destination, provenance=None):
         exported.append(cid)
         destination.write_bytes(b"synthetic company archive")
 
@@ -164,7 +164,7 @@ async def test_send_form_remembers_firm(real_engine, real_client, monkeypatch, t
     second_headers = {"Authorization": f"Bearer {await token(real_engine, user, second)}"}
     refuse = []
 
-    async def export(cid, destination):
+    async def export(cid, destination, provenance=None):
         destination.write_bytes(b"synthetic company archive")
 
     async def send(**kwargs):

@@ -115,7 +115,9 @@ async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(u
         raise HTTPException(status_code=422, detail=str(exc)) from None
     await session.rollback()  # snapshot uses its own consistent transaction
     async def export(destination: Path):
-        await cb.export_company_snapshot(ctx.company_id, destination)
+        # The copy names its firm, shown as Prepared by before it is opened.
+        await cb.export_company_snapshot(ctx.company_id, destination,
+                                         provenance={"prepared_by": payload.firm_name})
     try:
         sent = await sender.send_company_backup(
             export=export, company_id=ctx.company_id, operation_id=payload.operation_id,
