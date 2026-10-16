@@ -529,3 +529,90 @@ async def test_a_held_record_writes_nothing(real_client, real_engine, monkeypatc
     assert "6150" not in await _chart(real_client, firm_tok)
     assert not [l for l in await _links(real_engine, firm_company) if l.other_code == "6150"]
     assert not [n for n in await _notices(real_engine, firm_company) if "6150 Courier" in n[1]]
+
+
+# ---- AC39 an added account kept, archived or removed ----------------------------------
+
+async def _added(client, tok: str) -> dict[str, dict]:
+    r = await client.get("/accounting/peer/holds", headers=auth(tok))
+    assert r.status_code == 200, r.text
+    return {a["code"]: a for a in r.json()["added"]}
+
+
+async def _settle(client, tok: str, item: dict, action: str):
+    return await client.post(f"/accounting/peer/added/{item['id']}", json={"action": action},
+                             headers=auth(tok))
+
+
+async def test_an_added_account_is_kept_archived_or_removed(real_client, real_engine, monkeypatch):
+    """AC39 / A17: Remove is offered only on an added account with no postings, children,
+    posting role or bank account, and removes it with its link; any other is offered
+    Archive with the reason. Keep closes the notice and leaves the account."""
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    firm_company = _company_of(firm_tok)
+    await _add(real_client, tok, "6140", "Delivery")
+    await _add(real_client, tok, "6150", "Courier", parent="6140")
+    await _post_journal(real_client, tok, ADJUSTED, 21.0, "Courier run", debit="6150")
+    await _add(real_client, firm_tok, "6160", "Audit adjustments")
+    await _post_journal(real_client, firm_tok, ADJUSTED, 9.0, "Adjust", debit="6160")
+    _route_to_app(monkeypatch, [])
+    await _two_way(client_company, credential)
+
+    added = await _added(real_client, firm_tok)
+    assert set(added) == {"6140", "6150"}
+    assert added["6150"]["removable"] is False and "entries" in added["6150"]["why"]
+    assert added["6140"]["removable"] is False and "under it" in added["6140"]["why"]
+    r = await _settle(real_client, firm_tok, added["6150"], "remove")
+    assert r.status_code == 409 and "archived, not removed" in r.text
+    r = await real_client.get("/auth/firm-view", headers=auth(firm_tok))
+    [row] = [row for row in r.json()["items"] if row["company_id"] == firm_company]
+    assert {i["href"] for i in row["attention"] if i["kind"] == "added"} == {"/accounting/sync-accounts"}
+
+    await _patch(real_client, firm_tok, "6150", parent_code=None)
+    r = await _settle(real_client, firm_tok, added["6150"], "archive")
+    assert r.status_code == 200, r.text
+    assert (await _chart(real_client, firm_tok))["6150"]["is_active"] is False
+    added = await _added(real_client, firm_tok)
+    assert set(added) == {"6140"} and added["6140"]["removable"] is True and added["6140"]["why"] is None
+    r = await _settle(real_client, firm_tok, added["6140"], "remove")
+    assert r.status_code == 200, r.text
+    assert "6140" not in await _chart(real_client, firm_tok)
+    assert not [l for l in await _links(real_engine, firm_company) if l.code == "6140"]
+    assert await _added(real_client, firm_tok) == {}
+
+    kept = (await _added(real_client, tok))["6160"]
+    r = await _settle(real_client, tok, kept, "keep")
+    assert r.status_code == 200, r.text
+    assert await _added(real_client, tok) == {}
+    assert (await _chart(real_client, tok))["6160"]["is_active"] is True
+    r = await _settle(real_client, tok, kept, "keep")
+    assert r.status_code == 404  # a closed notice is gone, not kept twice
+
+
+# ---- A8 the other side's name ----------------------------------------------------------
+
+async def test_the_ledger_shows_the_other_sides_name_when_it_differs(real_client, real_engine, monkeypatch):
+    """A8: names never travel after linking; the account page shows the other company's
+    code and name for a linked account named differently, and nothing for one named alike."""
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    await _add(real_client, firm_tok, "6150", "Subscriptions")
+    await _add(real_client, tok, "6150", "Courier")
+    await _post_journal(real_client, tok, ADJUSTED, 5.0, "Courier", debit="6150")
+    await _post_journal(real_client, tok, ADJUSTED, 6.0, "Rent", debit="6100")
+    _route_to_app(monkeypatch, [])
+    await _two_way(client_company, credential)
+    [held] = await _holds(real_client, firm_tok)
+    await _fix(real_client, firm_tok, held, action="use", account="6150")
+    await _two_way(client_company, credential)
+
+    r = await real_client.get("/accounting/ledger/6150", headers=auth(firm_tok))
+    assert r.status_code == 200, r.text
+    assert r.json()["elsewhere"] == [{"company": "Demo Trading", "code": "6150", "name": "Courier"}]
+    r = await real_client.get("/accounting/ledger/6100", headers=auth(firm_tok))
+    assert r.json()["elsewhere"] == []
+    await _patch(real_client, tok, "6150", name="Couriers and post")
+    await _post_journal(real_client, tok, ADJUSTED, 7.0, "Post", debit="6150")
+    await _two_way(client_company, credential)
+    r = await real_client.get("/accounting/ledger/6150", headers=auth(firm_tok))
+    assert r.json()["elsewhere"][0]["name"] == "Couriers and post"
+    assert (await _chart(real_client, firm_tok))["6150"]["name"] == "Subscriptions"  # names never travel
