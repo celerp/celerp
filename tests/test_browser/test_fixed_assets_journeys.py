@@ -834,3 +834,56 @@ def test_j20_prior_year_cost_error_requested_by_an_operator_is_applied_by_a_mana
         page.get_by_role("button", name="Show", exact=True).click()
     expect(main).to_contain_text(number)
     expect(main).to_contain_text("2025")
+
+
+def _alignments(page: Page, table: str) -> list[tuple[str, str, str]]:
+    """Each column of `table`: (class, header alignment, first cell alignment)."""
+    return page.eval_on_selector(table, """t => [...t.querySelectorAll('thead th')].map((th, i) => {
+        const td = t.querySelector(`tbody tr td:nth-child(${i + 1})`);
+        return [th.className, getComputedStyle(th).textAlign, td ? getComputedStyle(td).textAlign : ''];
+    })""")
+
+
+def _aligned(page: Page, table: str) -> None:
+    """Number and money headers sit right over their right-aligned figures; other headers
+    are centered over left-aligned text."""
+    columns = _alignments(page, table)
+    assert any("cell--number" in cls for cls, _, _ in columns), columns
+    for cls, head, cell in columns:
+        if "cell--number" in cls:
+            assert (head, cell) == ("right", "right"), (table, cls, head, cell)
+        else:
+            assert head == "center" and cell in ("left", "start", ""), (table, cls, head, cell)
+
+
+def test_visual_esc_empty_marks_newest_first_and_alignment_on_screen_and_in_print(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    _run(c, "2026-01")
+    _run(c, "2026-02")
+
+    page.goto(f"/fixed-assets/assets/{car}")
+    serial = page.locator("td[data-col=serial]")
+    expect(serial).to_have_text("--")
+    serial.dblclick()
+    editor = page.locator("td.cell--editing [name=value]")
+    expect(editor).to_be_visible()
+    editor.press("Escape")
+    expect(editor).to_have_count(0)
+    expect(page.locator("td[data-col=serial]")).to_have_text("--")
+
+    page.goto("/fixed-assets/runs")
+    months = page.locator("main table.data-table tbody tr td:first-child").all_inner_texts()
+    assert months[:2] == ["2026-02", "2026-01"], months
+
+    for media in ("screen", "print"):
+        page.emulate_media(media=media)
+        page.goto("/fixed-assets/runs")
+        _aligned(page, "main table.data-table")
+        page.goto("/fixed-assets")
+        _aligned(page, "main table.data-table")
+        page.goto("/fixed-assets/reports/depreciation/print?date_from=2026-01-01&date_to=2026-02-28")
+        expect(page.locator("body")).to_contain_text("Owner's car")
+        _aligned(page, "table")
+    page.emulate_media(media="screen")
