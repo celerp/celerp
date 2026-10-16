@@ -139,3 +139,15 @@ def test_the_program_can_use_the_private_folders_it_creates():
     result = subprocess.run([sys.executable, "-I", launch.__file__, sys.executable, "-I", "-c", probe],
                             capture_output=True, text=True)
     assert (result.returncode, result.stdout) == (0, "ok\n"), result.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="restricted tokens are a Windows API")
+def test_the_program_can_start_programs_of_its_own_and_read_their_output():
+    # Postgres checks its own binary at start by running "postgres -V" through the
+    # shell and reading the pipe. Started from an administrator's token, the program
+    # must still be able to do that, or Postgres stops with "Permission denied".
+    probe = ("import subprocess, sys;"
+             " print(subprocess.check_output(f'\"{sys.executable}\" -I -c \"print(5)\"', shell=True, text=True), end='')")
+    result = subprocess.run([sys.executable, "-I", launch.__file__, sys.executable, "-I", "-c", probe],
+                            capture_output=True, text=True)
+    assert (result.returncode, result.stdout) == (0, "5\n"), result.stderr
