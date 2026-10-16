@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
     branches: ["develop", "bugfix"]
   pull_request:
-    branches: ["main"]   # mac-only unsigned build + boot smoke (pre-tag gate)
+    branches: ["main"]   # unsigned macOS build + boot smoke, plus Windows when it is touched (pre-tag gate)
   workflow_dispatch:
     inputs:
       platforms:
@@ -69,16 +69,28 @@ jobs:
 
   # Compute the build matrix: the bugfix branch and pull requests build macOS only.
   # Bugfix pushes use the normal signed-dev path; pull requests remain unsigned
-  # because signing credentials must not be exposed to PR workflows.
+  # because signing credentials must not be exposed to PR workflows. A pull request
+  # that changes how the Windows app is packaged or started also builds Windows,
+  # with its DLL check and both boot smokes.
   setup-matrix:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
     steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2  # the merge commit and the base it merges into
+      - id: changed
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          { echo "files<<CHANGED_EOF"; git diff --name-only HEAD^1 HEAD; echo "CHANGED_EOF"; } >> "$GITHUB_OUTPUT"
       - id: gen
         shell: bash
         env:
           PLATFORMS: ${{ github.event.inputs.platforms }}
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
         run: |
           mac='{"os":"macos-latest","build_cmd":"pnpm run build:mac","platform_flag":"--mac","standalone_dir":"mac-arm64","pbs_triple":"aarch64-apple-darwin"}'
           win='{"os":"windows-latest","build_cmd":"pnpm run build:win","platform_flag":"--win","standalone_dir":"win-x64","pbs_triple":"x86_64-pc-windows-msvc"}'
@@ -92,6 +104,9 @@ jobs:
               *)       inc="$lin,$win,$mac" ;;
             esac
             echo "matrix={\"include\":[$inc]}" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_EVENT_NAME" = "pull_request" ] \
+            && printf '%s\n' "$CHANGED_FILES" | grep -qE '^(electron/|celerp/win_restricted_launch\.py$|\.github/workflows/build\.yml$|scripts/(download-python\.sh|check_packaged_modules\.py)$)'; then
+            echo "matrix={\"include\":[$win,$mac]}" >> "$GITHUB_OUTPUT"
           elif [ "$GITHUB_REF_NAME" = "bugfix" ] || [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             echo "matrix={\"include\":[$mac]}" >> "$GITHUB_OUTPUT"
           else

@@ -608,11 +608,11 @@ def test_tag_releases_mark_latest_one_at_a_time():
 # The build matrix and the candidate the packaged upgrade check installs
 # ---------------------------------------------------------------------------
 
-def _matrix(tmp_path: Path, event: str, platforms: str = "", ref_name: str = "main") -> list[str]:
+def _matrix(tmp_path: Path, event: str, platforms: str = "", ref_name: str = "main", changed: str = "") -> list[str]:
     step = next(s for s in _steps("build.yml", "setup-matrix") if s.get("id") == "gen")
     out = tmp_path / "github_output"
     r = _run(tmp_path, step["run"], _env(tmp_path, GITHUB_EVENT_NAME=event, GITHUB_REF_NAME=ref_name,
-                                         PLATFORMS=platforms, GITHUB_OUTPUT=str(out)))
+                                         PLATFORMS=platforms, CHANGED_FILES=changed, GITHUB_OUTPUT=str(out)))
     assert r.returncode == 0, r.stdout + r.stderr
     line = out.read_text().strip()
     return [m["os"] for m in json.loads(line.removeprefix("matrix="))["include"]]
@@ -627,6 +627,28 @@ def _matrix(tmp_path: Path, event: str, platforms: str = "", ref_name: str = "ma
 ])
 def test_each_event_builds_its_platforms(tmp_path, event, platforms, ref_name, built):
     assert _matrix(tmp_path, event, platforms, ref_name) == built
+
+
+@pytest.mark.parametrize("changed,built", [
+    ("electron/app-main.js", ["windows-latest", "macos-latest"]),
+    ("README.md\ncelerp/win_restricted_launch.py", ["windows-latest", "macos-latest"]),
+    (".github/workflows/build.yml", ["windows-latest", "macos-latest"]),
+    ("scripts/download-python.sh", ["windows-latest", "macos-latest"]),
+    ("scripts/check_packaged_modules.py", ["windows-latest", "macos-latest"]),
+    ("celerp/main.py\nui/app.py\ndocs/electron/notes.md", ["macos-latest"]),
+    ("", ["macos-latest"]),
+])
+def test_a_pull_request_that_changes_the_windows_app_also_builds_windows(tmp_path, changed, built):
+    assert _matrix(tmp_path, "pull_request", changed=changed) == built
+
+
+def test_the_pull_request_matrix_reads_the_files_the_pull_request_changes():
+    steps = {s.get("id"): s for s in _steps("build.yml", "setup-matrix")}
+    assert steps["changed"]["if"] == "github.event_name == 'pull_request'"
+    assert "git diff --name-only HEAD^1 HEAD" in steps["changed"]["run"]
+    assert steps["gen"]["env"]["CHANGED_FILES"] == "${{ steps.changed.outputs.files }}"
+    checkout = next(s for s in _steps("build.yml", "setup-matrix") if s.get("uses", "").startswith("actions/checkout"))
+    assert checkout["with"]["fetch-depth"] == 2
 
 
 _CANDIDATE = 37700000001
