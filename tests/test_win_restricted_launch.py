@@ -47,6 +47,41 @@ def test_a_failed_windows_call_writes_the_recognised_line(monkeypatch, capsys):
     assert capsys.readouterr().err == "win_restricted_launch: CreateRestrictedToken failed (error 5)\n"
 
 
+@pytest.mark.parametrize("is_admin, elevation_type, state", [
+    (False, launch.TOKEN_ELEVATION_DEFAULT, "standard"),
+    (False, launch.TOKEN_ELEVATION_LIMITED, "standard"),
+    # UAC on, Run as administrator: a standard token sits behind this one.
+    (True, launch.TOKEN_ELEVATION_FULL, "elevated"),
+    # UAC off, or the built-in Administrator: no standard token to go back to.
+    (True, launch.TOKEN_ELEVATION_DEFAULT, "admin"),
+])
+def test_token_state_from_admin_membership_and_elevation_type(is_admin, elevation_type, state):
+    assert launch.classify(is_admin, elevation_type) == state
+
+
+def test_the_token_state_flag_prints_the_state(monkeypatch, capsys):
+    monkeypatch.setattr(launch, "token_state", lambda: "admin")
+    assert launch.main(["--token-state"]) == 0
+    assert capsys.readouterr().out == "admin\n"
+
+
+def test_a_token_that_cannot_be_read_is_a_recognised_failure(monkeypatch, capsys):
+    def fail():
+        raise launch.LaunchError("GetTokenInformation failed (error 5)")
+
+    monkeypatch.setattr(launch, "token_state", fail)
+    assert launch.main(["--token-state"]) == 1
+    assert capsys.readouterr().err.startswith(launch.FAILURE_PREFIX)
+
+
+def test_the_app_asks_for_the_token_state_the_launcher_answers():
+    app_main = (ROOT / "electron" / "app-main.js").read_text()
+    assert '"--token-state"' in app_main
+    deelevation = (ROOT / "electron" / "deelevation.js").read_text()
+    for state in ("standard", "elevated", "admin"):
+        assert f'"{state}"' in deelevation
+
+
 def test_no_program_is_a_failure(capsys):
     assert launch.main([]) == 1
     assert capsys.readouterr().err.startswith(launch.FAILURE_PREFIX)
@@ -59,9 +94,14 @@ def test_the_app_recognises_the_failure_prefix():
 
 @pytest.mark.skipif(sys.platform != "win32", reason="restricted tokens are a Windows API")
 def test_runs_the_program_without_administrator_rights(tmp_path):
+    # Both sides: this process holds administrator rights and the program does not.
+    assert launch.token_state() in ("elevated", "admin")
     probe = tmp_path / "probe.py"
     probe.write_text("import ctypes, sys\nsys.stdout.write(str(ctypes.windll.shell32.IsUserAnAdmin()))\nsys.exit(7)\n")
     result = subprocess.run([sys.executable, "-I", launch.__file__, sys.executable, "-I", str(probe)],
                             capture_output=True, text=True)
     assert result.returncode == 7
     assert result.stdout == "0"
+    restricted = subprocess.run([sys.executable, "-I", launch.__file__, sys.executable, "-I", launch.__file__,
+                                 "--token-state"], capture_output=True, text=True)
+    assert restricted.stdout == "standard\n"
