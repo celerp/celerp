@@ -261,6 +261,12 @@ async def test_s1_sourced_cost_cannot_diverge(fa):
     got = await fa.asset(asset["id"])
     r = await fa.patch(f"/assets/{asset['id']}", {"changes": {"cost": "30000"}, "previous": {"cost": got["cost"]}})
     assert r.status_code == 422 and "Replace source" in r.json()["detail"]
+    fields = await fa.ok(await fa.get(f"/assets/{asset['id']}/correct-fields"))
+    assert "cost" not in {f["field"] for f in fields["fields"]}
+    assert {"replace_source", "link_source"} <= {a["action"] for a in fields["source_actions"]}
+    typed = await fa.post(f"/assets/{asset['id']}/correct", {"changes": {"cost": "30000"}, "preview": True,
+                                                            "op_key": "c"})
+    assert typed.status_code == 422 and "Replace source" in typed.json()["detail"]
     assert D((await fa.asset(asset["id"]))["cost"]) == D("32000")
 
 
