@@ -5253,6 +5253,7 @@
   "event.fa.correction.undone": "Correction d'immobilisation annulée",
   "event.fa.review.recorded": "Test de dépréciation enregistré",
   "event.fa.review.status": "Test de dépréciation retiré",
+  "event.fa.recon.recorded": "Rapprochement des immobilisations enregistré",
   "event.mfg.order.wip_opened": "En-cours de production ouvert",
   "event.mfg.order.wip_unresolved": "L'en-cours de production doit être rapproché",
   "event.acc.period.closed": "Période clôturée",

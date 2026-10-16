@@ -26,7 +26,7 @@ from fastapi import HTTPException
 
 from celerp_fixed_assets import disposal, operations, runs, setup
 from celerp_fixed_assets.operations import (
-    _cents, _claim, _create_asset, _date, _dec, _effects, _emit, _entities, _journal_view, _lines, _move,
+    _cents, _claim, _create_asset, _date, _dec, _effects, _emit, _entities, _journal_view, _move,
     _next_numbers, _open_line, _post, _reclass, _run, _state, asset_movements, conflict)
 
 KINDS = ("improvement", "replacement")

@@ -20,7 +20,7 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.permissions import (
     assert_role_permission, get_current_company_settings, require_permission, role_has_permission)
 from celerp_fixed_assets import (
-    additions, corrections, disposal, opening, operations, recon, remeasure, runs, sales, setup, sources)
+    additions, corrections, disposal, opening, operations, recon, remeasure, reports, runs, sales, setup, sources)
 from celerp_fixed_assets.events import register_events
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
@@ -37,6 +37,7 @@ OPERATION_TYPES = {name: ("manage_accounting",)
 _MONEY_FIELDS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "nbv")
 _VIEW = [require_permission("view_fixed_assets")]
 _ACCOUNTING = [require_permission("manage_accounting")]
+_REPORTS = [require_permission("view_financial_reports")]
 _SELL = [require_permission("edit_documents"), require_permission("manage_fixed_assets")]
 
 
@@ -505,10 +506,28 @@ async def apply_to_assets(class_id: str, body: dict = Body(...), company_id=Depe
     return await _write(session, corrections.apply_to_assets, company_id, user.id, class_id, body)
 
 
-@router.get("/reports/prior-period-adjustments", dependencies=[require_permission("view_financial_reports")])
+@router.get("/reports/prior-period-adjustments", dependencies=_REPORTS)
 async def prior_period_adjustments(year: int, company_id=Depends(get_current_company_id),
                                    session: AsyncSession = Depends(get_session)) -> dict:
     return await corrections.prior_period_report(session, company_id, year)
+
+
+@router.get("/reports/schedule", dependencies=_REPORTS)
+async def schedule_report(date_from: str, date_to: str, company_id=Depends(get_current_company_id),
+                          session: AsyncSession = Depends(get_session)) -> dict:
+    return await reports.schedule(session, company_id, date_from, date_to)
+
+
+@router.get("/reports/depreciation", dependencies=_REPORTS)
+async def depreciation_report(date_from: str, date_to: str, company_id=Depends(get_current_company_id),
+                              session: AsyncSession = Depends(get_session)) -> dict:
+    return await reports.depreciation(session, company_id, date_from, date_to)
+
+
+@router.get("/reports/disposals", dependencies=_REPORTS)
+async def disposals_report(date_from: str, date_to: str, company_id=Depends(get_current_company_id),
+                           session: AsyncSession = Depends(get_session)) -> dict:
+    return await reports.disposals(session, company_id, date_from, date_to)
 
 
 def setup_api_routes(app) -> None:

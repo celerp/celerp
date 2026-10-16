@@ -31,8 +31,6 @@ and the assets it creates, Confirm does what was reviewed (POST /fixed-assets/op
 """
 from __future__ import annotations
 
-import csv
-import io
 import json
 import logging
 from datetime import date
@@ -41,7 +39,7 @@ from urllib.parse import quote, urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -1272,48 +1270,6 @@ def _error_fields(field: str, asset: dict, offer: dict, classes: list[dict], cha
     return [*controls, *_posting_fields()]
 
 
-def _report_table(report: dict, currency: str) -> list[FT]:
-    """The prior-period adjustments for one year: the year as reported and restated, the
-    corrections restating it, and the ones posted to current profit or loss instead."""
-    parts: list[FT] = []
-    if report["years"]:
-        parts += [H2(t("fixed_assets.restated_title"), cls="section-title"), _restated_table(report["years"], currency)]
-    if report["items"]:
-        parts += [H2(t("fixed_assets.ppa_corrections"), cls="section-title"), Table(
-            Thead(Tr(Th(t("fixed_assets.posting_date")), Th(t("fixed_assets.asset")), Th(t("fixed_assets.years")),
-                     Th(t("fixed_assets.correction")))),
-            Tbody(*[Tr(Td(_text(i.get("posting_date"))),
-                       Td(A(i.get("number") or EMPTY, href=f"/fixed-assets/assets/{i['asset_id']}")),
-                       Td(", ".join(str(y) for y in i.get("years") or []) or EMPTY),
-                       Td(A(t("fixed_assets.open"), href=f"/fixed-assets/corrections/{i['id']}")))
-                    for i in reversed(report["items"])]), cls="data-table")]
-    if report["immaterial"]:
-        parts += [H2(t("fixed_assets.ppa_immaterial"), cls="section-title"),
-                  P(t("fixed_assets.ppa_immaterial_hint"), cls="settings-hint"), Table(
-            Thead(Tr(Th(t("fixed_assets.posting_date")), Th(t("fixed_assets.asset")), Th(t("fixed_assets.years")),
-                     Th(t("fixed_assets.reason")))),
-            Tbody(*[Tr(Td(_text(i.get("posting_date"))),
-                       Td(A(i.get("number") or EMPTY, href=f"/fixed-assets/assets/{i['asset_id']}")),
-                       Td(", ".join(str(y) for y in i.get("years") or []) or EMPTY), Td(_text(i.get("reason"))))
-                    for i in reversed(report["immaterial"])]), cls="data-table")]
-    return parts or [empty_state_cta(t("fixed_assets.ppa_empty", year=report["year"]))]
-
-
-def _report_csv(report: dict) -> str:
-    out = io.StringIO()
-    w = csv.writer(out)
-    w.writerow(["section", "year", "asset", "posting_date", "reported", "restated", "reason"])
-    for y in report["years"]:
-        w.writerow(["restated", y["year"], "", "", y["reported"], y["restated"], ""])
-    for i in report["items"]:
-        w.writerow(["correction", ";".join(str(y) for y in i.get("years") or []), i.get("number") or "",
-                    i.get("posting_date") or "", "", "", ""])
-    for i in report["immaterial"]:
-        w.writerow(["immaterial", ";".join(str(y) for y in i.get("years") or []), i.get("number") or "",
-                    i.get("posting_date") or "", "", "", i.get("reason") or ""])
-    return out.getvalue()
-
-
 def setup_ui_routes(app) -> None:
     """Register the fixed assets pages into the FastHTML app."""
 
@@ -1344,7 +1300,8 @@ def setup_ui_routes(app) -> None:
                 notice = _recon_banner() if report["status"] != "Reconciled" else ""
             except APIError:
                 notice = ""  # The reconciliation is shown to those who manage accounting.
-        actions = (A(t("fixed_assets.corrections_title"), href="/fixed-assets/corrections", cls="btn btn--secondary"),
+        actions = (A(t("fixed_assets.reports_title"), href="/fixed-assets/reports", cls="btn btn--secondary"),
+                   A(t("fixed_assets.corrections_title"), href="/fixed-assets/corrections", cls="btn btn--secondary"),
                    A(t("fixed_assets.runs_title"), href="/fixed-assets/runs", cls="btn btn--secondary"),
                    A(t("fixed_assets.register_from_bills"), href="/fixed-assets/intake", cls="btn btn--secondary"),
                    A(t("fixed_assets.add_asset"), href="/fixed-assets/assets/new", cls="btn btn--primary"))
@@ -2308,45 +2265,6 @@ def setup_ui_routes(app) -> None:
         return await _page(request, crumbs, page_header(t("fixed_assets.apply_to_assets_title", name=cls["name"])),
                            form, title_key="fixed_assets.apply_to_assets")
 
-    async def _prior_period_report(token: str, year: int) -> dict:
-        return await api.fixed_assets_get(token, "/reports/prior-period-adjustments", {"year": year})
-
-    @app.get("/fixed-assets/reports/prior-period-adjustments")
-    async def prior_period_page(request: Request, year: int | None = None):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        year = year or date.today().year - 1
-        try:
-            _, currency = await _context(token)
-            report = await _prior_period_report(token, year)
-        except APIError as e:
-            return await _refused(request, e, "fixed_assets.ppa_title")
-        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
-                              (t("fixed_assets.corrections_title"), "/fixed-assets/corrections"),
-                              (t("fixed_assets.ppa_title"), None)])
-        chooser = Form(_input("year", year, type_="number", step="1", min="1900", aria_label=t("fixed_assets.year")),
-                       Button(t("fixed_assets.show"), type="submit", cls="btn btn--secondary"),
-                       method="get", action="/fixed-assets/reports/prior-period-adjustments", cls="flex-row")
-        download = A(t("fixed_assets.download_csv"), cls="btn btn--secondary",
-                     href=f"/fixed-assets/reports/prior-period-adjustments.csv?{urlencode({'year': year})}")
-        return await _page(request, crumbs, page_header(t("fixed_assets.ppa_title_year", year=year), download),
-                           P(t("fixed_assets.ppa_hint"), cls="settings-hint"), chooser,
-                           Div(*_report_table(report, currency), cls="detail-card section-card"),
-                           title_key="fixed_assets.ppa_title")
-
-    @app.get("/fixed-assets/reports/prior-period-adjustments.csv")
-    async def prior_period_csv(request: Request, year: int):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            report = await _prior_period_report(token, year)
-        except APIError as e:
-            return PlainTextResponse(_error_text(e), status_code=e.status or 400)
-        return PlainTextResponse(_report_csv(report), media_type="text/csv", headers={
-            "Content-Disposition": f'attachment; filename="prior-period-adjustments-{year}.csv"'})
-
     @app.get("/settings/fixed-assets")
     async def settings_page(request: Request):
         token = _token(request)
@@ -2462,4 +2380,7 @@ def setup_ui_routes(app) -> None:
             return Td(P(_error_text(e), cls="cell-error"))
         return _class_cell(cls, field, [])
 
+    from celerp_fixed_assets.ui_reports import setup_report_routes
+
+    setup_report_routes(app)
     log.info("celerp-fixed-assets: UI routes registered")

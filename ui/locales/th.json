@@ -5251,6 +5251,7 @@
   "event.fa.correction.undone": "ยกเลิกการแก้ไขสินทรัพย์ถาวรแล้ว",
   "event.fa.review.recorded": "บันทึกการทบทวนการด้อยค่าแล้ว",
   "event.fa.review.status": "ถอนการทบทวนการด้อยค่าแล้ว",
+  "event.fa.recon.recorded": "บันทึกการกระทบยอดสินทรัพย์ถาวรแล้ว",
   "event.mfg.order.wip_opened": "เปิดงานระหว่างทำแล้ว",
   "event.mfg.order.wip_unresolved": "งานระหว่างทำต้องกระทบยอด",
   "event.acc.period.closed": "ปิดงวดแล้ว",

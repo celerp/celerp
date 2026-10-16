@@ -46,11 +46,11 @@ async def test_improvement_keeps_the_end_date_or_takes_a_new_life(fa):
                if m["operation"] == "run"]
     assert charged[-1] == D(220)
     await _add(fa, car, kind="improvement", date="2026-08-01", amount="600", credit_account="3100", life_months=12)
-    preview = await fa.ok(await fa.post(f"/runs", {"month": "2026-08", "preview": True, "op_key": "p8"}))
+    preview = await fa.ok(await fa.post("/runs", {"month": "2026-08", "preview": True, "op_key": "p8"}))
     assert D(preview["months"][-1]["total"]) == D(270)
     await _undo_latest(fa, car)
     assert D((await fa.asset(car))["cost"]) == D(13080)
-    preview = await fa.ok(await fa.post(f"/runs", {"month": "2026-08", "preview": True, "op_key": "p9"}))
+    preview = await fa.ok(await fa.post("/runs", {"month": "2026-08", "preview": True, "op_key": "p9"}))
     assert D(preview["months"][-1]["total"]) == D(220)
     await fa.fold_matches(car)
 

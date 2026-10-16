@@ -5253,6 +5253,7 @@
   "event.fa.correction.undone": "Corrección de activo fijo deshecha",
   "event.fa.review.recorded": "Revisión de deterioro registrada",
   "event.fa.review.status": "Revisión de deterioro retirada",
+  "event.fa.recon.recorded": "Conciliación de activos fijos registrada",
   "event.mfg.order.wip_opened": "Trabajo en curso abierto",
   "event.mfg.order.wip_unresolved": "El trabajo en curso necesita conciliación",
   "event.acc.period.closed": "Período cerrado",

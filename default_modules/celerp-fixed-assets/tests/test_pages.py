@@ -334,7 +334,7 @@ async def test_correct_an_asset_then_the_corrections_pages_and_report(owner_ui):
         "asset_id": second, "field": "cost", "cost": "15000", "posting_date": "2026-04-20",
         "prior_years": "profit_and_loss", "immaterial_reason": "Below the materiality threshold"})
     report = await owner_ui.get("/fixed-assets/reports/prior-period-adjustments", params={"year": "2025"})
-    assert report.status_code == 200 and t("fixed_assets.ppa_title_year", year=2025) in report.text
+    assert report.status_code == 200 and t("fixed_assets.ppa_title") in report.text and ">2025</h2>" in report.text
     assert "Below the materiality threshold" in report.text and "1,750.00" in report.text
     assert "fixed_assets." not in report.text
     csv_file = await owner_ui.get("/fixed-assets/reports/prior-period-adjustments.csv", params={"year": "2025"})

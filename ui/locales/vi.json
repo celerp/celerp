@@ -5253,6 +5253,7 @@
   "event.fa.correction.undone": "Đã hoàn tác điều chỉnh tài sản cố định",
   "event.fa.review.recorded": "Đã ghi nhận rà soát ghi giảm",
   "event.fa.review.status": "Đã rút lại rà soát ghi giảm",
+  "event.fa.recon.recorded": "Đã ghi nhận đối chiếu tài sản cố định",
   "event.mfg.order.wip_opened": "Đã mở sản phẩm dở dang",
   "event.mfg.order.wip_unresolved": "Sản phẩm dở dang cần đối chiếu",
   "event.acc.period.closed": "Đã khóa kỳ",

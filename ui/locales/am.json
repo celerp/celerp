@@ -5251,6 +5251,7 @@
   "event.fa.correction.undone": "የቋሚ ንብረት እርማት ተቀልብሷል",
   "event.fa.review.recorded": "የዋጋ ቅነሳ ግምገማ ተመዝግቧል",
   "event.fa.review.status": "የዋጋ ቅነሳ ግምገማ ተሰርዟል",
+  "event.fa.recon.recorded": "የቋሚ ንብረት ማስታረቅ ተመዝግቧል",
   "event.mfg.order.wip_opened": "በሂደት ላይ ያለ ሥራ ተከፍቷል",
   "event.mfg.order.wip_unresolved": "በሂደት ላይ ያለ ሥራ ማስታረቅ ያስፈልገዋል",
   "event.acc.period.closed": "ጊዜው ተዘግቷል",
