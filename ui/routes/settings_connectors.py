@@ -1125,6 +1125,119 @@ def _grant_form(lang: str) -> FT:
     )
 
 
+def _grant_status(g: dict, lang: str, now: datetime) -> FT:
+    """How long a key still works, so the owner can extend it before synchronization stops."""
+    from celerp.services.peer_access import RENEW_WITHIN
+    if g.get("revoked"):
+        return Span(t("accountant_access.revoked", lang), cls="badge badge--neutral")
+    if g.get("replaced"):
+        return Span(t("accountant_access.renewed_by_client", lang), cls="badge badge--neutral")
+    try:
+        expires = datetime.fromisoformat(str(g.get("expires_at")))
+    except ValueError:
+        return Span("--")
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires <= now:
+        return Span(t("accountant_access.expired", lang), cls="badge badge--expired")
+    days = (expires - now).days + (1 if (expires - now).seconds else 0)
+    label = (t("accountant_access.expires_in", lang, days=days) if days > 1
+             else t("accountant_access.expires_in_one", lang))
+    return Span(label,
+                cls="badge badge--soon" if expires - now <= RENEW_WITHIN else "badge badge--active")
+
+
+def _grant_actions(g: dict, lang: str) -> FT:
+    if g.get("revoked") or g.get("replaced"):
+        return Span("--")
+    path = f"/settings/accountant-access/grants/{g['id']}"
+    swap = {"hx_target": "#accountant-access-grants", "hx_swap": "outerHTML"}
+    return Div(
+        Button(t("accountant_access.extend", lang), type="button", hx_post=f"{path}/extend",
+               cls="btn btn--secondary btn--sm", **swap),
+        Button(t("accountant_access.revoke", lang), type="button", hx_post=f"{path}/revoke",
+               hx_confirm=t("accountant_access.revoke_confirm", lang),
+               cls="btn btn--danger btn--sm", **swap),
+        cls="flex-row gap-sm",
+    )
+
+
+def _grants_table(grants: list[dict], lang: str, now: datetime | None = None, **attrs) -> FT:
+    """The receiving company's keys, newest first; Extend and Revoke swap this table in place."""
+    from ui.components.table import format_value
+    when = now or datetime.now(timezone.utc)
+    if not grants:
+        return Div(P(t("accountant_access.none", lang)), id="accountant-access-grants", **attrs)
+    rows = [
+        Tr(
+            Td(g.get("label") or "--"),
+            Td(", ".join(t(f"accountant_access.{scope}", lang) for scope in g.get("scopes") or []) or "--"),
+            Td(format_value(g.get("created_at"), "date")),
+            Td(format_value(g.get("expires_at"), "date")),
+            Td(_grant_status(g, lang, when)),
+            Td(_grant_actions(g, lang)),
+        )
+        for g in sorted(grants, key=lambda g: str(g.get("created_at") or ""), reverse=True)
+    ]
+    return Div(
+        Table(
+            Thead(Tr(
+                Th(t("accountant_access.label", lang)),
+                Th(t("accountant_access.scopes", lang)),
+                Th(t("accountant_access.issued", lang)),
+                Th(t("accountant_access.expires", lang)),
+                Th(t("th.status", lang)),
+                Th(t("th.actions", lang)),
+            )),
+            Tbody(*rows),
+            cls="data-table",
+        ),
+        P(t("accountant_access.revoke_reason", lang), cls="settings-hint"),
+        id="accountant-access-grants", **attrs,
+    )
+
+
+async def _owner_token(request: Request):
+    """The owner's token for a key action, or the response refusing it."""
+    from ui import api_client as api
+    from ui.security import not_permitted_redirect
+    token = _token(request)
+    if not token:
+        return None, RedirectResponse("/login", status_code=302)
+    if (denied := await _check_permission(request, "manage_integrations")):
+        return None, denied
+    if api.role_from_company(getattr(request.state, "auth_company", {})) != "owner":
+        return None, not_permitted_redirect(request)
+    return token, None
+
+
+async def _grant_action(request: Request, grant_id: str, action):
+    """Run Extend or Revoke and answer with the refreshed table."""
+    import uuid
+    from ui import api_client as api
+    from starlette.responses import Response
+    token, refused = await _owner_token(request)
+    if refused is not None:
+        return refused
+    try:
+        grant_id = str(uuid.UUID(grant_id))
+    except ValueError:
+        return Response(status_code=404)
+    lang = get_lang(request)
+    errors, grants = [], []
+    try:
+        await action(token, grant_id)
+    except api.APIError as exc:
+        errors.append(str(exc))
+    try:
+        grants = (await api.accountant_peer_grants(token)).get("items", [])
+    except api.APIError as exc:
+        errors.append(str(exc))
+    table = _grants_table(grants, lang)
+    table.children = (*(P(e, cls="flash flash--warning") for e in errors), *table.children)
+    return HTMLResponse(to_xml(table))
+
+
 def setup_routes(app):
 
     @app.get("/settings/accountant-access")
@@ -1148,24 +1261,6 @@ def setup_routes(app):
             notice = P(str(exc), cls="flash flash--warning")
         else:
             notice = ""
-        rows = [
-            Tr(
-                Td(g.get("label") or ""),
-                Td(", ".join(g.get("scopes") or [])),
-                Td(g.get("source_company_id") or ""),
-                Td(g.get("expires_at") or ""),
-                Td(
-                    Span(t("accountant_access.revoked", lang)) if g.get("revoked")
-                    else Button(
-                        t("accountant_access.revoke", lang), type="button",
-                        hx_post=f"/settings/accountant-access/grants/{g['id']}/revoke",
-                        hx_confirm=t("accountant_access.revoke_confirm", lang),
-                        hx_swap="none", cls="btn btn--danger btn--sm",
-                    )
-                ),
-            )
-            for g in grants
-        ]
         return await base_shell(
             page_header(
                 t("accountant_access.title", lang),
@@ -1180,17 +1275,7 @@ def setup_routes(app):
             Div(id="accountant-access-result"),
             notice,
             H3(t("accountant_access.active_grants", lang)),
-            Table(
-                Thead(Tr(
-                    Th(t("accountant_access.label", lang)),
-                    Th(t("accountant_access.scopes", lang)),
-                    Th(t("accountant_access.client_id", lang)),
-                    Th(t("accountant_access.expires", lang)),
-                    Th(t("th.actions", lang)),
-                )),
-                Tbody(*rows),
-                cls="data-table",
-            ) if rows else P(t("accountant_access.none", lang)),
+            _grants_table(grants, lang),
             title=t("accountant_access.title", lang), nav_active="settings",
             request=request,
         )
@@ -1199,14 +1284,9 @@ def setup_routes(app):
     async def accountant_access_issue(request: Request):
         from celerp.services.peer_access import SCOPES, parse_pairing_code
         from ui import api_client as api
-        from ui.security import not_permitted_redirect
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        if (denied := await _check_permission(request, "manage_integrations")):
-            return denied
-        if api.role_from_company(getattr(request.state, "auth_company", {})) != "owner":
-            return not_permitted_redirect(request)
+        token, refused = await _owner_token(request)
+        if refused is not None:
+            return refused
         lang = get_lang(request)
         form = await request.form()
         try:
@@ -1234,38 +1314,33 @@ def setup_routes(app):
                         cls="flash flash--warning")
         content = Div(
             P(t("accountant_access.copy_now", lang)),
-            Input(type="text", readonly=True, value=credential,
-                  onclick="this.select()", cls="form-input"),
+            Div(
+                Code(credential, cls="cell--mono", id="issued-peer-key"),
+                Button(t("btn.copy", lang), type="button", **{"data-copy": "#issued-peer-key"},
+                       cls="btn btn--xs btn--secondary ml-sm"),
+                cls="flex-row align-center gap-sm",
+            ),
             P(t("accountant_access.one_time", lang)),
             cls="settings-card",
         )
+        try:
+            grants = (await api.accountant_peer_grants(token)).get("items", [])
+        except api.APIError:
+            grants = None
+        refreshed = [] if grants is None else [_grants_table(grants, lang, hx_swap_oob="true")]
         return HTMLResponse(
-            to_xml(content), headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+            to_xml(Div(content, *refreshed)),
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+    @app.post("/settings/accountant-access/grants/{grant_id}/extend")
+    async def accountant_access_extend(request: Request, grant_id: str):
+        from ui import api_client as api
+        return await _grant_action(request, grant_id, api.extend_accountant_peer_grant)
 
     @app.post("/settings/accountant-access/grants/{grant_id}/revoke")
     async def accountant_access_revoke(request: Request, grant_id: str):
-        import uuid
         from ui import api_client as api
-        from ui.security import not_permitted_redirect
-        from starlette.responses import Response
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        if (denied := await _check_permission(request, "manage_integrations")):
-            return denied
-        if api.role_from_company(getattr(request.state, "auth_company", {})) != "owner":
-            return not_permitted_redirect(request)
-        try:
-            grant_id = str(uuid.UUID(grant_id))
-        except ValueError:
-            return Response(status_code=404)
-        try:
-            await api.revoke_accountant_peer_grant(token, grant_id)
-        except api.APIError as exc:
-            return Span(str(exc), cls="flash flash--warning")
-        return Response("", status_code=204, headers={"HX-Refresh": "true"})
-
-
+        return await _grant_action(request, grant_id, api.revoke_accountant_peer_grant)
 
     @app.get("/settings/connectors/{platform}/oauth-redirect")
     async def connector_oauth_redirect(request: Request, platform: str, shop: str = ""):

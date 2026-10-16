@@ -142,6 +142,10 @@ class ConnectorBase(ABC):
         document states. Connectors that cannot tell return False."""
         return False
 
+    async def before_outbound(self, ctx: ConnectorContext, now: datetime | None = None) -> None:
+        """Called once before a run sends anything; may refresh ctx's credentials."""
+        return None
+
     @abstractmethod
     async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull products/variants from platform -> Celerp items."""

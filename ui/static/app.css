@@ -562,7 +562,7 @@ a:hover { text-decoration: underline; }
 .badge--invoice { background: rgba(14,165,122,0.12); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.3); }
 .badge--purchase-order, .badge--purchase_order { background: rgba(249,115,22,0.12); color: var(--c-orange); border: 1px solid rgba(249,115,22,0.3); }
 .badge--paused { background: rgba(234,179,8,0.12); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
-.badge--warning { background: rgba(234,179,8,0.12); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
+.badge--warning, .badge--soon { background: rgba(234,179,8,0.12); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
 .badge--alert, .badge--danger, .badge--error { background: rgba(239,68,68,0.12); color: var(--c-red); border: 1px solid rgba(239,68,68,0.3); }
 .badge--asset { background: rgba(14,165,122,0.12); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.3); }
 .badge--liability { background: rgba(249,115,22,0.12); color: var(--c-orange); border: 1px solid rgba(249,115,22,0.3); }

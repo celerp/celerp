@@ -34,9 +34,17 @@ def _public(row: CompanyPeerGrant) -> dict:
     return {
         "id": str(row.id), "source_company_id": str(row.source_company_id),
         "label": row.label, "scopes": list(row.scopes),
-        "expires_at": row.expires_at.isoformat(),
-        "revoked": row.revoked_at is not None,
+        "created_at": row.created_at.isoformat(), "expires_at": row.expires_at.isoformat(),
+        "lifetime_days": row.lifetime_days,
+        "revoked": row.revoked_at is not None, "replaced": row.replaced_by_id is not None,
     }
+
+
+def _peer_key(authorization: str) -> str:
+    scheme, _, credential = authorization.partition(" ")
+    if scheme != "Peer" or not credential:
+        raise HTTPException(401, "Invalid integration credentials")
+    return credential
 
 
 @router.post("/grants", status_code=201)
@@ -62,20 +70,43 @@ async def list_peer_grants(ctx: AuthContext = Depends(user_owner),
 async def revoke_peer_grant(grant_id: uuid.UUID, ctx: AuthContext = Depends(user_owner),
                             session: AsyncSession = Depends(get_session)):
     await peer_access.revoke(session, ctx.company_id, grant_id)
+    await peer_access.notify_expiring(session, ctx.company_id)
     await session.commit()
     return {"revoked": True}
 
+
+@router.post("/grants/{grant_id}/extend")
+async def extend_peer_grant(grant_id: uuid.UUID, ctx: AuthContext = Depends(user_owner),
+                            session: AsyncSession = Depends(get_session)):
+    row = await peer_access.extend(session, ctx.company_id, grant_id)
+    await peer_access.notify_expiring(session, ctx.company_id)
+    await session.commit()
+    return _public(row)
+
+
 @router.get("/verify")
 async def verify_peer_grant(source_company_id: uuid.UUID,
-                            scope: Scope = "contacts",
                             authorization: str = Header(default=""),
                             session: AsyncSession = Depends(get_session)):
-    scheme, _, credential = authorization.partition(" ")
-    if scheme != "Peer" or not credential:
-        raise HTTPException(401, "Invalid integration credentials")
-    grant = await peer_access.authenticate(
-        session, credential, source_company_id=source_company_id, scope=scope)
-    return {"company_id": str(grant.company_id), "scopes": list(grant.scopes)}
+    grant = await peer_access.held(
+        session, _peer_key(authorization), source_company_id=source_company_id, now=None)
+    return {"company_id": str(grant.company_id), "scopes": list(grant.scopes),
+            "expires_at": grant.expires_at.isoformat()}
+
+
+class RenewRequest(BaseModel):
+    source_company_id: uuid.UUID
+
+
+@router.post("/renew")
+async def renew_peer_grant(body: RenewRequest, authorization: str = Header(default=""),
+                           session: AsyncSession = Depends(get_session)):
+    """The sending company exchanges its key for a new one before it expires."""
+    row, secret = await peer_access.rotate(
+        session, _peer_key(authorization), source_company_id=body.source_company_id)
+    await peer_access.notify_expiring(session, row.company_id)
+    await session.commit()
+    return {"credential": secret, "expires_at": row.expires_at.isoformat()}
 
 
 class ContactData(BaseModel):
@@ -101,11 +132,8 @@ async def receive_peer_contact(body: PeerContactUpdate,
                                authorization: str = Header(default=""),
                                session: AsyncSession = Depends(get_session)):
     from celerp.services.peer_identity import receive_contact
-    scheme, _, key = authorization.partition(" ")
-    if scheme != "Peer" or not key:
-        raise HTTPException(401, "Invalid integration credentials")
     grant = await peer_access.authenticate(
-        session, key, source_company_id=body.source_company_id, scope="contacts")
+        session, _peer_key(authorization), source_company_id=body.source_company_id, scope="contacts")
     result = await receive_contact(
         session, grant=grant, source_entity_id=body.source_entity_id,
         source_revision=body.source_revision, data=body.data.model_dump())
@@ -138,11 +166,8 @@ async def receive_peer_product(body: PeerProductUpdate,
                                authorization: str = Header(default=""),
                                session: AsyncSession = Depends(get_session)):
     from celerp.services.peer_identity import receive_product
-    scheme, _, key = authorization.partition(" ")
-    if scheme != "Peer" or not key:
-        raise HTTPException(401, "Invalid integration credentials")
     grant = await peer_access.authenticate(
-        session, key, source_company_id=body.source_company_id, scope="products")
+        session, _peer_key(authorization), source_company_id=body.source_company_id, scope="products")
     outcome = await receive_product(
         session, grant=grant, source_entity_id=body.source_entity_id,
         source_revision=body.source_revision, data=body.data.model_dump())
@@ -162,11 +187,8 @@ async def receive_peer_document(body: PeerDocumentUpdate,
                                 authorization: str = Header(default=""),
                                 session: AsyncSession = Depends(get_session)):
     from celerp.services.peer_documents import receive_draft_document
-    scheme, _, credential = authorization.partition(" ")
-    if scheme != "Peer" or not credential:
-        raise HTTPException(401, "Invalid integration credentials")
     grant = await peer_access.authenticate(
-        session, credential, source_company_id=body.source_company_id,
+        session, _peer_key(authorization), source_company_id=body.source_company_id,
         scope="documents")
     outcome = await receive_draft_document(
         session, grant=grant, source_entity_id=body.source_entity_id,
@@ -190,11 +212,8 @@ async def receive_peer_attachment(
 ):
     from celerp.services.peer_attachments import receive_attachment
 
-    scheme, _, credential = authorization.partition(" ")
-    if scheme != "Peer" or not credential:
-        raise HTTPException(401, "Invalid integration credentials")
     grant = await peer_access.authenticate(
-        session, credential, source_company_id=source_company_id,
+        session, _peer_key(authorization), source_company_id=source_company_id,
         scope="documents",
     )
     status = await receive_attachment(
@@ -236,11 +255,8 @@ async def receive_peer_stock_audit(
     session: AsyncSession = Depends(get_session),
 ):
     from celerp.services.peer_inventory import receive_stock_audit
-    scheme, _, credential = authorization.partition(" ")
-    if scheme != "Peer" or not credential:
-        raise HTTPException(401, "Invalid integration credentials")
     grant = await peer_access.authenticate(
-        session, credential, source_company_id=body.source_company_id,
+        session, _peer_key(authorization), source_company_id=body.source_company_id,
         scope="inventory")
     outcome = await receive_stock_audit(
         session, grant=grant, source_entity_id=body.source_entity_id,

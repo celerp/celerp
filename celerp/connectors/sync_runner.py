@@ -90,6 +90,8 @@ async def run_connector_sync(
         expected_direction = resolved_direction if config is not None else None
         await guard_session.commit()
 
+    if resolved_direction != SyncDirection.INBOUND:
+        await connector.before_outbound(ctx)
     results: list[SyncResult] = []
     completed: dict[str, bool] = {}
     dependencies = getattr(connector, "outbound_dependencies", {})

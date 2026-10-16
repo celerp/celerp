@@ -174,6 +174,7 @@ async def _verify_runtime_dependencies() -> None:
     )
     from celerp.connectors.daily_scheduler import scheduler_loop_all
     from celerp.connectors.relay_token import fetch_context as connector_token_fetcher
+    from celerp.services.peer_access import expiry_warning_loop
     from celerp.services.reorder import reorder_alert_loop
     from celerp.services.update import update_loop
 
@@ -189,6 +190,7 @@ async def _verify_runtime_dependencies() -> None:
         scheduler_loop_all,
         connector_token_fetcher,
         reorder_alert_loop,
+        expiry_warning_loop,
         update_loop,
     )
     if settings.gateway_token and not settings.celerp_public_url:
@@ -609,6 +611,11 @@ async def _serve(_app: FastAPI, held):
             # alerts disabled or no reorder points set).
             asyncio.create_task(reorder_alert_loop()),
         ]
+
+    # Company key expiry: an hourly check that keeps one notice standing while a key
+    # this company issued to a client company expires within a week.
+    from celerp.services.peer_access import expiry_warning_loop
+    background.append(asyncio.create_task(expiry_warning_loop()))
 
     # Update checks: reports the last update attempt once, then checks hourly and,
     # when automatic updates are on, installs overnight in the owner's time zone.

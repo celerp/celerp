@@ -229,8 +229,6 @@ async def store_credentials(
     subscription_required, relay_not_https, relay_error.
     """
     from celerp import connectors
-    import httpx
-    from celerp.gateway.state import relay_http_url, relay_session_headers
 
     try:
         connector = connectors.get(connector_name)
@@ -308,10 +306,10 @@ async def store_credentials(
                 return {"ok": False, "error": "store_rejected",
                         "detail": "The receiving installation rejected this company key."}
             info = json.loads(response.content)
-            if (not isinstance(info, dict) or "contacts" not in info.get("scopes", [])
+            if (not isinstance(info, dict) or not info.get("scopes")
                     or not info.get("company_id")):
                 return {"ok": False, "error": "store_rejected",
-                        "detail": "The receiving company did not confirm contact access."}
+                        "detail": "The receiving company did not confirm which records it accepts."}
         except Exception:
             return {"ok": False, "error": "store_unreachable",
                     "detail": "The receiving Celerp installation could not be verified."}
@@ -433,26 +431,13 @@ async def store_credentials(
             "detail": f"{exc} Disconnect it before retrying.",
         }
 
+    from celerp.connectors.relay_token import RelayStoreError, store_api_key
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-            r = await client.post(
-                f"{relay_http_url()}/tokens/{connector_name}",
-                json={
-                    "consumer_key": payload.consumer_key,
-                    "consumer_secret": payload.consumer_secret,
-                    "store_url": store_url or None,
-                },
-                headers=relay_session_headers(),
-            )
-    except Exception as exc:
+        await store_api_key(connector_name, payload.consumer_key, payload.consumer_secret, store_url)
+    except RelayStoreError as exc:
+        if exc.status == 402:
+            return await _failure("subscription_required", "")
         return await _failure("relay_error", str(exc))
-
-    if r.status_code == 402:
-        return await _failure("subscription_required", "")
-    if r.status_code != 200:
-        return await _failure(
-            "relay_error", f"relay returned {r.status_code}"
-        )
 
     webhook_ids: list[str] = []
     if connector_name == "woocommerce":

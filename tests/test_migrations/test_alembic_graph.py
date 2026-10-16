@@ -41,10 +41,11 @@ RELEASE_HEAD = "o2d3e4f5a6b7"
 # What this release adds on top of it, oldest first: session companies, then the
 # payment revisions, then per-company modules for companies from 2.5, then the invoice
 # an unmatched payment is recorded on, then cash flow sections, notice translations and
-# generated account codes, then import reversibility, then per-user notice reads.
+# generated account codes, then import reversibility, then per-user notice reads,
+# then company integration keys and their rotation.
 RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1", "t7i8j9k0l1m2",
                  "u8j9k0l1m2n3", "c7f1a2b3d4e5", "d8e9f0a1b2c3", "e9f0a1b2c3d4", "v0m1n2o3p4q5",
-                 "w1n2o3p4q5r6", "x2p3q4r5s6t7"]
+                 "w1n2o3p4q5r6", "x2p3q4r5s6t7", "a1r2o3t4a5t6"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.
@@ -108,9 +109,9 @@ def test_peer_downgrade_preserves_persisted_records(table):
                     conn.execute(text(
                         "INSERT INTO company_peer_grants "
                         "(id, company_id, source_company_id, token_hash, label, scopes, "
-                        "created_at, expires_at) VALUES "
+                        "created_at, expires_at, lifetime_days) VALUES "
                         "(:id, :company, :source, :digest, 'Firm', '[\"contacts\"]', "
-                        "now(), now() + interval '1 day')"), {
+                        "now(), now() + interval '1 day', 1)"), {
                             "id": str(uuid.uuid4()), "company": company_id,
                             "source": str(uuid.uuid4()), "digest": "a" * 64,
                         })

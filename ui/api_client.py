@@ -4085,6 +4085,11 @@ async def issue_accountant_peer_grant(token: str, payload: dict) -> dict:
         return _raise(await c.post("/company-peers/grants", json=payload)).json()
 
 
+async def extend_accountant_peer_grant(token: str, grant_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/company-peers/grants/{grant_id}/extend")).json()
+
+
 async def revoke_accountant_peer_grant(token: str, grant_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/company-peers/grants/{grant_id}/revoke")).json()
