@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import tarfile
+import time
 
 import psycopg2
 import pytest
@@ -89,6 +90,7 @@ def recovery(page, ui_server, api, tmp_path, monkeypatch):
 
 def test_system_recovery_safety_failure_confirm_browser(page, recovery, tmp_path):
     dump, names, url = recovery
+    page.on("dialog", lambda d: d.accept())
     page.set_input_files("#backup-import-input", _archive(tmp_path / "whole.celerp-backup", dump))
     button = page.locator('button:has-text("Restore without safety copy")')
     button.wait_for(timeout=_WAIT_MS)
@@ -107,6 +109,7 @@ def test_system_recovery_safety_failure_confirm_browser(page, recovery, tmp_path
 
 def test_system_recovery_refuses_a_cut_short_dump_browser(page, recovery, tmp_path):
     dump, names, url = recovery
+    page.on("dialog", lambda d: d.accept())
     page.set_input_files("#backup-import-input", _archive(tmp_path / "cut.celerp-backup", dump[:len(dump) // 8]))
     page.wait_for_selector("#backup-flash.flash--error", timeout=_WAIT_MS)
     flash = page.locator("#backup-flash").inner_text()
@@ -114,3 +117,37 @@ def test_system_recovery_refuses_a_cut_short_dump_browser(page, recovery, tmp_pa
     assert page.locator('button:has-text("Restore without safety copy")').count() == 0
     assert set(_company_names(url)) == {_RENAMED}
     assert not (tmp_path / "data" / "static" / "attachments").exists()
+
+
+def _slow_answer(accept: bool):
+    """A dialog handler that answers like a person reading the warning first."""
+    def answer(dialog):
+        time.sleep(6)
+        dialog.accept() if accept else dialog.dismiss()
+    return answer
+
+
+def test_import_backup_opens_the_file_picker_after_a_slow_confirm_browser(page, recovery, tmp_path):
+    """Reading the warning for more than a few seconds must not stop the file picker
+    from opening: the browser only lets a click open it for a short time."""
+    dump, names, url = recovery
+    page.on("dialog", _slow_answer(accept=True))
+    with page.expect_file_chooser(timeout=_WAIT_MS) as chooser:
+        page.click("#backup-import-btn")
+    chooser.value.set_files(_archive(tmp_path / "whole.celerp-backup", dump))
+    page.locator('button:has-text("Restore without safety copy")').wait_for(timeout=_WAIT_MS)
+
+
+def test_import_backup_cancelled_at_the_warning_sends_nothing_browser(page, recovery, tmp_path):
+    dump, names, url = recovery
+    sent = []
+    page.on("request", lambda r: sent.append(r.url) if "/backup/import" in r.url else None)
+    page.on("dialog", lambda d: d.dismiss())
+    with page.expect_file_chooser(timeout=_WAIT_MS) as chooser:
+        page.click("#backup-import-btn")
+    chooser.value.set_files(_archive(tmp_path / "whole.celerp-backup", dump))
+    page.wait_for_timeout(1000)
+    assert sent == []
+    button = page.locator("#backup-import-btn")
+    assert button.is_enabled() and button.inner_text() == t("btn.import_backup", "en")
+    assert set(_company_names(url)) == {_RENAMED}
