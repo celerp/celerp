@@ -532,7 +532,7 @@ async def test_enable_and_open_held_when_the_preview_changes_during_the_restart(
     assert "open_held" not in await _staged(real_client, tok, upload_token)
 
 
-async def test_copy_without_a_module_installed_here_opens_with_it_off_and_empty(real_client, real_engine, installed,
+async def test_copy_omitting_modules_policy(real_client, real_engine, installed,
                                                                                monkeypatch):
     """A module this installation runs that the copy does not use asks for nothing: the copy
     opens, and its company has the module off with no data of it."""

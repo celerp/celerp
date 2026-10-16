@@ -22,7 +22,7 @@ seed_demo = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(seed_demo)
 
 
-def test_entity_sets_are_defined_once():
+def test_entity_set_defined_once():
     from ui.routes import settings_connectors
 
     assert base.OUTBOUND_ENTITIES == (
@@ -44,7 +44,7 @@ def test_every_entity_has_a_label(lang):
 
 
 @pytest.mark.asyncio
-async def test_attention_names_documents_by_number(client, session, monkeypatch, memory_marks):
+async def test_attention_items_show_document_numbers(client, session, monkeypatch, memory_marks):
     from celerp import db
     from celerp.connectors import celerp as peer
     from jose import jwt

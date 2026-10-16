@@ -69,19 +69,13 @@ def _trial_balance(source, decisions=FULL) -> dict[str, D]:
     return {r.key: D(r.expected) for r in rows if r.measure == M.TRIAL_BALANCE}
 
 
-def test_starting_balances_and_holders_scan_without_blockers(tmp_path):
-    """RED before the change: every starting balance type, every holder type and the
-    custom control accounts stop Full history as unsupported."""
-    rows = _rows(_source(tmp_path))
-    assert {label: r.note for label, r in rows.items() if r.coverage_class in STOPPING} == {}
-    for label in ("CapitalAccount", "SubAccount", "SpecialAccount", "Employee", "ExpenseClaimsPayer", "FixedAsset",
-                  "IntangibleAsset", "Investment", "ControlAccountForCapitalAccounts",
+STARTING_TYPES = ("CapitalAccount", "SubAccount", "SpecialAccount", "Employee", "ExpenseClaimsPayer",
+                  "FixedAsset", "IntangibleAsset", "Investment", "ControlAccountForCapitalAccounts",
                   "ControlAccountForBankAccounts", "BalanceSheetAccountStartingBalance",
                   "BankOrCashAccountStartingBalance", "CapitalAccountStartingBalance",
                   "SpecialAccountStartingBalance", "EmployeeStartingBalance", "FixedAssetStartingBalance",
-                  "IntangibleAssetStartingBalance", "InventoryItemStartingBalance", "InvestmentStartingBalance",
-                  "SalesInvoiceStartingBalance"):
-        assert rows[label].coverage_class in (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS), label
+                  "IntangibleAssetStartingBalance", "InventoryItemStartingBalance",
+                  "InvestmentStartingBalance", "SalesInvoiceStartingBalance")
 
 
 def test_holders_arrive_as_accounts_under_their_control_account(tmp_path):
@@ -191,13 +185,16 @@ def _history_with(label: str, changes: dict) -> list:
             for o in specs.history_objects()]
 
 
-def test_activity_records_scan_without_blockers(tmp_path):
-    """RED before the change: depreciation, amortization, payslips, expense claims, late
-    fees, withholding tax receipts, billable time and market prices each stop Full history
-    as unsupported, and so does the disposed van."""
-    rows = _rows(_history(tmp_path))
+@pytest.mark.parametrize("book", ["starting", "history"])
+def test_manager_full_history_blocking_types(tmp_path, book):
+    """RED before the change: in the starting book, every starting balance type, every
+    holder type and the custom control accounts stop Full history as unsupported; in the
+    history book, depreciation, amortization, payslips, expense claims, late fees,
+    withholding tax receipts, billable time and market prices each do, and so does the
+    disposed van."""
+    rows = _rows(_source(tmp_path) if book == "starting" else _history(tmp_path))
     assert {label: r.note for label, r in rows.items() if r.coverage_class in STOPPING} == {}
-    for label in ACTIVITY:
+    for label in STARTING_TYPES if book == "starting" else ACTIVITY:
         assert rows[label].coverage_class in (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS), label
 
 

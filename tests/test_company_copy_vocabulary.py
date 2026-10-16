@@ -54,7 +54,7 @@ def _copy_strings(catalog: dict[str, str]) -> dict[str, str]:
 
 
 @pytest.mark.parametrize("lang", sorted(FORBIDDEN))
-def test_company_copy_strings_never_call_it_a_backup(lang):
+def test_company_copy_vocabulary(lang):
     catalog = _catalog(lang)
     # Pointing at the Backup tab, where System Recovery lives, is allowed.
     tab = re.escape(catalog["settings.tab_backup"])

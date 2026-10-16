@@ -469,10 +469,18 @@ async def test_checkin_payload_has_no_handoff(real_engine, real_client, tmp_path
     assert "handoff_id" not in sent[0][1]
 
 
+def test_handoff_id_confined_to_attribution():
+    """The old handoff_id name is gone from everything that ships, migrations included, not
+    only from the activation contract (which names the opened copy by copy_id and
+    copy_receipt). Only tests mention it, to prove it absent."""
+    found = subprocess.run(["git", "grep", "-n", "-I", "-F", "handoff_id", "--", ".", ":(exclude)tests"],
+                           cwd=REPO_ROOT, capture_output=True, text=True)
+    assert found.returncode == 1, found.stdout or found.stderr
+
+
 async def test_company_copy_names_removed(real_engine, real_client):
     """No shipped code or copy uses the old company copy names, and the old API is gone."""
-    patterns = ["company_copy", "company-copies", "company-copy", "Independent company copy",
-                "handoff_id", "open-copy"]
+    patterns = ["company_copy", "company-copies", "company-copy", "Independent company copy", "open-copy"]
     args = ["git", "grep", "-n", "-I", "-F"]
     for p in patterns:
         args += ["-e", p]

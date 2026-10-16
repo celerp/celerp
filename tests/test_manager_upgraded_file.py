@@ -103,7 +103,7 @@ def _books(manifest) -> dict:
     }
 
 
-def test_upgraded_file_scans_without_blockers_and_posts_the_same_books(tmp_path):
+def test_manager_older_file_format(tmp_path):
     """RED before the change: the old fields, the new fields, the form defaults and the
     obsolete objects each stop the scan as an unknown field or an unknown type."""
     upgraded = _source(tmp_path, _upgraded())

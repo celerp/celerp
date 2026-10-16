@@ -95,7 +95,7 @@ async def test_copy_of_another_company_opens_as_new_with_no_question(real_client
     assert preview.json()["replace"] is None
 
 
-async def test_replace_puts_the_copy_in_place_and_undo_restores_the_previous_version(real_client, real_engine):
+async def test_import_copy_into_populated_company(real_client, real_engine):
     tok, data = await _copy_then_more_work(real_client, real_engine)
     old = _cid(tok)
     before_docs = await _docs(real_engine, old)

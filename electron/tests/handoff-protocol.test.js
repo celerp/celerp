@@ -61,12 +61,14 @@ function runOpenScript(page) {
   return { shown, submitted, field };
 }
 
-test("a deep link opens the company copy without a manual Continue", () => {
+function test_deep_link_opens_without_continue() {
   const { shown, submitted, field } = runOpenScript({ valid: true });
   expect(shown).toBe(true);
   expect(field.value).toBe(link);
   expect(submitted).toEqual([link]);
-});
+}
+
+test("a deep link opens the company copy without a manual Continue", test_deep_link_opens_without_continue);
 
 test("a page still asking for sign-in details keeps the link and asks for them", () => {
   const page = { valid: false };

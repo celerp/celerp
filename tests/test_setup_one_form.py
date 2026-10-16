@@ -285,7 +285,7 @@ async def test_setup_options_hide_supported_line_when_sources_fail(ui_client):
 
 
 @pytest.mark.asyncio
-async def test_setup_options_and_later_note_present(ui_client):
+async def test_first_run_offers_open_company_copy(ui_client):
     with _Stubs():
         r = await ui_client.get("/setup")
     html = r.text

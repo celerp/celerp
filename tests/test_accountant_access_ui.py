@@ -131,7 +131,7 @@ def test_accountant_access_table_labels_no_reload():
 
 
 @pytest.mark.asyncio
-async def test_key_renewal_and_expiry_warning_on_the_access_page(monkeypatch):
+async def test_key_renewal_and_expiry_warning(monkeypatch):
     """Renew key and Revoke answer with the refreshed table instead of reloading the page."""
     from datetime import datetime, timezone
     from fasthtml.common import to_xml

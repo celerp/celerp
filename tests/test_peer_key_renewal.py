@@ -67,7 +67,7 @@ async def test_keys_last_one_year(db):
 
 
 @pytest.mark.asyncio
-async def test_renew_key_extends_the_same_key_by_a_year(db):
+async def test_peer_key_rotation(db):
     factory, target = db
     source = uuid.uuid4()
     grant, key = await _issued(factory, target, source)
