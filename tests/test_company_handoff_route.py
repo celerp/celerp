@@ -220,3 +220,58 @@ async def test_import_preview_shows_firm_name(real_engine, real_client, monkeypa
     preview = await read(real_client, bearer, sent.read_bytes())
     assert preview.status_code == 200, preview.text
     assert preview.json()["provenance"]["prepared_by"] == "North Ledger"
+
+
+_REFUSALS = (
+    (429, {"detail": "Too many copies created today"}, "Too many copies created today"),
+    (409, {"detail": "50 active copies is the limit. Revoke an old copy or download one."},
+     "50 active copies is the limit. Revoke an old copy or download one."),
+    (422, {"detail": [{"loc": ["body", "firm_name"], "msg": "String should have at most 200 characters",
+                       "type": "string_too_long"}]}, "String should have at most 200 characters"),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,body,shown", _REFUSALS, ids=("rate-limit", "conflict", "validation"))
+async def test_send_shows_the_cloud_refusal_with_its_status(real_engine, real_client, monkeypatch, tmp_path,
+                                                            status, body, shown):
+    """A refusal the cloud explains reaches the send form with its own status and words,
+    never as a failed connection. RED before the change: every refusal answered 502."""
+    import httpx
+    from celerp.config import settings
+    from celerp.services import cloud_entitlement
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    user = await owner(real_engine)
+    company_id = await company(real_engine, user, "Refused books", f"refused-{status}")
+    bearer = await token(real_engine, user, company_id)
+
+    async def cloud(method, path, *, json=None, params=None, total_s):
+        if method == "GET":
+            return httpx.Response(200, json={"items": []})
+        assert (method, path) == ("POST", "/handoffs")
+        return httpx.Response(status, json=body)
+
+    monkeypatch.setattr(cloud_entitlement, "authenticated_request", cloud)
+    r = await real_client.post("/company-backups/send-handoff", json={
+        "operation_id": str(uuid.uuid4()),
+        "key": base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("="),
+        "firm_name": "Owner books", "recipient": "client@example.com",
+        "reply_to": "verified@example.com", "note": ""}, headers={"Authorization": f"Bearer {bearer}"})
+    assert (r.status_code, r.json()["detail"]) == (status, shown)
+
+
+@pytest.mark.asyncio
+async def test_copies_list_without_an_account_asks_for_one(real_engine, real_client, monkeypatch):
+    """The copies list answers like the send form when no Celerp account is signed in.
+    RED before the change: it answered 502."""
+    from celerp.services import cloud_entitlement
+    user = await owner(real_engine)
+    company_id = await company(real_engine, user, "Signed out books", "copies-no-account")
+    bearer = await token(real_engine, user, company_id)
+
+    async def no_account(*a, **kw):
+        return None
+
+    monkeypatch.setattr(cloud_entitlement, "authenticated_request", no_account)
+    r = await real_client.get("/company-backups/handoffs", headers={"Authorization": f"Bearer {bearer}"})
+    assert r.status_code == 428 and "free Celerp account" in r.json()["detail"]
