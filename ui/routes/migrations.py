@@ -24,6 +24,7 @@ in request bodies to the API, never in a URL.
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -39,7 +40,7 @@ from ui.api_client import APIError
 from ui.components.posting_accounts import NEW_ACCOUNT, account_picker
 from ui.components.shell import auth_shell, client_scripts, flash, page_title
 from ui.components.activity import fmt_qty
-from ui.components.table import EMPTY, display_enum, fmt_money, searchable_select
+from ui.components.table import EMPTY, display_enum, fmt_money, format_value, searchable_select
 from ui.config import (
     clear_session_cookies,
     cookie_domain,
@@ -49,6 +50,7 @@ from ui.config import (
     set_session_cookies,
 )
 from ui.i18n import doc_type_label, get_lang, role_label, t
+from ui.routes.account import account_panel
 from ui.routes.auth import auth_header
 
 SCAN_COOKIE = "celerp_migration_scan"
@@ -464,6 +466,9 @@ async def _source_page(request: Request, mode: WizardMode, *, selected: str = ""
         flash(error) if error and not draft else "",
         flash(sources_error) if sources_error else "",
         upload,
+        # A client can send their export files by link instead; loaded after the page,
+        # since it asks the cloud for the requests sent.
+        Div(id="export-requests", hx_get=f"{mode.base}/requests", hx_trigger="load") if mode is COMPANY else "",
         sample,
         _source_request_form(),
         back_link(back or mode.back),
@@ -521,6 +526,17 @@ async def _choose_source(request: Request, mode: WizardMode):
                 return _change_source_page(request, mode, entry, source)
             clear = True
 
+    draft_token = None if clear or not api_token(request, mode) else await _draft_for(request, source or None)
+    if draft_token and source:
+        # The export set kept so far, such as files a client sent, shown checked.
+        try:
+            result = await api.migration_scan(api_token(request, mode), [], source, draft=draft_token, check=True)
+        except APIError as e:
+            resp = await _source_page(request, mode, selected=source, prepared_by=prepared_by, error=str(e.detail))
+            return _with_draft(resp, request, mode, None) if e.status == 410 else resp
+        resp = await _source_page(request, mode, selected=source, prepared_by=prepared_by, back=back,
+                                  draft=result.get("checklist"))
+        return _with_draft(resp, request, mode, result.get("draft_token"))
     resp = await _source_page(request, mode, selected=source, prepared_by=prepared_by, back=back)
     return _with_cleared_scan(resp, request, mode) if clear else resp
 
@@ -640,6 +656,178 @@ async def _printable_checklist(request: Request, mode: WizardMode):
         Button(t("btn.print"), type="button", cls="btn btn--primary", onclick="window.print()"),
         back_link(f"{mode.base}?{urlencode({'source': source})}"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Export requests: a client sends their export files by link
+# ---------------------------------------------------------------------------
+# The owner emails a client the checklist of an export-set source. The client uploads
+# the files from the link, encrypted with a key only the link and this installation
+# hold, and the owner adds what arrived to the upload. Only a signed-in owner has a
+# firm to send from, so only the company mode shows this.
+
+EXPORT_REQUEST_FIELDS = ("operation_id", "firm_name", "client_name", "recipient", "reply_to", "source")
+_REQUEST_BADGE = {"pending": "badge--pending", "sent": "badge--open", "arrived": "badge--active",
+                  "revoked": "badge--neutral", "expired": "badge--neutral"}
+
+
+def _request_id(request: Request) -> str | None:
+    try:
+        return str(uuid.UUID(request.path_params["request_id"]))
+    except ValueError:
+        return None
+
+
+def _request_state(row: dict) -> str:
+    status = row.get("status") or "pending"
+    return "arrived" if status == "sent" and row.get("files") else status
+
+
+def _request_actions(mode: WizardMode, row: dict) -> FT:
+    path = f"{mode.base}/requests/{row['id']}"
+    actions = []
+    if row.get("files") and row.get("readable"):
+        actions.append(Form(Button(t("migration.export_request_add"), type="submit", cls="btn btn--primary btn--sm"),
+                            method="post", action=f"{path}/add"))
+    if row.get("status") in ("pending", "sent"):
+        actions.append(Button(t("btn.revoke"), type="button", hx_post=f"{path}/revoke",
+                              hx_confirm=t("migration.export_request_revoke_confirm"),
+                              hx_target="#export-requests", hx_swap="outerHTML", cls="btn btn--danger btn--sm"))
+    return Div(*actions, cls="flex-row flex-wrap gap-sm") if actions else Span(EMPTY)
+
+
+def _requests_table(mode: WizardMode, rows: list[dict], names: dict[str, str]) -> FT:
+    """The requests sent, newest first, each with the files that arrived."""
+    if not rows:
+        return P(t("migration.export_requests_empty"), cls="form-hint")
+    rows = sorted(rows, key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    return Div(
+        H4(t("migration.export_requests_waiting")),
+        wizard_table(
+            Thead(Tr(Th(t("migration.export_request_client")), Th(t("migration.source_label")),
+                     Th(t("migration.export_request_sent")), Th(t("th.status")),
+                     Th(t("migration.export_request_files")), Th(t("th.actions")))),
+            Tbody(*(Tr(Td(r.get("client_name") or EMPTY), Td(names.get(r.get("source"), r.get("source") or EMPTY)),
+                       Td(format_value(r["created_at"], "date") if r.get("created_at") else EMPTY, cls="cell--date"),
+                       Td(_badge(t(f"migration.export_request_status_{_request_state(r)}"),
+                                 _REQUEST_BADGE.get(_request_state(r), "badge--neutral"))),
+                       Td(", ".join(str(f.get("name")) for f in r.get("files") or []) or EMPTY),
+                       Td(_request_actions(mode, r)))
+                    for r in rows)),
+        ),
+        P(t("migration.export_request_revoke_reason"), cls="form-hint"),
+    )
+
+
+async def _requests_panel(request: Request, mode: WizardMode, *, values: dict | None = None,
+                          error: str | None = None, notice: str | None = None, account: bool = False):
+    """The ask-a-client section of the upload page, swapped in place by every action on it."""
+    token = get_token(request)
+    sources, sources_error = await _sources()
+    asked = [s for s in sources if s.get("checklist")]
+    if values is None:
+        try:
+            last = await api.company_backup_sender(token)
+        except APIError:
+            last = {}
+        values = {"firm_name": last.get("firm_name") or "", "reply_to": last.get("reply_to") or ""}
+    operation = values.get("operation_id") or str(uuid.uuid4())
+    try:
+        rows, list_error = await api.migration_export_requests(token), None
+    except APIError as e:
+        rows, list_error = [], str(e.detail)
+    if account:
+        try:
+            google = bool((await api.account_methods(token)).get("google"))
+        except APIError:
+            google = False
+        message = account_panel(get_lang(request), google=google, next_action="export-send")
+    else:
+        message = flash(error) if error else ""
+
+    def field(name: str, label: str, kind: str = "text", maxlength: str = "160") -> FT:
+        return Div(Label(t(label), For=f"export-{name}", cls="form-label"),
+                   Input(type=kind, id=f"export-{name}", name=name, value=values.get(name, ""),
+                         required=True, maxlength=maxlength, cls="form-input"), cls="form-group")
+
+    form = Form(
+        Input(type="hidden", name="operation_id", value=operation),
+        Div(Label(t("migration.source_label"), For="export-source", cls="form-label"),
+            Select(*(Option(s["display_name"], value=s["key"], selected=s["key"] == values.get("source"))
+                     for s in asked), id="export-source", name="source", cls="form-input"), cls="form-group"),
+        field("client_name", "migration.export_request_client"),
+        field("recipient", "migration.export_request_recipient", "email", "320"),
+        field("firm_name", "company_backup.firm_label"),
+        field("reply_to", "company_backup.reply_label", "email", "320"),
+        Button(t("migration.export_request_send"), type="submit", cls="btn btn--secondary btn--full"),
+        id="export-request-form", hx_post=f"{mode.base}/requests", hx_target="#export-requests",
+        hx_swap="outerHTML", method="post", action=f"{mode.base}/requests", cls="auth-form",
+    ) if asked else P(sources_error or t("migration.export_requests_no_source"), cls="form-hint")
+    return HTMLResponse(to_xml(Div(
+        H3(t("migration.export_requests_title")),
+        P(t("migration.export_requests_hint"), cls="form-hint"),
+        P(notice, cls="flash flash--success") if notice else "",
+        message,
+        form,
+        flash(list_error) if list_error else _requests_table(mode, rows, {s["key"]: s["display_name"] for s in sources}),
+        id="export-requests", cls="export-requests",
+    )))
+
+
+async def _requests(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    return await _requests_panel(request, mode)
+
+
+async def _send_request(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    form = await request.form()
+    values = {k: str(form.get(k, "")).strip() for k in EXPORT_REQUEST_FIELDS}
+    try:
+        await api.migration_send_export_request(get_token(request), values)
+    except APIError as e:
+        # A retry keeps the same operation, so the client gets one email with one link.
+        return await _requests_panel(request, mode, values=values, error=str(e.detail), account=e.status == 428)
+    return await _requests_panel(
+        request, mode, values={k: values[k] for k in ("firm_name", "reply_to", "source")},
+        notice=t("migration.export_request_sent_to", email=values["recipient"]))
+
+
+async def _add_request_files(request: Request, mode: WizardMode):
+    """The client's files, added to the upload or to the draft already open; the upload
+    page shows them checked against the checklist."""
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    token, request_id = get_token(request), _request_id(request)
+    if request_id is None:
+        return await _source_page(request, mode, error=t("migration.export_request_not_found"))
+    try:
+        rows = await api.migration_export_requests(token)
+        source = next((r.get("source") or "" for r in rows if r.get("id") == request_id), "")
+        result = await api.migration_add_export_request(token, request_id, request.cookies.get(DRAFT_COOKIE) or None)
+    except APIError as e:
+        return await _source_page(request, mode, error=str(e.detail))
+    if "draft_token" in result:
+        resp = RedirectResponse(f"{mode.base}?{urlencode({'source': source})}", status_code=303)
+        _set_cookie(resp, DRAFT_COOKIE, result["draft_token"], mode, request)
+        return resp
+    resp = RedirectResponse(f"{mode.base}/coverage", status_code=303)
+    _set_scan_cookies(resp, result["scan_token"], "", mode, request)
+    return resp
+
+
+async def _revoke_request(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    if (request_id := _request_id(request)) is None:
+        return await _requests_panel(request, mode, error=t("migration.export_request_not_found"))
+    try:
+        await api.migration_revoke_export_request(get_token(request), request_id)
+    except APIError as e:
+        return await _requests_panel(request, mode, error=str(e.detail))
+    return await _requests_panel(request, mode, notice=t("migration.export_request_revoked"))
 
 
 async def _sample(request: Request, mode: WizardMode):
@@ -1223,6 +1411,10 @@ def _register_wizard(app, mode: WizardMode) -> None:
         ("get", "/coverage", _coverage), ("get", "/mapping", _mapping),
         ("post", "/decisions", _save_decisions), ("get", "/review", _review), ("post", "/start", _start),
     )
+    if mode is COMPANY:
+        steps += (("get", "/requests", _requests), ("post", "/requests", _send_request),
+                  ("post", "/requests/{request_id}/add", _add_request_files),
+                  ("post", "/requests/{request_id}/revoke", _revoke_request))
     for method, suffix, handler in steps:
         getattr(app, method)(f"{mode.base}{suffix}")(bind(handler, mode, "migrate"))
 

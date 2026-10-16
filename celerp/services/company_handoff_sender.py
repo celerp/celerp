@@ -11,13 +11,13 @@ import os
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import httpx
+from fastapi import HTTPException
 
 from celerp.services import cloud_entitlement, company_backup_files as files
 from celerp.services.company_handoff_crypto import decrypt_file, encrypt_file
-from celerp.services.company_handoff_links import handoff_page_link
+from celerp.services.company_handoff_links import handoff_page_link, spaces_object_url
 
 
 class HandoffSendError(Exception):
@@ -40,47 +40,65 @@ _ACCOUNT_NEEDED = "Sign in to a free Celerp account to send a company copy link.
 
 
 def _upload_url(value: object, copy_id: uuid.UUID) -> str:
-    if not isinstance(value, str) or len(value) > 4096:
-        raise HandoffSendError("The upload destination is unavailable")
     try:
-        url = urlsplit(value)
-        host, port = url.hostname, url.port
+        return spaces_object_url(value, f"/handoffs/{copy_id.hex}.upload")
     except ValueError:
         raise HandoffSendError("The upload destination is unavailable") from None
-    if (url.scheme != "https" or not host or
-            not (host == "digitaloceanspaces.com" or host.endswith(".digitaloceanspaces.com")) or
-            port is not None or url.username or url.password or url.fragment or
-            not url.path.endswith(f"/handoffs/{copy_id.hex}.upload")):
-        raise HandoffSendError("The upload destination is unavailable")
-    return value
 
 
-async def _cloud(method: str, path: str, *, payload: dict | None = None,
-                 params: dict | None = None, expected: int = 200) -> dict:
+async def cloud_json(method: str, path: str, *, payload: dict | None = None, params: dict | None = None,
+                     expected: int = 200, unconfirmed: str, account_needed: str,
+                     refused_means_account: bool = False) -> dict:
+    """One call to the cloud as this installation's account, answered with its JSON object.
+    No account, or a refusal the caller knows means an unverified one, raises
+    HandoffAccountNeeded with ``account_needed``; a refusal the cloud explains keeps its
+    words and status; anything else is ``unconfirmed``."""
     try:
         response = await cloud_entitlement.authenticated_request(
             method, path, json=payload, params=params, total_s=35)
     except (httpx.HTTPError, TimeoutError) as exc:
-        raise HandoffSendError("Could not confirm the company copy. Retry the same operation") from exc
+        raise HandoffSendError(unconfirmed) from exc
     if response is None or response.status_code == 401:
-        raise HandoffAccountNeeded(_ACCOUNT_NEEDED)
-    if response.status_code == 403 and (method, path) == ("POST", "/handoffs"):
-        # The relay's only refusal on create is an account it has not verified.
-        raise HandoffAccountNeeded(_ACCOUNT_NEEDED)
+        raise HandoffAccountNeeded(account_needed)
+    if response.status_code == 403 and refused_means_account:
+        raise HandoffAccountNeeded(account_needed)
     if response.status_code != expected:
         # A refusal the relay explains (a limit and its way out, a reply-to
         # mismatch) is shown as is; anything else is unconfirmed.
         detail = _detail(response) if 400 <= response.status_code < 500 else None
         if detail:
             raise HandoffRefused(detail, response.status_code)
-        raise HandoffSendError("Could not confirm the company copy. Retry the same operation")
+        raise HandoffSendError(unconfirmed)
     try:
         data = response.json()
     except ValueError:
-        raise HandoffSendError("Invalid company copy response") from None
+        raise HandoffSendError(unconfirmed) from None
     if not isinstance(data, dict):
-        raise HandoffSendError("Invalid company copy response")
+        raise HandoffSendError(unconfirmed)
     return data
+
+
+async def as_http(call):
+    """Await a cloud call, its refusals as HTTP errors that keep their words: 428 when a
+    free account is needed (the page offers one in place), the cloud's own status for a
+    reason the owner can act on, 502 only when the result is unconfirmed."""
+    try:
+        return await call
+    except HandoffAccountNeeded as exc:
+        raise HTTPException(status_code=428, detail=str(exc)) from None
+    except HandoffRefused as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+    except HandoffSendError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+
+
+async def _cloud(method: str, path: str, *, payload: dict | None = None,
+                 params: dict | None = None, expected: int = 200) -> dict:
+    # The relay's only refusal on creating a copy is an account it has not verified.
+    return await cloud_json(method, path, payload=payload, params=params, expected=expected,
+                            unconfirmed="Could not confirm the company copy. Retry the same operation",
+                            account_needed=_ACCOUNT_NEEDED,
+                            refused_means_account=(method, path) == ("POST", "/handoffs"))
 
 
 def _detail(response: httpx.Response) -> str | None:

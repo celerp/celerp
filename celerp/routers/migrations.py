@@ -9,6 +9,8 @@ Two entry modes share one flow (scan, decide, start, watch, verify, finish):
   Start creates the first owner and the staged company in one transaction.
 - company: an authenticated company owner moves another company in. Their session stays
   on the company they are working in; they open the new company only after finishing.
+  The owner can also email a client the export checklist of a source and add the files
+  the client uploads to the scan (``migration_export_requests``).
 
 Run routes belong to the run's creator while they own its company, whichever company
 their current token is scoped to (``migrations.get_owned_migration_run``); to anyone
@@ -40,6 +42,8 @@ from celerp.models.migration import MigrationRun
 from celerp.modules import requirements
 from celerp.routers.auth import companyless_login, hold_direct_slot, limiter
 from celerp.services import bootstrap
+from celerp.services import company_handoff_sender as sender
+from celerp.services import migration_export_requests as export_requests_service
 from celerp.services import migration_scan_store as store
 from celerp.services import migrations
 from celerp.services import posting_readiness
@@ -476,6 +480,45 @@ async def _run_view(session: AsyncSession, run_id: uuid.UUID, ctx: AuthContext) 
     await migrations.mark_stale_runs_interrupted(session, run.company_id)
     await session.refresh(run)
     return await migrations.run_view(session, run)
+
+
+# ── Export requests: a client sends their export files ───────────────────────
+
+class ExportRequestIn(BaseModel):
+    operation_id: uuid.UUID
+    firm_name: str
+    client_name: str
+    recipient: str
+    reply_to: str
+    source: str
+
+
+class AddExportFilesIn(BaseModel):
+    draft_token: str | None = None
+
+
+@router.get("/export-requests")
+async def export_requests(ctx: AuthContext = Depends(user_owner)) -> dict:
+    return {"items": await sender.as_http(export_requests_service.list_requests())}
+
+
+@router.post("/export-requests", status_code=201)
+async def send_export_request(payload: ExportRequestIn, ctx: AuthContext = Depends(user_owner)) -> dict:
+    """Email a client the export checklist of a source; the files they upload are added here."""
+    return await sender.as_http(export_requests_service.send_request(**payload.model_dump()))
+
+
+@router.post("/export-requests/{request_id}/add")
+async def add_export_files(request_id: uuid.UUID, payload: AddExportFilesIn,
+                           ctx: AuthContext = Depends(user_owner)) -> dict:
+    """The client's files, read and added to the upload or to the open draft."""
+    return _scan_result(await sender.as_http(export_requests_service.add_files(
+        request_id, payload.draft_token, owner=("user", ctx.user.id))))
+
+
+@router.post("/export-requests/{request_id}/revoke")
+async def revoke_export_request(request_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)) -> dict:
+    return await sender.as_http(export_requests_service.revoke(request_id))
 
 
 @router.get("/staged")

@@ -53,6 +53,7 @@ _NEXT_RES = (
     re.compile(r"^community:[a-z0-9_-]+$"),
     re.compile(r"^doc-send$"),
     re.compile(r"^copy-send$"),
+    re.compile(r"^export-send$"),
 )
 
 # Every gate delivers its panel inside the shared modal dialog, floating over
@@ -64,6 +65,7 @@ _GATE_BENEFIT_KEYS = {
     "community": "account.gate_community_benefit",
     "doc-send": "account.gate_doc_send_benefit",
     "copy-send": "account.gate_copy_send_benefit",
+    "export-send": "account.gate_export_send_benefit",
 }
 
 
@@ -441,6 +443,12 @@ def _resume_parts(next_action: str) -> list:
         # it again so the staged copy is reused, never re-exported.
         return [_resume_guard_script(next_action,
                                      "var f=document.getElementById('copy-send-form');"
+                                     "if(f){f.requestSubmit();}")]
+    if next_action == "export-send":
+        # The export request form kept every typed value and the same operation;
+        # submit it again so the client gets one email with one link.
+        return [_resume_guard_script(next_action,
+                                     "var f=document.getElementById('export-request-form');"
                                      "if(f){f.requestSubmit();}")]
     if next_action.startswith("buy:"):
         _, slug, kind = next_action.split(":")

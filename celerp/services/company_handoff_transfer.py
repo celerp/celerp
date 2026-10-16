@@ -10,12 +10,11 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urlsplit
 
 import httpx
 
 from celerp.services.company_handoff_crypto import MAX_CIPHERTEXT, decrypt_file
-from celerp.services.company_handoff_links import parse_handoff_link
+from celerp.services.company_handoff_links import parse_handoff_link, spaces_object_url
 
 log = logging.getLogger(__name__)
 
@@ -30,20 +29,10 @@ class HandoffUnreachable(HandoffDownloadError):
 
 def _validated_object_url(value: object, copy_id) -> str:
     """Accept only the expected ciphertext on the supported object host."""
-    if not isinstance(value, str) or len(value) > 4096:
-        raise HandoffDownloadError("The company copy is unavailable")
     try:
-        url = urlsplit(value)
-        host = url.hostname
-        port = url.port
+        return spaces_object_url(value, f"/handoffs/{copy_id.hex}.bin")
     except ValueError:
         raise HandoffDownloadError("The company copy is unavailable") from None
-    if (url.scheme != "https" or not host or
-            not (host == "digitaloceanspaces.com" or host.endswith(".digitaloceanspaces.com")) or
-            port is not None or url.username or url.password or url.fragment or
-            not url.path.endswith(f"/handoffs/{copy_id.hex}.bin")):
-        raise HandoffDownloadError("The company copy is unavailable")
-    return value
 
 
 async def verify_company_handoff(copy_id: str | None, proof_hash: str | None,

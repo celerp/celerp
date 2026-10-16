@@ -10,6 +10,8 @@ restore can still go on: beside it a small metadata file names the file the owne
 chose, and, once the restore is done, only the company it opened, so a retry whose
 response was lost can be answered without the backup itself. A backup taken of a company
 before a copy replaced it is kept, by the company's lineage, until its owner deletes it.
+The key of an export request's link is kept here too, as only this installation may read
+the files a client uploads through it.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ UPLOAD_TTL_SECONDS = 24 * 3600
 RECEIPT_TTL_SECONDS = 90 * 24 * 3600
 UPLOADS = "uploads"
 KEPT = "kept"
+EXPORT_REQUESTS = "export-requests"
 UPLOAD_SUFFIX, EXPORT_SUFFIX, META_SUFFIX, KEPT_SUFFIX = ".upload", ".export", ".json", ".celerp-company"
 _CHUNK = 1024 * 1024
 
@@ -271,6 +274,40 @@ def forget_sent_copy(company_id, copy_id) -> None:
     _sent_record(company_id, copy_id).unlink(missing_ok=True)
 
 
+def export_requests_dir() -> Path:
+    """The private folder holding the keys of export requests sent from here, and the files
+    being read from them."""
+    return _private_dir(EXPORT_REQUESTS)
+
+
+def _export_request_record(operation_id) -> Path:
+    try:
+        canonical = str(uuid.UUID(str(operation_id)))
+    except ValueError:
+        raise ValueError("Invalid export request") from None
+    return export_requests_dir() / f"{canonical}{META_SUFFIX}"
+
+
+def remember_export_request_key(operation_id, key: str) -> None:
+    """Keep the key of an export request's link. The cloud never stores it, so only this
+    installation can read the files the client uploads."""
+    _write_json(_export_request_record(operation_id), {"key": key})
+
+
+def export_request_key(operation_id) -> str | None:
+    """The key kept for the export request sent as ``operation_id``; None when there is none."""
+    try:
+        facts = json.loads(_export_request_record(operation_id).read_text())
+    except (OSError, ValueError):
+        return None
+    key = facts.get("key") if isinstance(facts, dict) else None
+    return key if isinstance(key, str) else None
+
+
+def forget_export_request_key(operation_id) -> None:
+    _export_request_record(operation_id).unlink(missing_ok=True)
+
+
 def _kept_dir(lineage) -> Path:
     folder = _private_dir(KEPT) / str(uuid.UUID(str(lineage)))
     folder.mkdir(exist_ok=True)
@@ -341,4 +378,10 @@ def sweep_transient_files() -> None:
     # A kept backup a stopped process left half made has no metadata yet.
     for f in _private_dir(KEPT).glob("*/*"):
         if f.name.endswith(".partial") or (f.suffix == KEPT_SUFFIX and not f.with_suffix(META_SUFFIX).exists()):
+            f.unlink(missing_ok=True)
+    # Export request keys stay; files a stopped read left behind do not.
+    for f in export_requests_dir().iterdir():
+        if f.is_dir():
+            shutil.rmtree(f, ignore_errors=True)
+        elif f.name.endswith(".partial"):
             f.unlink(missing_ok=True)

@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Validate company handoff links before downloading an encrypted backup."""
+"""Validate company handoff links, and the storage links the cloud hands out, before any
+encrypted file is sent or downloaded."""
 from __future__ import annotations
 
 import base64
@@ -55,6 +56,24 @@ def parse_handoff_link(value: str) -> CompanyHandoffLink:
     if len(secret) != 32 or base64.urlsafe_b64encode(secret).decode().rstrip("=") != parsed.fragment:
         raise ValueError("Invalid company copy link")
     return CompanyHandoffLink(copy_id, secret)
+
+
+def spaces_object_url(value: object, path_suffix: str) -> str:
+    """A storage URL the cloud handed out, accepted only as an https link to the object
+    store whose path ends in ``path_suffix``; ValueError for anything else."""
+    if not isinstance(value, str) or len(value) > 4096:
+        raise ValueError("Invalid storage link")
+    try:
+        url = urlsplit(value)
+        host, port = url.hostname, url.port
+    except ValueError:
+        raise ValueError("Invalid storage link") from None
+    if (url.scheme != "https" or not host or
+            not (host == "digitaloceanspaces.com" or host.endswith(".digitaloceanspaces.com")) or
+            port is not None or url.username or url.password or url.fragment or
+            not url.path.endswith(path_suffix)):
+        raise ValueError("Invalid storage link")
+    return value
 
 
 def handoff_page_link(copy_id: uuid.UUID, secret: bytes) -> str:

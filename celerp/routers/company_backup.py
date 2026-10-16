@@ -119,7 +119,7 @@ async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(u
         await cb.export_company_snapshot(ctx.company_id, destination,
                                          provenance={"prepared_by": payload.firm_name})
     try:
-        sent = await _cloud_call(sender.send_company_backup(
+        sent = await sender.as_http(sender.send_company_backup(
             export=export, company_id=ctx.company_id, operation_id=payload.operation_id,
             secret=secret, firm_name=payload.firm_name,
             recipient=payload.recipient, reply_to=payload.reply_to, note=payload.note,
@@ -136,35 +136,21 @@ async def last_sender(ctx: AuthContext = Depends(user_owner)):
     return await asyncio.to_thread(files.last_sender)
 
 
-async def _cloud_call(call):
-    """A company copy call to the cloud. Its refusals keep their status and words: 428 when
-    a free account is needed (the page offers one in place), the cloud's own status for a
-    reason the owner can act on, 502 only when the result is unconfirmed."""
-    try:
-        return await call
-    except sender.HandoffAccountNeeded as exc:
-        raise HTTPException(status_code=428, detail=str(exc)) from None
-    except sender.HandoffRefused as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
-    except sender.HandoffSendError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
-
-
 @router.get("/handoffs")
 async def company_handoffs(ctx: AuthContext = Depends(user_owner)):
     """This company's copies sent; only its owner sees them, and each link they carry."""
-    return {"items": await _cloud_call(sender.company_copies(ctx.company_id))}
+    return {"items": await sender.as_http(sender.company_copies(ctx.company_id))}
 
 
 @router.post("/handoffs/{copy_id}/revoke")
 async def revoke_company_handoff(copy_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)):
     """The link stops working at once; Undo restores it for a short time."""
-    return await _cloud_call(sender.revoke_copy(ctx.company_id, copy_id))
+    return await sender.as_http(sender.revoke_copy(ctx.company_id, copy_id))
 
 
 @router.post("/handoffs/{copy_id}/restore")
 async def restore_company_handoff(copy_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)):
-    return await _cloud_call(sender.restore_copy(ctx.company_id, copy_id))
+    return await sender.as_http(sender.restore_copy(ctx.company_id, copy_id))
 
 
 class NewCopyLink(BaseModel):
@@ -176,7 +162,7 @@ async def new_company_handoff_link(copy_id: uuid.UUID, payload: NewCopyLink,
                                    ctx: AuthContext = Depends(user_owner)):
     """Replace the link for the same stored copy: the old link stops working, and the
     14 days and three downloads start again."""
-    return await _cloud_call(sender.new_link(ctx.company_id, copy_id, payload.operation_id))
+    return await sender.as_http(sender.new_link(ctx.company_id, copy_id, payload.operation_id))
 
 
 # ── Restore ──────────────────────────────────────────────────────────────────

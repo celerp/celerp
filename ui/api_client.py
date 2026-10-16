@@ -4026,6 +4026,39 @@ async def company_backup_handoffs(token: str) -> dict:
     return _raise(response).json()
 
 
+async def migration_export_requests(token: str) -> list[dict]:
+    """The export checklists emailed to clients from here, newest first, with the files that arrived."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.get("/migrations/export-requests")
+    return _raise(r).json()["items"]
+
+
+async def migration_send_export_request(token: str, values: dict) -> dict:
+    """Email a client a source's export checklist; a retry of the same operation_id sends nothing new."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.post("/migrations/export-requests", json=values)
+    return _raise(r).json()
+
+
+async def migration_add_export_request(token: str, request_id: str, draft: str | None) -> dict:
+    """Add a request's files to the upload, or to the ``draft`` open: {"draft_token", "checklist"}
+    or {"scan_token", "scan"}, as for an upload."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True) as c:
+            r = await c.post(f"/migrations/export-requests/{request_id}/add",
+                             json={"draft_token": draft} if draft else {})
+    return _raise(r).json()
+
+
+async def migration_revoke_export_request(token: str, request_id: str) -> dict:
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.post(f"/migrations/export-requests/{request_id}/revoke")
+    return _raise(r).json()
+
+
 async def company_backup_sender(token: str) -> dict:
     """The firm name and reply address of the last company copy sent here."""
     async with _local_error_mapping():

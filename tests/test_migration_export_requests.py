@@ -242,6 +242,7 @@ async def test_files_that_cannot_be_read_are_never_added(real_engine, real_clien
     assert not scans.exists() or not any(scans.iterdir())      # no draft was made of an unreadable file
 
     relay.rows[request_id]["files"].clear()
+    relay.downloads.clear()
     relay.client_uploads(request_id, secret, "Contacts.csv", b"*ContactName\r\n")
     relay.host = "attacker.example.com"
     elsewhere = await real_client.post(f"{BASE}/{request_id}/add", json={}, headers=headers)
