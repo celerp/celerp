@@ -613,3 +613,38 @@ def test_j15_sale_voided_while_off_waits_read_only_and_is_reissued_once_on(page:
     reissued = page.url.rstrip("/").rsplit("/", 1)[1]
     assert reissued != invoice
     assert _ok(c.get(f"{API}/assets/{car}"))["sale"]["invoice_id"] == reissued
+
+
+def test_j16_archived_class_account_is_fixed_by_moving_its_balances_and_the_run_posts(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _ok(c.post("/accounting/accounts", json={"code": "1225", "name": "Vehicles accumulated depreciation",
+                                             "account_type": "asset", "parent_code": "1200"}))
+    vehicles = _classes(c)["Vehicles"]
+    _ok(c.patch(f"{API}/classes/{vehicles['id']}", json={"accumulated_depreciation_account": "1225"}))
+    car = _contributed(c, "Owner's car")
+    _run(c, "2026-01")
+    _ok(c.patch("/accounting/accounts/1225", json={"is_active": False}))
+    _run(c, "2026-02")
+
+    page.goto(f"/fixed-assets/assets/{car}")
+    card = page.locator("#fa-exception")
+    expect(card).to_contain_text("2026-02")
+    card.get_by_role("link", name="Fix posting account").click()
+    page.wait_for_url("**/fix-account**")
+    expect(page.locator("main")).to_contain_text("1225")
+    _choose(page, "account", "1220")
+    expect(page.locator("input[name=mode][value=move]")).to_be_checked()
+    page.get_by_role("button", name="Review", exact=True).click()
+    preview = page.locator("#fa-preview")
+    expect(preview).to_contain_text("1220")
+    expect(preview).to_contain_text("200.00")
+    with page.expect_navigation():
+        preview.get_by_role("button", name="Confirm").click()
+    assert _classes(c)["Vehicles"]["accumulated_depreciation_account"] == "1220"
+
+    _run_from_page(page, "2026-03")
+    page.goto(f"/fixed-assets/assets/{car}")
+    expect(page.locator("#fa-exception")).to_have_count(0)
+    assert D(_ok(c.get(f"{API}/assets/{car}"))["accumulated_depreciation"]) == D(600)
+    _reconciled(page)
