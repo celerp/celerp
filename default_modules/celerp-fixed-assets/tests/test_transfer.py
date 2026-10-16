@@ -9,6 +9,7 @@ A contributed car (12,000 over 60 months, straight line, full month, from Januar
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from decimal import Decimal
 
@@ -198,7 +199,7 @@ async def test_reclassify_moves_balances_and_depreciates_on_the_new_class(fa):
     plant = await _plant(fa)
     preview = await fa.ok(await fa.post(f"/assets/{car}/reclassify", {
         "date": "2026-05-10", "class_id": plant["id"], "preview": True, "op_key": "r"}))
-    assert preview["lines"]
+    assert preview["journals"][0]["lines"]
     await _reclassify(fa, car, plant["id"], "2026-05-10")
     # April is caught up on the old class, then cost and accumulated depreciation move.
     assert _journal_lines(await _journals_of(fa, car, "reclassify")) == {
@@ -269,6 +270,10 @@ async def test_transfer_targets_only_companies_the_user_can_post_in(fa):
     targets = (await fa.ok(await fa.get("/transfer-targets")))["items"]
     assert [t["company_id"] for t in targets] == [str(b.auth["company_id"])]
     assert targets[0]["name"] == "Beta Co"
+    # The form chooses the class and the liability account there, so both come along.
+    assert "Vehicles" in [c["name"] for c in targets[0]["classes"]]
+    assert "2110" in [a["code"] for a in targets[0]["accounts"]]
+    assert "1120" not in [a["code"] for a in targets[0]["accounts"]]
     await _set_module(b, False)
     assert (await fa.ok(await fa.get("/transfer-targets")))["items"] == []
 
@@ -502,3 +507,49 @@ async def test_asset_page_offers_move_reclassify_and_transfer(fa):
     register = await fa.page("/fixed-assets")
     assert t("fixed_assets.move") in register.text
     assert "fixed_assets." not in page.text + move.text + reclassify.text + transfer.text
+
+
+async def test_transfer_reviewed_and_confirmed_from_its_page(fa):
+    from ui.i18n import t
+
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    b = await _second_company(fa)
+    vehicles = (await b.classes())["Vehicles"]["id"]
+    form = {**_transfer_body(b, class_id=vehicles), "asset_id": car, "idempotency_key": str(uuid.uuid4())}
+    review = await fa.submit("/fixed-assets/op/transfer/review", form)
+    assert review.status_code == 200, review.text
+    # Both companies' journals are shown, each under its own heading.
+    assert t("fixed_assets.transfer_here") in review.text
+    assert t("fixed_assets.transfer_there", company="Beta Co") in review.text
+    fingerprint = re.search(r'name="fingerprint" value="([^"]+)"', review.text).group(1)
+    done = await fa.submit("/fixed-assets/op/transfer/confirm", {**form, "fingerprint": fingerprint})
+    assert done.headers.get("HX-Redirect") == f"/fixed-assets/assets/{car}", done.text
+    theirs = [a for a in await b.entities("fa_asset") if a.get("transferred_from")][0]
+    page = await b.page(f"/fixed-assets/assets/{theirs['entity_id']}")
+    assert t("fixed_assets.transferred_from_title") in page.text and "Demo Co" in page.text
+    assert t("fixed_assets.movement.contributed") in page.text
+    ours = await fa.page(f"/fixed-assets/assets/{car}")
+    assert "Beta Co" in ours.text and t("fixed_assets.undo_disposal") not in ours.text
+    assert t("fixed_assets.undo_latest_hint", change=t("fixed_assets.movement.transfer")) in ours.text
+
+
+async def test_move_reviewed_from_the_register_selection(fa):
+    from ui.i18n import t
+
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    picked = await fa.submit("/fixed-assets/move/selected", {"selected": [car]})
+    assert picked.headers["HX-Redirect"].startswith("/fixed-assets/move?ids=")
+    page = await fa.page("/fixed-assets/move", ids=car)
+    assert page.status_code == 200 and t("fixed_assets.move_several_title", n=1) in page.text
+    form = {"asset_ids": car, "date": "2026-02-01", "custodian_name": "Night shift lead",
+            "idempotency_key": str(uuid.uuid4())}
+    review = await fa.submit("/fixed-assets/op/move/review", form)
+    assert "Night shift lead" in review.text and t("fixed_assets.posts_nothing") in review.text
+    fingerprint = re.search(r'name="fingerprint" value="([^"]+)"', review.text).group(1)
+    done = await fa.submit("/fixed-assets/op/move/confirm", {**form, "fingerprint": fingerprint})
+    assert done.headers.get("HX-Redirect") == "/fixed-assets", done.text
+    asset_page = await fa.page(f"/fixed-assets/assets/{car}")
+    assert t("fixed_assets.placement_title") in asset_page.text and "Night shift lead" in asset_page.text
+    assert t("fixed_assets.undo_move") in asset_page.text

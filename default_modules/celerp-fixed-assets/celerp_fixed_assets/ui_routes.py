@@ -14,6 +14,10 @@ GET  /fixed-assets/assets/{id}/sell     Sell an asset through a draft invoice
 GET  /fixed-assets/assets/{id}/remeasure  Revalue an asset, impair it, or reverse an impairment
 GET  /fixed-assets/assets/{id}/add      Add an improvement or a replacement part to an asset
 GET  /fixed-assets/assets/{id}/place-in-service  Move construction cost to the assets it built
+GET  /fixed-assets/assets/{id}/move     Move an asset to a location or a custodian
+GET  /fixed-assets/move?ids=            Move the assets ticked on the register
+GET  /fixed-assets/assets/{id}/reclassify  Move an asset to another class
+GET  /fixed-assets/assets/{id}/transfer?company=  Transfer an asset to another company the user keeps books for
 GET  /fixed-assets/reviews              Impairment reviews due or overdue
 GET  /fixed-assets/classes/{id}/revalue Revalue every asset in a class on one date
 GET  /fixed-assets/corrections          Every correction newest first, and those waiting to be applied
@@ -168,8 +172,24 @@ def _preview(action: str, result: dict, currency: str) -> FT:
                                     for k in ("balance", "remainder")]))
     if result.get("kind") in ("improvement", "replacement"):
         parts.append(_addition_figures(result, currency))
+    if "custodian" in result:
+        parts.append(_detail_table([
+            (t("fixed_assets.date"), _text(result.get("date"))),
+            (t("fixed_assets.location"), _text((result.get("location") or {}).get("name"))),
+            (t("fixed_assets.custodian"), _text((result.get("custodian") or {}).get("name")))]))
+    if "to_class" in result:
+        parts.append(_detail_table([(t("fixed_assets.date"), _text(result["date"])),
+                                    (t("fixed_assets.from_class"), result["from_class"]),
+                                    (t("fixed_assets.to_class"), result["to_class"]),
+                                    (t("fixed_assets.catch_up"), _money_td(result["depreciation"], currency))]))
     journals = result.get("journals") or []
-    parts += [_lines_table(je.get("lines") or [], currency) for je in journals]
+    if "their_number" in result:
+        parts.append(_transfer_figures(result, currency))
+        parts += [H4(t("fixed_assets.transfer_here")), _lines_table(journals[0].get("lines") or [], currency),
+                  H4(t("fixed_assets.transfer_there", company=result["company"])),
+                  _lines_table(journals[1].get("lines") or [], result.get("their_currency") or currency)]
+    else:
+        parts += [_lines_table(je.get("lines") or [], currency) for je in journals]
     for month in result.get("months") or []:
         parts.append(H4(f"{month['month']}: {_money(month['total'], currency)}"))
         parts.append(_lines_table(month["lines"], currency) if month["lines"]
@@ -184,7 +204,7 @@ def _preview(action: str, result: dict, currency: str) -> FT:
                Input(type="hidden", name="fingerprint", value=result.get("fingerprint", "")),
                Div(Button(t("fixed_assets.confirm"), type="button", cls="btn btn--primary",
                           hx_post=f"/fixed-assets/op/{action}/confirm", hx_include="closest form",
-                          hx_target="#fa-preview", hx_swap="outerHTML"),
+                          hx_target="closest #fa-preview", hx_swap="outerHTML"),
                    cls="form-actions"),
                cls="detail-card section-card", id="fa-preview")
 
@@ -247,6 +267,18 @@ def _class_revaluation_preview(result: dict, currency: str) -> list[FT]:
     return parts
 
 
+def _transfer_figures(result: dict, currency: str) -> FT:
+    """The other company, the asset it gets, and the price on each side."""
+    their = result.get("their_currency") or currency
+    rows = [(t("fixed_assets.transfer_company"), result["company"]),
+            (t("fixed_assets.transfer_their_asset"), f"{result['their_number']} ({result['their_class']})"),
+            (t("fixed_assets.transfer_price"), _money_td(result["price"], currency))]
+    if result.get("rate"):
+        rows.append((t("fixed_assets.exchange_rate"), result["rate"]))
+    rows.append((t("fixed_assets.transfer_their_cost"), _money_td(result["their_cost"], their)))
+    return _detail_table(rows)
+
+
 def _addition_figures(result: dict, currency: str) -> FT:
     """What is added, over what life, and for a replacement the part that leaves the books."""
     rows = [(t("fixed_assets.add_kind"), t(f"fixed_assets.add_kind.{result['kind']}")),
@@ -286,11 +318,12 @@ def _held_table(held: list[dict], currency: str) -> FT:
 
 
 def _op_form(action: str, *fields: FT, review_label: str | None = None) -> FT:
-    """A two-step operation form: Review fills #fa-preview, Confirm (inside it) does it."""
+    """A two-step operation form: Review fills the form's own #fa-preview, Confirm (inside it)
+    does it. Targets are relative, so a page can carry several of these forms."""
     return Form(*fields, operation_key_input(),
                 Div(Button(review_label or t("fixed_assets.review"), type="button", cls="btn btn--secondary",
                            hx_post=f"/fixed-assets/op/{action}/review", hx_include="closest form",
-                           hx_target="#fa-preview", hx_swap="outerHTML"),
+                           hx_target="next #fa-preview", hx_swap="outerHTML"),
                     cls="form-actions"),
                 Div(id="fa-preview"),
                 onsubmit="return false;", cls="settings-card")
@@ -463,6 +496,30 @@ def _place_body(form) -> dict:
     return {"date": str(form.get("date") or ""), "allocations": allocations}
 
 
+def _move_body(form) -> dict:
+    """Where the assets go: a location, a member of the company, or a person who is not a user."""
+    member, name = str(form.get("custodian_user") or ""), str(form.get("custodian_name") or "").strip()
+    body = {"date": str(form.get("date") or ""), "location_id": str(form.get("location_id") or "") or None,
+            "custodian": {"user_id": member} if member else {"name": name} if name else None}
+    ids = form.getlist("asset_ids")
+    if ids:
+        body["asset_ids"] = [str(i) for i in ids]
+    return {k: v for k, v in body.items() if v is not None}
+
+
+def _reclassify_body(form) -> dict:
+    return {"date": str(form.get("date") or ""), "class_id": str(form.get("class_id") or "")}
+
+
+def _transfer_body(form) -> dict:
+    body = {"date": str(form.get("date") or ""), "target_company_id": str(form.get("target_company_id") or ""),
+            "price": _amount(form, "price"), "rate": _amount(form, "rate"),
+            "class_id": str(form.get("class_id") or ""),
+            "receivable_account": str(form.get("receivable_account") or ""),
+            "payable_account": str(form.get("payable_account") or "")}
+    return {k: v for k, v in body.items() if v is not None}
+
+
 def _asset_path(suffix: str):
     return lambda f: f"/assets/{_q(f, 'asset_id')}/{suffix}"
 
@@ -522,6 +579,11 @@ _OPERATIONS = {
     "add-to-asset": (_asset_path("add"), _add_body, lambda r, f: f"/fixed-assets/assets/{r['assets'][0]['id']}"),
     "place-in-service": (_asset_path("place-in-service"), _place_body, _to_asset),
     "undo-latest": (_asset_path("undo-latest"), lambda f: {}, _to_asset),
+    "move": (lambda f: f"/assets/{_q(f, 'asset_id')}/move" if f.get("asset_id") else "/move", _move_body,
+             lambda r, f: f"/fixed-assets/assets/{f.get('asset_id')}" if f.get("asset_id") else "/fixed-assets"),
+    "undo-move": (_asset_path("undo-move"), lambda f: {}, _to_asset),
+    "reclassify": (_asset_path("reclassify"), _reclassify_body, _to_asset),
+    "transfer": (_asset_path("transfer"), _transfer_body, _to_asset),
 }
 
 
@@ -586,8 +648,11 @@ def _register_table(items: list[dict], classes: dict[str, str], currency: str) -
 
 
 def _register_toolbar() -> FT:
-    return bulk_toolbar("fa-register", [{"value": "dispose", "label": t("fixed_assets.dispose"), "method": "post",
-                                         "url": "/fixed-assets/dispose/selected", "swap": "none"}])
+    return bulk_toolbar("fa-register", [
+        {"value": "move", "label": t("fixed_assets.move"), "method": "post", "url": "/fixed-assets/move/selected",
+         "swap": "none"},
+        {"value": "dispose", "label": t("fixed_assets.dispose"), "method": "post",
+         "url": "/fixed-assets/dispose/selected", "swap": "none"}])
 
 
 def _disposal_fields(asset: dict | None) -> list[FT]:
@@ -628,9 +693,14 @@ def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | st
             (t("fixed_assets.journal"), A(t("fixed_assets.journal"),
                                           href=f"/accounting?{urlencode({'q': latest['journal_id']})}")
              if latest.get("journal_id") else empty_mark())]
-    undo = _op_form("undo-disposal", Input(type="hidden", name="asset_id", value=asset["id"]),
-                    P(t("fixed_assets.undo_disposal_hint"), cls="settings-hint"),
-                    review_label=t("fixed_assets.undo_disposal"))
+    target = latest.get("target")
+    if target:
+        rows.insert(2, (t("fixed_assets.transfer_company"),
+                        f"{target['company_name']}: {target['number']} ({_money(latest.get('price'), currency)})"))
+    # A transfer is undone in both companies at once, through Undo latest.
+    undo = "" if target else _op_form("undo-disposal", Input(type="hidden", name="asset_id", value=asset["id"]),
+                                      P(t("fixed_assets.undo_disposal_hint"), cls="settings-hint"),
+                                      review_label=t("fixed_assets.undo_disposal"))
     return Div(H2(t("fixed_assets.disposal_title"), cls="section-title"),
                _detail_table(rows), undo, cls="detail-card section-card", id=f"fa-disposal-{asset_id}")
 
@@ -979,6 +1049,40 @@ def _reviews_card(asset: dict, reviews: list[dict], currency: str) -> FT:
     return Div(H2(t("fixed_assets.reviews_title"), cls="section-title"),
                P(t("fixed_assets.reviews_hint"), " ", Strong(due), cls="settings-hint"), table, form,
                cls="detail-card section-card", id="fa-reviews")
+
+
+def _placement_card(asset: dict, locations: dict[str, str]) -> FT:
+    """Where the asset is and who holds it, each move newest first."""
+    placements = list(reversed(asset.get("placements") or []))
+    current = [(t("fixed_assets.location"), _text(locations.get(asset.get("location_id") or ""))),
+               (t("fixed_assets.custodian"), _text((asset.get("custodian") or {}).get("name")))]
+    history = Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.location")),
+                             Th(t("fixed_assets.custodian")))),
+                    Tbody(*[Tr(Td(p["date"]), Td(_text(locations.get(p.get("location_id") or ""))),
+                               Td(_text((p.get("custodian") or {}).get("name")))) for p in placements]),
+                    cls="data-table") if placements else ""
+    undo = _op_form("undo-move", Input(type="hidden", name="asset_id", value=asset["id"]),
+                    P(t("fixed_assets.undo_move_hint"), cls="settings-hint"),
+                    review_label=t("fixed_assets.undo_move")) if placements else ""
+    return Div(H2(t("fixed_assets.placement_title"), cls="section-title"), _detail_table(current), history, undo,
+               cls="detail-card section-card", id="fa-placement")
+
+
+def _transferred_from_card(asset: dict, currency: str) -> FT:
+    """The company the asset came from and what happened to it there, read only."""
+    source = asset["transferred_from"]
+    currency = source.get("currency") or currency
+    rows = [Tr(Td(_text(m.get("effective_date"))), Td(t(f"fixed_assets.movement.{m.get('operation')}")),
+               _money_td((m.get("amounts") or {}).get("cost"), currency),
+               _money_td((m.get("amounts") or {}).get("accumulated_depreciation"), currency))
+            for m in reversed(source.get("history") or [])]
+    return Div(H2(t("fixed_assets.transferred_from_title"), cls="section-title"),
+               P(t("fixed_assets.transferred_from_hint", company=source["company_name"], number=source["number"]),
+                 cls="settings-hint"),
+               Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.movement")),
+                              _money_th(t("fixed_assets.cost")), _money_th(t("fixed_assets.accumulated_depreciation")))),
+                     Tbody(*rows), cls="data-table"),
+               cls="detail-card section-card", id="fa-transferred-from")
 
 
 def _undo_latest_card(asset: dict) -> FT:
@@ -1649,7 +1753,7 @@ def setup_ui_routes(app) -> None:
             return Div(Div(_error_text(e), cls="flash flash--error"),
                        *([Button(t("fixed_assets.review_again"), type="button", cls="btn btn--secondary",
                                  hx_post=f"/fixed-assets/op/{action}/review", hx_include="closest form",
-                                 hx_target="#fa-preview", hx_swap="outerHTML")] if step == "confirm" else []),
+                                 hx_target="closest #fa-preview", hx_swap="outerHTML")] if step == "confirm" else []),
                        id="fa-preview")
         if step == "review":
             return _preview(action, result, currency)
@@ -1695,6 +1799,8 @@ def setup_ui_routes(app) -> None:
                        if asset.get("review_due") else [])
             whole = (await api.fixed_assets_get(token, f"/assets/{quote(asset['parent_id'], safe=':')}")
                      if asset.get("parent_id") else None)
+            locations = ({loc["id"]: loc["name"] for loc in (await api.get_locations(token))["items"]}
+                         if asset.get("placements") else {})
         except APIError as e:
             return await _refused(request, e, "fixed_assets.title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (asset["number"], None)])
@@ -1730,6 +1836,10 @@ def setup_ui_routes(app) -> None:
             extra.append(_components_card(asset, components, currency))
         if asset.get("status") == "active" or fixes:
             extra.append(_corrections_card(asset, fixes))
+        if asset.get("status") != "physical":
+            extra.append(_placement_card(asset, locations))
+        if asset.get("transferred_from"):
+            extra.append(_transferred_from_card(asset, currency))
         if asset.get("undoable"):
             extra.append(_undo_latest_card(asset))
         title = f"{asset['number']} {asset.get('name') or ''}".strip()
@@ -1741,7 +1851,10 @@ def setup_ui_routes(app) -> None:
                        (A(t("fixed_assets.remeasure"), href=f"{base}/remeasure", cls="btn btn--secondary"),
                         A(t("fixed_assets.sell"), href=f"{base}/sell", cls="btn btn--secondary"),
                         A(t("fixed_assets.dispose"), href=f"{base}/dispose", cls="btn btn--secondary"))) + (
-                A(t("fixed_assets.add_to_asset"), href=f"{base}/add", cls="btn btn--secondary"),)
+                A(t("fixed_assets.add_to_asset"), href=f"{base}/add", cls="btn btn--secondary"),
+                A(t("fixed_assets.move"), href=f"{base}/move", cls="btn btn--secondary"),
+                A(t("fixed_assets.reclassify"), href=f"{base}/reclassify", cls="btn btn--secondary"),
+                A(t("fixed_assets.transfer"), href=f"{base}/transfer", cls="btn btn--secondary"))
         parent = (P(t("fixed_assets.component_of"), " ",
                     A(f"{whole['number']} {whole.get('name') or ''}".strip(), href=f"/fixed-assets/assets/{whole['id']}"),
                     cls="settings-hint") if whole else "")
@@ -2048,6 +2161,136 @@ def setup_ui_routes(app) -> None:
         asset = await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}")
         return asset, breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
                                    (asset["number"], f"/fixed-assets/assets/{asset_id}"), (t(label_key), None)])
+
+    async def _move_fields(token: str) -> list[FT]:
+        """When, to which location, and to whom: a member of the company or a person named here."""
+        locations = (await api.get_locations(token))["items"]
+        members = [u for u in (await api.get_users(token))["items"] if u.get("is_active")]
+        return [_field(t("fixed_assets.move_date"), _input("date", date.today().isoformat(), type_="date",
+                                                           required=True)),
+                _field(t("fixed_assets.location"),
+                       _picker("location_id", [(loc["id"], loc["name"]) for loc in locations],
+                               label=t("fixed_assets.location"), empty="fixed_assets.unchanged")),
+                _field(t("fixed_assets.custodian"),
+                       _picker("custodian_user", [(u["id"], u.get("name") or u["email"]) for u in members],
+                               label=t("fixed_assets.custodian"), empty="fixed_assets.unchanged")),
+                _field(t("fixed_assets.custodian_name"), _input("custodian_name"),
+                       t("fixed_assets.custodian_not_user"))]
+
+    @app.get("/fixed-assets/assets/{asset_id}/move")
+    async def move_page(request: Request, asset_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            await _context(token)
+            asset, crumbs = await _asset_crumbs(token, asset_id, "fixed_assets.move")
+            fields = await _move_fields(token)
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.move")
+        form = _op_form("move", Input(type="hidden", name="asset_id", value=asset_id),
+                        P(t("fixed_assets.move_hint"), cls="settings-hint"), *fields)
+        return await _page(request, crumbs, page_header(t("fixed_assets.move_title", number=asset["number"])),
+                           form, title_key="fixed_assets.move")
+
+    @app.post("/fixed-assets/move/selected")
+    async def move_selected(request: Request):
+        """The register's ticked rows, carried to the move form in the URL."""
+        ids = [str(i) for i in (await request.form()).getlist("selected")]
+        return Response(headers={"HX-Redirect": f"/fixed-assets/move?{urlencode({'ids': ','.join(ids)})}"})
+
+    @app.get("/fixed-assets/move")
+    async def move_several_page(request: Request, ids: str = ""):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        chosen = [i for i in ids.split(",") if i]
+        try:
+            await _context(token)
+            assets = [await api.fixed_assets_get(token, f"/assets/{quote(i, safe=':')}") for i in chosen]
+            fields = await _move_fields(token)
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.move")
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.move"), None)])
+        listed = Table(Thead(Tr(Th(t("fixed_assets.number")), Th(t("fixed_assets.name")))),
+                       Tbody(*[Tr(Td(A(a["number"], href=f"/fixed-assets/assets/{a['id']}")), Td(_text(a.get("name"))))
+                               for a in assets]), cls="data-table")
+        form = _op_form("move", *[Input(type="hidden", name="asset_ids", value=a["id"]) for a in assets],
+                        P(t("fixed_assets.move_hint"), cls="settings-hint"), listed, *fields)
+        return await _page(request, crumbs, page_header(t("fixed_assets.move_several_title", n=len(assets))),
+                           form if assets else P(t("label.select_rows_first"), cls="form-hint"),
+                           title_key="fixed_assets.move")
+
+    @app.get("/fixed-assets/assets/{asset_id}/reclassify")
+    async def reclassify_page(request: Request, asset_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            await _context(token)
+            asset, crumbs = await _asset_crumbs(token, asset_id, "fixed_assets.reclassify")
+            classes = (await api.fixed_assets_get(token, "/classes"))["items"]
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.reclassify")
+        options = [(c["id"], c["name"]) for c in classes if c["id"] != asset.get("class_id")]
+        form = _op_form("reclassify", Input(type="hidden", name="asset_id", value=asset_id),
+                        P(t("fixed_assets.reclassify_hint"), cls="settings-hint"),
+                        _field(t("fixed_assets.reclassify_date"),
+                               _input("date", date.today().isoformat(), type_="date", required=True)),
+                        _field(t("fixed_assets.to_class"), _picker("class_id", options, label=t("fixed_assets.to_class"))))
+        return await _page(request, crumbs, page_header(t("fixed_assets.reclassify_title", number=asset["number"])),
+                           form, title_key="fixed_assets.reclassify")
+
+    @app.get("/fixed-assets/assets/{asset_id}/transfer")
+    async def transfer_page(request: Request, asset_id: str, company: str = ""):
+        """Transfer to one of the companies the user keeps books for, chosen in the URL."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            _, currency = await _context(token)
+            asset, crumbs = await _asset_crumbs(token, asset_id, "fixed_assets.transfer")
+            targets = (await api.fixed_assets_get(token, "/transfer-targets"))["items"]
+            chart = (await api.get_chart(token)).get("items") or [] if targets else []
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.transfer")
+        title = page_header(t("fixed_assets.transfer_title", number=asset["number"]))
+        sell = A(t("fixed_assets.sell"), href=f"/fixed-assets/assets/{asset_id}/sell", cls="btn btn--sm btn--secondary")
+        hint = P(t("fixed_assets.transfer_taxable_hint"), " ", sell, cls="settings-hint")
+        if not targets:
+            return await _page(request, crumbs, title, P(t("fixed_assets.transfer_hint"), cls="settings-hint"), hint,
+                               P(t("fixed_assets.transfer_no_targets"), cls="form-hint"),
+                               title_key="fixed_assets.transfer")
+        target = next((x for x in targets if x["company_id"] == company), targets[0])
+        tabs = Div(*[A(x["name"], href=f"/fixed-assets/assets/{asset_id}/transfer?{urlencode({'company': x['company_id']})}",
+                       cls="btn btn--sm " + ("btn--primary" if x is target else "btn--secondary")) for x in targets],
+                   cls="flex-row")
+        receivables = [(a["code"], f"{a['code']} {a['name']}") for a in _postable(chart)
+                       if a.get("account_type") == "asset"]
+        fields = [Input(type="hidden", name="asset_id", value=asset_id),
+                  Input(type="hidden", name="target_company_id", value=target["company_id"]),
+                  P(t("fixed_assets.transfer_hint"), cls="settings-hint"), hint,
+                  _field(t("fixed_assets.transfer_date"),
+                         _input("date", date.today().isoformat(), type_="date", required=True)),
+                  _field(t("fixed_assets.transfer_price"),
+                         _input("price", type_="number", step="0.01", min="0", required=True),
+                         t("fixed_assets.transfer_price_hint", currency=currency))]
+        if target["currency"] != currency:
+            fields.append(_field(t("fixed_assets.exchange_rate"),
+                                 _input("rate", type_="number", step="any", min="0", required=True),
+                                 t("fixed_assets.exchange_rate_hint", ours=currency, theirs=target["currency"])))
+        fields += [_field(t("fixed_assets.their_class", company=target["name"]),
+                          _picker("class_id", [(c["id"], c["name"]) for c in target["classes"]],
+                                  label=t("fixed_assets.their_class", company=target["name"]))),
+                   _field(t("fixed_assets.receivable_account"),
+                          _picker("receivable_account", receivables, label=t("fixed_assets.receivable_account")),
+                          t("fixed_assets.receivable_hint", company=target["name"])),
+                   _field(t("fixed_assets.payable_account", company=target["name"]),
+                          _picker("payable_account", [(a["code"], f"{a['code']} {a['name']}") for a in target["accounts"]],
+                                  label=t("fixed_assets.payable_account", company=target["name"])),
+                          t("fixed_assets.payable_hint"))]
+        return await _page(request, crumbs, title, tabs, _op_form("transfer", *fields),
+                           title_key="fixed_assets.transfer")
 
     @app.get("/fixed-assets/assets/{asset_id}/remeasure")
     async def remeasure_page(request: Request, asset_id: str, op: str = "revaluation", value: str = "",

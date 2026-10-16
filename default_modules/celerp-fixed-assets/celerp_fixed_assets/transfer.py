@@ -45,17 +45,27 @@ def _uses(settings: dict | None) -> bool:
 
 async def targets(session, company_id, user_id) -> list[dict]:
     """The other companies the user may transfer an asset to: a member there with both
-    rights, in a company that uses fixed assets."""
+    rights, in a company that uses fixed assets. Each comes with the classes in use there
+    and the accounts a transfer can credit there, since the form chooses both."""
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company
+    from celerp.services.journal_accounts import chart_access
     from celerp.services.permissions import role_has_permission
 
     rows = (await session.execute(select(Company, UserCompany.role).join(
         UserCompany, UserCompany.company_id == Company.id).where(
         UserCompany.user_id == user_id, UserCompany.is_active.is_(True), Company.id != company_id))).all()
-    return sorted(({"company_id": str(c.id), "name": c.name} for c, role in rows
-                   if _uses(c.settings) and all(role_has_permission(c.settings, role, k) for k in KEYS)),
-                  key=lambda t: t["name"])
+    chart = chart_access()
+    out = []
+    for c, role in sorted(rows, key=lambda r: r[0].name):
+        if not _uses(c.settings) or not all(role_has_permission(c.settings, role, k) for k in KEYS):
+            continue
+        accounts = await chart.list_accounts(session, c.id) if chart else []
+        out.append({"company_id": str(c.id), "name": c.name, "currency": c.settings.get("currency") or "USD",
+                    "classes": [{"id": k["id"], "name": k["name"]} for k in await setup.classes(session, c.id)],
+                    "accounts": [{"code": a["code"], "name": a["name"]} for a in accounts
+                                 if a["is_active"] and not a["has_children"] and a["account_type"] == "liability"]})
+    return out
 
 
 def _company_id(value) -> uuid.UUID:
@@ -181,11 +191,11 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
                                                 date.fromisoformat(day))
         shown = {**item["shown"], "date": day, "company": their_name, "price": _cents(price),
                  "rate": str(rate) if rate != 1 else None, "their_number": number, "their_cost": _cents(cost),
-                 "their_class": their_cls["name"],
+                 "their_class": their_cls["name"], "their_currency": theirs_in,
                  "journals": [_journal_view(item["lines"]), _journal_view(their_lines)]}
         return shown, {
             "item": item, "day": day, "price": price, "cost": cost, "their_cls": their_cls,
-            "their_lines": their_lines, "number": number, "our_name": our_name, "their_name": their_name,
+            "their_lines": their_lines, "number": number, "currency": ours_in, "our_name": our_name, "their_name": their_name,
             "policy": _life_left(asset, setup.policy_of(their_cls, their_fa), day),
             "tax_values": values, "their_tax_values": {k: _cents(round_money(_dec(v) * rate, theirs_in))
                                                        for k, v in values.items()},
@@ -202,7 +212,8 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         their_id = await _create_asset(
             session, theirs, user_id, number=context["number"], name=asset["name"],
             class_id=context["their_cls"]["id"], status="active", available_date=day, op_key=op_key,
-            policy=context["policy"], transferred_from={**source, "history": context["history"]},
+            policy=context["policy"],
+            transferred_from={**source, "currency": context["currency"], "history": context["history"]},
             tax_values=context["their_tax_values"],
             **{k: asset.get(k) for k in ("serial", "description", "make", "model", "notes")})
         target = {"company_id": str(theirs), "company_name": context["their_name"], "asset_id": their_id,

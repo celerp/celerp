@@ -29,6 +29,13 @@ class FA:
 
     async def page(self, path: str, **params):
         """A UI page as this company's owner sees it, the UI talking to the API in process."""
+        return await self._ui("GET", path, params=params)
+
+    async def submit(self, path: str, data: dict):
+        """A UI form post as this company's owner sends it."""
+        return await self._ui("POST", path, data=data)
+
+    async def _ui(self, method: str, path: str, **kwargs):
         from unittest.mock import patch
 
         from httpx import ASGITransport, AsyncClient
@@ -45,7 +52,7 @@ class FA:
         with patch("ui.api_client._client", bridged):
             async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
                                    cookies={"celerp_token": token}) as ui:
-                return await ui.get(path, params=params)
+                return await ui.request(method, path, **kwargs)
 
     async def ok(self, response, status: int = 200) -> dict:
         assert response.status_code == status, response.text

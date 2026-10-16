@@ -20,7 +20,7 @@ KEYS = ("manage_fixed_assets",)
 _GONE = ("disposed", "sold", "undone")
 
 
-async def _location(session, company_id, value) -> str | None:
+async def _location(session, company_id, value) -> dict | None:
     from celerp.models.company import Location
 
     if value in (None, ""):
@@ -31,7 +31,7 @@ async def _location(session, company_id, value) -> str | None:
         loc = None
     if loc is None or loc.company_id != company_id:
         raise setup.unprocessable("Choose one of this company's locations.")
-    return str(loc.id)
+    return {"id": str(loc.id), "name": loc.name}
 
 
 async def _custodian(session, company_id, value) -> dict | None:
@@ -96,14 +96,14 @@ async def move(session, company_id, user_id, body: dict, asset_ids=None) -> dict
             if last and day < last:
                 raise setup.unprocessable(f"{asset['number']} was last moved on {last}. Date the move on or after it.")
         shown = {"assets": [{"id": a, "number": s["number"], "name": s.get("name")} for a, s in assets],
-                 "date": day, "location_id": location, "custodian": custodian}
+                 "date": day, "location": location, "custodian": custodian}
         return shown, {"assets": assets, "day": day, "location": location, "custodian": custodian,
                        "basis": [s.get("version") for _, s in assets]}
 
     async def apply(context, op_key):
         for asset_id, asset in context["assets"]:
             previous = {"location_id": asset.get("location_id"), "custodian": asset.get("custodian")}
-            changes = {k: v for k, v in (("location_id", context["location"]),
+            changes = {k: v for k, v in (("location_id", (context["location"] or {}).get("id")),
                                          ("custodian", context["custodian"])) if v is not None}
             placement = {"date": context["day"], **previous, **changes, "previous": previous, "op_key": op_key}
             await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.updated", {
