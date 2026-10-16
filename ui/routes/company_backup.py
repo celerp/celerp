@@ -960,9 +960,10 @@ async def _handoffs_page(request: Request):
         return denied
     try:
         rows = (await api.company_backup_handoffs(get_token(request)))["items"]
-    except (APIError, KeyError, TypeError):
+    except (APIError, KeyError, TypeError) as exc:
+        reason = _message(exc) if isinstance(exc, APIError) and exc.status != 502 else None
         return wizard_page(request, auth_header(t("company_backup.handoffs_title")),
-                           flash(t("company_backup.handoffs_unavailable")), back_link(BACKUP_TAB),
+                           flash(reason or t("company_backup.handoffs_unavailable")), back_link(BACKUP_TAB),
                            title="company_backup.handoffs_title")
     return wizard_page(
         request, auth_header(t("company_backup.handoffs_title")),

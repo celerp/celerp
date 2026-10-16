@@ -84,10 +84,13 @@ async def _cloud(method: str, path: str, *, payload: dict | None = None,
 
 
 def _detail(response: httpx.Response) -> str | None:
+    """The refusal's reason: its text, or the messages of a request the cloud found invalid."""
     try:
         detail = response.json().get("detail")
     except (ValueError, AttributeError):
         return None
+    if isinstance(detail, list):
+        detail = " ".join(m for e in detail if isinstance(e, dict) and isinstance(m := e.get("msg"), str))
     return detail if isinstance(detail, str) and detail else None
 
 
