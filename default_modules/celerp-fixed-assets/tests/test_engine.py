@@ -181,3 +181,26 @@ def test_the_registries_name_every_core_method_and_convention():
     assert set(CONVENTIONS) == {"full_month", "mid_month", "daily", "half_year"}
     for entry in (*METHODS.values(), *CONVENTIONS.values()):
         assert entry.label_key.startswith("fixed_assets.")
+
+
+def test_partial_disposal_splits_layers_and_the_rest_depreciates_on():
+    """A quarter disposed in July of a 12,000 asset over 60 months: the disposed quarter
+    stops (full month: nothing in its disposal month), the rest carries on at 150."""
+    policy = Policy("straight_line", 60, D(0), "full_month")
+    out = schedule([Acquire(date(2026, 1, 15), D(12000)), Dispose(date(2026, 7, 10), share=D("0.25"))], policy,
+                   through="2030-12", currency="USD")
+    amounts = [p.amount for p in out.periods]
+    assert amounts[:6] == [D(200)] * 6
+    assert amounts[6:] == [D(150)] * 54
+    assert sum(amounts) == D("9300")
+
+
+def test_partial_disposal_daily_charges_the_disposed_share_to_the_day():
+    """Daily convention, half disposed on 10 July (31 days): the disposed half takes
+    10/31 of July, the kept half the whole month."""
+    policy = Policy("straight_line", 60, D(0), "daily")
+    out = schedule([Acquire(date(2026, 1, 1), D(12000)), Dispose(date(2026, 7, 10), share=D("0.5"))], policy,
+                   through="2026-08", currency="USD")
+    july = next(p for p in out.periods if p.period == "2026-07")
+    assert july.amount == (D(100) + D(100) * D(10) / D(31)).quantize(D("0.01"))
+    assert out.periods[-1].amount == D(100)
