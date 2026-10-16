@@ -37,6 +37,8 @@ _CODE = {
         "async def extra_in_production(*, session, company_id, when=None):\n    return 0\n"
         "async def demo(*, session, company_id, user_id):\n    return None\n"
         "async def asset_lines(*, session, company_id, user_id, doc_id, doc, change):\n    return None\n"
+        "async def label_rows(*, session, company_id, ids):\n    return []\n"
+        "async def loose_label_rows(*, session, company_id):\n    return []\n"
     ),
 }
 
@@ -44,7 +46,9 @@ _CODE = {
 _VALID = {
     "nav": [{"key": "acme", "label": "Acme", "href": "/acme", "order": 40.5, "group": None},
             {"key": "acme-more", "label_key": "nav.acme", "href": "/acme/more", "order": 41,
-             "group": "Acme"}],
+             "group": "Acme"},
+            {"key": "acme-mine", "label": "Mine", "href": "/acme/mine", "order": 42,
+             "probe_href": "/acme/mine/nav"}],
     "search_provider": {"handler": "{inner}.search:find", "result_key": "items",
                         "permission": "view_inventory"},
     "bulk_action": [{"label": "Go", "form_action": "/acme/go", "action_type": "navigate",
@@ -70,6 +74,10 @@ _VALID = {
     "background_loop": [{"handler": "{inner}.hooks:loop"}],
     "doc_asset_lines": [{"handler": "{inner}.lineage:asset_lines"}],
     "fixed_asset_rules": [{"kind": "method", "key": "acme_rate", "handler": "{inner}.rules:Rate"}],
+    "label_source": [{"entity_type": "acme_box", "handler": "{inner}.lineage:label_rows",
+                      "permission": "view_inventory", "label_key": "nav.acme", "keys": ["number", "name"],
+                      "preset": {"name": "Box tag", "width_mm": 50, "height_mm": 25,
+                                 "fields": [{"key": "number", "type": "text"}]}}],
 }
 
 # (slot, the entry's wrong key and value, the text the refusal names).
@@ -111,6 +119,11 @@ _WRONG = [
     ("on_doc_payment", {"handler": 5}, "module.path:function"),
     ("fixed_asset_rules", {"kind": 3}, "kind"),
     ("fixed_asset_rules", {"key": ""}, "key"),
+    ("nav", {"probe_href": "https://elsewhere.example/nav"}, "probe_href"),
+    ("label_source", {"entity_type": ""}, "entity_type"),
+    ("label_source", {"keys": "number"}, "keys"),
+    ("label_source", {"preset": None}, "preset"),
+    ("label_source", {"handler": "{inner}.lineage:loose_label_rows"}, "session, company_id, ids"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:sync_guard"}, "must be async"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:short_guard"}, "session, entry, transition"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:loose_guard"}, "session, entry, transition"),

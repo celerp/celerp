@@ -114,6 +114,12 @@ def test_fixed_asset_rules_slot_is_open_to_every_module():
     assert loader._CALLABLE_SLOTS["fixed_asset_rules"] == ("handler", False)
 
 
+def test_label_source_slot_is_open_to_every_module():
+    assert "label_source" in slots.SLOT_NAMES and "label_source" not in slots.FIRST_PARTY_SLOTS
+    # Labels awaits the handler for the rows it prints.
+    assert loader._CALLABLE_SLOTS["label_source"] == ("handler", True)
+
+
 def test_the_chart_of_accounts_is_not_a_slot():
     assert not {"journal_accounts", "chart_accounts", "add_chart_account"} & slots.SLOT_NAMES
 
