@@ -272,7 +272,7 @@ async def test_concurrent_invoice_finalizations_get_distinct_numbers(committed_e
         lambda s: finalize_doc(entity_id="doc:PF-2", company_id=company_id, _=None, user=user, session=s),
     )
 
-    refs = [st["ref_id"] for st in await _states(factory, company_id, "doc") if st["doc_type"] == "invoice"]
+    refs = [st["ref_id"] for st in await _states(factory, company_id, "doc")]
     assert len(refs) == 2 and len(set(refs)) == 2 and all(r.startswith("INV-") for r in refs), refs
 
 
