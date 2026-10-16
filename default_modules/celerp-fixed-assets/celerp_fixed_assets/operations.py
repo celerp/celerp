@@ -21,12 +21,12 @@ import json
 import re
 import uuid
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from celerp.models.projections import Projection
 from celerp.services.money import books_currency
 from celerp_fixed_assets import setup, sources
-from celerp_fixed_assets.projections import BUCKETS
+from celerp_fixed_assets.projections import BUCKETS, _cents, _dec
 from celerp_fixed_assets.store import _emit, _entities, _state, recorded
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -47,29 +47,15 @@ def conflict(message: str) -> HTTPException:
 # ── Shared pieces ────────────────────────────────────────────────────────────
 
 
-def _dec(value) -> Decimal:
-    return Decimal(str(value or 0))
-
-
-def _cents(value) -> str:
-    return f"{_dec(value):.2f}"
-
-
 def _amount(value, field: str, *, positive: bool = False) -> Decimal:
-    try:
-        amount = Decimal(str(value if value not in (None, "") else "0"))
-    except InvalidOperation:
-        raise setup.unprocessable(f"{field} must be a number.") from None
-    if not amount.is_finite() or amount < 0 or (positive and amount == 0):
+    amount = setup.number(value if value not in (None, "") else "0", field)
+    if amount < 0 or (positive and amount == 0):
         raise setup.unprocessable(f"{field} must be more than zero." if positive else f"{field} must be zero or more.")
     return amount
 
 
 def _date(value, field: str) -> str:
-    try:
-        return date.fromisoformat(str(value)).isoformat()
-    except ValueError:
-        raise setup.unprocessable(f"{field} is a date.") from None
+    return setup.day(value, f"{field} is a date.").isoformat()
 
 
 def _hash(value) -> str:

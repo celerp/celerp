@@ -87,12 +87,13 @@ def _text(value) -> str:
     return EMPTY if value in (None, "") else str(value)
 
 
-def _money_td(value, currency):
-    return Td(_money(value, currency), cls="cell--number")
+def _money_td(value, currency, **attrs):
+    """A money cell, right-aligned on screen and on paper alike."""
+    return Td(_money(value, currency), cls="cell--number", **attrs)
 
 
-def _money_th(label: str):
-    return Th(label, cls="cell--number")
+def _money_th(label: str, **attrs):
+    return Th(label, cls="cell--number", **attrs)
 
 
 def _detail_table(rows: list[tuple[str, object]]) -> FT:

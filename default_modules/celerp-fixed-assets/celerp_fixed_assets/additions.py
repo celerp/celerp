@@ -201,7 +201,7 @@ async def _replaced(session, company_id, books, asset_id: str, asset: dict, cls:
         return disposal._plan_asset(books, part_id, part, part_cls,
                                     await asset_movements(session, company_id, part_id), day, Decimal(1),
                                     _dec(part.get("quantity")), roles)
-    estimate = disposal._number(replaced["estimate"], "The estimated cost of the old part")
+    estimate = setup.number(replaced["estimate"], "The estimated cost of the old part")
     cost = _dec(asset.get("cost"))
     if estimate <= 0 or estimate >= cost:
         raise setup.unprocessable(f"The estimated cost of the old part is more than 0 and less than "

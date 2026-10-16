@@ -18,6 +18,7 @@ from urllib.parse import quote_plus
 from celerp.models.projections import Projection
 from celerp.services.money import books_currency
 from celerp_fixed_assets import setup
+from celerp_fixed_assets.projections import _dec
 from sqlalchemy import select
 
 BILL_TYPES = ("bill",)
@@ -25,10 +26,6 @@ BILL_TYPES = ("bill",)
 
 def claim_id(source: str) -> str:
     return f"fa:src:{source}"
-
-
-def _dec(value) -> Decimal:
-    return Decimal(str(value or 0))
 
 
 def _quantity(value):

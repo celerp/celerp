@@ -19,23 +19,24 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.report_kit import action_bar, csv_amount, csv_response, fname_date, plain_error_response, print_shell
 from ui.components.shell import page_header
-from ui.components.table import EMPTY, breadcrumbs, empty_state_cta, fmt_money
+from ui.components.table import EMPTY, breadcrumbs, empty_state_cta
 from ui.config import get_token as _token
 from ui.i18n import t
 
-from celerp_fixed_assets.ui_routes import _context, _doc_href, _error_text, _input, _page, _restated_table, _text
+from celerp_fixed_assets.ui_routes import (
+    _chosen_regimes,
+    _context,
+    _doc_href,
+    _error_text,
+    _input,
+    _money_td,
+    _money_th,
+    _page,
+    _restated_table,
+    _text,
+)
 
 _BASE = "/fixed-assets/reports"
-
-
-def _amount(value, currency: str | None, **attrs) -> FT:
-    """A money cell, right-aligned on screen and on paper alike."""
-    shown = EMPTY if value in (None, "") else fmt_money(float(value), currency)
-    return Td(shown, cls="cell--number", **attrs)
-
-
-def _amount_th(label: str, **attrs) -> FT:
-    return Th(label, cls="cell--number", **attrs)
 
 
 def _table(head: list[FT], rows: list[FT], *extra_head: FT) -> FT:
@@ -64,15 +65,15 @@ _SCHEDULE_FIELDS = [f for _, fields in _SCHEDULE for f in fields]
 
 def _schedule_body(report: dict, currency: str) -> list[FT]:
     groups = Tr(Th(""), *[Th(t(label) if label else "", colspan=str(len(fields))) for label, fields in _SCHEDULE])
-    head = [Th(t("fixed_assets.asset")), *[_amount_th(t(f"fixed_assets.col.{f}")) for f in _SCHEDULE_FIELDS]]
+    head = [Th(t("fixed_assets.asset")), *[_money_th(t(f"fixed_assets.col.{f}")) for f in _SCHEDULE_FIELDS]]
     rows: list[FT] = []
     for c in report["classes"]:
-        rows.append(Tr(Td(Strong(_text(c["name"]))), *[_amount(c[f], currency) for f in _SCHEDULE_FIELDS]))
-        rows += [Tr(Td(_asset_link(a), " ", _text(a.get("name"))), *[_amount(a[f], currency) for f in _SCHEDULE_FIELDS])
+        rows.append(Tr(Td(Strong(_text(c["name"]))), *[_money_td(c[f], currency) for f in _SCHEDULE_FIELDS]))
+        rows += [Tr(Td(_asset_link(a), " ", _text(a.get("name"))), *[_money_td(a[f], currency) for f in _SCHEDULE_FIELDS])
                  for a in c["assets"]]
     if not rows:
-        rows = [Tr(Td(t("fixed_assets.schedule_empty")), *[Td(EMPTY, cls="cell--number") for _ in _SCHEDULE_FIELDS])]
-    rows.append(Tr(Td(Strong(t("fixed_assets.total"))), *[_amount(report["totals"][f], currency)
+        rows = [Tr(Td(t("fixed_assets.schedule_empty")), *[_money_td(None, currency) for _ in _SCHEDULE_FIELDS])]
+    rows.append(Tr(Td(Strong(t("fixed_assets.total"))), *[_money_td(report["totals"][f], currency)
                                                           for f in _SCHEDULE_FIELDS]))
     return [_table(head, rows, groups)]
 
@@ -111,10 +112,10 @@ def _register_body(report: dict, currency: str) -> list[FT]:
         return [empty_state_cta(t("fixed_assets.no_match"))]
     head = [Th(t("fixed_assets.number")), Th(t("fixed_assets.name")), Th(t("fixed_assets.class")),
             Th(t("fixed_assets.status")), Th(t("fixed_assets.available_date")),
-            *[_amount_th(t(f"fixed_assets.{k}")) for k in _REGISTER_MONEY]]
+            *[_money_th(t(f"fixed_assets.{k}")) for k in _REGISTER_MONEY]]
     rows = [Tr(Td(_asset_link(a)), Td(_text(a.get("name"))), Td(_text(report["classes"].get(a.get("class_id")))),
                Td(t(f"fixed_assets.status.{a.get('status')}")), Td(_text(a.get("available_date"))),
-               *[_amount(a.get(k), currency) for k in _REGISTER_MONEY]) for a in report["items"]]
+               *[_money_td(a.get(k), currency) for k in _REGISTER_MONEY]) for a in report["items"]]
     return [_table(head, rows)]
 
 
@@ -131,20 +132,20 @@ def _register_rows(report: dict, currency: str) -> list[list]:
 
 
 def _depreciation_body(report: dict, currency: str) -> list[FT]:
-    head = [Th(t("fixed_assets.month")), Th(t("fixed_assets.asset")), _amount_th(t("fixed_assets.posted")),
-            _amount_th(t("fixed_assets.forecast")), Th(t("fixed_assets.skipped"))]
+    head = [Th(t("fixed_assets.month")), Th(t("fixed_assets.asset")), _money_th(t("fixed_assets.posted")),
+            _money_th(t("fixed_assets.forecast")), Th(t("fixed_assets.skipped"))]
     rows: list[FT] = []
     for m in report["months"]:
-        rows.append(Tr(Td(Strong(m["month"])), Td(""), _amount(m["posted"], currency), _amount(m["forecast"], currency),
+        rows.append(Tr(Td(Strong(m["month"])), Td(""), _money_td(m["posted"], currency), _money_td(m["forecast"], currency),
                        Td("")))
-        rows += [Tr(Td(""), Td(_asset_link(a), " ", _text(a.get("name"))), _amount(a["posted"], currency),
-                    _amount(a["forecast"], currency), Td("")) for a in m["assets"]]
-        rows += [Tr(Td(""), Td(_asset_link(s), " ", _text(s.get("name"))), Td(EMPTY, cls="cell--number"),
-                    Td(EMPTY, cls="cell--number"), Td(_text(s.get("reason")))) for s in m["skipped"]]
+        rows += [Tr(Td(""), Td(_asset_link(a), " ", _text(a.get("name"))), _money_td(a["posted"], currency),
+                    _money_td(a["forecast"], currency), Td("")) for a in m["assets"]]
+        rows += [Tr(Td(""), Td(_asset_link(s), " ", _text(s.get("name"))), _money_td(None, currency),
+                    _money_td(None, currency), Td(_text(s.get("reason")))) for s in m["skipped"]]
     if not any(m["assets"] or m["skipped"] for m in report["months"]):
         return [empty_state_cta(t("fixed_assets.depreciation_empty"))]
-    rows.append(Tr(Td(Strong(t("fixed_assets.total"))), Td(""), _amount(report["totals"]["posted"], currency),
-                   _amount(report["totals"]["forecast"], currency), Td("")))
+    rows.append(Tr(Td(Strong(t("fixed_assets.total"))), Td(""), _money_td(report["totals"]["posted"], currency),
+                   _money_td(report["totals"]["forecast"], currency), Td("")))
     return [_table(head, rows)]
 
 
@@ -168,19 +169,19 @@ def _disposals_body(report: dict, currency: str) -> list[FT]:
     if not report["items"]:
         return [empty_state_cta(t("fixed_assets.disposals_empty"))]
     head = [Th(t("fixed_assets.date")), Th(t("fixed_assets.asset")), Th(t("fixed_assets.reason")),
-            *[_amount_th(t(f"fixed_assets.col.{k}")) for k in _DISPOSAL_MONEY], Th(t("fixed_assets.invoice")),
+            *[_money_th(t(f"fixed_assets.col.{k}")) for k in _DISPOSAL_MONEY], Th(t("fixed_assets.invoice")),
             Th(t("fixed_assets.credit_notes")), Th(t("fixed_assets.journal"))]
     rows = [Tr(Td(r["date"]), Td(A(r.get("number") or EMPTY, href=f"/fixed-assets/assets/{r['asset_id']}"), " ",
                                  _text(r.get("name"))),
                Td(t(f"fixed_assets.disposal_reason.{r['reason']}") if r.get("reason") else EMPTY),
-               *[_amount(r[k], currency) for k in _DISPOSAL_MONEY],
+               *[_money_td(r[k], currency) for k in _DISPOSAL_MONEY],
                Td(A(r["invoice_number"], href=_doc_href(r["invoice_id"])) if r.get("invoice_id") else EMPTY),
                Td(*[A(c["number"], href=_doc_href(c["id"]), cls="mr-sm") for c in r["credit_notes"]] or [EMPTY]),
                Td(A(t("fixed_assets.open"), href=f"/accounting?{urlencode({'q': r['journal_id']})}")
                   if r.get("journal_id") else EMPTY))
             for r in report["items"]]
     rows.append(Tr(Td(Strong(t("fixed_assets.total"))), Td(""), Td(""),
-                   *[_amount(report["totals"][k], currency) for k in _DISPOSAL_MONEY], Td(""), Td(""), Td("")))
+                   *[_money_td(report["totals"][k], currency) for k in _DISPOSAL_MONEY], Td(""), Td(""), Td("")))
     return [_table(head, rows)]
 
 
@@ -261,13 +262,13 @@ def _book_tax_body(report: dict | None, currency: str) -> list[FT]:
                                 "/settings/fixed-assets")]
     fields = _book_tax_fields(report)
     head = [Th(t("fixed_assets.tax_line")), Th(t("fixed_assets.tax_category")),
-            *[_amount_th(t(f"fixed_assets.col.{f}")) for f in fields]]
+            *[_money_th(t(f"fixed_assets.col.{f}")) for f in fields]]
     rows = [Tr(Td(_text(r["key"]), " ", _text(r.get("name")) if r.get("name") else ""),
-               Td(_text(r.get("category_label"))), *[_amount(r[f], currency) for f in fields])
+               Td(_text(r.get("category_label"))), *[_money_td(r[f], currency) for f in fields])
             for r in report["rows"]]
     if not rows:
         return [*_read_only(report), empty_state_cta(t("fixed_assets.book_tax_empty", year=report["year"]))]
-    rows.append(Tr(Td(Strong(t("fixed_assets.total"))), Td(""), *[_amount(report["totals"][f], currency)
+    rows.append(Tr(Td(Strong(t("fixed_assets.total"))), Td(""), *[_money_td(report["totals"][f], currency)
                                                                   for f in fields]))
     return [*_read_only(report), P(t("fixed_assets.tax_year_dates", start=report["start"], end=report["end"]),
                                    cls="settings-hint"), _table(head, rows)]
@@ -301,7 +302,7 @@ def _statutory_body(report: dict, currency: str) -> list[FT]:
                 empty_state_cta(t("fixed_assets.statutory_empty", year=report["year"]))]
     numeric = [all(_numeric(row[i]) for row in report["rows"] if row[i] is not None)
                for i in range(len(report["columns"]))]
-    head = [_amount_th(c) if numeric[i] else Th(c) for i, c in enumerate(report["columns"])]
+    head = [_money_th(c) if numeric[i] else Th(c) for i, c in enumerate(report["columns"])]
     rows = [Tr(*[Td(EMPTY if v is None else f"{Decimal(str(v)):,}" if numeric[i] else v,
                     cls="cell--number" if numeric[i] else None)
                  for i, v in enumerate(row)]) for row in report["rows"]]
@@ -365,12 +366,6 @@ REPORTS = (
 # Each country form a localization module provides, at /reports/statutory/{form}.
 STATUTORY = Report("statutory", "fixed_assets.statutory_title", "fixed_assets.statutory_hint", "year",
                    _statutory_fetch, _statutory_body, _statutory_rows, path_param="form")
-
-
-def _chosen_regimes(setup: dict) -> list[dict]:
-    """The tax regimes the company chose that a module it uses provides."""
-    chosen = (setup.get("settings") or {}).get("tax_regimes") or []
-    return [r for r in (setup.get("rules") or {}).get("tax_regimes") or [] if r["key"] in chosen]
 
 
 def _params(report: Report, request: Request, setup: dict) -> dict:

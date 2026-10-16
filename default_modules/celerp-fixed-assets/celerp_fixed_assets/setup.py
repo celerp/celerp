@@ -59,6 +59,25 @@ def unprocessable(message: str) -> HTTPException:
     return HTTPException(status_code=422, detail=message)
 
 
+def number(value, field: str) -> Decimal:
+    """``value`` as a finite number, refused with an explanation otherwise."""
+    try:
+        out = Decimal(str(value))
+    except InvalidOperation:
+        raise unprocessable(f"{field} must be a number.") from None
+    if not out.is_finite():
+        raise unprocessable(f"{field} must be a number.")
+    return out
+
+
+def day(value, refusal: str) -> date:
+    """``value`` as an ISO date, refused with ``refusal`` otherwise."""
+    try:
+        return date.fromisoformat(str(value or ""))
+    except ValueError:
+        raise unprocessable(refusal) from None
+
+
 def require_open(lock: date | None, day: str) -> None:
     """Refuses ``day`` when it falls in the locked period, naming the first open date."""
     if lock is not None and date.fromisoformat(day) <= lock:
@@ -223,11 +242,8 @@ async def require_started(session, company_id) -> dict:
 def _money(value, field: str) -> str | None:
     if value in (None, ""):
         return None
-    try:
-        amount = Decimal(str(value))
-    except InvalidOperation:
-        raise unprocessable(f"{field} must be a number.") from None
-    if not amount.is_finite() or amount < 0:
+    amount = number(value, field)
+    if amount < 0:
         raise unprocessable(f"{field} must be zero or more.")
     return str(amount)
 

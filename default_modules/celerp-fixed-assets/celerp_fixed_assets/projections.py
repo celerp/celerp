@@ -18,6 +18,10 @@ def _dec(value) -> Decimal:
     return Decimal(str(value or 0))
 
 
+def _cents(value) -> str:
+    return f"{_dec(value):.2f}"
+
+
 def live(movements: list[dict]) -> list[dict]:
     """The movements that still count: undone ones and their reversals cancel out."""
     reversed_ids = {m.get("reverses") for m in movements if m.get("reverses")}

@@ -57,7 +57,7 @@ def _money(value, field: str, currency: str) -> Decimal:
 
     if value in (None, ""):
         raise setup.unprocessable(f"Enter the {field}.")
-    amount = disposal._number(value, f"The {field}")
+    amount = setup.number(value, f"The {field}")
     if amount < 0:
         raise setup.unprocessable(f"The {field} must be zero or more.")
     return round_money(amount, currency)

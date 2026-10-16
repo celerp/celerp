@@ -59,10 +59,7 @@ def add_months(day: str, months: int) -> str:
 
 
 def _day(value, refusal: str) -> str:
-    try:
-        return date.fromisoformat(str(value or "")).isoformat()
-    except ValueError:
-        raise setup.unprocessable(refusal) from None
+    return setup.day(value, refusal).isoformat()
 
 
 def _text(value) -> str | None:
@@ -101,10 +98,9 @@ async def _field(session, company_id, field: str, value, kind: str):
         if value in (None, ""):
             return None
         from celerp.services.money import round_money
-        from celerp_fixed_assets.disposal import _number
 
         try:
-            amount = _number(value, "The insured value")
+            amount = setup.number(value, "The insured value")
         except HTTPException:
             raise setup.unprocessable("Enter the insured value as an amount, such as 25000.") from None
         if amount < 0:

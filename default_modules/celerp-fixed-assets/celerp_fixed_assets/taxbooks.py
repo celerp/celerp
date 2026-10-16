@@ -24,7 +24,7 @@ from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException
 
-from celerp_fixed_assets import setup
+from celerp_fixed_assets import projections, setup
 from celerp_fixed_assets.calc import rules
 from celerp_fixed_assets.calc.tax import PoolInputs, TaxAssetInputs
 from celerp_fixed_assets.projections import REMEASUREMENTS, _dec, live
@@ -48,7 +48,8 @@ def taxyear_id(regime_key: str, year: int) -> str:
 
 
 def _cents(value) -> str | None:
-    return None if value is None else f"{_dec(value):.2f}"
+    """A tax figure, or None where the regime has none."""
+    return None if value is None else projections._cents(value)
 
 
 def tax_year_end(settings: dict | None) -> str:

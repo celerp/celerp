@@ -134,7 +134,7 @@ def _rate(body: dict, ours: str, theirs: str, our_name: str, their_name: str) ->
     if body.get("rate") in (None, ""):
         raise setup.unprocessable(f"{our_name} keeps its books in {ours} and {their_name} in {theirs}. Enter the "
                                   f"exchange rate from {ours} to {theirs}.")
-    rate = disposal._number(body["rate"], "The exchange rate")
+    rate = setup.number(body["rate"], "The exchange rate")
     if rate <= 0:
         raise setup.unprocessable("The exchange rate is more than zero.")
     return rate

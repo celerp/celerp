@@ -295,8 +295,8 @@ async def test_j5_wizard_upload_review_import(fa):
     template = await fa.page("/fixed-assets/import/template")
     assert template.status_code == 200 and template.text.splitlines()[0].startswith("number,name,class")
     csv_text = ("Asset,Name,Class,In use from,Cost,Depreciation to date\n"
-                f"FA-0050,Warehouse,Buildings,2020-01-01,250000,40000\n"
-                f"FA-0051,Garage,Garages,2020-01-01,50000,0\n")
+                "FA-0050,Warehouse,Buildings,2020-01-01,250000,40000\n"
+                "FA-0051,Garage,Garages,2020-01-01,50000,0\n")
     mapped = await fa._ui("POST", "/fixed-assets/import/preview",
                           files={"csv_file": ("register.csv", csv_text.encode(), "text/csv")})
     assert mapped.status_code == 200 and "csv_ref" in mapped.text

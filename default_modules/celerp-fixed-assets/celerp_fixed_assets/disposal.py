@@ -15,7 +15,7 @@ invoice instead.
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from celerp.services.money import books_currency
 from celerp_fixed_assets import projections, runs, setup
@@ -45,16 +45,6 @@ _AD, _IMP, _SURPLUS = "accumulated_depreciation", "accumulated_impairment", "rev
 _CHARGES = ("run", "depreciation", "link_depreciation")
 
 
-def _number(value, field: str) -> Decimal:
-    try:
-        number = Decimal(str(value))
-    except InvalidOperation:
-        raise setup.unprocessable(f"{field} must be a number.") from None
-    if not number.is_finite():
-        raise setup.unprocessable(f"{field} must be a number.")
-    return number
-
-
 def _share(asset: dict, body: dict) -> tuple[Decimal, Decimal]:
     """The share of the asset disposed of, and the quantity that leaves with it."""
     quantity = _dec(asset.get("quantity"))
@@ -63,15 +53,15 @@ def _share(asset: dict, body: dict) -> tuple[Decimal, Decimal]:
             raise setup.unprocessable("This record holds a quantity, so it is disposed of by quantity.")
         if body.get("quantity") in (None, ""):
             return Decimal(1), quantity
-        out = _number(body["quantity"], "The quantity disposed of")
+        out = setup.number(body["quantity"], "The quantity disposed of")
         if out <= 0 or out > quantity:
             raise setup.unprocessable(f"The quantity disposed of is more than 0 and at most {quantity}.")
         return out / quantity, out
-    if body.get("quantity") not in (None, "") and _number(body["quantity"], "The quantity disposed of") != quantity:
+    if body.get("quantity") not in (None, "") and setup.number(body["quantity"], "The quantity disposed of") != quantity:
         raise setup.unprocessable(f"This asset has a quantity of {quantity}. Dispose of a percentage of it instead.")
     if body.get("percent") in (None, ""):
         return Decimal(1), quantity
-    percent = _number(body["percent"], "The percent disposed of")
+    percent = setup.number(body["percent"], "The percent disposed of")
     if percent <= 0 or percent > 100:
         raise setup.unprocessable("The percent disposed of is more than 0 and at most 100.")
     share = percent / 100
