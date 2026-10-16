@@ -163,7 +163,8 @@ async def test_a_batch_import_cannot_add_an_ineligible_item(committed_engine, ki
     route = docs.batch_import_docs if kind == "doc" else docs.batch_import_lists
 
     outcome = await _call(factory, lambda s: route(body, company_id=company_id, _=None, __=None,
-                                                   user=user, session=s))
+                                                   user=user, session=s,
+                                                   auth=types.SimpleNamespace(peer=None)))
 
     assert not isinstance(outcome, BaseException), outcome
     assert outcome.created == 1, outcome
