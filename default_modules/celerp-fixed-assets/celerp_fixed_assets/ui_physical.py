@@ -267,7 +267,9 @@ def setup_physical_routes(app) -> None:
         scan = Form(_field(t("fixed_assets.scan_tag"), _input("tag", required=True, autofocus=True, autocomplete="off")),
                     Div(Button(t("fixed_assets.record_check"), type="submit", cls="btn btn--primary"), cls="form-actions"),
                     hx_post=_CHECKS, hx_target="#fa-checks", hx_swap="outerHTML",
-                    hx_on__after_request="if(event.detail.successful){this.reset();this.tag.focus();}", cls="flex-row")
+                    # A refused scan answers 204 with its reason; the tag stays, selected, to correct.
+                    hx_on__after_request="if(event.detail.xhr.status===200){this.reset();}"
+                                         "this.tag.focus();this.tag.select();", cls="flex-row")
         since_form = Form(_field(t("fixed_assets.not_seen_since"),
                                  _input("since", since or date.today().replace(day=1).isoformat(), type_="date", required=True)),
                           Div(Button(t("fixed_assets.show"), type="submit", cls="btn btn--secondary"), cls="form-actions"),

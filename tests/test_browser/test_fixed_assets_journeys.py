@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from datetime import date
 from pathlib import Path
 from decimal import Decimal as D
 
@@ -648,3 +649,27 @@ def test_j16_archived_class_account_is_fixed_by_moving_its_balances_and_the_run_
     expect(page.locator("#fa-exception")).to_have_count(0)
     assert D(_ok(c.get(f"{API}/assets/{car}"))["accumulated_depreciation"]) == D(600)
     _reconciled(page)
+
+
+def test_j17_unknown_tag_is_named_and_the_correct_tag_scan_is_recorded(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    _ok(c.patch(f"{API}/assets/{car}", json={"changes": {"tag": "CAR-1"}, "previous": {"tag": None}}))
+    number = _ok(c.get(f"{API}/assets/{car}"))["number"]
+
+    page.goto("/fixed-assets/checks")
+    tag = page.locator("input[name=tag]")
+    expect(tag).to_be_focused()
+    tag.fill("CAR-9")
+    tag.press("Enter")
+    expect(page.locator(".toast-container .toast--error").last).to_contain_text("No asset with tag CAR-9")
+    expect(page.locator("#fa-checks")).to_contain_text("No checks recorded yet.")
+    expect(tag).to_have_value("CAR-9")
+
+    tag.fill("car-1")
+    tag.press("Enter")
+    expect(page.locator("#fa-checks")).to_contain_text(number)
+    expect(tag).to_have_value("")
+    checks = _ok(c.get(f"{API}/checks"))["items"]
+    assert [(k["asset_id"], k["date"]) for k in checks] == [(car, date.today().isoformat())]
