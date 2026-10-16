@@ -79,6 +79,18 @@ async def test_demo_reseed_seeds_asset_bills_once(fa):
     r = await fa.client.post("/companies/me/demo/reseed", headers=fa.h)
     assert r.status_code == 200, r.text
     assert len(await fa.intake()) == 4
+
+
+async def test_demo_reseed_names_a_module_whose_sample_records_failed(fa, monkeypatch):
+    from celerp_fixed_assets import demo
+
+    async def broken(**_):
+        raise RuntimeError("sample bills unavailable")
+
+    monkeypatch.setattr(demo, "seed_demo_assets_hook", broken)
+    r = await fa.client.post("/companies/me/demo/reseed", headers=fa.h)
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is False and r.json()["failed"] == ["celerp-fixed-assets"]
     assert await fa.balance("1210") == D("60350") and await fa.balance("1240") == D("18500")
 
 

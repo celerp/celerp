@@ -2690,7 +2690,8 @@ async def reseed_demo_items(
     """Replace the untouched demo items with the set for the company's current business type,
     and let modules add their own sample records (the demo_records slot).
 
-    Real inventory and demo items the user edited or used are never removed.
+    Real inventory and demo items the user edited or used are never removed. A module whose
+    sample records failed is named in ``failed``, and ``ok`` is then false.
     """
     from celerp.modules.slots import fire_lifecycle
     from celerp.services.demo import replace_demo_items
@@ -2698,6 +2699,6 @@ async def reseed_demo_items(
     company = await locked_company(session, company_id)
     vertical = (company.settings or {}).get("vertical") if company else None
     counts = await replace_demo_items(session, company_id, user.id, vertical)
-    await fire_lifecycle("demo_records", session=session, company_id=company_id, user_id=user.id)
+    failed = await fire_lifecycle("demo_records", session=session, company_id=company_id, user_id=user.id)
     await session.commit()
-    return {"ok": True, "vertical": vertical, **counts}
+    return {"ok": not failed, "vertical": vertical, "failed": [module for module, _ in failed], **counts}
