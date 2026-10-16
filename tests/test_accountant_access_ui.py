@@ -89,21 +89,94 @@ async def test_member_cannot_issue_or_revoke_company_keys(monkeypatch):
     assert (await ends["/settings/accountant-access"](request)).status_code == 403
 
 
-@pytest.mark.asyncio
-async def test_revoke_refreshes_access_list(monkeypatch):
-    _authenticated(monkeypatch)
-    revoked = []
-    async def revoke(token, grant_id):
-        revoked.append((token, grant_id))
-        return {"revoked": True}
-    monkeypatch.setattr(api_client, "revoke_accountant_peer_grant", revoke)
-    id_ = str(uuid.uuid4())
-    response = await _endpoints()["/settings/accountant-access/grants/{grant_id}/revoke"](
-        Request(), id_)
-    assert response.status_code == 204
-    assert response.headers["hx-refresh"] == "true"
-    assert revoked == [("test-token", id_)]
+def _grants(now):
+    from datetime import timedelta
+    return [
+        {"id": str(uuid.uuid4()), "label": "Soon Co", "scopes": ["contacts", "inventory"],
+         "source_company_id": str(uuid.uuid4()), "created_at": (now - timedelta(days=25)).isoformat(),
+         "expires_at": (now + timedelta(days=3)).isoformat(), "revoked": False, "replaced": False},
+        {"id": str(uuid.uuid4()), "label": "Late Co", "scopes": ["documents"],
+         "source_company_id": str(uuid.uuid4()), "created_at": (now - timedelta(days=40)).isoformat(),
+         "expires_at": (now - timedelta(days=2)).isoformat(), "revoked": False, "replaced": False},
+        {"id": str(uuid.uuid4()), "label": "Old Co", "scopes": ["products"],
+         "source_company_id": str(uuid.uuid4()), "created_at": (now - timedelta(days=50)).isoformat(),
+         "expires_at": (now + timedelta(days=1)).isoformat(), "revoked": False, "replaced": True},
+    ]
 
+
+def test_accountant_access_table_labels_no_reload():
+    """Scopes read as record names, dates as dates, IDs stay out, and actions swap the table."""
+    from datetime import datetime, timezone
+    from fasthtml.common import to_xml
+
+    now = datetime(2026, 10, 12, tzinfo=timezone.utc)
+    grants = _grants(now)
+    html = to_xml(routes._grants_table(grants, "en", now=now))
+    assert 'id="accountant-access-grants"' in html
+    assert "Contacts, Stock counts" in html and "contacts, inventory" not in html
+    assert grants[0]["source_company_id"] not in html and "T00:00" not in html
+    assert "2026-10-15" in html and "Expires in 3 days" in html and "badge--soon" in html
+    assert "Expired" in html and "badge--expired" in html
+    assert "Renewed by the client company" in html
+    assert html.count(">Extend<") == 2 and html.count(">Revoke<") == 2
+    assert "HX-Refresh" not in html and 'hx-target="#accountant-access-grants"' in html
+    assert to_xml(routes._grants_table([], "en", now=now)).count("No client access keys") == 1
+
+
+@pytest.mark.asyncio
+async def test_key_renewal_and_expiry_warning_on_the_access_page(monkeypatch):
+    """Extend and Revoke answer with the refreshed table instead of reloading the page."""
+    from datetime import datetime, timezone
+    from fasthtml.common import to_xml
+
+    _authenticated(monkeypatch)
+    now = datetime.now(timezone.utc)
+    grants = _grants(now)
+    calls = []
+
+    async def listing(token):
+        return {"items": grants}
+
+    async def extend(token, grant_id):
+        calls.append(("extend", grant_id))
+        return {}
+
+    async def revoke(token, grant_id):
+        calls.append(("revoke", grant_id))
+        return {"revoked": True}
+
+    monkeypatch.setattr(api_client, "accountant_peer_grants", listing)
+    monkeypatch.setattr(api_client, "extend_accountant_peer_grant", extend)
+    monkeypatch.setattr(api_client, "revoke_accountant_peer_grant", revoke)
+    ends = _endpoints()
+    gid = grants[1]["id"]
+    for action in ("extend", "revoke"):
+        response = await ends[f"/settings/accountant-access/grants/{{grant_id}}/{action}"](Request(), gid)
+        body = to_xml(response) if not hasattr(response, "body") else response.body.decode()
+        assert 'id="accountant-access-grants"' in body
+        assert "hx-refresh" not in {k.lower() for k in getattr(response, "headers", {})}
+    assert calls == [("extend", gid), ("revoke", gid)]
+
+
+@pytest.mark.asyncio
+async def test_issued_key_has_copy_and_refreshes_the_list(monkeypatch):
+    from datetime import datetime, timezone
+    _authenticated(monkeypatch)
+    now = datetime.now(timezone.utc)
+
+    async def create(token, body):
+        return {"credential": "cp1.ONE-TIME-TEST-KEY"}
+
+    async def listing(token):
+        return {"items": _grants(now)}
+
+    monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
+    monkeypatch.setattr(api_client, "accountant_peer_grants", listing)
+    response = await _endpoints()["/settings/accountant-access/grants"](Request({
+        "pairing_code": _code(uuid.uuid4()), "label": "Client", "lifetime_days": "30"}))
+    body = response.body.decode()
+    assert 'data-copy="#issued-peer-key"' in body and 'id="issued-peer-key"' in body
+    assert 'hx-swap-oob="true"' in body and 'id="accountant-access-grants"' in body
 
 
 @pytest.mark.asyncio
