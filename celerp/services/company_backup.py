@@ -96,6 +96,7 @@ EXCLUDED_TABLES = {
     "connector_sources": "connector links to outside services",
     "company_peer_grants": "company integration credentials",
     "company_peer_identities": "company integration identity mappings",
+    "company_peer_attention": "records a connected company sent that were not applied",
     "marketplace_configs": "marketplace connection settings and credentials",
     "sync_runs": "connector sync history",
     "outbound_queue": "messages waiting to leave this installation",

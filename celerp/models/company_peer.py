@@ -22,6 +22,8 @@ class CompanyPeerGrant(Base):
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     expires_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    # When the connected company's installation last reached this one with the key.
+    last_used_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         sa.CheckConstraint("length(token_hash) = 64", name="ck_company_peer_grant_hash_length"),
@@ -45,4 +47,26 @@ class CompanyPeerIdentity(Base):
         sa.UniqueConstraint("company_id", "source_company_id", "entity_type", "source_key_hash",
                             name="uq_company_peer_external_identity"),
         sa.Index("ix_company_peer_identities_company", "company_id"),
+    )
+
+
+class CompanyPeerAttention(Base):
+    """One record a connected company sent that this company did not apply, with the
+    reason, until that record is applied. The firm view lists them per company."""
+    __tablename__ = "company_peer_attention"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), sa.ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    source_company_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), nullable=False)
+    kind: Mapped[str] = mapped_column(sa.String(32), nullable=False)
+    entity_type: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    source_entity_id: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    label: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    reason: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        sa.UniqueConstraint("company_id", "source_company_id", "kind", "entity_type", "source_entity_id",
+                            name="uq_company_peer_attention_record"),
+        sa.Index("ix_company_peer_attention_company", "company_id"),
     )

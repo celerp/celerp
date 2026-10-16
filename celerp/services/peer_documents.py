@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.importers.results import message_text
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.services.peer_identity import (
@@ -228,7 +229,9 @@ async def receive_document(
     if len(outcome.records) != 1 or outcome.records[0].status not in (
         "created", "updated", "skipped",
     ):
-        raise HTTPException(409, "Receiving document needs review")
+        # The import's own reason, such as a locked period, tells the owner what to change.
+        message = outcome.records[0].message if len(outcome.records) == 1 else None
+        raise HTTPException(409, message_text(message) if message else "Receiving document needs review")
     if source_status != "draft" and target_status == "draft":
         await finalize_document(claim.target_id, str(grant.company_id),
                                 SimpleNamespace(id=member.id), session, commit=False)

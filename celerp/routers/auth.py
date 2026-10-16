@@ -360,6 +360,20 @@ async def my_companies(
     return {"items": result, "total": len(result), "deactivated": deactivated}
 
 
+@router.get("/firm-view")
+async def firm_view(
+    q: str | None = None,
+    sync: str | None = None,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Every company the user can open, with its accountant sync, last sync and what
+    needs attention, newest activity first; ``q`` searches names, ``sync`` filters."""
+    from celerp.services.firm_view import firm_view as rows
+    items = await rows(session, user.id, q=q, sync=sync)
+    return {"items": items, "total": len(items)}
+
+
 @router.post("/switch-company/{company_id}")
 async def switch_company(
     company_id: uuid.UUID,

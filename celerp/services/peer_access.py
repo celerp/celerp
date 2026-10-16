@@ -52,6 +52,8 @@ class PeerCaller:
 
 # How long a key works, from issue and from each renewal.
 KEY_LIFETIME = timedelta(days=365)
+# A key's last use is written at most this often.
+USED_EVERY = timedelta(minutes=1)
 # Both companies are warned this long before a key expires.
 RENEW_WITHIN = timedelta(days=14)
 EXPIRY_NOTICE = "notice.peer_key_expiring"
@@ -252,6 +254,13 @@ async def held(session: AsyncSession, credential: object, *,
     if _instant(row.expires_at) <= _instant(now or datetime.now(timezone.utc)):
         raise HTTPException(401, {"code": "key_expired", "company_name": company.name})
     return row
+
+
+def mark_used(grant: CompanyPeerGrant, now: datetime | None = None) -> None:
+    """Note that the connected company reached this one with the key: its last sync."""
+    when = now or datetime.now(timezone.utc)
+    if grant.last_used_at is None or _instant(grant.last_used_at) <= when - USED_EVERY:
+        grant.last_used_at = when
 
 
 async def renew(session: AsyncSession, company_id: uuid.UUID, grant_id: uuid.UUID,

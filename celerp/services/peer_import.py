@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictInt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.importers.results import failure_reason
-from celerp.services import peer_access
+from celerp.services import peer_access, peer_attention
 
 log = logging.getLogger(__name__)
 
@@ -126,15 +126,21 @@ async def receive_file(ctx, session: AsyncSession, source_doc_id: str, file,
     from celerp.services.peer_attachments import receive_attachment
     if fields["source_file_id"] is None or fields["sha256_hex"] is None:
         raise HTTPException(422, "A connected company's file needs its file id and checksum.")
+    grant = await _grant(session, ctx.peer)
+    peer_access.mark_used(grant)
     status = await receive_attachment(
-        session, grant=await _grant(session, ctx.peer), source_doc_id=source_doc_id,
-        file=file, **fields)
+        session, grant=grant, source_doc_id=source_doc_id, file=file, **fields)
     return {"status": status}
 
 
 async def _grant(session: AsyncSession, peer: peer_access.PeerCaller):
     return await peer_access.authenticate(
         session, peer.credential, source_company_id=peer.source_company_id, scope=peer.scope)
+
+
+def _label(record) -> str:
+    from celerp.connectors.celerp import attention_label
+    return attention_label(record.data if isinstance(record.data, dict) else {}, record.entity_id)
 
 
 async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, records) -> dict:
@@ -144,6 +150,11 @@ async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, r
     receive = RECEIVERS[peer.scope]
     counts = {"created": 0, "updated": 0, "skipped": 0}
     errors: list[str] = []
+    grant = await _grant(session, peer)
+    peer_access.mark_used(grant)
+    await session.commit()
+    where = dict(company_id=grant.company_id, source_company_id=peer.source_company_id,
+                 entity_type=peer.scope)
     for record in records:
         try:
             if record.source_revision is None:
@@ -151,16 +162,21 @@ async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, r
             grant = await _grant(session, peer)
             status = await receive(session, grant=grant, source_entity_id=record.entity_id,
                                    source_revision=record.source_revision, data=record.data)
+            await peer_attention.clear(session, **where, source_entity_id=record.entity_id)
             await session.commit()
         except Exception as exc:
             await session.rollback()
             if isinstance(exc, HTTPException) and exc.status_code == 401:
                 raise  # the key stopped working mid-batch; nothing further is applied
             if isinstance(exc, (HTTPException, ValueError)):
-                errors.append(f"{record.entity_id}: {failure_reason(exc)}")
+                reason = failure_reason(exc)
             else:
                 log.exception("connected company record %s failed", record.entity_id)
-                errors.append(f"{record.entity_id}: {UNEXPECTED}")
+                reason = UNEXPECTED
+            errors.append(f"{record.entity_id}: {reason}")
+            await peer_attention.record(session, **where, source_entity_id=record.entity_id,
+                                        label=_label(record), reason=reason)
+            await session.commit()
             continue
         counts[status] += 1
     return {**counts, "errors": errors}
