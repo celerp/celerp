@@ -34,6 +34,20 @@ def test_entity_set_defined_once():
     assert settings_connectors._ENTITY_ORDER == [*base.INBOUND_ENTITIES, *base.OUTBOUND_ENTITIES]
 
 
+def test_peer_connector_kinds_defined_once():
+    import ast
+    import inspect
+
+    from celerp.connectors import celerp as peer
+
+    assert {kind + "_out" for kind in peer._KINDS} <= set(base.OUTBOUND_ENTITIES)
+    # Each kind's event, sync entity and label live in _KINDS and nowhere else.
+    keyed_by_kind = [node for node in ast.walk(ast.parse(inspect.getsource(peer)))
+                     if isinstance(node, ast.Dict)
+                     and any(isinstance(k, ast.Constant) and k.value == "journals" for k in node.keys)]
+    assert len(keyed_by_kind) == 1
+
+
 @pytest.mark.parametrize("lang", ["en", "th"])
 def test_every_entity_has_a_label(lang):
     from ui.routes.settings_connectors import _entity_label
