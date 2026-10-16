@@ -24,6 +24,7 @@ from sqlalchemy import text
 
 from company_backup_support import company, download, manifest, members, owner, read, rezip, token
 from migration_support import code_config, count, real_client, real_engine  # noqa: F401
+from ui.components.table import format_value
 from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
@@ -927,6 +928,91 @@ async def test_company_handoff_activity_revoke_and_navigation(ui, real_engine, m
     revoked = await ui.post(f"{route.HANDOFFS}/{copy_id}/revoke")
     assert revoked.status_code == 303 and revoked.headers["location"] == route.HANDOFFS
     assert calls == [(tok, copy_id)]
+
+
+def _copy_row(**over) -> dict:
+    row = {"id": str(uuid.uuid4()), "status": "sent", "sent_at": "2026-10-10T08:00:00+00:00",
+           "expires_at": "2026-10-24T08:00:00+00:00", "opened": False, "downloaded": False,
+           "company_opened": False, "stored": True, "can_restore": False,
+           "firm_name": "Example Accounting", "recipient": "client@example.com", "link": None}
+    return {**row, **over}
+
+
+async def test_handoffs_table_header_dates_order_revoke_undo(ui, real_engine, monkeypatch):
+    from ui.routes import company_backup as route
+    from ui import api_client as api
+
+    _, _, tok = await _setup(real_engine, name="Company copies table")
+    ui.cookies.set("celerp_token", tok)
+    older = _copy_row(link="https://relay.celerp.com/handoffs/a/open#" + "A" * 43)
+    newer = _copy_row(sent_at="2026-10-15T08:00:00+00:00", expires_at="2026-10-29T08:00:00+00:00",
+                      status="revoked", can_restore=True, recipient=None, firm_name="Second Firm")
+    rows = {"items": [older, newer]}
+    calls = []
+
+    async def listed(token):
+        return rows
+
+    async def revoke(token, which):
+        calls.append(("revoke", which))
+        return {**older, "status": "revoked", "can_restore": True, "link": None}
+
+    async def restore(token, which):
+        calls.append(("restore", which))
+        return {**newer, "status": "sent", "can_restore": False}
+
+    async def new_link(token, which, operation):
+        calls.append(("new-link", which, operation))
+        if which == newer["id"]:
+            raise api.APIError(410, "This copy is no longer stored. Use Resend to send a new copy")
+        return {**older, "link": "https://relay.celerp.com/handoffs/b/open#" + "A" * 43}
+
+    monkeypatch.setattr(api, "company_backup_handoffs", listed)
+    monkeypatch.setattr(api, "company_backup_revoke_handoff", revoke)
+    monkeypatch.setattr(api, "company_backup_restore_handoff", restore)
+    monkeypatch.setattr(api, "company_backup_new_handoff_link", new_link)
+
+    page = _page(await ui.get(route.HANDOFFS))
+    head = re.search(r"<thead>(.*?)</thead>", page, re.S).group(1)
+    for key in ("company_backup.copies_sent_to", "th.status", "company_backup.copies_sent",
+                "company_backup.copies_expires", "th.actions"):
+        assert t(key) in head
+    # Localized dates, never the raw timestamp; newest copy first; "--" for a missing value.
+    assert "2026-10-24T08" not in page and str(format_value(older["expires_at"], "date")) in page
+    body = page[page.index("<tbody>"):]
+    assert body.index("Second Firm") < body.index("client@example.com")
+    assert "<td>--</td>" in body
+    # Copy link, New link, Resend and Revoke on the live copy; Undo on the one just revoked.
+    assert f'data-copy-text="{older["link"]}"' in page
+    assert f'hx-post="{route.HANDOFFS}/{older["id"]}/new-link"' in page
+    assert f'hx-post="{route.HANDOFFS}/{older["id"]}/revoke"' in page and "hx-confirm" in page
+    assert f'hx-post="{route.HANDOFFS}/{newer["id"]}/restore"' in page
+    assert f"{route.SEND}?firm_name=Example+Accounting&amp;recipient=client%40example.com" in \
+        (await ui.get(route.HANDOFFS)).text
+    assert t("company_backup.copies_revoke_reason") in page
+
+    swap = {"HX-Request": "true"}
+    revoked = await ui.post(f"{route.HANDOFFS}/{older['id']}/revoke", headers=swap)
+    assert revoked.status_code == 200 and 'id="company-copies"' in revoked.text
+    assert "<html" not in revoked.text.lower()  # swapped in place, no reload
+    assert t("company_backup.copies_revoked") in _page(revoked)
+    undone = await ui.post(f"{route.HANDOFFS}/{newer['id']}/restore", headers=swap)
+    assert undone.status_code == 200 and t("company_backup.copies_restored") in _page(undone)
+    operation = str(uuid.uuid4())
+    renewed = await ui.post(f"{route.HANDOFFS}/{older['id']}/new-link", headers=swap,
+                            data={"operation_id": operation})
+    assert t("company_backup.copies_new_link_done") in _page(renewed)
+    assert "handoffs/b/open" in renewed.text
+    refused = await ui.post(f"{route.HANDOFFS}/{newer['id']}/new-link", headers=swap,
+                            data={"operation_id": str(uuid.uuid4())})
+    assert refused.status_code == 200 and "Use Resend to send a new copy" in _page(refused)
+    assert calls[:3] == [("revoke", older["id"]), ("restore", newer["id"]),
+                         ("new-link", older["id"], operation)]
+
+    # Resend opens the send form filled in for the same firm and recipient.
+    resend = _page(await ui.get(route.SEND, params={"firm_name": "Example Accounting",
+                                                   "recipient": "client@example.com"}))
+    assert 'value="Example Accounting"' in resend and 'value="client@example.com"' in resend
 
 
 async def test_switch_to_migrated_company_before_send(ui, real_engine):

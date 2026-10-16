@@ -58,12 +58,16 @@ async def test_handoff_activity_and_revoke_are_company_scoped(real_engine, real_
         calls.append((method, path, params))
         if method == "GET":
             assert params == {"company_id": str(first)}
-            return {"items": [{"id": first_copy, "company_id": str(first),
-                               "status": "sent", "opened": True,
+            return {"items": [{"id": first_copy, "link_id": first_copy, "company_id": str(first),
+                               "status": "sent", "opened": True, "stored": True,
                                "downloaded": False, "company_opened": False,
                                "expires_at": "2026-10-25T00:00:00+00:00"}]}
-        assert method == "POST" and path == f"/handoffs/{first_copy}/revoke"
-        return {"revoked": True}
+        assert method == "POST"
+        if path == f"/handoffs/{first_copy}/new-link":
+            raise company_handoff_sender.HandoffRefused(
+                "This copy is no longer stored. Use Resend to send a new copy", 410)
+        assert path in (f"/handoffs/{first_copy}/revoke", f"/handoffs/{first_copy}/restore")
+        return {"id": first_copy}
 
     monkeypatch.setattr(company_handoff_sender, "_cloud", cloud)
     url = "/company-backups/handoffs"
@@ -73,13 +77,26 @@ async def test_handoff_activity_and_revoke_are_company_scoped(real_engine, real_
     assert response.status_code == 200, response.text
     assert len(response.json()["items"]) == 1
     assert response.json()["items"][0]["id"] == first_copy
-    assert "firm_name" not in response.text
+    # Without the key this installation kept at sending, there is no link to copy.
+    assert response.json()["items"][0]["link"] is None
     bad = await real_client.post(f"{url}/{second_copy}/revoke", headers=headers)
     assert bad.status_code == 404
     assert not any(method == "POST" for method, _, _ in calls)
     good = await real_client.post(f"{url}/{first_copy}/revoke", headers=headers)
-    assert good.status_code == 200
-    assert calls[-1][:2] == ("POST", f"/handoffs/{first_copy}/revoke")
+    assert good.status_code == 200 and good.json()["id"] == first_copy
+    assert ("POST", f"/handoffs/{first_copy}/revoke", None) in calls
+    undone = await real_client.post(f"{url}/{first_copy}/restore", headers=headers)
+    assert undone.status_code == 200
+    assert ("POST", f"/handoffs/{first_copy}/restore", None) in calls
+    for action in ("restore", "new-link"):
+        assert (await real_client.post(f"{url}/{first_copy}/{action}",
+                                       json={"operation_id": str(uuid.uuid4())})).status_code == 401
+    bad_body = await real_client.post(f"{url}/{first_copy}/new-link", json={"operation_id": "x"},
+                                      headers=headers)
+    assert bad_body.status_code == 422
+    gone = await real_client.post(f"{url}/{first_copy}/new-link",
+                                  json={"operation_id": str(uuid.uuid4())}, headers=headers)
+    assert gone.status_code == 410 and "Resend" in gone.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -93,7 +110,8 @@ async def test_handoff_activity_rejects_cross_company_cloud_response(real_engine
 
     async def wrong_company(method, path, *, params=None, **kw):
         calls.append(method)
-        return {"items": [{"id": str(uuid.uuid4()), "company_id": str(second), "status": "sent"}]}
+        return {"items": [{"id": str(uuid.uuid4()), "link_id": str(uuid.uuid4()),
+                           "company_id": str(second), "status": "sent"}]}
 
     monkeypatch.setattr(company_handoff_sender, "_cloud", wrong_company)
     headers = {"Authorization": f"Bearer {bearer}"}

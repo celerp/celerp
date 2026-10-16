@@ -23,6 +23,7 @@ def _run(coro):
 def _private_staging(monkeypatch, tmp_path):
     monkeypatch.setattr(sender.files, "stage_path", lambda owner, token: tmp_path / (owner + token + ".upload"))
     monkeypatch.setattr(sender.files, "export_path", lambda company: tmp_path / (uuid.uuid4().hex + ".export"))
+    monkeypatch.setattr(sender.files, "company_backups_dir", lambda: tmp_path / "copies")
 
 
 def _fake_cloud(monkeypatch, copy_id, *, state=None, destination=None):
@@ -36,8 +37,8 @@ def _fake_cloud(monkeypatch, copy_id, *, state=None, destination=None):
         if method == "GET":
             return httpx.Response(200, json={"items": [lookup["value"]] if lookup["value"] else []})
         if path == "/handoffs":
-            return httpx.Response(201, json={"id": str(copy_id), "status": "pending",
-                                             "upload_url": url})
+            return httpx.Response(201, json={"id": str(copy_id), "link_id": str(copy_id),
+                                             "status": "pending", "upload_url": url})
         return httpx.Response(200, json={"sent": True, "id": str(copy_id)})
 
     monkeypatch.setattr(sender.cloud_entitlement, "authenticated_request", request)
@@ -102,7 +103,7 @@ def test_lost_upload_retry_uses_original_encrypted_snapshot(tmp_path, monkeypatc
         _run(_send(source, cid, op_id, secret))
     assert len(list(tmp_path.glob("*.upload"))) == 1
     source.write_bytes(b"NEW AND DIFFERENT BOOKS")
-    lookup["value"] = {"id": str(copy_id), "operation_id": str(op_id),
+    lookup["value"] = {"id": str(copy_id), "link_id": str(copy_id), "operation_id": str(op_id),
                        "company_id": str(cid), "firm_name": "Example Accounting", "status": "pending"}
     async def no_export(destination):
         pytest.fail("retry must not export a different backup")
@@ -115,7 +116,7 @@ def test_known_success_replays_without_export_or_put(tmp_path, monkeypatch):
     _private_staging(monkeypatch, tmp_path)
     cid, op, copy_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     secret = bytes(range(32))
-    state = {"id": str(copy_id), "company_id": str(cid), "operation_id": str(op),
+    state = {"id": str(copy_id), "link_id": str(copy_id), "company_id": str(cid), "operation_id": str(op),
              "firm_name": "Example Accounting", "status": "sent"}
     calls, _ = _fake_cloud(monkeypatch, copy_id, state=state)
     monkeypatch.setattr(sender.httpx, "AsyncClient", lambda **kw: pytest.fail("no upload"))
@@ -184,3 +185,81 @@ def test_relay_refusal_reason_reaches_the_sender(tmp_path, monkeypatch):
     with pytest.raises(sender.HandoffSendError) as refused:
         _run(_send(plain, uuid.uuid4(), uuid.uuid4(), bytes(32)))
     assert str(refused.value) == limit
+
+
+def _relay_copies(monkeypatch, company_id, copy_id):
+    """A relay holding one sent copy; New link replaces its public link id."""
+    row = {"id": str(copy_id), "link_id": str(copy_id), "company_id": str(company_id),
+           "firm_name": "Example Accounting", "status": "sent", "stored": True,
+           "can_restore": False, "sent_at": "2026-10-16T08:00:00+00:00",
+           "expires_at": "2026-10-30T08:00:00+00:00", "opened": True,
+           "downloaded": True, "company_opened": False}
+    calls, answers = [], {}
+
+    async def request(method, path, *, json=None, params=None, total_s):
+        calls.append((method, path, json))
+        if method == "GET":
+            return httpx.Response(200, json={"items": [dict(row)]})
+        if path in answers:
+            return answers[path]
+        if path.endswith("/new-link"):
+            row.update(link_id=str(uuid.uuid4()), opened=False, downloaded=False,
+                       expires_at="2026-10-31T09:00:00+00:00")
+        return httpx.Response(200, json=dict(row))
+
+    monkeypatch.setattr(sender.cloud_entitlement, "authenticated_request", request)
+    return row, calls, answers
+
+
+def test_handoff_link_remint_and_copy(tmp_path, monkeypatch):
+    _private_staging(monkeypatch, tmp_path)
+    company_id, copy_id, other = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    secret = bytes(range(32))
+    sender.files.remember_sent_copy(company_id, copy_id, {
+        "key": sender.encode_key(secret), "recipient": "client@example.com"})
+    row, calls, answers = _relay_copies(monkeypatch, company_id, copy_id)
+
+    [listed] = _run(sender.company_copies(company_id))
+    first_link = listed["link"]
+    assert parse_handoff_link(first_link).copy_id == copy_id
+    assert parse_handoff_link(first_link).proof_hash == hashlib.sha256(secret).hexdigest()
+    assert (listed["recipient"], listed["firm_name"]) == ("client@example.com", "Example Accounting")
+
+    operation = uuid.uuid4()
+    renewed = _run(sender.new_link(company_id, copy_id, operation))
+    assert ("POST", f"/handoffs/{copy_id}/new-link", {"operation_id": str(operation)}) in calls
+    assert renewed["link"] != first_link
+    assert parse_handoff_link(renewed["link"]).copy_id == uuid.UUID(row["link_id"])
+    assert parse_handoff_link(renewed["link"]).proof_hash == hashlib.sha256(secret).hexdigest()
+    assert renewed["expires_at"] == "2026-10-31T09:00:00+00:00" and not renewed["opened"]
+
+    # Another company's copy is never touched on this one's behalf.
+    with pytest.raises(sender.CopyNotFound):
+        _run(sender.new_link(company_id, other, uuid.uuid4()))
+    assert not any(path.startswith(f"/handoffs/{other}") for _, path, _ in calls)
+
+    # The relay's reason reaches the owner with its status.
+    answers[f"/handoffs/{copy_id}/new-link"] = httpx.Response(
+        410, json={"detail": "This copy is no longer stored. Use Resend to send a new copy"})
+    with pytest.raises(sender.HandoffRefused) as refused:
+        _run(sender.new_link(company_id, copy_id, uuid.uuid4()))
+    assert refused.value.status_code == 410 and "Resend" in str(refused.value)
+
+    # Once the stored file is gone for good, no link is offered and the key is forgotten.
+    row.update(stored=False, status="revoked")
+    [gone] = _run(sender.company_copies(company_id))
+    assert gone["link"] is None
+    assert sender.files.sent_copy(company_id, copy_id) == {}
+
+
+def test_sending_keeps_the_key_for_copy_link(tmp_path, monkeypatch):
+    _private_staging(monkeypatch, tmp_path)
+    copy_id, company_id, secret = uuid.uuid4(), uuid.uuid4(), bytes(range(32))
+    state = {"id": str(copy_id), "link_id": str(copy_id), "company_id": str(company_id),
+             "operation_id": str(uuid.uuid4()), "firm_name": "Example Accounting", "status": "sent"}
+    _fake_cloud(monkeypatch, copy_id, state=state)
+    result = _run(_send(tmp_path / "unused", company_id, uuid.UUID(state["operation_id"]), secret))
+    kept = sender.files.sent_copy(company_id, copy_id)
+    assert kept == {"key": sender.encode_key(secret), "recipient": "client@example.com"}
+    assert sender.decode_key(kept["key"]) == secret
+    assert parse_handoff_link(result["link"]).copy_id == copy_id
