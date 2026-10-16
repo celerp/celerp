@@ -1511,7 +1511,7 @@ async def test_fee_notice_and_failure_notice(client, session, payments_on):
     assert (await client.put("/accounting/posting-accounts/online_payment_fees", headers=_h(tok),
                              json={"code": "6946"})).status_code == 200
     from sqlalchemy import update
-    from celerp.models.accounting import Account
+    from celerp_accounting.models import Account
     import uuid
     await session.execute(update(Account).where(Account.company_id == uuid.UUID(cid), Account.code == "6946")
                           .values(is_active=False))

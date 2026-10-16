@@ -350,20 +350,85 @@ async def receive_fees(payload: dict) -> bool:
         books = payment.get("books") or {}
         settled_currency = str(payment.get("currency") or (row.state or {}).get("currency") or "").lower()
         base_currency = str(books.get("base_currency") or "").lower()
+        document = (row.state or {}).get("ref_id") or (row.state or {}).get("doc_number") or target_doc
         if currency.lower() not in (settled_currency, base_currency):
-            return False
-        if not (isinstance(books, dict) and books.get("base_currency")
-                and payment.get("bank_account") and payment.get("conversion_rate")):
-            return False
-        from celerp_docs.routes_payments import _company_owner_id
-        actor = await _company_owner_id(session, cid)
-        await auto_je.create_for_online_fees(
-            session, company_id=cid, user_id=actor, doc_id=target_doc,
-            reference=reference, payment=payment, fees=fees,
-            occurred_at=when.astimezone(timezone.utc),
-        )
-        await session.commit()
-    return True
+            problem = "currency"
+        elif not (isinstance(books, dict) and books.get("base_currency")
+                  and payment.get("bank_account") and payment.get("conversion_rate")):
+            problem = "books"
+        else:
+            from celerp.services.account_roles import PostingRoleError
+            from celerp_docs.routes_payments import _company_owner_id
+            actor = await _company_owner_id(session, cid)
+            try:
+                account = await auto_je.create_for_online_fees(
+                    session, company_id=cid, user_id=actor, doc_id=target_doc,
+                    reference=reference, payment=payment, fees=fees,
+                    occurred_at=when.astimezone(timezone.utc),
+                )
+            except PostingRoleError as exc:
+                await session.rollback()
+                roles = [p["params"]["role"] for p in exc.detail["params"]["problems"]]
+                await _fee_not_recorded(cid, target_doc, document, fees, "account", roles)
+                return False
+            except ValueError:
+                await session.rollback()
+                await _fee_not_recorded(cid, target_doc, document, fees, "conflict")
+                raise
+            if account is not None:
+                await _fee_recorded(session, cid, target_doc, document, fees, account)
+            await session.commit()
+            return True
+    await _fee_not_recorded(cid, target_doc, document, fees, problem)
+    return False
+
+
+def _fee_amount(fees: dict) -> str:
+    amount = abs(stripe_amount(fees["total_minor"], fees["currency"]))
+    return f"{amount:.{_stripe_exponent(fees['currency'])}f} {fees['currency'].upper()}"
+
+
+async def _fee_recorded(session, cid, doc_id: str, document: str, fees: dict, account: str) -> None:
+    """Tell the company a fee was booked on its behalf, once per provider transaction
+    (the posting itself is idempotent, so this runs only when the fee was just posted)."""
+    from celerp.notifications import service as notification_service
+    from celerp.services.posting_readiness import account_names
+
+    name = (await account_names(session, cid, [account])).get(account)
+    key = "notice.online_fee_recorded" if fees["total_minor"] > 0 else "notice.online_fee_returned"
+    await notification_service.create_keyed(
+        session, cid, "accounting", key,
+        {"amount": _fee_amount(fees), "document": document,
+         "account": f"{account} {name}" if name else account},
+        action_url=f"/docs/{doc_id}")
+
+
+async def _fee_not_recorded(cid, doc_id: str, document: str, fees: dict, problem: str, roles=()) -> None:
+    """Tell the company, unmissably and once per fee and cause, that a fee Celerp Cloud
+    delivered could not be recorded and why. The delivery is not acknowledged, so it is
+    delivered again and recorded once the cause is fixed. A refused posting account also
+    raises the standing posting-accounts notice (posting_readiness.notify_unmapped)."""
+    from celerp.notifications import service as notification_service
+    from celerp.services.posting_readiness import notify_unmapped
+
+    reason = f"notice.online_fee_failed.{problem}"
+    params = {"amount": _fee_amount(fees), "document": document, "transaction": fees["transaction_id"],
+              "reason": t(reason, "en")}
+    keyed = {**params, "reason": {"message": params["reason"], "message_key": reason}}
+    try:
+        async with _own_session() as session:
+            await notification_service.notify_once(
+                session, cid, "accounting",
+                t("notice.online_fee_failed.title", "en", **params),
+                t("notice.online_fee_failed.body", "en", **params),
+                action_url=f"/docs/{doc_id}",
+                i18n={"title": "notice.online_fee_failed.title", "body": "notice.online_fee_failed.body",
+                      "params": keyed})
+            if roles:
+                await notify_unmapped(session, cid, roles)
+            await session.commit()
+    except Exception:
+        log.exception("Could not record the notice for an unrecorded online fee")
 
 
 class _Moved(Exception):

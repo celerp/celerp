@@ -1121,8 +1121,10 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
 async def create_for_online_fees(
     session, *, company_id, user_id, doc_id: str, reference: str,
     payment: dict, fees: dict, occurred_at: datetime,
-) -> None:
-    """Book actual settled online fees against the receipt's original deposit account.
+) -> str | None:
+    """Book actual settled online fees against the receipt's original deposit account,
+    on the account the company chose for online payment fees. Returns that account
+    when this call posted the fees, None when they were already posted or net to zero.
 
     Gross settlement of the invoice remains unchanged. Every provider transaction is
     a separate signed cash movement, including actual fee refunds. No inferred fees.
@@ -1150,7 +1152,7 @@ async def create_for_online_fees(
         if (previous.event_type != "acc.journal_entry.created"
                 or (previous.metadata_ or {}).get("fee_hash") != digest):
             raise ValueError("Online fee transaction was previously posted with other details")
-        return
+        return None
 
     from celerp.services.payments import stripe_amount
     from celerp.services.money import checked_exchange_rate, to_decimal
@@ -1167,7 +1169,7 @@ async def create_for_online_fees(
         rate = checked_exchange_rate(payment["conversion_rate"])
     else:
         raise ValueError("Provider fee currency cannot be converted from recorded payment books")
-    expense = await resolve(session, company_id, R.GENERAL_EXPENSE)
+    expense = await resolve(session, company_id, R.ONLINE_PAYMENT_FEES)
     parts = (("processor", "processor_minor"), ("platform", "platform_minor"),
              ("other", "other_minor"))
     running = _Dec(0)
@@ -1181,13 +1183,13 @@ async def create_for_online_fees(
         if signed:
             value = to_stored_float(abs(signed))
             entries.append({
-                **_line(expense, R.GENERAL_EXPENSE,
+                **_line(expense, R.ONLINE_PAYMENT_FEES,
                         debit=value if signed > 0 else 0.0,
                         credit=value if signed < 0 else 0.0),
                 "fee_kind": label,
             })
     if not entries:
-        return
+        return None
     amount = to_stored_float(abs(converted))
     if converted:
         entries.append({"account": bank,
@@ -1208,6 +1210,7 @@ async def create_for_online_fees(
                    "fee_components_minor": {key: fees[key] for key in
                                             ("processor_minor", "platform_minor", "other_minor")}},
     )
+    return expense
 
 
 def _reversal_template(entry: dict) -> dict:

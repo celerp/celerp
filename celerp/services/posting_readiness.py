@@ -105,6 +105,8 @@ async def used_groups(session: AsyncSession, company_id, settings: dict) -> set[
             groups.add("consignment")
         if float(state.get("tax") or 0):
             groups.add("tax")
+        if any(p.get("method") == "stripe" for p in state.get("payments") or ()):
+            groups.add("online_payments")
         if str(state.get("currency") or base).upper() != base:
             groups.add("fx")
         for li in _line_items(state):

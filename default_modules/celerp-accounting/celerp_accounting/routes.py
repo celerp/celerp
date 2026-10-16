@@ -126,6 +126,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "6700", "name": "Insurance", "account_type": "expense", "parent_code": "6000"},
     {"code": "6800", "name": "Office Supplies", "account_type": "expense", "parent_code": "6000"},
     {"code": "6900", "name": "Travel and Transportation", "account_type": "expense", "parent_code": "6000"},
+    {"code": "6940", "name": "Online Payment Fees", "account_type": "expense", "parent_code": "6000"},
     {"code": "6950", "name": "Miscellaneous Expenses", "account_type": "expense", "parent_code": "6000"},
     {"code": "6960", "name": "Foreign Exchange Difference", "account_type": "expense", "parent_code": "6000"},
     {"code": "6970", "name": "Inventory Shrinkage & Write-offs", "account_type": "expense", "parent_code": "6000"},
@@ -255,6 +256,7 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
 _SEEDED_ANCHORS: dict[AccountRole, tuple[str, ...]] = {
     AccountRole.WORK_IN_PROGRESS: ("1130", "1130-P", "1130-OB"),
     AccountRole.CONSIGNOR_PAYABLE: ("2100", "2110"),
+    AccountRole.ONLINE_PAYMENT_FEES: ("6000", "6950"),
 }
 
 

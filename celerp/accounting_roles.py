@@ -90,6 +90,7 @@ class AccountRole(StrEnum):
     STOCK_SHRINKAGE = "stock_shrinkage"
     WORK_IN_PROGRESS = "work_in_progress"
     CONSIGNOR_PAYABLE = "consignor_payable"
+    ONLINE_PAYMENT_FEES = "online_payment_fees"
 
 
 R = AccountRole
@@ -119,6 +120,7 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.STOCK_SHRINKAGE: "Stock shrinkage and write-offs",
     R.WORK_IN_PROGRESS: "Work in progress",
     R.CONSIGNOR_PAYABLE: "Consignor payable",
+    R.ONLINE_PAYMENT_FEES: "Online payment fees",
 }
 
 _ASSET = frozenset({"asset"})
@@ -150,6 +152,7 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.STOCK_SHRINKAGE: _EXPENSE,
     R.WORK_IN_PROGRESS: _ASSET,
     R.CONSIGNOR_PAYABLE: frozenset({"liability"}),
+    R.ONLINE_PAYMENT_FEES: _EXPENSE,
 }
 
 # Roles a posting lands on directly, so the target must be a concrete account,
@@ -185,6 +188,7 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.STOCK_SHRINKAGE: "6970",
     R.WORK_IN_PROGRESS: "1130-WIP",
     R.CONSIGNOR_PAYABLE: "2115",
+    R.ONLINE_PAYMENT_FEES: "6940",
 }
 
 # Landed-cost clearing role per landed-cost kind, and back.
@@ -220,12 +224,14 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
     "fixed_assets": (R.FIXED_ASSETS,),
     "manufacturing": (R.WORK_IN_PROGRESS,),
     "consignment": (R.CONSIGNOR_PAYABLE,),
+    "online_payments": (R.ONLINE_PAYMENT_FEES,),
 }
 
 # Roles a company whose chart came from elsewhere (a migration or a restored backup)
 # never has mapped by default code: its chart predates the role, so an account that
 # happens to carry the default number proves nothing about what it holds.
-UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE})
+UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE,
+                                                    R.ONLINE_PAYMENT_FEES})
 
 
 def is_role(value: object) -> bool:
