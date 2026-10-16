@@ -4050,6 +4050,49 @@ async def company_backup_restore(token: str, upload_token: str, mode: str, plan_
     return _raise(r).json()
 
 
+async def company_backup_replace(token: str, upload_token: str, mode: str, plan_fingerprint: str,
+                                 company_name: str) -> dict:
+    """Replace the signed-in owner's company of the same lineage with an uploaded copy, as
+    the preview offered, once its name is typed. Returns the outcome, the kept copy's id,
+    the company and tokens for it."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
+            r = await c.post("/company-backups/replace", json={
+                "upload_token": upload_token, "mode": mode, "plan_fingerprint": plan_fingerprint,
+                "company_name": company_name})
+    return _raise(r).json()
+
+
+async def company_backup_kept(token: str) -> dict:
+    """The copies kept of the session company each time a copy replaced it, newest first."""
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            r = await c.get("/company-backups/kept")
+    return _raise(r).json()
+
+
+async def company_backup_kept_download(token: str, kept_id: str):
+    """GET one kept copy's file, streamed. Returns (chunk_iterator, headers)."""
+    return await _stream_get(token, f"/company-backups/kept/{kept_id}/download", params=None,
+                             timeout_message=timeout_message())
+
+
+async def company_backup_delete_kept(token: str, kept_id: str) -> None:
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            r = await c.delete(f"/company-backups/kept/{kept_id}")
+    _raise(r)
+
+
+async def company_backup_put_back(token: str, kept_id: str, company_name: str) -> dict:
+    """Put a kept copy back in place of the session company once its name is typed, keeping
+    the version it replaces in turn. Returns the outcome, the company and tokens for it."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
+            r = await c.post(f"/company-backups/kept/{kept_id}/replace", json={"company_name": company_name})
+    return _raise(r).json()
+
+
 async def company_backup_reactivate(token: str, upload_token: str, mode: str, plan_fingerprint: str) -> dict:
     """Reactivate the deactivated company an uploaded backup was already restored as. Returns
     the outcome, the company, connectors to connect again, and tokens for it."""

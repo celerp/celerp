@@ -547,10 +547,10 @@ async def test_done_page_links_users_and_roles_when_roles_follow_installation(ui
     _, _, tok = await _setup(real_engine)
     ui.cookies.set("celerp_token", tok)
     base = "/setup/new-company/restore-backup"
-    ui.cookies.set("celerp_company_backup_outcome", "created:0:0:destination", path=base)
+    ui.cookies.set("celerp_company_backup_outcome", "created:0:0:destination:", path=base)
     page = _page(await ui.get(f"{base}/done"))
     assert _link(page, "/settings/general?tab=users", "Review Users & Roles")
-    ui.cookies.set("celerp_company_backup_outcome", "created:0:0:source", path=base)
+    ui.cookies.set("celerp_company_backup_outcome", "created:0:0:source:", path=base)
     assert "/settings/general?tab=users" not in _page(await ui.get(f"{base}/done"))
 
 

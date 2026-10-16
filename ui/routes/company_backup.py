@@ -53,6 +53,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, St
 import ui.api_client as api
 import ui.handoff_opening as opening
 from ui.api_client import APIError
+from ui.components.files import fmt_size
 from ui.components.shell import flash
 from ui.components.table import fmt_money, format_value
 from ui.config import cookie_domain, get_company_id, get_token, session_cookie_secure, set_session_cookies
@@ -80,6 +81,7 @@ from ui.routes.migrations import (
 DOWNLOAD = "/company-backup/download"
 SEND = "/settings/company-handoff"
 HANDOFFS = "/settings/company-handoffs"
+SAVED = "/settings/saved-copies"
 BACKUP_TAB = "/settings/general?tab=backup"
 _TITLE = "company_backup.restore_title"
 _OWNER_ONLY = "company_backup.owner_only"
@@ -97,7 +99,8 @@ OPENING_COOKIE = "celerp_handoff_opening"
 OUTCOME_COOKIE = "celerp_company_backup_outcome"
 OUTCOME_TTL_SECONDS = 300
 _CREATED, _OPENED, _TEAM_ADDED, _REACTIVATED = "created", "opened_existing", "opened_existing_team_added", "reactivated"
-_OUTCOMES = frozenset({_CREATED, _OPENED, _TEAM_ADDED, _REACTIVATED})
+_REPLACED, _PUT_BACK = "replaced", "put_back"
+_OUTCOMES = frozenset({_CREATED, _OPENED, _TEAM_ADDED, _REACTIVATED, _REPLACED, _PUT_BACK})
 
 
 def _html(page, status_code: int = 200) -> HTMLResponse:
@@ -182,16 +185,18 @@ def _set_outcome_cookie(resp, mode: WizardMode, request: Request, done: dict) ->
     never read from the address, and gone once shown."""
     value = ":".join(str(v) for v in (done.get("outcome") or "", _count(done.get("team_members")),
                                       len(done.get("connectors_to_reconnect") or []),
-                                      done.get("role_permissions") or ""))
+                                      done.get("role_permissions") or "", done.get("kept_backup_id") or ""))
     resp.set_cookie(OUTCOME_COOKIE, value, max_age=OUTCOME_TTL_SECONDS, path=mode.base, httponly=True,
                     samesite="strict", secure=session_cookie_secure(request), domain=cookie_domain(request))
 
 
 def _outcome(request: Request) -> dict:
     parts = (request.cookies.get(OUTCOME_COOKIE) or "").split(":")
-    if len(parts) != 4 or parts[0] not in _OUTCOMES:
+    if len(parts) != 5 or parts[0] not in _OUTCOMES:
         return {}
-    return {"outcome": parts[0], "team": _count(parts[1]), "reconnect": _count(parts[2]), "policy": parts[3]}
+    kept = parts[4] if len(parts[4]) == 32 and all(c in "0123456789abcdef" for c in parts[4]) else ""
+    return {"outcome": parts[0], "team": _count(parts[1]), "reconnect": _count(parts[2]), "policy": parts[3],
+            "kept": kept}
 
 
 async def _upload_page(request: Request, mode: WizardMode, error: str | None = None, status_code: int = 200,
@@ -371,6 +376,7 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
         )]
     else:
         step = await _module_section(mode, preview)
+    replace = preview.get("replace") if action == _CREATE and preview.get("modules_ready", True) else None
     return wizard_page(
         request,
         auth_header(preview.get("company_name", ""), t("company_backup.preview_subtitle")),
@@ -379,11 +385,70 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
         *_plan_lines(mode, preview),
         *_scope_lines(preview),
         P(t("company_backup.nothing_written"), cls="form-hint"),
+        *(_replace_section(mode, preview, replace) if replace else []),
         *step,
         _cancel(mode),
         status_code=status_code,
         title=_TITLE,
     )
+
+
+def _typed_name(company: str, label: str) -> FT:
+    """The field the owner types the company's name into before a replace."""
+    return Div(Label(t(label, company=company), For="confirm_company_name", cls="form-label"),
+               Input(type="text", id="confirm_company_name", name="company_name", value="", required=True,
+                     autocomplete="off", cls="form-input"), cls="form-group")
+
+
+def _version_rows(replace: dict) -> FT:
+    """The company here and the copy, side by side."""
+    here, copy = replace["current"], replace["incoming"]
+
+    def number(facts: dict, key: str) -> FT:
+        return Td(str(facts.get(key, 0)), cls="cell--number")
+
+    def when(facts: dict) -> FT:
+        return Td(format_value(facts["last_changed"], "date") if facts.get("last_changed") else "--", cls="cell--number")
+    return wizard_table(
+        Thead(Tr(Th(""), Th(t("company_backup.replace_here_now"), cls="cell--number"),
+                 Th(t("company_backup.replace_this_copy"), cls="cell--number"))),
+        Tbody(*[Tr(Td(t(label)), number(here, key), number(copy, key))
+                for key, label in (("documents", "company_backup.replace_documents"),
+                                   ("journals", "company_backup.replace_journals"),
+                                   ("items", "company_backup.replace_items"))],
+              Tr(Td(t("company_backup.replace_last_changed")), when(here), when(copy))))
+
+
+def _replace_section(mode: WizardMode, preview: dict, replace: dict) -> list:
+    """The company this copy is of is already here: what replacing it would lose, and the
+    replace itself for its owner, who types its name. Opening the copy as a separate
+    company stays below."""
+    company = replace["company_name"]
+    older = replace.get("older")
+    lines = [
+        H2(t("company_backup.replace_title", company=company), cls="mt-md"),
+        P(t("company_backup.replace_intro", company=company), cls="form-hint"),
+        _version_rows(replace),
+    ]
+    if older:
+        lines.append(P(t("company_backup.replace_older", company=company,
+                         date=format_value(older["since"], "date")),
+                       cls="flash flash--warning"))
+    if _count(replace.get("changed_after_copy")):
+        lines.append(P(t("company_backup.replace_changed_after", company=company,
+                         count=_count(replace["changed_after_copy"])), cls="flash flash--warning"))
+    if replace.get("can_replace"):
+        lines.append(Form(
+            Input(type="hidden", name="plan_fingerprint", value=str(preview.get("plan_fingerprint") or "")),
+            _typed_name(company, "company_backup.replace_type_name"),
+            P(t("company_backup.replace_saved_first", company=company), cls="form-hint"),
+            Button(t("company_backup.replace_button", company=company), type="submit",
+                   cls="btn btn--danger btn--full"),
+            method="post", action=f"{mode.base}/replace", cls="auth-form"))
+    else:
+        lines.append(P(t("company_backup.err_replace_owner_only", company=company), cls="flash flash--warning"))
+    lines.append(H2(t("company_backup.replace_or_separate"), cls="mt-md"))
+    return lines
 
 
 def _with_cookie(resp, mode: WizardMode, request: Request, upload_token: str):
@@ -816,6 +881,23 @@ async def _restore(request: Request, mode: WizardMode):
     return _signed_in(request, mode, done)
 
 
+async def _replace(request: Request, mode: WizardMode):
+    """Replace the company this copy is of, as the preview offered, once its name is typed."""
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    upload_token = request.cookies.get(UPLOAD_COOKIE)
+    if not upload_token:
+        return _upload_again(request, mode, t("company_backup.upload_expired"))
+    form = await request.form()
+    try:
+        done = await api.company_backup_replace(get_token(request), upload_token, mode.key,
+                                                str(form.get("plan_fingerprint", "")),
+                                                str(form.get("company_name", "")))
+    except APIError as e:
+        return await _refused(request, mode, upload_token, e, "replace", form)
+    return _signed_in(request, mode, done)
+
+
 async def _key_balances(token: str, currency: str | None) -> FT | str:
     """The opened company's own trial balance, receivables and payables, as its reports
     compute them. A report the company cannot show (its module is off) is left out."""
@@ -858,6 +940,19 @@ async def _done(request: Request, mode: WizardMode):
             open_company,
             title=_TITLE,
         )
+    elif outcome in (_REPLACED, _PUT_BACK):
+        restored = (company.get("settings") or {}).get("restored_backup") or {}
+        date = format_value(restored["created_at"], "date") if restored.get("created_at") else "--"
+        notice = "company_backup.replaced_notice" if outcome == _REPLACED else "company_backup.put_back_notice"
+        page = wizard_page(
+            request,
+            auth_header(t("company_backup.replaced_title"), name),
+            P(t(notice, company=name, date=date), cls="flash flash--success"),
+            _undo_replace(name, done["kept"]) if done.get("kept") else "",
+            await _key_balances(token, company.get("currency")),
+            open_company,
+            title=_TITLE,
+        )
     elif outcome in (_OPENED, _TEAM_ADDED):
         page = wizard_page(
             request,
@@ -892,6 +987,19 @@ async def _done(request: Request, mode: WizardMode):
     resp = _html(page)
     resp.delete_cookie(OUTCOME_COOKIE, path=mode.base, domain=cookie_domain(request))
     return resp
+
+
+def _undo_replace(company: str, kept_id: str) -> FT:
+    """The version a replace put aside: download it, or put it back once the company's name
+    is typed. Putting it back saves the version it replaces in turn."""
+    path = f"{SAVED}/{kept_id}"
+    return Div(
+        P(t("company_backup.replaced_saved", company=company), " ",
+          A(t("company_backup.saved_download"), href=f"{path}/download", cls="auth-link"), cls="form-hint"),
+        Form(_typed_name(company, "company_backup.undo_type_name"),
+             Button(t("company_backup.undo_replace"), type="submit", cls="btn btn--secondary btn--full"),
+             method="post", action=f"{path}/put-back", cls="auth-form"),
+    )
 
 
 def _handoff_status(item: dict) -> str:
@@ -1014,6 +1122,131 @@ async def _new_handoff_link(request: Request):
     return await _copy_action(request, act, "company_backup.copies_new_link_done")
 
 
+# ---------------------------------------------------------------------------
+# Saved copies: the version each replace put aside
+# ---------------------------------------------------------------------------
+
+def _kept_id(request: Request) -> str | None:
+    kept = request.path_params["kept_id"]
+    return kept if len(kept) == 32 and all(c in "0123456789abcdef" for c in kept) else None
+
+
+def _saved_table(items: list[dict], company: str, *, notice: str | None = None,
+                 warning: str | None = None) -> FT:
+    """The copies saved of this company before a copy replaced it, newest first. Delete
+    swaps this table in place."""
+    def actions(item: dict) -> FT:
+        path = f"{SAVED}/{item['id']}"
+        return Div(
+            Div(A(t("company_backup.saved_download"), href=f"{path}/download", cls="btn btn--secondary btn--sm"),
+                Button(t("btn.delete"), type="button", hx_post=f"{path}/delete",
+                       hx_confirm=t("company_backup.saved_delete_confirm"), hx_target="#saved-copies",
+                       hx_swap="outerHTML", cls="btn btn--danger btn--sm"),
+                cls="flex-row gap-sm"),
+            Form(Input(type="text", name="company_name", value="", required=True, autocomplete="off",
+                       placeholder=company, aria_label=t("company_backup.undo_type_name", company=company),
+                       cls="form-input"),
+                 Button(t("company_backup.saved_put_back"), type="submit", cls="btn btn--primary btn--sm"),
+                 method="post", action=f"{path}/put-back", cls="flex-row gap-sm"),
+            cls="flex-col gap-sm")
+    rows = [Tr(
+        Td(format_value(item["kept_at"], "date") if item.get("kept_at") else "--", cls="cell--date"),
+        Td(item.get("company_name") or "--"),
+        Td(fmt_size(_count(item.get("size"))), cls="cell--number"),
+        Td(actions(item)),
+    ) for item in sorted(items, key=lambda item: str(item.get("kept_at") or ""), reverse=True)]
+    return Div(
+        P(notice, cls="flash flash--success") if notice else "",
+        P(warning, cls="flash flash--warning") if warning else "",
+        wizard_table(Thead(Tr(Th(t("company_backup.saved_at")), Th(t("company_backup.saved_company")),
+                              Th(t("company_backup.saved_size"), cls="cell--number"), Th(t("th.actions")))),
+                     Tbody(*rows))
+        if rows else P(t("company_backup.saved_empty")),
+        P(t("company_backup.saved_put_back_hint", company=company), cls="form-hint") if rows else "",
+        P(t("company_backup.saved_delete_reason"), cls="form-hint") if rows else "",
+        id="saved-copies",
+    )
+
+
+async def _company_name(token: str) -> str:
+    try:
+        return (await api.get_company(token)).get("name", "")
+    except APIError:
+        return ""
+
+
+async def _saved_page(request: Request, *, warning: str | None = None, status_code: int = 200):
+    if (denied := await _gate(request, SETTINGS)) is not None:
+        return denied
+    token = get_token(request)
+    try:
+        items = (await api.company_backup_kept(token))["items"]
+    except (APIError, KeyError, TypeError) as exc:
+        return wizard_page(request, auth_header(t("company_backup.saved_title")),
+                           flash(_message(exc) if isinstance(exc, APIError) else t("error.invalid_value")),
+                           back_link(BACKUP_TAB), status_code=_status(exc) if isinstance(exc, APIError) else 502,
+                           title="company_backup.saved_title")
+    return wizard_page(
+        request, auth_header(t("company_backup.saved_title")),
+        P(t("company_backup.saved_intro"), cls="form-hint"),
+        _saved_table(items, await _company_name(token), warning=warning),
+        back_link(BACKUP_TAB), status_code=status_code, title="company_backup.saved_title")
+
+
+async def _saved_download(request: Request):
+    if (denied := await _gate(request, SETTINGS)) is not None:
+        return denied
+    if (kept := _kept_id(request)) is None:
+        return await _saved_page(request, warning=t("company_backup.err_kept_not_found"), status_code=404)
+    try:
+        chunks, headers = await api.company_backup_kept_download(get_token(request), kept)
+    except APIError as e:
+        return await _saved_page(request, warning=_message(e), status_code=_status(e))
+    return StreamingResponse(chunks, media_type="application/octet-stream",
+                             headers={k.title(): v for k, v in headers.items() if k != "content-type"})
+
+
+async def _saved_delete(request: Request):
+    """Delete a saved copy, after the page asked. The table swaps in place; without htmx
+    the page loads again."""
+    if (denied := await _gate(request, SETTINGS)) is not None:
+        return denied
+    token = get_token(request)
+    notice = warning = None
+    if (kept := _kept_id(request)) is None:
+        warning = t("company_backup.err_kept_not_found")
+    else:
+        try:
+            await api.company_backup_delete_kept(token, kept)
+            notice = t("company_backup.saved_deleted")
+        except APIError as exc:
+            warning = _message(exc)
+    if request.headers.get("HX-Request") != "true":
+        return RedirectResponse(SAVED, status_code=303)
+    try:
+        items = (await api.company_backup_kept(token))["items"]
+    except (APIError, KeyError, TypeError):
+        return _html(Div(flash(warning or t("error.invalid_value")), id="saved-copies"))
+    return _html(_saved_table(items, await _company_name(token), notice=notice, warning=warning))
+
+
+async def _put_back(request: Request):
+    """Put a saved copy back in place of this company, once its name is typed."""
+    if (denied := await _gate(request, SETTINGS)) is not None:
+        return denied
+    if (kept := _kept_id(request)) is None:
+        return await _saved_page(request, warning=t("company_backup.err_kept_not_found"), status_code=404)
+    form = await request.form()
+    try:
+        done = await api.company_backup_put_back(get_token(request), kept, str(form.get("company_name", "")))
+    except APIError as e:
+        return await _saved_page(request, warning=_message(e), status_code=_status(e))
+    resp = RedirectResponse(f"{SETTINGS.base}/done", status_code=303)
+    set_session_cookies(resp, done["access_token"], done["refresh_token"], request)
+    _set_outcome_cookie(resp, SETTINGS, request, {**done, "outcome": _PUT_BACK})
+    return resp
+
+
 async def _send_page(request: Request, *, error: str | None = None, values: dict | None = None,
                      status_code: int = 200, account: bool = False):
     """The send form. *account* embeds the free-account sign-in in place of the
@@ -1128,6 +1361,10 @@ def company_backup_routes(app) -> None:
     app.post(HANDOFFS + "/{copy_id}/revoke")(_revoke_handoff)
     app.post(HANDOFFS + "/{copy_id}/restore")(_restore_handoff)
     app.post(HANDOFFS + "/{copy_id}/new-link")(_new_handoff_link)
+    app.get(SAVED)(_saved_page)
+    app.get(SAVED + "/{kept_id}/download")(_saved_download)
+    app.post(SAVED + "/{kept_id}/delete")(_saved_delete)
+    app.post(SAVED + "/{kept_id}/put-back")(_put_back)
     for mode in (SETTINGS, NEW_COMPANY, BOOTSTRAP, START_COMPANY):
         for method, suffix, handler in (("get", "", _start), ("post", "/read", _read),
                                         ("get", "/opening", _opening_page), ("get", "/opening/status", _opening_state),
@@ -1141,3 +1378,4 @@ def company_backup_routes(app) -> None:
             getattr(app, method)(f"{mode.base}{suffix}")(bind(handler, mode, "company_backup"))
     for mode in (SETTINGS, NEW_COMPANY):
         app.post(f"{mode.base}/reactivate")(bind(_reactivate, mode, "company_backup"))
+        app.post(f"{mode.base}/replace")(bind(_replace, mode, "company_backup"))

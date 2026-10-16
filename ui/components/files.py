@@ -47,7 +47,7 @@ _ITEM_TAGS: tuple[str, ...] = (
 FILES_PAGE_SIZE = 20
 
 
-def _fmt_size(size: int) -> str:
+def fmt_size(size: int) -> str:
     if size < 1_048_576:
         return f"{size / 1024:.0f} KB"
     return f"{size / 1_048_576:.1f} MB"
@@ -381,7 +381,7 @@ def files_section(
                 hero_cell = Td()
             row_cells.append(hero_cell)
         row_cells += [
-            Td(Span(_fmt_size(size), cls="muted")),
+            Td(Span(fmt_size(size), cls="muted")),
             Td(
                 Button(
                     "×",
