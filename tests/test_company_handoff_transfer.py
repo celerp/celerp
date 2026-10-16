@@ -42,10 +42,53 @@ def test_authenticated_download_publishes_original_backup(tmp_path, monkeypatch)
     dest = tmp_path / "restored"
     asyncio.run(transfer.download_company_handoff(handoff_page_link(hid, secret), dest))
     assert dest.read_bytes() == original.read_bytes()
-    assert [c.method for c in calls] == ["POST", "GET"]
+    assert [c.method for c in calls] == ["POST", "GET", "POST"]
     assert 'proof' in calls[0].content.decode()
     assert secret.hex() not in calls[0].content.decode()
     assert not list(tmp_path.glob(".celerp-handoff-*"))
+
+
+def test_a_decrypted_download_is_confirmed_with_its_grant_operation(tmp_path, monkeypatch):
+    """The relay counts a download only when the app confirms it opened, so the
+    confirmation names the same operation the download URL was granted for."""
+    hid, secret = uuid.uuid4(), bytes(range(32))
+    original = tmp_path / "source"
+    original.write_bytes(b"synthetic company backup" * 100)
+    encrypted = tmp_path / "encrypted"
+    encrypt_file(original, encrypted, secret)
+    calls = _run_with_remote(monkeypatch, hid, encrypted.read_bytes())
+    asyncio.run(transfer.download_company_handoff(handoff_page_link(hid, secret), tmp_path / "restored"))
+    grant, confirm = calls[0], calls[-1]
+    assert str(grant.url).endswith(f"/handoffs/{hid}/fetch")
+    assert confirm.method == "POST" and str(confirm.url).endswith(f"/handoffs/{hid}/fetched")
+    assert json.loads(confirm.content) == json.loads(grant.content)
+
+
+def test_a_failed_confirmation_does_not_undo_a_good_download(tmp_path, monkeypatch):
+    """The confirmation only feeds the sender's download count; the opened copy stays."""
+    hid, secret = uuid.uuid4(), bytes(range(32))
+    original = tmp_path / "source"
+    original.write_bytes(b"synthetic company backup" * 100)
+    encrypted = tmp_path / "encrypted"
+    encrypt_file(original, encrypted, secret)
+    url = f"https://sfo2.digitaloceanspaces.com/x/handoffs/{hid.hex}.bin?sig=test"
+    confirmations = []
+
+    def remote(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/fetched"):
+            confirmations.append(request)
+            raise httpx.ConnectError("relay unreachable")
+        if request.method == "POST":
+            return httpx.Response(200, json={"download_url": url})
+        return httpx.Response(200, content=encrypted.read_bytes())
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(transfer.httpx, "AsyncClient", lambda **kw: real(
+        transport=httpx.MockTransport(remote), **kw))
+    restored = tmp_path / "restored"
+    asyncio.run(transfer.download_company_handoff(handoff_page_link(hid, secret), restored))
+    assert restored.read_bytes() == original.read_bytes()
+    assert len(confirmations) == 1
 
 
 @pytest.mark.parametrize("url", [
@@ -73,11 +116,12 @@ def test_corrupt_encrypted_copy_does_not_replace_destination(tmp_path, monkeypat
     encrypt_file(src, blob, secret)
     damaged = bytearray(blob.read_bytes())
     damaged[len(damaged) // 2] ^= 1
-    _run_with_remote(monkeypatch, hid, bytes(damaged))
+    calls = _run_with_remote(monkeypatch, hid, bytes(damaged))
     dest.write_bytes(b"existing")
     with pytest.raises(InvalidTag):
         asyncio.run(transfer.download_company_handoff(handoff_page_link(hid, secret), dest))
     assert dest.read_bytes() == b"existing"
+    assert not any(str(c.url).endswith("/fetched") for c in calls)
     assert not list(tmp_path.glob(".celerp-handoff-*"))
     assert not list(tmp_path.glob(".celerp-copy-*"))
 
@@ -110,6 +154,8 @@ def test_lost_grant_response_reuses_same_operation(tmp_path, monkeypatch):
               f"handoffs/{hid.hex}.bin?sig=test")
 
     def remote(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/fetched"):
+            return httpx.Response(200, json={"download_count": 1})
         if request.method == "POST":
             calls.append(json.loads(request.content))
             if len(calls) == 1:
