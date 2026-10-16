@@ -124,7 +124,8 @@ class GLJournal:
     key: str                                    # J:<journal number>
     number: str
     date: date
-    source: str                                 # the source's own kind of journal
+    source: str                                 # the source's own name for the kind of journal
+    kind: str                                   # receivable invoice, receivable payment, bank transfer, ...
     reference: str
     invoice: str
     contact: str

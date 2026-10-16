@@ -12,7 +12,6 @@ the foreign amount alongside where the ledger states one.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from decimal import Decimal
 
 from celerp.importers.adapters.exports.book import ZERO, Book, Document
 from celerp.importers.adapters.exports.ledger import Ledger, Posting

@@ -5,10 +5,10 @@
 from __future__ import annotations
 
 from celerp.importers.adapters.base import ArtifactSet, SourceAdapter
-from celerp.importers.adapters.exports import XeroAdapter
+from celerp.importers.adapters.exports import QuickBooksOnlineAdapter, XeroAdapter
 from celerp.importers.adapters.manager_io import ManagerIOAdapter
 
-_ADAPTERS: tuple[SourceAdapter, ...] = (ManagerIOAdapter(), XeroAdapter())
+_ADAPTERS: tuple[SourceAdapter, ...] = (ManagerIOAdapter(), XeroAdapter(), QuickBooksOnlineAdapter())
 
 
 def list_adapters() -> tuple[SourceAdapter, ...]:

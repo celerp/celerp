@@ -39,9 +39,10 @@ from celerp.importers.schema import CIFMode
 from celerp.services.money import checked_exchange_rate, round_money, split_to_base
 from ui.i18n import t
 
-DOCUMENT_SOURCES = ("receivable invoice", "receivable credit note", "payable invoice", "payable credit note")
-SETTLEMENT_SOURCES = {"receivable payment": "receipt", "payable payment": "payment"}
-TRANSFER_SOURCES = ("bank transfer",)
+# Journal kinds, as each source reader names them on `GLJournal.kind`.
+DOCUMENT_KINDS = ("receivable invoice", "receivable credit note", "payable invoice", "payable credit note")
+SETTLEMENT_KINDS = {"receivable payment": "receipt", "payable payment": "payment"}
+TRANSFER_KINDS = ("bank transfer",)
 
 
 @dataclass(frozen=True)
@@ -213,10 +214,9 @@ def _rate(base: Decimal, foreign: Decimal | None) -> Decimal | None:
 def _document_journal(book: Book, j: GLJournal) -> Document | None:
     """The posted document a document journal books, with its rate set from the journal's
     customer or supplier line. None when the journal books no document the export lists."""
-    source = j.source.lower()
-    if source not in DOCUMENT_SOURCES:
+    if j.kind not in DOCUMENT_KINDS:
         return None
-    doc = find_document(book, source.startswith("receivable"), j.invoice, j.contact)
+    doc = find_document(book, j.kind.startswith("receivable"), j.invoice, j.contact)
     if doc is None or doc.status != "posted" or doc.journal is not None:
         return None
     party = [ln for ln in j.lines if ln.account in _party(book, doc.doc_type)]
@@ -232,7 +232,7 @@ def _document_journal(book: Book, j: GLJournal) -> Document | None:
 def _settlement(book: Book, j: GLJournal, owing: dict[str, Decimal]) -> Settlement | None:
     """A receipt or payment journal settling one carried document from one bank account
     in the document's currency or the base currency, within what is still owed on it."""
-    kind = SETTLEMENT_SOURCES.get(j.source.lower())
+    kind = SETTLEMENT_KINDS.get(j.kind)
     if kind is None:
         return None
     doc = find_document(book, kind == "receipt", j.invoice, j.contact)
@@ -259,7 +259,7 @@ def _settlement(book: Book, j: GLJournal, owing: dict[str, Decimal]) -> Settleme
 def _transfer(book: Book, j: GLJournal) -> Transfer | None:
     """A transfer journal between two bank accounts that Celerp moves at the same base amount:
     one side in the base currency, or both."""
-    if j.source.lower() not in TRANSFER_SOURCES or len(j.lines) != 2:
+    if j.kind not in TRANSFER_KINDS or len(j.lines) != 2:
         return None
     out, into = sorted(j.lines, key=lambda ln: ln.amount)
     if any(book.accounts[ln.account].control != "bank" for ln in (out, into)) or out.amount != -into.amount:

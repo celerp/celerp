@@ -133,7 +133,9 @@ def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...]) -> tuple[list[
             table = Table(name, layout, lines[:index], header)
             for line in lines[index + 1:]:
                 if any(c.strip() for c in line):
-                    table.rows.append({h: (line[i] if i < len(line) else "") for i, h in enumerate(header) if h})
+                    # A report's first column may have no heading; it is read under "".
+                    table.rows.append({h: (line[i] if i < len(line) else "") for i, h in enumerate(header)
+                                       if h or i == 0})
             tables.append(table)
     return tables, unknown
 
@@ -160,10 +162,49 @@ def refuse_incomplete(tables: list[Table], unknown: list[str], required: list[La
         raise ScanError(" ".join([*problems, t("migration.err_export_recognised", files=found)]))
 
 
+def of(tables: list[Table], layout: Layout) -> list[Table]:
+    return [tb for tb in tables if tb.layout.kind == layout.kind]
+
+
+def report_heading(text: str) -> bool:
+    return normalize(text).startswith(("as at", "as of", "for the", "from ")) or _PERIOD.match(text.strip()) is not None
+
+
+def company_name(tables: list[Table]) -> str:
+    """The company a report names above its header: the line that is neither its title nor its date."""
+    for tb in tables:
+        if tb.layout.title:
+            for line in tb.above:
+                cells = [c.strip() for c in line if c.strip()]
+                if cells and normalize(cells[0]) != normalize(tb.layout.title) and not report_heading(cells[0]):
+                    return cells[0]
+    return ""
+
+
+def as_at(tb: Table) -> date:
+    """The date a report states its balances at: As at 31 Dec 2025, or As of."""
+    for line in tb.above:
+        for cell in line:
+            if normalize(cell).startswith(("as at", "as of")):
+                return report_date(cell)
+    raise ScanError(t("migration.err_export_date", value=tb.layout.title or tb.name, where=tb.name))
+
+
+def period(tb: Table) -> tuple[date, date]:
+    """The period a report covers, from its heading: 1 January 2024 - 30 June 2024."""
+    for line in tb.above:
+        for cell in line:
+            m = _PERIOD.match(cell.strip())
+            if m:
+                return report_date(m.group(1)), report_date(m.group(2))
+    raise ScanError(t("migration.err_export_date", value=tb.layout.title or tb.name, where=tb.name))
+
+
 # ── Cell values ───────────────────────────────────────────────────────────────
 
 _ISO = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T].*)?$")
 _SLASHED = re.compile(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$")
+_PERIOD = re.compile(r"^(\d{1,2} \w+ \d{4}|\w+ \d{1,2}, \d{4}) ?[-\u2013] ?(\d{1,2} \w+ \d{4}|\w+ \d{1,2}, \d{4})$")
 
 
 def amount(value: str, where: str = "") -> Decimal:
@@ -223,8 +264,10 @@ class DateReader:
 
 
 def report_date(text: str) -> date:
-    """A date as a report heading prints it: 31 Dec 2025 or 31 December 2025."""
-    text = text.strip().removeprefix("As at").removeprefix("as at").strip()
+    """A date as a report heading prints it: 31 Dec 2025 or 31 December 2025, after As at or As of."""
+    text = text.strip()
+    if normalize(text).startswith(("as at", "as of")):
+        text = text[5:].strip()
     for pattern in ("%d %b %Y", "%d %B %Y", "%B %d, %Y", "%b %d, %Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(text, pattern).date()

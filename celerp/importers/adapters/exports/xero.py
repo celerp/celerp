@@ -16,11 +16,13 @@ from datetime import date
 from decimal import Decimal
 
 from celerp.importers.adapters.base import ArtifactSet, ScanError
+from celerp.importers.adapters.exports import steps
 from celerp.importers.adapters.exports.book import (
-    PROFIT_AND_LOSS, ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, TaxCode,
+    ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, TaxCode,
 )
 from celerp.importers.adapters.exports.files import (
-    DateReader, Layout, Table, amount, money, normalize, read_set, refuse_incomplete, report_date,
+    DateReader, Layout, Table, amount, as_at, company_name, money, normalize, of, read_set, refuse_incomplete,
+    report_date,
 )
 from ui.i18n import t
 
@@ -66,20 +68,12 @@ DOCUMENT_STATUS = {"awaiting payment": "posted", "paid": "posted", "voided": "vo
 DELETED = "Deleted invoice or bill"
 
 
-def _show(on: date) -> str:
-    return f"{on.day} {on:%b %Y}"
-
-
-def _of(tables: list[Table], layout: Layout) -> list[Table]:
-    return [tb for tb in tables if tb.layout.kind == layout.kind]
-
-
 def _required(tables: list[Table]) -> list[Layout]:
     """The files a set needs: the ledger, chart, contacts and trial balances always; the
     invoices and bills and the aged report for each side the ledger posts customer or
     supplier balances on."""
     required = [CHART, CONTACTS, LEDGER, TRIAL_BALANCE]
-    sources = {normalize(tb.value(row, "source")) for tb in _of(tables, LEDGER) for row in tb.rows}
+    sources = {normalize(tb.value(row, "source")) for tb in of(tables, LEDGER) for row in tb.rows}
     if any(s.startswith("receivable") for s in sources):
         required += [DOCUMENTS, AGED_RECEIVABLES]
     if any(s.startswith("payable") for s in sources):
@@ -88,7 +82,7 @@ def _required(tables: list[Table]) -> list[Layout]:
 
 
 def _accounts(book: Book, tables: list[Table]) -> None:
-    for tb in _of(tables, CHART):
+    for tb in of(tables, CHART):
         for row in tb.rows:
             code, name, kind = tb.value(row, "code"), tb.value(row, "name"), normalize(tb.value(row, "type"))
             if kind not in ACCOUNT_TYPES:
@@ -103,7 +97,7 @@ def _accounts(book: Book, tables: list[Table]) -> None:
 
 
 def _contacts(book: Book, tables: list[Table]) -> None:
-    for tb in _of(tables, CONTACTS):
+    for tb in of(tables, CONTACTS):
         for row in tb.rows:
             name = tb.value(row, "contactname")
             if not name:
@@ -117,7 +111,7 @@ def _contacts(book: Book, tables: list[Table]) -> None:
 
 
 def _items(book: Book, tables: list[Table]) -> None:
-    for tb in _of(tables, ITEMS):
+    for tb in of(tables, ITEMS):
         for row in tb.rows:
             code = tb.value(row, "itemcode")
             if code:
@@ -142,7 +136,7 @@ def _documents(book: Book, tables: list[Table], read_date: DateReader) -> None:
     two contacts keys each by its contact; one document in two files is an overlap."""
     groups: dict[tuple[bool, str, str], list[tuple[Table, dict[str, str]]]] = {}
     files: dict[tuple[bool, str, str], str] = {}
-    for tb in _of(tables, DOCUMENTS):
+    for tb in of(tables, DOCUMENTS):
         for row in tb.rows:
             kind = normalize(tb.value(row, "type"))
             if kind not in DOCUMENT_TYPES:
@@ -200,7 +194,7 @@ def _documents(book: Book, tables: list[Table], read_date: DateReader) -> None:
 
 def _ledger(book: Book, tables: list[Table], read_date: DateReader) -> None:
     by_number: dict[str, list[dict[str, str]]] = defaultdict(list)
-    tb = _of(tables, LEDGER)[0]
+    tb = of(tables, LEDGER)[0]
     for row in tb.rows:
         by_number[tb.value(row, "journal number")].append(row)
     missing: dict[str, str] = {}
@@ -220,8 +214,9 @@ def _ledger(book: Book, tables: list[Table], read_date: DateReader) -> None:
             book.tracking |= set(tracking)
             if base or fx:
                 lines.append(GLLine(code, base, fx, tb.value(row, "description"), tracking))
+        source = tb.value(first, "source")
         book.journals.append(GLJournal(
-            f"J:{number}", number, read_date(tb.value(first, "date"), where), tb.value(first, "source"),
+            f"J:{number}", number, read_date(tb.value(first, "date"), where), source, source.lower(),
             tb.value(first, "reference"), tb.value(first, "invoice number"), tb.value(first, "contact"),
             tb.value(first, "currency").upper(), lines))
     if missing:
@@ -230,33 +225,13 @@ def _ledger(book: Book, tables: list[Table], read_date: DateReader) -> None:
     book.journals.sort(key=lambda j: (j.date, int(j.number) if j.number.isdigit() else 0, j.number))
 
 
-def _base_currency(book: Book) -> str:
-    """The currency of the journals that state no foreign amount on any line."""
-    found = Counter(j.currency for j in book.journals if j.currency and all(ln.foreign is None for ln in j.lines))
-    if not found:
-        raise ScanError(t("migration.err_export_no_base"))
-    return found.most_common(1)[0][0]
-
-
-def _bank_currencies(book: Book) -> None:
-    """A bank account is kept in a foreign currency when every line on it states that currency."""
-    seen: dict[str, set[str]] = defaultdict(set)
-    for j in book.journals:
-        for ln in j.lines:
-            if book.accounts[ln.account].control == "bank":
-                seen[ln.account].add(j.currency if ln.foreign is not None and j.currency != book.base else book.base)
-    for code, currencies in seen.items():
-        if len(currencies) == 1 and book.is_foreign(next(iter(currencies))):
-            book.accounts[code].currency = next(iter(currencies))
-
-
 def _trial_balances(book: Book, tables: list[Table]) -> None:
     """Balances from the first record at each month end. A financial year's trial balance
     states profit and loss for the year so far and carries earlier years' profit in retained
     earnings; each file is one financial year."""
     years = []
     seen: dict[date, str] = {}
-    for tb in _of(tables, TRIAL_BALANCE):
+    for tb in of(tables, TRIAL_BALANCE):
         columns = [(c, report_date(c)) for c in tb.header if c not in ("account code", "account")]
         for _, on in columns:
             if on in seen:
@@ -277,114 +252,41 @@ def _trial_balances(book: Book, tables: list[Table]) -> None:
             listed = ", ".join(f"{c} {n}" for c, n in sorted(missing.items()))
             raise ScanError(t("migration.err_export_account_missing", accounts=listed))
         years.append(dict(sorted(values.items())))
-    years.sort(key=lambda year: next(iter(year)))
-    earlier: dict[str, Decimal] = defaultdict(lambda: ZERO)
-    retained = book.control("retained_earnings")
-    for year in years:
-        for on, balances in year.items():
-            out = dict(balances)
-            for code, carried in earlier.items():
-                out[code] = out.get(code, ZERO) + carried
-            profit = sum(earlier.values(), ZERO)
-            for code in retained[:1]:
-                out[code] = out.get(code, ZERO) - profit
-            book.trial_balances[on] = out
-        closing = year[max(year)]
-        for code, value in closing.items():
-            if book.accounts[code].account_type in PROFIT_AND_LOSS:
-                earlier[code] += value
+    steps.roll_up_trial_balances(book, years)
     _refuse_missing_months(book)
-
-
-def _month_end(on: date) -> date:
-    following = date(on.year + on.month // 12, on.month % 12 + 1, 1)
-    return date.fromordinal(following.toordinal() - 1)
 
 
 def _refuse_missing_months(book: Book) -> None:
     if not book.journals:
         return
-    first, last = _month_end(book.journals[0].date), _month_end(book.journals[-1].date)
+    first, last = steps.month_end(book.journals[0].date), steps.month_end(book.journals[-1].date)
     missing_years = set()
     on = first
     while on <= last:
         if on not in book.trial_balances:
             missing_years.add(on.year)
-        on = _month_end(date.fromordinal(on.toordinal() + 1))
+        on = steps.month_end(date.fromordinal(on.toordinal() + 1))
     if missing_years:
         raise ScanError(t("migration.err_export_tb_missing", label=TRIAL_BALANCE.label,
                           years=", ".join(str(y) for y in sorted(missing_years))))
 
 
-def _company_name(tables: list[Table]) -> str:
-    for tb in tables:
-        if tb.layout.title:
-            for line in tb.above:
-                cells = [c.strip() for c in line if c.strip()]
-                if cells and normalize(cells[0]) != normalize(tb.layout.title) and not report_heading(cells[0]):
-                    return cells[0]
-    return ""
-
-
-def report_heading(text: str) -> bool:
-    return normalize(text).startswith(("as at", "for the", "from "))
-
-
-def _as_at(tb: Table) -> date:
-    for line in tb.above:
-        for cell in line:
-            if normalize(cell).startswith("as at"):
-                return report_date(cell)
-    raise ScanError(t("migration.err_export_date", value=tb.layout.title or tb.name, where=tb.name))
-
-
 def _aged(book: Book, tables: list[Table]) -> None:
-    last = book.journals[-1].date if book.journals else None
     for layout, side, sign in ((AGED_RECEIVABLES, "receivable", 1), (AGED_PAYABLES, "payable", -1)):
-        for tb in _of(tables, layout):
-            as_at = _as_at(tb)
-            if last and as_at < last:
-                raise ScanError(t("migration.err_export_aged_stale", label=layout.label, as_at=_show(as_at),
-                                  last=_show(last)))
+        for tb in of(tables, layout):
+            on = as_at(tb)
+            steps.refuse_stale_aged(book, layout.label, on)
             owed: dict[str, Decimal] = {}
             for row in tb.rows:
                 first = tb.value(row, tb.header[0])
                 if first.startswith("Total ") and first != "Total":
                     owed[first.removeprefix("Total ").strip()] = sign * money(tb.value(row, "total"), tb.name)
-            book.aged[side] = (as_at, owed)
-
-
-def _roles_from_ledger(book: Book) -> None:
-    receivable, payable = set(book.control("receivable")), set(book.control("payable"))
-    for j in book.journals:
-        if not j.contact:
-            continue
-        for ln in j.lines:
-            if ln.account in receivable:
-                book.contact(j.contact).roles.add("customer")
-            elif ln.account in payable:
-                book.contact(j.contact).roles.add("supplier")
-
-
-def _tax_rates(book: Book) -> None:
-    """A tax code's rate from a leading percentage in its name, otherwise from the lines that use it."""
-    for code in book.tax_codes.values():
-        head = code.name.split("%", 1)[0].strip()
-        if "%" in code.name and head.replace(".", "", 1).isdigit():
-            code.rate = Decimal(head)
-        else:
-            rates = {(ln.tax * 100 / ln.net).quantize(Decimal("0.1")) for d in book.documents.values()
-                     for ln in d.lines if ln.tax_code == code.name and ln.net}
-            code.rate = rates.pop() if len(rates) == 1 else ZERO
-        if code.rate:
-            if book.tax_account is None:
-                raise ScanError(t("migration.err_export_tax_account", tax=code.name))
-            code.account = book.tax_account
+            book.aged[side] = (on, owed)
 
 
 def _dates(tables: list[Table]) -> DateReader:
-    samples = [tb.value(row, c) for tb in _of(tables, DOCUMENTS) for row in tb.rows for c in ("invoicedate", "duedate")]
-    samples += [tb.value(row, "date") for tb in _of(tables, LEDGER) for row in tb.rows]
+    samples = [tb.value(row, c) for tb in of(tables, DOCUMENTS) for row in tb.rows for c in ("invoicedate", "duedate")]
+    samples += [tb.value(row, "date") for tb in of(tables, LEDGER) for row in tb.rows]
     return DateReader(samples)
 
 
@@ -397,18 +299,18 @@ def read_xero(artifacts: ArtifactSet) -> Book:
     _contacts(book, tables)
     _items(book, tables)
     _ledger(book, tables, read_date)
-    book.base = _base_currency(book)
+    book.base = steps.base_currency(book)
     for j in book.journals:
         j.currency = j.currency or book.base
     _documents(book, tables, read_date)
     for doc in book.documents.values():
         doc.currency = doc.currency or book.base
-    _bank_currencies(book)
+    steps.bank_currencies(book)
     _trial_balances(book, tables)
     _aged(book, tables)
-    _roles_from_ledger(book)
-    _tax_rates(book)
-    book.company_name = _company_name(tables)
+    steps.roles_from_ledger(book)
+    steps.tax_rates(book)
+    book.company_name = company_name(tables)
     book.object_counts.update({"Account": len(book.accounts), "Contact": len(book.contacts), "Item": len(book.items),
                                "Invoice or bill": len(book.documents) + book.skipped[DELETED],
                                "Journal": len(book.journals)})
