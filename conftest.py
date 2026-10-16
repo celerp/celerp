@@ -250,6 +250,11 @@ from celerp_labels.ui_routes import setup_ui_routes as _setup_labels_ui
 _setup_labels(app)
 _setup_labels_ui(_ui_app)
 
+# Register the fixed assets module path.
+_fa_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-fixed-assets")
+if _os.path.abspath(_fa_src) not in [_os.path.abspath(p) for p in _sys.path]:
+    _sys.path.insert(0, _os.path.abspath(_fa_src))
+
 # Register warehousing module path so its UI components can be imported in tests.
 _wh_src = _os.path.join(_os.path.dirname(__file__), "premium_modules", "celerp-warehousing")
 _wh_available = _os.path.isfile(_os.path.join(_wh_src, "celerp_warehousing", "__init__.py"))
