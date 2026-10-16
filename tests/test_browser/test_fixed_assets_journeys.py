@@ -363,3 +363,50 @@ def test_j7_missing_reading_holds_one_asset_and_the_next_run_catches_up(page: Pa
     expect(page.locator("#fa-exception")).to_have_count(0)
     assert D(_ok(c.get(f"{API}/assets/{press}"))["accumulated_depreciation"]) == D(360)
     _reconciled(page)
+
+
+def _finalize_doc(page: Page) -> None:
+    """Finalize the open credit note from its own page."""
+    page.get_by_role("button", name="Issue Credit Note").click()
+
+
+def test_j8_over_credit_is_refused_then_the_asset_is_returned_from_correct_sale(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    number = next(a["number"] for a in _ok(c.get(f"{API}/assets"))["items"] if a["id"] == car)
+    _run(c, "2026-03")
+    invoice = _operate(c, f"/assets/{car}/sell", {"date": "2026-05-20", "price": "10000",
+                                                 "contact_name": "Buyer Co"})["invoice_id"]
+    _ok(c.post(f"/docs/{invoice}/finalize"))
+    line = next(li for li in _ok(c.get(f"/docs/{invoice}"))["line_items"] if li.get("asset_id"))
+
+    def note(amount: float, on: str) -> str:
+        return _ok(c.post("/docs", json={
+            "doc_type": "credit_note", "original_doc_id": invoice, "issue_date": on, "total": amount,
+            "line_items": [{"name": line.get("name"), "quantity": 1, "unit_price": amount, "line_total": amount,
+                            "source_line_id": line["line_id"], "asset_id": car}]}))["id"]
+
+    _ok(c.post(f"/docs/{note(2000, '2026-06-10')}/finalize"))
+    page.goto(f"/docs/{note(9000, '2026-06-15')}")
+    _finalize_doc(page)
+    toast = page.locator(".toast-container .toast--error").last
+    expect(toast).to_contain_text("8,000")
+    expect(toast).to_contain_text(number)
+
+    page.get_by_role("link", name="Correct sale").first.click()
+    page.wait_for_url(f"**/fixed-assets/assets/{car}**")
+    sale = page.locator(f"[id='fa-sale-{car}']")
+    expect(sale).to_contain_text("8,000.00")
+    sale.locator("select[name=kind]").select_option(label="Asset returned")
+    sale.locator("input[name=date]").fill("2026-06-20")
+    sale.get_by_role("button", name="Credit the sale", exact=True).click()
+    with page.expect_navigation(url="**/docs/**"):
+        page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
+    with page.expect_navigation():
+        _finalize_doc(page)
+    expect(page.get_by_role("button", name="Issue Credit Note")).to_have_count(0)
+    page.goto(f"/fixed-assets/assets/{car}")
+    expect(page.locator(f"[id='fa-sale-{car}']")).to_contain_text("Returned")
+    assert next(a for a in _ok(c.get(f"{API}/assets"))["items"] if a["id"] == car)["status"] == "active"
+    _reconciled(page)

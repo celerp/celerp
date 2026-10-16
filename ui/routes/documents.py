@@ -254,6 +254,16 @@ def _receive_kind_select(li: dict | None) -> FT:
     )
 
 
+# Line links the page never edits: the credited invoice line, and the asset a line sells or
+# credits. Every save sends them back as stored, so editing a draft keeps its links.
+_CARRIED_LINE_KEYS = ("source_line_id", "asset_id", "asset_returned")
+
+
+def _carried_inputs(li: dict) -> list:
+    return [Input(type="hidden", value="true" if li[k] is True else str(li[k]), data_carry=k)
+            for k in _CARRIED_LINE_KEYS if li.get(k) not in (None, "", False)]
+
+
 def _status_doc(item: dict) -> tuple[str, str] | None:
     """The document behind an item's status as (id, number), or None when either is missing."""
     doc_id, doc_number = str(item.get("status_doc_id") or ""), str(item.get("status_doc_number") or "")
@@ -7530,6 +7540,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    None if pol["customs"] else Input(type="hidden", value=li.get("hs_code", "") or "", data_name="hs_code"),
                    Input(type="hidden", value=li_entity_id, data_name="entity_id"),
                    Input(type="hidden", value=li.get("line_id") or "", data_name="line_id"),
+                   *_carried_inputs(li),
                    Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
                    Input(type="hidden", value=str(li.get("item_quantity") or _meta.get("quantity") or qty), data_name="item_quantity"),
                    cls="cell--number col-total"),
@@ -8916,6 +8927,8 @@ function _celerpCollectLines() {{
         const barcode = row.querySelector('[data-name="barcode"]')?.value || null;
         const piecesEl = row.querySelector('[data-name="pieces"]');
         const pieces = piecesEl && piecesEl.value !== '' ? parseFloat(piecesEl.value) : null;
+        const carried = {{}};
+        for (const el of row.querySelectorAll('input[data-carry]')) carried[el.dataset.carry] = el.value === 'true' ? true : el.value;
         const weightEl = row.querySelector('[data-name="weight"]');
         const weight = weightEl && weightEl.value !== '' ? parseFloat(weightEl.value) : null;
         if (_celerpRowHasContent(row)) {{
@@ -8945,6 +8958,7 @@ function _celerpCollectLines() {{
                          ...(accountCode ? {{account_code: accountCode}} : {{}}),
                          ...(pieces !== null ? {{pieces}} : {{}}),
                          ...(weight !== null ? {{weight}} : {{}}),
+                         ...carried,
                          allow_splitting: allowSplitting}});
         }}
     }}
