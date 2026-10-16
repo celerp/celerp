@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Sample asset bills for a demo company: a delivery van, three laptops and an office
-fit-out still under construction, so the register has something to register.
+"""Sample asset bills for a demo company: a delivery van, three laptops, an office fit-out
+still under construction and an older forklift that has been in service long enough to
+sell, so the register has something to register, build and sell.
 
 Seeded once, only while the company keeps no books of its own. The bills are ordinary
 finalized bills marked as demo records, so they never count as the company's own books.
@@ -14,6 +15,7 @@ from types import SimpleNamespace
 
 # key, supplier, line name, quantity, unit price, months back, day of month, account code
 _BILLS = (
+    ("forklift", "Lift Equipment Co", "Forklift", 1, "24000", 18, 20, None),
     ("van", "City Motors", "Delivery van", 1, "32000", 2, 5, None),
     ("laptops", "Office IT Supplies", "Laptop", 3, "1450", 1, 12, None),
     ("fitout", "Shopfit Builders", "Office fit-out", 1, "18500", 0, 1, "1240"),

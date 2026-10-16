@@ -56,15 +56,18 @@ async def test_start_creates_starter_classes_and_default_settings(fa):
 
 async def test_demo_reseed_seeds_asset_bills_once(fa):
     lines = await fa.intake()
-    assert sorted(i["description"] for i in lines) == ["Delivery van", "Laptop", "Office fit-out"]
+    assert sorted(i["description"] for i in lines) == ["Delivery van", "Forklift", "Laptop", "Office fit-out"]
     van = await fa.line("Delivery van")
     assert D(van["amount"]) == D("32000") and van["account"] == "1210" and van["kind"] == "acquisition"
     assert (await fa.line("Laptop"))["quantity"] == 3
     assert (await fa.line("Office fit-out"))["account"] == "1240"
+    # An older forklift, in service long enough to be sold through an invoice.
+    forklift = await fa.line("Forklift")
+    assert forklift["account"] == "1210" and forklift["date"] < van["date"]
     r = await fa.client.post("/companies/me/demo/reseed", headers=fa.h)
     assert r.status_code == 200, r.text
-    assert len(await fa.intake()) == 3
-    assert await fa.balance("1210") == D("36350") and await fa.balance("1240") == D("18500")
+    assert len(await fa.intake()) == 4
+    assert await fa.balance("1210") == D("60350") and await fa.balance("1240") == D("18500")
 
 
 async def test_class_create_and_archive(fa):
@@ -142,7 +145,7 @@ async def test_register_into_other_account_class_posts_reclass(fa):
         ("1240", "32000.00", "0.00"), ("1210", "0.00", "32000.00")]
     done = await fa.register(van["source"], key="reg-auc", class_name="Assets under construction", mode="separate")
     assert len(done["journals"]) == 1
-    assert await fa.balance("1210") == D("4350") and await fa.balance("1240") == D("50500")
+    assert await fa.balance("1210") == D("28350") and await fa.balance("1240") == D("50500")
     (je_state,) = await fa.module_journals()
     assert je_state["status"] == "posted"
 
@@ -155,7 +158,7 @@ async def test_expense_instead_below_threshold(fa):
     done = await fa.operate("/register", {"source": laptops["source"], "mode": "expense", "expense_account": "6800"},
                             key="exp-1")
     assert done["assets"] == []
-    assert await fa.balance("6800") == D("4350") and await fa.balance("1210") == D("32000")
+    assert await fa.balance("6800") == D("4350") and await fa.balance("1210") == D("56000")
     assert all(i["source"] != laptops["source"] for i in await fa.intake())
 
 
@@ -248,7 +251,7 @@ async def test_undo_registration_releases_line_and_reverses_reclass(fa):
     assert (await fa.asset(asset_id))["status"] == "undone"
     line = await fa.line("Delivery van")
     assert line["generation"] == 1
-    assert await fa.balance("1210") == D("36350") and await fa.balance("1240") == D("18500")
+    assert await fa.balance("1210") == D("60350") and await fa.balance("1240") == D("18500")
     (je,) = await fa.module_journals()
     assert je["status"] == "void"
     listed = await fa.ok(await fa.get("/assets"))
@@ -349,7 +352,7 @@ async def test_s1_maintenance_on_asset_line_reclassified(fa):
     done = await fa.operate("/register", {"source": laptops["source"], "mode": "maintenance", "asset_id": asset_id,
                                           "expense_account": "6950"}, key="mt")
     assert done["assets"] == [] and len(done["journals"]) == 1
-    assert await fa.balance("6950") == D("4350") and await fa.balance("1210") == D("32000")
+    assert await fa.balance("6950") == D("4350") and await fa.balance("1210") == D("56000")
     logs = [m for m in await fa.entities("fa_maint") if m["asset_id"] == asset_id]
     assert len(logs) == 1 and logs[0]["source"] == laptops["source"] and D(logs[0]["amount"]) == D("4350")
     assert D((await fa.asset(asset_id))["cost"]) == D("32000")
@@ -402,7 +405,7 @@ async def test_contributed_asset_posts_acquisition(fa):
                                         "available_date": first, "cost": "12000", "credit_account": "3100"}, key="c")
     (je_id,) = done["journals"]
     assert je_id.startswith("je:mod:celerp-fixed-assets:asset:")
-    assert await fa.balance("1210") == D("48350") and await fa.balance("3100") == D("-12000")
+    assert await fa.balance("1210") == D("72350") and await fa.balance("3100") == D("-12000")
     await fa.fold_matches(done["assets"][0]["id"])
 
 
@@ -462,7 +465,8 @@ async def test_invariant_registered_cost_equals_source_and_ledger(fa):
     """Source cost equals registered cost, and the class accounts hold what the register holds."""
     for n, (description, cls, mode) in enumerate((("Delivery van", "Vehicles", "separate"),
                                                   ("Laptop", "Computer equipment", "separate"),
-                                                  ("Office fit-out", "Assets under construction", "separate"))):
+                                                  ("Office fit-out", "Assets under construction", "separate"),
+                                                  ("Forklift", "Vehicles", "separate"))):
         line = await fa.line(description)
         done = await fa.register(line["source"], key=f"inv-{n}", class_name=cls, mode=mode)
         costs = [D((await fa.asset(a["id"]))["cost"]) for a in done["assets"]]
