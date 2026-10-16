@@ -181,7 +181,8 @@ async def test_company_archive_upload_has_path_specific_streaming_cap(path):
 async def test_company_archive_cap_applies_to_chunked_uploads(monkeypatch):
     from celerp.services import company_backup
     monkeypatch.setattr(company_backup, "MAX_UPLOAD_BYTES", 1024)
-    status, received = await _drive_chunked(1024, "/company-backups/start-company/read", 3, 128 * 1024)
+    # The general cap is far above this body, so only the archive's own cap can stop it.
+    status, received = await _drive_chunked(10 * 1024 * 1024, "/company-backups/start-company/read", 3, 128 * 1024)
     assert status == 413
     assert received <= 1024 + 256 * 1024
 
