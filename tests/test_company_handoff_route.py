@@ -223,7 +223,8 @@ async def test_import_preview_shows_firm_name(real_engine, real_client, monkeypa
 
 
 _REFUSALS = (
-    (429, {"detail": "Too many copies created today"}, "Too many copies created today"),
+    (429, {"detail": "50 copies were created today, the daily limit. Try again tomorrow"},
+     "50 copies were created today, the daily limit. Try again tomorrow"),
     (409, {"detail": "50 active copies is the limit. Revoke an old copy or download one."},
      "50 active copies is the limit. Revoke an old copy or download one."),
     (422, {"detail": [{"loc": ["body", "firm_name"], "msg": "String should have at most 200 characters",
