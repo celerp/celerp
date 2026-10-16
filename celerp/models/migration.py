@@ -155,3 +155,33 @@ class MigrationCleanupTask(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
+
+
+class MigrationAttachmentFetch(Base):
+    """The files of a Xero migration's documents, fetched from Xero after the import.
+
+    One per run: fetching again starts it over under a new operation, and the files already
+    attached are recognised by their Xero id, never attached twice. ``progress`` holds
+    the listing cursor (``kind`` and ``page``), the files found and attached so far, and
+    the ``unmatched`` rows: documents not imported and files that could not be attached,
+    each with its reason."""
+    __tablename__ = "migration_attachment_fetches"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    migration_run_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), ForeignKey("migration_runs.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    started_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    operation_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), nullable=False)
+    cloud_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # signing_in, fetching, waiting (a Xero limit), done, stopped or failed
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    organisation: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    progress: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )

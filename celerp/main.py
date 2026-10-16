@@ -175,6 +175,7 @@ async def _verify_runtime_dependencies() -> None:
     from celerp.connectors.daily_scheduler import scheduler_loop_all
     from celerp.connectors.relay_token import fetch_context as connector_token_fetcher
     from celerp.services.peer_access import expiry_warning_loop
+    from celerp.services.migration_xero_attachments import fetch_loop as xero_attachment_loop
     from celerp.services.reorder import reorder_alert_loop
     from celerp.services.update import update_loop
 
@@ -191,6 +192,7 @@ async def _verify_runtime_dependencies() -> None:
         connector_token_fetcher,
         reorder_alert_loop,
         expiry_warning_loop,
+        xero_attachment_loop,
         update_loop,
     )
     if settings.gateway_token and not settings.celerp_public_url:
@@ -616,6 +618,11 @@ async def _serve(_app: FastAPI, held):
     # this company issued to a client company expires within a week.
     from celerp.services.peer_access import expiry_warning_loop
     background.append(asyncio.create_task(expiry_warning_loop()))
+
+    # Xero attachments: once a minute, takes each fetch the owner started from a Xero
+    # migration as far as it can go (sign-in, then reading and attaching files).
+    from celerp.services.migration_xero_attachments import fetch_loop as xero_attachment_loop
+    background.append(asyncio.create_task(xero_attachment_loop()))
 
     # Update checks: reports the last update attempt once, then checks hourly and,
     # when automatic updates are on, installs overnight in the owner's time zone.

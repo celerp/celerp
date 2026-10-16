@@ -159,7 +159,7 @@ async def test_files_in_xero_are_attached_to_the_imported_documents(real_engine,
     relay.document("Invoices", bill.number, "ACCPAY", bill.contact,
                    ("bill.pdf", "application/pdf", PDF), ("delivery.png", "image/png", PNG))
     relay.document("CreditNotes", note.number, "ACCRECCREDIT", note.contact, ("note.pdf", "application/pdf", PDF))
-    relay.document("Invoices", "INV-9999", "ACCREC", "Gone Customer", ("old.pdf", "application/pdf", PDF))
+    gone = relay.document("Invoices", "INV-9999", "ACCREC", "Gone Customer", ("old.pdf", "application/pdf", PDF))
 
     assert (await real_client.get(base, headers=headers)).json()["status"] == "none"
 
@@ -188,7 +188,7 @@ async def test_files_in_xero_are_attached_to_the_imported_documents(real_engine,
         == ["bill.pdf", "delivery.png"]
     assert [f["filename"] for f in await _doc_files(real_engine, run, f"S:{note.number}")] == ["note.pdf"]
     # The files of a document Celerp never imported are not downloaded.
-    assert not any(p.endswith(relay.files[relay.invoices[3]["InvoiceID"]][0][0]) for p in relay.reads())
+    assert not any(p.endswith(relay.files[gone][0][0]) for p in relay.reads())
     # Finishing closes the Xero access and leaves a notice.
     assert relay.calls[-1][0] == "DELETE"
     async with maker(real_engine)() as s:
@@ -214,8 +214,9 @@ async def test_xero_limits_pause_the_fetch_and_stop_ends_it(real_engine, real_cl
     relay.document("Invoices", invoice.number, "ACCREC", invoice.contact, ("receipt.pdf", "application/pdf", PDF))
 
     # Only the owner of the migration sees or starts it.
-    from company_backup_support import owner
-    stranger = auth(await token(real_engine, await owner(real_engine, "other@example.com", "Other"), run.company_id))
+    from company_backup_support import company, owner
+    other = await owner(real_engine, "other@example.com", "Other")
+    stranger = auth(await token(real_engine, other, await company(real_engine, other, "Other Co", "other")))
     assert (await real_client.post(base, headers=stranger)).status_code == 404
     assert (await real_client.get(base, headers=stranger)).status_code == 404
 

@@ -46,6 +46,7 @@ from celerp.services import company_handoff_sender as sender
 from celerp.services import migration_export_requests as export_requests_service
 from celerp.services import migration_move_requests as move_requests_service
 from celerp.services import migration_scan_store as store
+from celerp.services import migration_xero_attachments as xero_attachments
 from celerp.services import migrations
 from celerp.services import posting_readiness
 from celerp.services.auth import (
@@ -645,9 +646,39 @@ async def finalize_run(run_id: uuid.UUID, body: FinalizeIn | None = None,
 async def discard_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                       session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
+    open_fetch = await xero_attachments.discarded_cloud_id(session, run.id)
     try:
         redirect = await migrations.discard(session, run)
     except BaseException:
         await session.rollback()
         raise
+    await xero_attachments.close_at_relay(open_fetch)
     return {"redirect": redirect}
+
+
+# ── Xero attachments ─────────────────────────────────────────────────────────
+
+@router.get("/{run_id}/xero-attachments")
+async def get_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
+                               session: AsyncSession = Depends(get_session)) -> dict:
+    """The fetch of the files attached to this Xero migration's documents in Xero."""
+    return await xero_attachments.view(session, await _owned_run(session, run_id, ctx))
+
+
+@router.post("/{run_id}/xero-attachments")
+async def start_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
+                                 session: AsyncSession = Depends(get_session)) -> dict:
+    """Start fetching them, or return the fetch under way with its Xero sign-in link."""
+    run = await _owned_run(session, run_id, ctx)
+    try:
+        return await sender.as_http(xero_attachments.start(session, run, ctx.user.id))
+    except BaseException:
+        await session.rollback()
+        raise
+
+
+@router.post("/{run_id}/xero-attachments/stop")
+async def stop_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
+                                session: AsyncSession = Depends(get_session)) -> dict:
+    """End the fetch and close its Xero access; files already attached stay."""
+    return await xero_attachments.stop(session, await _owned_run(session, run_id, ctx))

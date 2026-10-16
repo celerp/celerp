@@ -51,7 +51,8 @@ from ui.i18n import t
 
 # Every run-scoped endpoint, as (method, path suffix).
 RUN_ROUTES = (("get", ""), ("get", "/reconciliation"), ("get", "/reconciliation/pack"),
-              ("post", "/start"), ("post", "/cancel"), ("post", "/finalize"), ("post", "/discard"))
+              ("post", "/start"), ("post", "/cancel"), ("post", "/finalize"), ("post", "/discard"),
+              ("get", "/xero-attachments"), ("post", "/xero-attachments"), ("post", "/xero-attachments/stop"))
 
 FAKE_MAGIC = b"FAKESRC1\n"
 FAKE_KEY = "fake_source"

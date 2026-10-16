@@ -55,6 +55,7 @@ _NEXT_RES = (
     re.compile(r"^copy-send$"),
     re.compile(r"^export-send$"),
     re.compile(r"^move-send$"),
+    re.compile(r"^xero-attachments$"),
 )
 
 # Every gate delivers its panel inside the shared modal dialog, floating over
@@ -68,13 +69,14 @@ _GATE_BENEFIT_KEYS = {
     "copy-send": "account.gate_copy_send_benefit",
     "export-send": "account.gate_export_send_benefit",
     "move-send": "account.gate_move_send_benefit",
+    "xero-attachments": "account.gate_xero_attachments_benefit",
 }
 
 # Continuations whose form kept every typed value and the same operation: submitting it
 # again reuses what was staged, so the copy is never re-exported, the client gets one
-# email with one link, and Celerp's team gets one move request.
+# email with one link, Celerp's team gets one move request, and a Xero sign-in keeps its link.
 _RESUBMIT_FORMS = {"copy-send": "copy-send-form", "export-send": "export-request-form",
-                   "move-send": "move-request-form"}
+                   "move-send": "move-request-form", "xero-attachments": "xero-attachments-form"}
 
 
 def _next_from(value: str | None) -> str | None:

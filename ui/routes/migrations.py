@@ -1098,6 +1098,7 @@ def _coverage_page(request: Request, mode: WizardMode, entry: dict, errors: dict
         flash(error) if error else "",
         _summary(scan),
         _coverage_table(scan),
+        P(t("migration.xero_attachments_later"), cls="form-hint") if scan.get("source_system") == "xero" else "",
         _issues(scan),
         Form(
             Input(type="hidden", name="step", value="coverage"),
@@ -1539,6 +1540,18 @@ def migrations_routes(app) -> None:
             return failure
         return await _complete_page(request, run)
 
+    @app.get("/migrations/{run_id}/xero-attachments")
+    async def migration_xero_attachments(request: Request, run_id: str):
+        return await _xero_attachments(request, run_id)
+
+    @app.post("/migrations/{run_id}/xero-attachments")
+    async def migration_xero_attachments_start(request: Request, run_id: str):
+        return await _xero_attachments(request, run_id, "start")
+
+    @app.post("/migrations/{run_id}/xero-attachments/stop")
+    async def migration_xero_attachments_stop(request: Request, run_id: str):
+        return await _xero_attachments(request, run_id, "stop")
+
     @app.get("/migrations/{run_id}/discard")
     async def migration_discard_confirm(request: Request, run_id: str):
         run, failure = await _load_run(request, run_id)
@@ -1725,6 +1738,7 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None,
              ) if failures else "",
              Button(t("migration.finish"), type="submit", cls="btn btn--primary btn--full mt-md"),
              method="post", action=f"/migrations/{run_id}/finalize", cls="auth-form mt-md"),
+        _xero_attachments_slot(run),
         P(A(t("migration.download_pack"), href=f"/migrations/{run_id}/pack", cls="auth-link")),
         P(A(t("migration.discard"), href=f"/migrations/{run_id}/discard", cls="auth-link")),
         back_link(f"/migrations/{run_id}"),
@@ -1762,6 +1776,7 @@ async def _complete_page(request: Request, run: dict):
             Tbody(*[Tr(Td(_check_label(row)), Td(_figure(row, "celerp"), cls="cell--number"))
                     for row in totals]),
         ) if totals else "",
+        _xero_attachments_slot(run),
         pack,
         open_company,
         option(t("migration.correcting_entry"), f"{open_href}?next=/accounting/journal/new")
@@ -1774,6 +1789,93 @@ async def _complete_page(request: Request, run: dict):
         P(A(t("company_backup.download"), href=f"/company-backup/download?from_run={run_id}",
             cls="auth-link"), cls="mt-md"),
     )
+
+
+_XERO_LIVE = ("signing_in", "fetching", "waiting")
+
+
+def _xero_attachments_slot(run: dict) -> FT | str:
+    """Where the Xero attachments section loads on a Xero migration's result pages."""
+    if run.get("source_system") != "xero" or run.get("is_sample"):
+        return ""
+    return Div(id="xero-attachments", hx_get=f"/migrations/{run['id']}/xero-attachments",
+               hx_trigger="load", hx_swap="outerHTML")
+
+
+def _xero_attachments_panel(request: Request, run_id: str, fetch: dict, *, error: str | None = None,
+                            account: bool = False) -> HTMLResponse:
+    """The Xero attachments section, swapped in place by every action on it and refreshed
+    every few seconds while a fetch is under way."""
+    base = f"/migrations/{run_id}/xero-attachments"
+    status = fetch.get("status") or "none"
+    swap = {"hx_target": "#xero-attachments", "hx_swap": "outerHTML"}
+    counts = {"attached": fetch.get("attached", 0), "total": fetch.get("total", 0),
+              "organisation": fetch.get("organisation") or "Xero"}
+    stop = Button(t("migration.xero_attachments_stop"), type="button", hx_post=f"{base}/stop",
+                  cls="btn btn--secondary btn--sm", **swap)
+
+    def start(label: str) -> FT:
+        return Form(Button(t(label), type="submit", cls="btn btn--secondary btn--full"),
+                    id="xero-attachments-form", hx_post=base, method="post", action=base, **swap)
+
+    if status == "signing_in":
+        url = fetch.get("authorize_url") or ""
+        body = [P(t("migration.xero_attachments_sign_in_hint")),
+                Div(A(t("migration.xero_attachments_sign_in"), href=url, target="_blank", rel="noopener",
+                      cls="btn btn--primary btn--sm") if url else "",
+                    Button(t("company_backup.ready_copy_link"), type="button", cls="btn btn--secondary btn--sm",
+                           **{"data-copy": "", "data-copy-text": url}) if url else "",
+                    stop, cls="form-actions")]
+    elif status in ("fetching", "waiting"):
+        body = [flash(fetch["error"], "warning") if status == "waiting" and fetch.get("error") else "",
+                P(t("migration.xero_attachments_progress", **counts)), stop]
+    elif status == "done":
+        body = [P(t("migration.xero_attachments_done", **counts), cls="flash flash--success"),
+                start("migration.xero_attachments_again")]
+    elif status == "stopped":
+        body = [P(t("migration.xero_attachments_stopped", **counts)), start("migration.xero_attachments_again")]
+    elif status == "failed":
+        body = [flash(fetch.get("error") or t("migration.xero_att_ended")), start("migration.xero_attachments_retry")]
+    else:
+        body = [start("migration.xero_attachments_fetch")]
+    unmatched = fetch.get("unmatched") or []
+    message = account_panel(get_lang(request), next_action="xero-attachments") if account \
+        else (flash(error) if error else "")
+    polling = {"hx_get": base, "hx_trigger": "every 5s", "hx_swap": "outerHTML"} if status in _XERO_LIVE else {}
+    return HTMLResponse(to_xml(Div(
+        H3(t("migration.xero_attachments_title")),
+        P(t("migration.xero_attachments_hint"), cls="form-hint"),
+        message,
+        *body,
+        Div(
+            H4(t("migration.xero_attachments_not_attached")),
+            wizard_table(
+                Thead(Tr(Th(t("migration.xero_attachments_document")), Th(t("migration.xero_attachments_contact")),
+                         Th(t("migration.export_request_files"), cls="cell--number"),
+                         Th(t("migration.xero_attachments_reason")))),
+                Tbody(*(Tr(Td(row.get("document") or EMPTY), Td(row.get("contact") or EMPTY),
+                           Td(str(row.get("files", 0)), cls="cell--number"), Td(row.get("reason") or EMPTY))
+                        for row in unmatched)),
+            ),
+            cls="mt-md",
+        ) if unmatched else "",
+        id="xero-attachments", cls="export-requests mt-md", **polling,
+    )))
+
+
+async def _xero_attachments(request: Request, run_id: str, action: str = "") -> HTMLResponse:
+    token = get_token(request)
+    error, account = None, False
+    if action:
+        try:
+            return _xero_attachments_panel(request, run_id, await api.migration_xero_attachments(token, run_id, action))
+        except APIError as e:
+            error, account = str(e.detail), e.status == 428
+    try:
+        fetch = await api.migration_xero_attachments(token, run_id)
+    except APIError as e:
+        fetch, error = {}, error or str(e.detail)
+    return _xero_attachments_panel(request, run_id, fetch, error=error, account=account)
 
 
 def _discard_page(request: Request, run: dict, error: str | None = None):

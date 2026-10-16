@@ -164,6 +164,8 @@ class FakeMigrationAPI:
         self.move_requests: list[dict] = []    # newest first, as the API lists them
         self.move_sends: list[dict] = []
         self.move_refusal: tuple[int, str] | None = None
+        self.xero_fetches: dict[str, dict] = {}   # run -> its Xero attachment fetch, as the API shows it
+        self.xero_refusal: tuple[int, str] | None = None
         self._n = 0
 
     def add_run(self, status: str, **kw) -> str:
@@ -260,6 +262,8 @@ class FakeMigrationAPI:
         if method == "POST" and tail == "/discard":
             del self.runs[run_id]
             return _json(200, {"redirect": "/"})
+        if tail.startswith("/xero-attachments"):
+            return self._xero_attachments(method, run_id, tail)
         return _json(405, {"detail": "Method not allowed"})
 
     def _export_request(self, method: str, path: str, data: dict) -> httpx.Response:
@@ -284,6 +288,19 @@ class FakeMigrationAPI:
         return _json(200, {"draft_token": f"drafttoken{self._n:04d}secretvalue", "checklist": self.draft_view})
 
 
+    def _xero_attachments(self, method: str, run_id: str, tail: str) -> httpx.Response:
+        fetch = self.xero_fetches.setdefault(run_id, _xero_fetch("none"))
+        if method == "GET":
+            return _json(200, fetch)
+        if self.xero_refusal is not None:
+            return _json(self.xero_refusal[0], {"detail": self.xero_refusal[1]})
+        if tail.endswith("/stop"):
+            fetch.update(status="stopped")
+            fetch.pop("authorize_url", None)
+        elif fetch["status"] not in ("fetching", "waiting"):
+            fetch.update(_xero_fetch("signing_in"))
+        return _json(200, fetch)
+
     def _move_request(self, method: str, path: str, data: dict) -> httpx.Response:
         if method == "GET" and path == "/migrations/move-requests":
             return _json(200, {"items": self.move_requests})
@@ -300,6 +317,15 @@ class FakeMigrationAPI:
             return _json(404, {"detail": "Move request not found."})
         row.update(status="withdrawn", stored=False)
         return _json(200, {"status": "withdrawn"})
+
+
+def _xero_fetch(status: str, **kw) -> dict:
+    """A Xero attachment fetch as the API shows it."""
+    view = {"status": status, "organisation": "", "error": "", "attached": 0, "total": 0, "unmatched": [],
+            "resume_at": None, **kw}
+    if status == "signing_in":
+        view.setdefault("authorize_url", "https://login.xero.com/identity/connect/authorize?state=abc")
+    return view
 
 
 def _move_request(**kw) -> dict:
@@ -1511,3 +1537,85 @@ async def test_review_shows_company_currency_scope_and_plain_outcomes(ui, fake_a
     for expected in ("Harbor Goods Ltd", "USD", "2024-01-01", "Sales invoice", "Will move", "Will not move"):
         assert expected in text, expected
     assert "sales_invoices" not in _page(r) and "sales invoices" not in text
+
+
+async def test_the_files_attached_in_xero_are_fetched_from_the_check_results_page(ui, router, fake_api, monkeypatch):
+    _export_set_sources(monkeypatch)
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize", source="xero")
+    base = f"/migrations/{run_id}/xero-attachments"
+    for page_path in (f"/migrations/{run_id}/verify", f"/migrations/{run_id}/complete"):
+        if page_path.endswith("complete"):
+            fake_api.runs[run_id]["status"] = "completed"
+        section = re.search(r'<div[^>]*id="xero-attachments"[^>]*>', _page(await ui.get(page_path))).group(0)
+        assert _attr(section, "hx-get") == base and _attr(section, "hx-trigger") == "load", page_path
+        assert _attr(section, "hx-swap") == "outerHTML"
+    # Only a migration from Xero offers it, and never the sample company.
+    other = fake_api.add_run("ready_to_finalize")
+    assert 'id="xero-attachments"' not in _page(await ui.get(f"/migrations/{other}/verify"))
+    sample = fake_api.add_run("completed", source="xero", is_sample=True)
+    assert 'id="xero-attachments"' not in _page(await ui.get(f"/migrations/{sample}/complete"))
+
+    panel = _page(await ui.get(base))
+    assert panel.startswith('<div id="xero-attachments"')
+    assert "Attachments in Xero" in panel and "only reads" in panel
+    form = re.search(r'<form[^>]*id="xero-attachments-form"[^>]*>', panel).group(0)
+    assert _attr(form, "hx-post") == base and _attr(form, "hx-target") == "#xero-attachments"
+    assert "hx-trigger=\"every" not in panel               # nothing to watch before a fetch starts
+
+    fake_api.xero_refusal = (428, "Sign in to a free Celerp account to fetch attachments from Xero.")
+    needed = _page(await ui.post(base))
+    assert 'id="celerp-account-panel"' in needed and "xero-attachments" in needed
+    fake_api.xero_refusal = None
+
+    signing = _page(await ui.post(base))
+    url = "https://login.xero.com/identity/connect/authorize?state=abc"
+    link = re.search(r'<a[^>]*>Sign in to Xero</a>', signing).group(0)
+    assert _attr(link, "href") == url and _attr(link, "target") == "_blank"
+    assert f'data-copy-text="{url}"' in signing             # the link can go to whoever holds the login
+    assert "choose this client's organisation" in signing
+    assert f'hx-post="{base}/stop"' in signing
+    assert _attr(re.search(r'<div[^>]*id="xero-attachments"[^>]*>', signing).group(0), "hx-trigger") == "every 5s"
+
+    fake_api.xero_fetches[run_id] = _xero_fetch("fetching", organisation="Demo Trading Ltd", attached=3, total=10)
+    fetching = _page(await ui.get(base))
+    assert "Demo Trading Ltd" in fetching and "3 of 10 files attached so far" in fetching
+    assert "every 5s" in fetching and f'hx-post="{base}/stop"' in fetching
+
+    fake_api.xero_fetches[run_id] = _xero_fetch(
+        "waiting", organisation="Demo Trading Ltd", attached=3, total=10, resume_at="2026-10-17T10:00:00+00:00",
+        error="Xero's daily limit was reached. Fetching continues when it resets.")
+    waiting = _page(await ui.get(base))
+    assert "daily limit was reached" in waiting and "every 5s" in waiting
+
+    fake_api.xero_fetches[run_id] = _xero_fetch(
+        "done", organisation="Demo Trading Ltd", attached=4, total=5, unmatched=[
+            {"document": "INV-9999", "contact": "Gone Customer", "files": 1,
+             "reason": "This document was not imported into Celerp."}])
+    done = _visible(await ui.get(base))
+    assert "4 of 5 files from Demo Trading Ltd were attached" in done
+    assert "INV-9999" in done and "Gone Customer" in done and "This document was not imported into Celerp." in done
+    done_page = _page(await ui.get(base))
+    assert "every 5s" not in done_page and "Fetch again" in done_page
+    files_header = re.search(r'<th[^>]*>Files</th>', done_page).group(0)
+    assert "cell--number" in files_header                    # a count sits right, under its header
+
+    fake_api.xero_fetches[run_id] = _xero_fetch("failed", error="Choose exactly one organisation when you sign in to Xero.")
+    failed = _page(await ui.get(base))
+    assert "exactly one organisation" in failed and "Try again" in failed
+
+    fake_api.xero_fetches[run_id] = _xero_fetch("fetching", attached=1, total=2)
+    stopped = _page(await ui.post(f"{base}/stop"))
+    assert stopped.startswith('<div id="xero-attachments"') and "Fetching stopped" in stopped
+    assert "Fetch again" in stopped
+
+
+async def test_a_xero_import_says_attachments_are_fetched_after_it(ui, fake_api, monkeypatch):
+    _export_set_sources(monkeypatch)
+    r = await ui.post("/setup/migrate/scan", files=_UPLOAD, data={"source": "manager_io"})
+    token = _cookie_value(r, SCAN_COOKIE)
+    ui.cookies.set(SCAN_COOKIE, token)
+    hint = "fetch them from Xero on the check results page"
+    assert hint not in _visible(await ui.get("/setup/migrate/coverage"))
+    fake_api.scans[token]["scan"].update(source_system="xero", display_name="Xero")
+    assert hint in _visible(await ui.get("/setup/migrate/coverage"))
