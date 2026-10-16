@@ -800,3 +800,25 @@ class TestApplyModulesRestartDecision:
 
         assert backup_import._apply_modules(["celerp-labels"]) is True
         assert (tmp_path / ".restart_requested").exists()
+
+
+def test_recovery_marker_is_written_where_a_directory_cannot_be_opened(monkeypatch, tmp_path):
+    """Windows refuses os.open on a directory with PermissionError, so a System Recovery
+    there must still record and clear its marker: the directory sync after the rename is
+    skipped where the platform cannot do it, never turned into a failed recovery."""
+    from celerp.config import settings
+    from celerp.services import backup_import
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    real_open = os.open
+
+    def _open_like_windows(path, flags, *args, **kwargs):
+        if Path(path).is_dir():
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", _open_like_windows)
+    backup_import._mark_recovery_started(tmp_path / "target.celerp-backup", [])
+    assert backup_import.recovery_incomplete() is True
+    backup_import._mark_recovery_finished()
+    assert backup_import.recovery_incomplete() is False

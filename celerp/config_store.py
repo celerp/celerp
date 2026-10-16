@@ -162,7 +162,7 @@ def _refreshing_release(lock_path: str, fd: int, token: bytes):
     return release
 
 
-def _fsync_dir(dir_path: str) -> None:
+def fsync_dir(dir_path) -> None:
     """Fsync the directory so a preceding atomic rename is durable, not only the
     renamed file's contents. A crash after os.replace but before the directory
     entry reaches disk could otherwise lose the rename. No-op on platforms that
@@ -225,7 +225,7 @@ def atomic_write_text(path: str, data: str) -> None:
         except OSError:
             pass
         raise
-    _fsync_dir(os.path.dirname(path) or ".")
+    fsync_dir(os.path.dirname(path) or ".")
 
 
 def merge_packaged_config(updates: dict) -> bool:

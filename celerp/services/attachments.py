@@ -44,6 +44,7 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.config_store import fsync_dir
 from celerp.events.engine import emit_event
 from celerp.services.company_lock import hold_company
 from ui.i18n import t
@@ -246,12 +247,7 @@ def mark_landing(company_id: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     with open(folder / company_id, "wb") as fh:
         os.fsync(fh.fileno())
-    if hasattr(os, "O_DIRECTORY"):
-        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+    fsync_dir(folder)
 
 
 def landing_companies() -> list[str]:
