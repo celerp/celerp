@@ -84,3 +84,20 @@ async def test_attention_names_documents_by_number(client, session, monkeypatch)
     assert result.attention
     for entry in result.attention:
         assert entry["label"] == numbers[entry["id"]], entry
+
+
+def test_status_view_names_records_and_aligns_numbers():
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import _attention_list, _entity_status_table
+
+    entry = [{"id": "doc:1", "label": "INV-0001", "reason": "Receiving installation needs attention"}]
+    peer = to_xml(_attention_list("celerp", entry))
+    assert "Records needing attention" in peer and "Orders" not in peer
+    assert "Orders needing attention" in to_xml(_attention_list("woocommerce", entry))
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    run = SimpleNamespace(finished_at=datetime.now(timezone.utc), status="success",
+                          created_count=1, updated_count=0, errors=[])
+    table = to_xml(_entity_status_table({"documents_out": run}))
+    headers = table.split("<thead>")[1].split("</thead>")[0]
+    assert headers.count('class="cell--number"') == 2, headers
