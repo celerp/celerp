@@ -538,3 +538,14 @@ def test_checks_that_run_the_packaged_python_leave_the_build_unchanged():
         "Check the Windows bundle", "Check bundled modules in the packaged artifact"}
     for step in runs_packaged_python:
         assert step.get("env", {}).get("PYTHONDONTWRITEBYTECODE") == "1", step["name"]
+
+
+def test_windows_smoke_commands_run_with_the_account_user_name():
+    """Start-Process -Credential hands the child the runner's environment, so without
+    this the installer sees the runner's USERNAME. The installer only closes a running
+    app found with tasklist /FI "USERNAME eq %USERNAME%", so it would miss the
+    account's running app and copy over files that app holds open."""
+    smoke = _win_boot_smoke()
+    env_set = smoke.split("$envSet = ", 1)[1].split("\n", 1)[0]
+    assert "set USERNAME=$u`r`n" in env_set
+    assert "set USERDOMAIN=$env:COMPUTERNAME`r`n" in env_set

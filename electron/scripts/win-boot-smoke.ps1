@@ -117,7 +117,9 @@ public class WinStaAccess {
 
 # Start-Process -Credential hands the child the CALLER's environment (the runner's
 # %APPDATA%), so a warm-up logon first materialises the account's profile and the cmd
-# wrappers point the profile variables at it, as a real logon does.
+# wrappers set the account's user name and point the profile variables at it, as a
+# real logon does. The installer finds a running app by user name, so a runner
+# USERNAME would hide the account's app from it.
 $pub = "C:\Users\Public"
 Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "exit 0" -Credential $cred -LoadUserProfile -Wait -WorkingDirectory $pub
 $sid = (New-Object System.Security.Principal.NTAccount("$env:COMPUTERNAME\$u")).Translate([System.Security.Principal.SecurityIdentifier]).Value
@@ -125,7 +127,7 @@ $profileDir = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $si
 if (-not $profileDir) { Fail "no profile created for $u" }
 # The wrappers are UTF-8 and switch cmd to UTF-8 first, so a profile path with non-ASCII
 # letters reaches the app as it is.
-$envSet = "set USERPROFILE=$profileDir`r`nset APPDATA=$profileDir\AppData\Roaming`r`nset LOCALAPPDATA=$profileDir\AppData\Local`r`nset TEMP=$profileDir\AppData\Local\Temp`r`nset TMP=$profileDir\AppData\Local\Temp`r`nif not exist `"%APPDATA%`" mkdir `"%APPDATA%`"`r`nif not exist `"%TEMP%`" mkdir `"%TEMP%`""
+$envSet = "set USERNAME=$u`r`nset USERDOMAIN=$env:COMPUTERNAME`r`nset USERPROFILE=$profileDir`r`nset APPDATA=$profileDir\AppData\Roaming`r`nset LOCALAPPDATA=$profileDir\AppData\Local`r`nset TEMP=$profileDir\AppData\Local\Temp`r`nset TMP=$profileDir\AppData\Local\Temp`r`nif not exist `"%APPDATA%`" mkdir `"%APPDATA%`"`r`nif not exist `"%TEMP%`" mkdir `"%TEMP%`""
 function Wrapper([string]$path, [string]$body) {
   Set-Content -Encoding utf8NoBOM $path "@echo off`r`nchcp 65001 >nul`r`n$envSet`r`n$body"
 }
