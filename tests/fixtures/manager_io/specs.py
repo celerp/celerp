@@ -109,6 +109,26 @@ T = {name: uuid.UUID(guid) for name, guid in {
     "BalanceSheetIntangibleAssetsAtCostAccount": "31d369e3-32c7-4bd2-bb83-9c1c58010c1a",
     "BalanceSheetIntangibleAssetsAccumulatedAmortizationAccount": "aa12d048-bfbd-47dc-a5b8-03e35c417996",
     "BalanceSheetInvestmentsAccount": "352897d1-e7fe-462e-9965-458ed9e27b82",
+    # Records that post through the accounts above, and the built-in accounts they post to.
+    "DepreciationEntry": "75cdc055-6dec-4381-bc40-b670366e6abc",
+    "AmortizationEntry": "d33519a3-e8e0-4556-9833-b744a58dd2f7",
+    "Payslip": "1d103fa7-6fc1-4951-811e-972968b842cc",
+    "PayslipEarningsItem": "ab02f6ab-c91c-4fc2-b979-66a6682c200e",
+    "PayslipDeductionItem": "0444eb18-6fc5-4d1f-be8b-c114da01832c",
+    "PayslipContributionItem": "73af4c68-c347-4088-8846-758f1e7bc5bb",
+    "ExpenseClaim": "02572e0c-0167-4dbd-a392-08d8f67f3fe4",
+    "LatePaymentFee": "4dada073-022f-464e-bdb3-ff38c83e577f",
+    "WithholdingTaxReceipt": "8f7510d9-a92d-4b4c-9421-fd745e198b3c",
+    "BillableTime": "6bfb652c-11cb-46fa-9e5a-c5950ccbae15",
+    "BalanceSheetBillableTimeAccount": "9f3c0a1a-dd0b-4b5c-ba50-3e4939a0e90c",
+    "BalanceSheetWithholdingTaxAccount": "8f75a810-abd0-4d89-a6a2-66c9003a60e2",
+    "ProfitAndLossStatementAccountBillableTimeMovement": "03d41bd1-8dd4-4ce3-9b82-5ce17a40171a",
+    "ProfitAndLossStatementAccountFixedAssetDepreciation": "fb6fdbfd-b39f-4674-8928-10c2bdd87e58",
+    "ProfitAndLossStatementAccountFixedAssetLossOnDisposal": "428ea9ba-4679-4568-b05b-7fcf62504893",
+    "ProfitAndLossStatementAccountIntangibleAssetsAmortization": "83d56444-fed8-4de8-8e58-e325a370ae44",
+    "ProfitAndLossStatementAccountIntangibleAssetsGainsLossOnDisposal": "43e14984-202e-4e9e-b843-d417dddcd3d2",
+    "ProfitAndLossStatementCapitalGainsOnInvestments": "de8d014f-e862-4ab5-88cc-335d464315a6",
+    "ProfitAndLossStatementAccountLatePaymentFees": "841b2acb-8bb5-4742-864e-4226fa421f44",
 }.items()}
 
 INCOME = uuid.UUID("95713fac-30d3-42e4-b536-dd7bc4f7a80e")
@@ -836,7 +856,7 @@ def starting_balance_objects() -> list[Obj]:
 
     Starting balances: equipment 1000, bank loan -400, operating bank 500, owner capital
     -900, director loan -150, Staff One -60, van 800 at cost and -200 depreciated, patent
-    300 at cost and -30 amortized, 5 widgets @ 12 = 60, index fund 250, 70 of the 100
+    300 at cost and -30 amortized, 5 widgets @ 12 = 60, 250 units of the index fund @ 1 = 250, 70 of the 100
     invoice INV-0 already received and all 40 of the bill BILL-0 already paid. Debits
     2950, credits 1810: retained earnings -1140.
 
@@ -869,7 +889,7 @@ def starting_balance_objects() -> list[Obj]:
         obj("FixedAssetStartingBalance", "SBVAN", {1: k("VAN"), 2: D("800"), 3: D("200")}),
         obj("IntangibleAssetStartingBalance", "SBPAT", {1: k("PAT"), 2: D("300"), 3: D("30")}),
         obj("InventoryItemStartingBalance", "SBWID", {1: k("WID"), 2: True, 3: [{2: D("5")}], 8: D("12")}),
-        obj("InvestmentStartingBalance", "SBFUND", {1: k("FUND"), 2: D("250")}),
+        obj("InvestmentStartingBalance", "SBFUND", {1: k("FUND"), 2: D("250"), 3: D("1")}),
         obj("SalesInvoiceStartingBalance", "SBINV", {1: k("INVSB"), 2: D("70")}),
         obj("JournalEntry", "HJ1", {1: date(2026, 1, 10), 2: "HJ-1", 3: "Owner drawings", 14: [
             {1: CAPITAL, 11: k("CAP"), 17: k("DRAW"), 13: D("50")},
@@ -901,3 +921,70 @@ def starting_balance_objects() -> list[Obj]:
 
 def build_starting_balances(path: Path, extra: tuple[Obj, ...] = ()) -> Path:
     return write_manager_file(path, [*starting_balance_objects(), *extra])
+
+
+# ── Records that post through the accounts Manager keeps under a control account ──
+
+HISTORY_CUTOVER = date(2026, 2, 22)
+
+
+def history_objects() -> list[Obj]:
+    """The starting balance business, then a quarter of the records Manager posts through its
+    holders and built-in accounts. Hand-worked figures, debit positive:
+
+    DEP1 depreciates the van 50 to the built-in depreciation account and AMO1 amortizes the
+    patent 10 to its own expense account. PS1 pays Staff One 2 x 500 salary less 100 income
+    tax, with a 50 employer contribution: wages 1050, PAYE -150, Staff One -900. EC1 claims
+    2 x 15 of office expenses for the owner: Owner -10. LPF1 charges a late fee of 5 on
+    INV-0 and WHT1 receives a 5 withholding tax certificate from the same customer.
+    Billable time: BT1 2h30 @ 40 = 100 written off on 15 February, BT2 1h @ 60 invoiced on
+    INV-BT (60), BT3 0h45 @ 80 = 60 unbilled, so billable time 60 and its movement -60. The
+    index fund's 250 units are priced at 1.2 on 20 February (+50), 30 more is paid in on 25
+    February at no change in units (-30) and the price falls to 1.1 on 1 March (-25): fund
+    275, investment gains 5. The van is sold for 600 on 4 March and disposed of on 5 March:
+    at cost 300 and depreciation -250 clear with a loss on disposal of 50.
+
+    End: operating bank 1010, Staff One -900, Owner -10, van 0 and 0, patent 300 and -40,
+    fund 275, receivable 60, sales -160, office expenses 70."""
+    opb, ca = k("OPB"), k("CA")
+    van = {1: "Van", 10: "FA1", 17: D("20"), 5: MIN_DATE, 6: True, 7: date(2026, 3, 5), 23: {}}
+    patent = {1: "Patent", 10: "IA1", 15: D("10"), 22: MIN_DATE, 18: True, 19: k("AMEXP")}
+    replaced = {k("VAN"): van, k("PAT"): patent}
+    return [
+        *(Obj(o.key, o.content_type, replaced.get(o.key, o.fields)) for o in starting_balance_objects()),
+        obj("ProfitAndLossStatementAccount", "WAGES", {1: "Wages", 11: "6200", 3: EXPENSES}),
+        obj("ProfitAndLossStatementAccount", "AMEXP", {1: "Patent amortization", 11: "6300", 3: EXPENSES}),
+        obj("BalanceSheetAccount", "PAYE", {1: "PAYE payable", 17: "2200", 3: T["Liabilities"]}),
+        obj("PayslipEarningsItem", "PEW", {1: "Salary", 3: k("WAGES")}),
+        obj("PayslipDeductionItem", "PDT", {1: "Income tax", 3: k("PAYE")}),
+        obj("PayslipContributionItem", "PCS", {1: "Social security", 3: k("WAGES"), 4: k("PAYE")}),
+        obj("DepreciationEntry", "DEP1", {1: date(2026, 2, 1), 2: "February", 3: [{1: k("VAN"), 2: D("50")}]}),
+        obj("AmortizationEntry", "AMO1", {1: date(2026, 2, 2), 2: "February", 3: [{1: k("PAT"), 2: D("10")}]}),
+        obj("Payslip", "PS1", {1: date(2026, 2, 5), 2: k("EMP"), 3: [{3: D("500"), 4: k("PEW"), 7: D("2")}],
+                               4: [{2: D("100"), 3: k("PDT")}], 5: [{2: D("50"), 3: k("PCS")}]}),
+        obj("ExpenseClaim", "EC1", {1: date(2026, 2, 6), 3: "Stationery", 9: k("ECP"), 18: [
+            {2: k("OFF"), 17: "Paper", 18: D("2"), 19: D("15")}]}),
+        obj("LatePaymentFee", "LPF1", {1: date(2026, 2, 8), 2: ca, 3: k("INVSB"), 4: D("5")}),
+        obj("WithholdingTaxReceipt", "WHT1", {1: ca, 2: date(2026, 2, 9), 3: D("5"), 4: "Certificate 7"}),
+        obj("BillableTime", "BT1", {1: date(2026, 2, 10), 3: "Review", 6: 2, 7: 30, 8: D("40"), 9: ca, 14: 2,
+                                    15: date(2026, 2, 15)}),
+        obj("BillableTime", "BT2", {1: date(2026, 2, 11), 3: "Advice", 6: 1, 8: D("60"), 9: ca, 13: k("INVBT"),
+                                    14: 1}),
+        obj("BillableTime", "BT3", {1: date(2026, 2, 13), 3: "Drafting", 7: 45, 8: D("80"), 9: ca}),
+        obj("SalesInvoice", "INVBT", {1: date(2026, 2, 12), 2: "INV-BT", 3: ca, 49: [
+            {2: k("S1"), 17: "Advice", 18: D("1"), 19: D("60")}]}),
+        obj("InvestmentMarketPrice", "MP1", {1: date(2026, 2, 20), 2: k("FUND"), 6: D("1.2")}),
+        obj("JournalEntry", "HJ5", {1: date(2026, 2, 25), 2: "HJ-5", 3: "Fund top-up", 14: [
+            {1: INVESTMENTS, 26: k("FUND"), 13: D("30")},
+            {1: CASH_AT_BANK, 29: opb, 14: D("30")},
+        ]}),
+        obj("InvestmentMarketPrice", "MP2", {1: date(2026, 3, 1), 2: k("FUND"), 6: D("1.1")}),
+        obj("JournalEntry", "HJ6", {1: date(2026, 3, 4), 2: "HJ-6", 3: "Van sold", 14: [
+            {1: CASH_AT_BANK, 29: opb, 13: D("600")},
+            {1: FIXED_AT_COST, 9: k("VAN"), 14: D("600")},
+        ]}),
+    ]
+
+
+def build_history(path: Path, objects: list[Obj] | None = None) -> Path:
+    return write_manager_file(path, history_objects() if objects is None else objects)

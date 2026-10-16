@@ -64,11 +64,6 @@ def _rows(source) -> dict:
     return {r.source_type: r for r in adapter().inspect([source]).coverage}
 
 
-def _replaced(label: str, changes: dict) -> list:
-    return [dataclasses.replace(o, fields={**o.fields, **changes}) if o.key == specs.k(label) else o
-            for o in specs.starting_balance_objects()]
-
-
 def _trial_balance(source, decisions=FULL) -> dict[str, D]:
     rows = adapter().source_expectations([source], decisions).expectations
     return {r.key: D(r.expected) for r in rows if r.measure == M.TRIAL_BALANCE}
@@ -178,11 +173,178 @@ def test_holder_on_a_line_of_another_control_account_stops_the_record(tmp_path):
     assert rows["JournalEntry (unknown reference)"].count == 1
 
 
-def test_disposed_fixed_asset_stops_the_scan(tmp_path):
-    """Disposal posts a gain or loss Celerp does not rebuild yet; it is named, never dropped."""
-    rows = _rows(_source(tmp_path, objects=_replaced("VAN", {6: True, 7: date(2026, 1, 25)})))
-    assert rows["FixedAsset (unsupported feature)"].coverage_class == CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER
-    assert "dispos" in rows["FixedAsset (unsupported feature)"].note
+# Records Manager posts through holders and its own built-in accounts: the figures worked
+# out in specs.history_objects(), debit positive.
+HISTORY = _figures({
+    "OPB": "1010", "EQUIP": "1000", "LOAN": "-400", "CAP": "-900", "CAP:DRAW": "50", "CAP2": "-100",
+    "SPEC": "-190", "EMP": "-900", "ECP": "-10", "VAN": "0", "VAN:depreciation": "0", "PAT": "300",
+    "PAT:amortization": "-40", "FUND": "275", "@BalanceSheetInventoryOnHandAccount": "60",
+    "@BalanceSheetAccountsReceivableAccount": "60", "@BalanceSheetAccountsPayableAccount": "0", "S1": "-160",
+    "OFF": "70", "WAGES": "1050", "PAYE": "-150", "AMEXP": "10", "@BalanceSheetRetainedEarningsAccount": "-1140",
+    "@ProfitAndLossStatementAccountFixedAssetDepreciation": "50",
+    "@ProfitAndLossStatementAccountFixedAssetLossOnDisposal": "50",
+    "@ProfitAndLossStatementAccountLatePaymentFees": "-5", "@BalanceSheetWithholdingTaxAccount": "5",
+    "@BalanceSheetBillableTimeAccount": "60", "@ProfitAndLossStatementAccountBillableTimeMovement": "-60",
+    "@ProfitAndLossStatementCapitalGainsOnInvestments": "5",
+})
+ACTIVITY = ("DepreciationEntry", "AmortizationEntry", "Payslip", "ExpenseClaim", "LatePaymentFee",
+            "WithholdingTaxReceipt", "BillableTime", "InvestmentMarketPrice", "PayslipEarningsItem",
+            "PayslipDeductionItem", "PayslipContributionItem")
+
+
+def _history(tmp_path, objects: list | None = None, name: str = "history.manager"):
+    return artifact(specs.build_history(tmp_path / name, objects))
+
+
+def _history_with(label: str, changes: dict) -> list:
+    return [dataclasses.replace(o, fields={**o.fields, **changes}) if o.key == specs.k(label) else o
+            for o in specs.history_objects()]
+
+
+def test_activity_records_scan_without_blockers(tmp_path):
+    """RED before the change: depreciation, amortization, payslips, expense claims, late
+    fees, withholding tax receipts, billable time and market prices each stop Full history
+    as unsupported, and so does the disposed van."""
+    rows = _rows(_history(tmp_path))
+    assert {label: r.note for label, r in rows.items() if r.coverage_class in STOPPING} == {}
+    for label in ACTIVITY:
+        assert rows[label].coverage_class in (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS), label
+
+
+def test_activity_records_post_what_manager_reports(tmp_path):
+    """Each record posts the lines Manager's own reports show, through the holder accounts and
+    the built-in accounts Manager adds once the record type is used. RED before the change:
+    the scan stops on every one of them."""
+    assert _trial_balance(_history(tmp_path)) == HISTORY
+
+
+def test_activity_built_in_accounts_arrive_only_when_used(tmp_path):
+    """The depreciation, disposal, late fee, withholding tax, billable time and investment
+    gains accounts are added with Manager's names and types once a record uses them, and not
+    otherwise. RED before the change: the scan stops, and none is added."""
+    bundle = adapter().build_manifest([_history(tmp_path)], FULL).bundle
+    accounts = {a.source_external_id: (a.name, a.account_type.value) for a in bundle.accounts}
+    assert {label: accounts[_key(label)] for label in (
+        "@BalanceSheetBillableTimeAccount", "@BalanceSheetWithholdingTaxAccount",
+        "@ProfitAndLossStatementAccountBillableTimeMovement", "@ProfitAndLossStatementAccountFixedAssetDepreciation",
+        "@ProfitAndLossStatementAccountFixedAssetLossOnDisposal", "@ProfitAndLossStatementAccountLatePaymentFees",
+        "@ProfitAndLossStatementCapitalGainsOnInvestments")} == {
+        "@BalanceSheetBillableTimeAccount": ("Billable time", "asset"),
+        "@BalanceSheetWithholdingTaxAccount": ("Withholding tax", "asset"),
+        "@ProfitAndLossStatementAccountBillableTimeMovement": ("Billable time - movement", "revenue"),
+        "@ProfitAndLossStatementAccountFixedAssetDepreciation": ("Fixed assets - depreciation", "expense"),
+        "@ProfitAndLossStatementAccountFixedAssetLossOnDisposal": ("Fixed assets - loss on disposal", "expense"),
+        "@ProfitAndLossStatementAccountLatePaymentFees": ("Late payment fees", "revenue"),
+        "@ProfitAndLossStatementCapitalGainsOnInvestments": ("Investment gains (losses)", "revenue"),
+    }
+    # The patent amortizes to its own account, so the built-in amortization account is unused.
+    assert ref("@ProfitAndLossStatementAccountIntangibleAssetsAmortization") not in accounts
+    started = {a.source_external_id for a in adapter().build_manifest([_source(tmp_path)], FULL).bundle.accounts}
+    assert ref("@ProfitAndLossStatementAccountFixedAssetDepreciation") not in started
+
+
+def test_activity_records_arrive_as_journals_on_their_own_dates(tmp_path):
+    """Every record is a journal of its own type, dated as Manager dates it: billable time
+    reverses when it is invoiced or written off, and a disposal posts on its disposal date.
+    RED before the change: the scan stops."""
+    bundle = adapter().build_manifest([_history(tmp_path)], FULL).bundle
+    dates: dict[str, list[date]] = {}
+    for journal in bundle.journals:
+        dates.setdefault(journal.source_type, []).append(journal.entry_date)
+    assert {t: sorted(d) for t, d in dates.items() if t not in ("JournalEntry", "StartingBalances")} == {
+        "DepreciationEntry": [date(2026, 2, 1)], "AmortizationEntry": [date(2026, 2, 2)],
+        "Payslip": [date(2026, 2, 5)], "ExpenseClaim": [date(2026, 2, 6)], "LatePaymentFee": [date(2026, 2, 8)],
+        "WithholdingTaxReceipt": [date(2026, 2, 9)],
+        "BillableTime": [date(2026, 2, 10), date(2026, 2, 11), date(2026, 2, 12), date(2026, 2, 13),
+                         date(2026, 2, 15)],
+        "InvestmentRevaluation": [date(2026, 2, 20), date(2026, 2, 25), date(2026, 3, 1)],
+        "FixedAssetDisposal": [date(2026, 3, 5)],
+    }
+
+
+def test_cutover_inside_the_activity_ends_on_the_same_balances(tmp_path):
+    """A cutover folds the records before it into its opening and carries the rest. RED
+    before the change: both scans stop."""
+    source = _history(tmp_path)
+    cutover = MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=specs.HISTORY_CUTOVER)
+    assert _trial_balance(source, cutover) == _trial_balance(source, FULL)
+
+
+def test_intangible_asset_disposal_posts_its_gain_to_the_account_it_names(tmp_path):
+    """A disposal clears the asset's cost and what was written off it and posts the
+    difference to the disposal account the asset names. The patent was written down to 260
+    and an offer of 300 came in: a gain of 40. RED before the change: disposal blocks."""
+    objects = [*_history_with("PAT", {6: True, 7: date(2026, 3, 6), 21: specs.k("GAIN")}),
+               specs.obj("ProfitAndLossStatementAccount", "GAIN", {1: "Gain on patent", 11: "4900",
+                                                                    3: specs.INCOME}),
+               specs.obj("JournalEntry", "HJ7", {1: date(2026, 3, 6), 2: "HJ-7", 3: "Patent sold", 14: [
+                   {1: specs.CASH_AT_BANK, 29: specs.k("OPB"), 13: D("300")},
+                   {1: specs.INTANGIBLE_AT_COST, 10: specs.k("PAT"), 14: D("300")}]})]
+    trial = _trial_balance(_history(tmp_path, objects))
+    assert (trial[ref("PAT")], trial[_key("PAT:amortization")], trial[ref("GAIN")]) == (D(0), D(0), D("-40"))
+    assert ref("@ProfitAndLossStatementAccountIntangibleAssetsGainsLossOnDisposal") not in trial
+
+
+def test_disposal_date_without_the_disposed_flag_posts_nothing(tmp_path):
+    """Manager ignores a disposal date on an asset that is not marked disposed. RED before
+    the change: the scan stops on the other activity records."""
+    trial = _trial_balance(_history(tmp_path, _history_with("VAN", {6: False})))
+    assert (trial[ref("VAN")], trial[_key("VAN:depreciation")]) == (D("300"), D("-250"))
+    assert ref("@ProfitAndLossStatementAccountFixedAssetLossOnDisposal") not in trial
+
+
+def test_late_fee_stays_on_the_customer_and_its_invoice_link_is_disclosed(tmp_path):
+    """Manager adds a late fee to the invoice it is charged on. Celerp carries it as a
+    customer charge, so the invoice keeps its own total and the coverage says so. RED before
+    the change: the fee stops the scan."""
+    source = _history(tmp_path)
+    rows = _rows(source)
+    assert rows["LatePaymentFee (invoice link)"].coverage_class == CoverageClass.MAPPED_WITH_LOSS
+    documents = {d.source_external_id: d for d in adapter().build_manifest([source], FULL).bundle.documents}
+    invoice = documents[ref("INVSB")]
+    assert (invoice.amount_outstanding, invoice.status) == (D("0"), "paid")
+
+
+def test_receipt_of_a_late_fee_against_its_invoice_stops_the_receipt(tmp_path):
+    """Paying an invoice more than its own total, because Manager added a late fee to it,
+    would overpay the invoice in Celerp. RED before the change: the fee itself stops the scan,
+    under a different label."""
+    objects = [*specs.history_objects(),
+               specs.obj("Receipt", "HR3", {1: date(2026, 2, 28), 2: "HR-3", 3: specs.PAID_BY_CUSTOMER,
+                                            4: specs.k("CA"), 7: specs.k("OPB"), 11: [
+                   {2: specs.AR, 3: specs.k("CA"), 4: specs.k("INVSB"), 18: D("5")}]})]
+    rows = _rows(_history(tmp_path, objects))
+    blocked = rows["Receipt (late payment fee)"]
+    assert (blocked.count, blocked.coverage_class) == (1, CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER)
+
+
+def test_market_price_without_an_investment_stops_the_price(tmp_path):
+    """RED before the change: the price stops the scan as an unsupported type, not as an
+    unknown reference."""
+    objects = [*specs.history_objects(),
+               specs.obj("InvestmentMarketPrice", "MPX", {1: date(2026, 3, 2), 6: D("2")})]
+    rows = _rows(_history(tmp_path, objects))
+    assert rows["InvestmentMarketPrice (unknown reference)"].count == 1
+
+
+def test_payslip_with_an_unknown_item_stops_the_payslip(tmp_path):
+    """RED before the change: the payslip stops the scan as an unsupported type."""
+    objects = _history_with("PS1", {4: [{2: D("100"), 3: specs.k("NOPE")}]})
+    rows = _rows(_history(tmp_path, objects))
+    assert rows["Payslip (unknown reference)"].count == 1
+
+
+async def test_activity_records_migrate_end_to_end(real_engine, real_client, monkeypatch, tmp_path):
+    """The migrated books hold Manager's trial balance after every activity record. RED
+    before the change: the scan stops."""
+    path = specs.build_history(tmp_path / "history.manager")
+    books = await _migrated(real_engine, monkeypatch, tmp_path, {"mode": "full_history"}, source=path)
+    code = {m: t for (_, m), t in books.maps.items()}
+    trial = (await real_client.get("/accounting/trial-balance", headers=books.headers)).json()
+    assert trial["balanced"] is True
+    net = {line["code"]: D(str(line["net"])) for line in trial["lines"]}
+    assert {key: net[code[key]] for key, amount in HISTORY.items() if amount} == \
+        {key: amount for key, amount in HISTORY.items() if amount}
 
 
 def test_foreign_currency_starting_balance_stops_the_scan(tmp_path):
