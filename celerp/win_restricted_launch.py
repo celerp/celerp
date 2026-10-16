@@ -13,6 +13,15 @@ and exits with the program's exit code.
 
   python -I win_restricted_launch.py PROGRAM ARGS...
 
+The app also asks it what kind of token it was started with, read straight from
+the token rather than from any Windows service:
+
+  python -I win_restricted_launch.py --token-state
+
+prints "standard" (no administrator rights), "elevated" (administrator, with a
+standard token behind it: UAC on, Run as administrator) or "admin"
+(administrator with nothing behind it: UAC off, or the built-in Administrator).
+
 On failure it writes one line starting with FAILURE_PREFIX to stderr and exits 1;
 the app recognises that prefix (electron/windows-start-errors.js).
 """
@@ -31,6 +40,11 @@ HANDLE_FLAG_INHERIT = 0x1
 STARTF_USESTDHANDLES = 0x100
 STD_HANDLES = (-10, -11, -12)  # input, output, error
 INFINITE = 0xFFFFFFFF
+TOKEN_QUERY = 0x8
+TOKEN_ELEVATION_TYPE_CLASS = 18  # TOKEN_INFORMATION_CLASS TokenElevationType
+TOKEN_ELEVATION_DEFAULT = 1
+TOKEN_ELEVATION_FULL = 2
+TOKEN_ELEVATION_LIMITED = 3
 WAIT_FAILED = 0xFFFFFFFF
 
 
@@ -46,6 +60,13 @@ def command_line(argv: list[str]) -> str:
 def exit_status(code: int) -> int:
     """A Windows exit code (an unsigned 32-bit value) as the signed int sys.exit passes on intact."""
     return ctypes.c_int32(code).value
+
+
+def classify(is_admin: bool, elevation_type: int) -> str:
+    """The token state the app acts on: "standard", "elevated" or "admin"."""
+    if not is_admin:
+        return "standard"
+    return "elevated" if elevation_type == TOKEN_ELEVATION_FULL else "admin"
 
 
 def _api():
@@ -78,6 +99,9 @@ def _api():
         (kernel32, "GetExitCodeProcess"): (wintypes.BOOL, [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]),
         (kernel32, "CloseHandle"): (wintypes.BOOL, [wintypes.HANDLE]),
         (kernel32, "LocalFree"): (ctypes.c_void_p, [ctypes.c_void_p]),
+        (advapi32, "CheckTokenMembership"): (wintypes.BOOL, [wintypes.HANDLE, ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL)]),
+        (advapi32, "GetTokenInformation"): (wintypes.BOOL, [
+            wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]),
         (advapi32, "OpenProcessToken"): (wintypes.BOOL, [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]),
         (advapi32, "ConvertStringSidToSidW"): (wintypes.BOOL, [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]),
         (advapi32, "CreateRestrictedToken"): (wintypes.BOOL, [
@@ -99,6 +123,46 @@ def _check(ok, call: str) -> None:
         raise LaunchError(f"{call} failed (error {ctypes.get_last_error()})")
 
 
+def _sids(advapi32, sids: list) -> None:
+    """Append the Administrators and Power Users SIDs to `sids`; the caller frees each
+    with LocalFree, including any appended before a failure."""
+    for text in (ADMINISTRATORS, POWER_USERS):
+        sid = ctypes.c_void_p()
+        _check(advapi32.ConvertStringSidToSidW(text, ctypes.byref(sid)), "ConvertStringSidToSidW")
+        sids.append(sid)
+
+
+def token_state() -> str:
+    """This process's token state. Administrator means a member of the groups Postgres
+    checks (pgwin32_is_admin): Administrators or Power Users."""
+    kernel32, advapi32, wintypes, *_ = _api()
+    sids = []
+    try:
+        _sids(advapi32, sids)
+        is_admin = False
+        for sid in sids:
+            member = wintypes.BOOL()
+            # A null token checks this thread's effective token.
+            _check(advapi32.CheckTokenMembership(None, sid, ctypes.byref(member)), "CheckTokenMembership")
+            is_admin = is_admin or bool(member.value)
+    finally:
+        for sid in sids:
+            kernel32.LocalFree(sid)
+
+    token = wintypes.HANDLE()
+    _check(advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)),
+           "OpenProcessToken")
+    try:
+        elevation_type = wintypes.DWORD()
+        size = wintypes.DWORD()
+        _check(advapi32.GetTokenInformation(token, TOKEN_ELEVATION_TYPE_CLASS, ctypes.byref(elevation_type),
+                                            ctypes.sizeof(elevation_type), ctypes.byref(size)),
+               "GetTokenInformation")
+    finally:
+        kernel32.CloseHandle(token)
+    return classify(is_admin, elevation_type.value)
+
+
 def run_restricted(argv: list[str]) -> int:
     """Start `argv` with the restricted token, wait for it, and return its exit code."""
     kernel32, advapi32, wintypes, SidAndAttributes, StartupInfo, ProcessInformation = _api()
@@ -108,10 +172,7 @@ def run_restricted(argv: list[str]) -> int:
            "OpenProcessToken")
     sids = []
     try:
-        for text in (ADMINISTRATORS, POWER_USERS):
-            sid = ctypes.c_void_p()
-            _check(advapi32.ConvertStringSidToSidW(text, ctypes.byref(sid)), "ConvertStringSidToSidW")
-            sids.append(sid)
+        _sids(advapi32, sids)
         disable = (SidAndAttributes * len(sids))(*(SidAndAttributes(s, 0) for s in sids))
         restricted = wintypes.HANDLE()
         _check(advapi32.CreateRestrictedToken(token, DISABLE_MAX_PRIVILEGE, len(sids), disable,
@@ -152,6 +213,9 @@ def main(argv: list[str]) -> int:
         print(f"{FAILURE_PREFIX} usage: win_restricted_launch.py PROGRAM ARGS...", file=sys.stderr)
         return 1
     try:
+        if argv == ["--token-state"]:
+            print(token_state())
+            return 0
         return exit_status(run_restricted(argv))
     except LaunchError as e:
         print(f"{FAILURE_PREFIX} {e}", file=sys.stderr, flush=True)

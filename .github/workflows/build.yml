@@ -963,10 +963,13 @@ jobs:
           Write-Host "installed older: updated 0.0.1 to $built"
           Write-Host "installer version check OK on Windows"
 
-      # The runner's own account is an administrator with UAC off, so Explorer is
-      # elevated too and the app's relaunch through it stays elevated. The app must
-      # then boot in place with Postgres started at a restricted token, not relaunch
-      # again. Launches the copy the installer check above left installed.
+      # The runner's own account is an administrator with UAC off: there is no
+      # standard token to relaunch into, so the app must boot in place with
+      # Postgres started at a restricted token. The installed app's own token check
+      # must read this account as "admin" and the restricted launcher's child as
+      # "standard". The Server service is stopped first: the app reads its own
+      # token, never a service. Launches the copy the installer check above left
+      # installed.
       - name: Boot smoke (Windows administrator, UAC off)
         timeout-minutes: 15
         if: runner.os == 'Windows'
@@ -975,13 +978,20 @@ jobs:
           $ErrorActionPreference = "Stop"
           $lua = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System").EnableLUA
           if ($lua -ne 0) { Write-Host "::error::UAC is on (EnableLUA=$lua); this step needs an administrator with UAC off"; exit 1 }
-          net session *> $null
-          if ($LASTEXITCODE -ne 0) { Write-Host "::error::the runner account is not elevated"; exit 1 }
           $entry = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
             Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like "Celerp*" } | Select-Object -First 1
           if ($entry) { $uninstall = (Get-ItemProperty $entry.PSPath).UninstallString }
           if (-not $uninstall -or $uninstall -notmatch '^"([^"]+)"') { Write-Host "::error::no installed Celerp for the runner account"; exit 1 }
           $exe = Join-Path (Split-Path $Matches[1]) "Celerp.exe"
+          $resources = Join-Path (Split-Path $Matches[1]) "resources"
+          $py = Join-Path $resources "python-x64\python\python.exe"
+          $launcher = Join-Path $resources "app\celerp\win_restricted_launch.py"
+          $state = (& $py -I $launcher --token-state).Trim()
+          if ($state -ne "admin") { Write-Host "::error::token state '$state' (want admin for an administrator with UAC off)"; exit 1 }
+          $child = (& $py -I $launcher $py -I $launcher --token-state).Trim()
+          if ($child -ne "standard") { Write-Host "::error::restricted launcher child token state '$child' (want standard)"; exit 1 }
+          Write-Host "token states OK: app admin, restricted child standard"
+          Stop-Service LanmanServer -Force
           $udd = Join-Path $env:APPDATA "Celerp"
           Remove-Item $udd -Recurse -Force -EA SilentlyContinue
 

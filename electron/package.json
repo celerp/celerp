@@ -55,6 +55,7 @@
       "compatibility.js",
       "deelevation.js",
       "windows-start-errors.js",
+      "windows-initdb.js",
       "boot.js",
       "preload.js",
       "assets/**"

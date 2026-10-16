@@ -193,8 +193,9 @@ const { compatibilityArgs, mayOpenData } = require("./compatibility");
 const { openData, reopenData } = require("./boot");
 const { writeConfig: writeLockedConfig } = require("./config-writer");
 const { serveUpdateState } = require("./update-state");
-const { startupDeelevation } = require("./deelevation");
-const { windowsStartFailure } = require("./windows-start-errors");
+const { startupDeelevation, relaunchThroughExplorer } = require("./deelevation");
+const { windowsStartFailure, logSince } = require("./windows-start-errors");
+const { initialiseClusterOnce } = require("./windows-initdb");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -274,6 +275,8 @@ function pythonBin() {
 // Windows-only first-boot initdb that mirrors embedded-postgres's initialise()
 // (same args/auth so the cluster is identical and .start() can connect), but with
 // stdio disabled so initdb's stderr cannot fill an unread pipe and deadlock.
+// initialiseClusterOnce runs it into a setup folder that is moved into place only
+// on success, so a setup cut short is run again on the next start.
 async function initialisePostgresWindows(password) {
   const logPath = path.join(LOG_DIR, "initdb-win.log");
   const trace = (m) => { try { fs.appendFileSync(logPath, m + "\n"); } catch { /* ignore */ } };
@@ -283,33 +286,39 @@ async function initialisePostgresWindows(password) {
   const initdbBin = path.join(process.resourcesPath, "app.asar.unpacked", "node_modules",
     "@embedded-postgres", "windows-x64", "native", "bin", "initdb.exe");
   trace(`initdb bin=${initdbBin} exists=${fs.existsSync(initdbBin)}`);
-  const pwfile = path.join(DATA_DIR, `pg-pwfile-${process.pid}`);
-  fs.writeFileSync(pwfile, `${password}\n`);
-  const out = fs.openSync(logPath, "a");
-  try {
-    await new Promise((resolve, reject) => {
-      const proc = _spawn(initdbBin, [
-        `--pgdata=${PG_DATA_DIR}`,
-        "--auth=password",
-        "--username=celerp",
-        `--pwfile=${pwfile}`,
-        // Force a UTF-8 / C-locale cluster. Without this initdb adopts the Windows
-        // system locale (e.g. WIN1252), and the app's UTF-8 data + migrations fail
-        // against a WIN1252 database.
-        "--encoding=UTF8",
-        "--no-locale",
-      ], { stdio: ["ignore", out, out], env: { ...process.env } });
-      proc.on("error", (e) => { trace("initdb spawn error: " + e.message); reject(e); });
-      proc.on("exit", (code) => {
-        trace("initdb exit code=" + code);
-        if (code === 0) resolve();
-        else reject(new Error(windowsStartFailure({ exitCode: code }) ?? `initdb exited with code ${code}`));
+  const runInitdb = async (target) => {
+    const pwfile = path.join(DATA_DIR, `pg-pwfile-${process.pid}`);
+    fs.writeFileSync(pwfile, `${password}\n`);
+    // Only this run's part of the log is read back to explain a failure.
+    const offset = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
+    const out = fs.openSync(logPath, "a");
+    try {
+      await new Promise((resolve, reject) => {
+        const proc = _spawn(initdbBin, [
+          `--pgdata=${target}`,
+          "--auth=password",
+          "--username=celerp",
+          `--pwfile=${pwfile}`,
+          // Force a UTF-8 / C-locale cluster. Without this initdb adopts the Windows
+          // system locale (e.g. WIN1252), and the app's UTF-8 data + migrations fail
+          // against a WIN1252 database.
+          "--encoding=UTF8",
+          "--no-locale",
+        ], { stdio: ["ignore", out, out], env: { ...process.env } });
+        proc.on("error", (e) => { trace("initdb spawn error: " + e.message); reject(e); });
+        proc.on("exit", (code) => {
+          trace("initdb exit code=" + code);
+          if (code === 0) { resolve(); return; }
+          const known = windowsStartFailure({ exitCode: code, output: logSince(logPath, offset) });
+          reject(new Error(known ?? `initdb exited with code ${code}`));
+        });
       });
-    });
-  } finally {
-    try { fs.closeSync(out); } catch { /* ignore */ }
-    try { fs.rmSync(pwfile, { force: true }); } catch { /* ignore */ }
-  }
+    } finally {
+      try { fs.closeSync(out); } catch { /* ignore */ }
+      try { fs.rmSync(pwfile, { force: true }); } catch { /* ignore */ }
+    }
+  };
+  await initialiseClusterOnce({ dataDir: PG_DATA_DIR, runInitdb });
 }
 
 /**
@@ -1180,50 +1189,42 @@ ipcMain.handle("uninstall-keep-data", () => _doUninstallKeepData());
 ipcMain.handle("uninstall-delete-data", () => _doUninstallDeleteData());
 
 // ── Windows: de-elevate before doing anything else ──────────────────────────
-// The bundled Postgres refuses to run under a Windows administrator token. An
-// elevated start (Run as administrator) relaunches through Explorer, which with
-// UAC on starts the copy with the user's standard token. With UAC off Explorer is
-// elevated too, so the relaunched copy boots in place and starts Postgres with the
-// administrator rights removed (deelevation.js). This must run BEFORE the
+// The bundled Postgres refuses to run under a Windows administrator token. The
+// token state is read from the app's own access token (deelevation.js): an
+// elevated start with UAC on relaunches through Explorer, which starts the copy
+// with the user's standard token; an administrator with UAC off boots here and
+// starts Postgres with the administrator rights removed. This must run BEFORE the
 // single-instance lock so the relaunched copy can acquire it.
-function isWindowsElevated() {
+function windowsTokenState() {
   try {
-    // `net session` succeeds only with administrator rights; it throws otherwise.
-    childProcess.execSync("net session", { stdio: "ignore", windowsHide: true });
-    return true;
-  } catch {
-    return false;
+    const script = path.join(APP_DIR, "celerp", "win_restricted_launch.py");
+    return childProcess.execFileSync(pythonBin(), ["-I", script, "--token-state"], {
+      encoding: "utf8", timeout: 15000, windowsHide: true,
+    }).trim();
+  } catch (e) {
+    console.error("[startup] could not read the Windows token state; starting Postgres restricted:", e);
+    return null;
   }
 }
 
 let deelevation = process.platform === "win32"
   ? startupDeelevation({
-    elevated: isWindowsElevated(),
+    token: windowsTokenState(),
     markerPath: path.join(app.getPath("userData"), "deelevate-attempt"),
     now: Date.now(),
   })
   : "boot";
 
 if (deelevation === "relaunch") {
-  try {
-    // Relaunch by handing the exe back to Explorer (the shell). This also
-    // sidesteps Electron's job object: Electron runs its own children in a job
-    // with KILL_ON_JOB_CLOSE, so a direct relaunch would die the moment this
-    // instance exits, but an Explorer-launched process is the shell's child, not
-    // ours, and survives.
-    const explorer = path.join(process.env.SystemRoot || "C:\\Windows", "explorer.exe");
-    const child = childProcess.spawn(explorer, [process.execPath], {
-      detached: true, stdio: "ignore", windowsHide: true,
-    });
-    child.on("error", (e) => console.error("[startup] de-elevation spawn error:", e));
-    child.unref();
+  if (relaunchThroughExplorer({
+    spawnSync: childProcess.spawnSync, systemRoot: process.env.SystemRoot, exePath: process.execPath,
+  })) {
     console.log("[startup] elevated launch detected; relaunched through Explorer (Postgres cannot run as admin)");
     app.quit();
     return;  // stop the elevated instance (CommonJS module: top-level return is valid)
-  } catch (e) {
-    console.error("[startup] de-elevation relaunch failed; booting with Postgres restricted:", e);
-    deelevation = "boot-restricted";
   }
+  console.error("[startup] booting here with Postgres restricted instead");
+  deelevation = "boot-restricted";
 }
 
 // ── Single-instance lock ─────────────────────────────────────────────────────
