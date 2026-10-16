@@ -117,16 +117,51 @@ async def test_manager_newer_revision_refused(client, migration_env, tmp_path):
         assert await _scan_refusals(client, path) == {message}
 
 
-async def test_manager_older_revision_refused_with_upgrade_instruction(client, migration_env, tmp_path):
-    """The revision just below the supported range is refused with the steps that upgrade it."""
+def _supported() -> str:
+    """The one sentence stating which Manager files Celerp reads, and how to get there."""
     from celerp.importers.adapters.manager_io import sqlite_reader
 
-    older = _book(tmp_path / "older.manager", sqlite_reader.SUPPORTED_SCHEMA_MIN - 1)
+    return t("migration.manager_supported", "en", format=sqlite_reader.SUPPORTED_SCHEMA_MAX,
+             release=sqlite_reader.SUPPORTED_RELEASE)
+
+
+def test_manager_supported_line_names_the_version_and_the_steps():
+    supported = _supported()
+    assert "file format 419" in supported and "Manager 26.8.4" in supported
+    assert "https://www.manager.io/download" in supported
+    for step in ("1.", "2.", "3.", "4."):
+        assert step in supported
+    assert "Backup" in supported and "Import" in supported
+
+
+async def test_import_page_states_the_supported_manager_files(client):
+    """The sources the import page lists carry the same supported-version sentence the refusals end with."""
+    r = await client.get("/migrations/sources")
+    manager = next(s for s in r.json() if s["key"] == "manager_io")
+    assert manager["accepts"] == _supported()
+
+
+async def test_manager_older_revision_refused_with_upgrade_instruction(client, migration_env, tmp_path):
+    """The revision just below the supported range is refused naming the format found, the
+    supported format and Manager version, and the steps that upgrade the file."""
+    from celerp.importers.adapters.manager_io import sqlite_reader
+
+    found = sqlite_reader.SUPPORTED_SCHEMA_MIN - 1
+    older = _book(tmp_path / "older.manager", found)
     message = _refused_everywhere(older)[0]
-    assert "older version of Manager" in message
-    assert "Open it in the latest version of Manager" in message
-    assert "upload" in message
+    assert message == t("migration.err_manager_older", "en", found=found) + " " + _supported()
+    assert f"file format {found}" in message
     assert await _scan_refusals(client, older) == {message}
+
+
+async def test_manager_single_file_container_refused_with_upgrade_instruction(client, migration_env, tmp_path):
+    """Manager's pre-database single-file format is recognised and refused with the same steps,
+    on every entry and through the scan route, never reported as an unknown file."""
+    legacy = tmp_path / "old.manager"
+    legacy.write_bytes(b"MNGR|" + b"\x00" * 64)
+    message = _refused_everywhere(legacy)[0]
+    assert message == t("migration.err_manager_container", "en") + " " + _supported()
+    assert await _scan_refusals(client, legacy) == {message}
 
 
 async def test_manager_missing_or_unknown_revision_refused(client, migration_env, tmp_path):

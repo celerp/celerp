@@ -72,15 +72,6 @@ def test_manager_rejects_corrupt_or_non_manager_sqlite(tmp_path):
     with pytest.raises(ScanError, match="damaged"):
         manager.inspect([artifact(damaged)])
 
-    # The older non-SQLite format is recognised as such and the user is told how to resave it.
-    legacy = tmp_path / "old.manager"
-    legacy.write_bytes(b"MNGR|" + b"\x00" * 64)
-    result = manager.detect([artifact(legacy)])
-    assert result.matched is False
-    assert "older Manager format" in (result.reason or "")
-    with pytest.raises(ScanError, match="save it, and upload the saved file"):
-        manager.inspect([artifact(legacy)])
-
     # Not SQLite at all.
     text = tmp_path / "notes.manager"
     text.write_bytes(b"plain text, not a database")

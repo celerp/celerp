@@ -85,7 +85,8 @@ async def test_product_mapping_cancel_returns_to_the_upload_page(stage_dir):  # 
 # ── N7: the migration upload says which file each system gives ────────────────
 
 _SOURCES = [{"key": "manager_io", "display_name": "Manager.io",
-             "artifacts": [{"label": "Manager.io backup", "extensions": [".manager"]}]}]
+             "artifacts": [{"label": "Manager.io backup", "extensions": [".manager"]}],
+             "accepts": "Celerp reads Manager business files saved in file format 419."}]
 
 
 async def test_migration_upload_names_the_accepted_file_and_where_to_find_it():
@@ -95,6 +96,7 @@ async def test_migration_upload_names_the_accepted_file_and_where_to_find_it():
     assert r.status_code == 200, r.text
     assert t("migration.accepted_files", files="Manager.io backup (.manager)") in r.text
     assert t("migration.export_help.manager_io") in r.text
+    assert "Celerp reads Manager business files saved in file format 419." in r.text
     field = re.search(r'<input[^>]*id="files"[^>]*>', r.text).group(0)
     assert "multiple" not in field
 
