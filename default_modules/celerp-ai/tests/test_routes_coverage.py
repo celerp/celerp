@@ -687,7 +687,9 @@ async def test_proposals_idempotent_and_vendor_resolved(auth_client, session):
     assert bill["total"] == 27.5 and bill["tax"] == 2.5 and bill["subtotal"] == 25.0
     assert bill["line_items"][0]["item_id"] == "i-1"
     assert "item_id" not in bill["line_items"][1]
-    assert "R-1001" in bill["notes"] and "ai_up_1" in bill["notes"]
+    assert bill["notes"] == "Vendor reference: R-1001"
+    assert actions[0]["file_id"] == "ai_up_1"
+    assert "ai_up_1" not in str(bill)
     assert actions[0]["warnings"] == []
     assert actions[0]["title"] == "Create bill from Acme Supplies"
     assert actions[0]["message_id"] == first["message_id"]
@@ -766,7 +768,8 @@ async def test_unknown_vendor_dependency_resolves_across_confirmations(auth_clie
         raise AssertionError(capability["name"])
 
     with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
-         patch("celerp.ai.tools.execute_agent_capability", _exec):
+         patch("celerp.ai.tools.execute_agent_capability", _exec), \
+         patch("celerp_ai.routes._attach_confirmed_bill_receipt", new_callable=AsyncMock) as attached:
         proposed = (await c.post(
             f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h,
         )).json()
@@ -797,6 +800,7 @@ async def test_unknown_vendor_dependency_resolves_across_confirmations(auth_clie
     assert writes[1][1]["body"]["contact_id"] == "contact:new-vendor"
     thread = (await c.get(f"/ai/conversations/{conv_id}", headers=h)).json()
     assert thread["messages"][-1]["pending_actions"] == []
+    attached.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -1011,7 +1011,8 @@ def migrations_routes(app) -> None:
     @app.post("/migrations/{run_id}/finalize")
     async def migration_finalize(request: Request, run_id: str):
         token = get_token(request)
-        chosen = {k.removeprefix(_ROLE_FIELD): str(v) for k, v in (await request.form()).items()
+        form = await request.form()
+        chosen = {k.removeprefix(_ROLE_FIELD): str(v) for k, v in form.items()
                   if k.startswith(_ROLE_FIELD) and v}
         try:
             proposals = {row["role"]: row["proposal"]
@@ -1020,6 +1021,7 @@ def migrations_routes(app) -> None:
                 "roles": {role: code for role, code in chosen.items() if code != NEW_ACCOUNT},
                 "add_accounts": [{**proposals[role], "role": role} for role, code in chosen.items()
                                  if code == NEW_ACCOUNT and role in proposals],
+                "reviewed_differences": form.get("reviewed_differences") == "true",
             })
         except APIError as e:
             return await _verify_page(request, run_id, str(e.detail), chosen)
@@ -1177,6 +1179,7 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None,
         return wizard_page(request, _steps(6), auth_header(t("migration.verify_title")), flash(error) if error else "",
                      P(str(e.detail), cls="form-hint"), back_link(f"/migrations/{run_id}"))
     rows = recon.get("rows") or []
+    failures = [row for row in rows if row.get("result") == "fail"]
     lock_date = run.get("lock_date")
     return wizard_page(
         request,
@@ -1201,7 +1204,18 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None,
             ]),
         ) if rows else P(t("migration.no_checks"), cls="form-hint"),
         P(t("migration.lock_date_notice", date=lock_date), cls="form-hint") if lock_date else "",
+        Div(
+            H3(t("migration.differences_title")),
+            P(t("migration.differences_hint"), cls="form-hint"),
+            Ul(*[Li(f"{_check_label(row)}: {_figure(row, 'difference')}") for row in failures]),
+            cls="mt-md",
+        ) if failures else "",
         Form(_posting_accounts(roles, chosen or {}),
+             Label(
+                 Input(type="checkbox", name="reviewed_differences", value="true", required=True),
+                 t("migration.review_differences"),
+                 cls="form-label mt-md",
+             ) if failures else "",
              Button(t("migration.finish"), type="submit", cls="btn btn--primary btn--full mt-md"),
              method="post", action=f"/migrations/{run_id}/finalize", cls="auth-form mt-md"),
         P(A(t("migration.download_pack"), href=f"/migrations/{run_id}/pack", cls="auth-link")),

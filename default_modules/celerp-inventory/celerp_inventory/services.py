@@ -37,7 +37,7 @@ from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from celerp.services.account_roles import current_settings, is_consigned, sold_lot_account, sold_lot_key
+from celerp.services.account_roles import current_settings, is_consigned, lot_account, sold_lot_account, sold_lot_key
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
@@ -447,6 +447,8 @@ class _Restatement:
     resold: dict[str, dict[str, float]]      # invoice without allocations -> COGS change per inventory account
     unposted: list[str]                      # lots sold by hand, whose cost no entry carries
     sold: list[tuple[str, str, float]]       # (lot id, inventory account, change in its cost of sale)
+    writeoffs: list[tuple[str, str, str, str, float]]  # (lot, list, destination, origin, delta)
+    lists: list[str]                        # write-off lists the correction reads
 
 
 async def _restatement(session: AsyncSession, company_id, entity_id: str, event_type: str, data: dict,
@@ -488,10 +490,8 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     successors: list[tuple[str, float]] = []
     restated: list[tuple[str, dict, dict]] = [(entity_id, old, new)]   # (entity_id, before, after)
     if status in ("merged", "sold", "disposed") and old_basis != new_basis:
-        if status == "disposed":
-            raise CostRestatementConflict(
-                f"{label} was written off, so a cost correction cannot be carried into the write-off automatically"
-            )
+        # A write-off of a whole traceable lot can be restated below. Other disposals
+        # are refused because their financial counterparty is not a write-off list.
         # A lot that left with no cost left at cost 0, so adding or clearing a cost
         # moves everything downstream by the whole amount.
         delta = round_basis((new_basis or 0) - _basis_or_conflict(old, label))
@@ -552,6 +552,8 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     resold: dict[str, dict[str, float]] = {}
     unposted: list[str] = []
     sold: list[tuple[str, str, float]] = []
+    writeoffs: list[tuple[str, str, str, str, float]] = []
+    lists: list[str] = []
     if cost_changed:
         for lot_id, before, after in restated:
             lot_status = str(before.get("status") or "").lower()
@@ -560,6 +562,24 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
             records: list[dict] = []
             sale = _Sale()
             change = auto_je.lot_cost_of_sale(after) - auto_je.lot_cost_of_sale(before)
+            if lot_status == "disposed":
+                # Only a still-closed write-off of this exact lot has a known
+                # destination account and can be reversed by Undo write-off.
+                list_id = before.get("status_doc_id")
+                row = await _read(list_id) if isinstance(list_id, str) and list_id else None
+                ls = (row.state or {}) if row is not None and row.entity_type == "list" else {}
+                matches = [line for line in ls.get("line_items") or []
+                           if line.get("adjusted") and line.get("disposed_entity_id") == lot_id]
+                if (ls.get("list_type") != "writeoff" or ls.get("status") != "closed"
+                        or ls.get("result") != "written_off" or len(matches) != 1
+                        or not isinstance(matches[0].get("account"), str)
+                        or not matches[0]["account"]):
+                    raise CostRestatementConflict(
+                        f"{lot_label(before, lot_id)} was disposed of, not verifiably written off on a current write-off record, "
+                        "so its cost cannot be restated automatically")
+                origin = lot_account(before)
+                writeoffs.append((lot_id, list_id, matches[0]["account"], origin, change))
+                lists.append(list_id)
             if lot_status == "sold":
                 sale = await _sale_of_lot(session, company_id, lot_id, before)
                 if sale.line is not None:
@@ -594,6 +614,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
         lots=[eid for eid, _, _ in restated],
         docs=sorted({r["doc_id"] for records in repriced.values() for r in records} | set(resold)),
         resold=resold, unposted=unposted, sold=sold,
+        writeoffs=writeoffs, lists=sorted(set(lists)),
     )
 
 
@@ -638,10 +659,11 @@ async def restate_item_cost(
     # the second repeats it under their locks and must name no others.
     await lock_company(session, company_id)
     unlocked = await _restatement(session, company_id, entity_id, event_type, data, {})
-    await lock_projections(session, company_id, unlocked.docs)
+    await lock_projections(session, company_id, [*unlocked.docs, *unlocked.lists])
     lots = await lock_projections(session, company_id, unlocked.lots)
     plan = await _restatement(session, company_id, entity_id, event_type, data, lots)
-    if not set(plan.docs) <= set(unlocked.docs) or not set(plan.lots) <= set(unlocked.lots):
+    if (not set(plan.docs) <= set(unlocked.docs) or not set(plan.lots) <= set(unlocked.lots)
+            or not set(plan.lists) <= set(unlocked.lists)):
         raise CostRestatementConflict(
             f"{plan.label} changed while the correction was being applied; try again")
     successors, repriced, label = plan.successors, plan.repriced, plan.label
@@ -669,7 +691,7 @@ async def restate_item_cost(
             idempotency_key=f"cost-restate:{identity}:{succ_id}",
             metadata_=_metadata(succ_id, lineage),
         )
-    if plan.docs:
+    if plan.docs or plan.writeoffs:
         if day is None:
             company = await session.get(Company, company_id)
             day = business_date_at(datetime.now(timezone.utc), ((company.settings if company else None) or {}).get("timezone"))
@@ -678,6 +700,33 @@ async def restate_item_cost(
                 session, company_id, actor_id, account, Decimal(str(change)),
                 je_id=f"je:auto:{lot_id}:cost-restated:{identity}", idem=f"cost-restate-value:{identity}:{lot_id}",
                 day=day, metadata={"trigger": "item.cost_restated", "item_id": entity_id, "restatement": identity})
+        for lot_id, list_id, destination, origin, raw_delta in plan.writeoffs:
+            currency = await auto_je.company_currency(session, company_id)
+            delta = auto_je.round_money(raw_delta, currency)
+            if not delta:
+                continue
+            amount = float(abs(delta))
+            settings = await current_settings(session, company_id)
+            # Re-value the source inventory, then carry that value out to the
+            # write-off's original destination. Undo reverses only the latter;
+            # the restored lot retains its corrected cost on its original account.
+            if not self_booked(entry):
+                await book_lot_value(
+                    session, company_id, actor_id, origin, Decimal(str(delta)),
+                    je_id=f"je:auto:{lot_id}:cost-restated:{identity}",
+                    idem=f"cost-restate-value:{identity}:{lot_id}", day=day,
+                    metadata={"trigger": "item.cost_restated", "item_id": entity_id,
+                              "writeoff_id": list_id, "restatement": identity})
+            inventory = auto_je._lot_line(settings, origin,
+                                          credit=amount if delta > 0 else 0.0,
+                                          debit=amount if delta < 0 else 0.0)
+            expense = {"account": destination,
+                       "debit": amount if delta > 0 else 0.0,
+                       "credit": amount if delta < 0 else 0.0}
+            await auto_je.create_for_line_adjustment(
+                session, company_id=company_id, user_id=actor_id,
+                list_id=f"{list_id}:cost:{identity}:{lot_id}", kind="writeoff_cost",
+                entries=[expense, inventory], recorded=day)
         for doc_id in plan.docs:
             adjustment = dict(
                 session=session, company_id=company_id, user_id=actor_id, doc_id=doc_id,

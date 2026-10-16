@@ -978,6 +978,7 @@ class DocListFilters:
     not_restocked: bool = False
     not_stocked: bool = False
     converted_to_type: str | None = None
+    accounting_sync: Literal["excluded", "included"] | None = None
     ids: str | None = None
     sort: str | None = None
     dir: str = "desc"
@@ -1025,6 +1026,10 @@ def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
         base_where.append(Projection.state["converted_to_type"].as_string() == f.converted_to_type)
     if f.contact_id:
         base_where.append(Projection.state["contact_id"].as_string() == f.contact_id)
+    if f.accounting_sync:
+        excluded = Projection.state["accounting_sync_excluded"].as_boolean()
+        base_where.append(excluded.is_(True) if f.accounting_sync == "excluded"
+                          else excluded.is_not(True))
     if id_list:
         base_where.append(Projection.entity_id.in_(id_list))
     if f.date_from:
@@ -1878,6 +1883,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         # Contact snapshot fields - stored on doc, no JE impact
         "contact_id", "contact_name", "contact_company_name", "contact_billing_address",
         "contact_phone", "contact_email", "contact_tax_id", "payment_terms",
+        "accounting_sync_excluded",
     }
     _LI_FINALIZED_EDITABLE = {"description", "account_code"}
     # The selected contact is locked before the document, the order merge and delete use.
@@ -13160,6 +13166,19 @@ async def undo_write_off(
             l.pop("adjusted", None)
             l.pop("disposed_entity_id", None)
             l.pop("disposed_qty", None)
+    # Corrections recorded after the disposal belong to this write-off cycle.
+    # Undo them with the original entry in this same transaction, leaving the
+    # restored lots on the books at their current corrected costs.
+    adjustment_ids = (await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+        Projection.entity_id.like(f"je:auto:{entity_id}:cost:%:writeoff_cost:0"),
+    ).order_by(Projection.entity_id))).scalars().all()
+    for adjustment_id in adjustment_ids:
+        derived_id = adjustment_id.removeprefix("je:auto:").removesuffix(":writeoff_cost:0")
+        await auto_je.void_for_list_adjustment(
+            session, company_id=company_id, user_id=user.id,
+            list_id=derived_id, kind="writeoff_cost")
     await auto_je.void_for_list_adjustment(session, company_id=company_id, user_id=user.id,
                                            list_id=entity_id, kind="writeoff", cycle=cycle)
     await _emit_list(session, company_id, entity_id, "list.reopened", {"line_items": lines}, user)
@@ -13295,3 +13314,50 @@ async def move_transfer(
                             "moved_at": datetime.now(timezone.utc).isoformat()})
     await session.commit()
     return {"moved": moved, "to_location_id": payload.to_location_id}
+
+
+
+class AccountingSyncSelection(BaseModel):
+    entity_ids: list[str] = Field(min_length=1, max_length=200)
+    excluded: bool
+    operation_id: uuid.UUID
+
+
+@router.post("/accounting-sync/bulk")
+async def update_accounting_sync_selection(
+    body: AccountingSyncSelection,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """One reviewed selection of documents, committed atomically with their audit events."""
+    if len(set(body.entity_ids)) != len(body.entity_ids):
+        raise HTTPException(422, "Document selection contains duplicates")
+    await locked_company(session, company_id)
+    items = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_id.in_(body.entity_ids),
+    ).order_by(Projection.entity_id).with_for_update())).scalars().all()
+    if len(items) != len(body.entity_ids) or any(row.entity_type != "doc" for row in items):
+        raise HTTPException(404, "Document selection not found")
+    changed = 0
+    for row in items:
+        prior = bool((row.state or {}).get("accounting_sync_excluded"))
+        if prior == body.excluded:
+            continue
+        identity = hashlib.sha256(row.entity_id.encode()).hexdigest()[:24]
+        await write_doc_patch(
+            session, company_id, role, settings, user, row.entity_id,
+            DocPatch(
+                fields_changed={
+                    "accounting_sync_excluded": {"old": prior, "new": body.excluded},
+                },
+                idempotency_key=f"accounting-sync:{body.operation_id}:{identity}",
+            ),
+        )
+        changed += 1
+    await session.commit()
+    return {"updated": changed, "selected": len(items)}

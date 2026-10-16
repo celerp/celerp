@@ -918,6 +918,27 @@ def _row(expectation: ReconciliationExpectation, actual: Decimal | None) -> dict
     return row
 
 
+def reviewable_differences(report: dict) -> bool:
+    """Only measured mismatches may be accepted after explicit review.
+
+    Missing measurements or corrupt rows cannot be waived by a checkbox.
+    """
+    failures = [row for row in report.get("rows", []) if row.get("result") == "fail"]
+    if not failures or len(failures) != report.get("blockers"):
+        return False
+    try:
+        return all(
+            row.get("celerp") is not None
+            and Decimal(str(row["difference"])).is_finite()
+            and Decimal(str(row["difference"])) != 0
+            and Decimal(str(row["source"])).is_finite()
+            and Decimal(str(row["celerp"])).is_finite()
+            for row in failures
+        )
+    except (ValueError, TypeError, KeyError, ArithmeticError):
+        return False
+
+
 async def _verification(session: AsyncSession, run: MigrationRun) -> dict:
     """Compare the source's own figures with what Celerp now holds. Raises on a provider failure."""
     adapter, artifacts, decisions = await asyncio.to_thread(_source, run)
@@ -979,18 +1000,19 @@ async def _reconcile_run(maker, run_id: uuid.UUID, state: dict, expected: list[t
             return
         await s.rollback()  # measurement only; nothing it read is kept locked
         run = await s.get(MigrationRun, run_id, with_for_update=True, populate_existing=True)
-        passed = report["blockers"] == 0
+        ready = report["blockers"] == 0 or reviewable_differences(report)
         state[_P.RECONCILIATION.value] = {**_phase_entry(state, _P.RECONCILIATION),
-                                          "status": "done" if passed else "failed"}
-        if passed:
+                                          "status": "done" if ready else "failed"}
+        if ready:
             state[_P.READY_TO_FINALIZE.value] = {**_phase_entry(state, _P.READY_TO_FINALIZE), "status": "done"}
         run.phase_state = dict(state)
         run.reconciliation = report
-        run.current_phase = (_P.READY_TO_FINALIZE if passed else _P.RECONCILIATION).value
-        if not passed:
-            run.error_summary = {"phase": _P.RECONCILIATION.value, "batch_cursor": 0, "error_class": "Mismatch",
-                                 "message": f"{report['blockers']} verification check(s) do not match the source."}
-        await _set_status(s, run, _S.READY_TO_FINALIZE if passed else _S.FAILED)
+        run.current_phase = (_P.READY_TO_FINALIZE if ready else _P.RECONCILIATION).value
+        run.error_summary = {} if ready else {
+            "phase": _P.RECONCILIATION.value, "batch_cursor": 0, "error_class": "Mismatch",
+            "message": f"{report['blockers']} verification check(s) cannot be measured reliably.",
+        }
+        await _set_status(s, run, _S.READY_TO_FINALIZE if ready else _S.FAILED)
         await s.commit()
 
 
@@ -1005,7 +1027,8 @@ async def is_company_migration_staged(session: AsyncSession, company_id: uuid.UU
     return bool(await session.scalar(select(Company.is_migration_staged).where(Company.id == company_id)))
 
 
-async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: dict | None = None) -> MigrationRun:
+async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: dict | None = None,
+                   *, reviewed_differences: bool = False) -> MigrationRun:
     """Re-check verification under the company lock, then set the posting accounts
     (``posting_readiness.apply_choices`` with ``posting_accounts``), install the source's
     lock date and activate the company in one commit, so the company never becomes normal
@@ -1017,10 +1040,16 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
     run_id = run.id  # read before a rollback expires the row
     try:
         report = await _verification(session, run)
-        if report["blockers"]:
+        # Approval applies to the exact figures shown, never a changed set of numbers.
+        if report["blockers"] and (
+            report.get("rows") != (run.reconciliation or {}).get("rows")
+            or not reviewable_differences(report)
+        ):
             run.reconciliation = report
             await session.commit()
             raise MigrationError(409, t("migration.err_verification_stale"))
+        if report["blockers"] and not reviewed_differences:
+            raise MigrationError(409, t("migration.err_review_differences"))
         company = await session.get(Company, run.company_id)
         try:
             await posting_readiness.apply_choices(session, run.company_id, posting_accounts)
@@ -1032,6 +1061,8 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
             write_period_lock(company, run.source_lock_date.isoformat(), run.created_by_user_id)
         company.is_active = True
         company.is_migration_staged = False
+        if report["blockers"]:
+            report["reviewed_differences"] = True
         await place_company_stock(session, run.company_id)
         run.reconciliation = report
         run.status = _S.COMPLETED.value
@@ -1331,6 +1362,9 @@ def reconciliation_pack_csv(run: MigrationRun) -> str:
     ):
         writer.writerow([label, value])
     writer.writerow([])
+    if report.get("reviewed_differences"):
+        writer.writerow(["Differences reviewed", "Yes"])
+        writer.writerow([])
     # What was carried with loss or not moved, so the pack records it beside the checks.
     losses = [e for e in (run.coverage or {}).get("entries", []) if e["coverage_class"] in _PACK_LOSSES]
     if losses:

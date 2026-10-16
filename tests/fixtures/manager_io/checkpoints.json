@@ -17,9 +17,11 @@
         "@BalanceSheetRetainedEarningsAccount": "0.00",
         "@ProfitAndLossStatementAccountCurrencyGainsLosses": "0.00"
       },
+      "ar_document_residual": "0.00",
       "ar_control": {
         "@BalanceSheetAccountsReceivableAccount": "224.00"
       },
+      "ap_document_residual": "0.00",
       "ap_control": {
         "@BalanceSheetAccountsPayableAccount": "-39.60"
       },
@@ -162,9 +164,11 @@
         "@BalanceSheetRetainedEarningsAccount": "0.00",
         "@ProfitAndLossStatementAccountCurrencyGainsLosses": "0.00"
       },
+      "ar_document_residual": "0.00",
       "ar_control": {
         "@BalanceSheetAccountsReceivableAccount": "224.00"
       },
+      "ap_document_residual": "0.00",
       "ap_control": {
         "@BalanceSheetAccountsPayableAccount": "-39.60"
       },

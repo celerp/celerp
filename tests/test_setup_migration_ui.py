@@ -880,6 +880,7 @@ async def test_finishing_asks_for_each_posting_account_the_company_needs(ui, rou
     assert fake_api.finalized_with == [{
         "roles": {"payable": "211", "sales_revenue": "405"},
         "add_accounts": [{**_EXPENSE_PROPOSAL, "role": "general_expense"}],
+        "reviewed_differences": False,
     }]
 
 
