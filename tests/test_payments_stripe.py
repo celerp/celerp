@@ -1415,3 +1415,112 @@ async def test_provider_base_currency_fees_are_not_converted_twice(client, sessi
     credit = sum(Decimal(str(e.get("credit") or 0)) for e in entries)
     assert debit == credit == Decimal("3.2")
     assert await receive_fees({**report, "fees": {**fees, "currency": "gbp"}}) is False
+
+
+async def _fee_notices(session, cid: str, key: str) -> list:
+    import uuid
+    from sqlalchemy import select
+    from celerp.models.notification import Notification
+    rows = (await session.execute(select(Notification).where(
+        Notification.company_id == uuid.UUID(cid)))).scalars().all()
+    return [n for n in rows if (n.i18n or {}).get("title") == f"{key}.title"]
+
+
+async def _paid_with_fees(client, tok, reference: str, fees: dict):
+    from celerp.services.payments import receive_payment
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    assert await receive_payment({"company_id": cid, "entity_id": eid, "reference": reference,
+                                  "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                                  "context": dict(BOOKS), "managed": True})
+    return eid, {"company_id": cid, "entity_id": eid, "reference": reference,
+                 "fees": fees, "occurred_at": PAID.isoformat()}
+
+
+@pytest.mark.asyncio
+async def test_online_fees_post_to_the_chosen_account(client, session, payments_on):
+    """The fee lands on the account the company chose for online payment fees, which a
+    new company starts with as its own seeded account, never on General expenses."""
+    import hashlib
+    import uuid
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_fees
+
+    tok = await _register(client)
+    roles = {r["role"]: r for r in (await client.get(
+        "/accounting/posting-accounts", headers=_h(tok))).json()["roles"]}
+    assert roles["online_payment_fees"]["code"] == "6940"
+    r = await client.post("/accounting/accounts", headers=_h(tok), json={
+        "code": "6945", "name": "Card fees", "account_type": "expense", "parent_code": "6000"})
+    assert r.status_code == 200, r.text
+    r = await client.put("/accounting/posting-accounts/online_payment_fees", headers=_h(tok),
+                         json={"code": "6945"})
+    assert r.status_code == 200, r.text
+
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_chosen",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    eid, event = await _paid_with_fees(client, tok, "pi_chosen", fees)
+    assert await receive_fees(event)
+    token = hashlib.sha256(b"txn_chosen").hexdigest()[:24]
+    journal = await session.get(Projection, (uuid.UUID(_company_id(tok)), f"je:auto:{eid}:online-fees:{token}"),
+                                populate_existing=True)
+    fee_lines = [e for e in journal.state["entries"] if e["account"] != "1111"]
+    assert {e["account"] for e in fee_lines} == {"6945"}
+    assert all(e["account_roles"] == ["online_payment_fees"] for e in fee_lines)
+
+
+@pytest.mark.asyncio
+async def test_fee_notice_and_failure_notice(client, session, payments_on):
+    """Each fee booked on the company's behalf tells it so, once, with a link to the
+    invoice; a fee that cannot be recorded tells it why instead of only being logged,
+    and is recorded when delivered again after the cause is fixed."""
+    from celerp.services.payments import receive_fees
+
+    tok = await _register(client)
+    cid = _company_id(tok)
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_notice",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    eid, event = await _paid_with_fees(client, tok, "pi_notice", fees)
+    assert await receive_fees(event)
+    assert await receive_fees(event)
+    recorded = await _fee_notices(session, cid, "notice.online_fee_recorded")
+    assert len(recorded) == 1
+    assert recorded[0].action_url == f"/docs/{eid}"
+    assert "5.20 USD" in recorded[0].body and "6940" in recorded[0].body
+
+    refund = {**fees, "transaction_id": "txn_notice_back", "total_minor": -100,
+              "processor_minor": 0, "platform_minor": -100}
+    assert await receive_fees({**event, "fees": refund})
+    returned = await _fee_notices(session, cid, "notice.online_fee_returned")
+    assert len(returned) == 1 and "1.00 USD" in returned[0].body
+
+    # A fee in a currency the payment's books cannot convert is never guessed at.
+    odd = {**fees, "transaction_id": "txn_notice_gbp", "currency": "gbp"}
+    assert await receive_fees({**event, "fees": odd}) is False
+    assert await receive_fees({**event, "fees": odd}) is False
+    failed = await _fee_notices(session, cid, "notice.online_fee_failed")
+    assert len(failed) == 1
+    assert failed[0].priority == "high" and failed[0].action_url == f"/docs/{eid}"
+    assert failed[0].i18n["params"]["reason"]["message_key"] == "notice.online_fee_failed.currency"
+
+    # The company's fee account cannot take postings: the fee is refused with a notice,
+    # and recorded once the account is fixed and the fee delivered again.
+    r = await client.post("/accounting/accounts", headers=_h(tok), json={
+        "code": "6946", "name": "Old fees", "account_type": "expense", "parent_code": "6000"})
+    assert r.status_code == 200, r.text
+    assert (await client.put("/accounting/posting-accounts/online_payment_fees", headers=_h(tok),
+                             json={"code": "6946"})).status_code == 200
+    from sqlalchemy import update
+    from celerp.models.accounting import Account
+    import uuid
+    await session.execute(update(Account).where(Account.company_id == uuid.UUID(cid), Account.code == "6946")
+                          .values(is_active=False))
+    await session.commit()
+    later = {**fees, "transaction_id": "txn_notice_later"}
+    assert await receive_fees({**event, "fees": later}) is False
+    failed = await _fee_notices(session, cid, "notice.online_fee_failed")
+    assert any(n.i18n["params"]["reason"]["message_key"] == "notice.online_fee_failed.account" for n in failed)
+    assert await _fee_notices(session, cid, "notice.posting_unmapped")
+    assert (await client.put("/accounting/posting-accounts/online_payment_fees", headers=_h(tok),
+                             json={"code": "6940"})).status_code == 200
+    assert await receive_fees({**event, "fees": later}) is True
