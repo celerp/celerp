@@ -1922,6 +1922,18 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
    no click-to-edit hover affordance. */
 .editable-cell--locked { cursor: help; }
 .editable-cell--locked:hover { background: transparent; border-color: transparent; }
+/* A turned-off module's records, readable at their own addresses: everything that would
+   change them is left out, and click-to-edit cells read as plain text. */
+.records-read-only form:has([hx-post], [hx-patch], [hx-put], [hx-delete]),
+.records-read-only form[method="post"], .records-read-only [hx-post], .records-read-only [hx-patch],
+.records-read-only [hx-put], .records-read-only [hx-delete], .records-read-only .bulk-toolbar,
+.records-read-only a.btn:not(.btn--ghost), .records-read-only .file-drop-zone,
+.records-read-only .write-only { display: none; }
+.records-read-only .editable-cell, .records-read-only [hx-get$="/edit"] { pointer-events: none; cursor: default; }
+.records-read-only .cell--clickable { pointer-events: none; cursor: default; border-bottom: 1px solid var(--c-border) !important; }
+/* The work a module would leave open, listed under its Turn off button. */
+.module-turn-off { margin-top: 6px; max-width: 320px; text-align: left; white-space: normal; }
+.module-turn-off ul { margin: 2px 0 6px; padding-left: 18px; }
 .section-hint { font-size: 11px; color: var(--c-text2); margin: 0 0 6px; padding: 0 14px; }
 
 /* Internal section */

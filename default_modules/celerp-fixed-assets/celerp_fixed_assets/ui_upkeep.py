@@ -145,7 +145,7 @@ def _add_reminder_form(asset_id: str, members: dict[str, str]) -> FT:
                     t("fixed_assets.insurance_only_hint")),
              Div(Button(t("fixed_assets.add_reminder"), type="submit", cls="btn btn--primary"), cls="form-actions"),
              hx_post=f"/fixed-assets/assets/{_rid(asset_id)}/reminders", hx_swap="none"),
-        cls="fa-add")
+        cls="fa-add write-only")
 
 
 def _files_cell(asset_id: str, entry: dict) -> FT:
@@ -192,7 +192,7 @@ def _add_entry_form(asset_id: str) -> FT:
                     t("fixed_assets.every_months_hint")),
              Div(Button(t("fixed_assets.add_entry"), type="submit", cls="btn btn--primary"), cls="form-actions"),
              hx_post=f"/fixed-assets/assets/{_rid(asset_id)}/maintenance", hx_swap="none"),
-        cls="fa-add")
+        cls="fa-add write-only")
 
 
 async def upkeep_card(token: str, asset: dict, members: dict[str, str], currency: str) -> FT:

@@ -417,6 +417,8 @@
   "fixed_assets.revalue_class_missing": "Pas encore de juste valeur pour {numbers}. Chaque immobilisation de la catégorie est réévaluée à la même date.",
   "fixed_assets.carrying_amount_now": "Valeur comptable actuelle",
   "fixed_assets.shared_basis_hint": "Utilisé pour chaque ligne sans fondement propre.",
+  "fixed_assets.records_read_only": "Les immobilisations sont désactivées. Les fiches sont en lecture seule.",
+  "fixed_assets.turn_off_run_prepared": "Amortissement de {month} préparé, non comptabilisé",
   "fixed_assets.valuer_report": "Rapport de l'expert",
   "fixed_assets.valuer_report_hint": "Le rapport est conservé sur chaque immobilisation en service de cette catégorie.",
   "fixed_assets.valuer_report_upload": "Joindre le rapport",

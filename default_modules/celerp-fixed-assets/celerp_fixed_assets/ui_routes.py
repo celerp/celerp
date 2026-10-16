@@ -59,8 +59,9 @@ from ui.config import get_token as _token
 from ui.i18n import refusal_text, t
 from ui.routes.csv_import import read_tabular_source
 from celerp.importers import tabular
+from celerp.modules.registry import uses_module
 
-from celerp_fixed_assets.operations import DESCRIPTIVE_FIELDS, RESPONSIBLE
+from celerp_fixed_assets.operations import DESCRIPTIVE_FIELDS, MODULE, RESPONSIBLE
 
 log = logging.getLogger(__name__)
 
@@ -144,7 +145,19 @@ async def _context(token: str) -> tuple[dict, str]:
 
 
 async def _page(request: Request, *content, title_key: str, nav: str = "fixed_assets"):
-    return await base_shell(*content, title=page_title(title_key), nav_active=nav, request=request)
+    """A module page. While the company has the module turned off its records stay readable
+    here, read-only, under a banner that says so."""
+    settings = {}
+    if token := _token(request):
+        try:
+            settings = (await api.get_company(token)).get("settings") or {}
+        except APIError:
+            settings = {}
+    if not uses_module(settings, MODULE):
+        content = (Div(t("fixed_assets.records_read_only"), cls="flash flash--warning", id="fa-read-only"),
+                   Div(*content, cls="records-read-only"))
+    return await base_shell(*content, title=page_title(title_key), nav_active=nav, request=request,
+                            company_settings=settings)
 
 
 def _refused(request: Request, e: APIError, title_key: str):
@@ -1995,7 +2008,7 @@ def setup_ui_routes(app) -> None:
                            Div(H2(t("fixed_assets.movements"), cls="section-title"),
                                _movements_table(movements, currency), cls="detail-card section-card"),
                            Div(H2(t("fixed_assets.undo"), cls="section-title"), undo,
-                               cls="detail-card section-card") if asset.get("status") != "undone" else "",
+                               cls="detail-card section-card write-only") if asset.get("status") != "undone" else "",
                            title_key="fixed_assets.title")
 
     async def _asset_field_cell(token: str, asset_id: str, field: str) -> FT:

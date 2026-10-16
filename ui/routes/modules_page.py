@@ -155,6 +155,20 @@ def _tabs(active: str, lang: str) -> FT:
 
 # ── local modules panel ────────────────────────────────────────────────────────
 
+def _turn_off_items(found: dict | None, lang: str):
+    """The work an enabled module would leave open, beside its Turn off: what must be
+    finished first, then what is kept while it is off."""
+    if not found:
+        return ""
+    if found.get("failed"):
+        return Div(t("modules.turn_off_check_failed", lang), cls="module-turn-off text-muted small")
+    parts = []
+    for kind, key in (("blocking", "modules.turn_off_finish_first"), ("listed", "modules.turn_off_kept")):
+        if found.get(kind):
+            parts += [Div(t(key, lang)), Ul(*(Li(A(item["label"], href=item["href"])) for item in found[kind]))]
+    return Div(*parts, cls="module-turn-off small") if parts else ""
+
+
 def _deps_cell(m: dict, name_map: dict[str, str] | None = None) -> FT:
     """The Module Dependencies cell: the other modules a listing needs, so nothing
     is bought or enabled without its prerequisites. `name_map` translates internal
@@ -318,7 +332,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
             Td(f"v{version}" if version and version != "unknown" else "--"),
             Td(author or "--"),
             Td(*status_parts, data_filter_value=status_filter),
-            Td(*action_parts),
+            Td(*action_parts, _turn_off_items(m.get("turn_off") if enabled else None, lang)),
             # Disabled rows are shaded so their off state reads at a glance.
             cls="data-row" if enabled else "data-row module-row--disabled",
         ))

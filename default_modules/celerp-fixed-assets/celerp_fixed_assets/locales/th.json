@@ -417,6 +417,8 @@
   "fixed_assets.revalue_class_missing": "ยังไม่มีมูลค่ายุติธรรมสำหรับ {numbers} สินทรัพย์ทุกรายการในหมวดจะตีราคาใหม่ในวันเดียวกัน",
   "fixed_assets.carrying_amount_now": "มูลค่าตามบัญชีปัจจุบัน",
   "fixed_assets.shared_basis_hint": "ใช้กับทุกแถวที่ไม่ได้ใส่หลักฐานอ้างอิงของตัวเอง",
+  "fixed_assets.records_read_only": "ปิดการใช้งานสินทรัพย์ถาวรอยู่ ข้อมูลเป็นแบบอ่านอย่างเดียว",
+  "fixed_assets.turn_off_run_prepared": "ค่าเสื่อมราคาของ {month} เตรียมไว้แล้ว ยังไม่บันทึกบัญชี",
   "fixed_assets.valuer_report": "รายงานของผู้ประเมิน",
   "fixed_assets.valuer_report_hint": "รายงานจะถูกเก็บไว้กับสินทรัพย์ทุกรายการที่ใช้งานอยู่ในประเภทนี้",
   "fixed_assets.valuer_report_upload": "แนบรายงาน",

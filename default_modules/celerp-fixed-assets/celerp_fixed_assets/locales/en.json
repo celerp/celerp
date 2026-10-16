@@ -417,6 +417,8 @@
   "fixed_assets.revalue_class_missing": "No fair value yet for {numbers}. Every asset in the class is revalued on the same date.",
   "fixed_assets.carrying_amount_now": "Carrying amount now",
   "fixed_assets.shared_basis_hint": "Used for every row whose own basis is blank.",
+  "fixed_assets.records_read_only": "Fixed assets is turned off. Records are read-only.",
+  "fixed_assets.turn_off_run_prepared": "Depreciation for {month} prepared, not posted",
   "fixed_assets.valuer_report": "Valuer's report",
   "fixed_assets.valuer_report_hint": "The report is kept on every asset in use in this class.",
   "fixed_assets.valuer_report_upload": "Attach report",

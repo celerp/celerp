@@ -18,6 +18,9 @@ PLUGIN_MANIFEST = {
     "ui_routes": "celerp_fixed_assets.ui_routes",
     # Assets are registered from bill lines, so the documents module is required too.
     "depends_on": ["celerp-accounting", "celerp-docs"],
+    # A company that turns the module off keeps reading its asset records and their audit
+    # links at the same addresses; nothing can be changed until it is on again.
+    "readable_when_off": True,
 
     # ── Extension slots ───────────────────────────────────────────────────────
     "slots": {
@@ -87,6 +90,8 @@ PLUGIN_MANIFEST = {
         # The opening asset register, imported as at the cutover.
         "import_target": {"kind": "fixed_asset_register", "href": "/fixed-assets/import",
                           "handler": "celerp_fixed_assets.imports:import_register"},
+        # Sales waiting on their invoice block turning the module off; other open work is listed.
+        "turn_off_preflight": {"handler": "celerp_fixed_assets.turnoff:preflight"},
     },
 
     # ── UI translation catalogs ───────────────────────────────────────────────

@@ -417,6 +417,8 @@
   "fixed_assets.revalue_class_missing": "{numbers} の公正価値がまだありません。区分内のすべての資産は同じ日付で再評価します。",
   "fixed_assets.carrying_amount_now": "現在の帳簿価額",
   "fixed_assets.shared_basis_hint": "根拠が空欄の行すべてに使います。",
+  "fixed_assets.records_read_only": "固定資産はオフになっています。記録は読み取り専用です。",
+  "fixed_assets.turn_off_run_prepared": "{month} の減価償却は準備済みで未計上",
   "fixed_assets.valuer_report": "鑑定人の報告書",
   "fixed_assets.valuer_report_hint": "報告書はこの区分で使用中のすべての資産に保存されます。",
   "fixed_assets.valuer_report_upload": "報告書を添付",

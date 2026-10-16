@@ -41,6 +41,8 @@ _CODE = {
         "async def loose_label_rows(*, session, company_id):\n    return []\n"
         "async def import_rows(*, session, company_id, user_id, rows, as_at, source, body):\n    return {}\n"
         "async def short_import_rows(*, session, company_id, user_id, rows, as_at, source):\n    return {}\n"
+        "async def preflight(*, session, company_id):\n    return {'blocking': [], 'listed': []}\n"
+        "async def loose_preflight(*, session):\n    return {}\n"
     ),
 }
 
@@ -82,6 +84,7 @@ _VALID = {
                                  "fields": [{"key": "number", "type": "text"}]}}],
     "import_target": [{"kind": "acme_register", "handler": "{inner}.lineage:import_rows",
                        "href": "/acme/import"}],
+    "turn_off_preflight": [{"handler": "{inner}.lineage:preflight"}],
 }
 
 # (slot, the entry's wrong key and value, the text the refusal names).
@@ -132,6 +135,7 @@ _WRONG = [
     ("import_target", {"href": "https://elsewhere.example/import"}, "href"),
     ("import_target", {"handler": "{inner}.lineage:short_import_rows"},
      "session, company_id, user_id, rows, as_at, source, body"),
+    ("turn_off_preflight", {"handler": "{inner}.lineage:loose_preflight"}, "session, company_id"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:sync_guard"}, "must be async"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:short_guard"}, "session, entry, transition"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:loose_guard"}, "session, entry, transition"),

@@ -89,7 +89,15 @@ import_target      {"kind", "handler", "href"}: a file of records a module impor
                    as_at, source, body) -> dict`, called with exactly those keyword
                    arguments: rows a list of dicts keyed by the module's column names,
                    body the module's own options (preview, exclusions, confirmation)
-search_provider    Contributes rows to the global search bar. Exactly one descriptor
+turn_off_preflight {"handler": "module.path:function"} naming
+                   `async def handler(*, session, company_id) -> dict`, called with exactly
+                   those keyword arguments when the module is about to be turned off for a
+                   company (under the company lock) and when the modules page lists it.
+                   It returns {"blocking": [...], "listed": [...]}, each item
+                   {"label", "href"}: blocking items refuse turning off, naming them;
+                   listed items are shown beside Turn off and kept. Filled by Celerp's own
+                   modules only (FIRST_PARTY_SLOTS)
+search_provider   Contributes rows to the global search bar. Exactly one descriptor
                    dict per module: {"handler", "result_key", "permission"}. handler
                    names an in-module "module.path:function" resolved and validated
                    async at load, invoked as
@@ -113,7 +121,7 @@ app-local paths; and every
 callable an entry names is the module's own code, async exactly where core awaits it,
 and takes exactly the keyword arguments core passes where the slot names them
 (inventory_in_production, item_lineage_guard, demo_records, doc_asset_lines,
-label_source, import_target). A nav entry with a "probe_href" is shown only when that page,
+label_source, import_target, turn_off_preflight). A nav entry with a "probe_href" is shown only when that page,
 loaded with the sidebar, answers with the link: for an entry whose audience
 depends on the records themselves (the assets in a member's care), not on a
 permission.
@@ -148,13 +156,13 @@ SLOT_NAMES = frozenset({
     "projection_handler", "on_company_created", "on_modules_ready", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
     "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
-    "import_target",
+    "import_target", "turn_off_preflight",
 })
 
 # Slots only Celerp's own (first-party) modules may fill; admission refuses any
 # other module that fills one.
 FIRST_PARTY_SLOTS = frozenset({"inventory_in_production", "demo_records", "background_loop",
-                               "doc_asset_lines"})
+                               "doc_asset_lines", "turn_off_preflight"})
 
 # projection_handler prefixes core handles itself: system events (registered at
 # startup, celerp.main) and the core-folded connectors' declared prefixes.
@@ -188,7 +196,7 @@ def resolve_handler(dotted: str) -> Callable:
 # Slots whose handler core calls directly: a contribution without a
 # "module.path:function" handler would fail every such call, so it is refused here.
 _HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard", "demo_records",
-                            "doc_asset_lines", "label_source", "import_target"})
+                            "doc_asset_lines", "label_source", "import_target", "turn_off_preflight"})
 
 
 def check(slot: str, contribution: dict) -> None:

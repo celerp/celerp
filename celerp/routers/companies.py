@@ -1692,6 +1692,7 @@ async def put_units(
 @router.get("/me/modules")
 async def list_modules(
     company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     """List all installed modules with their enabled state.
@@ -1793,7 +1794,21 @@ async def list_modules(
                 })
         return results
 
-    return await asyncio.to_thread(_scan_modules)
+    modules = await asyncio.to_thread(_scan_modules)
+    # The work an enabled module would leave open, shown beside its Turn off to whoever
+    # may turn it off.
+    from celerp.services.permissions import role_has_permission
+    from celerp.services.turn_off_preflight import outstanding
+    if not role_has_permission(settings_dict, role, "manage_company_settings"):
+        return modules
+    for m in modules:
+        if m["enabled"]:
+            try:
+                m["turn_off"] = await outstanding(session, company_id, m["name"])
+            except Exception:
+                logger.exception("Turn-off preflight failed for %s", m["name"])
+                m["turn_off"] = {"failed": True}
+    return modules
 
 
 @router.post("/me/modules/{module_name}/enable", dependencies=[require_permission("manage_company_settings")])
@@ -1841,6 +1856,7 @@ async def disable_module(
     from celerp.modules.registry import (
         ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled, hold_module_state,
     )
+    from celerp.services.turn_off_preflight import outstanding
 
     if is_core_folded(module_name):
         raise HTTPException(status_code=409, detail=(
@@ -1850,6 +1866,11 @@ async def disable_module(
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    blocking = (await outstanding(session, company_id, module_name))["blocking"]
+    if blocking:
+        raise HTTPException(status_code=409, detail=t(
+            "modules.turn_off_blocked", module=module_label(module_name),
+            items="; ".join(item["label"] for item in blocking)))
     try:
         company.settings = disable_for_company(company.settings, module_name)
     except ModuleStillNeeded as exc:

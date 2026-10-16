@@ -100,6 +100,7 @@ def test_manufacturing_slots_are_public_with_their_keyword_contracts():
         "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),
         "label_source": ("session", "company_id", "ids"),
         "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
+        "turn_off_preflight": ("session", "company_id"),
     }
     assert set(loader._HANDLER_KEYWORDS) <= set(loader._SLOT_VALIDATORS)
     assert all(loader._CALLABLE_SLOTS[s] == ("handler", True) for s in loader._HANDLER_KEYWORDS)
@@ -108,6 +109,11 @@ def test_manufacturing_slots_are_public_with_their_keyword_contracts():
 def test_document_asset_lines_slot_is_first_party():
     assert "doc_asset_lines" in slots.FIRST_PARTY_SLOTS
     assert loader._CALLABLE_SLOTS["doc_asset_lines"] == ("handler", True)
+
+
+def test_turn_off_preflight_slot_is_first_party():
+    assert "turn_off_preflight" in slots.FIRST_PARTY_SLOTS
+    assert loader._CALLABLE_SLOTS["turn_off_preflight"] == ("handler", True)
 
 
 def test_fixed_asset_rules_slot_is_open_to_every_module():

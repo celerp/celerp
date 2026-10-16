@@ -417,6 +417,8 @@
   "fixed_assets.revalue_class_missing": "Aún no hay valor razonable para {numbers}. Todos los activos de la clase se revalúan en la misma fecha.",
   "fixed_assets.carrying_amount_now": "Valor contable actual",
   "fixed_assets.shared_basis_hint": "Se usa en cada fila sin base propia.",
+  "fixed_assets.records_read_only": "Activos fijos está desactivado. Los registros son de solo lectura.",
+  "fixed_assets.turn_off_run_prepared": "Depreciación de {month} preparada, sin contabilizar",
   "fixed_assets.valuer_report": "Informe del tasador",
   "fixed_assets.valuer_report_hint": "El informe se guarda en cada activo en uso de esta clase.",
   "fixed_assets.valuer_report_upload": "Adjuntar informe",

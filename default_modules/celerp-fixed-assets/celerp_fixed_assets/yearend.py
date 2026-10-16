@@ -66,7 +66,7 @@ async def _exceptions(session, company_id) -> list[dict]:
              "href": f"/fixed-assets/assets/{a['asset_id']}"} for a in await runs.attention(session, company_id)]
 
 
-async def _differences(session, company_id) -> list[dict]:
+async def open_differences(session, company_id) -> list[dict]:
     from ui.i18n import t
 
     try:
@@ -81,7 +81,7 @@ async def _differences(session, company_id) -> list[dict]:
             for a in found["accounts"] for d in a["differences"] if d["state"] != "accepted"]
 
 
-async def _sales(session, company_id) -> list[dict]:
+async def pending_sales(session, company_id) -> list[dict]:
     waiting = sorted(((i, s) for i, s in await _entities(session, company_id, "fa_asset")
                       if (s.get("sale") or {}).get("state") == "pending"), key=lambda r: r[1]["number"])
     return [{"key": f"sale:{asset_id}", "kind": "sale", "amount": None,
@@ -96,7 +96,7 @@ async def _reviews(session, company_id, end: date) -> list[dict]:
             for r in await remeasure.due_reviews(session, company_id, end) if r["due"] <= end.isoformat()]
 
 
-async def _corrections(session, company_id) -> list[dict]:
+async def waiting_corrections(session, company_id) -> list[dict]:
     waiting = sorted(((i, s) for i, s in await _entities(session, company_id, "fa_correction")
                       if s.get("state") == "requested"), key=lambda r: r[0])
     out = []
@@ -135,8 +135,8 @@ async def report(session, company_id, year) -> dict:
     marks = (await _state(session, company_id, yearend_id(year)) or {}).get("marks") or {}
     items = []
     found = [*await _runs(session, company_id, start, end), *await _exceptions(session, company_id),
-             *await _differences(session, company_id), *await _sales(session, company_id),
-             *await _corrections(session, company_id), *await _reviews(session, company_id, end),
+             *await open_differences(session, company_id), *await pending_sales(session, company_id),
+             *await waiting_corrections(session, company_id), *await _reviews(session, company_id, end),
              *await _tax(session, company_id, settings, year)]
     for item in found:
         key, params = item.pop("label")
