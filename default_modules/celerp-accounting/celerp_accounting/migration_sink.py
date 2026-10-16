@@ -25,12 +25,18 @@ from celerp.importers.schema import (
     CIFBankTransfer,
     CIFJournalEntry,
     CIFSourceRecord,
+    ReconciliationExpectation,
     ReconciliationExpectations,
     ReconciliationMeasure,
 )
 from celerp.accounting_roles import AccountRole
 from celerp.models.projections import Projection
-from celerp.services.doc_balance import doc_value, outstanding_balance
+from celerp.services.doc_balance import (
+    AWAITING_PAYMENT_STATUSES,
+    OPEN_CREDIT_STATUSES,
+    doc_value,
+    outstanding_balance,
+)
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkContext
 from celerp.services.account_roles import current_settings, merge_survivors, record_source_control, source_controls
 from celerp.services.migration_core_sink import (
@@ -87,6 +93,9 @@ _DOCUMENT_RESIDUALS = {
     ReconciliationMeasure.AR_DOCUMENT_RESIDUAL: AccountRole.RECEIVABLE,
     ReconciliationMeasure.AP_DOCUMENT_RESIDUAL: AccountRole.PAYABLE,
 }
+# Statuses in which a document can still owe: a draft or void document owes nothing,
+# whatever its recorded balance.
+_OWING_STATUSES = {**AWAITING_PAYMENT_STATUSES, **OPEN_CREDIT_STATUSES}
 
 
 class AccountingMigrationSink:
@@ -108,13 +117,14 @@ class AccountingMigrationSink:
         wanted = [e for e in expectations.expectations if e.measure in (
             _ACCOUNT_MEASURES | _CONTROL_MEASURES.keys() | _PARTY_MEASURES.keys()
             | _DOCUMENT_RESIDUALS.keys()
-            | {ReconciliationMeasure.DEBITS_EQUAL_CREDITS}
+            | {ReconciliationMeasure.DEBITS_EQUAL_CREDITS, ReconciliationMeasure.TRIAL_BALANCE_AT}
         )]
         if not wanted:
             return []
         posted = await _je_rows(context.session, context.company_id)
         balances = _build_balances(posted, None, None)
-        codes = await mapped_targets(context, ACCOUNT, [e.key for e in wanted])
+        codes = await mapped_targets(context, ACCOUNT, [_account_key(e) for e in wanted])
+        dated: dict[str, dict[str, Decimal]] = {}
         settings = await current_settings(context.session, context.company_id)
         contacts = await mapped_targets(context, CONTACT, [e.key for e in wanted if e.measure in _PARTY_MEASURES])
         party_totals: dict[tuple[str, str], Decimal] = {}
@@ -149,8 +159,10 @@ class AccountingMigrationSink:
                     balance = outstanding_balance(state)
                     if balance is None:
                         raise ValueError("An imported document has no measurable outstanding balance")
-                    balance = round_money(balance * require_doc_rate(state, base), base)
                     doc_type = state.get("doc_type")
+                    if state.get("status") not in _OWING_STATUSES.get(doc_type, ()):
+                        continue
+                    balance = round_money(balance * require_doc_rate(state, base), base)
                     if doc_type == "invoice":
                         open_ar += balance
                     elif doc_type == "credit_note":
@@ -169,6 +181,13 @@ class AccountingMigrationSink:
                 if e.key not in codes:
                     continue
                 actual = balances.get(codes[e.key], Decimal(0))
+            elif e.measure == ReconciliationMeasure.TRIAL_BALANCE_AT:
+                account, on = e.key.rsplit("@", 1)
+                if account not in codes:
+                    continue
+                if on not in dated:
+                    dated[on] = _build_balances(posted, None, on)
+                actual = dated[on].get(codes[account], Decimal(0))
             elif e.measure in _DOCUMENT_RESIDUALS:
                 role = _DOCUMENT_RESIDUALS[e.measure]
                 control = sum((balances.get(code, Decimal(0)) for code in source_controls(settings, role)),
@@ -184,6 +203,13 @@ class AccountingMigrationSink:
                               for code in source_controls(settings, _PARTY_MEASURES[e.measure])), Decimal(0))
             out.append(DestinationMeasurement(e.measure, e.key, e.currency, actual))
         return out
+
+
+def _account_key(expectation: ReconciliationExpectation) -> str:
+    """The source account an expectation measures; a dated balance keys it as account@date."""
+    if expectation.measure == ReconciliationMeasure.TRIAL_BALANCE_AT:
+        return expectation.key.rsplit("@", 1)[0]
+    return expectation.key
 
 
 # ── Accounts ──────────────────────────────────────────────────────────────────

@@ -568,6 +568,7 @@ class CIFTolerance(BaseModel):
 class ReconciliationMeasure(StrEnum):
     DEBITS_EQUAL_CREDITS = "debits_equal_credits"
     TRIAL_BALANCE = "trial_balance"
+    TRIAL_BALANCE_AT = "trial_balance_at"     # key: account@YYYY-MM-DD, the balance at the end of that day
     AR_CONTROL = "ar_control"
     AR_BY_CUSTOMER = "ar_by_customer"
     AP_CONTROL = "ap_control"

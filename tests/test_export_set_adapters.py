@@ -71,7 +71,7 @@ def test_xero_export_set_is_recognised_by_content_alone(tmp_path):
     assert scan.company_name == build.COMPANY
     assert scan.base_currency == "GBP"
     assert scan.currencies == ("GBP", "USD")
-    assert (scan.period_start, scan.period_end) == (date(2023, 1, 2), date(2025, 12, 31))
+    assert (scan.period_start, scan.period_end) == (date(2023, 1, 1), date(2025, 12, 31))
     assert "foreign_currency" in scan.features
 
     # The Manager adapter does not claim a set, and the export adapter does not claim a Manager file.
@@ -118,6 +118,14 @@ def test_an_aged_report_older_than_the_ledger_is_refused(tmp_path):
         _adapter().inspect(_set(tmp_path, files.items()))
 
 
+def test_a_ledger_account_missing_from_the_chart_is_refused(tmp_path):
+    files = dict(_xero())
+    chart = files["ChartOfAccounts.csv"].decode("utf-8-sig").splitlines()
+    files["ChartOfAccounts.csv"] = "\r\n".join(ln for ln in chart if not ln.startswith("404,")).encode()
+    with pytest.raises(ScanError, match="404 Bank Fees.*archived"):
+        _adapter().inspect(_set(tmp_path, files.items()))
+
+
 def test_slashed_dates_are_read_in_the_one_order_the_set_allows():
     from celerp.importers.adapters.exports.files import DateReader
 
@@ -145,7 +153,6 @@ def test_xero_masters_and_documents_carry_into_cif(tmp_path):
         "receivable", "payable", "tax")
     assert accounts["499"].control == "exchange_difference"
     assert accounts["960"].control == "retained_earnings"
-    assert accounts["430"].is_active is False
     assert (accounts["310"].account_type, accounts["416"].account_type, accounts["720"].account_type) == (
         "cogs", "expense", "asset")
 
@@ -199,6 +206,7 @@ def test_xero_expectations_come_from_the_reports_not_the_conversion(tmp_path):
 # ── End to end ────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(180)  # three years of trading through the real runner
 @pytest.mark.parametrize("decisions", [{"mode": "full_history"},
                                        {"mode": "cutover", "cutover_date": CUTOVER.isoformat()}])
 async def test_quickbooks_and_xero_adapters(real_engine, monkeypatch, tmp_path, decisions):
@@ -210,7 +218,7 @@ async def test_quickbooks_and_xero_adapters(real_engine, monkeypatch, tmp_path, 
     run, rejected = await migrate_set(real_engine, list(_xero()), decisions, monkeypatch, tmp_path)
     assert rejected == []
     _passing(run)
-    measures = {r["measure"] for r in run.reconciliation["rows"]}
+    measures = {r["check"] for r in run.reconciliation["rows"]}
     assert {"trial_balance_at", "ar_by_customer", "ap_by_supplier", "bank_cash"} <= measures
     async with maker(real_engine)() as s:
         report = await migrations.run_view(s, run)

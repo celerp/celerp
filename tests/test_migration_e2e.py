@@ -189,7 +189,7 @@ async def _projections(engine, run, entity_type: str) -> dict:
 
 def _passing(run) -> None:
     assert run.status == "ready_to_finalize", run.error_summary
-    assert run.reconciliation["blockers"] == 0
+    assert run.reconciliation["blockers"] == 0, [r for r in run.reconciliation["rows"] if r["result"] not in ("pass", "rounding")]
     assert [r for r in run.reconciliation["rows"] if r["result"] not in ("pass", "rounding")] == []
 
 

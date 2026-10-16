@@ -52,7 +52,9 @@ def test_manager_source_expectations_are_independent_of_cif(monkeypatch):
 
     # Every measure the source can state is present: trial balance, AR/AP control and parties, bank and
     # cash, inventory quantity and value, tax, document count/total/status and settlement allocation.
-    assert {row.measure for row in full.expectations} == set(schema.ReconciliationMeasure)
+    # A business file holds no month-end trial balance reports; only export sets state those.
+    assert {row.measure for row in full.expectations} == (
+        set(schema.ReconciliationMeasure) - {schema.ReconciliationMeasure.TRIAL_BALANCE_AT})
 
     # The manifest carries the same, independently computed expectations.
     monkeypatch.undo()

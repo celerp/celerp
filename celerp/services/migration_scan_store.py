@@ -49,7 +49,7 @@ from celerp.importers.schema import CIFCoverageEntry, CIFMode
 from ui.i18n import t
 
 SCAN_TTL_SECONDS = 3600
-MAX_ARTIFACTS = 5
+MAX_ARTIFACTS = 50                    # an export set: one trial balance per year, invoices in batches
 MAX_AGGREGATE_BYTES = 2 * 1024**3
 
 EXPIRED = "This scan has expired. Upload the file again."
@@ -311,7 +311,7 @@ async def _receive(files: AsyncIterable[UploadPart], directory: Path) -> tuple[A
                     raise ScanStoreError(422, t("migration.err_source_unavailable"))
         elif part.name == "files" and part.filename:
             if len(artifacts) >= MAX_ARTIFACTS:
-                raise ScanStoreError(413, f"Upload at most {MAX_ARTIFACTS} files.")
+                raise ScanStoreError(413, t("migration.err_too_many_files", count=MAX_ARTIFACTS))
             path = directory / f"artifact-{len(artifacts) + 1}"
             artifact = await _stream_file(part, path, per_file=_per_file_limit(adapter),
                                           remaining=MAX_AGGREGATE_BYTES - total)

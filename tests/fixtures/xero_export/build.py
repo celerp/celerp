@@ -58,7 +58,6 @@ CHART = [
     ("960", "Retained Earnings", "Retained Earnings", "No VAT"),
     ("970", "Owner A Funds Introduced", "Equity", "No VAT"),
 ]
-ARCHIVED = {"430"}
 PROFIT_AND_LOSS = {code for code, _, kind, _ in CHART
                    if kind in ("Revenue", "Direct Costs", "Overhead", "Depreciation", "Expense", "Other Income")}
 TAXES = {"20% (VAT on Income)": Decimal(20), "20% (VAT on Expenses)": Decimal(20), "Zero Rated Income": ZERO,
