@@ -435,3 +435,31 @@ def test_j9_stale_move_form_asks_for_a_new_review_and_the_move_succeeds(page: Pa
     asset = next(a for a in _ok(c.get(f"{API}/assets"))["items"] if a["id"] == car)
     assert asset["location_id"] == store
     expect(page.locator("main")).to_contain_text("North store")
+
+
+def test_j10_revalue_on_a_cost_class_starts_the_class_workflow_and_revalues_it(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    first, second = (_contributed(c, f"Building {n}", cost="48000", on="2026-01-01", cls="Buildings") for n in "AB")
+
+    page.goto(f"/fixed-assets/assets/{first}/remeasure")
+    page.locator("input[name=date]").fill("2026-03-31")
+    page.locator("input[name=fair_value]").fill("50000")
+    page.get_by_role("button", name="Review", exact=True).click()
+    expect(page.locator("#fa-preview .flash--error")).to_contain_text(
+        "This class uses the cost model. Change class to revaluation revalues all 2 assets in it on one date.")
+    page.locator(".flash--warning").get_by_role("link", name="Change class to revaluation").click()
+    page.wait_for_url("**/fixed-assets/classes/**/revalue")
+    expect(page.locator("h1")).to_contain_text("Change Buildings to revaluation")
+    page.locator("input[name=date]").fill("2026-03-31")
+    page.locator("input[name=basis]").fill("Valuer report March 2026")
+    page.locator(f"input[name='fair_value:{first}']").fill("50000")
+    page.locator(f"input[name='fair_value:{second}']").fill("47000")
+    page.get_by_role("button", name="Review", exact=True).click()
+    expect(page.locator("#fa-preview")).to_contain_text("97,000.00")
+    with page.expect_navigation(url="**/settings/fixed-assets**"):
+        page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
+    assets = {a["id"]: D(a["nbv"]) for a in _ok(c.get(f"{API}/assets"))["items"]}
+    assert (assets[first], assets[second]) == (D(50000), D(47000))
+    assert _classes(c)["Buildings"]["measurement_policy"] == "revaluation"
+    _reconciled(page)
