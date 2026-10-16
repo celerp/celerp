@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
@@ -50,14 +51,20 @@ def peer_headers(ctx: ConnectorContext) -> dict:
     return {"Authorization": "Peer " + ctx.access_token, SOURCE_HEADER: str(ctx.company_id)}
 
 
-# The import record event each entity's record is written as at the receiving company.
-_EVENT = {"contacts": "crm.contact.created", "products": "item.created",
-          "documents": "doc.created", "inventory": "list.created",
-          "journals": "acc.journal_entry.created"}
-# The sync entity each kind's run is recorded under.
-_ENTITY = {"contacts": SyncEntity.CONTACTS, "products": SyncEntity.PRODUCTS,
-           "documents": SyncEntity.DOCUMENTS, "inventory": SyncEntity.INVENTORY,
-           "journals": SyncEntity.JOURNALS}
+class _Kind(NamedTuple):
+    event: str  # the import record event the receiving company writes it as
+    entity: SyncEntity  # the sync entity its runs are recorded under
+    label: str  # how a record of this kind is named to the user
+
+
+# Every kind of record the connector moves, in one place.
+_KINDS = {
+    "contacts": _Kind("crm.contact.created", SyncEntity.CONTACTS, "Contact"),
+    "products": _Kind("item.created", SyncEntity.PRODUCTS, "Product"),
+    "documents": _Kind("doc.created", SyncEntity.DOCUMENTS, "Document"),
+    "inventory": _Kind("list.created", SyncEntity.INVENTORY, "Stock count"),
+    "journals": _Kind("acc.journal_entry.created", SyncEntity.JOURNALS, "Journal entry"),
+}
 
 
 async def _read_projection_page(company_id: uuid.UUID, after: str, since, entity: str) -> list[tuple[str, int, dict]]:
@@ -388,9 +395,9 @@ class CelerpConnector(ConnectorBase):
         from celerp.services import peer_accounts, peer_journals
         from celerp.services.peer_access import key_ids
 
-        if (entity := _ENTITY.get(kind)) is None:
+        if (spec := _KINDS.get(kind)) is None:
             raise ValueError("Unsupported peer entity")
-        result = SyncResult(entity=entity, direction=SyncDirection.OUTBOUND,
+        result = SyncResult(entity=spec.entity, direction=SyncDirection.OUTBOUND,
                             errors=[], attention=[])
         target = _target_url(ctx, kind)
         if not isinstance(ctx.access_token, str) or not ctx.access_token.startswith("cp1."):
@@ -399,8 +406,7 @@ class CelerpConnector(ConnectorBase):
         firm_company, grant_id = key_ids(ctx.access_token)
         since = await _last_success_watermark(ctx.company_id, self.name, kind + "_out")
         fields = _FIELDS if kind == "contacts" else _PRODUCT_FIELDS if kind == "products" else None
-        label = {"contacts": "Contact", "products": "Product", "documents": "Document",
-                 "inventory": "Stock count", "journals": "Journal entry"}[kind]
+        label = spec.label
         after = ""
         async with RateLimitedClient(public_only=True) as client:
             while True:
@@ -464,7 +470,7 @@ class CelerpConnector(ConnectorBase):
                     try:
                         response = await client.post(target, headers=peer_headers(ctx), json={
                             "records": [{
-                                "entity_id": entity_id, "event_type": _EVENT[kind],
+                                "entity_id": entity_id, "event_type": spec.event,
                                 "data": data, "source": "celerp",
                                 "idempotency_key": f"peer:{company_id}:{entity_id}:{revision}",
                                 "source_revision": revision,
@@ -518,7 +524,8 @@ class CelerpConnector(ConnectorBase):
         from celerp.services import peer_journals
         from celerp.services.peer_access import key_ids
 
-        result = SyncResult(entity=SyncEntity.JOURNALS, direction=SyncDirection.INBOUND,
+        journals = _KINDS["journals"]
+        result = SyncResult(entity=journals.entity, direction=SyncDirection.INBOUND,
                             errors=[], attention=[])
         company_id = uuid.UUID(ctx.company_id)
         firm_company, grant_id = key_ids(ctx.access_token)
@@ -532,7 +539,7 @@ class CelerpConnector(ConnectorBase):
                 if not isinstance(items, list):
                     raise ValueError("Receiving installation needs attention")
                 for item in items:
-                    label = attention_label(item if isinstance(item, dict) else {}, "Journal entry")
+                    label = attention_label(item if isinstance(item, dict) else {}, journals.label)
                     try:
                         fetched = await peer_journals.apply_firm_journal(
                             company_id, grant_id, body["firm"], firm_company, item)
@@ -540,7 +547,7 @@ class CelerpConnector(ConnectorBase):
                             response = await client.post(
                                 _target_url(ctx, "journals"), headers=peer_headers(ctx), json={
                                     "records": [{
-                                        "entity_id": item["id"], "event_type": _EVENT["journals"],
+                                        "entity_id": item["id"], "event_type": journals.event,
                                         "data": fetched.answer, "source": "celerp",
                                         "idempotency_key": f"peer:{company_id}:answer:{item['id']}:"
                                                            f"{uuid.uuid5(uuid.NAMESPACE_URL, str(fetched.declined))}",
@@ -598,7 +605,7 @@ class CelerpConnector(ConnectorBase):
         if excluded is not None:
             excluded_id, excluded_label = excluded
             return SyncResult(
-                entity=SyncEntity.INVENTORY, direction=SyncDirection.OUTBOUND,
+                entity=_KINDS["inventory"].entity, direction=SyncDirection.OUTBOUND,
                 errors=["Inventory needs a complete source-document reconciliation"],
                 attention=[{"id": excluded_id, "label": excluded_label,
                             "reason": "A stock-linked document was excluded from accounting sync"}],
