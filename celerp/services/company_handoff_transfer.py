@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 import uuid
@@ -15,6 +16,8 @@ import httpx
 
 from celerp.services.company_handoff_crypto import MAX_CIPHERTEXT, decrypt_file
 from celerp.services.company_handoff_links import parse_handoff_link
+
+log = logging.getLogger(__name__)
 
 
 class HandoffDownloadError(Exception):
@@ -76,6 +79,25 @@ Progress = Callable[..., None]
 
 def _silent(stage: str, received: int = 0, total: int | None = None) -> None:
     return None
+
+
+async def _confirm_download(copy_id, proof_hash: str, grant_id: str) -> None:
+    """Tell the relay the granted download opened, so the sender's count includes it.
+
+    The copy is already authenticated and staged, so a failed confirmation only leaves
+    that count lower; it never undoes the download.
+    """
+    try:
+        async with httpx.AsyncClient(follow_redirects=False,
+                                     timeout=httpx.Timeout(20, connect=10)) as client:
+            response = await client.post(
+                f"https://relay.celerp.com/handoffs/{copy_id}/fetched",
+                json={"proof": proof_hash, "operation_id": grant_id},
+            )
+        if response.status_code != 200:
+            log.warning("Confirming a company copy download returned %s", response.status_code)
+    except httpx.HTTPError:
+        log.warning("Confirming a company copy download failed", exc_info=True)
 
 
 async def download_company_handoff(link: str, destination: Path, progress: Progress | None = None) -> None:
@@ -141,6 +163,7 @@ async def download_company_handoff(link: str, destination: Path, progress: Progr
                     os.fsync(target.fileno())
             progress("decrypting")
             await asyncio.to_thread(decrypt_file, encrypted, destination, parsed.secret)
+        await _confirm_download(parsed.copy_id, parsed.proof_hash, grant_id)
     except (httpx.HTTPError, TimeoutError) as exc:
         raise HandoffDownloadError("The company copy could not be downloaded") from exc
     finally:
