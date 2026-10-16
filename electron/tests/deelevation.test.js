@@ -110,30 +110,71 @@ describe("startupDeelevation", () => {
 
 describe("relaunchThroughExplorer", () => {
   const EXE = "C:\\Program Files\\Celerp\\Celerp.exe";
+  const FAST = { pollMs: 5, handoffMs: 100 };
 
-  test("hands the app to Explorer and reports success once Explorer has taken it", () => {
-    const spawnSync = jest.fn(() => ({ status: 1, error: undefined }));
-    expect(relaunchThroughExplorer({ spawnSync, systemRoot: "C:\\Windows", exePath: EXE })).toBe(true);
+  // The marker a relaunch writes; the relaunched copy deletes it as it starts.
+  function marker() {
+    const markerPath = markerIn();
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+    fs.writeFileSync(markerPath, String(Date.now()));
+    return markerPath;
+  }
+  // Explorer runs and the copy it starts consumes the marker.
+  const copyStarts = (markerPath, result = { status: 1, signal: null }) =>
+    jest.fn(() => { fs.rmSync(markerPath, { force: true }); return result; });
+  const relaunch = (spawnSync, markerPath) =>
+    relaunchThroughExplorer({ spawnSync, systemRoot: "C:\\Windows", exePath: EXE, markerPath, ...FAST });
+
+  test("succeeds only once the relaunched copy has started", () => {
+    const markerPath = marker();
+    const spawnSync = copyStarts(markerPath);
+    expect(relaunch(spawnSync, markerPath)).toBe(true);
     const [cmd, args, options] = spawnSync.mock.calls[0];
     expect(cmd).toMatch(/explorer\.exe$/);
     expect(args).toEqual([EXE]);
     expect(options.timeout).toBeGreaterThan(0);
   });
 
+  test("Explorer ran but the copy never started: not a success, and the marker stays", () => {
+    const markerPath = marker();
+    const spawnSync = jest.fn(() => ({ status: 1, signal: null }));
+    expect(relaunch(spawnSync, markerPath)).toBe(false);
+    // A copy that starts late still finds it and boots restricted instead of relaunching again.
+    expect(fs.existsSync(markerPath)).toBe(true);
+  });
+
+  test("Explorer ended by a signal is a failure, whatever happened to the marker", () => {
+    const markerPath = marker();
+    expect(relaunch(copyStarts(markerPath, { status: null, signal: "SIGTERM" }), markerPath)).toBe(false);
+  });
+
+  test("Explorer with no exit status is a failure", () => {
+    const markerPath = marker();
+    expect(relaunch(copyStarts(markerPath, { status: null, signal: null }), markerPath)).toBe(false);
+  });
+
   test("Explorer failing to start is reported, not lost", () => {
+    const markerPath = marker();
     const error = Object.assign(new Error("spawn explorer.exe ENOENT"), { code: "ENOENT" });
-    const spawnSync = jest.fn(() => ({ status: null, error }));
-    expect(relaunchThroughExplorer({ spawnSync, systemRoot: "C:\\Windows", exePath: EXE })).toBe(false);
+    expect(relaunch(jest.fn(() => ({ status: null, signal: null, error })), markerPath)).toBe(false);
   });
 
   test("Explorer not handing off in time is reported", () => {
+    const markerPath = marker();
     const error = Object.assign(new Error("spawnSync explorer.exe ETIMEDOUT"), { code: "ETIMEDOUT" });
-    expect(relaunchThroughExplorer({ spawnSync: () => ({ status: null, error }), systemRoot: "C:\\Windows", exePath: EXE }))
-      .toBe(false);
+    expect(relaunch(copyStarts(markerPath, { status: null, signal: "SIGTERM", error }), markerPath)).toBe(false);
   });
 
   test("a spawn that throws is reported", () => {
-    const spawnSync = () => { throw new Error("EPERM"); };
-    expect(relaunchThroughExplorer({ spawnSync, systemRoot: "C:\\Windows", exePath: EXE })).toBe(false);
+    const markerPath = marker();
+    expect(relaunch(() => { throw new Error("EPERM"); }, markerPath)).toBe(false);
+  });
+
+  test("a full wait sleeps between checks instead of spinning", () => {
+    const markerPath = marker();
+    const sleep = jest.fn();
+    relaunchThroughExplorer({ spawnSync: () => ({ status: 1, signal: null }), systemRoot: "C:\\Windows",
+      exePath: EXE, markerPath, pollMs: 5, handoffMs: 50, sleep });
+    expect(sleep).toHaveBeenCalledWith(5);
   });
 });

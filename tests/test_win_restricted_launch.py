@@ -4,6 +4,7 @@
 and fails with the line the desktop app recognises."""
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -105,3 +106,25 @@ def test_runs_the_program_without_administrator_rights(tmp_path):
     restricted = subprocess.run([sys.executable, "-I", launch.__file__, sys.executable, "-I", launch.__file__,
                                  "--token-state"], capture_output=True, text=True)
     assert restricted.stdout == "standard\n"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="job objects are a Windows API")
+def test_the_program_ends_when_the_launcher_is_killed(tmp_path):
+    # The app stops a server by killing the process it started, which here is the
+    # launcher: the program it runs must not outlive it and keep the server's port.
+    probe = tmp_path / "probe.py"
+    probe.write_text("import os, sys, time\nprint(os.getpid(), flush=True)\ntime.sleep(60)\n")
+    launcher = subprocess.Popen([sys.executable, "-I", launch.__file__, sys.executable, "-I", str(probe)],
+                                stdout=subprocess.PIPE, text=True)
+    pid = int(launcher.stdout.readline())
+    launcher.kill()
+    launcher.wait(timeout=10)
+    deadline = time.monotonic() + 10
+    while _running(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not _running(pid)
+
+
+def _running(pid: int) -> bool:
+    listed = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+    return str(pid) in listed

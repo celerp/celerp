@@ -7,7 +7,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { windowsStartFailure, logSince } = require("../windows-start-errors");
+const { windowsStartFailure, clusterStartFailure, logSince, LOG_SINCE_MAX_BYTES } = require("../windows-start-errors");
 
 const VC_REDIST = "https://aka.ms/vs/17/release/vc_redist.x64.exe";
 
@@ -51,6 +51,24 @@ describe("windowsStartFailure", () => {
   });
 });
 
+describe("clusterStartFailure", () => {
+  const dataDir = "C:\\Users\\someone\\AppData\\Roaming\\Celerp\\data\\pg";
+
+  test("names the folder, says nothing was changed and how to recover", () => {
+    const message = clusterStartFailure(dataDir, "postgres exited before it was ready");
+    expect(message).toContain(dataDir);
+    expect(message).toMatch(/nothing in it was changed or removed/i);
+    expect(message).toMatch(/move that folder somewhere else/i);
+    expect(message).toMatch(/backup/i);
+    expect(message).toContain("postgres exited before it was ready");
+    expect(message).not.toMatch(/\u2014/);
+  });
+
+  test("an error with no reason still gets the message", () => {
+    expect(clusterStartFailure(dataDir, "")).toContain(dataDir);
+  });
+});
+
 describe("logSince", () => {
   test("returns only what was written to the log after the offset", () => {
     const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "initdb-log-")), "initdb-win.log");
@@ -62,5 +80,23 @@ describe("logSince", () => {
 
   test("a log that does not exist reads as empty", () => {
     expect(logSince(path.join(os.tmpdir(), "no-such-dir-celerp", "x.log"), 0)).toBe("");
+  });
+
+  test("reads only this attempt, and at most the last LOG_SINCE_MAX_BYTES of it", () => {
+    const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "initdb-log-")), "initdb-win.log");
+    fs.writeFileSync(logPath, "old\n".repeat(100000));
+    const offset = fs.statSync(logPath).size;
+    const attempt = "x".repeat(LOG_SINCE_MAX_BYTES) + "initdb: error: the last line\n";
+    fs.appendFileSync(logPath, attempt);
+    const read = jest.spyOn(fs, "readFileSync");
+    try {
+      const text = logSince(logPath, offset);
+      expect(text.length).toBe(LOG_SINCE_MAX_BYTES);
+      expect(text.endsWith("initdb: error: the last line\n")).toBe(true);
+      expect(text).not.toContain("old");
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
   });
 });

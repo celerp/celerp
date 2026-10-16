@@ -14,7 +14,12 @@ const path = require("path");
 const childProcessReal = require("child_process");
 const { loadAppMain } = require("./app-main-loader.lib");
 
-function start({ userData, token, explorerError = null, netSessionWorks = false }) {
+// `copyStarts` is what the copy Explorer starts does; by default it consumes the
+// relaunch marker as a real copy does when it starts.
+const consumeMarker = (userData) => () => fs.rmSync(path.join(userData, "deelevate-attempt"), { force: true });
+
+function start({ userData, token, explorerError = null, explorerSignal = null, netSessionWorks = false,
+                 copyStarts = consumeMarker(userData) }) {
   const execFileSync = jest.fn((cmd, args) => {
     if (args && args.includes("--token-state")) {
       if (token === null) throw new Error("token query failed");
@@ -25,7 +30,11 @@ function start({ userData, token, explorerError = null, netSessionWorks = false 
   // `net session` is not how the state is read: it fails whenever the Server
   // service is stopped, whatever the token says.
   const execSync = jest.fn(() => { if (!netSessionWorks) throw new Error("service not started"); });
-  const spawnSync = jest.fn(() => ({ status: 1, error: explorerError || undefined }));
+  // Explorer starts the relaunched copy, which consumes the relaunch marker as it starts.
+  const spawnSync = jest.fn(() => {
+    if (!explorerError) copyStarts();
+    return { status: explorerSignal ? null : 1, signal: explorerSignal, error: explorerError || undefined };
+  });
   const spawn = jest.fn(() => ({ on: () => {}, unref: () => {} }));
   const quit = jest.fn();
   const requestSingleInstanceLock = jest.fn(() => true);
@@ -80,10 +89,20 @@ test("Explorer failing to take the relaunch boots restricted instead of quitting
   expect(started.postgresLauncher()[2]).toMatch(RESTRICTED);
 });
 
+test("Explorer ended by a signal boots restricted instead of quitting", () => {
+  const started = start({ userData: userDataDir(), token: "elevated", explorerSignal: "SIGTERM" });
+  expect(started.relaunched).toBe(true);
+  expect(started.quit).not.toHaveBeenCalled();
+  expect(started.requestSingleInstanceLock).toHaveBeenCalled();
+  expect(started.postgresLauncher()[2]).toMatch(RESTRICTED);
+});
+
 test("an elevated relaunched copy (Explorer itself elevated) boots restricted, never a loop", () => {
   const userData = userDataDir();
-  expect(start({ userData, token: "elevated" }).relaunched).toBe(true);
-  const second = start({ userData, token: "elevated" });
+  let second;
+  const first = start({ userData, token: "elevated", copyStarts: () => { second = start({ userData, token: "elevated" }); } });
+  expect(first.relaunched).toBe(true);
+  expect(first.quit).toHaveBeenCalled();
   expect(second.relaunched).toBe(false);
   expect(second.quit).not.toHaveBeenCalled();
   expect(second.postgresLauncher()[2]).toMatch(RESTRICTED);
@@ -99,6 +118,22 @@ test("a standard account boots as before", () => {
   const started = start({ userData: userDataDir(), token: "standard" });
   expect(started.relaunched).toBe(false);
   expect(started.postgresLauncher()).toEqual([]);
+});
+
+test("UAC off: the API and UI servers start through the restricted launcher too", () => {
+  const started = start({ userData: userDataDir(), token: "admin" });
+  const [command, args] = started.serverCommand("celerp.main:app", 8000);
+  expect(args[0]).toBe("-I");
+  expect(args[1]).toMatch(RESTRICTED);
+  expect(args[2]).toBe(command);
+  expect(args.slice(3)).toEqual(["-m", "uvicorn", "celerp.main:app", "--host", "127.0.0.1", "--port", "8000",
+    "--timeout-graceful-shutdown", "3"]);
+});
+
+test("a standard account starts the servers directly", () => {
+  const started = start({ userData: userDataDir(), token: "standard" });
+  const [, args] = started.serverCommand("ui.app:app", 8001);
+  expect(args.slice(0, 3)).toEqual(["-m", "uvicorn", "ui.app:app"]);
 });
 
 test("Linux and macOS keep running Postgres under desktop_child.py", () => {

@@ -17,7 +17,8 @@ const APP_MAIN = path.join(__dirname, "..", "app-main.js");
 // set once the app is ready. Tests that never make the app ready set them themselves.
 const SETTERS = "\n;module.exports.setMainWindow = (win) => { mainWindow = win; };\n" +
   ";module.exports.setServices = (api, ui, pg) => { apiProcess = api; uiProcess = ui; pgInstance = pg; };\n" +
-  ";module.exports.postgresLauncher = () => postgresLauncher();\n";
+  ";module.exports.postgresLauncher = () => postgresLauncher();\n" +
+  ";module.exports.serverCommand = (asgiApp, port) => serverCommand(asgiApp, port);\n";
 
 // Runs app-main.js as Node would (it has a top-level return), resolving the
 // modules below to fakes and everything else normally. `app` and `extraFakes`
@@ -67,7 +68,8 @@ function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resou
     fs.readFileSync(APP_MAIN, "utf8") + SETTERS);
   body(mod.exports, fakeRequire, mod, APP_MAIN, path.dirname(APP_MAIN), proc);
   return { handlers, listeners, updater, setMainWindow: mod.exports.setMainWindow,
-           setServices: mod.exports.setServices, postgresLauncher: mod.exports.postgresLauncher };
+           setServices: mod.exports.setServices, postgresLauncher: mod.exports.postgresLauncher,
+           serverCommand: mod.exports.serverCommand };
 }
 
 module.exports = { loadAppMain };

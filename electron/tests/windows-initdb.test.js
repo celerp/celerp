@@ -84,3 +84,17 @@ test("a data folder holding files but no cluster is never deleted; the user is t
   expect(goodInitdb).not.toHaveBeenCalled();
   expect(fs.readFileSync(path.join(dataDir, "something-of-theirs"), "utf8")).toBe("keep me");
 });
+
+test("a cluster an older version left half set up is kept exactly as it is", async () => {
+  // Older versions ran initdb straight into the data folder, so a setup cut short
+  // there can leave PG_VERSION without a usable cluster. Starting it then fails
+  // with a message (windows-start-errors.js); nothing here may touch it.
+  const dataDir = dataDirIn();
+  fs.writeFileSync(path.join(dataDir, "PG_VERSION"), "17\n");
+  fs.mkdirSync(path.join(dataDir, "base", "1"), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, "base", "1", "1259"), "partial");
+  await expect(initialiseClusterOnce({ dataDir, runInitdb: goodInitdb })).resolves.toBe(false);
+  expect(goodInitdb).not.toHaveBeenCalled();
+  expect(fs.readdirSync(dataDir).sort()).toEqual(["PG_VERSION", "base"]);
+  expect(fs.readFileSync(path.join(dataDir, "base", "1", "1259"), "utf8")).toBe("partial");
+});
