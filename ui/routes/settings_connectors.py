@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-from urllib.parse import urlsplit
 from datetime import datetime, timezone
 
 from fasthtml.common import *
@@ -44,16 +43,13 @@ def _store_url_error(store_url: str, platform: str) -> str | None:
     elif platform in ("woocommerce", "celerp"):
         return "connectors.store_url_required"
     if platform == "celerp" and store_url:
-        try:
-            origin = urlsplit(store_url)
-            if (origin.scheme != "https" or origin.hostname is None
-                    or origin.port not in (None, 443) or origin.username is not None
-                    or origin.password is not None or origin.path not in ("", "/")
-                    or origin.query or origin.fragment):
-                return "connectors.store_url_must_use_https"
-        except ValueError:
+        from celerp.services.peer_access import is_https_origin
+        if not is_https_origin(store_url):
             return "connectors.store_url_must_use_https"
     return None
+
+# Where a client sends its accountant to learn how Celerp works for firms.
+ACCOUNTANTS_URL = "https://celerp.com/accountants"
 
 _CONNECTOR_ICONS: dict[str, str] = {
     "shopify": "🛍️",
@@ -883,17 +879,24 @@ def _connector_card(
             )
             if config is not None else None
         )
+        if cid == "celerp":
+            fields = [Input(name="pairing_link", type="password", autocomplete="off",
+                            placeholder=t("accountant_access.pairing_link", lang),
+                            cls="input input--sm", style="flex:1;min-width:260px;")]
+        else:
+            fields = [
+                Input(name="store_url", placeholder="https://mystore.com",
+                      cls="input input--sm", style="flex:1;min-width:200px;"),
+                Input(name="consumer_key", placeholder=t("connectors.consumer_key_placeholder", lang),
+                      cls="input input--sm", style="width:200px;"),
+                Input(name="consumer_secret", placeholder=t("connectors.consumer_secret_placeholder", lang),
+                      type="password", cls="input input--sm", style="width:160px;"),
+            ]
         action_area = Div(
             *([P(t("accountant_access.connector_source_help", lang), cls="settings-hint")]
               if cid == "celerp" else []),
             Form(
-                Input(name="store_url", placeholder="https://accountant.example.com" if cid == "celerp" else "https://mystore.com",
-                      cls="input input--sm", style="flex:1;min-width:200px;"),
-                Input(name="consumer_key", placeholder="Receiving company key" if cid == "celerp" else t("connectors.consumer_key_placeholder", lang),
-                      type="password" if cid == "celerp" else "text",
-                      cls="input input--sm", style="width:200px;"),
-                *([Input(name="consumer_secret", placeholder=t("connectors.consumer_secret_placeholder", lang),
-                         type="password", cls="input input--sm", style="width:160px;")] if cid != "celerp" else []),
+                *fields,
                 Button(t("connectors.connect", lang),
                        type="submit", cls="btn btn--sm btn--primary"),
                 hx_post=f"/settings/connectors/{cid}/connect-apikey",
@@ -935,6 +938,9 @@ def _connector_card(
         connected_details,
         # Action area
         action_area,
+        *([P(A(t("connectors.send_to_accountant", lang), href=ACCOUNTANTS_URL,
+               target="_blank", rel="noopener"), cls="settings-hint")]
+          if cid == "celerp" else []),
         id=f"connector-card-{cid}",
         cls=card_cls,
     )
@@ -1101,10 +1107,14 @@ def _pairing_card(company_id: str, name: str, lang: str) -> FT:
 
 
 def _grant_form(lang: str) -> FT:
+    from celerp.config import settings
     from celerp.services.peer_access import SCOPE_ORDER
     return Form(
         Label(t("accountant_access.pairing_code", lang)),
         Input(name="pairing_code", type="text", maxlength="1024", cls="form-input"),
+        Label(t("accountant_access.address", lang)),
+        Input(name="address", type="url", maxlength="512",
+              value=settings.celerp_public_url or "", cls="form-input"),
         Label(t("accountant_access.label", lang)),
         Input(name="label", maxlength="128",
               placeholder=t("accountant_access.label_example", lang),
@@ -1279,13 +1289,17 @@ def setup_routes(app):
 
     @app.post("/settings/accountant-access/grants")
     async def accountant_access_issue(request: Request):
-        from celerp.services.peer_access import SCOPES, parse_pairing_code
+        from celerp.services.peer_access import SCOPES, is_https_origin, pairing_link, parse_pairing_code
         from ui import api_client as api
         token, refused = await _owner_token(request)
         if refused is not None:
             return refused
         lang = get_lang(request)
         form = await request.form()
+        address = str(form.get("address") or "").strip().rstrip("/")
+        if not is_https_origin(address):
+            return Span(t("accountant_access.address_invalid", lang),
+                        cls="flash flash--warning")
         try:
             source, source_name = parse_pairing_code(form.get("pairing_code"))
             source_id = str(source)
@@ -1303,15 +1317,17 @@ def setup_routes(app):
             })
         except api.APIError as exc:
             return Span(str(exc), cls="flash flash--warning")
-        credential = issued.get("credential")
-        if not isinstance(credential, str) or not credential.startswith("cp1."):
+        try:
+            link = pairing_link(address, issued.get("credential"))
+        except (ValueError, TypeError, AttributeError):
             return Span(t("accountant_access.unavailable", lang),
                         cls="flash flash--warning")
         content = Div(
             P(t("accountant_access.copy_now", lang)),
             Div(
-                Code(credential, cls="cell--mono", id="issued-peer-key"),
-                Button(t("btn.copy", lang), type="button", **{"data-copy": "#issued-peer-key"},
+                Code(link, cls="cell--mono", id="issued-pairing-link"),
+                Button(t("accountant_access.copy_link", lang), type="button",
+                       **{"data-copy": "#issued-pairing-link"},
                        cls="btn btn--xs btn--secondary ml-sm"),
                 cls="flex-row align-center gap-sm",
             ),
@@ -1759,6 +1775,17 @@ def setup_routes(app):
 
         if platform not in ("woocommerce", "celerp"):
             return Span(t("connectors.unknown_connector", lang, platform=platform))
+        if platform == "celerp":
+            from celerp.services.peer_access import parse_pairing_link
+            try:
+                store_url, consumer_key = parse_pairing_link(form.get("pairing_link"))
+            except ValueError:
+                return Div(
+                    Span(t("accountant_access.pairing_link_invalid", lang),
+                         cls="flash flash--warning"),
+                    id=f"connector-card-{platform}", cls="connector-card",
+                )
+            store_url = store_url.rstrip("/")
         if not consumer_key or (platform == "woocommerce" and not consumer_secret):
             return Div(
                 Span(t("connectors.missing_credentials", lang),

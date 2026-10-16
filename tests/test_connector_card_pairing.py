@@ -1,8 +1,10 @@
 """The Celerp connector card: camera capture, the accountant link, and one pasted pairing link."""
 from __future__ import annotations
 
+import base64
 import json
 import re
+import secrets
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +18,7 @@ from ui.routes import settings_connectors as routes
 
 LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 ADDRESS = "https://firm.example.com"
-KEY = f"cp1.{uuid.uuid4()}.{uuid.uuid4()}.secret-part"
+KEY = f"cp1.{uuid.uuid4()}.{uuid.uuid4()}.{secrets.token_urlsafe(32)}"
 
 
 class FormData(dict):
@@ -27,6 +29,8 @@ class FormData(dict):
 class Request:
     def __init__(self, data=None):
         self.state = SimpleNamespace()
+        self.cookies = {}
+        self.headers = {}
         self._form = FormData(data or {})
 
     async def form(self):
@@ -80,8 +84,9 @@ def test_pairing_link_round_trip():
 
     link = pairing_link(ADDRESS, KEY)
     assert parse_pairing_link(f"  {link}\n") == (ADDRESS, KEY)
+    plain = base64.urlsafe_b64encode(b"http://firm.example.com").decode().rstrip("=")
     for bad in ("", KEY, ADDRESS, link + "!", link.replace("cplink1", "cplink2"),
-                pairing_link("http://firm.example.com", KEY)):
+                f"cplink1.{plain}.{KEY}"):
         with pytest.raises(ValueError):
             parse_pairing_link(bad)
 
@@ -102,7 +107,7 @@ async def test_connect_with_pairing_link_stores_address_and_key(monkeypatch):
 
     async def store(token, platform, key, secret, url):
         stored.append((platform, key, secret, url))
-        return {"ok": True}
+        raise RuntimeError("stored")  # the handler shows it; the connected card is tested elsewhere
 
     monkeypatch.setattr(routes, "_token", lambda request: "t")
     monkeypatch.setattr(routes, "get_lang", lambda request: "en")
@@ -118,10 +123,8 @@ async def test_connect_with_pairing_link_stores_address_and_key(monkeypatch):
     bad = await handler(Request({"pairing_link": "not a link"}), "celerp")
     assert "Check the pairing link" in to_xml(bad)
     assert stored == []
-    try:
-        await handler(Request({"pairing_link": pairing_link(ADDRESS, KEY)}), "celerp")
-    except Exception:
-        pass  # rendering the connected card needs more state than this test sets up
+    shown = await handler(Request({"pairing_link": pairing_link(ADDRESS, KEY)}), "celerp")
+    assert "stored" in to_xml(shown)
     assert stored[0] == ("celerp", KEY, "", ADDRESS)
 
 
@@ -158,7 +161,7 @@ async def test_issue_result_shows_pairing_link(monkeypatch):
     assert 'data-copy="#issued-pairing-link"' in body
 
     refused = await issue(Request({"pairing_code": code, "label": "", "address": "http://x"}))
-    assert "HTTPS" in to_xml(refused)
+    assert "https://" in to_xml(refused)
 
 
 def test_connector_help_copy_localized():

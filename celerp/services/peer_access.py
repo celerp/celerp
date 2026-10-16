@@ -10,6 +10,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -56,6 +57,7 @@ RENEW_WITHIN = timedelta(days=14)
 EXPIRY_NOTICE = "notice.peer_key_expiring"
 INVALID = "Invalid integration credentials"
 PAIRING_PREFIX = "cpair1"
+LINK_PREFIX = "cplink1"
 MAX_LABEL = 128
 
 
@@ -83,6 +85,53 @@ def parse_pairing_code(code: object) -> tuple[uuid.UUID, str]:
     if base64.urlsafe_b64encode(raw).decode().rstrip("=") != bits[2] or len(name) > MAX_LABEL:
         raise ValueError("Invalid pairing code")
     return company_id, name
+
+
+def pairing_link(address: str, credential: str) -> str:
+    """What the receiving owner gives the sending company: its HTTPS address and key in one
+    string. Raises ValueError when either part is not valid."""
+    if not isinstance(credential, str):
+        raise ValueError("Invalid pairing link")
+    encoded = base64.urlsafe_b64encode(address.encode()).decode().rstrip("=")
+    link = f"{LINK_PREFIX}.{encoded}.{credential}"
+    parse_pairing_link(link)
+    return link
+
+
+def parse_pairing_link(link: object) -> tuple[str, str]:
+    """Return the address and key in a pairing link, or raise ValueError for anything else."""
+    if not isinstance(link, str) or len(link) > 2048:
+        raise ValueError("Invalid pairing link")
+    prefix, _, rest = link.strip().partition(".")
+    encoded, _, credential = rest.partition(".")
+    if prefix != LINK_PREFIX or not credential.startswith("cp1."):
+        raise ValueError("Invalid pairing link")
+    try:
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        address = raw.decode()
+    except (ValueError, UnicodeDecodeError, base64.binascii.Error):
+        raise ValueError("Invalid pairing link") from None
+    if base64.urlsafe_b64encode(raw).decode().rstrip("=") != encoded:
+        raise ValueError("Invalid pairing link")
+    try:
+        _parse(credential)
+    except HTTPException:
+        raise ValueError("Invalid pairing link") from None
+    if not is_https_origin(address):
+        raise ValueError("Invalid pairing link")
+    return address, credential
+
+
+def is_https_origin(address: str) -> bool:
+    """An address a key may be sent to: https, a host, and nothing after it."""
+    try:
+        origin = urlsplit(address)
+        return (origin.scheme == "https" and origin.hostname is not None
+                and origin.port in (None, 443) and origin.username is None
+                and origin.password is None and origin.path in ("", "/")
+                and not origin.query and not origin.fragment)
+    except ValueError:
+        return False
 
 
 def route_entity(method: str, path: str) -> str | None:

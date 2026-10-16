@@ -11,6 +11,8 @@ from starlette.responses import Response
 from ui import api_client
 from ui.routes import settings_connectors as routes
 
+KEY = f"cp1.{uuid.uuid4()}.{uuid.uuid4()}.{'A' * 43}"
+
 
 class FormData(dict):
     def getlist(self, name):
@@ -20,7 +22,7 @@ class FormData(dict):
 class Request:
     def __init__(self, data=None):
         self.state = SimpleNamespace()
-        self._form = FormData(data or {})
+        self._form = FormData({"address": "https://firm.example.com", **(data or {})})
     async def form(self):
         return self._form
 
@@ -55,7 +57,7 @@ async def test_owner_receives_noncacheable_single_display_and_no_secret_in_listi
     async def create(token, body):
         assert token == "test-token"
         issued.append(body)
-        return {"credential": "cp1.ONE-TIME-TEST-KEY"}
+        return {"credential": KEY}
     monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
     handler = _endpoints()["/settings/accountant-access/grants"]
     request = Request({"pairing_code": _code(source), "label": "Client"})
@@ -63,7 +65,7 @@ async def test_owner_receives_noncacheable_single_display_and_no_secret_in_listi
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["pragma"] == "no-cache"
-    assert b"cp1.ONE-TIME-TEST-KEY" in response.body
+    assert KEY.encode() in response.body
     assert b"shown only once" in response.body
     assert issued == [{"source_company_id": source, "label": "Client",
                        "scopes": ["contacts", "products"]}]
@@ -170,7 +172,7 @@ async def test_issued_key_has_copy_and_refreshes_the_list(monkeypatch):
     now = datetime.now(timezone.utc)
 
     async def create(token, body):
-        return {"credential": "cp1.ONE-TIME-TEST-KEY"}
+        return {"credential": KEY}
 
     async def listing(token):
         return {"items": _grants(now)}
@@ -180,7 +182,7 @@ async def test_issued_key_has_copy_and_refreshes_the_list(monkeypatch):
     response = await _endpoints()["/settings/accountant-access/grants"](Request({
         "pairing_code": _code(uuid.uuid4()), "label": "Client"}))
     body = response.body.decode()
-    assert 'data-copy="#issued-peer-key"' in body and 'id="issued-peer-key"' in body
+    assert 'data-copy="#issued-pairing-link"' in body and 'id="issued-pairing-link"' in body
     assert 'hx-swap-oob="true"' in body and 'id="accountant-access-grants"' in body
 
 
@@ -190,7 +192,7 @@ async def test_documents_scope_can_be_granted_without_contact_permission(monkeyp
     seen = []
     async def create(token, body):
         seen.append(body)
-        return {"credential": "cp1.ONE-TIME-TEST-KEY"}
+        return {"credential": KEY}
     monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
     issue = _endpoints()["/settings/accountant-access/grants"]
     source = str(uuid.uuid4())
@@ -244,7 +246,7 @@ async def test_pairing_code_carries_company_id(monkeypatch):
     seen = []
     async def create(token, body):
         seen.append(body)
-        return {"credential": "cp1.ONE-TIME-TEST-KEY"}
+        return {"credential": KEY}
     monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
     issue = _endpoints()["/settings/accountant-access/grants"]
     response = await issue(Request({"pairing_code": code, "label": ""}))
@@ -289,7 +291,7 @@ async def test_scopes_derived_from_entities(monkeypatch):
     seen = []
     async def create(token, body):
         seen.append(body)
-        return {"credential": "cp1.ONE-TIME-TEST-KEY"}
+        return {"credential": KEY}
     monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
     response = await _endpoints()["/settings/accountant-access/grants"](Request({
         "pairing_code": _code(uuid.uuid4()), "label": "Stock",
