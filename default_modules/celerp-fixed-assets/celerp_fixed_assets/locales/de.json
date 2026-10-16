@@ -11,6 +11,7 @@
   "fixed_assets.convention.half_year": "Halbjahr",
   "fixed_assets.error": "Etwas ist schiefgelaufen. Bitte erneut versuchen.",
   "fixed_assets.choose": "Auswählen",
+  "fixed_assets.all_classes": "Alle Klassen",
   "fixed_assets.number": "Nummer",
   "fixed_assets.name": "Bezeichnung",
   "fixed_assets.amount": "Betrag",

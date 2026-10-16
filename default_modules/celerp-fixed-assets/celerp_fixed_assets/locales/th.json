@@ -11,6 +11,7 @@
   "fixed_assets.convention.half_year": "ครึ่งปี",
   "fixed_assets.error": "เกิดข้อผิดพลาด โปรดลองอีกครั้ง",
   "fixed_assets.choose": "เลือก",
+  "fixed_assets.all_classes": "ทุกประเภท",
   "fixed_assets.number": "เลขที่",
   "fixed_assets.name": "ชื่อ",
   "fixed_assets.amount": "จำนวนเงิน",

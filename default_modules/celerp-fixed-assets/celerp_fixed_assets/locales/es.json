@@ -11,6 +11,7 @@
   "fixed_assets.convention.half_year": "Medio año",
   "fixed_assets.error": "Algo salió mal. Inténtelo de nuevo.",
   "fixed_assets.choose": "Elegir",
+  "fixed_assets.all_classes": "Todas las clases",
   "fixed_assets.number": "Número",
   "fixed_assets.name": "Nombre",
   "fixed_assets.amount": "Importe",

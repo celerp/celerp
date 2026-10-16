@@ -11,6 +11,7 @@
   "fixed_assets.convention.half_year": "Demi-année",
   "fixed_assets.error": "Une erreur est survenue. Réessayez.",
   "fixed_assets.choose": "Choisir",
+  "fixed_assets.all_classes": "Toutes les catégories",
   "fixed_assets.number": "Numéro",
   "fixed_assets.name": "Nom",
   "fixed_assets.amount": "Montant",

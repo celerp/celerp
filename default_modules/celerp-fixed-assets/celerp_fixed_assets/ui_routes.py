@@ -66,11 +66,12 @@ def _postable(chart: list[dict]) -> list[dict]:
     return [a for a in chart if a.get("is_active", True) and a["code"] not in parents]
 
 
-def _picker(name: str, options: list[tuple[str, str]], value: str = "", *, label: str) -> FT:
-    """A select, searchable once it could hold more than ten options (rule i)."""
+def _picker(name: str, options: list[tuple[str, str]], value: str = "", *, label: str,
+            empty: str = "fixed_assets.choose") -> FT:
+    """A select, searchable once it could hold more than ten options (rule i). `empty` labels no choice."""
     if len(options) > _SEARCHABLE_THRESHOLD:
-        return searchable_select(name, options, value=value, placeholder=t("fixed_assets.choose"), aria_label=label)
-    return Select(Option(t("fixed_assets.choose"), value="", selected=not value),
+        return searchable_select(name, options, value=value, placeholder=t(empty), aria_label=label)
+    return Select(Option(t(empty), value="", selected=not value),
                   *[Option(text, value=v, selected=v == value) for v, text in options],
                   name=name, cls="form-input", aria_label=label)
 
@@ -266,7 +267,8 @@ def _register_table(items: list[dict], classes: dict[str, str], currency: str) -
 def _filters(q: str, class_id: str, classes: list[dict]) -> FT:
     return Form(
         _input("q", q, type_="search", placeholder=t("fixed_assets.search"), aria_label=t("fixed_assets.search")),
-        _picker("class_id", [(c["id"], c["name"]) for c in classes], class_id, label=t("fixed_assets.class")),
+        _picker("class_id", [(c["id"], c["name"]) for c in classes], class_id, label=t("fixed_assets.class"),
+                empty="fixed_assets.all_classes"),
         Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary"),
         method="get", action="/fixed-assets", cls="flex-row",
     )
@@ -304,6 +306,7 @@ def _class_cell(cls: dict, field: str, chart: list[dict]) -> FT:
     if field == "method":
         labels = {m: t(f"fixed_assets.method.{m}") for m in _methods()}
     return display_cell(cls["id"], field, value, "text", label_map=labels,
+                        cls_extra="cell--number" if field in ("life_months", "residual_percent") else "",
                         edit_url=f"/settings/fixed-assets/classes/{quote(cls['id'], safe=':')}/{field}/edit")
 
 
@@ -328,12 +331,12 @@ def _classes_card(classes: list[dict], chart: list[dict]) -> FT:
                    hx_post="/settings/fixed-assets/classes", hx_target="#fa-classes", hx_swap="outerHTML"),
             cls="flex-row flex-between settings-card-header"),
         P(t("fixed_assets.classes_hint"), cls="settings-hint"),
-        Table(Thead(Tr(Th(t("fixed_assets.name")), Th(t("fixed_assets.method")),
+        Div(Table(Thead(Tr(Th(t("fixed_assets.name")), Th(t("fixed_assets.method")),
                        Th(t("fixed_assets.life_months"), cls="cell--number"),
                        Th(t("fixed_assets.residual_percent"), cls="cell--number"),
                        Th(t("fixed_assets.asset_account")), Th(t("fixed_assets.accumulated_depreciation_account")),
                        Th(t("fixed_assets.depreciation_account")), Th(""))),
-              Tbody(*rows), cls="data-table"),
+              Tbody(*rows), cls="data-table"), cls="table-scroll-wrap"),
         cls="settings-card", id="fa-classes",
     )
 
@@ -390,7 +393,7 @@ def _sources_card(asset: dict, currency: str) -> FT:
     if not sources:
         body = P(t("fixed_assets.no_sources"), cls="form-hint")
     else:
-        body = Ul(*[Li(A(_source_document(s["source"]), href=_source_href(s["source"])), " ",
+        body = Ul(*[Li(A(s.get("ref") or _source_document(s["source"]), href=_source_href(s["source"])), " ",
                        _money(s.get("amount"), currency) if s.get("amount") is not None else "")
                     for s in sources])
     return Div(H2(t("fixed_assets.sources"), cls="section-title"), body, cls="detail-card section-card")

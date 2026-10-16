@@ -41,6 +41,7 @@ async def test_start_panel_then_register_page(owner_ui):
     page = await owner_ui.get("/fixed-assets")
     assert page.status_code == 200 and t("fixed_assets.start_title") in page.text
     assert t("fixed_assets.starter.vehicles") in page.text
+    assert "fixed_assets." not in page.text, "every label on the page reads as words"
 
     started = await owner_ui.post("/fixed-assets/start")
     assert started.headers.get("HX-Redirect") == "/fixed-assets"
@@ -70,6 +71,7 @@ async def test_register_a_bill_line_from_the_intake_page(owner_ui):
     asset = await owner_ui.get(href)
     assert asset.status_code == 200 and "Delivery van" in asset.text
     assert t("fixed_assets.movement.registration") in asset.text
+    assert f">{line['document_ref']}</a>" in asset.text, "the source reads as the bill's reference"
 
     asset_id = href.rsplit("/", 1)[1]
     cell = await owner_ui.patch(f"/fixed-assets/assets/{asset_id}/field/serial", data={"value": "VAN-001"})

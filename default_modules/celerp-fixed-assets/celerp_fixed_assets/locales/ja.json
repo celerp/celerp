@@ -11,6 +11,7 @@
   "fixed_assets.convention.half_year": "半年",
   "fixed_assets.error": "問題が発生しました。もう一度お試しください。",
   "fixed_assets.choose": "選択",
+  "fixed_assets.all_classes": "すべての区分",
   "fixed_assets.number": "番号",
   "fixed_assets.name": "名称",
   "fixed_assets.amount": "金額",

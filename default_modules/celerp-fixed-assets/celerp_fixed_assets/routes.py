@@ -47,7 +47,7 @@ def asset_out(asset_id: str, state: dict, *, money: bool = True) -> dict:
                          - Decimal(str(state.get("accumulated_impairment") or 0)))
     if not money:
         out.update(dict.fromkeys(_MONEY_FIELDS))
-        out["sources"] = [{"source": s.get("source")} for s in out.get("sources") or []]
+        out["sources"] = [{"source": s.get("source"), "ref": s.get("ref")} for s in out.get("sources") or []]
     return out
 
 

@@ -11,6 +11,7 @@
   "fixed_assets.convention.half_year": "ግማሽ ዓመት",
   "fixed_assets.error": "ችግር ተፈጥሯል። እንደገና ይሞክሩ።",
   "fixed_assets.choose": "ይምረጡ",
+  "fixed_assets.all_classes": "ሁሉም ምድቦች",
   "fixed_assets.number": "ቁጥር",
   "fixed_assets.name": "ስም",
   "fixed_assets.amount": "መጠን",

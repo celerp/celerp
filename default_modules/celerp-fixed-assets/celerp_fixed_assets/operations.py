@@ -293,7 +293,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
             return ({"assets": [], "journals": [je_id]},
                     _effects(claims=[line["source"]], journals=[je_id], maint=maint))
         assets, journals, movements = [], [], []
-        source_ref = {"source": line["source"], "amount": line["amount"]}
+        source_ref = {"source": line["source"], "ref": line.get("document_ref"), "amount": line["amount"]}
         for number, (cost, quantity), reclass in zip(context["numbers"], context["each"],
                                                     context["journals"] or [None] * len(context["each"])):
             asset_id = await _create_asset(
