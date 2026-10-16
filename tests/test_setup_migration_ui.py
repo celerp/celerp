@@ -155,6 +155,8 @@ class FakeMigrationAPI:
         self.scan_error = False
         self.expired = False
         self.with_questions = True
+        self.draft_view: dict | None = None   # an export set the API keeps as a draft
+        self.scan_bodies: list[bytes] = []
         self._n = 0
 
     def add_run(self, status: str, **kw) -> str:
@@ -170,10 +172,15 @@ class FakeMigrationAPI:
         if method == "GET" and path == "/migrations/sources":
             return _json(200, _SOURCES)
         if method == "POST" and path in ("/migrations/bootstrap/scan", "/migrations/scan"):
+            self.scan_bodies.append(body)
             if self.scan_error:
                 return _json(422, {"detail": "Celerp cannot read this file yet."})
+            if self.expired and _form_field(body, "draft"):
+                return _json(410, {"detail": "This scan has expired. Upload the file again."})
             source = _form_field(body, "source") or "manager_io"
             self._n += 1
+            if self.draft_view is not None and (_form_field(body, "check") or not self.draft_view["complete"]):
+                return _json(200, {"draft_token": f"drafttoken{self._n:04d}secretvalue", "checklist": self.draft_view})
             token = f"scantoken{self._n:04d}secretvalue"
             scan = _scan_view(source, _file_name(body) or "upload")
             if not self.with_questions:
@@ -626,7 +633,9 @@ async def test_source_selection_offers_source_request_link(ui, router, fake_api,
     from celerp.importers.adapters.registry import list_adapters
     body = r.json()
     assert [s["key"] for s in body] == [a.key for a in list_adapters()]
-    assert all(set(s) == {"key", "display_name", "accepts", "artifacts"} for s in body)
+    assert all(set(s) == {"key", "display_name", "accepts", "artifacts", "checklist"} for s in body)
+    assert {s["key"]: s["checklist"] is not None for s in body} == {
+        a.key: hasattr(a, "checklist") for a in list_adapters()}
 
     r = await ui.post("/setup/migrate/scan", files=_UPLOAD,
                       data={"source": "manager_io", "prepared_by": "Example Bookkeeping"})
@@ -664,6 +673,96 @@ async def test_source_selection_offers_source_request_link(ui, router, fake_api,
     assert form and _inputs(form.group(1), "source")
 
     assert {host for _, host, _ in router.calls} == {"api"}
+
+
+DRAFT_COOKIE = "celerp_migration_draft"
+
+
+def _export_set_sources(monkeypatch) -> dict:
+    """The fake API offering Xero's export set beside the one-file sources; its blank checklist."""
+    from celerp.importers.adapters.exports import XeroAdapter
+    blank = XeroAdapter().checklist().view()
+    monkeypatch.setattr(sys.modules[__name__], "_SOURCES", [*_SOURCES, {
+        "key": "xero", "display_name": "Xero", "accepts": "",
+        "artifacts": [{"key": "export_set", "label": "Xero export files",
+                       "extensions": [".csv", ".txt", ".xlsx", ".zip"], "max_bytes": 1024 ** 3}],
+        "checklist": blank}])
+    return blank
+
+
+async def test_an_export_set_is_checked_file_by_file_and_kept_as_a_draft(ui, router, fake_api, monkeypatch):
+    blank = _export_set_sources(monkeypatch)
+    r = await ui.get("/setup/migrate?source=xero")
+    page = _page(r)
+    assert "Files to export from Xero" in page and "Xero closes access" in page
+    assert "Accounting > Reports > General Ledger > Export" in page
+    assert _link(page, "/setup/migrate/checklist?source=xero", "Open this list to print")
+    files = _inputs(page, "files")[0]
+    assert _attr(files, "hx-post") == "/setup/migrate/check" and _attr(files, "hx-include") == "closest form"
+    assert re.search(r"\bmultiple\b", files)       # an export set is many files of one kind
+    radio = next(tag for tag in _inputs(page, "source") if _attr(tag, "value") == "xero")
+    assert _attr(radio, "hx-get") == "/setup/migrate/checklist?source=xero"
+
+    printable = _page(await ui.get("/setup/migrate/checklist?source=xero"))
+    assert "Files to export from Xero" in printable and 'onclick="window.print()"' in printable
+    assert "is missing" not in printable    # a blank list names no problems before the first file
+    one_file = _page(await ui.get("/setup/migrate/checklist?source=manager_io"))
+    assert 'id="export-checklist"' in one_file and "has no list of files to export" in one_file
+
+    # A one-file source is never checked as a set: its chosen file stays in the field.
+    r = await ui.post("/setup/migrate/check", files=_UPLOAD, data={"source": "manager_io"})
+    assert r.status_code == 200 and fake_api.scan_bodies == []
+    assert "X-Export-Draft-Kept" not in r.headers
+
+    fake_api.draft_view = {**blank, "problems": ["General Ledger is missing. Export it from Accounting > "
+                                                 "Reports > General Ledger > Export."],
+                           "uploads": [{"name": "notes.txt", "stored_name": "artifact-1"}]}
+    r = await ui.post("/setup/migrate/check", files={"files": ("notes.txt", b"call the bank", "text/plain")},
+                      data={"source": "xero"})
+    assert r.status_code == 200 and r.headers["X-Export-Draft-Kept"] == "1"
+    assert _form_field(fake_api.scan_bodies[-1], "check") == "1"
+    token = _cookie_value(r, DRAFT_COOKIE)
+    assert "HttpOnly" in _cookie_header(r, DRAFT_COOKIE)
+    panel = _page(r)
+    assert panel.startswith('<div id="export-checklist"') and "General Ledger is missing" in panel
+    assert '"remove": "artifact-1"' in panel and "Remove" in panel
+    assert "Choose it again to put it back" in panel
+
+    ui.cookies.set(DRAFT_COOKIE, token, path="/setup/migrate")
+    r = await ui.post("/setup/migrate/check", data={"source": "xero", "remove": "artifact-1"},
+                      files={"files": ("", b"", "application/octet-stream")})
+    body = fake_api.scan_bodies[-1]
+    assert _form_field(body, "draft") == token and _form_field(body, "remove") == "artifact-1"
+
+    # Analyze with the set still short: the page says so and keeps every received file.
+    r = await ui.post("/setup/migrate/scan", data={"source": "xero"},
+                      files={"files": ("", b"", "application/octet-stream")})
+    assert r.status_code == 200
+    page = _page(r)
+    assert "The set is not ready to analyze yet" in page and "General Ledger is missing" in page
+    # Said inside the list, so the next check that swaps the list in also clears it.
+    assert page.index('id="export-checklist"') < page.index("The set is not ready to analyze yet")
+    assert _form_field(fake_api.scan_bodies[-1], "draft") == token
+    assert _form_field(fake_api.scan_bodies[-1], "check") is None
+    ui.cookies.set(DRAFT_COOKIE, _cookie_value(r, DRAFT_COOKIE), path="/setup/migrate")
+
+    fake_api.draft_view = {**blank, "complete": True, "problems": [], "uploads": []}
+    r = await ui.post("/setup/migrate/scan", data={"source": "xero"},
+                      files={"files": ("", b"", "application/octet-stream")})
+    assert r.status_code == 303 and r.headers["location"] == "/setup/migrate/coverage"
+    assert _cookie_value(r, SCAN_COOKIE) in fake_api.scans and _cleared(r, DRAFT_COOKIE)
+
+
+async def test_an_expired_draft_is_dropped_with_the_reason(ui, router, fake_api, monkeypatch):
+    blank = _export_set_sources(monkeypatch)
+    fake_api.draft_view = {**blank, "uploads": []}
+    fake_api.expired = True
+    ui.cookies.set(DRAFT_COOKIE, "drafttoken0001secretvalue", path="/setup/migrate")
+    r = await ui.post("/setup/migrate/check", data={"source": "xero"},
+                      files={"files": ("Contacts.csv", b"*ContactName\r\n", "text/csv")})
+    assert r.status_code == 200 and "This scan has expired" in _page(r)
+    assert _cleared(r, DRAFT_COOKIE) and "X-Export-Draft-Kept" not in r.headers
+    assert "Files to export from Xero" in _page(r)    # the blank list stays to start again
 
 
 # ---------------------------------------------------------------------------

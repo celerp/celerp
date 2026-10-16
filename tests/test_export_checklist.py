@@ -51,6 +51,11 @@ def _books():
     return qbo.simulate()
 
 
+def _folder(path):
+    path.mkdir(exist_ok=True)
+    return path
+
+
 def _journal_years(*periods: tuple[date, date]) -> list[tuple[str, bytes]]:
     rest = [(n, d) for n, d in _qbo() if n != "Journal.xlsx"]
     return rest + [(f"Journal {start.isoformat()}.xlsx", qbo.journal(_books(), start, end)) for start, end in periods]
@@ -132,7 +137,7 @@ YEARS = [(date(y, 1, 1), date(y, 12, 31)) for y in qbo.YEARS]
 
 def test_a_journal_exported_per_year_joins_and_reads_the_same(tmp_path):
     whole = _qbo_adapter().inspect(_set(tmp_path, _qbo()))
-    per_year = _set(tmp_path / "years", _journal_years(*YEARS))
+    per_year = _set(_folder(tmp_path / "years"), _journal_years(*YEARS))
     assert _qbo_adapter().check(per_year).complete is True
     assert _items(_qbo_adapter().check(per_year).view())["journal"]["files"] == [
         f"Journal {start.isoformat()}.xlsx" for start, _ in YEARS]
@@ -146,11 +151,11 @@ def test_overlapping_or_gapped_years_are_named_with_the_dates_to_export(tmp_path
     assert "Journal 2024-01-01.xlsx overlaps Journal 2023-01-01.xlsx from 1 Jan 2024" in problems
     assert "Export Journal 2024-01-01.xlsx again from 1 Jul 2024" in problems
 
-    gap = _qbo_adapter().check(_set(tmp_path / "gap", _journal_years(YEARS[0], YEARS[2])))
+    gap = _qbo_adapter().check(_set(_folder(tmp_path / "gap"), _journal_years(YEARS[0], YEARS[2])))
     problems = " ".join(gap.view()["problems"])
     assert "Journal: nothing covers 1 Jan 2024 to 31 Dec 2024" in problems
     with pytest.raises(ScanError, match="nothing covers 1 Jan 2024 to 31 Dec 2024"):
-        _qbo_adapter().inspect(_set(tmp_path / "gap", _journal_years(YEARS[0], YEARS[2])))
+        _qbo_adapter().inspect(_set(_folder(tmp_path / "gap"), _journal_years(YEARS[0], YEARS[2])))
 
 
 # ── Drafts: a set brought in a file at a time ────────────────────────────────
