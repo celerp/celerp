@@ -306,7 +306,7 @@ async def test_stock_sync_refuses_missing_issued_stock_document(monkeypatch):
 
     async def excluded(cid):
         assert isinstance(cid, uuid.UUID)
-        return "doc:excluded-sale"
+        return "doc:excluded-sale", "INV-0042"
 
     async def must_not_send(*args):
         pytest.fail("Stock counts must not bypass an excluded stock transaction")
@@ -320,6 +320,7 @@ async def test_stock_sync_refuses_missing_issued_stock_document(monkeypatch):
     ))
     assert not result.ok
     assert result.attention[0]["id"] == "doc:excluded-sale"
+    assert result.attention[0]["label"] == "INV-0042"
     assert "reconciliation" in result.errors[0].lower()
 
 
@@ -350,6 +351,7 @@ async def test_stock_exclusion_guard_checks_full_document_page(monkeypatch):
                 ])
             return Records([
                 ("doc:1000", {"status": "final", "accounting_sync_excluded": True,
+                              "ref_id": "INV-1000",
                               "line_items": [{"sku": "ITEM", "quantity": 1}]})
             ])
     @asynccontextmanager
@@ -357,7 +359,7 @@ async def test_stock_exclusion_guard_checks_full_document_page(monkeypatch):
         yield Session()
 
     monkeypatch.setattr("celerp.db.get_session_ctx", session_factory)
-    assert await peer._excluded_stock_document(cid) == "doc:1000"
+    assert await peer._excluded_stock_document(cid) == ("doc:1000", "INV-1000")
     assert pages == 2
 
 

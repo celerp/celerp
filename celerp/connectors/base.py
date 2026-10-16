@@ -51,10 +51,15 @@ class SyncFrequency(str, Enum):
     DAILY = "daily"         # once per day at configured hour
 
 
-# Entity classification for direction filtering. Inbound entities are pulled from
-# the platform; the *_out entities are pushed from Celerp to the platform.
-_INBOUND_ENTITIES = {"products", "orders", "contacts", "inventory"}
-_OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out", "contacts_out", "documents_out", "attachments_out"}
+# The one list of sync entities. Inbound entities are pulled from the platform; the
+# *_out entities are pushed from Celerp to the platform, in dispatch order (documents
+# before the stock counts and files that refer to them). Each entity is run by the
+# connector method named sync_<entity>.
+INBOUND_ENTITIES = ("products", "orders", "contacts", "inventory")
+OUTBOUND_ENTITIES = (
+    "products_out", "contacts_out", "invoices_out", "documents_out",
+    "inventory_out", "attachments_out",
+)
 
 
 def entity_allowed(entity: str, direction: SyncDirection) -> bool:
@@ -62,9 +67,9 @@ def entity_allowed(entity: str, direction: SyncDirection) -> bool:
     if direction == SyncDirection.BOTH:
         return True
     if direction == SyncDirection.INBOUND:
-        return entity in _INBOUND_ENTITIES
+        return entity in INBOUND_ENTITIES
     if direction == SyncDirection.OUTBOUND:
-        return entity in _OUTBOUND_ENTITIES
+        return entity in OUTBOUND_ENTITIES
     return False
 
 

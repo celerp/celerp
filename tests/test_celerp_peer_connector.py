@@ -62,7 +62,7 @@ async def test_versioned_contact_outbound_and_retry_reporting(monkeypatch):
         company_id=company, store_handle="https://peer.example", access_token="cp1.secret"))
     assert result.updated == 1
     assert len(result.errors) == 1
-    assert result.attention == [{"id": "contact:b", "label": "contact:b",
+    assert result.attention == [{"id": "contact:b", "label": "B",
                                  "reason": "Receiving installation needs attention"}]
     assert sent[0]["json"]["source_revision"] == 3
     assert sent[0]["json"]["data"]["name"] == "A"

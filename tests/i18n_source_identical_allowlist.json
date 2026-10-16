@@ -260,6 +260,7 @@
     "cloud.plan_cloud_name",
     "cloud.tab_infrastructure",
     "company_backup.file_failed",
+    "connectors.entity_documents_out",
     "connectors.shop_url_placeholder",
     "connectors.status_ok",
     "contacts.contact_name_fallback",

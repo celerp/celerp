@@ -12,7 +12,9 @@ from celerp.services.attachments import MAX_FILE_BYTES, accepts_mime, read_compa
 async def sync_document_attachments(connector, ctx):
     from celerp.connectors.base import SyncDirection, SyncEntity, SyncResult
     from celerp.connectors.http import RateLimitedClient
-    from celerp.connectors.celerp import _PAGE, _read_projection_page, _target_url
+    from celerp.connectors.celerp import (
+        _PAGE, _read_projection_page, _target_url, attention_label,
+    )
     from celerp.connectors.sync_runner import _last_success_watermark
 
     result = SyncResult(
@@ -35,13 +37,20 @@ async def sync_document_attachments(connector, ctx):
                     result.skipped += 1
                     continue
                 files = state.get("files") or []
+                doc_label = attention_label(state, source_doc_id)
                 if not isinstance(files, list):
                     result.errors.append("Document attachment list needs review")
-                    result.attention.append({"id": source_doc_id, "reason": "Invalid attachment list"})
+                    result.attention.append({
+                        "id": source_doc_id, "label": doc_label,
+                        "reason": "Invalid attachment list",
+                    })
                     continue
                 for meta in files:
                     attachment_id = meta.get("id") if isinstance(meta, dict) else None
-                    label = f"{source_doc_id}:{attachment_id or '?'}"
+                    filename = meta.get("filename") if isinstance(meta, dict) else None
+                    key = f"{source_doc_id}:{attachment_id or '?'}"
+                    label = (f"{doc_label}: {filename}" if isinstance(filename, str) and filename
+                             else doc_label)
                     try:
                         if (not isinstance(attachment_id, str) or not attachment_id
                                 or len(attachment_id) > 255):
@@ -77,7 +86,7 @@ async def sync_document_attachments(connector, ctx):
                     except Exception:
                         result.errors.append("Attachment delivery incomplete")
                         result.attention.append({
-                            "id": label, "label": label,
+                            "id": key, "label": label,
                             "reason": "Document attachment needs attention",
                         })
             after = page[-1][0]

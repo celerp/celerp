@@ -184,8 +184,18 @@ async def _read_audits(company_id: uuid.UUID, after: str, since=None) -> list[tu
         return out
 
 
-async def _excluded_stock_document(company_id: uuid.UUID) -> str | None:
-    """An excluded stock transaction cannot be represented as a count variance."""
+def attention_label(state: dict, fallback: str) -> str:
+    """How the user knows a record: its document number, name, or stock location."""
+    for key in ("ref_id", "name", "location_name"):
+        value = state.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return fallback
+
+
+async def _excluded_stock_document(company_id: uuid.UUID) -> tuple[str, str] | None:
+    """An excluded stock transaction cannot be represented as a count variance.
+    Returns the document's id and its attention label."""
     from celerp.db import get_session_ctx
     from celerp.services.peer_documents import requires_stock_movement
 
@@ -203,7 +213,7 @@ async def _excluded_stock_document(company_id: uuid.UUID) -> str | None:
             for entity_id, state in rows:
                 state = state or {}
                 if state.get("status") not in ("draft", "void") and requires_stock_movement(state):
-                    return str(entity_id)
+                    return str(entity_id), attention_label(state, str(entity_id))
             if len(rows) < _PAGE:
                 return None
             after = rows[-1][0]
@@ -291,7 +301,10 @@ class CelerpConnector(ConnectorBase):
                         reason = "Contact name unavailable" if kind == "contacts" else "Product name missing"
                     if reason is not None:
                         result.errors.append(reason)
-                        result.attention.append({"id": entity_id, "label": entity_id, "reason": reason})
+                        result.attention.append({
+                            "id": entity_id, "label": attention_label(state, entity_id),
+                            "reason": reason,
+                        })
                         continue
                     if kind == "products" and not data.get("sell_by"):
                         data["sell_by"] = "piece"
@@ -312,7 +325,7 @@ class CelerpConnector(ConnectorBase):
                     except Exception:
                         result.errors.append(label + " delivery incomplete")
                         result.attention.append({
-                            "id": entity_id, "label": entity_id,
+                            "id": entity_id, "label": attention_label(state, entity_id),
                             "reason": "Receiving installation needs attention",
                         })
                 after = (str(page[-1][2]["source_closed_event_id"]) if kind == "inventory"
@@ -333,10 +346,11 @@ class CelerpConnector(ConnectorBase):
     async def sync_inventory_out(self, ctx: ConnectorContext) -> SyncResult:
         excluded = await _excluded_stock_document(uuid.UUID(ctx.company_id))
         if excluded is not None:
+            excluded_id, excluded_label = excluded
             return SyncResult(
                 entity=SyncEntity.INVENTORY, direction=SyncDirection.OUTBOUND,
                 errors=["Inventory needs a complete source-document reconciliation"],
-                attention=[{"id": excluded, "label": excluded,
+                attention=[{"id": excluded_id, "label": excluded_label,
                             "reason": "A stock-linked document was excluded from accounting sync"}],
             )
         return await self._send_outbound(ctx, "inventory", _read_audits)

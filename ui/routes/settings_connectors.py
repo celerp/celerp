@@ -20,7 +20,9 @@ from ui.i18n import get_lang, refusal_text, t
 from ui.routes.settings import _check_permission, _token
 from ui.security import is_safe_authorize_url
 
-from celerp.connectors.base import ConnectorCategory, SyncFrequency
+from celerp.connectors.base import (
+    INBOUND_ENTITIES, OUTBOUND_ENTITIES, ConnectorCategory, SyncFrequency,
+)
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
 from celerp.services.background import spawn_background
 
@@ -421,11 +423,12 @@ _ENTITY_LABELS: dict[str, str] = {
     "orders": "dashboard.orders",
     "contacts": "dashboard.contacts",
     "inventory": "nav.inventory",
-    "invoices": "nav.invoices",
     "products_out": "connectors.entity_products_out",
-    "invoices_out": "connectors.entity_invoices_out",
-    "inventory_out": "connectors.entity_inventory_out",
     "contacts_out": "dashboard.contacts",
+    "invoices_out": "connectors.entity_invoices_out",
+    "documents_out": "connectors.entity_documents_out",
+    "inventory_out": "connectors.entity_inventory_out",
+    "attachments_out": "connectors.entity_attachments_out",
 }
 
 
@@ -435,8 +438,7 @@ def _entity_label(entity: str, lang: str = "en") -> str:
     key = _ENTITY_LABELS.get(entity)
     return t(key, lang) if key else entity
 
-_ENTITY_ORDER = ["products", "orders", "contacts", "inventory", "invoices",
-                 "products_out", "invoices_out", "inventory_out", "contacts_out"]
+_ENTITY_ORDER = [*INBOUND_ENTITIES, *OUTBOUND_ENTITIES]
 
 
 async def _entity_runs(company_id: str, connector: str) -> dict:
@@ -515,8 +517,9 @@ def _entity_status_table(runs: dict, lang: str = "en") -> FT:
         ))
     return Table(
         Thead(Tr(Th(t("connectors.entity", lang)), Th(t("connectors.last_sync", lang)),
-                 Th(t("connectors.status", lang)), Th(t("connectors.changes", lang)),
-                 Th(t("connectors.issues_header", lang)))),
+                 Th(t("connectors.status", lang)),
+                 Th(t("connectors.changes", lang), cls="cell--number"),
+                 Th(t("connectors.issues_header", lang), cls="cell--number"))),
         Tbody(*rows),
         cls="data-table",
     )
@@ -553,7 +556,8 @@ def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | N
 
 def _attention_list(platform: str, entries: list[dict], lang: str = "en") -> FT:
     """Records the connector could not import and is holding for a person (an
-    order whose customer or product is missing, or a refund to reconcile). The
+    order whose customer or product is missing, a refund to reconcile, or a record
+    the receiving company could not take, named by its number or name). The
     list is kept until a sync produces a new one, so a failed run never hides it.
     Orders a person marked reconciled sit in a collapsed section under the open
     ones, with Undo, until the order changes in the store."""
@@ -562,7 +566,9 @@ def _attention_list(platform: str, entries: list[dict], lang: str = "en") -> FT:
     open_entries = [e for e in entries if not e.get("reconciled")]
     reconciled = [e for e in entries if e.get("reconciled")]
     return Div(
-        P(t("connectors.attention_header", lang), cls="settings-section-title"),
+        # A store connector holds orders; the Celerp connector holds any record it sends.
+        P(t("connectors.attention_header_records" if platform == "celerp"
+            else "connectors.attention_header", lang), cls="settings-section-title"),
         Ul(*[_attention_item(platform, e, lang) for e in open_entries]) if open_entries else Span(),
         Details(
             Summary(t("connectors.attention_reconciled_header", lang, n=len(reconciled)),

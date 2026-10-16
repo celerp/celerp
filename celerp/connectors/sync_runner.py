@@ -9,6 +9,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from celerp.connectors.base import (
+    INBOUND_ENTITIES,
+    OUTBOUND_ENTITIES,
     ConnectorBase,
     ConnectorContext,
     SyncDirection,
@@ -22,35 +24,16 @@ from celerp.models.sync_run import SyncRun
 
 log = logging.getLogger(__name__)
 
-_SYNC_METHODS = {
-    "products": "sync_products",
-    "orders": "sync_orders",
-    "contacts": "sync_contacts",
-    "inventory": "sync_inventory",
-    "products_out": "sync_products_out",
-    "contacts_out": "sync_contacts_out",
-    "invoices_out": "sync_invoices_out",
-    "documents_out": "sync_documents_out",
-    "inventory_out": "sync_inventory_out",
-    "attachments_out": "sync_attachments_out",
-}
-_OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out", "contacts_out", "documents_out", "attachments_out"}
+_SYNC_METHODS = {entity: f"sync_{entity}" for entity in (*INBOUND_ENTITIES, *OUTBOUND_ENTITIES)}
 CONNECTOR_RESET_ENTITY = "__connector_reset__"
-_OUTBOUND_ENTITY_METHODS = {
-    "products_out": "sync_products_out",
-    "contacts_out": "sync_contacts_out",
-    "invoices_out": "sync_invoices_out",
-    "documents_out": "sync_documents_out",
-    "inventory_out": "sync_inventory_out",
-    "attachments_out": "sync_attachments_out",
-}
 
 
 def supported_outbound(connector: ConnectorBase) -> list[str]:
     """Outbound entities implemented by this connector, in stable dispatch order."""
     return [
-        entity for entity, method in _OUTBOUND_ENTITY_METHODS.items()
-        if getattr(type(connector), method, None) is not getattr(ConnectorBase, method, None)
+        entity for entity in OUTBOUND_ENTITIES
+        if getattr(type(connector), _SYNC_METHODS[entity], None)
+        is not getattr(ConnectorBase, _SYNC_METHODS[entity], None)
     ]
 
 
@@ -406,7 +389,7 @@ async def run_sync(
             else:
                 if (
                     since is None
-                    and entity not in _OUTBOUND_ENTITIES
+                    and entity not in OUTBOUND_ENTITIES
                     and use_watermark
                 ):
                     since = await _last_success_watermark(
@@ -438,7 +421,7 @@ async def run_sync(
                     await bind_connector_store(
                         guard_session, ctx.company_id, connector, current_ctx
                     )
-                    if entity in _OUTBOUND_ENTITIES:
+                    if entity in OUTBOUND_ENTITIES:
                         result = await sync_method(current_ctx)
                     else:
                         accepts = inspect.signature(sync_method).parameters
