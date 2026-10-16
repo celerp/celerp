@@ -265,6 +265,8 @@ _SYSTEM_EVENT_TYPES = frozenset({
     "fa.run.prepared",
     "fa.run.posted",
     "fa.run.reversed",
+    "fa.import.recorded",
+    "fa.import.row",
 })
 
 # metadata_.reason values that mark an event as a mechanical side-effect of a

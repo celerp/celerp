@@ -89,10 +89,11 @@ async def asset_movements(session, company_id, asset_id: str) -> list[dict]:
     return recorded((await session.execute(movements_query(company_id, asset_id))).all())
 
 
-async def _next_numbers(session, company_id, count: int) -> list[str]:
-    """The next ``count`` asset numbers. Numbers are never reused, undone assets included."""
-    used = [int(s["number"][3:]) for _, s in await _entities(session, company_id, "fa_asset")
-            if str(s.get("number") or "").startswith("FA-") and s["number"][3:].isdigit()]
+async def _next_numbers(session, company_id, count: int, taken=()) -> list[str]:
+    """The next ``count`` asset numbers after the company's and the ``taken`` ones about to
+    be added with them. Numbers are never reused, undone assets included."""
+    numbers = [str(s.get("number") or "") for _, s in await _entities(session, company_id, "fa_asset")]
+    used = [int(n[3:]) for n in [*numbers, *taken] if n.startswith("FA-") and n[3:].isdigit()]
     start = max(used, default=0) + 1
     return [f"FA-{n:04d}" for n in range(start, start + count)]
 
@@ -424,6 +425,14 @@ async def link_depreciation(session, company_id, user_id, body: dict) -> dict:
 # ── Assets added by hand ─────────────────────────────────────────────────────
 
 
+WRITTEN_OFF_OVER_COST = "Accumulated depreciation and impairment cannot be more than the cost."
+
+
+def after_cutover(cut: str) -> str:
+    """Why an opening asset cannot be dated after the cutover, and what to do instead."""
+    return f"Dated after the cutover {cut}. Enter the bill, or use Contributed or acquired without a bill."
+
+
 async def _financials(session, company_id, fa: dict, body: dict) -> dict:
     """The checked financial details of an opening or contributed asset."""
     from celerp.services.journal_accounts import require_destinations
@@ -436,12 +445,11 @@ async def _financials(session, company_id, fa: dict, body: dict) -> dict:
     cut = setup.cutover(fa)
     if kind == "opening":
         if cut and available > cut:
-            raise setup.unprocessable(f"Dated after the cutover {cut}. Enter the bill, or use Contributed or "
-                                      "acquired without a bill.")
+            raise setup.unprocessable(after_cutover(cut))
         dep = _amount(body.get("accumulated_depreciation"), "Accumulated depreciation")
         imp = _amount(body.get("accumulated_impairment"), "Accumulated impairment")
         if dep + imp > cost:
-            raise setup.unprocessable("Accumulated depreciation and impairment cannot be more than the cost.")
+            raise setup.unprocessable(WRITTEN_OFF_OVER_COST)
         out.update(dep=dep, imp=imp, posting=cut or available)
     elif kind == "contributed":
         credit = str(body.get("credit_account") or "")
@@ -568,16 +576,24 @@ def by_tag(assets: list[tuple[str, dict]], tag: str) -> tuple[str, dict] | None:
             or next(((eid, s) for eid, s in live if (s.get("number") or "").casefold() == needle), None))
 
 
-async def _tag_free(session, company_id, asset_id: str, tag: str) -> None:
-    """Refuse a tag another of the company's assets carries, or that is another asset's number.
-    The caller holds the company lock (lock_projections), so two assets never claim one tag."""
-    held = by_tag(await _entities(session, company_id, "fa_asset"), tag)
+def tag_taken(assets: list[tuple[str, dict]], asset_id: str, tag: str) -> str | None:
+    """Why ``tag`` cannot go on ``asset_id``: another asset carries it, or it is another
+    asset's number. None when it is free."""
+    held = by_tag(assets, tag)
     if held is None or held[0] == asset_id:
-        return
+        return None
     number = held[1].get("number")
     if (held[1].get("tag") or "").casefold() == tag.strip().casefold():
-        raise setup.unprocessable(f"Tag {held[1]['tag']} is already on {number}.")
-    raise setup.unprocessable(f"{number} is another asset's number, so it cannot be a tag here.")
+        return f"Tag {held[1]['tag']} is already on {number}."
+    return f"{number} is another asset's number, so it cannot be a tag here."
+
+
+async def _tag_free(session, company_id, asset_id: str, tag: str) -> None:
+    """Refuse a tag that is taken (tag_taken). The caller holds the company lock
+    (lock_projections), so two assets never claim one tag."""
+    problem = tag_taken(await _entities(session, company_id, "fa_asset"), asset_id, tag)
+    if problem:
+        raise setup.unprocessable(problem)
 
 
 async def update_asset(session, company_id, user_id, asset_id: str, body: dict) -> dict:
@@ -639,28 +655,40 @@ async def reverse_move(session, company_id, user_id, movement_id: str, mv: dict,
                        quantity=str(-_dec(mv.get("quantity"))), reverses=movement_id)
 
 
-async def _undo(session, company_id, user_id, target_key: str, body: dict) -> dict:
+async def _undo(session, company_id, user_id, target_keys: list[str], body: dict, *, subject: str | None = None,
+                done=None) -> dict:
+    """Undo the operations ``target_keys`` together, as one operation. ``subject`` is what the
+    result names as undone (the one operation by default); ``done(op_key)`` records anything
+    else the undo changes, such as the import the operations belong to."""
     from celerp.services.company_lock import lock_projections
     from celerp.services.module_journals import reverse_journal
 
     async def plan(fa):
-        op = await _state(session, company_id, f"fa:op:{target_key}")
-        if op is None or op.get("type") in (None, "undo"):
+        ops = [await _state(session, company_id, f"fa:op:{key}") for key in target_keys]
+        if not ops or any(op is None or op.get("type") in (None, "undo") for op in ops):
             raise setup.unprocessable("There is nothing to undo here.")
-        if op.get("undone_by"):
+        if any(op.get("undone_by") for op in ops):
             raise conflict("This was already undone.")
-        if op.get("type") == "transfer_in":
-            source = op["result"]["source"]
+        transfer = next((op for op in ops if op.get("type") == "transfer_in"), None)
+        if transfer:
+            source = transfer["result"]["source"]
             raise conflict(f"This asset was transferred in from {source['company_name']}. Undo the transfer on "
                            f"{source['number']} there instead.")
-        effects = op.get("effects") or {}
-        claims = [sources.claim_id(s) for s in effects.get("claims") or []]
-        rows = await lock_projections(session, company_id, [*effects.get("assets", []), *claims])
-        assets = [rows[a].state for a in effects.get("assets", [])]
-        for a in assets:
-            if int(a.get("movement_count") or 0) > 1:
-                raise conflict(f"{a['number']} has changed since it was registered. Use Correct instead.")
-        movements = {m: await _state(session, company_id, m) for m in effects.get("movements", [])}
+        effects = _effects(**{k: [x for op in ops for x in (op.get("effects") or {}).get(k) or []]
+                              for k in ("assets", "movements", "claims", "journals", "maint", "statuses",
+                                        "changes", "classes")})
+        effects["unchanged"] = {k: v for op in ops
+                                for k, v in ((op.get("effects") or {}).get("unchanged") or {}).items()}
+        claims = [sources.claim_id(s) for s in effects["claims"]]
+        rows = await lock_projections(session, company_id, [*effects["assets"], *claims])
+        assets = [rows[a].state for a in effects["assets"]]
+        changed = [a["number"] for a in assets if int(a.get("movement_count") or 0) > 1]
+        if len(changed) == 1:
+            raise conflict(f"{changed[0]} has changed since it was registered. Use Correct instead.")
+        if changed:
+            raise conflict(f"These assets have changed since they were added: {', '.join(changed)}. "
+                           "Use Correct on each instead.")
+        movements = {m: await _state(session, company_id, m) for m in effects["movements"]}
         # Per asset it did not create, the operation's last movement is still the asset's latest.
         last: dict[str, int] = {}
         for m, s in movements.items():
@@ -681,7 +709,7 @@ async def _undo(session, company_id, user_id, target_key: str, body: dict) -> di
         journals = {j: await _state(session, company_id, j) for j in effects.get("journals", [])}
         shown = {"assets": [{"number": a["number"]} for a in assets],
                  "journals": [_reversed_lines(je) for je in journals.values() if je and je.get("status") == "posted"]}
-        return shown, {"op": op, "effects": effects, "movements": movements, "claims": claims}
+        return shown, {"effects": effects, "movements": movements, "claims": claims}
 
     async def apply(context, op_key):
         effects = context["effects"]
@@ -711,8 +739,11 @@ async def _undo(session, company_id, user_id, target_key: str, body: dict) -> di
         for cls in effects.get("classes", []):
             await _emit(session, company_id, user_id, cls["id"], "fa_class", "fa.class.updated",
                         {"changes": cls["before"]})
-        await _emit(session, company_id, user_id, f"fa:op:{target_key}", "fa_op", "fa.op.undone", {"undo_key": op_key})
-        return {"undone": target_key, "assets": [], "journals": []}, _effects()
+        for key in target_keys:
+            await _emit(session, company_id, user_id, f"fa:op:{key}", "fa_op", "fa.op.undone", {"undo_key": op_key})
+        if done is not None:
+            await done(op_key)
+        return {"undone": subject or target_keys[0], "assets": [], "journals": []}, _effects()
 
     return await _run(session, company_id, user_id, body, op_type="undo", keys=("manage_accounting",),
                       plan=plan, apply=apply)
@@ -723,7 +754,11 @@ async def undo_asset(session, company_id, user_id, asset_id: str, body: dict) ->
     asset = await _state(session, company_id, asset_id)
     if asset is None or not asset_id.startswith("fa:asset:"):
         raise HTTPException(status_code=404, detail="No such asset.")
-    return await _undo(session, company_id, user_id, asset["op_key"], body)
+    if asset.get("import_batch"):
+        from celerp_fixed_assets import imports
+
+        return await imports.undo_import(session, company_id, user_id, asset["import_batch"], body)
+    return await _undo(session, company_id, user_id, [asset["op_key"]], body)
 
 
 async def undo_source(session, company_id, user_id, body: dict) -> dict:
@@ -731,4 +766,4 @@ async def undo_source(session, company_id, user_id, body: dict) -> dict:
     claim = await _state(session, company_id, sources.claim_id(str(body.get("source") or "")))
     if claim is None or claim.get("status") != "claimed":
         raise setup.unprocessable("This line is not registered.")
-    return await _undo(session, company_id, user_id, claim["op_key"], body)
+    return await _undo(session, company_id, user_id, [claim["op_key"]], body)

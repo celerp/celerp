@@ -187,9 +187,10 @@ async def test_j5_preview_reconciles_and_flags_duplicates(fa):
     assert held["number"] in flagged[1] and "SN-1" in flagged[1].upper()
     assert "row 2" in flagged[3].lower()
     accounts = preview["accounts"]
-    buildings = _account(accounts, "1210")
-    assert D(buildings["importing"]) == D("500000")
-    assert D(buildings["difference"]) == D(buildings["ledger"]) - D(buildings["registered"]) - D("500000")
+    # Buildings and vehicles share the fixed asset account: two buildings and the truck.
+    fixed = _account(accounts, "1210")
+    assert D(fixed["importing"]) == D("530000")
+    assert D(fixed["difference"]) == D(fixed["ledger"]) - D(fixed["registered"]) - D("530000")
     assert D(_account(accounts, "1220")["importing"]) == D("-80000")
     assert [a["row"] for a in preview["assets"]] == [1, 2, 3]
 
@@ -223,8 +224,7 @@ async def test_j5_undo_import_refused_naming_changed_assets(fa):
     done = await _import(fa, [_building(cut), _building(cut, name="Annex")])
     warehouse, annex = done["assets"]
     await fa.operate(f"/assets/{annex['id']}/correct", {
-        "changes": {"accumulated_depreciation": "41000"}, "prior_years": False,
-        "immaterial_reason": "Typing error"}, key="fix-annex")
+        "changes": {"opening_values": {"cost": "250000", "accumulated_depreciation": "41000"}}}, key="fix-annex")
     refused = await _undo(fa, done["batch"]["id"])
     assert refused.status_code == 409
     detail = refused.json()["detail"]
@@ -253,9 +253,9 @@ async def test_j5_disposed_rows_are_history(fa):
 async def test_j5_policy_parent_place_and_custodian(fa):
     cut = await _cutover(fa)
     office = await fa.ok(await fa.client.post("/companies/me/locations", headers=fa.h,
-                                              json={"name": "Head office", "type": "warehouse"}))
+                                              json={"name": "North yard", "type": "warehouse"}))
     me = (await fa.ok(await fa.client.get("/companies/me/users", headers=fa.h)))["items"][0]
-    rows = [_building(cut, number="B-1", life_months="480", residual_percent="5", location="head office",
+    rows = [_building(cut, number="B-1", life_months="480", residual_percent="5", location="north YARD",
                       custodian=me["email"], tag="BLD-1"),
             {"name": "Roof", "class": "Buildings", "available_date": "2020-01-01", "cost": "20000",
              "parent_number": "B-1", "custodian": "Site manager"}]

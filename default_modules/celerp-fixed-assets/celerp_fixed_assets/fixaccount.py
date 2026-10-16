@@ -194,4 +194,4 @@ async def undo_fix(session, company_id, user_id, class_id: str, body: dict) -> d
         raise HTTPException(status_code=404, detail="No such asset class.")
     if not cls.get("last_fix"):
         raise setup.unprocessable(f"{cls['name']} has no posting account change to undo.")
-    return await _undo(session, company_id, user_id, cls["last_fix"], body)
+    return await _undo(session, company_id, user_id, [cls["last_fix"]], body)

@@ -20,7 +20,7 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.permissions import (
     assert_role_permission, get_current_company_settings, require_permission, role_has_permission)
 from celerp_fixed_assets import (
-    additions, classtable, corrections, disposal, fixaccount, moves, opening, operations, recon, reclassify, remeasure, reports,
+    additions, classtable, corrections, disposal, fixaccount, imports, moves, opening, operations, recon, reclassify, remeasure, reports,
     runs, sales, setup, sources, taxbooks, transfer, yearend)
 from celerp_fixed_assets.events import register_events
 from celerp_fixed_assets.search import matching
@@ -179,6 +179,43 @@ async def get_opening(company_id=Depends(get_current_company_id), session: Async
 async def finish_opening(body: dict = Body(...), company_id=Depends(get_current_company_id),
                          user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, opening.finish, company_id, user.id, body)
+
+
+@router.post("/imports", dependencies=_ACCOUNTING)
+async def import_register(body: dict = Body(...), company_id=Depends(get_current_company_id),
+                          user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    options = {k: v for k, v in body.items() if k not in ("rows", "as_at", "source")}
+    result = await imports.import_register(session, company_id=company_id, user_id=user.id, rows=body.get("rows"),
+                                           as_at=body.get("as_at"), source=body.get("source"), body=options)
+    await session.commit()
+    return result
+
+
+@router.get("/imports", dependencies=_ACCOUNTING)
+async def list_imports(limit: int = 50, offset: int = 0, company_id=Depends(get_current_company_id),
+                       session: AsyncSession = Depends(get_session)) -> dict:
+    if limit < 1 or limit > 500 or offset < 0:
+        raise setup.unprocessable("Choose a page of 1 to 500 imports.")
+    found = await imports.batches(session, company_id)
+    return {"items": found[offset:offset + limit], "total": len(found), "limit": limit, "offset": offset}
+
+
+@router.get("/imports/{batch_id}", dependencies=_ACCOUNTING)
+async def get_import(batch_id: str, status: str | None = None, limit: int = 100, offset: int = 0,
+                     company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+    return await imports.batch_view(session, company_id, batch_id, status=status, limit=limit, offset=offset)
+
+
+@router.post("/imports/{batch_id}/rows", dependencies=_ACCOUNTING)
+async def import_rows(batch_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, imports.import_rows, company_id, user.id, batch_id, body)
+
+
+@router.post("/imports/{batch_id}/undo", dependencies=_ACCOUNTING)
+async def undo_import(batch_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, imports.undo_import, company_id, user.id, batch_id, body)
 
 
 @router.get("/reconciliation", dependencies=_ACCOUNTING)

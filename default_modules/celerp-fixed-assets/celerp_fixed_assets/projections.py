@@ -51,7 +51,7 @@ def apply_fixed_asset_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state or {})
     if event_type in ("fa.class.created", "fa.movement.recorded", "fa.maint.recorded", "fa.op.recorded", "fa.review.recorded",
                       "fa.run.prepared", "fa.run.posted", "fa.recon.recorded", "fa.taxbook.recorded",
-                      "fa.taxyear.recorded", "fa.yearend.recorded"):
+                      "fa.taxyear.recorded", "fa.yearend.recorded", "fa.import.recorded", "fa.import.row"):
         return deepcopy(data)
     if event_type == "fa.correction.requested":
         return {**deepcopy(data), "state": "requested"}

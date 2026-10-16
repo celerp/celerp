@@ -346,4 +346,4 @@ async def undo_latest(session, company_id, user_id, asset_id: str, body: dict) -
         return await disposal.undo(session, company_id, user_id, asset_id, body)
     if op.get("type") == "transfer":
         return await transfer.undo(session, company_id, user_id, asset_id, body)
-    return await operations._undo(session, company_id, user_id, latest["op_key"], body)
+    return await operations._undo(session, company_id, user_id, [latest["op_key"]], body)

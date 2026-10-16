@@ -182,6 +182,22 @@ class CheckRemoved(_Event):
     user_id: str
 
 
+class ImportRecorded(_Event):
+    as_at: str
+    state: str
+    counts: dict
+    totals: dict
+    op_keys: list
+
+
+class ImportRow(_Event):
+    batch_id: str
+    row: int
+    status: str
+    values: dict
+    errors: list
+
+
 EVENTS: dict[str, type[BaseModel]] = {
     "fa.class.created": ClassCreated,
     "fa.class.updated": Changes,
@@ -222,6 +238,8 @@ EVENTS: dict[str, type[BaseModel]] = {
     "fa.asset.problem": ProblemReported,
     "fa.check.recorded": CheckRecorded,
     "fa.check.removed": CheckRemoved,
+    "fa.import.recorded": ImportRecorded,
+    "fa.import.row": ImportRow,
 }
 
 
