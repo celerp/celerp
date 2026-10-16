@@ -261,6 +261,16 @@ async def test_ar_aging_credit_note_from_invoice_settles_and_leaves_remainder():
 
 
 @pytest.mark.asyncio
+async def test_ar_aging_names_invoices_without_a_contact_as_unlinked():
+    """Invoices that link no contact share one line, named as unlinked whatever name each one carries."""
+    first, second = ({**_invoice_state(10.0, 10.0, "final", 5, contact=""), "contact_name": name}
+                     for name in ("Apex", "Northgate"))
+    for rows in ([first, second], [second, first]):
+        (line,) = (await _ar(rows))["lines"]
+        assert (line["customer_id"], line["customer_name"], line["total"]) == ("unlinked", "Unlinked Invoices", 20.0)
+
+
+@pytest.mark.asyncio
 async def test_ar_aging_excludes_closed_and_void_credit_notes():
     ar = await _ar([_credit_state(50.0, 0.0, "paid", 3), _credit_state(50.0, 50.0, "void", 3),
                     _credit_state(50.0, 50.0, "draft", 3), _invoice_state(20.0, 20.0, "final", -5)])
