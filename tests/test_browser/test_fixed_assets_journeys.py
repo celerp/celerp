@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 import threading
 import uuid
 from datetime import date, timedelta
@@ -23,8 +22,7 @@ from celerp.accounting_roles import SEEDED_TARGETS
 pytestmark = pytest.mark.browser
 
 API = "/fixed-assets/api"
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "default_modules" / "celerp-fixed-assets" / "tests"))
-from fa_fixtures import admit_zz  # noqa: E402
+_MODULE_TESTS = Path(__file__).resolve().parents[2] / "default_modules" / "celerp-fixed-assets" / "tests"
 
 
 @pytest.fixture(autouse=True)
@@ -523,6 +521,9 @@ def test_j12_unexplained_journal_names_its_fix_and_is_registered(page: Page, fre
 @pytest.fixture
 def zz(monkeypatch):
     """The test-only country module ZZ and its asset tax regime, in the running app."""
+    monkeypatch.syspath_prepend(str(_MODULE_TESTS))
+    from fa_fixtures import admit_zz
+
     yield from admit_zz(monkeypatch)
 
 
