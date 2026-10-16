@@ -298,16 +298,17 @@ async def test_j5_wizard_upload_review_import(fa):
                 f"FA-0050,Warehouse,Buildings,2020-01-01,250000,40000\n"
                 f"FA-0051,Garage,Garages,2020-01-01,50000,0\n")
     mapped = await fa._ui("POST", "/fixed-assets/import/preview",
-                          files={"file": ("register.csv", csv_text.encode(), "text/csv")})
+                          files={"csv_file": ("register.csv", csv_text.encode(), "text/csv")})
     assert mapped.status_code == 200 and "csv_ref" in mapped.text
     csv_ref = mapped.text.split('name="csv_ref" value="', 1)[1].split('"', 1)[0]
-    form = {"csv_ref": csv_ref, "map_Asset": "number", "map_Name": "name", "map_Class": "class",
-            "map_In use from": "available_date", "map_Cost": "cost",
-            "map_Depreciation to date": "accumulated_depreciation"}
-    review = await fa.submit("/fixed-assets/import/mapped", form)
+    form = {"csv_ref": csv_ref, "map__Asset": "number", "map__Name": "name", "map__Class": "class",
+            "map__In use from": "available_date", "map__Cost": "cost",
+            "map__Depreciation to date": "accumulated_depreciation"}
+    review = await fa._ui("POST", "/fixed-assets/import/mapped", data=form, follow_redirects=True)
     assert review.status_code == 200 and "Garages" in review.text
     draft_ref = str(review.url).rsplit("/", 1)[1]
-    excluded = await fa.submit("/fixed-assets/import/review", {"csv_ref": draft_ref, "revision": "0",
+    revision = review.text.split('name="revision" value="', 1)[1].split('"', 1)[0]
+    excluded = await fa.submit("/fixed-assets/import/review", {"csv_ref": draft_ref, "revision": revision,
                                                                 "exclude": "2", "fixes_json": ""})
     assert 'name="preview_hash"' in excluded.text
     preview_hash = excluded.text.split('name="preview_hash" value="', 1)[1].split('"', 1)[0]

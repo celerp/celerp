@@ -24,6 +24,7 @@ GET  /fixed-assets/corrections          Every correction newest first, and those
 GET  /fixed-assets/corrections/{id}     One correction: what it changed and posted; apply, withdraw or undo it
 GET  /fixed-assets/classes/{id}/apply   Apply a class's depreciation settings to the assets on older ones
 GET  /fixed-assets/reports/...          The reports, each with its print view and CSV (celerp_fixed_assets.ui_reports)
+GET  /fixed-assets/import, /imports/{id}  Import an opening register and the imports made (celerp_fixed_assets.ui_imports)
 GET  /fixed-assets/reconciliation?at=   The register against the ledger, account by account, with every difference
 GET  /fixed-assets/opening              Opening balances at the cutover: finish, keep open or reopen them
 GET  /fixed-assets/runs                 Depreciation runs: run a month, every month's run newest first
@@ -213,12 +214,17 @@ def _preview(action: str, result: dict, currency: str) -> FT:
         parts.append(P(t("fixed_assets.nothing_to_depreciate"), cls="form-hint"))
     elif not journals and not result.get("months"):
         parts.append(P(t("fixed_assets.posts_nothing"), cls="form-hint"))
+    # Rows an import would refuse: each named, and nothing to confirm until they are fixed.
+    errors = result.get("errors") or []
+    if errors:
+        parts.append(Div(*[P(f"{t('import.col_row')} {e['row']}: {e['message']}") for e in errors],
+                         cls="flash flash--error"))
     return Div(H3(t("fixed_assets.review_title"), cls="section-title"), *parts,
                Input(type="hidden", name="fingerprint", value=result.get("fingerprint", "")),
                Div(Button(t("fixed_assets.confirm"), type="button", cls="btn btn--primary",
                           hx_post=f"/fixed-assets/op/{action}/confirm", hx_include="closest form",
                           hx_target="closest #fa-preview", hx_swap="outerHTML"),
-                   cls="form-actions"),
+                   cls="form-actions") if not errors else "",
                cls="detail-card section-card", id="fa-preview")
 
 
@@ -533,6 +539,24 @@ def _transfer_body(form) -> dict:
     return {k: v for k, v in body.items() if v is not None}
 
 
+def _import_rows_body(form) -> dict:
+    """Fix and import rows: each ticked row with its values as the form now holds them."""
+    rows = []
+    for n in (int(v) for v in form.getlist("row") if str(v).isdigit()):
+        prefix = f"v.{n}."
+        rows.append({"row": n, "values": {k[len(prefix):]: str(v).strip() for k, v in form.multi_items()
+                                          if k.startswith(prefix) and str(v).strip()}})
+    return {"rows": rows}
+
+
+def _batch_path(suffix: str):
+    return lambda f: f"/imports/{_q(f, 'batch_id')}/{suffix}"
+
+
+def _to_batch(r, f) -> str:
+    return f"/fixed-assets/imports/{_q(f, 'batch_id')}"
+
+
 def _asset_path(suffix: str):
     return lambda f: f"/assets/{_q(f, 'asset_id')}/{suffix}"
 
@@ -602,6 +626,8 @@ _OPERATIONS = {
                     lambda r, f: f"/fixed-assets/classes/{f.get('class_id')}/fix-account?field={f.get('field')}"),
     "undo-fix-account": (lambda f: f"/classes/{_q(f, 'class_id')}/fix-account/undo", lambda f: {},
                          lambda r, f: f"/fixed-assets/classes/{f.get('class_id')}/fix-account"),
+    "import-rows": (_batch_path("rows"), _import_rows_body, _to_batch),
+    "undo-import": (_batch_path("undo"), lambda f: {}, _to_batch),
 }
 
 
@@ -1135,8 +1161,9 @@ def _reviews_due_card(items: list[dict]) -> FT:
                cls="flash flash--warning", id="fa-reviews-due")
 
 
-def _first_period_card(first: dict) -> FT:
-    """The first managed period suggested, what it was read from, and the button that confirms it."""
+def _first_period_card(first: dict, back: str = "/fixed-assets") -> FT:
+    """The first managed period suggested, what it was read from, and the button that confirms it.
+    Confirming returns to ``back``, the page that needed it."""
     evidence = first.get("evidence") or {}
     booked = evidence.get("depreciation") or []
     if booked:
@@ -1148,6 +1175,7 @@ def _first_period_card(first: dict) -> FT:
     return Div(H3(t("fixed_assets.first_period_title")), P(t("fixed_assets.first_period_hint")),
                P(t("fixed_assets.first_period_suggested", period=first["suggested"]), " ", why),
                Form(Input(type="hidden", name="first_managed_period", value=first["suggested"]),
+                    Input(type="hidden", name="back", value=back),
                     Button(t("fixed_assets.first_period_confirm"), type="submit", cls="btn btn--primary"), " ",
                     A(t("fixed_assets.first_period_other"), href="/settings/fixed-assets#first_managed_period"),
                     hx_post="/fixed-assets/first-period", hx_swap="none"),
@@ -1214,10 +1242,16 @@ def _differences_table(accounts: list[dict], currency: str) -> FT:
 
 
 def _opening_table(accounts: list[dict], currency: str) -> FT:
+    """Each asset account at the cutover: the ledger, the register and, in an import's
+    review, what the import adds, with the difference left."""
+    importing = any("importing" in a for a in accounts)
     rows = [Tr(Td(f"{a['account']} {a['name']}"), _money_td(a["ledger"], currency), _money_td(a["registered"], currency),
+               *([_money_td(a["importing"], currency)] if importing else []),
                _money_td(a["difference"], currency)) for a in accounts]
     return Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.recon_ledger")),
-                          _money_th(t("fixed_assets.recon_registered")), _money_th(t("fixed_assets.difference")))),
+                          _money_th(t("fixed_assets.recon_registered")),
+                          *([_money_th(t("fixed_assets.importing"))] if importing else []),
+                          _money_th(t("fixed_assets.difference")))),
                  Tbody(*rows), cls="data-table", id="fa-opening-accounts")
 
 
@@ -1620,6 +1654,7 @@ def setup_ui_routes(app) -> None:
                    A(t("fixed_assets.runs_title"), href="/fixed-assets/runs", cls="btn btn--secondary"),
                    A(t("fixed_assets.checks_title"), href="/fixed-assets/checks", cls="btn btn--secondary"),
                    A(t("fixed_assets.register_from_bills"), href="/fixed-assets/intake", cls="btn btn--secondary"),
+                   A(t("fixed_assets.import_register"), href="/fixed-assets/import", cls="btn btn--secondary"),
                    A(t("fixed_assets.add_asset"), href="/fixed-assets/assets/new", cls="btn btn--primary"))
         if not found["items"] and not params:
             body = Div(empty_state_cta(t("fixed_assets.empty"), t("fixed_assets.register_from_bills"),
@@ -1983,8 +2018,10 @@ def setup_ui_routes(app) -> None:
         if not token:
             return Response(status_code=401)
         form = await request.form()
+        back = str(form.get("back") or "")
         return await _hx_write(token, "PATCH", "/settings",
-                               {"first_managed_period": str(form.get("first_managed_period") or "")}, "/fixed-assets")
+                               {"first_managed_period": str(form.get("first_managed_period") or "")},
+                               back if back.startswith("/fixed-assets/") else "/fixed-assets")
 
     @app.get("/fixed-assets/reconciliation")
     async def reconciliation_page(request: Request, at: str = ""):
@@ -3042,8 +3079,10 @@ def setup_ui_routes(app) -> None:
         return _class_cell(cls, field, [])
 
     from celerp_fixed_assets.ui_physical import physical_cards, setup_physical_routes
+    from celerp_fixed_assets.ui_imports import setup_import_routes
     from celerp_fixed_assets.ui_reports import setup_report_routes
 
     setup_physical_routes(app)
     setup_report_routes(app)
+    setup_import_routes(app)
     log.info("celerp-fixed-assets: UI routes registered")

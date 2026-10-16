@@ -84,6 +84,9 @@ PLUGIN_MANIFEST = {
         # An asset sale's invoice and credit notes link back to the sale.
         "doc_detail_actions": [{"render": "celerp_fixed_assets.ui_routes:doc_sale_actions",
                                 "permission": "view_fixed_assets"}],
+        # The opening asset register, imported as at the cutover.
+        "import_target": {"kind": "fixed_asset_register", "href": "/fixed-assets/import",
+                          "handler": "celerp_fixed_assets.imports:import_register"},
     },
 
     # ── UI translation catalogs ───────────────────────────────────────────────

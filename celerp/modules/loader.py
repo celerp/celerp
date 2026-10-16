@@ -2428,6 +2428,7 @@ _CALLABLE_SLOTS = {
     "doc_asset_lines": ("handler", True),
     "fixed_asset_rules": ("handler", False),
     "label_source": ("handler", True),
+    "import_target": ("handler", True),
 }
 # Callable slots core calls with keyword arguments only, and those arguments. The
 # handler takes exactly these: no other parameter, none positional-only, and no
@@ -2440,6 +2441,7 @@ _HANDLER_KEYWORDS = {
     "background_loop": (),
     "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),
     "label_source": ("session", "company_id", "ids"),
+    "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
 }
 # Entry keys naming a permission. Gating surfaces index the permission registry,
 # so a value outside it must never reach them.
@@ -2448,6 +2450,7 @@ _PERMISSION_ENTRY_KEYS = ("permission", "write_permission")
 _DESTINATION_KEYS = {
     "nav": {"href": False, "settings_href": False, "probe_href": False},
     "bulk_action": {"form_action": True},
+    "import_target": {"href": True},
 }
 
 
@@ -2599,6 +2602,7 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "fixed_asset_rules": {"kind": (_TEXT, True), "key": (_TEXT, True)},
     "label_source": {"entity_type": (_TEXT, True), "label_key": (_TEXT, True), "keys": ((list,), True),
                      "preset": ((dict,), True)},
+    "import_target": {"kind": (_TEXT, True)},
 }
 _TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",
                list: "a list", dict: "a dict", type(None): "None"}

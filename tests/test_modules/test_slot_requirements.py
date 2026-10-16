@@ -39,6 +39,8 @@ _CODE = {
         "async def asset_lines(*, session, company_id, user_id, doc_id, doc, change):\n    return None\n"
         "async def label_rows(*, session, company_id, ids):\n    return []\n"
         "async def loose_label_rows(*, session, company_id):\n    return []\n"
+        "async def import_rows(*, session, company_id, user_id, rows, as_at, source, body):\n    return {}\n"
+        "async def short_import_rows(*, session, company_id, user_id, rows, as_at, source):\n    return {}\n"
     ),
 }
 
@@ -78,6 +80,8 @@ _VALID = {
                       "permission": "view_inventory", "label_key": "nav.acme", "keys": ["number", "name"],
                       "preset": {"name": "Box tag", "width_mm": 50, "height_mm": 25,
                                  "fields": [{"key": "number", "type": "text"}]}}],
+    "import_target": [{"kind": "acme_register", "handler": "{inner}.lineage:import_rows",
+                       "href": "/acme/import"}],
 }
 
 # (slot, the entry's wrong key and value, the text the refusal names).
@@ -124,6 +128,10 @@ _WRONG = [
     ("label_source", {"keys": "number"}, "keys"),
     ("label_source", {"preset": None}, "preset"),
     ("label_source", {"handler": "{inner}.lineage:loose_label_rows"}, "session, company_id, ids"),
+    ("import_target", {"kind": ""}, "kind"),
+    ("import_target", {"href": "https://elsewhere.example/import"}, "href"),
+    ("import_target", {"handler": "{inner}.lineage:short_import_rows"},
+     "session, company_id, user_id, rows, as_at, source, body"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:sync_guard"}, "must be async"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:short_guard"}, "session, entry, transition"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:loose_guard"}, "session, entry, transition"),

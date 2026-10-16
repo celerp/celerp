@@ -81,6 +81,14 @@ label_source       {"entity_type", "handler", "permission", "label_key", "keys",
                    gates who may print them; preset is the label template offered for
                    creation when the company has none whose fields the rows can fill (its
                    fields' labels are i18n keys, translated when the template is created)
+import_target      {"kind", "handler", "href"}: a file of records a module imports that
+                   no core import page holds. kind names what the file is
+                   ("fixed_asset_register"); href is the module's own import page, where
+                   core's import page for that kind sends a company that uses the module;
+                   handler names `async def handler(*, session, company_id, user_id, rows,
+                   as_at, source, body) -> dict`, called with exactly those keyword
+                   arguments: rows a list of dicts keyed by the module's column names,
+                   body the module's own options (preview, exclusions, confirmation)
 search_provider    Contributes rows to the global search bar. Exactly one descriptor
                    dict per module: {"handler", "result_key", "permission"}. handler
                    names an in-module "module.path:function" resolved and validated
@@ -93,18 +101,19 @@ search_provider    Contributes rows to the global search bar. Exactly one descri
 Every slot entry is checked before any of its module's code runs
 (celerp.modules.loader): an entry is a dict; every key its slot reads has the
 type it is read as (nav "key" text, "group" text or None, "order" a number;
-send_to_targets "doc_type", catalog_channel "id" and label_source "entity_type"
-non-empty text, label_source "keys" a list of text and "preset" a dict, catalog_channel
-"can_create" true or false; category_schema "category" non-empty text and
+send_to_targets "doc_type", catalog_channel "id", label_source "entity_type" and
+import_target "kind" non-empty text, label_source "keys" a list of text and "preset"
+a dict, catalog_channel "can_create" true or false; category_schema "category" non-empty text and
 "fields" a list of field definitions; bulk_action "action_type" "htmx" or
 "navigate"; "label" and "label_key" text); a "permission" (or catalog_channel
 "write_permission"), when present, is a key from the permission registry; a
 "requires_connector", when set, is a connector id; nav "href" / "settings_href" /
-"probe_href" and bulk_action "form_action" (required) are app-local paths; and every
+"probe_href", bulk_action "form_action" and import_target "href" (both required) are
+app-local paths; and every
 callable an entry names is the module's own code, async exactly where core awaits it,
 and takes exactly the keyword arguments core passes where the slot names them
 (inventory_in_production, item_lineage_guard, demo_records, doc_asset_lines,
-label_source). A nav entry with a "probe_href" is shown only when that page,
+label_source, import_target). A nav entry with a "probe_href" is shown only when that page,
 loaded with the sidebar, answers with the link: for an entry whose audience
 depends on the records themselves (the assets in a member's care), not on a
 permission.
@@ -139,6 +148,7 @@ SLOT_NAMES = frozenset({
     "projection_handler", "on_company_created", "on_modules_ready", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
     "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
+    "import_target",
 })
 
 # Slots only Celerp's own (first-party) modules may fill; admission refuses any
@@ -178,7 +188,7 @@ def resolve_handler(dotted: str) -> Callable:
 # Slots whose handler core calls directly: a contribution without a
 # "module.path:function" handler would fail every such call, so it is refused here.
 _HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard", "demo_records",
-                            "doc_asset_lines", "label_source"})
+                            "doc_asset_lines", "label_source", "import_target"})
 
 
 def check(slot: str, contribution: dict) -> None:

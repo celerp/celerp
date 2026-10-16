@@ -150,6 +150,26 @@ async def test_settings_page_saves_and_edits_a_class(owner_ui):
     assert next(c for c in classes if c["id"] == vehicles["id"])["life_months"] == 72
 
 
+async def test_import_page_asks_for_the_start_and_first_period_and_returns_to_the_upload(owner_ui):
+    await _demo(owner_ui)
+    page = await owner_ui.get("/fixed-assets/import")
+    assert page.status_code == 200 and t("fixed_assets.start_title") in page.text
+    assert 'id="csv_file"' not in page.text
+    await owner_ui.post("/fixed-assets/start")
+    page = await owner_ui.get("/fixed-assets/import")
+    assert t("fixed_assets.first_period_title") in page.text and 'id="csv_file"' not in page.text
+    assert 'name="back" value="/fixed-assets/import"' in page.text
+    suggested = (await owner_ui.api.get(f"{API}/setup")).json()["first_period"]["suggested"]
+    elsewhere = await owner_ui.post("/fixed-assets/first-period",
+                                    data={"first_managed_period": suggested, "back": "https://example.com/"})
+    assert elsewhere.headers.get("HX-Redirect") == "/fixed-assets", "only a fixed assets page is returned to"
+    confirmed = await owner_ui.post("/fixed-assets/first-period",
+                                    data={"first_managed_period": suggested, "back": "/fixed-assets/import"})
+    assert confirmed.headers.get("HX-Redirect") == "/fixed-assets/import", confirmed.headers
+    page = await owner_ui.get("/fixed-assets/import")
+    assert 'id="csv_file"' in page.text and t("fixed_assets.first_period_title") not in page.text
+
+
 async def test_confirm_the_first_period_then_reconcile_and_finish_opening(owner_ui):
     await _demo(owner_ui)
     await owner_ui.post("/fixed-assets/start")

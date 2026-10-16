@@ -397,6 +397,15 @@ _SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
         },
     },
     {
+        "slot": "import_target",
+        "contrib": {
+            "kind": "fixed_asset_register",
+            "href": "/fixed-assets/import",
+            "handler": "celerp_fixed_assets.imports:import_register",
+            "_module": "celerp-fixed-assets",
+        },
+    },
+    {
         "slot": "projection_handler",
         "contrib": {
             "prefix": "shop.sync.",

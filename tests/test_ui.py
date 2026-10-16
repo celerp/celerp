@@ -7340,6 +7340,24 @@ class TestColumnMappingValidation:
         assert "Stone" in html
         assert "S1" in html
 
+    def test_form_without_custom_fields_suggests_skip(self):
+        from fasthtml.common import to_xml
+        from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP, column_mapping_form
+        html = to_xml(column_mapping_form(
+            csv_cols=["Asset no", "name"],
+            target_cols=["number", "name", "available_date"],
+            csv_ref="test-ref",
+            sample_rows=[{"Asset no": "FA-1", "name": "Van"}],
+            confirm_action="/test/mapped",
+            back_href="/test",
+            required_targets={"available_date"},
+            col_labels={"available_date": "In use from"},
+            custom_fields=False,
+        ))
+        assert f'name="map__Asset no" value="{MAPPING_SKIP}"' in html
+        assert f'"value": "{MAPPING_ATTRIBUTE}"' not in html
+        assert "In use from" in html.split("flash--warning")[1].split("</p>")[0]
+
     def test_form_renders_errors_when_provided(self):
         from fasthtml.common import to_xml
         from ui.routes.csv_import import column_mapping_form

@@ -99,6 +99,7 @@ def test_manufacturing_slots_are_public_with_their_keyword_contracts():
         "background_loop": (),
         "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),
         "label_source": ("session", "company_id", "ids"),
+        "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
     }
     assert set(loader._HANDLER_KEYWORDS) <= set(loader._SLOT_VALIDATORS)
     assert all(loader._CALLABLE_SLOTS[s] == ("handler", True) for s in loader._HANDLER_KEYWORDS)
@@ -119,6 +120,13 @@ def test_label_source_slot_is_open_to_every_module():
     assert "label_source" in slots.SLOT_NAMES and "label_source" not in slots.FIRST_PARTY_SLOTS
     # Labels awaits the handler for the rows it prints.
     assert loader._CALLABLE_SLOTS["label_source"] == ("handler", True)
+
+
+def test_import_target_slot_is_open_to_every_module():
+    assert "import_target" in slots.SLOT_NAMES and "import_target" not in slots.FIRST_PARTY_SLOTS
+    # An import page sends the company to the module's own page, which it must name.
+    assert loader._DESTINATION_KEYS["import_target"] == {"href": True}
+    assert loader._CALLABLE_SLOTS["import_target"] == ("handler", True)
 
 
 def test_the_chart_of_accounts_is_not_a_slot():

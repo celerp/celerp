@@ -269,16 +269,21 @@ def column_mapping_form(
     col_labels: dict[str, str] | None = None,
     mutex_groups: list[list[str]] | None = None,
     skip_cols: frozenset[str] = SYSTEM_SKIP_COLS,
+    custom_fields: bool = True,
 ) -> FT:
     """Render a horizontal spreadsheet-style column mapping UI.
 
     Each CSV column stays as a visual column with a searchable mapping dropdown
     and 3-5 sample data rows below - matching the user's spreadsheet mental model.
     ``col_labels`` names core and category targets in the reader's language; ``skip_cols``
-    are the file's columns the importer manages itself, suggested as Skip.
+    are the file's columns the importer manages itself, suggested as Skip. Without
+    ``custom_fields`` the records hold no custom fields, so a column no target matches
+    is suggested as Skip and custom is not offered.
     """
     attrs = category_attrs or []
-    suggested = suggest_mapping(csv_cols, target_cols, category_attrs=attrs, skip_cols=skip_cols)
+    unmatched = MAPPING_ATTRIBUTE if custom_fields else MAPPING_SKIP
+    suggested = {col: unmatched if target == MAPPING_ATTRIBUTE else target for col, target in
+                 suggest_mapping(csv_cols, target_cols, category_attrs=attrs, skip_cols=skip_cols).items()}
     req = required_targets or set()
     fv = form_values or {}
     preview = sample_rows[:5]
@@ -295,7 +300,8 @@ def column_mapping_form(
     import json as _json
     option_defs = []
     # Special options first (top of list)
-    option_defs.append({"value": MAPPING_ATTRIBUTE, "label": t("import.opt_import_as_custom"), "group": "action"})
+    if custom_fields:
+        option_defs.append({"value": MAPPING_ATTRIBUTE, "label": t("import.opt_import_as_custom"), "group": "action"})
     option_defs.append({"value": MAPPING_SKIP, "label": t("import.opt_skip"), "group": "action"})
     # Core fields
     for tc in target_cols:
@@ -314,7 +320,7 @@ def column_mapping_form(
     # Build per-column header cells
     mapping_cells = []
     for csv_col in csv_cols:
-        target = str(fv.get(f"map__{csv_col}", "")) or suggested.get(csv_col, MAPPING_ATTRIBUTE)
+        target = str(fv.get(f"map__{csv_col}", "")) or suggested.get(csv_col, unmatched)
         attr_name = str(fv.get(f"attr_name__{csv_col}", "")) or csv_col
         is_custom = target == MAPPING_ATTRIBUTE
 
@@ -361,13 +367,13 @@ def column_mapping_form(
     # Warning about unmapped required fields (strip attr prefix for comparison)
     mapped_targets = set()
     for c in csv_cols:
-        v = str(fv.get(f"map__{c}", "")) or suggested.get(c, MAPPING_ATTRIBUTE)
+        v = str(fv.get(f"map__{c}", "")) or suggested.get(c, unmatched)
         if v not in (MAPPING_ATTRIBUTE, MAPPING_SKIP):
             mapped_targets.add(v.removeprefix(MAPPING_ATTR_PREFIX) if v.startswith(MAPPING_ATTR_PREFIX) else v)
     missing_required = req - mapped_targets
     warning = ""
     if missing_required:
-        names = ", ".join(sorted(missing_required))
+        names = ", ".join(sorted(column_label(c, _col_labels) for c in missing_required))
         warning = P(
             t("import.required_not_mapped", names=names),
             cls="flash flash--warning",
@@ -383,7 +389,7 @@ def column_mapping_form(
         _step_indicator(2, has_mapping=True),
         H3(t("page.map_columns"), cls="settings-section-title"),
         P(
-            t("import.map_intro"),
+            t("import.map_intro" if custom_fields else "import.map_intro_no_custom"),
             cls="import-hint",
         ),
         error_block,
@@ -1424,15 +1430,16 @@ def plan_review_panel(
     col_labels: dict[str, str],
     csv_ref: str,
     revision: int,
-    upsert: bool,
-    upsert_label: str,
     plan: dict,
     review_action: str,
     confirm_action: str,
     error_report_action: str,
     cancel_action: str,
     upload_href: str,
+    upsert: bool = False,
+    upsert_label: str = "",
     notice: str = "",
+    extra: Any = "",
 ) -> FT:
     """The review of an import, read entirely from the server's plan of its rows.
 
@@ -1440,7 +1447,9 @@ def plan_review_panel(
     can be corrected in place, a row excluded, and a total row or a SKU shared
     by several rows settled by the decision offered for it. Any change saves
     the draft at ``revision`` and checks it again; the import button appears
-    only when the plan has no blocker, and carries the plan's hash.
+    only when the plan has no blocker, and carries the plan's hash. An import
+    that can update existing records names them in ``upsert_label``, which
+    offers the choice; ``extra`` is what else the importer shows above the rows.
     """
     errors = list(plan.get("errors") or [])
     excluded = set((plan.get("decisions") or {}).get("exclude") or [])
@@ -1482,6 +1491,7 @@ def plan_review_panel(
         Div(
             P(notice, cls="flash flash--warning") if notice else "",
             _review_counters(counts),
+            extra,
             *[P(e.get("message", ""), cls="flash flash--error") for e in file_errors],
             P(t("import.review_fix_here"), cls="import-hint") if errors else "",
             P(t("import.locations_to_create", names=", ".join(locations)), cls="import-hint") if locations else "",
@@ -1494,7 +1504,7 @@ def plan_review_panel(
                 Input(type="hidden", name="fixes_json", value=""),
                 Input(type="hidden", name="preview_hash", value=str(plan.get("preview_hash") or ""))
                 if not errors else "",
-                _upsert_control(upsert_label, checked=upsert, review_action=review_action),
+                _upsert_control(upsert_label, checked=upsert, review_action=review_action) if upsert_label else "",
                 _review_decisions(plan),
                 Div(Table(
                     Thead(Tr(Th(t("import.col_row")), Th(t("import.col_exclude")),
