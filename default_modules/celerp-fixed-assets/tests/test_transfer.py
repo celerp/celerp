@@ -426,8 +426,8 @@ async def test_transfer_tax_value_from_the_related_party_rule(fa, zz):
 async def test_s5_concurrent_transfers_one_wins(committed_engine):
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company
-    from celerp.services.provisioning import provision_company_books
     from celerp_fixed_assets import setup, transfer
+    from test_helpers import provision_company_books
 
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
     cid, uid = await _race_company(factory)
