@@ -121,11 +121,10 @@ def bind_handoff(stage: Path, copy_id: str, proof: str) -> None:
     _write_meta(stage, {**facts, "handoff": receipt})
 
 
-def handoff_receipt(stage: Path) -> dict | None:
-    facts = stage_facts(stage)
-    value = facts.get("handoff")
-    if (not isinstance(value, dict) or not isinstance(facts.get("restored"), dict)
-            or not facts["restored"].get("company_id")):
+def staged_handoff(stage: Path) -> dict | None:
+    """The handoff bound to this upload once its link was verified, restored or not."""
+    value = stage_facts(stage).get("handoff")
+    if not isinstance(value, dict):
         return None
     try:
         canonical = str(uuid.UUID(value["copy_id"]))
@@ -134,6 +133,14 @@ def handoff_receipt(stage: Path) -> dict | None:
     if canonical != value["copy_id"] or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("proof"))):
         return None
     return value
+
+
+def handoff_receipt(stage: Path) -> dict | None:
+    """The handoff of an upload whose restore has finished: the receipt to report."""
+    restored = stage_facts(stage).get("restored")
+    if not isinstance(restored, dict) or not restored.get("company_id"):
+        return None
+    return staged_handoff(stage)
 
 
 def pending_handoffs(*, reported: bool | None = None) -> list[tuple[Path, dict]]:

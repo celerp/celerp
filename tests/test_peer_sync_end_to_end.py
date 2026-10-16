@@ -14,10 +14,11 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from company_backup_support import confirm, download, owner, read, token
+from company_backup_support import confirm, download, owner, token
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
 from test_company_backup_lifecycle import _data_dir  # noqa: F401
 from test_company_copy_round_trip import _books
+from test_company_handoff_identity_restore import _link, _link_verified  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
@@ -72,12 +73,14 @@ async def _paired(real_client, real_engine, before_copy=None):
     if before_copy is not None:
         await before_copy(tok, contacts)
 
-    # The accountant opens the company copy as a company of their own.
+    # The accountant opens the company copy from its link as a company of their own.
     accountant = await owner(real_engine, "firm@example.test", "Firm Owner")
     from company_backup_support import company
     own = await company(real_engine, accountant, "Firm Practice", "firm-marker")
     firm_tok = await token(real_engine, accountant, own)
-    preview = await read(real_client, firm_tok, await download(real_client, tok), mode="new_company")
+    preview = await real_client.post("/company-backups/read", files={
+        "file": ("demo.celerp-company", await download(real_client, tok))},
+        data={"mode": "new_company", **_link()}, headers=auth(firm_tok))
     assert preview.status_code == 200, preview.text
     opened = await real_client.post("/company-backups/restore", json=confirm(preview, "new_company"),
                                     headers=auth(firm_tok))
@@ -85,19 +88,6 @@ async def _paired(real_client, real_engine, before_copy=None):
     firm_company = opened.json()["company_id"]
     firm_tok = await token(real_engine, accountant, firm_company)
     client_company = _company_of(tok)
-    # A copy opened from a link keeps the sending company's record identities; the restore
-    # gave the copy's locations new ids, which the link's restore passes on as its id map.
-    from celerp.models.company import Location
-    from celerp.services.peer_identity import seed_restored_identities
-    async with maker(real_engine)() as s:
-        def by_name(company_id):
-            return select(Location.name, Location.id).where(Location.company_id == uuid.UUID(company_id))
-        source = dict((await s.execute(by_name(client_company))).all())
-        target = dict((await s.execute(by_name(firm_company))).all())
-        await seed_restored_identities(
-            s, target_company=uuid.UUID(firm_company), source_company=uuid.UUID(client_company),
-            id_map={str(source[name]): str(target[name]) for name in source})
-        await s.commit()
     granted = await real_client.post("/company-peers/grants", json={
         "source_company_id": client_company, "label": "Demo Trading",
         "scopes": ["contacts", "products", "documents", "inventory"]}, headers=auth(firm_tok))

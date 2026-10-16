@@ -377,7 +377,7 @@ async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_own
                                               current_company_id=ctx.company_id,
                                               plan_fingerprint=payload.plan_fingerprint,
                                               company_name=payload.company_name,
-                                              retain_peer_identities=files.handoff_receipt(stage) is not None)
+                                              retain_peer_identities=files.staged_handoff(stage) is not None)
         except cb.BackupError as exc:
             return _error(exc, stage)
         files.finish_stage(stage, result.company_id)
@@ -496,7 +496,7 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
     try:
         result = await cb.restore_company(stage, mode="bootstrap", owner_account=account,
                                           company_name=payload.company_name, caller=request_caller(request),
-                                          retain_peer_identities=files.handoff_receipt(stage) is not None)
+                                          retain_peer_identities=files.staged_handoff(stage) is not None)
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
@@ -545,7 +545,7 @@ async def start_company_restore(request: Request, payload: StartCompanyRestoreIn
         result = await cb.restore_company(stage, mode=_START_COMPANY, user_id=user.id,
                                           plan_fingerprint=payload.plan_fingerprint,
                                           company_name=payload.company_name,
-                                          retain_peer_identities=files.handoff_receipt(stage) is not None)
+                                          retain_peer_identities=files.staged_handoff(stage) is not None)
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
