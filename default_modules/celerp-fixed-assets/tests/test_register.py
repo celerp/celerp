@@ -25,40 +25,6 @@ pytestmark = pytest.mark.asyncio
 D = Decimal
 
 
-async def _journal(fa: FA, ts: str, entries: list[dict]) -> str:
-    r = await fa.client.post("/accounting/journal-entries", headers=fa.h, json={
-        "ts": ts, "memo": "Manual", "idempotency_token": str(uuid.uuid4()), "entries": entries})
-    assert r.status_code == 200, r.text
-    return r.json()["je_id"]
-
-
-async def _role_headers(fa: FA, role: str) -> dict:
-    from celerp.models.accounting import UserCompany
-    from celerp.models.company import User
-    from test_helpers import make_authed_token
-
-    uid = uuid.uuid4()
-    fa.session.add(User(id=uid, email=f"{role}-{uid.hex[:8]}@test.co", name=role.title(), auth_hash="x",
-                        is_active=True))
-    await fa.session.flush()
-    fa.session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=fa.auth["company_id"], role=role,
-                               is_active=True))
-    await fa.session.commit()
-    token = await make_authed_token(fa.session, str(uid), str(fa.auth["company_id"]), role)
-    return {"Authorization": f"Bearer {token}"}
-
-
-async def _fold_matches(fa: FA, asset_id: str) -> None:
-    """The asset's financial state equals the fold of its movements."""
-    from celerp_fixed_assets.projections import fold_movements
-
-    state = await fa.state(asset_id)
-    movements = [m for m in await fa.entities("fa_movement") if m["asset_id"] == asset_id]
-    folded = fold_movements(movements)
-    for key in ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "quantity"):
-        assert D(str(state[key])) == D(str(folded[key])), (key, state, folded)
-
-
 def _nbv_holds(asset: dict) -> None:
     assert D(asset["nbv"]) == D(asset["cost"]) - D(asset["accumulated_depreciation"]) - D(
         asset["accumulated_impairment"]), asset
@@ -113,7 +79,7 @@ async def test_class_create_and_archive(fa):
 
 
 async def test_viewer_cannot_register_or_start(fa):
-    viewer = await _role_headers(fa, "viewer")
+    viewer = await fa.role_headers("viewer")
     van = await fa.line("Delivery van")
     cls = (await fa.classes())["Vehicles"]
     r = await fa.post("/register", {"source": van["source"], "class_id": cls["id"], "mode": "separate",
@@ -144,7 +110,7 @@ async def test_register_van_posts_nothing_and_claims_the_line(fa):
     assert await fa.module_journals() == []
     assert all(i["source"] != van["source"] for i in await fa.intake())
     _nbv_holds(got)
-    await _fold_matches(fa, asset["id"])
+    await fa.fold_matches(asset["id"])
 
 
 async def test_register_separate_splits_cost_pro_rata(fa):
@@ -163,7 +129,7 @@ async def test_register_quantity_record(fa):
     (asset,) = done["assets"]
     got = await fa.asset(asset["id"])
     assert got["quantity"] == 3 and D(got["cost"]) == D("4350")
-    await _fold_matches(fa, asset["id"])
+    await fa.fold_matches(asset["id"])
 
 
 async def test_register_into_other_account_class_posts_reclass(fa):
@@ -314,7 +280,7 @@ async def test_descriptive_edit_compare_and_set(fa):
 
 async def test_manual_journal_new_acquisition(fa):
     first = (await fa.ok(await fa.get("/setup")))["settings"]["first_managed_period"]
-    je_id = await _journal(fa, first, [{"account": "1210", "debit": 5000}, {"account": "3100", "credit": 5000}])
+    je_id = await fa.journal(first, [{"account": "1210", "debit": 5000}, {"account": "3100", "credit": 5000}])
     line = await fa.line("Manual")
     assert line["source"] == f"{je_id}:0" and D(line["amount"]) == D("5000")
     done = await fa.register(line["source"], key="mj", class_name="Plant and machinery", mode="separate",
@@ -332,7 +298,7 @@ async def test_bill_journals_and_module_journals_are_never_offered_as_manual_lin
 
 async def test_not_an_acquisition_requires_a_reason(fa):
     first = (await fa.ok(await fa.get("/setup")))["settings"]["first_managed_period"]
-    je_id = await _journal(fa, first, [{"account": "1210", "debit": 700}, {"account": "1111", "credit": 700}])
+    je_id = await fa.journal(first, [{"account": "1210", "debit": 700}, {"account": "1111", "credit": 700}])
     source = f"{je_id}:0"
     r = await fa.post("/not-acquisition", {"source": source, "reason": "  ", "preview": True, "op_key": "na"})
     assert r.status_code == 422 and "reason" in r.json()["detail"].lower()
@@ -349,7 +315,7 @@ async def test_s1_link_existing_depreciation(fa):
     a = (await fa.register(van["source"], key="r1", mode="separate"))["assets"][0]["id"]
     b = (await fa.register(laptops["source"], key="r2", class_name="Computer equipment", mode="quantity"))["assets"][0]["id"]
     first = (await fa.ok(await fa.get("/setup")))["settings"]["first_managed_period"]
-    je_id = await _journal(fa, first, [{"account": "6400", "debit": 900}, {"account": "1220", "credit": 900}])
+    je_id = await fa.journal(first, [{"account": "6400", "debit": 900}, {"account": "1220", "credit": 900}])
     line = await fa.line("Manual")
     assert line["kind"] == "depreciation" and line["source"] == f"{je_id}:1" and D(line["amount"]) == D("900")
     before = await fa.balance("1220")
@@ -367,7 +333,7 @@ async def test_s1_link_existing_depreciation(fa):
     assert len(claims) == 1 and claims[0]["allocation"] == "link_depreciation"
     for asset_id in (a, b):
         _nbv_holds(await fa.asset(asset_id))
-        await _fold_matches(fa, asset_id)
+        await fa.fold_matches(asset_id)
 
 
 async def test_s1_maintenance_on_asset_line_reclassified(fa):
@@ -387,11 +353,11 @@ async def test_s1_maintenance_on_asset_line_reclassified(fa):
 async def test_s1_pre_cutover_lines_not_in_intake(fa):
     settings = (await fa.ok(await fa.get("/setup")))["settings"]
     cutover = date.fromisoformat(settings["cutover"])
-    early = await _journal(fa, (cutover - timedelta(days=20)).isoformat(),
+    early = await fa.journal((cutover - timedelta(days=20)).isoformat(),
                            [{"account": "1210", "debit": 100}, {"account": "3100", "credit": 100}])
-    on_cutover = await _journal(fa, cutover.isoformat(),
+    on_cutover = await fa.journal(cutover.isoformat(),
                                 [{"account": "1210", "debit": 200}, {"account": "3100", "credit": 200}])
-    after = await _journal(fa, settings["first_managed_period"],
+    after = await fa.journal(settings["first_managed_period"],
                            [{"account": "1210", "debit": 300}, {"account": "3100", "credit": 300}])
     sources = {i["source"] for i in await fa.intake()}
     assert f"{early}:0" not in sources and f"{on_cutover}:0" not in sources
@@ -431,7 +397,7 @@ async def test_contributed_asset_posts_acquisition(fa):
     (je_id,) = done["journals"]
     assert je_id.startswith("je:mod:celerp-fixed-assets:asset:")
     assert await fa.balance("1210") == D("48350") and await fa.balance("3100") == D("-12000")
-    await _fold_matches(fa, done["assets"][0]["id"])
+    await fa.fold_matches(done["assets"][0]["id"])
 
 
 async def test_adding_an_asset_by_hand_needs_the_right_permission(fa):
@@ -439,7 +405,7 @@ async def test_adding_an_asset_by_hand_needs_the_right_permission(fa):
     contributed asset carries cost, so it also needs manage_accounting."""
     from celerp.services.permissions import missing_permission_text
 
-    operator, viewer = await _role_headers(fa, "operator"), await _role_headers(fa, "viewer")
+    operator, viewer = await fa.role_headers("operator"), await fa.role_headers("viewer")
     cls = (await fa.classes())["Buildings"]
     opening = {"kind": "opening", "class_id": cls["id"], "name": "Warehouse", "available_date": "2020-01-01",
                "cost": "1000", "preview": True, "op_key": "perm-1"}
@@ -464,7 +430,7 @@ async def test_physical_record_then_financial_details(fa):
     got = await fa.asset(asset_id)
     assert got["status"] == "active" and D(got["cost"]) == D("18000") and got["number"] == "FA-0001"
     assert (await fa.ok(await fa.get(f"/assets/{asset_id}/movements")))["items"][0]["posting_date"] == cutover
-    await _fold_matches(fa, asset_id)
+    await fa.fold_matches(asset_id)
 
 
 async def test_asset_list_filters_and_pagination(fa):
@@ -500,5 +466,5 @@ async def test_invariant_registered_cost_equals_source_and_ledger(fa):
         cls = next(c for c in (await fa.classes()).values() if c["id"] == a["class_id"])
         register[cls["asset_account"]] += D(a["cost"])
         _nbv_holds(a)
-        await _fold_matches(fa, a["id"])
+        await fa.fold_matches(a["id"])
     assert register == {"1210": await fa.balance("1210"), "1240": await fa.balance("1240")}

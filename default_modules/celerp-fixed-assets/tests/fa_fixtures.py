@@ -3,6 +3,7 @@
 """Test support for the fixed assets module: a started demo company and the calls tests make."""
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -84,11 +85,46 @@ class FA:
         return [je for je in await self.entities("journal_entry")
                 if je["entity_id"].startswith("je:mod:celerp-fixed-assets:")]
 
+    async def journal(self, ts: str, entries: list[dict]) -> str:
+        """Post a manual journal; returns its id."""
+        r = await self.client.post("/accounting/journal-entries", headers=self.h, json={
+            "ts": ts, "memo": "Manual", "idempotency_token": str(uuid.uuid4()), "entries": entries})
+        assert r.status_code == 200, r.text
+        return r.json()["je_id"]
+
+    async def role_headers(self, role: str) -> dict:
+        """Headers of a new member of this company holding ``role``."""
+        return (await self.member(role))[1]
+
+    async def member(self, role: str) -> tuple[uuid.UUID, dict]:
+        """A new member of this company holding ``role``: their user id and headers."""
+        from celerp.models.accounting import UserCompany
+        from celerp.models.company import User
+        from test_helpers import make_authed_token
+
+        uid = uuid.uuid4()
+        self.session.add(User(id=uid, email=f"{role}-{uid.hex[:8]}@test.co", name=role.title(), auth_hash="x",
+                              is_active=True))
+        await self.session.flush()
+        self.session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=self.auth["company_id"], role=role,
+                                     is_active=True))
+        await self.session.commit()
+        token = await make_authed_token(self.session, str(uid), str(self.auth["company_id"]), role)
+        return uid, {"Authorization": f"Bearer {token}"}
+
+    async def fold_matches(self, asset_id: str) -> None:
+        """The asset's financial state equals the fold of its movements."""
+        from celerp_fixed_assets.projections import fold_movements
+
+        state = await self.state(asset_id)
+        movements = [m for m in await self.entities("fa_movement") if m["asset_id"] == asset_id]
+        folded = fold_movements(movements)
+        for key in ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "quantity"):
+            assert Decimal(str(state[key])) == Decimal(str(folded[key])), (key, state, folded)
+
 
 async def demo_owner(client) -> dict:
     """A company signed up the way a user signs up, with its owner's headers."""
-    import uuid
-
     r = await client.post("/auth/register", json={
         "company_name": "Demo Co", "email": f"fa-{uuid.uuid4().hex[:8]}@test.example",
         "name": "Owner", "password": "pwvalid1"})
