@@ -38,4 +38,26 @@ async function initialiseClusterOnce({ dataDir, runInitdb }) {
   return true;
 }
 
-module.exports = { initialiseClusterOnce };
+// initdb writes the path of its input files into SQL it runs on a UTF-8 database,
+// in the Windows ANSI code page. A path with letters outside ASCII (a per-user
+// install under an account named with accents or another script) is not valid
+// UTF-8 there and setup fails, so initdb is given an ASCII form of that path.
+const ASCII_PATH = /^[\x20-\x7e]+$/;
+
+/**
+ * The folder of initdb's input files as a path initdb can use: `shareDir` when it
+ * is ASCII, otherwise its Windows short (8.3) form from `shortPath(shareDir)`.
+ * Throws a message the user can act on when the folder has no ASCII form.
+ */
+function initdbShareDir(shareDir, shortPath) {
+  if (ASCII_PATH.test(shareDir)) return shareDir;
+  const short = shortPath(shareDir);
+  if (short && ASCII_PATH.test(short)) return short;
+  throw new Error(
+    `Celerp cannot set up its database from ${shareDir}, because the folder name has ` +
+    "letters the database setup cannot read. Reinstall Celerp for all users of this " +
+    "PC (it then goes into Program Files), or into a folder whose path uses only " +
+    "English letters and digits. Your data is not affected.");
+}
+
+module.exports = { initialiseClusterOnce, initdbShareDir };

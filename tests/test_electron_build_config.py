@@ -432,7 +432,9 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
     assert 'PG_PIDFILE="$PG_DATA/postmaster.pid"' in unix["run"] and 'find "$HOME"' not in unix["run"].split("boot smoke OK")[1]
     # Linux and macOS: a force-quit app (SIGKILL) must leave no API or database running.
     assert 'kill -9 "$ELECTRON"' in unix["run"] and "left the API or the database running" in unix["run"]
-    assert win["run"] == "./scripts/win-boot-smoke.ps1 -Account standard -OverRunning" and win["working-directory"] == "electron"
+    # A fresh install under an account named with spaces and non-ASCII letters: the
+    # profile, data and install folders all carry them, and the database must set up.
+    assert win["run"] == './scripts/win-boot-smoke.ps1 -Account standard -UserName "Célerp Tëst ü" -OverRunning' and win["working-directory"] == "electron"
     smoke = _win_boot_smoke()
     assert 'Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json' in smoke
     assert "set ENABLED_MODULES=$enabled" in smoke

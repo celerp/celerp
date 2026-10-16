@@ -197,7 +197,7 @@ const { writeConfig: writeLockedConfig } = require("./config-writer");
 const { serveUpdateState } = require("./update-state");
 const { startupDeelevation, relaunchThroughExplorer } = require("./deelevation");
 const { windowsStartFailure, clusterStartFailure, logSince } = require("./windows-start-errors");
-const { initialiseClusterOnce } = require("./windows-initdb");
+const { initialiseClusterOnce, initdbShareDir } = require("./windows-initdb");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -274,6 +274,16 @@ function pythonBin() {
 
 // ── Startup sequence ─────────────────────────────────────────────────────────
 
+/** The Windows short (8.3) form of an existing path, or "" when it has none. */
+function windowsShortPath(p) {
+  const r = childProcess.spawnSync(pythonBin(), ["-I", "-c",
+    "import ctypes,sys;b=ctypes.create_unicode_buffer(32768);" +
+    "n=ctypes.windll.kernel32.GetShortPathNameW(sys.argv[1],b,32768);" +
+    "sys.stdout.write(b.value if 0<n<32768 else '')", p],
+  { encoding: "utf8", env: { ...process.env, PYTHONIOENCODING: "utf-8" }, timeout: 30000 });
+  return r.status === 0 ? r.stdout.trim() : "";
+}
+
 // Windows-only first-boot initdb that mirrors embedded-postgres's initialise()
 // (same args/auth so the cluster is identical and .start() can connect), but with
 // stdio disabled so initdb's stderr cannot fill an unread pipe and deadlock.
@@ -289,6 +299,7 @@ async function initialisePostgresWindows(password) {
     "@embedded-postgres", "windows-x64", "native", "bin", "initdb.exe");
   trace(`initdb bin=${initdbBin} exists=${fs.existsSync(initdbBin)}`);
   const runInitdb = async (target) => {
+    const shareDir = initdbShareDir(path.join(path.dirname(path.dirname(initdbBin)), "share"), windowsShortPath);
     const pwfile = path.join(DATA_DIR, `pg-pwfile-${process.pid}`);
     fs.writeFileSync(pwfile, `${password}\n`);
     // Only this run's part of the log is read back to explain a failure.
@@ -306,6 +317,7 @@ async function initialisePostgresWindows(password) {
           // against a WIN1252 database.
           "--encoding=UTF8",
           "--no-locale",
+          "-L", shareDir,
         ], { stdio: ["ignore", out, out], env: { ...process.env } });
         proc.on("error", (e) => { trace("initdb spawn error: " + e.message); reject(e); });
         proc.on("exit", (code) => {

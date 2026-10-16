@@ -778,17 +778,20 @@ jobs:
       # real standard account gives a clean medium token where both Electron and
       # Postgres run. With the app open, the installer runs again, as a user does
       # with the app still running: it must close the app, install and boot again.
+      # The account's name, and so its profile, data and install folders, has spaces
+      # and non-ASCII letters.
       - name: Boot smoke (Windows, require db:ok)
         timeout-minutes: 20
         if: runner.os == 'Windows'
         shell: pwsh
         working-directory: electron
-        run: ./scripts/win-boot-smoke.ps1 -Account standard -OverRunning
+        run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName "Célerp Tëst ü" -OverRunning
 
-      # The latest release, installed and opened by an account whose name, and so its
-      # profile, data and install folders, has spaces and non-ASCII letters. It keeps
-      # records; this build then installs over it and must serve the same records.
-      - name: Boot smoke (Windows, upgrade from the latest release, non-ASCII account)
+      # The latest release, installed and opened by an account whose name has a space.
+      # It keeps records; this build then installs over it and must serve the same
+      # records. (Releases up to 2.5.6 cannot set up their database under a non-ASCII
+      # account name, so the upgrade runs under an ASCII one.)
+      - name: Boot smoke (Windows, upgrade from the latest release)
         timeout-minutes: 25
         if: runner.os == 'Windows'
         shell: pwsh
@@ -803,7 +806,7 @@ jobs:
           gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern Celerp-Setup.exe --dir $previous
           if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not download Celerp-Setup.exe from $tag"; exit 1 }
           Write-Host "upgrading from $tag"
-          ./scripts/win-boot-smoke.ps1 -Account standard -UserName "Célerp Tëst ü" -Previous (Join-Path $previous "Celerp-Setup.exe")
+          ./scripts/win-boot-smoke.ps1 -Account standard -UserName "Celerp Upgrade" -Previous (Join-Path $previous "Celerp-Setup.exe")
 
       # The installer reads the installed version from the uninstall entry. Over an
       # existing install: none -> installs; the same version run silently ->

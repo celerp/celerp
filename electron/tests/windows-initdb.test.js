@@ -10,7 +10,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { initialiseClusterOnce } = require("../windows-initdb");
+const { initialiseClusterOnce, initdbShareDir } = require("../windows-initdb");
 
 function dataDirIn(root = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-pg-"))) {
   const dataDir = path.join(root, "pg");
@@ -97,4 +97,29 @@ test("a cluster an older version left half set up is kept exactly as it is", asy
   expect(goodInitdb).not.toHaveBeenCalled();
   expect(fs.readdirSync(dataDir).sort()).toEqual(["PG_VERSION", "base"]);
   expect(fs.readFileSync(path.join(dataDir, "base", "1", "1259"), "utf8")).toBe("partial");
+});
+
+// initdb writes the path of its input files into SQL on a UTF-8 database, so a
+// per-user install under an account named with accents must hand it an ASCII path.
+describe("initdbShareDir", () => {
+  const share = "C:\\Users\\Célerp Tëst ü\\AppData\\Local\\Programs\\Celerp\\native\\share";
+
+  test("an ASCII folder is used as it is, without asking Windows", () => {
+    const shortPath = jest.fn();
+    const plain = "C:\\Program Files\\Celerp\\native\\share";
+    expect(initdbShareDir(plain, shortPath)).toBe(plain);
+    expect(shortPath).not.toHaveBeenCalled();
+  });
+
+  test("a folder with letters outside ASCII is given as its short form", () => {
+    const shortPath = jest.fn(() => "C:\\Users\\CLERPT~1\\AppData\\Local\\Programs\\Celerp\\native\\share");
+    expect(initdbShareDir(share, shortPath)).toBe("C:\\Users\\CLERPT~1\\AppData\\Local\\Programs\\Celerp\\native\\share");
+    expect(shortPath).toHaveBeenCalledWith(share);
+  });
+
+  test.each([["no short form", ""], ["a short form that is not ASCII either", share]])(
+    "%s stops the setup with a message saying how to reinstall", (_label, result) => {
+      expect(() => initdbShareDir(share, () => result))
+        .toThrow(/cannot set up its database from .*Reinstall Celerp for all users/);
+    });
 });
