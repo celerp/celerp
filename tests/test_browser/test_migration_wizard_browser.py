@@ -276,6 +276,13 @@ def test_migration_wizard_browser_existing_owner(page, fresh_company):
     assert after == before
 
 
+def _forget_saved_answers(api) -> None:
+    """Forget the posting accounts earlier tests' finished migrations saved for this person,
+    so the finish step starts with none preselected."""
+    from celerp.importers.adapters.manager_io import ManagerIOAdapter
+    assert api.delete(f"/migrations/templates/{ManagerIOAdapter().key}").status_code == 204
+
+
 def _new_company_run(page, company_name: str) -> str:
     """Move the example file into a new company; returns the run id once it is ready to verify."""
     page.goto("/setup/new-company")
@@ -294,6 +301,7 @@ def test_finishing_with_posting_accounts_unchosen_is_refused_in_german(page, ui_
     """The refusal names each posting account still unchosen by its German label."""
     from ui import i18n
 
+    _forget_saved_answers(fresh_company)
     run_id = _new_company_run(page, "Unchosen Goods Ltd")
     host = ui_server.split("//", 1)[1].split(":", 1)[0]
     page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
@@ -363,8 +371,10 @@ def test_an_added_posting_account_the_chart_refuses_is_refused_in_german(page, u
     from celerp.services import posting_readiness
 
     real = posting_readiness._proposals
-    monkeypatch.setattr(posting_readiness, "_proposals", lambda chart: {
-        role: {**proposal, "code": "P" * 30 + proposal["code"]} for role, proposal in real(chart).items()})
+    monkeypatch.setattr(posting_readiness, "_proposals", lambda chart, reserved: {
+        role: {**proposal, "code": "P" * 30 + proposal["code"]}
+        for role, proposal in real(chart, reserved).items()})
+    _forget_saved_answers(fresh_company)
     page.goto("/setup/new-company")
     page.click('a:has-text("Move from another system")')
     page.wait_for_url(re.compile(r"/setup/new-company/migrate$"))
