@@ -270,6 +270,8 @@ def _doc_record(
     data = {
         "doc_type": record.doc_type.value,
         "status": statuses[record.status],
+        **_conversion(context, record),
+        "valid_until": record.metadata.get("valid_until"),
         "contact_id": contact_id,
         "contact_name": names.get(contact_id) if contact_id else None,
         "contact_billing_address": record.metadata.get("billing_address"),
@@ -291,6 +293,22 @@ def _doc_record(
         source="migration",
         idempotency_key=context.idempotency_key(record, "created"),
     )
+
+
+def _conversion(context: SinkContext, record: CIFDocument) -> dict:
+    """The links Celerp's own conversions write: a quotation or order converted, naming the
+    record it became, and an invoice or bill naming the quotation or order it came from."""
+    out: dict = {}
+    became = record.metadata.get("converted_to")
+    if became:
+        target = deterministic_id(context, became["source_type"], became["external_id"])
+        out.update(status="converted", converted_to=f"doc:{target}", converted_to_type=became["doc_type"])
+    came = record.metadata.get("converted_from")
+    if came and record.doc_type == DocumentType.INVOICE:
+        out["source_quotation_id"] = f"doc:{deterministic_id(context, came['source_type'], came['external_id'])}"
+    elif came and record.doc_type == DocumentType.BILL:
+        out["source_po_ref"] = came["ref"] or ""
+    return out
 
 
 def _currency(record: CIFDocument | CIFSettlement, base: str) -> str:

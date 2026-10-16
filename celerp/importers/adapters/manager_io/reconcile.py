@@ -131,14 +131,15 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
     counts: Counter = Counter()
     totals: dict[tuple[str, str], Decimal] = defaultdict(lambda: ZERO)
     statuses: Counter = Counter()
-    for key in ledger.documents:
-        doc = book.documents[key]
+    records = [(book.documents[k], ledger.states[k].status) for k in ledger.documents]
+    records += [(book.orders[k], book.orders[k].order_status) for k in ledger.orders]
+    for doc, status in records:
         if doc.source_type in JOURNAL_DOCUMENTS:
             continue
         group = (doc.doc_type, book.currency_code(doc.currency))
         counts[group] += 1
         totals[group] += doc.total
-        statuses[f"{doc.doc_type}:{ledger.states[key].status}"] += 1
+        statuses[f"{doc.doc_type}:{status}"] += 1
     for (doc_type, currency), count in sorted(counts.items()):
         add(M.DOCUMENT_COUNT, doc_type, currency, Decimal(count))
         add(M.DOCUMENT_TOTAL, doc_type, currency, totals[(doc_type, currency)])

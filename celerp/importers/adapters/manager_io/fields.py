@@ -66,6 +66,8 @@ _PAYMENT_LINE = _fields(read=_SETTLEMENT_LINE + (39,), refs=(2, 3, 4, 7, 8, 20),
 _MOVEMENT_LINE = _fields(refs=(1,), numbers=(3,),
                          f2=ignored("The item's name as the line shows it. The line names the item itself, "
                                     "and the item carries its own name."))
+# Quote and order lines: no account, since none of them posts.
+_ORDER_LINE = _fields(read=(2,), refs=(1, 7), numbers=(3, 4, 5, 6))
 _JOURNAL_LINE = _fields(read=(4, 5, 6, 8, 9, 10, 11, 12, 15, 17, 18, 20, 21, 22, 23, 24, 26, 30),
                         refs=(1, 2, 3, 29), numbers=(13, 14))
 
@@ -80,6 +82,14 @@ _CUSTOM_FIELDS = Field(nested={1: REF, 2: READ})     # (custom field, value); va
 _MOVEMENT = _fields(read=(1,), refs=(11,), days=(3,), f15=_lines(_MOVEMENT_LINE),
                     f4=ignored("The supplier or customer on the note. The bill or invoice it moves goods "
                                "for names the same contact, and that is what is carried."))
+_PRINTED_FORM = ignored("How Manager prints the form: its theme, title, footers, images, line numbers and which "
+                        "columns and totals it shows. Celerp prints every document in its own layout.")
+
+
+def _printed(*numbers: int) -> dict[str, Field]:
+    return {f"f{n}": _PRINTED_FORM for n in numbers}
+
+
 _PAID_BY = dict(
     f3=ignored("Whether a customer, a supplier or someone else paid, as the form shows it. Each line names "
                "the contact and document it settles, and that is what is carried."),
@@ -119,14 +129,22 @@ SCHEMAS: dict[str, Schema] = {
     "DefaultInventoryLocation": _fields(f1=ignored("The location's name. Every item is held at the one "
                                                    "default location, so no location is carried.")),
     "InventoryUnitCost": _fields(refs=(2,), numbers=(3,), days=(1,)),
-    "SalesInvoice": _fields(read=(2, 4, 8, 12, 22, 28, 29, 31, 32, 35, 54, 69), refs=(3, 30), days=(1, 6),
+    "SalesInvoice": _fields(read=(2, 4, 8, 12, 22, 28, 29, 31, 32, 35, 54, 69), refs=(3, 30, 50, 51), days=(1, 6),
                             f49=_lines(_SALES_LINE), f64=NUMBER, f65=READ, f48=_LINE_DESCRIPTION),
-    "PurchaseInvoice": _fields(read=(2, 7, 9, 14, 15, 19, 24, 31, 64, 65, 68), refs=(3, 13), days=(1, 5),
+    "PurchaseInvoice": _fields(read=(2, 7, 9, 14, 15, 19, 24, 31, 64, 65, 68), refs=(3, 13, 28, 29), days=(1, 5),
                                f23=_lines(_PURCHASE_LINE), f61=NUMBER, f62=READ, f22=_LINE_DESCRIPTION),
     "CreditNote": _fields(read=(2, 4, 6, 9, 13, 15, 16, 31), refs=(3, 8), days=(1,), numbers=(30,),
                           f22=_lines(_SALES_LINE), f21=_LINE_DESCRIPTION),
     "DebitNote": _fields(read=(2, 5, 7, 10, 11, 23), refs=(3, 6), days=(1,), numbers=(22,),
                          f16=_lines(_PURCHASE_LINE)),
+    "SalesQuote": _fields(read=(2, 4, 8, 9, 13, 16, 17, 18, 25, 26, 28, 29, 30, 31), refs=(3,), days=(1,),
+                          f24=_lines(_ORDER_LINE), **_printed(14, 19, 20, 21, 22, 23, 27, 32, 33, 34, 36)),
+    "SalesOrder": _fields(read=(2, 9, 11, 12, 13, 14, 21, 23, 24, 25, 26), refs=(3, 19), days=(1,),
+                          f18=_lines(_ORDER_LINE), **_printed(15, 16, 17, 22, 27, 28, 29, 31, 32, 33)),
+    "PurchaseQuote": _fields(read=(2, 9, 11, 12, 13, 19, 25, 26, 27, 28), refs=(3,), days=(1,),
+                             f17=_lines(_ORDER_LINE), **_printed(14, 15, 16, 18, 20, 21, 22, 23, 24, 29, 30, 31)),
+    "PurchaseOrder": _fields(read=(2, 9, 11, 12, 13, 20, 22, 23, 24, 25), refs=(3, 18), days=(1,),
+                             f17=_lines(_ORDER_LINE), **_printed(14, 15, 16, 21, 26, 27, 28, 30, 31)),
     "GoodsReceipt": _MOVEMENT | {17: REF},
     "DeliveryNote": _MOVEMENT | {19: REF},
     "Receipt": _fields(read=(2, 10, 31, 32, 33, 34, 35, 38, 39), refs=(7,), days=(1,), f11=_lines(_RECEIPT_LINE),
@@ -161,6 +179,10 @@ _OBSOLETE: dict[str, tuple[int, ...]] = {
     "PurchaseInvoice": (4, 6, 11, 18, 21),
     "CreditNote": (5, 32, 33),
     "DebitNote": (4,),
+    "SalesQuote": (5, 7, 11, 12, 15),
+    "SalesOrder": (4, 5, 6, 7, 8, 20),
+    "PurchaseQuote": (4,),
+    "PurchaseOrder": (4, 5, 6, 7, 8, 19),
     "GoodsReceipt": (7,),
     "DeliveryNote": (7, 9),
     "Receipt": (8, 14, 21, 37),

@@ -65,7 +65,8 @@ def _representations(book: Book, key: str, postings: list[Posting], moved: dict[
 
 def _refuse_gaps(book: Book, ledger: Ledger, bundle: CIFImportBundle) -> None:
     """Refuse a bundle missing a representation of a mapped source record: every record in
-    full history or after the cutover, every pre-cutover document it carries, every master."""
+    full history or after the cutover, every pre-cutover document, quote and order it carries,
+    every master."""
     by_record: dict[str, list[Posting]] = defaultdict(list)
     imported = ledger.imported_postings()
     for p in {*imported, *(p for p in ledger.postings if ledger.cutover is None or p.date > ledger.cutover)}:
@@ -76,6 +77,8 @@ def _refuse_gaps(book: Book, ledger: Ledger, bundle: CIFImportBundle) -> None:
     for key, verdict in book.verdicts.items():
         if verdict.coverage_class not in MAPPED or verdict.source_type == attachments.REJECTED:
             continue
+        if key in book.orders and key not in ledger.orders:
+            continue                                    # a quote or order converted or cancelled before the cutover
         if not _representations(book, key, by_record.get(key, []), moved) <= present:
             missing[verdict.source_type] += 1
     if missing:

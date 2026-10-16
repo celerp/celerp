@@ -52,12 +52,16 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("DeliveryNote", "a0f6a539-f6a4-4a38-a69a-546a608a1f6d", _M),
     ("GoodsReceipt", "866217a4-f841-47de-a4e6-87152405c88d", _M),
     ("PurchaseInvoice", "58b9eb90-f6b8-4abc-8ea1-12fd77b8336e", _M),
+    ("PurchaseOrder", "a26bbea1-57aa-4fd9-b7c9-e26b83114385", _M),
     ("Receipt", "7662b887-c8d8-486e-98fd-f9dbcd41c6dc", _M),
     ("SalesInvoice", "ad12b60b-23bf-4421-94df-8be79cef533e", _M),
+    ("SalesQuote", "ba89de75-cb87-4bde-b20f-314f01b31037", _M),
     ("Supplier", "6d2dc48d-2053-4e45-8330-285ebd431242", _M),
     ("TaxCode", "7f368d97-8b7f-4b39-b156-dc66afd9496a", _M),
     # mapped_with_loss
     ("Assets", "4c05c221-ca57-4c7c-be62-115669302ed4", _L),
+    ("PurchaseQuote", "38d606f7-6358-4ace-9d1d-f6c0b9ea9d68", _L),
+    ("SalesOrder", "2dac5598-128d-4954-b2e4-21515047b3a7", _L),
     ("BalanceSheetGroup", "c03d1921-7a45-4eda-8742-a2d9082dcf4f", _L),
     ("DebitNote", "274fc6d0-2eac-43d0-8286-79c856e644aa", _L),
     ("Equity", "9275ff4c-4cff-41d0-b7b5-f31c783f03d8", _L),
@@ -121,8 +125,6 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("PayslipDeductionItem", "0444eb18-6fc5-4d1f-be8b-c114da01832c", _N),
     ("PayslipEarningsItem", "ab02f6ab-c91c-4fc2-b979-66a6682c200e", _N),
     ("Project", "5170f738-cfba-42e3-bb8e-a7d5c5ab66f2", _N),
-    ("PurchaseOrder", "a26bbea1-57aa-4fd9-b7c9-e26b83114385", _N),
-    ("PurchaseQuote", "38d606f7-6358-4ace-9d1d-f6c0b9ea9d68", _N),
     ("RecurringInterAccountTransfer", "10ac4ab8-df74-4faf-b7fc-eb343556fb1b", _N),
     ("RecurringJournalEntry", "b4c1b390-351e-4579-b43b-412b920cddaf", _N),
     ("RecurringPayment", "789d22dc-bc42-4952-a591-60123b344726", _N),
@@ -133,8 +135,6 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("RecurringSalesInvoice", "81385989-81e5-48c7-a819-c344324c1c01", _N),
     ("RecurringSalesOrder", "dd7d5b17-c4be-4369-b0f5-79361525f3c2", _N),
     ("RecurringSalesQuote", "1ca6ee3a-3583-41d8-83b1-74ac9129e1c1", _N),
-    ("SalesOrder", "2dac5598-128d-4954-b2e4-21515047b3a7", _N),
-    ("SalesQuote", "ba89de75-cb87-4bde-b20f-314f01b31037", _N),
     # ignored_non_business
     ("AccessToken", "10431cbb-2b55-4154-b610-c45488afb808", _I),
     ("AdvancedQuery", "c6b97908-627b-453b-9b62-3e6308a96ace", _I),
@@ -479,6 +479,10 @@ TARGETS: dict[str, str] = {
     "DefaultInventoryLocation": "location",
     "InventoryUnitCost": "inventory_adjustment",
     "CreditNote": "document",
+    "SalesQuote": "document",
+    "SalesOrder": "document",
+    "PurchaseQuote": "document",
+    "PurchaseOrder": "document",
     "DebitNote": "document",
     "Receipt": "settlement",
     "Payment": "settlement",
@@ -495,6 +499,10 @@ TARGETS: dict[str, str] = {
 NOTES: dict[str, str] = {
     "ExchangeRate": ("Used to convert the records that store no rate of their own; Celerp keeps each record's "
                      "own rate, so the table itself is not moved."),
+    "SalesOrder": ("Imported as a quotation: Celerp has no sales order. It keeps its status and lines and converts "
+                   "to an invoice like any quotation."),
+    "PurchaseQuote": ("Imported as a draft purchase order: Celerp has no purchase quote. It keeps its lines and "
+                      "can be sent as an order."),
     "DebitNote": "Posted as a journal on the bill it notes and applied to that bill; Celerp has no debit note document.",
     "BalanceSheetGroup": "Sets the account type of the accounts in the group; the group itself is not carried.",
     "ProfitAndLossStatementGroup": "Sets the account type of the accounts in the group; the group itself is not carried.",

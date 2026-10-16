@@ -15,8 +15,9 @@ applied, so the source figures and the imported ones agree.
 Full history imports every record. Cutover partitions the records at the cutover
 date: those dated on or before it are pre-cutover, the rest are imported as they
 are. Of the pre-cutover records it imports the documents still open at the
-cutover date or settled by a later record, the notes applied to them and the
-settlement portions allocated to them; one opening journal and an opening stock
+cutover date or settled by a later record, the notes applied to them, the
+settlement portions allocated to them and the quotes and orders not yet
+converted or cancelled; one opening journal and an opening stock
 position per item carry the rest of the pre-cutover history.
 
 Stock moves on the physical record: a goods receipt or delivery note on its own date
@@ -74,6 +75,7 @@ class Ledger:
     postings: list[Posting] = field(default_factory=list)          # every posting in the book
     states: dict[str, DocumentState] = field(default_factory=dict)
     documents: list[str] = field(default_factory=list)             # imported document keys
+    orders: list[str] = field(default_factory=list)                # imported quote and order keys
     allocations: dict[str, list[tuple[str, Decimal]]] = field(default_factory=dict)  # imported
     settlement_amounts: dict[str, Decimal] = field(default_factory=dict)             # imported
     opening: list[Posting] = field(default_factory=list)
@@ -322,6 +324,9 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
         carried = _carried(book, records, cutover)
         documents = [k for k in documents if k in carried or book.documents[k].date > cutover]
     ledger.documents = documents
+    # A quote or order before the cutover is carried while it is still open: not cancelled and not yet converted.
+    ledger.orders = [o.key for o in sorted(book.orders.values(), key=lambda o: (o.date, o.key))
+                     if cutover is None or o.date > cutover or not (o.cancelled or o.converted_to)]
     imported = set(documents)
     for key in sorted((k for k in records if k in book.settlements), key=lambda k: _record_date(book, k)):
         s = book.settlements[key]

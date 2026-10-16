@@ -61,6 +61,13 @@ ROOT_TYPES = {ASSETS: "asset", LIABILITIES: "liability", EQUITY: "equity", INCOM
 DOC_TYPES = {
     "SalesInvoice": "invoice", "CreditNote": "credit_note", "PurchaseInvoice": "bill", "DebitNote": "debit_note",
 }
+# Quotes and orders: none posts. Celerp has no sales order, so one arrives as the quotation
+# that converts to an invoice, and no purchase quote, so one arrives as a purchase order.
+ORDER_TYPES = {
+    "SalesQuote": "quotation", "SalesOrder": "quotation", "PurchaseQuote": "purchase_order",
+    "PurchaseOrder": "purchase_order",
+}
+SALES_TYPES = frozenset({"SalesInvoice", "CreditNote", "SalesQuote", "SalesOrder"})
 # The document a note settles: a credit note reduces a sales invoice, a debit note a purchase invoice.
 NOTE_OF = {"CreditNote": "SalesInvoice", "DebitNote": "PurchaseInvoice"}
 # Documents Celerp has no document type for: each posts as a journal on the document it notes.
@@ -195,10 +202,25 @@ class Document:
     location: str | None = None                # where such an invoice moves its stock
     rate: Decimal | None = None                # base units per document unit; 1 for a base currency document
     billing_address: str | None = None
+    valid_until: date | None = None            # the last day a quote can be accepted
+    cancelled: bool = False                    # a quote or order cancelled in Manager
+    names: tuple[str, ...] = ()                # the quotes and orders the record says it came from, nearest first
+    converted_from: str | None = None          # the carried quote or order it came from
+    converted_to: str | None = None            # the record a quote or order became
 
     @property
     def doc_type(self) -> str:
-        return DOC_TYPES[self.source_type]
+        return DOC_TYPES.get(self.source_type) or ORDER_TYPES[self.source_type]
+
+    @property
+    def order_status(self) -> str:
+        """A quote or order's status: cancelled is void, a purchase quote still a draft, any
+        other issued, converted ones included."""
+        if self.cancelled:
+            return "void"
+        if self.source_type == "PurchaseQuote" and self.converted_to is None:
+            return "draft"
+        return "awaiting_payment"
 
     @property
     def total(self) -> Decimal:
@@ -215,7 +237,9 @@ class Document:
 
 def line_account(doc: Document, line: Line) -> str | None:
     """The account a document line posts its net to: an inventory item bought goes to
-    inventory on hand, one sold to inventory sales."""
+    inventory on hand, one sold to inventory sales. A quote or order posts nothing."""
+    if doc.source_type in ORDER_TYPES:
+        return None
     if not line.item:
         return line.account
     return INVENTORY if doc.source_type == "PurchaseInvoice" else INVENTORY_SALES
@@ -349,6 +373,7 @@ class Book:
     contacts: dict[str, Contact] = field(default_factory=dict)
     items: dict[str, Item] = field(default_factory=dict)
     documents: dict[str, Document] = field(default_factory=dict)
+    orders: dict[str, Document] = field(default_factory=dict)    # quotes and orders, which never post
     settlements: dict[str, Settlement] = field(default_factory=dict)
     transfers: dict[str, Transfer] = field(default_factory=dict)
     journals: dict[str, Journal] = field(default_factory=dict)
@@ -375,6 +400,13 @@ class Book:
     def block(self, type_name: str, key: str, reason: str, note: str) -> None:
         self.verdicts[key] = Verdict(f"{type_name} ({reason})", CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER,
                                      None, note[:MAX_NOTE])
+
+    def set_aside(self, type_name: str, key: str, reason: str, note: str) -> None:
+        """A quote or order Celerp cannot carry faithfully: listed as not carried. It moves no
+        money, so it never stops the migration."""
+        self.orders.pop(key, None)
+        self.verdicts[key] = Verdict(f"{type_name} ({reason})", CoverageClass.UNSUPPORTED_NONFINANCIAL, None,
+                                     note[:MAX_NOTE])
 
     def is_blocked(self, key: str) -> bool:
         return self.verdicts[key].coverage_class == CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER
@@ -460,15 +492,22 @@ def _doc_line(m: Message, links: tuple[int, ...]) -> Line:
     )
 
 
-def _line_discounts(msg: Message, lines: list[Message], parsed: list[Line], flag: int, kind: int) -> None:
+def _order_line(m: Message) -> Line:
+    return Line(account=None, item=_ref(m.guid(1)), description=m.str(2),
+                quantity=m.decimal(3) if m.values(3) else Decimal(1), unit_price=_money(m.decimal(4)),
+                discount=Decimal(0), tax_code=_ref(m.guid(7)))
+
+
+def _line_discounts(msg: Message, lines: list[Message], parsed: list[Line], flag: int, kind: int,
+                    percent: int = 23, amount: int = 24) -> None:
     if not msg.bool(flag):
         return
     exact = msg.int(kind, 0) == 1
     for raw, line in zip(lines, parsed):
         if exact:
-            line.discount = _money(raw.decimal(24))
+            line.discount = _money(raw.decimal(amount))
         else:
-            line.discount_percent = _money(raw.decimal(23)) or None
+            line.discount_percent = _money(raw.decimal(percent)) or None
 
 
 def _due(msg: Message, issue: date, kind: int, days: int, on: int) -> date | None:
@@ -499,7 +538,7 @@ def _document(source_type: str, key: str, m: Message) -> Document:
         issue = _require_date(m, 1)
         return Document(key, source_type, issue, _due(m, issue, 54, 22, 6), m.str(2), _ref(m.guid(3)), None,
                         m.bool(8), m.str(12), lines, moves_stock=m.bool(69), location=_ref(m.guid(30)),
-                        rate=_rate(m, 64, 65), billing_address=m.str(4))
+                        rate=_rate(m, 64, 65), billing_address=m.str(4), names=_names(m, 50, 51))
     if source_type == "PurchaseInvoice":
         _unsupported(m, (24, 65, 68), "withholding tax, freight or landed costs")
         raw = m.messages(23)
@@ -508,7 +547,7 @@ def _document(source_type: str, key: str, m: Message) -> Document:
         issue = _require_date(m, 1)
         return Document(key, source_type, issue, _due(m, issue, 31, 19, 5), m.str(2), _ref(m.guid(3)), None,
                         m.bool(7), m.str(9), lines, moves_stock=m.bool(64), location=_ref(m.guid(13)),
-                        rate=_rate(m, 61, 62))
+                        rate=_rate(m, 61, 62), names=_names(m, 29, 28))
     if source_type == "CreditNote":
         _unsupported(m, (13,), "withholding tax")
         raw = m.messages(22)
@@ -522,6 +561,34 @@ def _document(source_type: str, key: str, m: Message) -> Document:
     _line_discounts(m, raw, lines, 10, 11)
     return Document(key, source_type, _require_date(m, 1), None, m.str(2), _ref(m.guid(3)), None,
                     m.bool(5), m.str(7), lines, _ref(m.guid(6)), rate=_rate(m, 22, 23))
+
+
+def _names(m: Message, *numbers: int) -> tuple[str, ...]:
+    return tuple(ref for ref in (_ref(m.guid(n)) for n in numbers) if ref)
+
+
+# Per quote and order type: (lines, include tax, description, cancelled, discount flag and
+# kind, the quote or order it came from, billing address, unsupported fields).
+_ORDER_LAYOUT = {
+    "SalesQuote": (24, 8, 9, 25, 17, 18, None, 4, (13, 16, 28, 29, 30, 31)),
+    "SalesOrder": (18, 9, 12, 21, 13, 14, 19, 11, (23, 24, 25, 26)),
+    "PurchaseQuote": (17, 9, 11, 19, 12, 13, None, None, (25, 26, 27, 28)),
+    "PurchaseOrder": (17, 9, 11, 20, 12, 13, 18, None, (22, 23, 24, 25)),
+}
+
+
+def _order(source_type: str, key: str, m: Message) -> Document:
+    lines_at, tax_at, text_at, cancelled_at, flag, kind, came_from, address_at, unsupported = _ORDER_LAYOUT[source_type]
+    _unsupported(m, unsupported, "rounding or withholding tax")
+    raw = m.messages(lines_at)
+    lines = [_order_line(x) for x in raw]
+    _line_discounts(m, raw, lines, flag, kind, 5, 6)
+    issue = _require_date(m, 1)
+    days = m.int(26, 0) if source_type == "SalesQuote" else 0
+    return Document(key, source_type, issue, None, m.str(2), _ref(m.guid(3)), None, m.bool(tax_at), m.str(text_at),
+                    lines, billing_address=m.str(address_at) if address_at else None,
+                    valid_until=issue + timedelta(days=days) if days else None, cancelled=m.bool(cancelled_at),
+                    names=_names(m, came_from) if came_from else ())
 
 
 def _movement(source_type: str, key: str, m: Message) -> Movement:
@@ -678,6 +745,8 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
                                VALUATION_METHODS[method])
     elif name in DOC_TYPES:
         book.documents[key] = _document(name, key, m)
+    elif name in ORDER_TYPES:
+        book.orders[key] = _order(name, key, m)
     elif name in MOVEMENT_OF:
         book.movements[key] = _movement(name, key, m)
     elif name == "InventoryUnitCost":
@@ -780,7 +849,7 @@ def _price_lines(book: Book, currency: str | None, lines: list[Line], include_ta
 
 def _resolve_document(book: Book, doc: Document) -> None:
     contact = book.contacts.get(doc.contact) if doc.contact else None
-    wanted = "Customer" if doc.source_type in ("SalesInvoice", "CreditNote") else "Supplier"
+    wanted = "Customer" if doc.source_type in SALES_TYPES else "Supplier"
     _check(contact is not None and contact.source_type == wanted, f"a {wanted.lower()}")
     doc.currency = contact.currency
     for line in doc.lines:
@@ -800,6 +869,40 @@ def _resolve_document(book: Book, doc: Document) -> None:
     _price_lines(book, doc.currency, doc.lines, doc.include_tax)
     if doc.moves_stock and doc.location not in (None, DEFAULT_LOCATION):
         raise Blocked("multiple locations", LOCATION_NOTE)
+
+
+def _resolve_order(book: Book, order: Document) -> None:
+    contact = book.contacts.get(order.contact) if order.contact else None
+    wanted = "Customer" if order.source_type in SALES_TYPES else "Supplier"
+    _check(contact is not None and contact.source_type == wanted, f"a {wanted.lower()}")
+    if book.is_blocked(contact.key):
+        raise Blocked("blocked contact", f"Its {wanted.lower()} cannot be migrated.")
+    order.currency = contact.currency
+    for line in order.lines:
+        if line.item:
+            _check(line.item in book.items and not book.is_blocked(line.item), "an inventory item")
+        if line.tax_code:
+            _check(line.tax_code in book.tax_codes and not book.is_blocked(line.tax_code), "a tax code")
+    _price_lines(book, order.currency, order.lines, order.include_tax)
+    order.rate = _record_rate(book, order.currency, None, order.date)
+
+
+def _link_orders(book: Book) -> None:
+    """Each carried record names the carried quote or order it came from, nearest first, and
+    each quote or order names what it became: the order made from it, else its earliest
+    invoice or bill. A cancelled quote or order is not linked."""
+    def live(key: str) -> bool:
+        return key in book.orders and not book.orders[key].cancelled
+
+    later = sorted(book.documents.values(), key=lambda d: (d.date, d.key))
+    for record in [*sorted(book.orders.values(), key=lambda d: (d.date, d.key)), *later]:
+        if book.is_blocked(record.key) or (record.key in book.orders and record.cancelled):
+            continue
+        sources = [key for key in record.names if live(key)]
+        record.converted_from = sources[0] if sources else None
+        for key in sources:
+            if book.orders[key].converted_to is None:
+                book.orders[key].converted_to = record.key
 
 
 def _unit_cost(book: Book, item: str, day: date) -> Decimal | None:
@@ -1009,6 +1112,12 @@ def _resolve(book: Book) -> None:
                 rate(book, record)
             except Blocked as blocked:
                 book.block(names[key], key, blocked.reason, blocked.note)
+    for key, order in list(book.orders.items()):
+        try:
+            _resolve_order(book, order)
+        except Blocked as blocked:
+            book.set_aside(order.source_type, key, blocked.reason, blocked.note)
+    _link_orders(book)
     for key, t in book.transfers.items():
         try:
             for bank in (t.from_bank, t.to_bank):
@@ -1140,7 +1249,7 @@ def _receipt_verdicts(book: Book) -> None:
 
 def _document_verdicts(book: Book) -> None:
     """A document whose line form Celerp cannot keep is carried with exact totals, reported per record."""
-    for key, doc in book.documents.items():
+    for key, doc in [*book.documents.items(), *book.orders.items()]:
         if book.is_blocked(key):
             continue
         lost = []
@@ -1152,7 +1261,8 @@ def _document_verdicts(book: Book) -> None:
                          "Editing the document later recomputes tax from those amounts, which can differ by a cent."))
         if lost:
             book.accept(doc.source_type, key, label=f"{doc.source_type} ({', '.join(w for w, _ in lost)})",
-                        klass=CoverageClass.MAPPED_WITH_LOSS, note=" ".join(n for _, n in lost))
+                        klass=CoverageClass.MAPPED_WITH_LOSS,
+                        note=" ".join(filter(None, (NOTES.get(doc.source_type), *(n for _, n in lost)))))
 
 
 def _master_verdicts(book: Book) -> None:
@@ -1225,9 +1335,9 @@ def read_book(reader: ManagerReader) -> Book:
             _decode_object(book, name, key, message)
             book.losses |= {(key, f"{name} ({f.lost})"): f.note for f in lost}
         except DecodeError as exc:
-            book.block(name, key, "unreadable", f"Could not be read: {exc}")
+            (book.set_aside if name in ORDER_TYPES else book.block)(name, key, "unreadable", f"Could not be read: {exc}")
         except Blocked as blocked:
-            book.block(name, key, blocked.reason, blocked.note)
+            (book.set_aside if name in ORDER_TYPES else book.block)(name, key, blocked.reason, blocked.note)
     for key, (account_type, control, label) in BUILTINS.items():
         book.accounts.setdefault(key, Account(key, TYPE_NAMES[key], label, None, None, account_type, control))
     if any(doc.source_type == "SalesInvoice" and any(line.item for line in doc.lines) for doc in book.documents.values()):

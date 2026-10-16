@@ -128,9 +128,42 @@ def _movements(book: Book) -> dict[str, list[dict]]:
     return out
 
 
+def _record(book: Book, key: str) -> Document:
+    return book.documents.get(key) or book.orders[key]
+
+
+def _links(book: Book, ledger: Ledger, doc: Document) -> dict:
+    """The imported quote or order a record came from, and the imported record a quote or
+    order became."""
+    links: dict = {}
+    if doc.converted_from in ledger.orders:
+        source = book.orders[doc.converted_from]
+        links["converted_from"] = {"source_type": source.source_type, "external_id": source.key, "ref": source.ref}
+    if doc.converted_to and (doc.converted_to in ledger.documents or doc.converted_to in ledger.orders):
+        successor = _record(book, doc.converted_to)
+        links["converted_to"] = {"source_type": successor.source_type, "external_id": successor.key,
+                                 "doc_type": successor.doc_type}
+    return links
+
+
+def _order(book: Book, ledger: Ledger, order: Document) -> CIFDocument:
+    """A quote or order: its lines and totals, posting nothing and owing nothing."""
+    metadata: dict = {"amounts_include_tax": order.include_tax, **_links(book, ledger, order)}
+    if order.valid_until:
+        metadata["valid_until"] = order.valid_until.isoformat()
+    if order.billing_address:
+        metadata["billing_address"] = order.billing_address
+    return CIFDocument(**_src(order.source_type, order.key, order.ref), doc_type=order.doc_type,
+                       status=order.order_status, contact_external_id=order.contact, ref=order.ref,
+                       issue_date=order.date, currency=book.currency_code(order.currency),
+                       exchange_rate=order.rate if book.is_foreign(order.currency) else None,
+                       total=order.total, tax_total=order.tax_total, amount_paid=ZERO, amount_outstanding=ZERO,
+                       line_items=[_line(book, order, ln) for ln in order.lines], metadata=metadata)
+
+
 def _document(book: Book, ledger: Ledger, doc: Document, movements: dict[str, list[dict]]) -> CIFDocument:
     state = ledger.states[doc.key]
-    metadata: dict = {"amounts_include_tax": doc.include_tax}
+    metadata: dict = {"amounts_include_tax": doc.include_tax, **_links(book, ledger, doc)}
     if doc.applies_to:
         metadata["applies_to"] = doc.applies_to
     if doc.billing_address:
@@ -258,7 +291,7 @@ def _attachments(book: Book, screened: Screened) -> list[CIFAttachment]:
 def carried(book: Book, ledger: Ledger) -> set[str]:
     """Keys of the source records this migration imports under their own id: attachment targets."""
     imported = {p.record for p in ledger.imported_postings() if p.part in ("transfer", "journal")}
-    return {*book.contacts, *book.items, *ledger.documents, *ledger.settlement_amounts, *imported}
+    return {*book.contacts, *book.items, *ledger.documents, *ledger.orders, *ledger.settlement_amounts, *imported}
 
 
 def build_bundle(book: Book, ledger: Ledger, screened: Screened) -> CIFImportBundle:
@@ -271,7 +304,8 @@ def build_bundle(book: Book, ledger: Ledger, screened: Screened) -> CIFImportBun
         tax_codes=_tax_codes(book),
         contacts=_contacts(book),
         items=_items(book),
-        documents=[_document(book, ledger, book.documents[k], movements) for k in ledger.documents],
+        documents=[*(_document(book, ledger, book.documents[k], movements) for k in ledger.documents),
+                   *(_order(book, ledger, book.orders[k]) for k in ledger.orders)],
         settlements=_settlements(book, ledger),
         bank_transfers=_transfers(book, ledger),
         journals=_journals(book, ledger),
