@@ -245,3 +245,20 @@ async def test_statutory_form_renders_from_regime(fa, zz):
     assert printed.status_code == 200 and "3,000.00" in printed.text and "9,000.00" in printed.text
     missing = await fa.get("/reports/statutory/zz_unknown", year=2026)
     assert missing.status_code == 404
+
+
+def test_no_country_rules_in_core():
+    """Tax regimes, statutory forms and country class tables come only from a country module:
+    neither core nor any module Celerp ships carries one."""
+    from celerp.modules import loader
+    from celerp_fixed_assets.calc import rules
+
+    assert rules.CORE["tax_regime"] == () and rules.CORE["statutory_report"] == ()
+    repo = PACKAGE.parents[2]
+    for module in sorted(p for p in (repo / "default_modules").iterdir() if (p / "__init__.py").exists()):
+        assert "fixed_asset_rules" not in (loader.read_manifest(module).get("slots") or {}), module.name
+    shipped = [p for root in (repo / "celerp", repo / "default_modules") for p in root.rglob("*.json")
+               if "tests" not in p.relative_to(repo).parts]
+    assert shipped
+    carrying = [str(p.relative_to(repo)) for p in shipped if "fixed_asset_classes" in p.read_text()]
+    assert carrying == []

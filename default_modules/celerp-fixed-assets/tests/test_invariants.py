@@ -5,14 +5,22 @@ that carry it, net book value is cost less both reductions, every reversal mirro
 it reverses, and the tax books never touch the ledger."""
 from __future__ import annotations
 
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
 
 from fa_fixtures import FA
+from test_additions import _add, _undo_latest
 from test_corrections import _bill, _correct, _void
+from test_disposal import _dispose
+from test_opening import _check_identity, _month_end
 from test_register import _nbv_holds
+from test_remeasure import _impair, _revalue_class
+from test_remeasure import _reverse as _reverse_impairment
 from test_runs import _contributed, _managed_from, _reverse, _run
+from test_sales import _finalize, _sell
+from test_transfer import _plant, _reclassify, _second_company, _transfer
 
 pytestmark = pytest.mark.asyncio
 
@@ -116,3 +124,55 @@ async def test_invariant_tax_books_never_post(fa, zz):
     from test_l10n import test_l10n_tax_books_never_post
 
     await test_l10n_tax_books_never_post(fa, zz)
+
+
+async def _identity_around(fa: FA, day: str) -> None:
+    """The register reconciles with the ledger the day before an operation's date, on it and at its month end."""
+    on = date.fromisoformat(day)
+    for at in (on - timedelta(days=1), on, _month_end(on)):
+        await _check_identity(fa, at.isoformat())
+
+
+async def test_s2_each_operation_identity_at_effective_date(fa):
+    await _managed_from(fa)
+    bill = await _bill(fa, "Truck", "15000", "2026-01-20")
+    (line,) = [i for i in await fa.intake() if i["document"] == bill]
+    truck = (await fa.register(line["source"], key="truck"))["assets"][0]["id"]
+    await _identity_around(fa, "2026-01-20")  # acquisition
+    car = await _contributed(fa)
+    land = await _contributed(fa, "Plot", cls="Land", cost="600")
+    await _identity_around(fa, "2026-01-15")
+    await _run(fa, "2026-01")
+    await _run(fa, "2026-02")
+    await _identity_around(fa, "2026-02-28")  # run
+    await _add(fa, car, kind="improvement", date="2026-03-10", amount="1080", credit_account="3100")
+    await _identity_around(fa, "2026-03-10")
+    await _run(fa, "2026-03")
+    await _add(fa, car, kind="replacement", date="2026-04-15", amount="4000", credit_account="3100",
+               name="Engine", life_months=36, replaced={"estimate": "3000"})
+    await _identity_around(fa, "2026-04-15")
+    await _revalue_class(fa, "Land", "2026-04-30", {land: "500"})
+    await _identity_around(fa, "2026-04-30")
+    await _run(fa, "2026-04")
+    await _impair(fa, truck, "2026-04-30", "9000")
+    await _identity_around(fa, "2026-04-30")
+    await _run(fa, "2026-05")
+    await _reverse_impairment(fa, truck, "2026-05-31", "11000")
+    await _identity_around(fa, "2026-05-31")
+    plant = await _plant(fa)
+    await _reclassify(fa, truck, plant["id"], "2026-06-10")
+    await _identity_around(fa, "2026-06-10")
+    await _run(fa, "2026-06")
+    await _correct(fa, car, {"life_months": 48})
+    await _identity_around(fa, "2026-07-01")  # correction
+    await _undo_latest(fa, car)
+    await _identity_around(fa, "2026-07-01")  # undo
+    await _dispose(fa, land, "2026-07-10")
+    await _identity_around(fa, "2026-07-10")
+    invoice = await _sell(fa, car, on="2026-07-20", price="9000")
+    await _finalize(fa, invoice)
+    await _identity_around(fa, "2026-07-20")  # sale
+    b = await _second_company(fa)
+    await _transfer(fa, b, truck, date="2026-07-25")
+    await _identity_around(fa, "2026-07-25")
+    await _identity_around(b, "2026-07-25")
