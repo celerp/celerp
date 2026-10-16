@@ -37,7 +37,7 @@ def test_email_and_desktop_link_round_trip():
 ])
 def test_invalid_urls_fail_closed(mutate):
     email = handoff_page_link(uuid.uuid4(), bytes(range(32)))
-    with pytest.raises(ValueError, match="Invalid company handoff link"):
+    with pytest.raises(ValueError, match="Invalid company copy link"):
         parse_handoff_link(mutate(email))
 
 

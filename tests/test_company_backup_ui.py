@@ -332,10 +332,10 @@ async def test_company_copy_page_gone(ui, real_engine):
 # ── Setup form start options ─────────────────────────────────────────────────
 
 async def test_setup_form_offers_one_restore_entry_point(ui, real_engine):
-    """The setup form links the company restore once; the whole-installation recovery
-    sits on the restore page, so restore has one entry point and no copy choice."""
+    """The setup form links Open a company copy once; the whole-installation recovery
+    sits on the restore page, so restore has one entry point."""
     page = _page(await ui.get("/setup"))
-    assert re.search(r"\bcop(y|ies)\b", page, re.I) is None
+    assert "Open a company copy" in page
     assert "/setup/open-copy" not in page
     hrefs = [h for h, _, _ in _anchors(page)]
     assert hrefs.count("/setup/restore-backup") == 1
@@ -679,7 +679,7 @@ async def test_preview_offers_prepare_for_disabled_module(routed_ui, real_engine
     assert re.search(r'name="consent"[^>]*value="acme-widgets"', page)
     assert 'value="celerp-labels"' not in page
 
-OPENING = "celerp_company_copy_opening"
+OPENING = "celerp_handoff_opening"
 
 
 async def _status_of(ui, base: str = "/settings/restore-backup") -> dict:
@@ -819,7 +819,7 @@ async def test_invalid_handoff_link_is_not_downloaded(ui, real_engine, monkeypat
         "handoff_link": "https://evil.example/handoffs/abcd/open#" + "A" * 43,
     })
     assert r.status_code == 200
-    assert "Check the link or request a new copy" in _page(r)
+    assert "Check the link or ask for a new one" in _page(r)
     assert await _company_ids(real_engine) == before
 
 

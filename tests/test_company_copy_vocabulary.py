@@ -25,7 +25,7 @@ EXTRA_KEYS = (
     "setup.option_restore_desc",
     "setup.start_company_explain",
     "setup.later_from_dashboard",
-    "settings.download_backup_first",
+    "settings.download_backup_first", "activity.actor_historical",
 )
 
 FORBIDDEN = {
@@ -59,7 +59,7 @@ def test_company_copy_strings_never_call_it_a_backup(lang):
     # Pointing at the Backup tab, where System Recovery lives, is allowed.
     tab = re.escape(catalog["settings.tab_backup"])
     recovery = re.escape(catalog["system_recovery.title"])
-    allowed = re.compile(rf"[,،、]\s*{tab}|{recovery}")
+    allowed = re.compile(rf"[,،፣「]\s*{tab}|{recovery}")
     wrong = {
         key: text
         for key, text in _copy_strings(catalog).items()

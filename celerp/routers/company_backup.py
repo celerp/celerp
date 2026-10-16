@@ -46,8 +46,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/company-backups", tags=["company-backups"])
 
-MODULES_UNAVAILABLE = ("This company backup needs modules that cannot run here: {labels}. "
-                       "Import them, or choose another backup. Nothing was restored.")
+MODULES_UNAVAILABLE = ("This company copy needs modules that cannot run here: {labels}. "
+                       "Import them, or choose another company copy. Nothing was restored.")
 CONSENT_NEEDED = ("These modules come from outside Celerp. Confirm that you want to turn them on: {labels}. "
                   "Nothing was restored.")
 _BOOTSTRAP = "bootstrap"
@@ -114,10 +114,10 @@ async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(u
     try:
         secret = base64.urlsafe_b64decode(payload.key + "=")
     except (ValueError, binascii.Error):
-        raise HTTPException(status_code=422, detail="Invalid handoff key") from None
+        raise HTTPException(status_code=422, detail="Invalid company copy key") from None
     if (len(secret) != 32 or
             base64.urlsafe_b64encode(secret).decode().rstrip("=") != payload.key):
-        raise HTTPException(status_code=422, detail="Invalid handoff key")
+        raise HTTPException(status_code=422, detail="Invalid company copy key")
     await session.rollback()  # snapshot uses its own consistent transaction
     async def export(destination: Path):
         await cb.export_company_snapshot(ctx.company_id, destination)
@@ -143,18 +143,18 @@ async def company_handoffs(ctx: AuthContext = Depends(user_owner)):
         raise HTTPException(status_code=502, detail=str(exc)) from None
     rows = answer.get("items")
     if not isinstance(rows, list) or len(rows) > 100:
-        raise HTTPException(status_code=502, detail="Handoff activity is unavailable")
+        raise HTTPException(status_code=502, detail="Company copy activity is unavailable")
     safe = []
     for row in rows:
         if not isinstance(row, dict) or row.get("company_id") != str(ctx.company_id):
-            raise HTTPException(status_code=502, detail="Handoff activity is unavailable")
+            raise HTTPException(status_code=502, detail="Company copy activity is unavailable")
         try:
             copy_id = uuid.UUID(row["id"])
         except (ValueError, KeyError, TypeError):
-            raise HTTPException(status_code=502, detail="Handoff activity is unavailable") from None
+            raise HTTPException(status_code=502, detail="Company copy activity is unavailable") from None
         status = row.get("status")
         if status not in ("pending", "ready", "sent", "imported", "expired", "revoked"):
-            raise HTTPException(status_code=502, detail="Handoff activity is unavailable")
+            raise HTTPException(status_code=502, detail="Company copy activity is unavailable")
         safe.append({"id": str(copy_id), "status": status,
                      "opened": row.get("opened") is True,
                      "downloaded": row.get("downloaded") is True,
@@ -174,7 +174,7 @@ async def revoke_company_handoff(copy_id: uuid.UUID, ctx: AuthContext = Depends(
             not isinstance(row, dict) or row.get("company_id") != str(ctx.company_id)
             for row in rows
         ):
-            raise HTTPException(status_code=502, detail="Handoff activity is unavailable")
+            raise HTTPException(status_code=502, detail="Company copy activity is unavailable")
         if not any(row.get("id") == str(copy_id) for row in rows):
             raise HTTPException(status_code=404, detail="Company copy not found")
         await _cloud("POST", f"/handoffs/{copy_id}/revoke")
@@ -243,7 +243,7 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str =
                     handoff_copy_id, handoff_proof, files.stage_facts(stage).get("sha256"))
                 files.bind_handoff(stage, handoff_copy_id, handoff_proof)
             except (TypeError, ValueError, HandoffDownloadError):
-                raise cb.BackupError(422, "This archive does not match the company handoff") from None
+                raise cb.BackupError(422, "This file does not match the company copy") from None
         return preview
     except BaseException:
         files.discard_stage(stage)

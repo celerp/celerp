@@ -149,7 +149,7 @@ BATCH_ROWS = 1000
 BATCH_BYTES = 1024 ** 2
 
 _NOT_RESTORED = " Nothing was restored."
-_NOT_BACKED_UP = " Nothing was backed up."
+_NO_COPY_MADE = " No copy was made."
 # Refusals, as locale keys: each is translated where the BackupError is raised.
 NOT_A_BACKUP = "company_backup.err_not_a_backup"
 SYSTEM_BACKUP = "company_backup.err_system_backup"
@@ -276,7 +276,7 @@ def _refusal(table: str, owners: dict[str, str]) -> BackupError:
 
 
 def _unsupported(label: str, owner: str | None, *, restoring: bool) -> BackupError:
-    status, verb, end = (422, "restore", _NOT_RESTORED) if restoring else (409, "back up", _NOT_BACKED_UP)
+    status, verb, end = (422, "restore", _NOT_RESTORED) if restoring else (409, "copy", _NO_COPY_MADE)
     if owner:
         return BackupError(status, f"The {owner} module keeps data in {label} in a form Celerp "
                                    f"cannot {verb} yet." + end)
@@ -327,7 +327,7 @@ async def _classify(session: AsyncSession, modules: InstalledModules, *, strict:
                 # whose declarations and version a backup records.
                 if strict:
                     raise BackupError(409, f"The {owner} module is installed more than once, with "
-                                           f"different table prefixes." + _NOT_BACKED_UP)
+                                           f"different table prefixes." + _NO_COPY_MADE)
                 refused.add(name)
                 continue
             how = declarations[owner].get(name)
@@ -398,8 +398,8 @@ async def notify_undeclared_module_tables(session: AsyncSession) -> int:
         label = module_label(module)
         created += await notif_service.notify_every_company(
             session, "modules", f"The {label} module needs an update",
-            f"The {label} module keeps data it has not said belongs in a company backup. A company "
-            "holding that data cannot be backed up until the module is updated.",
+            f"The {label} module keeps data it has not said belongs in a company copy. No company "
+            "copy can be made of a company holding that data until the module is updated.",
             action_url="/modules")
     return created
 
@@ -576,7 +576,7 @@ def _collect_urls(value, company_id, found: dict[str, str], types: dict[str, str
     if isinstance(value, str):
         name = attachments.company_file_name(company_id, value)
         if name is not None and found.setdefault(name, value) != value:
-            raise BackupError(409, f"This company has two attachment files named {name}." + _NOT_BACKED_UP)
+            raise BackupError(409, f"This company has two attachment files named {name}." + _NO_COPY_MADE)
     elif isinstance(value, dict):
         if isinstance(value.get("url"), str) and isinstance(value.get("mime"), str):
             types.setdefault(value["url"], value["mime"])
@@ -596,7 +596,7 @@ def _backup_name(name: str, url: str, types: dict[str, str]) -> str:
     backup_name = attachments.stored_file_name(name, mime) if mime else None
     if backup_name is None:
         raise BackupError(409, f"This company has an attachment file of a type Celerp does not store: {url}."
-                          + _NOT_BACKED_UP)
+                          + _NO_COPY_MADE)
     return backup_name
 
 
@@ -604,7 +604,7 @@ async def _share_schema(session: AsyncSession, *, restoring: bool) -> None:
     """Hold the schema key shared until the transaction ends, so no schema change runs
     meanwhile; refused at once while one runs or waits."""
     if not await celerp.db.share_schema(session):
-        raise BackupError(409, "Celerp is updating its database." + (_NOT_RESTORED if restoring else _NOT_BACKED_UP)
+        raise BackupError(409, "Celerp is updating its database." + (_NOT_RESTORED if restoring else _NO_COPY_MADE)
                           + " Try again in a moment.")
 
 
@@ -711,7 +711,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
             if modules.version(owner) is None:
                 raise BackupError(409, f"The {owner} module does not declare a valid version, so a "
                                        f"backup of its data cannot say which version restores it."
-                                  + _NOT_BACKED_UP)
+                                  + _NO_COPY_MADE)
         manifest: dict = {
             "format": FORMAT, "format_version": FORMAT_VERSION, "celerp_version": running_version(),
             "backup_id": str(uuid.uuid4()),
@@ -752,7 +752,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
                 backup_name = _backup_name(name, found[name], types)
                 if names.setdefault(backup_name, name) != name:
                     raise BackupError(409, f"This company has two attachment files named {backup_name}."
-                                      + _NOT_BACKED_UP)
+                                      + _NO_COPY_MADE)
             for backup_name, name in sorted(names.items()):
                 url = found[name]
                 try:
@@ -763,7 +763,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
                     body = None
                 if body is None:
                     raise BackupError(409, f"This company has an attachment file Celerp cannot read: {url}."
-                                      + _NOT_BACKED_UP)
+                                      + _NO_COPY_MADE)
                 zf.writestr(f"attachments/{backup_name}", body)
                 manifest["attachments"].append({"url": url, "name": backup_name, "size": len(body),
                                                 "sha256": hashlib.sha256(body).hexdigest()})

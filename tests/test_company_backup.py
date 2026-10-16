@@ -876,7 +876,7 @@ async def test_export_refusal_surfaces_on_settings_and_migration_download(real_e
             r = await real_client.get("/company-backups/download", params=params or None, headers=auth(tok))
             assert r.status_code == 409, (params, r.text)
             detail = r.json()["detail"]
-            assert named in detail and "Nothing was backed up." in detail, detail
+            assert named in detail and "No copy was made." in detail, detail
     finally:
         await _bk_drop(real_engine, "bk_unknown_things")
 
@@ -1025,7 +1025,7 @@ async def test_overlapping_hand_copied_prefix_stops_the_export_instead_of_droppi
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert detail == t(cb.UNSUPPORTED) and "Nothing was backed up." in detail, detail
+        assert detail == t(cb.UNSUPPORTED) and "No copy was made." in detail, detail
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
@@ -1050,7 +1050,7 @@ async def test_module_table_outside_invariants_refused(real_engine, real_client,
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert "Widgets" in detail and "zz_" not in detail and "Nothing was backed up." in detail
+        assert "Widgets" in detail and "zz_" not in detail and "No copy was made." in detail
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
@@ -1078,7 +1078,7 @@ async def test_unsupported_module_refusal_names_module_and_table_before_archive(
             await cb.export_company_snapshot(cid, out_dir / "books.celerp-company")
         assert err.value.status_code == 409
         assert "Widgets" in err.value.detail and "zz_" not in err.value.detail
-        assert "Nothing was backed up." in err.value.detail
+        assert "No copy was made." in err.value.detail
         assert opened == [] and list(out_dir.iterdir()) == []
     finally:
         await _bk_drop(real_engine, "zz_widgets")
@@ -2273,8 +2273,8 @@ async def test_a_table_in_a_schema_ahead_of_celerps_stops_the_backup(real_engine
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == (f"This company has data Celerp cannot back up yet: {role}.ext_notes. "
-                                      "Nothing was backed up.")
+        assert r.json()["detail"] == (f"This company has data Celerp cannot copy yet: {role}.ext_notes. "
+                                      "No copy was made.")
         r = await restore(real_client, tok, made.content, mode="new_company")
         assert r.status_code == 422, r.text[:200]
         assert r.json()["detail"] == (f"This company has data Celerp cannot restore yet: {role}.ext_notes. "
@@ -2303,8 +2303,8 @@ async def test_a_companies_table_ahead_of_celerps_stops_the_backup(real_engine, 
             await cb.export_company_snapshot(cid, out)
 
         assert err.value.status_code == 409
-        assert err.value.detail.startswith("This company has data Celerp cannot back up yet: public.")
-        assert err.value.detail.endswith("Nothing was backed up.")
+        assert err.value.detail.startswith("This company has data Celerp cannot copy yet: public.")
+        assert err.value.detail.endswith("No copy was made.")
         assert list(out.parent.iterdir()) == []
     finally:
         await _bk_sql(real_engine, f"DROP SCHEMA IF EXISTS {role} CASCADE")
@@ -2491,7 +2491,7 @@ async def test_a_backup_naming_a_row_outside_it_is_refused_plainly(
         data = _bk_naming_outside(await download(real_client, tok), lookup,
                                   cb.FORMAT_VERSION - 1 if older else cb.FORMAT_VERSION)
 
-        message = ("This company backup was made by an older version of Celerp and can't be restored here."
+        message = ("This company copy was made by an older version of Celerp and can't be restored here."
                    if older else "damaged or was changed")
         await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, message)
     finally:
@@ -2954,7 +2954,7 @@ async def test_record_too_large_to_parse_is_not_backed_up(real_engine, real_clie
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
     assert r.json()["detail"] == t(cb.ROW_TOO_LARGE_TO_BACK_UP)
-    assert "too large for a company backup" in r.json()["detail"]
+    assert "too large for a company copy" in r.json()["detail"]
 
 
 @pytest.mark.parametrize("limit", ["MAX_MEMBERS", "MAX_MEMBER_BYTES", "MAX_TOTAL_BYTES", "MAX_UPLOAD_BYTES"])
@@ -3044,10 +3044,10 @@ def _bk_wrong_format(data: bytes) -> bytes:
 _BK_TAMPERING = {
     "changed_row": (_bk_changed_row, "damaged or was changed"),
     "wrong_row_count": (_bk_wrong_count, "damaged or was changed"),
-    "not_a_zip": (lambda _: b"this is not a backup", "isn't a Celerp company backup"),
-    "wrong_format": (_bk_wrong_format, "isn't a Celerp company backup"),
+    "not_a_zip": (lambda _: b"this is not a backup", "isn't a Celerp company copy"),
+    "wrong_format": (_bk_wrong_format, "isn't a Celerp company copy"),
     "system_backup": (lambda _: _bk_system_backup(),
-                      "This is a whole-installation backup, not a company backup."),
+                      "This file holds a whole Celerp installation, not a company copy."),
 }
 
 
@@ -4440,7 +4440,7 @@ async def test_attachment_named_before_type_extensions_round_trips(real_engine, 
     await _bk_set_data(real_engine, cid, state)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert "a type Celerp does not store" in r.json()["detail"] and "Nothing was backed up." in r.json()["detail"]
+    assert "a type Celerp does not store" in r.json()["detail"] and "No copy was made." in r.json()["detail"]
 
 
 async def test_team_count_stated_in_preview_and_result(real_engine, real_client, tmp_path, monkeypatch):
@@ -5314,7 +5314,7 @@ async def test_module_tables_travel_only_as_their_manifest_declares(real_engine,
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert "Widgets" in detail and "zz_" not in detail and "Nothing was backed up." in detail
+        assert "Widgets" in detail and "zz_" not in detail and "No copy was made." in detail
         await _bk_refused(real_engine, real_client, tok, user, tmp_path, data)
     finally:
         await _bk_drop(real_engine, "zz_tokens", "zz_widgets")

@@ -23,7 +23,7 @@ MAX_PLAINTEXT = MAX_CIPHERTEXT - len(_MAGIC) - _NONCE_BYTES - _TAG_BYTES
 
 def _key(key: bytes) -> None:
     if not isinstance(key, bytes) or len(key) != 32:
-        raise ValueError("A company handoff key must be 32 bytes")
+        raise ValueError("A company copy key must be 32 bytes")
 
 
 def _temp(destination: Path) -> tuple[int, Path]:
@@ -35,7 +35,7 @@ def encrypt_file(source: Path, destination: Path, key: bytes) -> int:
     """Encrypt a bounded file with a fresh nonce, returning ciphertext bytes."""
     _key(key)
     if source.stat().st_size > MAX_PLAINTEXT:
-        raise ValueError("Company copy exceeds the handoff size limit")
+        raise ValueError("Company copy exceeds the size limit for links")
     nonce = os.urandom(_NONCE_BYTES)
     encryptor = Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
     encryptor.authenticate_additional_data(_MAGIC)
@@ -47,14 +47,14 @@ def encrypt_file(source: Path, destination: Path, key: bytes) -> int:
             while chunk := plain.read(_CHUNK):
                 total += len(chunk)
                 if total > MAX_PLAINTEXT:
-                    raise ValueError("Company copy exceeds the handoff size limit")
+                    raise ValueError("Company copy exceeds the size limit for links")
                 encrypted.write(encryptor.update(chunk))
             encrypted.write(encryptor.finalize())
             encrypted.write(encryptor.tag)
             encrypted.flush()
             os.fsync(encrypted.fileno())
         if temporary.stat().st_size > MAX_CIPHERTEXT:
-            raise ValueError("Company copy exceeds the handoff size limit")
+            raise ValueError("Company copy exceeds the size limit for links")
         os.replace(temporary, destination)
         return destination.stat().st_size
     finally:
@@ -67,11 +67,11 @@ def decrypt_file(source: Path, destination: Path, key: bytes) -> None:
     size = source.stat().st_size
     overhead = len(_MAGIC) + _NONCE_BYTES + _TAG_BYTES
     if size < overhead or size > MAX_CIPHERTEXT:
-        raise ValueError("Invalid company handoff file size")
+        raise ValueError("Invalid company copy file size")
     with source.open("rb") as encrypted:
         header = encrypted.read(len(_MAGIC) + _NONCE_BYTES)
         if header[:len(_MAGIC)] != _MAGIC:
-            raise ValueError("Unsupported company handoff file")
+            raise ValueError("Unsupported company copy file")
         nonce = header[len(_MAGIC):]
         encrypted.seek(-_TAG_BYTES, os.SEEK_END)
         tag = encrypted.read(_TAG_BYTES)
@@ -85,7 +85,7 @@ def decrypt_file(source: Path, destination: Path, key: bytes) -> None:
                 while remaining:
                     chunk = encrypted.read(min(_CHUNK, remaining))
                     if not chunk:
-                        raise ValueError("Truncated company handoff file")
+                        raise ValueError("Truncated company copy file")
                     remaining -= len(chunk)
                     plain.write(decryptor.update(chunk))
                 plain.write(decryptor.finalize())

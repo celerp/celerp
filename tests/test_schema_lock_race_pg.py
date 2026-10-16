@@ -587,9 +587,9 @@ async def test_company_backup_during_system_recovery_is_refused_and_writes_nothi
         recovery.release.set()
         await asyncio.wait_for(recovery.task, 15)
     assert r.status_code == 409, r.status_code
-    assert r.json()["detail"].startswith("Celerp is updating its database. Nothing was backed up.")
+    assert r.json()["detail"].startswith("Celerp is updating its database. No copy was made.")
     assert direct is not None and direct.status_code == 409
-    assert direct.detail.startswith("Celerp is updating its database. Nothing was backed up.")
+    assert direct.detail.startswith("Celerp is updating its database. No copy was made.")
     assert sorted(p for p in tmp_path.rglob("*") if p.is_file()) == files_before
 
 

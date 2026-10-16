@@ -109,12 +109,12 @@ def bind_handoff(stage: Path, copy_id: str, proof: str) -> None:
     try:
         canonical = str(uuid.UUID(copy_id))
     except (ValueError, TypeError):
-        raise ValueError("Invalid company handoff") from None
+        raise ValueError("Invalid company copy link") from None
     if canonical != copy_id or not re.fullmatch(r"[0-9a-f]{64}", proof):
-        raise ValueError("Invalid company handoff")
+        raise ValueError("Invalid company copy link")
     facts = stage_facts(stage)
     if not stage.is_file() or not facts.get("owner"):
-        raise ValueError("The backup upload is unavailable")
+        raise ValueError("The company copy upload is unavailable")
     receipt = {"copy_id": copy_id, "proof": proof}
     if "handoff" in facts and facts["handoff"] != receipt:
         raise ValueError("A different handoff is already associated with this upload")

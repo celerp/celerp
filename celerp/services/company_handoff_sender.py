@@ -44,17 +44,17 @@ async def _cloud(method: str, path: str, *, payload: dict | None = None,
         response = await cloud_entitlement.authenticated_request(
             method, path, json=payload, params=params, total_s=35)
     except (httpx.HTTPError, TimeoutError) as exc:
-        raise HandoffSendError("Could not confirm the handoff. Retry the same operation") from exc
+        raise HandoffSendError("Could not confirm the company copy. Retry the same operation") from exc
     if response is None:
-        raise HandoffSendError("Connect this installation before sending a company handoff")
+        raise HandoffSendError("Connect this installation before sending a company copy")
     if response.status_code != expected:
-        raise HandoffSendError("Could not confirm the handoff. Retry the same operation")
+        raise HandoffSendError("Could not confirm the company copy. Retry the same operation")
     try:
         data = response.json()
     except ValueError:
-        raise HandoffSendError("Invalid handoff response") from None
+        raise HandoffSendError("Invalid company copy response") from None
     if not isinstance(data, dict):
-        raise HandoffSendError("Invalid handoff response")
+        raise HandoffSendError("Invalid company copy response")
     return data
 
 
@@ -64,19 +64,19 @@ async def _existing(company_id: uuid.UUID, operation_id: uuid.UUID) -> dict | No
     })
     items = result.get("items")
     if not isinstance(items, list) or len(items) > 1:
-        raise HandoffSendError("Could not verify the existing handoff")
+        raise HandoffSendError("Could not verify the existing company copy")
     if not items:
         return None
     row = items[0]
     if (not isinstance(row, dict) or row.get("operation_id") != str(operation_id)
             or row.get("company_id") != str(company_id)):
-        raise HandoffSendError("Could not verify the existing handoff")
+        raise HandoffSendError("Could not verify the existing company copy")
     return row
 
 
 def _stage_path(company_id: uuid.UUID, operation_id: uuid.UUID, secret: bytes) -> Path:
     if not isinstance(secret, bytes) or len(secret) != 32:
-        raise HandoffSendError("Invalid handoff key")
+        raise HandoffSendError("Invalid company copy key")
     token = operation_id.hex + hashlib.sha256(secret).hexdigest()
     path = files.stage_path(str(company_id), token)
     if path is None:
@@ -164,7 +164,7 @@ async def send_company_backup(*, export: Callable[[Path], Awaitable[None]],
     try:
         copy_id = uuid.UUID(created["id"])
     except (ValueError, TypeError, KeyError):
-        raise HandoffSendError("Invalid handoff response") from None
+        raise HandoffSendError("Invalid company copy response") from None
     upload_url = created.get("upload_url")
     if upload_url is not None:
         url = _upload_url(upload_url, copy_id)

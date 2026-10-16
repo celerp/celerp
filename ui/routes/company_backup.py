@@ -49,7 +49,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 import ui.api_client as api
-import ui.company_copy_opening as opening
+import ui.handoff_opening as opening
 from ui.api_client import APIError
 from ui.components.shell import flash
 from ui.components.table import format_value
@@ -90,7 +90,7 @@ USERS_AND_ROLES = "/settings/general?tab=users"
 
 UPLOAD_COOKIE = "celerp_company_backup_upload"
 UPLOAD_TTL_SECONDS = 24 * 3600
-OPENING_COOKIE = "celerp_company_copy_opening"
+OPENING_COOKIE = "celerp_handoff_opening"
 OUTCOME_COOKIE = "celerp_company_backup_outcome"
 OUTCOME_TTL_SECONDS = 300
 _CREATED, _OPENED, _TEAM_ADDED, _REACTIVATED = "created", "opened_existing", "opened_existing_team_added", "reactivated"
