@@ -61,10 +61,10 @@ def _run(c, month: str) -> dict:
     return _operate(c, "/runs", {"month": month})
 
 
-def _review_and_confirm(page: Page) -> None:
+def _review_and_confirm(page: Page, review: str = "Review") -> None:
     """Review the form on the page, then confirm what the review shows and wait for the
     page it leads to."""
-    page.get_by_role("button", name="Review", exact=True).first.click()
+    page.get_by_role("button", name=review, exact=True).first.click()
     confirm = page.locator("#fa-preview").get_by_role("button", name="Confirm")
     with page.expect_navigation():
         confirm.click()
@@ -232,3 +232,39 @@ def test_j4_locked_date_is_refused_and_the_first_open_date_saves(page: Page, fre
     page.wait_for_url("**/fixed-assets/assets/fa:asset:*")
     expect(page.locator("main")).to_contain_text("Owner's car")
     expect(page.get_by_role("button", name="Undo")).to_be_visible()
+
+
+_REGISTER = (b"name,class,available_date,cost,accumulated_depreciation\n"
+             b"Warehouse,Buildings,2020-01-01,250000,40000\n"
+             b"Garage,Garages,2020-01-01,50000,0\n"
+             b"Shed,Buildings,2020-01-01,-100,0\n"
+             b"Forklift,Vehicles,2020-01-01,10000,12000\n")
+
+
+def test_j5_bad_import_rows_are_fixed_in_the_grid_and_imported(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    page.goto("/fixed-assets/import")
+    page.locator("input[type='file']").first.set_input_files(
+        {"name": "register.csv", "mimeType": "text/csv", "buffer": _REGISTER})
+    page.locator("#csv-preview-btn").click()
+    page.get_by_role("button", name="Continue to Preview").click()
+    review = page.locator("#import-preview")
+    expect(review).to_contain_text("Garages")
+    # The clean row imports now; the three bad rows stay in the import to be fixed.
+    # Each tick is checked again before the next, so wait for the review to show it.
+    for done, n in enumerate((2, 3, 4), 1):
+        review.locator(f"input[name=exclude][value='{n}']").check()
+        expect(review.locator("tr.import-row--excluded")).to_have_count(done)
+    with page.expect_navigation(url="**/fixed-assets/imports/**"):
+        review.get_by_role("button", name="Import All 1 Rows").click()
+    expect(page.locator("#fa-import-imported tbody tr")).to_have_count(1)
+
+    page.locator("input[name='v.2.class']").fill("Buildings")
+    page.locator("input[name='v.3.cost']").fill("100")
+    page.locator("input[name='v.4.accumulated_depreciation']").fill("2000")
+    _review_and_confirm(page, "Fix and import rows")
+    expect(page.locator("#fa-import-imported tbody tr")).to_have_count(4)
+    expect(page.locator("input[name='v.2.class']")).to_have_count(0)
+    # The import's reconciliation: the register now holds every row against the ledger.
+    expect(page.locator("#fa-opening-accounts")).to_contain_text("310,100")
