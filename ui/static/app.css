@@ -170,9 +170,9 @@ a:hover { text-decoration: underline; }
 .migration-wizard form:has(input[name="mode"][value="full_history"]:checked) .cutover-date { display: none; }
 /* The wizard card has a fixed width, so its tables fill the card (not the base max-content)
    and their text wraps between words (a coverage note, a check label) instead of pushing
-   the table past the card. Figures never wrap. */
+   the table past the card. Figures and dates never wrap. */
 .migration-wizard .data-table { margin-bottom: 16px; width: 100%; }
-.migration-wizard .data-table td:not(.cell--number, .cell--money) { white-space: normal; overflow-wrap: break-word; }
+.migration-wizard .data-table td:not(.cell--number, .cell--money, .cell--date) { white-space: normal; overflow-wrap: break-word; }
 
 /* ─── Sidebar ─────────────────────────────────────────────────────────── */
 .sidebar {

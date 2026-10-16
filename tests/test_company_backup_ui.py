@@ -965,7 +965,8 @@ async def test_handoffs_table_header_dates_order_revoke_undo(ui, real_engine, mo
         calls.append(("new-link", which, operation))
         if which == newer["id"]:
             raise api.APIError(410, "This copy is no longer stored. Use Resend to send a new copy")
-        return {**older, "link": "https://relay.celerp.com/handoffs/b/open#" + "A" * 43}
+        older["link"] = "https://relay.celerp.com/handoffs/b/open#" + "A" * 43
+        return dict(older)
 
     monkeypatch.setattr(api, "company_backup_handoffs", listed)
     monkeypatch.setattr(api, "company_backup_revoke_handoff", revoke)
@@ -1083,7 +1084,7 @@ async def test_sent_page_has_copy_and_next_steps(ui, real_engine, monkeypatch):
     assert any(f"The link expires on {d}." in page for d in _dates("2026-10-30T09:00:00+00:00"))
     assert _link(page, HANDOFFS, "Company copies")
     assert "See when they open it in Company copies." in re.sub(r"<[^>]+>", "", page)
-    assert "To send a new link, send the company copy again." in page
+    assert "To send a new link, open Company copies and use New link." in page
 
 
 async def test_company_copy_ready_state(ui, real_engine, monkeypatch):

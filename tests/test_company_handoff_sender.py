@@ -263,3 +263,17 @@ def test_sending_keeps_the_key_for_copy_link(tmp_path, monkeypatch):
     assert kept == {"key": sender.encode_key(secret), "recipient": "client@example.com"}
     assert sender.decode_key(kept["key"]) == secret
     assert parse_handoff_link(result["link"]).copy_id == copy_id
+
+
+def test_deleting_a_company_forgets_its_sent_copy_keys(tmp_path, monkeypatch):
+    from celerp.services import company_files
+    monkeypatch.setattr(sender.files, "company_backups_dir", lambda: tmp_path)
+    monkeypatch.setattr(company_files, "company_backups_dir", lambda: tmp_path)
+    kept, gone = uuid.uuid4(), uuid.uuid4()
+    for company in (kept, gone):
+        sender.files.remember_sent_copy(company, company, {"key": sender.encode_key(bytes(32))})
+    record = next((tmp_path / "sent" / str(gone)).iterdir())
+    assert oct(record.stat().st_mode & 0o777) == "0o600"
+    company_files._remove_backups(gone)
+    assert sender.files.sent_copy(gone, gone) == {}
+    assert sender.files.sent_copy(kept, kept)["key"] == sender.encode_key(bytes(32))

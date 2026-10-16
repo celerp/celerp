@@ -34,11 +34,13 @@ cookies scoped to the entry point's base path.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import secrets
 import uuid
 import base64
 from pathlib import Path
+from urllib.parse import urlencode
 from cryptography.exceptions import InvalidTag
 
 from celerp.services.company_handoff_links import parse_handoff_link
@@ -883,7 +885,55 @@ def _handoff_status(item: dict) -> str:
         "sent" if item["status"] in ("sent", "imported") else "pending"))
 
 
-async def _handoffs_page(request: Request, *, error: str | None = None):
+def _copy_actions(item: dict) -> FT:
+    path = f"{HANDOFFS}/{item['id']}"
+    swap = {"hx_target": "#company-copies", "hx_swap": "outerHTML"}
+    actions = []
+    if item.get("link"):
+        actions.append(Button(t("company_backup.ready_copy_link"), type="button", cls="btn btn--secondary btn--sm",
+                              **{"data-copy": "", "data-copy-text": item["link"]}))
+    if item.get("stored") and item["status"] in ("sent", "imported", "expired"):
+        actions.append(Button(t("company_backup.copies_new_link"), type="button", hx_post=f"{path}/new-link",
+                              hx_vals=json.dumps({"operation_id": str(uuid.uuid4())}),
+                              cls="btn btn--secondary btn--sm", **swap))
+    if item.get("can_restore"):
+        actions.append(Button(t("company_backup.copies_undo"), type="button", hx_post=f"{path}/restore",
+                              cls="btn btn--primary btn--sm", **swap))
+    if item["status"] != "pending":
+        resend = {k: item[k] for k in ("firm_name", "recipient") if item.get(k)}
+        actions.append(A(t("company_backup.copies_resend"), cls="btn btn--secondary btn--sm",
+                         href=f"{SEND}?{urlencode(resend)}" if resend else SEND))
+    if item["status"] in ("pending", "ready", "sent", "imported"):
+        actions.append(Button(t("btn.revoke"), type="button", hx_post=f"{path}/revoke",
+                              hx_confirm=t("company_backup.copies_revoke_confirm"),
+                              cls="btn btn--danger btn--sm", **swap))
+    return Div(*actions, cls="flex-row flex-wrap gap-sm") if actions else Span("--")
+
+
+def _copies_table(items: list[dict], *, notice: str | None = None, warning: str | None = None) -> FT:
+    """This company's copies sent, newest first; every action swaps this table in place."""
+    rows = [Tr(
+        Td(item.get("recipient") or "--"),
+        Td(item.get("firm_name") or "--"),
+        Td(_handoff_status(item)),
+        Td(format_value(item["sent_at"], "date") if item.get("sent_at") else "--", cls="cell--date"),
+        Td(format_value(item["expires_at"], "date") if item.get("expires_at") else "--", cls="cell--date"),
+        Td(_copy_actions(item)),
+    ) for item in sorted(items, key=lambda item: str(item.get("sent_at") or ""), reverse=True)]
+    return Div(
+        P(notice, cls="flash flash--success") if notice else "",
+        P(warning, cls="flash flash--warning") if warning else "",
+        wizard_table(Thead(Tr(Th(t("company_backup.copies_sent_to")), Th(t("company_backup.firm_label")),
+                              Th(t("th.status")), Th(t("company_backup.copies_sent")),
+                              Th(t("company_backup.copies_expires")), Th(t("th.actions")))),
+                     Tbody(*rows))
+        if rows else P(t("company_backup.handoffs_empty")),
+        P(t("company_backup.copies_revoke_reason"), cls="form-hint") if rows else "",
+        id="company-copies",
+    )
+
+
+async def _handoffs_page(request: Request):
     if (denied := await _gate(request, SETTINGS)) is not None:
         return denied
     try:
@@ -892,31 +942,53 @@ async def _handoffs_page(request: Request, *, error: str | None = None):
         return wizard_page(request, auth_header(t("company_backup.handoffs_title")),
                            flash(t("company_backup.handoffs_unavailable")), back_link(BACKUP_TAB),
                            title="company_backup.handoffs_title")
-    entries = [Tr(
-        Td(_handoff_status(item)),
-        Td(item["expires_at"][:10]),
-        Td(Form(Button(t("btn.revoke"), type="submit", cls="btn btn--secondary btn--sm"),
-                method="post", action=f"{HANDOFFS}/{item['id']}/revoke"))
-        if item["status"] not in ("expired", "revoked", "imported") else Td(""),
-    ) for item in rows]
     return wizard_page(
         request, auth_header(t("company_backup.handoffs_title")),
-        flash(error) if error else "",
-        Table(Tbody(*entries), cls="data-table") if entries else P(t("company_backup.handoffs_empty")),
+        _copies_table(rows),
         A(t("company_backup.send_title"), href=SEND, cls="btn btn--primary"),
         back_link(BACKUP_TAB), title="company_backup.handoffs_title")
 
 
-async def _revoke_handoff(request: Request):
+async def _copy_action(request: Request, act, done: str):
+    """Revoke, Undo or New link: the table swaps in place with what happened. Without
+    htmx the page loads again."""
     if (denied := await _gate(request, SETTINGS)) is not None:
         return denied
+    notice = warning = None
+    token = get_token(request)
     try:
-        copy_id = uuid.UUID(request.path_params["copy_id"])
-        await api.company_backup_revoke_handoff(get_token(request), str(copy_id))
-    except (APIError, ValueError) as exc:
-        message = _message(exc) if isinstance(exc, APIError) else t("company_backup.handoffs_unavailable")
-        return await _handoffs_page(request, error=message)
-    return RedirectResponse(HANDOFFS, status_code=303)
+        await act(token, str(uuid.UUID(request.path_params["copy_id"])))
+        notice = t(done)
+    except APIError as exc:
+        warning = _message(exc)
+    except ValueError:
+        warning = t("company_backup.handoffs_unavailable")
+    if request.headers.get("HX-Request") != "true":
+        return RedirectResponse(HANDOFFS, status_code=303)
+    try:
+        rows = (await api.company_backup_handoffs(token))["items"]
+    except (APIError, KeyError, TypeError):
+        return _html(Div(flash(warning or t("company_backup.handoffs_unavailable")), id="company-copies"))
+    return _html(_copies_table(rows, notice=notice, warning=warning))
+
+
+async def _revoke_handoff(request: Request):
+    return await _copy_action(request, api.company_backup_revoke_handoff, "company_backup.copies_revoked")
+
+
+async def _restore_handoff(request: Request):
+    return await _copy_action(request, api.company_backup_restore_handoff, "company_backup.copies_restored")
+
+
+async def _new_handoff_link(request: Request):
+    form = await request.form()
+    operation = str(form.get("operation_id", ""))
+
+    async def act(token, copy_id):
+        if str(uuid.UUID(operation)) != operation:
+            raise ValueError
+        return await api.company_backup_new_handoff_link(token, copy_id, operation)
+    return await _copy_action(request, act, "company_backup.copies_new_link_done")
 
 
 async def _send_page(request: Request, *, error: str | None = None, values: dict | None = None,
@@ -925,7 +997,8 @@ async def _send_page(request: Request, *, error: str | None = None, values: dict
     error; once verified it submits this same form again (same operation)."""
     if (denied := await _gate(request, SETTINGS)) is not None:
         return denied
-    values = values or {}
+    # Resend from the copies list arrives with the firm and recipient filled in.
+    values = values or {k: request.query_params.get(k, "") for k in ("firm_name", "recipient")}
     notice = flash(error) if error else ""
     if account:
         try:
@@ -1021,6 +1094,8 @@ def company_backup_routes(app) -> None:
     app.post(SEND)(_send_handoff)
     app.get(HANDOFFS)(_handoffs_page)
     app.post(HANDOFFS + "/{copy_id}/revoke")(_revoke_handoff)
+    app.post(HANDOFFS + "/{copy_id}/restore")(_restore_handoff)
+    app.post(HANDOFFS + "/{copy_id}/new-link")(_new_handoff_link)
     for mode in (SETTINGS, NEW_COMPANY, BOOTSTRAP, START_COMPANY):
         for method, suffix, handler in (("get", "", _start), ("post", "/read", _read),
                                         ("get", "/opening", _opening_page), ("get", "/opening/status", _opening_state),

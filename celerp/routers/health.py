@@ -274,7 +274,7 @@ async def backup_status() -> dict:
     tier, subscription_status = get_subscription_state()
     db = backup_scheduler.last_db_result()
     next_db = backup_scheduler.next_db_run_utc()
-    running = bool(backup_scheduler._db_task and not backup_scheduler._db_task.done())
+    running = backup_scheduler.db_backup_running()
     return {
         "running": running,
         "active": is_active(),

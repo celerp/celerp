@@ -631,7 +631,7 @@ class _S3Client:
 @pytest.mark.asyncio
 async def test_s3_read_back_reads_only_the_companys_own_objects(monkeypatch):
     fake = _S3Client(b"original")
-    monkeypatch.setattr(att_svc, "_s3_client", lambda *a: fake)
+    monkeypatch.setattr(att_svc, "s3_client", lambda *a: fake)
     s3 = att_svc.S3Backend("https://s3.example.test", "bucket", "k", "s")
     base = "https://s3.example.test/bucket/attachments"
     assert await s3.read("co1", f"{base}/co1/a1.JPG", 100) == b"original"
@@ -646,9 +646,9 @@ async def test_s3_read_back_reads_only_the_companys_own_objects(monkeypatch):
 async def test_s3_read_back_refuses_an_original_over_the_limit(monkeypatch):
     s3 = att_svc.S3Backend("", "bucket", "k", "s")
     url = "https://bucket.s3.amazonaws.com/attachments/co1/a1.png"
-    monkeypatch.setattr(att_svc, "_s3_client", lambda *a: _S3Client(b"x" * 11))
+    monkeypatch.setattr(att_svc, "s3_client", lambda *a: _S3Client(b"x" * 11))
     assert await s3.read("co1", url, 10) is None
-    monkeypatch.setattr(att_svc, "_s3_client", lambda *a: _S3Client(b"x" * 11, length=0))
+    monkeypatch.setattr(att_svc, "s3_client", lambda *a: _S3Client(b"x" * 11, length=0))
     assert await s3.read("co1", url, 10) is None  # a missing or wrong length still stops at the limit
 
 
@@ -665,14 +665,14 @@ class _S3MissingClient(_S3Client):
 @pytest.mark.asyncio
 async def test_s3_reads_a_stored_thumbnail_by_its_id(monkeypatch):
     fake = _S3Client(b"thumb")
-    monkeypatch.setattr(att_svc, "_s3_client", lambda *a: fake)
+    monkeypatch.setattr(att_svc, "s3_client", lambda *a: fake)
     s3 = att_svc.S3Backend("https://s3.example.test", "bucket", "k", "s")
     assert await s3.read_stored("co1", "a1_thumb", "image/jpeg", 100) == b"thumb"
     assert fake.keys == [("bucket", "attachments/co1/a1_thumb.jpg")]
     assert await s3.read_stored("co1", "../co2/a1_thumb", "image/jpeg", 100) is None
     assert len(fake.keys) == 1
     missing = _S3MissingClient(b"")
-    monkeypatch.setattr(att_svc, "_s3_client", lambda *a: missing)
+    monkeypatch.setattr(att_svc, "s3_client", lambda *a: missing)
     assert await s3.read_stored("co1", "a2_thumb", "image/jpeg", 100) is None
 
 

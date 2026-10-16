@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
 
-from celerp.services.company_files import company_backups_dir
+from celerp.services.company_files import SENT, company_backups_dir
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ def bind_handoff(stage: Path, copy_id: str, proof: str) -> None:
     _write_meta(stage, {**facts, "handoff": receipt})
 
 
-def _receipt(stage: Path) -> dict | None:
+def handoff_receipt(stage: Path) -> dict | None:
     facts = stage_facts(stage)
     value = facts.get("handoff")
     if (not isinstance(value, dict) or not isinstance(facts.get("restored"), dict)
@@ -141,14 +141,14 @@ def pending_handoffs(*, reported: bool | None = None) -> list[tuple[Path, dict]]
     result = []
     for metadata in _private_dir(UPLOADS).glob("*.json"):
         stage = metadata.with_suffix(UPLOAD_SUFFIX)
-        receipt = _receipt(stage)
+        receipt = handoff_receipt(stage)
         if receipt and (reported is None or bool(receipt.get("reported")) == reported):
             result.append((stage, receipt))
     return sorted(result, key=lambda pair: pair[0].name)
 
 
 def mark_handoff_reported(stage: Path) -> None:
-    receipt = _receipt(stage)
+    receipt = handoff_receipt(stage)
     if receipt is None:
         return
     facts = stage_facts(stage)
@@ -192,12 +192,43 @@ def purge_expired_uploads() -> None:
         try:
             if not f.is_file() or f.stat().st_mtime >= cutoff:
                 continue
-            if f.suffix == META_SUFFIX and _receipt(f.with_suffix(UPLOAD_SUFFIX)):
+            if f.suffix == META_SUFFIX and handoff_receipt(f.with_suffix(UPLOAD_SUFFIX)):
                 if f.stat().st_mtime >= time.time() - RECEIPT_TTL_SECONDS:
                     continue
             f.unlink(missing_ok=True)
         except FileNotFoundError:
             continue  # removed by another request meanwhile
+
+
+def _sent_record(company_id, copy_id) -> Path:
+    folder = _private_dir(SENT) / str(uuid.UUID(str(company_id)))
+    folder.mkdir(exist_ok=True)
+    os.chmod(folder, 0o700)
+    return folder / f"{uuid.UUID(str(copy_id))}{META_SUFFIX}"
+
+
+def remember_sent_copy(company_id, copy_id, facts: dict) -> None:
+    """Keep what this installation alone knows about a copy it sent: the link's key
+    and who it went to. The cloud never stores the key, so Copy link needs this."""
+    path = _sent_record(company_id, copy_id)
+    partial = path.with_suffix(META_SUFFIX + ".partial")
+    partial.unlink(missing_ok=True)
+    with private_file(partial) as out:
+        out.write(json.dumps(facts).encode())
+    partial.replace(path)
+
+
+def sent_copy(company_id, copy_id) -> dict:
+    """The facts kept for a sent copy; empty when this installation has none."""
+    try:
+        facts = json.loads(_sent_record(company_id, copy_id).read_text())
+    except (OSError, ValueError):
+        return {}
+    return facts if isinstance(facts, dict) else {}
+
+
+def forget_sent_copy(company_id, copy_id) -> None:
+    _sent_record(company_id, copy_id).unlink(missing_ok=True)
 
 
 def _is_uuid(name: str) -> bool:

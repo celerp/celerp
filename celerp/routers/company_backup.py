@@ -16,8 +16,6 @@ restores one through the start-company routes with its email and password.
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import logging
 import secrets
 import uuid
@@ -39,6 +37,7 @@ from celerp.routers.migrations import ensure_not_bootstrapped, owner_account, us
 from celerp.services import bootstrap
 from celerp.services import company_backup as cb
 from celerp.services import company_backup_files as files
+from celerp.services import company_handoff_sender as sender
 from celerp.services.auth import AuthContext, request_caller
 from ui.i18n import t
 
@@ -110,82 +109,64 @@ class SendCompanyHandoff(BaseModel):
 @router.post("/send-handoff")
 async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(user_owner),
                        session: AsyncSession = Depends(get_session)):
-    from celerp.services.company_handoff_sender import (
-        HandoffAccountNeeded, HandoffSendError, send_company_backup,
-    )
     try:
-        secret = base64.urlsafe_b64decode(payload.key + "=")
-    except (ValueError, binascii.Error):
-        raise HTTPException(status_code=422, detail="Invalid company copy key") from None
-    if (len(secret) != 32 or
-            base64.urlsafe_b64encode(secret).decode().rstrip("=") != payload.key):
-        raise HTTPException(status_code=422, detail="Invalid company copy key")
+        secret = sender.decode_key(payload.key)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     await session.rollback()  # snapshot uses its own consistent transaction
     async def export(destination: Path):
         await cb.export_company_snapshot(ctx.company_id, destination)
     try:
-        return await send_company_backup(
+        return await sender.send_company_backup(
             export=export, company_id=ctx.company_id, operation_id=payload.operation_id,
             secret=secret, firm_name=payload.firm_name,
             recipient=payload.recipient, reply_to=payload.reply_to, note=payload.note,
         )
     except cb.BackupError as exc:
         return _error(exc)
-    except HandoffAccountNeeded as exc:
+    except sender.HandoffAccountNeeded as exc:
         # 428: the page offers a free account in place and resumes this operation.
         raise HTTPException(status_code=428, detail=str(exc)) from None
-    except HandoffSendError as exc:
+    except sender.HandoffSendError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+
+
+async def _copies_call(call):
+    try:
+        return await call
+    except sender.HandoffRefused as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+    except sender.HandoffSendError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
 
 @router.get("/handoffs")
 async def company_handoffs(ctx: AuthContext = Depends(user_owner)):
-    """Only this company's owner can see its handoff activity."""
-    from celerp.services.company_handoff_sender import HandoffSendError, _cloud
-    try:
-        answer = await _cloud("GET", "/handoffs", params={"company_id": str(ctx.company_id)})
-    except HandoffSendError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
-    rows = answer.get("items")
-    if not isinstance(rows, list) or len(rows) > 100:
-        raise HTTPException(status_code=502, detail="Company copy activity is unavailable")
-    safe = []
-    for row in rows:
-        if not isinstance(row, dict) or row.get("company_id") != str(ctx.company_id):
-            raise HTTPException(status_code=502, detail="Company copy activity is unavailable")
-        try:
-            copy_id = uuid.UUID(row["id"])
-        except (ValueError, KeyError, TypeError):
-            raise HTTPException(status_code=502, detail="Company copy activity is unavailable") from None
-        status = row.get("status")
-        if status not in ("pending", "ready", "sent", "imported", "expired", "revoked"):
-            raise HTTPException(status_code=502, detail="Company copy activity is unavailable")
-        safe.append({"id": str(copy_id), "status": status,
-                     "opened": row.get("opened") is True,
-                     "downloaded": row.get("downloaded") is True,
-                     "company_opened": row.get("company_opened") is True,
-                     "expires_at": str(row.get("expires_at") or "")})
-    return {"items": safe}
+    """This company's copies sent; only its owner sees them, and each link they carry."""
+    return {"items": await _copies_call(sender.company_copies(ctx.company_id))}
 
 
 @router.post("/handoffs/{copy_id}/revoke")
 async def revoke_company_handoff(copy_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)):
-    """Prevent a company owner from managing another company's copy."""
-    from celerp.services.company_handoff_sender import HandoffSendError, _cloud
-    try:
-        answer = await _cloud("GET", "/handoffs", params={"company_id": str(ctx.company_id)})
-        rows = answer.get("items")
-        if not isinstance(rows, list) or len(rows) > 100 or any(
-            not isinstance(row, dict) or row.get("company_id") != str(ctx.company_id)
-            for row in rows
-        ):
-            raise HTTPException(status_code=502, detail="Company copy activity is unavailable")
-        if not any(row.get("id") == str(copy_id) for row in rows):
-            raise HTTPException(status_code=404, detail="Company copy not found")
-        await _cloud("POST", f"/handoffs/{copy_id}/revoke")
-    except HandoffSendError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
-    return {"revoked": True}
+    """The link stops working at once; Undo restores it for a short time."""
+    return await _copies_call(sender.revoke_copy(ctx.company_id, copy_id))
+
+
+@router.post("/handoffs/{copy_id}/restore")
+async def restore_company_handoff(copy_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)):
+    return await _copies_call(sender.restore_copy(ctx.company_id, copy_id))
+
+
+class NewCopyLink(BaseModel):
+    operation_id: uuid.UUID
+
+
+@router.post("/handoffs/{copy_id}/new-link")
+async def new_company_handoff_link(copy_id: uuid.UUID, payload: NewCopyLink,
+                                   ctx: AuthContext = Depends(user_owner)):
+    """Replace the link for the same stored copy: the old link stops working, and the
+    14 days and three downloads start again."""
+    return await _copies_call(sender.new_link(ctx.company_id, copy_id, payload.operation_id))
 
 
 # ── Restore ──────────────────────────────────────────────────────────────────
@@ -386,7 +367,7 @@ async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_own
                                               current_company_id=ctx.company_id,
                                               plan_fingerprint=payload.plan_fingerprint,
                                               company_name=payload.company_name,
-                                              retain_peer_identities=files._receipt(stage) is not None)
+                                              retain_peer_identities=files.handoff_receipt(stage) is not None)
         except cb.BackupError as exc:
             return _error(exc, stage)
         files.finish_stage(stage, result.company_id)
@@ -505,7 +486,7 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
     try:
         result = await cb.restore_company(stage, mode="bootstrap", owner_account=account,
                                           company_name=payload.company_name, caller=request_caller(request),
-                                          retain_peer_identities=files._receipt(stage) is not None)
+                                          retain_peer_identities=files.handoff_receipt(stage) is not None)
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
@@ -554,7 +535,7 @@ async def start_company_restore(request: Request, payload: StartCompanyRestoreIn
         result = await cb.restore_company(stage, mode=_START_COMPANY, user_id=user.id,
                                           plan_fingerprint=payload.plan_fingerprint,
                                           company_name=payload.company_name,
-                                          retain_peer_identities=files._receipt(stage) is not None)
+                                          retain_peer_identities=files.handoff_receipt(stage) is not None)
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)

@@ -3977,6 +3977,21 @@ async def company_backup_revoke_handoff(token: str, copy_id: str) -> dict:
     return _raise(response).json()
 
 
+async def company_backup_restore_handoff(token: str, copy_id: str) -> dict:
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            response = await c.post(f"/company-backups/handoffs/{copy_id}/restore")
+    return _raise(response).json()
+
+
+async def company_backup_new_handoff_link(token: str, copy_id: str, operation_id: str) -> dict:
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            response = await c.post(f"/company-backups/handoffs/{copy_id}/new-link",
+                                    json={"operation_id": operation_id})
+    return _raise(response).json()
+
+
 async def company_backup_staged(token: str | None, upload_token: str, mode: str | None = None) -> dict:
     """The preview of a backup already uploaded, checked again."""
     async with _local_error_mapping():
