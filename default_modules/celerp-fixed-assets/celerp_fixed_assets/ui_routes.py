@@ -1937,8 +1937,13 @@ def setup_ui_routes(app) -> None:
         form = _op_form("add-asset", Input(type="hidden", name="kind", value=kind),
                         P(t(f"fixed_assets.kind_hint.{kind}"), cls="settings-hint"),
                         *_asset_fields(kind, classes, chart))
+        # A paid supplier belongs on a bill, where tax and the supplier balance are kept.
+        bill = (Div(P(t("fixed_assets.paid_supplier_hint"), cls="settings-hint"),
+                    Button(t("fixed_assets.enter_bill"), hx_post="/docs/create-blank?type=bill", hx_swap="none",
+                           cls="btn btn--sm btn--secondary write-only"), cls="flex-row")
+                if kind == "contributed" else "")
         return await _page(request, crumbs, page_header(t("fixed_assets.add_asset")),
-                           _kind_tabs("/fixed-assets/assets/new", kind, kinds), form,
+                           _kind_tabs("/fixed-assets/assets/new", kind, kinds), bill, form,
                            title_key="fixed_assets.add_asset")
 
     @app.get("/fixed-assets/assets/{asset_id}")

@@ -76,7 +76,7 @@ async def test_dispose_on_a_locked_date_names_the_first_open_date(fa):
     await _lock(fa, "2026-03-31")
     r = await fa.post(f"/assets/{car}/dispose", {"date": "2026-03-15", "reason": "lost", "preview": True,
                                                  "op_key": "dl"})
-    assert r.status_code == 422 and "2026-04-01" in r.json()["detail"]
+    assert r.status_code == 422 and "Use a date from 1 Apr 2026" in r.json()["detail"]
 
 
 async def test_dispose_validates_its_inputs(fa):

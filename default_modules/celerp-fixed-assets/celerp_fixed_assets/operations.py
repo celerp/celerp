@@ -457,6 +457,8 @@ async def _financials(session, company_id, fa: dict, body: dict) -> dict:
             raise setup.unprocessable("Choose the account the asset was contributed from.")
         # The preview refuses what the confirm would: both lines are new postings.
         await require_destinations(session, company_id, {cls["asset_account"], credit})
+        lock = (await setup.company_settings(session, company_id)).get("lock_date")
+        setup.require_open(date.fromisoformat(lock) if lock else None, available)
         out.update(credit=credit, posting=available)
     else:
         raise setup.unprocessable("Choose how the asset came in: opening, contributed or a physical record.")

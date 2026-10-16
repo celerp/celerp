@@ -14,7 +14,7 @@ invoice instead.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from celerp.services.money import books_currency
@@ -118,9 +118,7 @@ def check_date(books: runs.Books, asset: dict, live: list[dict], day: str, *, wh
                                   f"({asset['available_date']}).")
     if day > business_date_of(None, books.settings.get("timezone")):
         raise setup.unprocessable(f"The {what} date {day} is after today.")
-    if books.lock is not None and date.fromisoformat(day) <= books.lock:
-        raise setup.unprocessable(f"{day} is in a locked period. {verb} on or after "
-                                  f"{(books.lock + timedelta(days=1)).isoformat()}.")
+    setup.require_open(books.lock, day)
     changed = max((m["effective_date"] for m in live if m.get("operation") not in _CHARGES), default=day)
     if changed > day:
         raise setup.unprocessable(f"{asset['number']} changed on {changed}. {verb} on or after that date.")

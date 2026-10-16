@@ -6,6 +6,7 @@ that page offers."""
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal as D
 
 import pytest
 from playwright.sync_api import Page, expect
@@ -157,9 +158,77 @@ def test_j2_voided_bill_is_replaced_from_the_asset(page: Page, fresh_company):
     expect(corrected).to_contain_text("12,000")
     with page.expect_navigation(url="**/fixed-assets/corrections/**"):
         preview.get_by_role("button", name="Confirm").click()
-    assert _ok(c.get(f"{API}/assets/{asset}"))["cost"] in ("12100", "12100.00")
+    assert D(_ok(c.get(f"{API}/assets/{asset}"))["cost"]) == D(12100)
     # The month held while the source was in doubt is caught up by the next run.
     _run_from_page(page, "2026-05")
     page.goto(f"/fixed-assets/assets/{asset}")
     expect(page.locator("#fa-exception")).to_have_count(0)
     _reconciled(page)
+
+
+def _contributed(c, name: str, cost: str = "12000", on: str = "2026-01-15", cls: str = "Vehicles") -> str:
+    return _operate(c, "/assets", {"kind": "contributed", "class_id": _classes(c)[cls]["id"], "name": name,
+                                   "available_date": on, "cost": cost, "credit_account": "3100"})["assets"][0]["id"]
+
+
+def _journal(c, ts: str, memo: str, entries: list[dict]) -> str:
+    return _ok(c.post("/accounting/journal-entries", json={
+        "ts": ts, "memo": memo, "idempotency_token": str(uuid.uuid4()), "entries": entries}))["je_id"]
+
+
+def test_j3_manual_depreciation_is_linked_over_two_assets(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car, van = _contributed(c, "Owner's car"), _contributed(c, "Delivery van", cost="18000")
+    _journal(c, "2026-01-31", "January depreciation booked by hand",
+             [{"account": "6400", "debit": 500}, {"account": "1220", "credit": 500}])
+
+    page.goto("/fixed-assets/intake")
+    row = page.locator("tr", has_text="January depreciation booked by hand")
+    row.get_by_role("link").last.click()
+    page.wait_for_url("**/fixed-assets/intake/line**")
+    page.locator(f"input[name='share:{car}']").fill("200")
+    page.locator(f"input[name='share:{van}']").fill("200")
+    page.get_by_role("button", name="Review", exact=True).click()
+    expect(page.locator("#fa-preview .flash--error")).to_contain_text("400.00, not 500.00")
+    page.locator(f"input[name='share:{van}']").fill("300")
+    _review_and_confirm(page)
+    page.wait_for_url("**/fixed-assets/intake")
+    expect(page.locator("main")).not_to_contain_text("January depreciation booked by hand")
+    assert {a["id"]: D(a["accumulated_depreciation"]) for a in _ok(c.get(f"{API}/assets"))["items"]} == {
+        car: D(200), van: D(300)}
+    _reconciled(page)
+
+
+def _choose(page: Page, name: str, text: str) -> None:
+    """Choose `text` in the searchable picker named `name`."""
+    box = page.locator(f".combobox-wrap:has(input[name='{name}']) .combobox-input")
+    box.click()
+    box.fill(text)
+    page.locator(".combobox-option:visible", has_text=text).first.click()
+
+
+def test_j4_locked_date_is_refused_and_the_first_open_date_saves(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _ok(c.post("/accounting/period-lock", json={"lock_date": "2026-03-31"}))
+
+    page.goto("/fixed-assets")
+    page.get_by_role("link", name="Add asset").click()
+    page.get_by_role("link", name="Contributed or acquired without a bill").click()
+    page.locator("input[name=name]").fill("Owner's car")
+    page.locator("select[name=class_id]").select_option(label="Vehicles")
+    page.locator("input[name=available_date]").fill("2026-03-15")
+    page.locator("input[name=cost]").fill("12000")
+    _choose(page, "credit_account", "3100")
+    page.get_by_role("button", name="Review", exact=True).click()
+    error = page.locator("#fa-preview .flash--error")
+    expect(error).to_contain_text("Locked up to 31 Mar")
+    expect(error).to_contain_text("1 Apr")
+    expect(page.locator("input[name=available_date]")).to_have_value("2026-03-15")
+
+    page.locator("input[name=available_date]").fill("2026-04-01")
+    _review_and_confirm(page)
+    page.wait_for_url("**/fixed-assets/assets/fa:asset:*")
+    expect(page.locator("main")).to_contain_text("Owner's car")
+    expect(page.get_by_role("button", name="Undo")).to_be_visible()

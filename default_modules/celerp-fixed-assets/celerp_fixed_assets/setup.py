@@ -59,6 +59,14 @@ def unprocessable(message: str) -> HTTPException:
     return HTTPException(status_code=422, detail=message)
 
 
+def require_open(lock: date | None, day: str) -> None:
+    """Refuses ``day`` when it falls in the locked period, naming the first open date."""
+    if lock is not None and date.fromisoformat(day) <= lock:
+        first = lock + timedelta(days=1)
+        raise unprocessable(f"Locked up to {lock.day} {lock:%b %Y}. Use a date from {first.day} {first:%b %Y}, "
+                            "or ask an accountant to unlock.")
+
+
 def settings_of(company_settings: dict | None) -> dict:
     return dict((company_settings or {}).get(SETTINGS_KEY) or {})
 
