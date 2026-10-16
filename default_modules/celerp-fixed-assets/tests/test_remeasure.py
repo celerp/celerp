@@ -206,3 +206,68 @@ async def test_corrections_do_not_restate_across_a_remeasurement(fa):
     assert early.status_code == 422, early.text
     await fa.ok(await fa.post(path, {"changes": {"life_months": 48}, "classification": "estimate",
                                      "effective_date": "2026-04-01", "preview": True, "op_key": "c3"}))
+
+
+# ── Class revaluation: the valuer's report and fair values from a file ──────
+
+
+PDF = b"%PDF-1.0\n1 0 obj<</Type/Catalog>>endobj\n"
+
+
+async def _buildings(fa: FA, count: int = 2) -> tuple[dict, list[str], list[str]]:
+    await _managed_from(fa)
+    ids = [await _contributed(fa, f"Building {n}", cls="Buildings", cost="48000") for n in "ABC"[:count]]
+    return (await fa.classes())["Buildings"], ids, [(await fa.asset(a))["number"] for a in ids]
+
+
+async def test_valuer_report_attached_to_every_asset_in_the_class_and_removed(fa):
+    cls, ids, _ = await _buildings(fa)
+    path = f"/fixed-assets/api/classes/{cls['id']}/valuer-report"
+    r = await fa.client.post(path, headers=fa.h, files={"file": ("valuation.pdf", PDF, "application/pdf")})
+    assert r.status_code == 200, r.text
+    report = r.json()
+    assert report["filename"] == "valuation.pdf" and sorted(f["asset_id"] for f in report["files"]) == sorted(ids)
+    for asset_id in ids:
+        assert [(f["filename"], f["document_tag"]) for f in (await fa.asset(asset_id))["files"]] == [
+            ("valuation.pdf", "valuations")]
+    await fa.ok(await fa.post(f"/classes/{cls['id']}/valuer-report/remove", {"files": report["files"]}))
+    assert all((await fa.asset(a))["files"] == [] for a in ids)
+    land = (await fa.classes())["Land"]
+    empty = await fa.client.post(f"/fixed-assets/api/classes/{land['id']}/valuer-report", headers=fa.h,
+                                 files={"file": ("valuation.pdf", PDF, "application/pdf")})
+    assert empty.status_code == 422 and "No assets in use" in empty.json()["detail"]
+    stranger = await fa.post(f"/classes/{cls['id']}/valuer-report/remove",
+                             {"files": [{"asset_id": ids[0], "file_id": "nope"}]})
+    assert stranger.status_code == 404
+
+
+async def test_fair_values_from_a_file_fill_the_class_table(fa):
+    from ui.i18n import t
+
+    cls, ids, numbers = await _buildings(fa, 3)
+    csv = (f"Asset no,Fair value,Basis\n{numbers[0]},50000,Valuer A\n{numbers[1]},47 000.50,\n"
+           f"FA-9999,1,\n{numbers[2]},abc,\n")
+    r = await fa._ui("POST", f"/fixed-assets/classes/{cls['id']}/revalue/fair-values",
+                     files={"csv_file": ("values.csv", csv.encode(), "text/csv")})
+    assert r.status_code == 200, r.text
+    assert f'name="fair_value:{ids[0]}"' in r.text and 'value="50000"' in r.text and 'value="Valuer A"' in r.text
+    assert 'value="47000.50"' in r.text
+    assert "FA-9999" in r.text and numbers[2] in r.text and "flash--warning" in r.text
+    assert t("fixed_assets.fair_values_filled", count=2) in r.text and "fixed_assets." not in r.text
+    r = await fa._ui("POST", f"/fixed-assets/classes/{cls['id']}/revalue/fair-values",
+                     files={"csv_file": ("values.csv", b"", "text/csv")})
+    assert r.status_code == 200 and "flash--error" in r.text
+
+
+async def test_valuer_report_on_the_class_revalue_page(fa):
+    from ui.i18n import t
+
+    cls, ids, _ = await _buildings(fa)
+    page = await fa.page(f"/fixed-assets/classes/{cls['id']}/revalue")
+    assert t("fixed_assets.valuer_report") in page.text and t("fixed_assets.fair_values_file") in page.text
+    r = await fa._ui("POST", f"/fixed-assets/classes/{cls['id']}/revalue/report",
+                     files={"file": ("valuation.pdf", PDF, "application/pdf")})
+    assert r.status_code == 200, r.text
+    assert t("fixed_assets.valuer_report_attached", name="valuation.pdf", count=2) in r.text
+    assert t("fixed_assets.valuer_report_basis", name="valuation.pdf") in r.text, "the shared basis names the report"
+    assert t("fixed_assets.valuer_report_remove") in r.text
