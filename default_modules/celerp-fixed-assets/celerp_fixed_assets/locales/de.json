@@ -351,5 +351,6 @@
   "fixed_assets.cancel_sale_hint": "Das Anlagegut wartet nicht mehr auf einen Verkauf. Ein Rechnungsentwurf, der es noch enthält, wird storniert.",
   "fixed_assets.credit_sale": "Verkauf gutschreiben",
   "fixed_assets.credit_sale_hint": "Legt einen Gutschriftsentwurf zur Verkaufsrechnung an. Abschließen senkt den Erlös oder nimmt ein zurückgegebenes Anlagegut wieder in Nutzung.",
-  "fixed_assets.credit_amount_hint": "Für einen Teil des Preises, vor Steuern. Ein zurückgegebenes Anlagegut schreibt alles Verbleibende gut."
+  "fixed_assets.credit_amount_hint": "Für einen Teil des Preises, vor Steuern. Ein zurückgegebenes Anlagegut schreibt alles Verbleibende gut.",
+  "fixed_assets.correct_sale": "Verkauf korrigieren"
 }

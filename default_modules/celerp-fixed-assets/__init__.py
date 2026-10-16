@@ -41,6 +41,9 @@ PLUGIN_MANIFEST = {
         "background_loop": {"handler": "celerp_fixed_assets.runs:loop"},
         # Invoices that sell an asset and credit notes that credit its sale.
         "doc_asset_lines": {"handler": "celerp_fixed_assets.sales:on_asset_lines"},
+        # An asset sale's invoice and credit notes link back to the sale.
+        "doc_detail_actions": [{"render": "celerp_fixed_assets.ui_routes:doc_sale_actions",
+                                "permission": "view_fixed_assets"}],
     },
 
     # ── UI translation catalogs ───────────────────────────────────────────────

@@ -351,5 +351,6 @@
   "fixed_assets.cancel_sale_hint": "The asset stops waiting on a sale. A draft invoice that still carries it is voided.",
   "fixed_assets.credit_sale": "Credit the sale",
   "fixed_assets.credit_sale_hint": "Makes a draft credit note on the sale invoice. Finalizing it lowers the proceeds, or for a returned asset puts it back in use.",
-  "fixed_assets.credit_amount_hint": "For part of the price, before tax. A returned asset credits all that is left."
+  "fixed_assets.credit_amount_hint": "For part of the price, before tax. A returned asset credits all that is left.",
+  "fixed_assets.correct_sale": "Correct sale"
 }

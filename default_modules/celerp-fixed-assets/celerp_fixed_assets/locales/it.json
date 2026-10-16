@@ -351,5 +351,6 @@
   "fixed_assets.cancel_sale_hint": "Il cespite smette di attendere una vendita. La bozza di fattura che lo contiene ancora viene annullata.",
   "fixed_assets.credit_sale": "Storna la vendita",
   "fixed_assets.credit_sale_hint": "Crea una bozza di nota di credito sulla fattura di vendita. Finalizzarla riduce il ricavo o, per un cespite restituito, lo rimette in uso.",
-  "fixed_assets.credit_amount_hint": "Per parte del prezzo, al netto delle imposte. Un cespite restituito storna tutto ciò che resta."
+  "fixed_assets.credit_amount_hint": "Per parte del prezzo, al netto delle imposte. Un cespite restituito storna tutto ciò che resta.",
+  "fixed_assets.correct_sale": "Correggi vendita"
 }

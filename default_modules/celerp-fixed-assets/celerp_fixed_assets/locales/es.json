@@ -351,5 +351,6 @@
   "fixed_assets.cancel_sale_hint": "El activo deja de esperar una venta. Se anula el borrador de factura que aún lo incluya.",
   "fixed_assets.credit_sale": "Abonar la venta",
   "fixed_assets.credit_sale_hint": "Crea un borrador de nota de crédito sobre la factura de venta. Al finalizarla se reduce el importe obtenido o, si el activo se devuelve, vuelve a estar en uso.",
-  "fixed_assets.credit_amount_hint": "Para parte del precio, antes de impuestos. Un activo devuelto abona todo lo que queda."
+  "fixed_assets.credit_amount_hint": "Para parte del precio, antes de impuestos. Un activo devuelto abona todo lo que queda.",
+  "fixed_assets.correct_sale": "Corregir venta"
 }

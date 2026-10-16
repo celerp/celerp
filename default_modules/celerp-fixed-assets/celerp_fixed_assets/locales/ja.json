@@ -351,5 +351,6 @@
   "fixed_assets.cancel_sale_hint": "資産は売却待ちではなくなります。まだこの資産を含む請求書の下書きは無効になります。",
   "fixed_assets.credit_sale": "売却を減額",
   "fixed_assets.credit_sale_hint": "売却請求書に対するクレジットノートの下書きを作成します。確定すると売却収入が減るか、返品された資産が再び使用中になります。",
-  "fixed_assets.credit_amount_hint": "価格の一部の場合、税抜で入力します。返品の場合は残額すべてが減額されます。"
+  "fixed_assets.credit_amount_hint": "価格の一部の場合、税抜で入力します。返品の場合は残額すべてが減額されます。",
+  "fixed_assets.correct_sale": "売却を修正"
 }

@@ -351,5 +351,6 @@
   "fixed_assets.cancel_sale_hint": "Aset berhenti menunggu penjualan. Draf faktur yang masih memuatnya dibatalkan.",
   "fixed_assets.credit_sale": "Kredit penjualan",
   "fixed_assets.credit_sale_hint": "Membuat draf nota kredit pada faktur penjualan. Memfinalisasinya mengurangi hasil penjualan, atau untuk aset yang dikembalikan, menggunakannya kembali.",
-  "fixed_assets.credit_amount_hint": "Untuk sebagian harga, sebelum pajak. Aset yang dikembalikan mengkredit seluruh sisanya."
+  "fixed_assets.credit_amount_hint": "Untuk sebagian harga, sebelum pajak. Aset yang dikembalikan mengkredit seluruh sisanya.",
+  "fixed_assets.correct_sale": "Koreksi penjualan"
 }

@@ -351,5 +351,6 @@
   "fixed_assets.cancel_sale_hint": "يتوقف الأصل عن انتظار البيع. تُلغى مسودة الفاتورة التي لا تزال تتضمنه.",
   "fixed_assets.credit_sale": "خصم من البيع",
   "fixed_assets.credit_sale_hint": "ينشئ مسودة إشعار دائن على فاتورة البيع. اعتماده يخفض العائد، أو يعيد الأصل المرتجع إلى الاستخدام.",
-  "fixed_assets.credit_amount_hint": "لجزء من السعر، قبل الضريبة. الأصل المرتجع يخصم كل ما تبقى."
+  "fixed_assets.credit_amount_hint": "لجزء من السعر، قبل الضريبة. الأصل المرتجع يخصم كل ما تبقى.",
+  "fixed_assets.correct_sale": "تصحيح البيع"
 }

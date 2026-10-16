@@ -351,5 +351,6 @@
   "fixed_assets.cancel_sale_hint": "O ativo deixa de aguardar uma venda. Um rascunho de fatura que ainda o inclua é anulado.",
   "fixed_assets.credit_sale": "Creditar a venda",
   "fixed_assets.credit_sale_hint": "Cria um rascunho de nota de crédito na fatura de venda. Finalizá-la reduz o produto da venda ou, para um ativo devolvido, volta a pô-lo em uso.",
-  "fixed_assets.credit_amount_hint": "Para parte do preço, antes de impostos. Um ativo devolvido credita tudo o que resta."
+  "fixed_assets.credit_amount_hint": "Para parte do preço, antes de impostos. Um ativo devolvido credita tudo o que resta.",
+  "fixed_assets.correct_sale": "Corrigir venda"
 }

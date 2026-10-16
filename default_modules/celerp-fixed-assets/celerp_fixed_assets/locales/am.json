@@ -351,5 +351,6 @@
   "fixed_assets.cancel_sale_hint": "ንብረቱ ሽያጭ መጠበቁን ያቆማል። አሁንም የያዘው ረቂቅ ደረሰኝ ይሰረዛል።",
   "fixed_assets.credit_sale": "ሽያጩን ቀንስ",
   "fixed_assets.credit_sale_hint": "በሽያጩ ደረሰኝ ላይ ረቂቅ የክሬዲት ማስታወሻ ያዘጋጃል። ማጠናቀቁ ገቢውን ይቀንሳል፣ ለተመለሰ ንብረት ደግሞ ወደ አገልግሎት ይመልሰዋል።",
-  "fixed_assets.credit_amount_hint": "ለዋጋው ክፍል፣ ከታክስ በፊት። የተመለሰ ንብረት የቀረውን ሁሉ ይቀንሳል።"
+  "fixed_assets.credit_amount_hint": "ለዋጋው ክፍል፣ ከታክስ በፊት። የተመለሰ ንብረት የቀረውን ሁሉ ይቀንሳል።",
+  "fixed_assets.correct_sale": "ሽያጩን አስተካክል"
 }

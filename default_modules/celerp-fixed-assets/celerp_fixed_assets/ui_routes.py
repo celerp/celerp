@@ -570,6 +570,21 @@ def _sale_card(asset: dict, sale: dict, currency: str) -> FT | str:
     return Div(*parts, cls="detail-card section-card", id=f"fa-sale-{quote(asset_id, safe=':')}")
 
 
+def doc_sale_actions(doc: dict) -> FT | None:
+    """The doc_detail_actions slot: an invoice or credit note carrying an asset line links to
+    that asset's sale, where every change after finalize is made."""
+    from celerp.services.doc_asset_lines import ASSET_DOC_TYPES, asset_lines
+
+    if doc.get("doc_type") not in ASSET_DOC_TYPES:
+        return None
+    links = []
+    for li in asset_lines(doc):
+        asset_id = quote(li["asset_id"], safe=":")
+        links.append(A(t("fixed_assets.correct_sale"), href=f"/fixed-assets/assets/{asset_id}#fa-sale-{asset_id}",
+                       cls="btn btn--secondary btn--sm", title=_text(li.get("description"))))
+    return Span(*links) if links else None
+
+
 def _filters(q: str, class_id: str, classes: list[dict]) -> FT:
     return Form(
         _input("q", q, type_="search", placeholder=t("fixed_assets.search"), aria_label=t("fixed_assets.search")),

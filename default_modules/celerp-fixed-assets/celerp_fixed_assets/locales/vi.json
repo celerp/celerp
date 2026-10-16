@@ -351,5 +351,6 @@
   "fixed_assets.cancel_sale_hint": "Tài sản không còn chờ bán. Hóa đơn nháp vẫn còn chứa tài sản sẽ bị hủy.",
   "fixed_assets.credit_sale": "Ghi giảm việc bán",
   "fixed_assets.credit_sale_hint": "Tạo giấy báo có nháp trên hóa đơn bán. Hoàn tất sẽ giảm số tiền thu được, hoặc đưa tài sản được trả lại vào sử dụng lại.",
-  "fixed_assets.credit_amount_hint": "Cho một phần giá, trước thuế. Tài sản được trả lại sẽ ghi giảm toàn bộ phần còn lại."
+  "fixed_assets.credit_amount_hint": "Cho một phần giá, trước thuế. Tài sản được trả lại sẽ ghi giảm toàn bộ phần còn lại.",
+  "fixed_assets.correct_sale": "Sửa giao dịch bán"
 }
