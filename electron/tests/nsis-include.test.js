@@ -111,14 +111,17 @@ test("setup stops with an error when the app files cannot be copied",
 
 // /D= is the last argument and is never quoted, so a folder with spaces such as
 // C:\Program Files\Celerp is taken whole, the way NSIS itself reads it. Reading it
-// as a single parameter stopped at the first space and installed into C:\Program
+// as a single parameter stopped at the first space and installed into C:\Program.
+// NSIS removes /D= from $CMDLINE, so the folder comes from the process command line
 // (patches/app-builder-lib@25.1.8.patch).
 test("an install folder given with /D keeps its spaces",
   function test_nsis_install_dir_keeps_spaces() {
     const multiUser = fs.readFileSync(path.join(templatesDir(), "multiUser.nsh"), "utf8");
     expect(multiUser).not.toContain('${StdUtils.GetParameter} $R0 "D" ""');
     const reader = multiUser.split("!macro installDirFromCommandLine")[1].split("!macroend")[0];
+    expect(reader).toContain("System::Call 'kernel32::GetCommandLineW() t .r3'");
+    expect(reader).not.toContain("$CMDLINE");
     expect(reader).toContain('${If} $0 S== " /D="');
-    expect(reader).toContain('StrCpy $INSTDIR $CMDLINE "" $1');
+    expect(reader).toContain('StrCpy $INSTDIR $3 "" $1');
     expect(multiUser.split("!insertmacro installDirFromCommandLine").length).toBe(3);
   });

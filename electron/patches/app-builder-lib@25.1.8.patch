@@ -1,28 +1,39 @@
 diff --git a/templates/nsis/multiUser.nsh b/templates/nsis/multiUser.nsh
-index 3de631b..e680c52 100644
+index 3de631b..3f62ce1 100644
 --- a/templates/nsis/multiUser.nsh
 +++ b/templates/nsis/multiUser.nsh
-@@ -11,6 +11,28 @@
+@@ -11,6 +11,39 @@
  # current Install Mode ("all" or "CurrentUser")
  Var installMode
  
 +# /D=<folder> overrides the install folder. As NSIS itself reads it, it is the last
 +# argument and is never quoted, so everything after it, spaces included, is the folder.
++# NSIS removes /D= from $CMDLINE, so it is read from the process command line.
 +!macro installDirFromCommandLine
 +  Push $0
 +  Push $1
 +  Push $2
-+  StrLen $2 $CMDLINE
++  Push $3
++  System::Call 'kernel32::GetCommandLineW() t .r3'
++  StrLen $2 $3
 +  StrCpy $1 0
 +  ${DoWhile} $1 < $2
-+    StrCpy $0 $CMDLINE 4 $1
++    StrCpy $0 $3 4 $1
 +    ${If} $0 S== " /D="
 +      IntOp $1 $1 + 4
-+      StrCpy $INSTDIR $CMDLINE "" $1
++      StrCpy $INSTDIR $3 "" $1
++      ${Do}
++        StrCpy $0 $INSTDIR 1 -1
++        ${If} $0 != " "
++          ${ExitDo}
++        ${endif}
++        StrCpy $INSTDIR $INSTDIR -1
++      ${Loop}
 +      ${ExitDo}
 +    ${endif}
 +    IntOp $1 $1 + 1
 +  ${Loop}
++  Pop $3
 +  Pop $2
 +  Pop $1
 +  Pop $0
@@ -31,7 +42,7 @@ index 3de631b..e680c52 100644
  !ifndef INSTALL_MODE_PER_ALL_USERS
    !ifndef ONE_CLICK
      Var hasPerUserInstallation
-@@ -28,23 +50,24 @@ Var installMode
+@@ -28,23 +61,24 @@ Var installMode
        StrCpy $INSTDIR $perUserInstallationFolder
      ${else}
        StrCpy $0 "$LocalAppData\Programs"
@@ -66,7 +77,7 @@ index 3de631b..e680c52 100644
  
    !macroend
  !endif
-@@ -83,11 +106,7 @@ Var installMode
+@@ -83,11 +117,7 @@ Var installMode
        StrCpy $INSTDIR "$0\${APP_FILENAME}"
      ${endif}
  
