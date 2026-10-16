@@ -41,8 +41,23 @@ def _moved(state: dict, data: dict) -> dict:
 
 def apply_fixed_asset_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state or {})
-    if event_type in ("fa.class.created", "fa.movement.recorded", "fa.maint.recorded", "fa.op.recorded"):
+    if event_type in ("fa.class.created", "fa.movement.recorded", "fa.maint.recorded", "fa.op.recorded",
+                      "fa.run.prepared", "fa.run.posted"):
         return deepcopy(data)
+    if event_type == "fa.run.reversed":
+        return {**current, "status": "reversed", "reversed_by_op": data["op_key"]}
+    if event_type == "fa.reading.recorded":
+        current.setdefault("readings", {})[data["period"]] = data["units"]
+        return current
+    if event_type == "fa.skip.recorded":
+        current.setdefault("skips", {})[data["month"]] = data["reason"]
+        return current
+    if event_type == "fa.skip.withdrawn":
+        current.setdefault("skips", {}).pop(data["month"], None)
+        return current
+    if event_type == "fa.asset.exception":
+        current["exception"] = deepcopy(data["exception"])
+        return current
     if event_type == "fa.asset.created":
         new = deepcopy(data)
         new.setdefault("quantity", 0)

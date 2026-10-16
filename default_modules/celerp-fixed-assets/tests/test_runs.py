@@ -76,10 +76,10 @@ async def _lock(fa: FA, through: str | None) -> None:
 
 
 async def _set_module(fa: FA, on: bool) -> None:
-    from celerp.models.company import Company
     from celerp.modules.registry import get_enabled, set_enabled
+    from celerp.services.company_lock import locked_company
 
-    company = await fa.session.get(Company, fa.auth["company_id"], populate_existing=True)
+    company = await locked_company(fa.session, fa.auth["company_id"])
     enabled = get_enabled(company.settings) | {"celerp-fixed-assets", "celerp-accounting", "celerp-docs"}
     if not on:
         enabled.discard("celerp-fixed-assets")
@@ -336,12 +336,12 @@ async def test_s8_two_processes_one_run_journal(committed_engine):
             return outcome
 
     async def manual():
+        # Either step may come after a tick has posted the month, and is then refused.
         body = {"month": "2026-01", "op_key": "manual"}
         async with factory() as s:
-            preview = await runs.run(s, cid, uid, {**body, "preview": True})
-            await s.rollback()
-        async with factory() as s:
             try:
+                preview = await runs.run(s, cid, uid, {**body, "preview": True})
+                await s.rollback()
                 result = await runs.run(s, cid, uid, {**body, "fingerprint": preview["fingerprint"]})
                 await s.commit()
                 return result

@@ -54,6 +54,11 @@ demo_records       {"handler": "module.path:function"} naming
                    is seeded again: the module adds its own sample records, once, and
                    only while the company keeps no books of its own. Filled by Celerp's
                    own modules only (FIRST_PARTY_SLOTS)
+background_loop    {"handler": "module.path:function"} naming `async def handler() -> None`,
+                   started once as a background task after every start that brings the
+                   stored records current, never while they are held back. It runs for the
+                   life of the process and decides itself which companies it serves
+                   (uses_module). Filled by Celerp's own modules only (FIRST_PARTY_SLOTS)
 search_provider    Contributes rows to the global search bar. Exactly one descriptor
                    dict per module: {"handler", "result_key", "permission"}. handler
                    names an in-module "module.path:function" resolved and validated
@@ -106,12 +111,12 @@ SLOT_NAMES = frozenset({
     "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
     "projection_handler", "on_company_created", "on_modules_ready", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
-    "demo_records",
+    "demo_records", "background_loop",
 })
 
 # Slots only Celerp's own (first-party) modules may fill; admission refuses any
 # other module that fills one.
-FIRST_PARTY_SLOTS = frozenset({"inventory_in_production", "demo_records"})
+FIRST_PARTY_SLOTS = frozenset({"inventory_in_production", "demo_records", "background_loop"})
 
 # projection_handler prefixes core handles itself: system events (registered at
 # startup, celerp.main) and the core-folded connectors' declared prefixes.

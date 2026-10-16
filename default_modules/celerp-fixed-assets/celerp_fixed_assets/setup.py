@@ -35,7 +35,7 @@ STARTER_CLASSES = (
 )
 
 CLASS_FIELDS = ("name", "kind", "asset_account", "accumulated_depreciation_account", "depreciation_account",
-                "method", "life_months", "residual_percent", "convention", "archived")
+                "method", "life_months", "residual_percent", "convention", "params", "archived")
 
 
 def unprocessable(message: str) -> HTTPException:
@@ -51,6 +51,9 @@ def view(fa: dict) -> dict:
     first = fa.get("first_managed_period")
     return {
         "run_mode": fa.get("run_mode", "prepare"),
+        "run_day": int(fa.get("run_day") or 1),
+        "auto_post_user": fa.get("auto_post_user"),
+        "auto_post_paused": bool(fa.get("auto_post_paused")),
         "convention": fa.get("convention", "full_month"),
         "threshold": fa.get("threshold"),
         "first_managed_period": first,
@@ -119,7 +122,7 @@ async def start(session, company_id, user_id) -> dict:
                 "accumulated_depreciation_account": roles.get("accumulated_depreciation") or "",
                 "depreciation_account": roles.get("depreciation_expense") or "",
                 "method": method, "life_months": life, "residual_percent": "0", "convention": None,
-                "archived": False, "seq": seq}
+                "params": {}, "archived": False, "seq": seq}
         await _emit(session, company_id, user_id, f"fa:class:{uuid.uuid4()}", "fa.class.created", data,
                     key=f"fa:class:starter:{seq}")
     fa.update(started=True, run_mode="prepare", convention="full_month", threshold=None,
@@ -157,7 +160,7 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
     fa = settings_of(company.settings)
     if not fa.get("started"):
         raise HTTPException(status_code=409, detail="Start fixed assets first.")
-    unknown = set(body) - {"threshold", "run_mode", "convention", "first_managed_period"}
+    unknown = set(body) - {"threshold", "run_mode", "run_day", "convention", "first_managed_period"}
     if unknown:
         raise unprocessable(f"Unknown setting: {sorted(unknown)[0]}.")
     if "threshold" in body:
@@ -166,6 +169,17 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
         if body["run_mode"] not in RUN_MODES:
             raise unprocessable("Choose how depreciation runs: prepare, post or manual.")
         fa["run_mode"] = body["run_mode"]
+        if body["run_mode"] == "post":
+            # Runs post as the user who chose to post them, while that user may.
+            from celerp_fixed_assets import notices
+
+            fa.update(auto_post_user=str(user_id), auto_post_paused=False)
+            await notices.clear(session, company_id, notices.PAUSED, notices.NO_USER)
+    if "run_day" in body:
+        day = body["run_day"]
+        if not isinstance(day, int) or isinstance(day, bool) or not 1 <= day <= 28:
+            raise unprocessable("The run day is a day of the month from 1 to 28.")
+        fa["run_day"] = day
     if "convention" in body:
         if body["convention"] not in CONVENTIONS:
             raise unprocessable("Choose a timing convention.")
@@ -183,8 +197,37 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
     return view(fa)
 
 
+def method_params(method: str, params) -> dict:
+    """A method's parameters, checked against its schema. A method that reads units
+    takes its life from ``total_units``, so that one is required."""
+    schema = METHODS[method].params_schema
+    if params is None:
+        params = {}
+    if not isinstance(params, dict):
+        raise unprocessable("Method settings are a set of named values.")
+    unknown = set(params) - set(schema)
+    if unknown:
+        raise unprocessable(f"{sorted(unknown)[0]} is not a setting of this method.")
+    out = {}
+    for name, value in params.items():
+        if value in (None, ""):
+            continue
+        if schema[name] == "bool":
+            if not isinstance(value, bool):
+                raise unprocessable(f"{name} is true or false.")
+            out[name] = value
+            continue
+        amount = Decimal(_money(value, name))
+        if amount == 0:
+            raise unprocessable(f"{name} must be more than zero.")
+        out[name] = str(amount)
+    if METHODS[method].uses_readings and "total_units" not in out:
+        raise unprocessable("A units-of-use class needs the total units the asset is expected to produce.")
+    return out
+
+
 async def _check_class(session, company_id, data: dict) -> None:
-    from celerp.services.journal_accounts import lock_accounts
+    from celerp.services.journal_accounts import require_destinations
 
     if not str(data.get("name") or "").strip():
         raise unprocessable("A class needs a name.")
@@ -197,17 +240,14 @@ async def _check_class(session, company_id, data: dict) -> None:
     life = data.get("life_months")
     if life is not None and (not isinstance(life, int) or isinstance(life, bool) or life <= 0):
         raise unprocessable("The useful life is a whole number of months.")
-    if data["method"] != "none" and life is None:
+    if data["method"] != "none" and not METHODS[data["method"]].uses_readings and life is None:
         raise unprocessable("A depreciated class needs a useful life.")
+    data["params"] = method_params(data["method"], data.get("params"))
     residual = Decimal(_money(data.get("residual_percent"), "Residual percent") or 0)
     if residual >= 100:
         raise unprocessable("The residual percent is below 100.")
-    codes = {data[k] for k in ("asset_account", "accumulated_depreciation_account", "depreciation_account")
-             if data.get(k)}
-    chart = await lock_accounts(session, company_id, codes)
-    missing = sorted(codes - set(chart or {})) if chart is not None else []
-    if missing:
-        raise unprocessable(f"Account {missing[0]} is not in the chart of accounts.")
+    await require_destinations(session, company_id, {
+        data[k] for k in ("asset_account", "accumulated_depreciation_account", "depreciation_account") if data.get(k)})
 
 
 async def create_class(session, company_id, user_id, body: dict) -> dict:
@@ -224,7 +264,7 @@ async def create_class(session, company_id, user_id, body: dict) -> dict:
             "depreciation_account": body.get("depreciation_account") or roles.get("depreciation_expense") or "",
             "method": body.get("method") or "straight_line", "life_months": body.get("life_months"),
             "residual_percent": str(body.get("residual_percent") or "0"), "convention": body.get("convention"),
-            "archived": False, "seq": len(await classes(session, company_id, include_archived=True))}
+            "params": body.get("params"), "archived": False, "seq": len(await classes(session, company_id, include_archived=True))}
     await _check_class(session, company_id, data)
     entity_id = f"fa:class:{uuid.uuid4()}"
     await _emit(session, company_id, user_id, entity_id, "fa.class.created", data)
@@ -248,7 +288,10 @@ async def update_class(session, company_id, user_id, class_id: str, body: dict) 
         changes["name"] = str(changes["name"] or "").strip()
     if "archived" in changes and not isinstance(changes["archived"], bool):
         raise unprocessable("Archived is true or false.")
-    await _check_class(session, company_id, {**row.state, **changes})
+    checked = {**row.state, **changes}
+    await _check_class(session, company_id, checked)
+    if "params" in changes:
+        changes["params"] = checked["params"]
     if changes:
         await _emit(session, company_id, user_id, class_id, "fa.class.updated", {"changes": changes})
     return {"id": class_id, **row.state, **changes}

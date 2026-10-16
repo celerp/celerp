@@ -21,7 +21,7 @@ import pytest
 from celerp.modules import loader, slots
 
 _CODE = {
-    "hooks.py": "async def hook(*a):\n    return None\n",
+    "hooks.py": "async def hook(*a):\n    return None\nasync def loop():\n    return None\n",
     "search.py": "async def find(*a):\n    return {'items': []}\n",
     "render.py": "def render(doc):\n    return None\n",
     "events.py": "def handle(state, event_type, data):\n    return state\n",
@@ -34,6 +34,7 @@ _CODE = {
         "async def positional_guard(session, entry, transition, /):\n    return None\n"
         "async def misnamed_in_production(*, db, company_id):\n    return 0\n"
         "async def extra_in_production(*, session, company_id, when=None):\n    return 0\n"
+        "async def demo(*, session, company_id, user_id):\n    return None\n"
     ),
 }
 
@@ -63,6 +64,8 @@ _VALID = {
     "on_doc_payment": [{"handler": "{inner}.hooks:hook"}],
     "item_lineage_guard": [{"handler": "{inner}.lineage:guard"}],
     "inventory_in_production": [{"handler": "{inner}.lineage:in_production"}],
+    "demo_records": [{"handler": "{inner}.lineage:demo"}],
+    "background_loop": [{"handler": "{inner}.hooks:loop"}],
 }
 
 # (slot, the entry's wrong key and value, the text the refusal names).

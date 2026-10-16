@@ -107,12 +107,14 @@ def _journal_view(lines) -> dict:
 
 
 async def _post(session, company_id, user_id, *, key: str, operation: str, day: str, memo: str, lines,
-                source_id: str, href: str, label: str, op_key: str) -> str:
+                source_id: str, href: str, label: str, op_key: str, intent: dict | None = None) -> str:
+    """Post one module journal. Its intent is the operation key unless ``intent`` names
+    what the journal is for (a run month's journal is the same whichever operation posts it)."""
     from celerp.services.module_journals import JournalSource, post_journal
 
     posted = await post_journal(session, company_id=company_id, user_id=user_id, module=MODULE, key=key,
                                 operation=operation, date=day, memo=memo, lines=lines,
-                                source=JournalSource(source_id, href, label), intent={"op_key": op_key})
+                                source=JournalSource(source_id, href, label), intent=intent or {"op_key": op_key})
     return posted.je_id
 
 
@@ -164,7 +166,9 @@ def _op_key(body: dict) -> str:
 async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: tuple[str, ...], plan, apply):
     """Preview or confirm one operation. ``plan(fa)`` returns ``(shown, context)``: what
     the preview shows, which the fingerprint covers, and what ``apply`` needs to do it.
-    ``context["generation"]`` (a source line's claim generation) names a stale form."""
+    ``context["generation"]`` (a source line's claim generation) names a stale form, and
+    ``context["basis"]``, when given, is what the plan was read from that the preview does
+    not show (the fingerprint covers it too)."""
     from celerp.services.permissions import locked_authority
 
     op_key = _op_key(body)
@@ -179,7 +183,7 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
             return done["result"]
     shown, context = await plan(fa)
     generation = context.get("generation", 0)
-    fingerprint = f"{generation}.{_hash(shown)}"
+    fingerprint = f"{generation}.{_hash({'shown': shown, 'basis': context.get('basis')})}"
     if body.get("preview"):
         return {**shown, "fingerprint": fingerprint}
     previewed = str(body.get("fingerprint") or "")
@@ -520,22 +524,25 @@ async def add_financial_details(session, company_id, user_id, asset_id: str, bod
 
 
 async def update_asset(session, company_id, user_id, asset_id: str, body: dict) -> dict:
-    """Change an asset's descriptive fields, refused when ``previous`` no longer holds."""
+    """Change an asset's descriptive fields, or the account its depreciation is charged to
+    (which takes the right to post journals), refused when ``previous`` no longer holds."""
     from celerp.services.company_lock import lock_projections
+    from celerp.services.journal_accounts import require_destinations
     from celerp.services.permissions import locked_authority
 
-    await locked_authority(session, company_id, user_id, ("manage_fixed_assets",))
-    row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
-    if row is None or row.entity_type != "fa_asset":
-        raise HTTPException(status_code=404, detail="No such asset.")
     changes, previous = body.get("changes"), body.get("previous")
     if not isinstance(changes, dict) or not isinstance(previous, dict):
         raise setup.unprocessable("Send the changes and the values they replace.")
+    account = "depreciation_account" in changes
+    await locked_authority(session, company_id, user_id, ("manage_accounting",) if account else ("manage_fixed_assets",))
+    row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
+    if row is None or row.entity_type != "fa_asset":
+        raise HTTPException(status_code=404, detail="No such asset.")
     if set(changes) & {*BUCKETS, "quantity"}:
         raise setup.unprocessable(
             "This cost comes from its source lines. Use Replace source to change it." if row.state.get("sources")
             else "Use Correct to change the cost.")
-    unknown = set(changes) - set(DESCRIPTIVE_FIELDS)
+    unknown = set(changes) - {*DESCRIPTIVE_FIELDS, "depreciation_account"}
     if unknown:
         raise setup.unprocessable(f"{sorted(unknown)[0]} cannot be edited here.")
     if any(row.state.get(k) != v for k, v in previous.items()):
@@ -543,6 +550,8 @@ async def update_asset(session, company_id, user_id, asset_id: str, body: dict) 
     changes = {k: (str(v).strip() or None) if v is not None else None for k, v in changes.items()}
     if "name" in changes and not changes["name"]:
         raise setup.unprocessable("An asset needs a name.")
+    if account and changes["depreciation_account"]:
+        await require_destinations(session, company_id, {changes["depreciation_account"]})
     changes = {k: v for k, v in changes.items() if row.state.get(k) != v}
     if changes:
         await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.updated", {"changes": changes})

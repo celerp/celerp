@@ -37,6 +37,8 @@ PLUGIN_MANIFEST = {
         ],
         # A demo company's sample data includes a few asset bills to register.
         "demo_records": {"handler": "celerp_fixed_assets.demo:seed_demo_assets_hook"},
+        # Each company's run for last month, prepared or posted once its run day has come.
+        "background_loop": {"handler": "celerp_fixed_assets.runs:loop"},
     },
 
     # ── UI translation catalogs ───────────────────────────────────────────────

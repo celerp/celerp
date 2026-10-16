@@ -19,14 +19,14 @@ from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import (
     assert_role_permission, get_current_company_settings, require_permission, role_has_permission)
-from celerp_fixed_assets import operations, setup, sources
+from celerp_fixed_assets import operations, runs, setup, sources
 from celerp_fixed_assets.events import register_events
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
 
 # Journal operation types this module posts, and the permission each needs.
 OPERATION_TYPES = {name: ("manage_accounting",)
-                   for name in ("registration", "acquisition", "expense", "maintenance", "undo")}
+                   for name in ("registration", "acquisition", "expense", "maintenance", "undo", "run")}
 
 _MONEY_FIELDS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "nbv")
 _VIEW = [require_permission("view_fixed_assets")]
@@ -48,6 +48,8 @@ def asset_out(asset_id: str, state: dict, *, money: bool = True) -> dict:
     if not money:
         out.update(dict.fromkeys(_MONEY_FIELDS))
         out["sources"] = [{"source": s.get("source"), "ref": s.get("ref")} for s in out.get("sources") or []]
+        if out.get("exception"):
+            out["exception"] = {**out["exception"], "amount": None}
     return out
 
 
@@ -205,6 +207,14 @@ async def financial_details(asset_id: str, body: dict = Body(...), company_id=De
     return await _write(session, operations.add_financial_details, company_id, user.id, asset_id, body)
 
 
+def movements_query(company_id, asset_id: str):
+    """An asset's movements, read through the index on the asset a projection belongs to."""
+    from celerp.models.projections import ASSET_ID
+
+    return select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "fa_movement", ASSET_ID == asset_id)
+
+
 @router.get("/assets/{asset_id}/movements", dependencies=_VIEW)
 async def list_movements(asset_id: str, limit: int = 50, offset: int = 0,
                          company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
@@ -213,14 +223,66 @@ async def list_movements(asset_id: str, limit: int = 50, offset: int = 0,
     if limit < 1 or limit > 500 or offset < 0:
         raise setup.unprocessable("Choose a page of 1 to 500 movements.")
     await _asset(session, company_id, asset_id)
-    rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "fa_movement",
-        Projection.state["asset_id"].as_string() == asset_id))).all()
+    rows = (await session.execute(movements_query(company_id, asset_id))).all()
     items = sorted(({"id": eid, **s} for eid, s in rows),
                    key=lambda m: (m.get("posting_date") or "", int(m["id"].rsplit(":", 1)[1])), reverse=True)
     if not _shows_money(company_settings, role):
         items = [{**m, "amounts": None, "contributions": None} for m in items]
     return {"items": items[offset:offset + limit], "total": len(items), "limit": limit, "offset": offset}
+
+
+# ── Depreciation runs ────────────────────────────────────────────────────────
+
+
+@router.get("/runs", dependencies=_VIEW)
+async def list_runs(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
+                    company_settings: dict = Depends(get_current_company_settings),
+                    session: AsyncSession = Depends(get_session)) -> dict:
+    items = await runs.records(session, company_id)
+    if not _shows_money(company_settings, role):
+        items = [{**r, "total": None, "exceptions": [{**e, "amount": None} for e in r.get("exceptions") or []]}
+                 for r in items]
+    return {"items": items}
+
+
+@router.post("/runs", dependencies=_ACCOUNTING)
+async def run(body: dict = Body(...), company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+              session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, runs.run, company_id, user.id, body)
+
+
+@router.post("/runs/{month}/reverse", dependencies=_ACCOUNTING)
+async def reverse_run(month: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, runs.reverse, company_id, user.id, month, body)
+
+
+@router.get("/attention", dependencies=_VIEW)
+async def attention(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
+                    company_settings: dict = Depends(get_current_company_settings),
+                    session: AsyncSession = Depends(get_session)) -> dict:
+    items = await runs.attention(session, company_id)
+    if not _shows_money(company_settings, role):
+        items = [{**a, "exception": {**a["exception"], "amount": None}} for a in items]
+    return {"items": items}
+
+
+@router.post("/assets/{asset_id}/readings", dependencies=[require_permission("manage_fixed_assets")])
+async def record_reading(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, runs.record_reading, company_id, user.id, asset_id, body)
+
+
+@router.post("/assets/{asset_id}/skip", dependencies=_ACCOUNTING)
+async def skip_month(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                     user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, runs.skip_month, company_id, user.id, asset_id, body)
+
+
+@router.delete("/assets/{asset_id}/skip/{month}", dependencies=_ACCOUNTING)
+async def withdraw_skip(asset_id: str, month: str, company_id=Depends(get_current_company_id),
+                        user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, runs.withdraw_skip, company_id, user.id, asset_id, month)
 
 
 def setup_api_routes(app) -> None:

@@ -611,6 +611,9 @@ async def _serve(_app: FastAPI, held):
             # alerts disabled or no reorder points set).
             asyncio.create_task(reorder_alert_loop()),
         ]
+        # Modules' own background loops (the background_loop slot), on the same rule.
+        from celerp.modules.slots import get as _get_slot, resolve_handler as _resolve
+        background += [asyncio.create_task(_resolve(c["handler"])()) for c in _get_slot("background_loop")]
 
     # Update checks: reports the last update attempt once, then checks hourly and,
     # when automatic updates are on, installs overnight in the owner's time zone.

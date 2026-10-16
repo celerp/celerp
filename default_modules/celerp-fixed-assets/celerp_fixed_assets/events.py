@@ -86,6 +86,34 @@ class OperationUndone(_Event):
     undo_key: str
 
 
+class RunRecorded(_Event):
+    month: str
+    status: str
+    total: str
+
+
+class RunReversed(_Event):
+    op_key: str
+
+
+class ReadingRecorded(_Event):
+    period: str
+    units: str
+
+
+class SkipRecorded(_Event):
+    month: str
+    reason: str
+
+
+class SkipWithdrawn(_Event):
+    month: str
+
+
+class AssetException(_Event):
+    exception: dict | None
+
+
 EVENTS: dict[str, type[BaseModel]] = {
     "fa.class.created": ClassCreated,
     "fa.class.updated": Changes,
@@ -101,6 +129,13 @@ EVENTS: dict[str, type[BaseModel]] = {
     "fa.maint.status": AssetStatus,
     "fa.op.recorded": OperationRecorded,
     "fa.op.undone": OperationUndone,
+    "fa.run.prepared": RunRecorded,
+    "fa.run.posted": RunRecorded,
+    "fa.run.reversed": RunReversed,
+    "fa.reading.recorded": ReadingRecorded,
+    "fa.skip.recorded": SkipRecorded,
+    "fa.skip.withdrawn": SkipWithdrawn,
+    "fa.asset.exception": AssetException,
 }
 
 
