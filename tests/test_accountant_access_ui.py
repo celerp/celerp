@@ -25,6 +25,11 @@ class Request:
         return self._form
 
 
+def _code(source):
+    from celerp.services.peer_access import pairing_code
+    return pairing_code(uuid.UUID(str(source)), "Client company")
+
+
 def _endpoints():
     app = FastAPI()
     routes.setup_routes(app)
@@ -53,7 +58,7 @@ async def test_owner_receives_noncacheable_single_display_and_no_secret_in_listi
         return {"credential": "cp1.ONE-TIME-TEST-KEY"}
     monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
     handler = _endpoints()["/settings/accountant-access/grants"]
-    request = Request({"source_company_id": source, "label": "Client",
+    request = Request({"pairing_code": _code(source), "label": "Client",
                        "lifetime_days": "30"})
     response = await handler(request)
     assert response.status_code == 200
@@ -76,7 +81,7 @@ async def test_member_cannot_issue_or_revoke_company_keys(monkeypatch):
     monkeypatch.setattr(ui.security, "not_permitted_redirect",
                         lambda request: Response("denied", status_code=403))
     ends = _endpoints()
-    request = Request({"source_company_id": str(uuid.uuid4()),
+    request = Request({"pairing_code": _code(str(uuid.uuid4())),
                        "label": "Client", "lifetime_days": "14"})
     assert (await ends["/settings/accountant-access/grants"](request)).status_code == 403
     assert (await ends["/settings/accountant-access/grants/{grant_id}/revoke"](
@@ -112,7 +117,7 @@ async def test_documents_scope_can_be_granted_without_contact_permission(monkeyp
     issue = _endpoints()["/settings/accountant-access/grants"]
     source = str(uuid.uuid4())
     response = await issue(Request({
-        "source_company_id": source,
+        "pairing_code": _code(source),
         "label": "Finance documents only",
         "lifetime_days": "14",
         "scopes": ["documents"],
@@ -133,8 +138,49 @@ async def test_accountant_grant_rejects_unapproved_or_empty_scope(monkeypatch):
     source = str(uuid.uuid4())
     for scopes in ([], ["attachments"], ["contacts", "manage_users"]):
         response = await issue(Request({
-            "source_company_id": source, "label": "Test", "lifetime_days": "14",
+            "pairing_code": _code(source), "label": "Test", "lifetime_days": "14",
             "scopes": scopes,
         }))
         from fasthtml.common import to_xml
-        assert "Check the client company ID" in to_xml(response)
+        assert "Check the pairing code" in to_xml(response)
+
+
+@pytest.mark.asyncio
+async def test_pairing_code_carries_company_id(monkeypatch):
+    """The sending company copies one code; the receiving owner pastes it instead of a typed ID."""
+    from fasthtml.common import to_xml
+
+    from celerp.services.peer_access import pairing_code, parse_pairing_code
+
+    source = uuid.uuid4()
+    code = pairing_code(source, "Acme Trading Co.")
+    assert parse_pairing_code(f"  {code}\n") == (source, "Acme Trading Co.")
+    for bad in ("", str(source), "cpair1." + str(source)[:-1] + ".QQ", "cp1." + code[7:], code + "!"):
+        with pytest.raises(ValueError):
+            parse_pairing_code(bad)
+
+    card = to_xml(routes._pairing_card(str(source), "Acme Trading Co.", "en"))
+    assert code in card and 'data-copy="#peer-pairing-code"' in card
+    assert ">Copy<" in card
+
+    _authenticated(monkeypatch)
+    seen = []
+    async def create(token, body):
+        seen.append(body)
+        return {"credential": "cp1.ONE-TIME-TEST-KEY"}
+    monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
+    issue = _endpoints()["/settings/accountant-access/grants"]
+    response = await issue(Request({"pairing_code": code, "label": "", "lifetime_days": "30"}))
+    assert response.status_code == 200
+    assert seen == [{"source_company_id": str(source), "label": "Acme Trading Co.",
+                     "scopes": ["contacts", "products"], "lifetime_days": 30}]
+
+    response = await issue(Request({"pairing_code": str(source), "label": "Client",
+                                    "lifetime_days": "30"}))
+    assert "Check the pairing code" in to_xml(response)
+    assert len(seen) == 1
+
+    page = routes._grant_form("en")
+    html = to_xml(page)
+    assert 'name="pairing_code"' in html and 'name="source_company_id"' not in html
+    assert "required" not in html
