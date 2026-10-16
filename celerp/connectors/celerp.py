@@ -54,6 +54,10 @@ def peer_headers(ctx: ConnectorContext) -> dict:
 _EVENT = {"contacts": "crm.contact.created", "products": "item.created",
           "documents": "doc.created", "inventory": "list.created",
           "journals": "acc.journal_entry.created"}
+# The sync entity each kind's run is recorded under.
+_ENTITY = {"contacts": SyncEntity.CONTACTS, "products": SyncEntity.PRODUCTS,
+           "documents": SyncEntity.DOCUMENTS, "inventory": SyncEntity.INVENTORY,
+           "journals": SyncEntity.JOURNALS}
 
 
 async def _read_projection_page(company_id: uuid.UUID, after: str, since, entity: str) -> list[tuple[str, int, dict]]:
@@ -384,11 +388,8 @@ class CelerpConnector(ConnectorBase):
         from celerp.services import peer_accounts, peer_journals
         from celerp.services.peer_access import key_ids
 
-        if kind not in ("contacts", "products", "documents", "inventory", "journals"):
+        if (entity := _ENTITY.get(kind)) is None:
             raise ValueError("Unsupported peer entity")
-        entity = {"contacts": SyncEntity.CONTACTS, "products": SyncEntity.PRODUCTS,
-                  "documents": SyncEntity.DOCUMENTS, "inventory": SyncEntity.INVENTORY,
-                  "journals": SyncEntity.JOURNALS}[kind]
         result = SyncResult(entity=entity, direction=SyncDirection.OUTBOUND,
                             errors=[], attention=[])
         target = _target_url(ctx, kind)
