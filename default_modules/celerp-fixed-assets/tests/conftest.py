@@ -9,5 +9,5 @@ from fa_fixtures import FA, start_demo
 
 
 @pytest_asyncio.fixture
-async def fa(client, session, auth) -> FA:
-    return await start_demo(client, session, auth)
+async def fa(client, session) -> FA:
+    return await start_demo(client, session)

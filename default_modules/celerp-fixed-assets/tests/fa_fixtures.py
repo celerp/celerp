@@ -85,9 +85,23 @@ class FA:
                 if je["entity_id"].startswith("je:mod:celerp-fixed-assets:")]
 
 
-async def start_demo(client, session, auth) -> FA:
-    fa = FA(client, session, auth)
-    r = await client.post("/companies/me/demo/reseed", headers=auth["headers"])
+async def demo_owner(client) -> dict:
+    """A company signed up the way a user signs up, with its owner's headers."""
+    import uuid
+
+    r = await client.post("/auth/register", json={
+        "company_name": "Demo Co", "email": f"fa-{uuid.uuid4().hex[:8]}@test.example",
+        "name": "Owner", "password": "pwvalid1"})
+    assert r.status_code == 200, r.text
+    headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    me = (await client.get("/companies/me", headers=headers)).json()
+    return {"headers": headers, "company_id": uuid.UUID(me["id"])}
+
+
+async def start_demo(client, session) -> FA:
+    """A demo company carrying its asset bills (the reseed seeds them), started."""
+    fa = FA(client, session, await demo_owner(client))
+    r = await client.post("/companies/me/demo/reseed", headers=fa.h)
     assert r.status_code == 200, r.text
     await fa.ok(await fa.post("/start"))
     return fa
