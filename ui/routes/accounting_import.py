@@ -149,9 +149,8 @@ def setup_routes(app):
     async def import_asset_register_page(request: Request):
         """Where an asset register is imported: the module's own import page, or how to turn it on."""
         from celerp.modules.registry import uses_module
-        from celerp.services.permissions import role_has_permission
         from ui.config import get_role
-        from ui.routes.modules_page import manages_modules
+        from ui.routes.modules_page import turn_on_action
 
         token = _token(request)
         if not token:
@@ -167,14 +166,9 @@ def setup_routes(app):
             raise
         if uses_module(settings, target["_module"]):
             return RedirectResponse(target["href"], status_code=303)
-        role = get_role(request)
-        if manages_modules(role) and role_has_permission(settings, role, "manage_company_settings"):
-            action = Form(P(t("accounting_import.turn_on_fixed_assets"), cls="settings-hint"),
-                          Input(type="hidden", name="next", value=target["href"]),
-                          Button(t("modules.turn_on"), type="submit", cls="btn btn--primary"),
-                          hx_post=f"/modules/{target['_module']}/enable", hx_swap="none")
-        else:
-            action = P(t("accounting_import.ask_admin_fixed_assets"), cls="settings-hint")
+        action = turn_on_action(get_role(request), settings, target["_module"],
+                                t("accounting_import.turn_on_fixed_assets"),
+                                t("accounting_import.ask_admin_fixed_assets"), target["href"], primary=True)
         return await base_shell(
             page_header(t("accounting_import.header_asset_register")),
             Div(action, cls="settings-card"),

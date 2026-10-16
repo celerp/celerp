@@ -424,6 +424,8 @@
   "fixed_assets.carrying_amount_now": "มูลค่าตามบัญชีปัจจุบัน",
   "fixed_assets.shared_basis_hint": "ใช้กับทุกแถวที่ไม่ได้ใส่หลักฐานอ้างอิงของตัวเอง",
   "fixed_assets.records_read_only": "ปิดการใช้งานสินทรัพย์ถาวรอยู่ ข้อมูลเป็นแบบอ่านอย่างเดียว",
+  "fixed_assets.turn_on_records": "เปิดสินทรัพย์ถาวรเพื่อทำงานกับรายการเหล่านี้อีกครั้ง",
+  "fixed_assets.ask_admin_records": "ขอให้ผู้ดูแลระบบเปิดสินทรัพย์ถาวรเพื่อทำงานกับรายการเหล่านี้อีกครั้ง",
   "fixed_assets.turn_off_run_prepared": "ค่าเสื่อมราคาของ {month} เตรียมไว้แล้ว ยังไม่บันทึกบัญชี",
   "fixed_assets.valuer_report": "รายงานของผู้ประเมิน",
   "fixed_assets.valuer_report_hint": "รายงานจะถูกเก็บไว้กับสินทรัพย์ทุกรายการที่ใช้งานอยู่ในประเภทนี้",

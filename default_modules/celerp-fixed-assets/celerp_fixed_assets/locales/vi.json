@@ -424,6 +424,8 @@
   "fixed_assets.carrying_amount_now": "Giá trị còn lại hiện tại",
   "fixed_assets.shared_basis_hint": "Dùng cho mọi dòng để trống căn cứ.",
   "fixed_assets.records_read_only": "Tài sản cố định đang tắt. Hồ sơ chỉ được xem.",
+  "fixed_assets.turn_on_records": "Bật Tài sản cố định để làm việc lại với các bản ghi này.",
+  "fixed_assets.ask_admin_records": "Nhờ quản trị viên bật Tài sản cố định để làm việc lại với các bản ghi này.",
   "fixed_assets.turn_off_run_prepared": "Khấu hao {month} đã chuẩn bị, chưa ghi sổ",
   "fixed_assets.valuer_report": "Báo cáo của thẩm định viên",
   "fixed_assets.valuer_report_hint": "Báo cáo được lưu trên mọi tài sản đang dùng trong nhóm này.",

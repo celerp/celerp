@@ -583,3 +583,33 @@ def test_j14_import_with_the_module_off_turns_it_on_and_imports(page: Page, fres
         page.locator("#import-preview").get_by_role("button", name="Import All 1 Rows").click()
     expect(page.locator("#fa-import-imported tbody tr")).to_have_count(1)
     assert [a["name"] for a in _ok(c.get(f"{API}/assets"))["items"]] == ["Warehouse"]
+
+
+def test_j15_sale_voided_while_off_waits_read_only_and_is_reissued_once_on(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    invoice = _operate(c, f"/assets/{car}/sell", {"date": "2026-05-20", "price": "10000",
+                                                 "contact_name": "Buyer Co"})["invoice_id"]
+    _ok(c.post(f"/docs/{invoice}/finalize"))
+    # The company has chosen its modules, fixed assets and what it needs, then turns fixed assets off.
+    _ok(c.post("/companies/me/modules/celerp-fixed-assets/enable"))
+    _ok(c.post("/companies/me/modules/celerp-fixed-assets/disable"))
+    # The invoice is the document's own business: voiding it still reverses the disposal.
+    _ok(c.post(f"/docs/{invoice}/void", json={"reason": "Buyer withdrew"}))
+
+    page.goto(f"/fixed-assets/assets/{car}")
+    expect(page.locator("#fa-read-only")).to_contain_text("Fixed assets is turned off. Records are read-only.")
+    sale = page.locator(f"[id='fa-sale-{car}']")
+    expect(sale).to_contain_text("Waiting on its invoice")
+    expect(sale.get_by_role("button", name="New draft invoice")).to_have_count(0)
+    assert _ok(c.get(f"{API}/assets/{car}"))["status"] == "active"
+
+    with page.expect_navigation(url=f"**/fixed-assets/assets/{car}"):
+        page.locator("#fa-read-only").get_by_role("button", name="Turn on").click()
+    expect(page.locator("#fa-read-only")).to_have_count(0)
+    _review_and_confirm(page, "New draft invoice")
+    page.wait_for_url("**/docs/**")
+    reissued = page.url.rstrip("/").rsplit("/", 1)[1]
+    assert reissued != invoice
+    assert _ok(c.get(f"{API}/assets/{car}"))["sale"]["invoice_id"] == reissued

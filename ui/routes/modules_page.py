@@ -81,6 +81,20 @@ def manages_modules(role: str) -> bool:
     return _ROLE_LEVELS.get(role, 0) >= _ROLE_LEVELS["admin"]
 
 
+def turn_on_action(role: str, settings: dict, module: str, offer: str, ask: str, back: str,
+                   primary: bool = False) -> FT:
+    """How a page reached with *module* off for the company gets it on: a Turn on button
+    that comes back to *back* for whoever may turn modules on, else the ask-an-admin text."""
+    from celerp.services.permissions import role_has_permission
+
+    if manages_modules(role) and role_has_permission(settings, role, "manage_company_settings"):
+        return Form(P(offer, cls="settings-hint"), Input(type="hidden", name="next", value=back),
+                    Button(t("modules.turn_on"), type="submit", cls="btn " + ("btn--primary" if primary
+                                                                              else "btn--secondary")),
+                    hx_post=f"/modules/{module}/enable", hx_swap="none")
+    return P(ask, cls="settings-hint")
+
+
 def _is_admin(request: Request) -> bool:
     return manages_modules(_get_role(request))
 

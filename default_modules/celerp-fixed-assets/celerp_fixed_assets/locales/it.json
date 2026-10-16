@@ -424,6 +424,8 @@
   "fixed_assets.carrying_amount_now": "Valore contabile attuale",
   "fixed_assets.shared_basis_hint": "Usata per ogni riga senza base propria.",
   "fixed_assets.records_read_only": "Cespiti è disattivato. I dati sono di sola lettura.",
+  "fixed_assets.turn_on_records": "Attiva Immobilizzazioni per lavorare di nuovo su questi record.",
+  "fixed_assets.ask_admin_records": "Chiedi a un amministratore di attivare Immobilizzazioni per lavorare di nuovo su questi record.",
   "fixed_assets.turn_off_run_prepared": "Ammortamento di {month} preparato, non registrato",
   "fixed_assets.valuer_report": "Perizia del valutatore",
   "fixed_assets.valuer_report_hint": "La perizia viene conservata su ogni cespite in uso di questa classe.",

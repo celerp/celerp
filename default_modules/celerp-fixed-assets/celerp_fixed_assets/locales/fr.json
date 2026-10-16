@@ -424,6 +424,8 @@
   "fixed_assets.carrying_amount_now": "Valeur comptable actuelle",
   "fixed_assets.shared_basis_hint": "Utilisé pour chaque ligne sans fondement propre.",
   "fixed_assets.records_read_only": "Les immobilisations sont désactivées. Les fiches sont en lecture seule.",
+  "fixed_assets.turn_on_records": "Activez Immobilisations pour travailler à nouveau sur ces enregistrements.",
+  "fixed_assets.ask_admin_records": "Demandez à un administrateur d'activer Immobilisations pour travailler à nouveau sur ces enregistrements.",
   "fixed_assets.turn_off_run_prepared": "Amortissement de {month} préparé, non comptabilisé",
   "fixed_assets.valuer_report": "Rapport de l'expert",
   "fixed_assets.valuer_report_hint": "Le rapport est conservé sur chaque immobilisation en service de cette catégorie.",

@@ -55,7 +55,7 @@ from ui.components.operation_key import FIELD as OP_KEY_FIELD, operation_key_inp
 from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import (EMPTY, breadcrumbs, bulk_toolbar, display_cell, editable_cell, empty_mark, empty_state_cta,
                                  fmt_money, pagination, searchable_select, _SEARCHABLE_THRESHOLD)
-from ui.config import get_token as _token
+from ui.config import get_role, get_token as _token
 from ui.i18n import refusal_text, t
 from ui.routes.csv_import import read_tabular_source
 from celerp.importers import tabular
@@ -156,7 +156,12 @@ async def _page(request: Request, *content, title_key: str, nav: str = "fixed_as
         except APIError:
             settings = {}
     if not uses_module(settings, MODULE):
-        content = (Div(t("fixed_assets.records_read_only"), cls="flash flash--warning", id="fa-read-only"),
+        from ui.routes.modules_page import turn_on_action
+
+        way_on = turn_on_action(get_role(request), settings, MODULE, t("fixed_assets.turn_on_records"),
+                                t("fixed_assets.ask_admin_records"),
+                                str(request.url.replace(scheme="", netloc="")))
+        content = (Div(t("fixed_assets.records_read_only"), way_on, cls="flash flash--warning", id="fa-read-only"),
                    Div(*content, cls="records-read-only"))
     return await base_shell(*content, title=page_title(title_key), nav_active=nav, request=request,
                             company_settings=settings)

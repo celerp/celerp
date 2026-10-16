@@ -424,6 +424,8 @@
   "fixed_assets.carrying_amount_now": "Nilai tercatat saat ini",
   "fixed_assets.shared_basis_hint": "Dipakai untuk setiap baris yang dasarnya kosong.",
   "fixed_assets.records_read_only": "Aset tetap dinonaktifkan. Catatan hanya dapat dibaca.",
+  "fixed_assets.turn_on_records": "Aktifkan Aset tetap untuk bekerja dengan catatan ini lagi.",
+  "fixed_assets.ask_admin_records": "Minta admin mengaktifkan Aset tetap untuk bekerja dengan catatan ini lagi.",
   "fixed_assets.turn_off_run_prepared": "Penyusutan {month} disiapkan, belum diposting",
   "fixed_assets.valuer_report": "Laporan penilai",
   "fixed_assets.valuer_report_hint": "Laporan disimpan pada setiap aset yang digunakan dalam kelas ini.",

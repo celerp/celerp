@@ -424,6 +424,8 @@
   "fixed_assets.carrying_amount_now": "አሁን ያለ የመዝገብ ዋጋ",
   "fixed_assets.shared_basis_hint": "የራሱ መሰረት ባዶ ለሆነ ለእያንዳንዱ ረድፍ ይውላል።",
   "fixed_assets.records_read_only": "ቋሚ ንብረቶች ጠፍቷል። መዝገቦቹ ለንባብ ብቻ ናቸው።",
+  "fixed_assets.turn_on_records": "እነዚህን መዝገቦች እንደገና ለመጠቀም ቋሚ ንብረቶችን ያብሩ።",
+  "fixed_assets.ask_admin_records": "እነዚህን መዝገቦች እንደገና ለመጠቀም አስተዳዳሪ ቋሚ ንብረቶችን እንዲያበራ ይጠይቁ።",
   "fixed_assets.turn_off_run_prepared": "የ{month} ቅናሽ ተዘጋጅቷል፣ አልተለጠፈም",
   "fixed_assets.valuer_report": "የገምጋሚ ሪፖርት",
   "fixed_assets.valuer_report_hint": "ሪፖርቱ በዚህ ምድብ ውስጥ በአገልግሎት ላይ ባሉ እያንዳንዱ ንብረት ላይ ይቀመጣል።",

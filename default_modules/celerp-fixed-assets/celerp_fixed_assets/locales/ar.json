@@ -424,6 +424,8 @@
   "fixed_assets.carrying_amount_now": "القيمة الدفترية الحالية",
   "fixed_assets.shared_basis_hint": "يُستخدم لكل صف يكون أساسه فارغًا.",
   "fixed_assets.records_read_only": "الأصول الثابتة متوقفة. السجلات للقراءة فقط.",
+  "fixed_assets.turn_on_records": "شغّل الأصول الثابتة للعمل على هذه السجلات مرة أخرى.",
+  "fixed_assets.ask_admin_records": "اطلب من المسؤول تشغيل الأصول الثابتة للعمل على هذه السجلات مرة أخرى.",
   "fixed_assets.turn_off_run_prepared": "إهلاك {month} مُعَدّ ولم يُرحَّل",
   "fixed_assets.valuer_report": "تقرير المقيّم",
   "fixed_assets.valuer_report_hint": "يُحفظ التقرير على كل أصل قيد الاستخدام في هذه الفئة.",

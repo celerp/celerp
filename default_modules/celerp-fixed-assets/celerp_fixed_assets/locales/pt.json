@@ -424,6 +424,8 @@
   "fixed_assets.carrying_amount_now": "Valor contábil atual",
   "fixed_assets.shared_basis_hint": "Usada em cada linha sem base própria.",
   "fixed_assets.records_read_only": "Ativo imobilizado está desativado. Os registros são somente leitura.",
+  "fixed_assets.turn_on_records": "Ative Ativo imobilizado para voltar a trabalhar com estes registos.",
+  "fixed_assets.ask_admin_records": "Peça a um administrador para ativar Ativo imobilizado para voltar a trabalhar com estes registos.",
   "fixed_assets.turn_off_run_prepared": "Depreciação de {month} preparada, não lançada",
   "fixed_assets.valuer_report": "Laudo do avaliador",
   "fixed_assets.valuer_report_hint": "O laudo fica guardado em cada ativo em uso desta classe.",

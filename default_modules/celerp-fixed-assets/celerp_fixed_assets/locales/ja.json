@@ -424,6 +424,8 @@
   "fixed_assets.carrying_amount_now": "現在の帳簿価額",
   "fixed_assets.shared_basis_hint": "根拠が空欄の行すべてに使います。",
   "fixed_assets.records_read_only": "固定資産はオフになっています。記録は読み取り専用です。",
+  "fixed_assets.turn_on_records": "これらの記録を再び扱うには固定資産をオンにしてください。",
+  "fixed_assets.ask_admin_records": "これらの記録を再び扱うには、管理者に固定資産をオンにするよう依頼してください。",
   "fixed_assets.turn_off_run_prepared": "{month} の減価償却は準備済みで未計上",
   "fixed_assets.valuer_report": "鑑定人の報告書",
   "fixed_assets.valuer_report_hint": "報告書はこの区分で使用中のすべての資産に保存されます。",

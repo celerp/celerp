@@ -45,22 +45,16 @@ async def _files_fragment(token: str, asset_id: str, **kwargs) -> FT:
 
 def _tag_card(asset: dict, request: Request, settings: dict) -> FT:
     """The asset number, which can always be written on a tag by hand, and how to print one."""
-    from celerp.services.permissions import role_has_permission
     from ui.components.shell import module_active
-    from ui.routes.modules_page import manages_modules
+    from ui.routes.modules_page import turn_on_action
 
     here = f"/fixed-assets/assets/{asset['id']}"
-    role = get_role(request)
     if module_active(settings, "celerp-labels"):
         action = A(t("fixed_assets.print_tag"), cls="btn btn--secondary",
                    href="/labels/print-source?" + urlencode({"source": "fa_asset", "ids": asset["id"], "back": here}))
-    elif manages_modules(role) and role_has_permission(settings, role, "manage_company_settings"):
-        action = Form(P(t("fixed_assets.turn_on_labels"), cls="settings-hint"),
-                      Input(type="hidden", name="next", value=here),
-                      Button(t("modules.turn_on"), type="submit", cls="btn btn--secondary"),
-                      hx_post="/modules/celerp-labels/enable", hx_swap="none")
     else:
-        action = P(t("fixed_assets.ask_admin_labels"), cls="settings-hint")
+        action = turn_on_action(get_role(request), settings, "celerp-labels", t("fixed_assets.turn_on_labels"),
+                                t("fixed_assets.ask_admin_labels"), here)
     return Div(H2(t("fixed_assets.asset_tag"), cls="section-title"),
                P(Strong(asset["number"]), " ", _text(asset.get("tag")) if asset.get("tag") else ""), action,
                cls="detail-card section-card", id="fa-tag")
