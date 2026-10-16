@@ -518,7 +518,6 @@
   "fixed_assets.disposals_title": "除却・売却",
   "fixed_assets.disposals_hint": "期間中に帳簿から除かれた資産: 売却額、帳簿価額、損益、および各資産の請求書、クレジットノート、仕訳。新しい順。",
   "fixed_assets.disposals_empty": "この期間の除却・売却はありません",
-  "fixed_assets.planned_not_posted": "予定・未計上",
   "fixed_assets.total": "合計",
   "fixed_assets.posted": "計上済み",
   "fixed_assets.forecast": "見込",

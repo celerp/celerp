@@ -518,7 +518,6 @@
   "fixed_assets.disposals_title": "Disposals",
   "fixed_assets.disposals_hint": "Assets that left the books in the period: what they fetched, their carrying amount, the gain or loss, and the invoice, credit notes and journal behind each. Newest first.",
   "fixed_assets.disposals_empty": "No disposals in this period",
-  "fixed_assets.planned_not_posted": "Planned, not posted",
   "fixed_assets.total": "Total",
   "fixed_assets.posted": "Posted",
   "fixed_assets.forecast": "Forecast",

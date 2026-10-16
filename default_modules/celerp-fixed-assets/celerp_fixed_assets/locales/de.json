@@ -518,7 +518,6 @@
   "fixed_assets.disposals_title": "Abgänge",
   "fixed_assets.disposals_hint": "Anlagen, die im Zeitraum ausgebucht wurden: Erlös, Buchwert, Gewinn oder Verlust sowie Rechnung, Gutschriften und Buchung dazu. Neueste zuerst.",
   "fixed_assets.disposals_empty": "Keine Abgänge in diesem Zeitraum",
-  "fixed_assets.planned_not_posted": "Geplant, nicht gebucht",
   "fixed_assets.total": "Summe",
   "fixed_assets.posted": "Gebucht",
   "fixed_assets.forecast": "Prognose",

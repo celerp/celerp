@@ -518,7 +518,6 @@
   "fixed_assets.disposals_title": "Dismissioni",
   "fixed_assets.disposals_hint": "Cespiti usciti dai libri nel periodo: il ricavo, il valore contabile, la plusvalenza o minusvalenza, e la fattura, le note di credito e la registrazione di ciascuno. Più recenti per primi.",
   "fixed_assets.disposals_empty": "Nessuna dismissione in questo periodo",
-  "fixed_assets.planned_not_posted": "Previsto, non registrato",
   "fixed_assets.total": "Totale",
   "fixed_assets.posted": "Registrato",
   "fixed_assets.forecast": "Previsione",

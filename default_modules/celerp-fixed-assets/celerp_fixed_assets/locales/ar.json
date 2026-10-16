@@ -518,7 +518,6 @@
   "fixed_assets.disposals_title": "الاستبعادات",
   "fixed_assets.disposals_hint": "الأصول التي خرجت من الدفاتر في الفترة: ما حققته، وقيمتها الدفترية، والربح أو الخسارة، والفاتورة والإشعارات الدائنة والقيد وراء كل منها. الأحدث أولاً.",
   "fixed_assets.disposals_empty": "لا توجد استبعادات في هذه الفترة",
-  "fixed_assets.planned_not_posted": "مخطط، غير مرحّل",
   "fixed_assets.total": "الإجمالي",
   "fixed_assets.posted": "مرحّل",
   "fixed_assets.forecast": "المتوقع",

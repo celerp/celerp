@@ -518,7 +518,6 @@
   "fixed_assets.disposals_title": "การจำหน่ายสินทรัพย์",
   "fixed_assets.disposals_hint": "สินทรัพย์ที่ตัดออกจากบัญชีในงวด: เงินที่ได้รับ มูลค่าตามบัญชี กำไรหรือขาดทุน และใบแจ้งหนี้ ใบลดหนี้ และรายการบัญชีของแต่ละรายการ ล่าสุดอยู่บนสุด",
   "fixed_assets.disposals_empty": "ไม่มีการจำหน่ายในงวดนี้",
-  "fixed_assets.planned_not_posted": "ตามแผน ยังไม่บันทึก",
   "fixed_assets.total": "รวม",
   "fixed_assets.posted": "บันทึกแล้ว",
   "fixed_assets.forecast": "คาดการณ์",

@@ -518,7 +518,6 @@
   "fixed_assets.disposals_title": "Pelepasan aset",
   "fixed_assets.disposals_hint": "Aset yang keluar dari pembukuan pada periode ini: hasil yang diperoleh, nilai tercatat, laba atau rugi, serta faktur, nota kredit, dan jurnal untuk masing-masing. Terbaru di atas.",
   "fixed_assets.disposals_empty": "Tidak ada pelepasan pada periode ini",
-  "fixed_assets.planned_not_posted": "Direncanakan, belum diposting",
   "fixed_assets.total": "Jumlah",
   "fixed_assets.posted": "Diposting",
   "fixed_assets.forecast": "Perkiraan",

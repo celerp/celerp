@@ -56,13 +56,13 @@ _SCHEDULE = (
     ("fixed_assets.accumulated_impairment", ("impairment_opening", "impairment_charge", "impairment_disposals",
                                              "impairment_closing")),
     ("fixed_assets.nbv", ("nbv_opening", "nbv_closing")),
-    ("fixed_assets.planned_not_posted", ("planned_not_posted",)),
+    (None, ("planned_not_posted",)),
 )
 _SCHEDULE_FIELDS = [f for _, fields in _SCHEDULE for f in fields]
 
 
 def _schedule_body(report: dict, currency: str) -> list[FT]:
-    groups = Tr(Th(""), *[Th(t(label), colspan=str(len(fields))) for label, fields in _SCHEDULE])
+    groups = Tr(Th(""), *[Th(t(label) if label else "", colspan=str(len(fields))) for label, fields in _SCHEDULE])
     head = [Th(t("fixed_assets.asset")), *[_amount_th(t(f"fixed_assets.col.{f}")) for f in _SCHEDULE_FIELDS]]
     rows: list[FT] = []
     for c in report["classes"]:
@@ -245,6 +245,11 @@ class Report:
     fetch: Callable
     body: Callable[[dict, str], list[FT]]
     rows: Callable[[dict, str], list[list]]
+    # Too many columns for portrait paper: printed landscape, in a smaller type.
+    wide: bool = False
+
+
+_WIDE_PRINT_CSS = "@page { size: A4 landscape; } body { padding: 10mm; } table { font-size: 7pt; }"
 
 
 def _api(path: str) -> Callable:
@@ -255,7 +260,7 @@ def _api(path: str) -> Callable:
 
 REPORTS = (
     Report("schedule", "fixed_assets.schedule_title", "fixed_assets.schedule_hint", "range",
-           _api("/reports/schedule"), _schedule_body, _schedule_rows),
+           _api("/reports/schedule"), _schedule_body, _schedule_rows, wide=True),
     Report("register", "fixed_assets.register_report_title", "fixed_assets.register_report_hint", "register",
            _register_fetch, _register_body, _register_rows),
     Report("depreciation", "fixed_assets.depreciation_title", "fixed_assets.depreciation_hint", "range",
@@ -355,7 +360,8 @@ def _register_routes(app, report: Report) -> None:
             company = await api.get_company(token)
         except APIError as e:
             return plain_error_response(e)
-        return print_shell(company, t(report.title_key), _subtitle(params), Div(*report.body(data, currency)))
+        wide = Style(_WIDE_PRINT_CSS) if report.wide else None
+        return print_shell(company, t(report.title_key), _subtitle(params), Div(wide, *report.body(data, currency)))
 
     @app.get(f"{path}.csv", name=f"fa_report_{report.key}_csv")
     async def exported(request: Request):

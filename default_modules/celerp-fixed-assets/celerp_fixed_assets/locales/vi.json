@@ -518,7 +518,6 @@
   "fixed_assets.disposals_title": "Thanh lý",
   "fixed_assets.disposals_hint": "Tài sản ra khỏi sổ trong kỳ: số thu được, giá trị còn lại, lãi hoặc lỗ, cùng hóa đơn, giấy báo có và bút toán của từng tài sản. Mới nhất ở trên.",
   "fixed_assets.disposals_empty": "Không có thanh lý trong kỳ này",
-  "fixed_assets.planned_not_posted": "Dự kiến, chưa ghi sổ",
   "fixed_assets.total": "Tổng cộng",
   "fixed_assets.posted": "Đã ghi sổ",
   "fixed_assets.forecast": "Dự báo",

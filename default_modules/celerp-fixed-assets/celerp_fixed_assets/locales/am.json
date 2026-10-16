@@ -518,7 +518,6 @@
   "fixed_assets.disposals_title": "የተወገዱ ንብረቶች",
   "fixed_assets.disposals_hint": "በጊዜው ከመዝገብ የወጡ ንብረቶች፡ ያስገኙት፣ የመዝገብ ዋጋቸው፣ ትርፍ ወይም ኪሳራ፣ እና ከእያንዳንዱ ጀርባ ያሉ ደረሰኝ፣ የክሬዲት ማስታወሻዎች እና ጆርናል። አዲሱ መጀመሪያ።",
   "fixed_assets.disposals_empty": "በዚህ ጊዜ ውስጥ የተወገደ ንብረት የለም",
-  "fixed_assets.planned_not_posted": "የታቀደ፣ ያልተለጠፈ",
   "fixed_assets.total": "ጠቅላላ",
   "fixed_assets.posted": "የተለጠፈ",
   "fixed_assets.forecast": "ትንበያ",

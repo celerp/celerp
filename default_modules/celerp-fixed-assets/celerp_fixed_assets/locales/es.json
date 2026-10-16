@@ -518,7 +518,6 @@
   "fixed_assets.disposals_title": "Bajas",
   "fixed_assets.disposals_hint": "Activos que salieron de los libros en el periodo: lo obtenido, su valor en libros, la ganancia o pérdida, y la factura, notas de crédito y asiento de cada uno. Los más recientes primero.",
   "fixed_assets.disposals_empty": "No hay bajas en este periodo",
-  "fixed_assets.planned_not_posted": "Previsto, sin contabilizar",
   "fixed_assets.total": "Totales",
   "fixed_assets.posted": "Contabilizado",
   "fixed_assets.forecast": "Previsión",

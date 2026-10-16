@@ -518,7 +518,6 @@
   "fixed_assets.disposals_title": "Cessions",
   "fixed_assets.disposals_hint": "Actifs sortis des comptes sur la période : le prix obtenu, la valeur comptable, la plus ou moins-value, ainsi que la facture, les avoirs et l'écriture de chacun. Plus récents en premier.",
   "fixed_assets.disposals_empty": "Aucune cession sur cette période",
-  "fixed_assets.planned_not_posted": "Prévu, non comptabilisé",
   "fixed_assets.total": "Totaux",
   "fixed_assets.posted": "Comptabilisé",
   "fixed_assets.forecast": "Prévision",

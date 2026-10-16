@@ -518,7 +518,6 @@
   "fixed_assets.disposals_title": "Abates",
   "fixed_assets.disposals_hint": "Ativos que saíram dos livros no período: o valor obtido, a quantia escriturada, o ganho ou perda, e a fatura, notas de crédito e lançamento de cada um. Mais recentes primeiro.",
   "fixed_assets.disposals_empty": "Sem abates neste período",
-  "fixed_assets.planned_not_posted": "Previsto, não lançado",
   "fixed_assets.total": "Totais",
   "fixed_assets.posted": "Lançado",
   "fixed_assets.forecast": "Previsão",
