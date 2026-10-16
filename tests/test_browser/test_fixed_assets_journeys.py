@@ -562,3 +562,24 @@ def test_j13_noted_keeps_the_year_open_and_accepted_lets_it_close(page: Page, fr
     expect(page.locator("#fa-tax-reopen")).to_be_visible()
     book = _ok(c.get(f"{API}/tax-books", params={"regime": "zz_asset", "year": 2026}))
     assert book["status"] == "closed"
+
+
+def test_j14_import_with_the_module_off_turns_it_on_and_imports(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _ok(c.post("/companies/me/modules/celerp-fixed-assets/disable"))
+
+    page.goto("/settings/accounting?tab=chart")
+    page.get_by_role("link", name="Import asset register").click()
+    page.wait_for_url("**/import/asset-register")
+    expect(page.locator("main")).to_contain_text("Turn on Fixed assets to import the asset register")
+    with page.expect_navigation(url="**/fixed-assets/import"):
+        page.get_by_role("button", name="Turn on").click()
+    page.locator("input[type='file']").first.set_input_files(
+        {"name": "register.csv", "mimeType": "text/csv", "buffer": b"\n".join(_REGISTER.split(b"\n")[:2]) + b"\n"})
+    page.locator("#csv-preview-btn").click()
+    page.get_by_role("button", name="Continue to Preview").click()
+    with page.expect_navigation(url="**/fixed-assets/imports/**"):
+        page.locator("#import-preview").get_by_role("button", name="Import All 1 Rows").click()
+    expect(page.locator("#fa-import-imported tbody tr")).to_have_count(1)
+    assert [a["name"] for a in _ok(c.get(f"{API}/assets"))["items"]] == ["Warehouse"]
