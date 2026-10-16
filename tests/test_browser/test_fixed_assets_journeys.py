@@ -6,7 +6,9 @@ that page offers."""
 from __future__ import annotations
 
 import os
+import sys
 import uuid
+from pathlib import Path
 from decimal import Decimal as D
 
 import httpx
@@ -18,6 +20,8 @@ from celerp.accounting_roles import SEEDED_TARGETS
 pytestmark = pytest.mark.browser
 
 API = "/fixed-assets/api"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "default_modules" / "celerp-fixed-assets" / "tests"))
+from fa_fixtures import admit_zz  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -511,3 +515,50 @@ def test_j12_unexplained_journal_names_its_fix_and_is_registered(page: Page, fre
     (generator,) = [a for a in _ok(c.get(f"{API}/assets"))["items"] if a["name"] == "Standby generator"]
     assert D(generator["cost"]) == D(900)
     _reconciled(page)
+
+
+@pytest.fixture
+def zz(monkeypatch):
+    """The test-only country module ZZ and its asset tax regime, in the running app."""
+    yield from admit_zz(monkeypatch)
+
+
+def test_j13_noted_keeps_the_year_open_and_accepted_lets_it_close(page: Page, fresh_company, zz):
+    c = fresh_company
+    _started(c, "2025-07-01")
+    _ok(c.patch(f"{API}/settings", json={"tax_regimes": ["zz_asset"], "tax_year_end": "06-30"}))
+    _contributed(c, "Owner's car", on="2025-07-15")
+    _run(c, "2026-06")
+    _journal(c, "2026-03-10", "Generator paid in cash", [{"account": "1210", "debit": 900},
+                                                         {"account": "3100", "credit": 900}])
+    for item in _ok(c.get(f"{API}/year-end", params={"year": 2026}))["items"]:
+        if item["kind"] != "difference":
+            _ok(c.post(f"{API}/year-end/2026/marks", json={"key": item["key"], "state": "accepted",
+                                                          "reason": "Reviewed at year end", "effect": "None"}))
+
+    page.goto("/fixed-assets/year-end?year=2026")
+    status = page.locator("#fa-ye-status")
+    expect(status).to_contain_text("Not ready to close.")
+    row = page.locator("#fa-ye-items tr", has_text="Reconciliation difference")
+    row.locator("select[name=state]").select_option("noted")
+    row.locator("input[name=reason]").fill("Generator invoice requested from the supplier")
+    with page.expect_navigation():
+        row.get_by_role("button", name="Save").click()
+    expect(status).to_contain_text("Not ready to close.")
+
+    row = page.locator("#fa-ye-items tr", has_text="Reconciliation difference")
+    expect(row.locator("select[name=state]")).to_have_value("noted")
+    row.locator("select[name=state]").select_option("accepted")
+    row.locator("input[name=effect]").fill("Cost of 900.00 registered next year")
+    with page.expect_navigation():
+        row.get_by_role("button", name="Save").click()
+    expect(status).to_contain_text("Ready to close.")
+    assert _ok(c.get(f"{API}/reconciliation"))["status"] != "Reconciled", "accepting for close leaves the books"
+
+    page.locator("#fa-ye-next").get_by_role("link").first.click()
+    page.wait_for_url("**/fixed-assets/tax-books**")
+    with page.expect_navigation():
+        page.locator("#fa-tax-close").get_by_role("button", name="Close tax year").click()
+    expect(page.locator("#fa-tax-reopen")).to_be_visible()
+    book = _ok(c.get(f"{API}/tax-books", params={"regime": "zz_asset", "year": 2026}))
+    assert book["status"] == "closed"

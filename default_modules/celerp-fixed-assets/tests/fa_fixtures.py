@@ -3,12 +3,34 @@
 """Test support for the fixed assets module: a started demo company and the calls tests make."""
 from __future__ import annotations
 
+import sys
 import uuid
 from decimal import Decimal
+from pathlib import Path
 
 from sqlalchemy import select
 
 API = "/fixed-assets/api"
+ZZ = Path(__file__).resolve().parent / "fixtures" / "celerp_l10n_zz"
+
+
+def admit_zz(monkeypatch):
+    """The test-only country module ZZ, admitted, registered and listed as loaded as the
+    module loader does for a module that is not Celerp's own, for as long as the caller's
+    fixture lasts."""
+    from celerp.modules import loader, slots
+    from celerp.modules.loader import _check_slot_contracts, _register_locales, _runtime_keys, read_manifest
+
+    if str(ZZ.parent) not in sys.path:
+        sys.path.insert(0, str(ZZ.parent))
+    manifest = read_manifest(ZZ)
+    _check_slot_contracts(ZZ, manifest["slots"], first_party=False)
+    _register_locales(ZZ.name, ZZ, manifest)
+    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, manifest])
+    for item in manifest["slots"]["fixed_asset_rules"]:
+        slots.register("fixed_asset_rules", {**item, **_runtime_keys(ZZ.name, False)})
+    yield ZZ
+    slots.unregister_module(ZZ.name)
 
 
 class FA:
