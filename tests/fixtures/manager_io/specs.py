@@ -183,9 +183,7 @@ def masters(company: str = "Example Trading") -> list[Obj]:
         obj("TaxCode", "VAT", {1: "VAT 10%", 5: CUSTOM_RATE, 6: SINGLE_RATE, 4: D("10")}),
         obj("Customer", "CA", {1: "Acme Trading", 13: "C-001", 3: "accounts@acme.example.com", 2: "2 Example Road"}),
         obj("Supplier", "SA", {1: "Acme Trading", 10: "S-001", 2: "accounts@acme.example.com", 7: "2 Example Road"}),
-        # Items are valued at average cost (38: 1): the hand-worked figures are averages.
-        obj("InventoryItem", "WID", {1: "WID-1", 11: "Widget", 13: "each", 32: True, 3: D("12.50"), 31: True, 2: D("4"),
-                                     38: 1}),
+        obj("InventoryItem", "WID", {1: "WID-1", 11: "Widget", 13: "each", 32: True, 3: D("12.50"), 31: True, 2: D("4")}),
     ]
 
 
@@ -580,30 +578,33 @@ def inventory_oracle_objects() -> list[Obj]:
     """Two items, each bought and sold across physical records that straddle the 02-06
     cutover in both directions. Hand-worked figures, receipts before deliveries on a day.
 
-    Cost of sales, from what Manager owns on the invoice date, bills before invoices on a day:
-      02-02 BO1 WID 10 / 30.00, GAD 4 / 28.00; 02-05 BO2 WID 6 / 21.00: WID 16 / 51.00
-      02-05 SO1 WID 7: 51.00 x 7 / 16 = 22.31, owns 9 / 28.69; GAD 2: 28.00 x 2 / 4 = 14.00
-      02-08 BO4 WID 2 / 8.00: 11 / 36.69; SO2 WID 3: 36.69 x 3 / 11 = 10.01, owns 8 / 26.68
-      02-09 SO3 WID 1: 26.68 / 8 = 3.34
+    Cost of sales, the item's unit cost on the invoice date (WID 3.20 from 02-01 and 3.50
+    from 02-08, GAD 7.00 from 02-01), as Manager books it whatever the bills paid:
+      02-05 SO1 WID 7 @ 3.20 = 22.40; GAD 2 @ 7.00 = 14.00
+      02-08 SO2 WID 3 @ 3.50 = 10.50
+      02-09 SO3 WID 1 @ 3.50 = 3.50
+    Manager owns enough for each: WID 16 by 02-05 (BO1 10, BO2 6), 9 + BO4 2 = 11 by 02-08.
 
     Stock, each delivery leaving at its share of the cost its invoice line booked:
 
       02-03 GRO1 receives BO1's WID 10 of 10 @ 3.00 = 30.00 and GAD 3 of 4 @ 7.00 = 21.00
       02-04 GRA receives BO4's WID 2 @ 4.00 = 8.00, before BO4 is billed on 02-08
       02-05 BO2, flagged, brings in its own WID 6 @ 3.50 = 21.00: WID 18 / 59.00
-      02-05 DNA delivers SO3's WID 1, before SO3 is invoiced on 02-09: 3.34, WID 17 / 55.66
-      Opening at the 02-06 cutover: WID 17 / 55.66, GAD 3 / 21.00
+      02-05 DNA delivers SO3's WID 1, before SO3 is invoiced on 02-09: 3.50, WID 17 / 55.50
+      Opening at the 02-06 cutover: WID 17 / 55.50, GAD 3 / 21.00
       02-07 GRO2 receives BO1's last GAD 1, BO1 billed before the cutover: 28.00 - 21.00 = 7.00,
             GAD 4 / 28.00
       02-07 DNO1 delivers SO1's WID 5 of 7 and GAD 2 of 2, SO1 invoiced before the cutover:
-            WID 22.31 x 5 / 7 = 15.94, 12 / 39.72; GAD 14.00, 2 / 14.00
-      02-08 SO2, flagged, takes out its own WID 3: 10.01, WID 9 / 29.71
+            WID 22.40 x 5 / 7 = 16.00, 12 / 39.50; GAD 14.00, 2 / 14.00
+      02-08 SO2, flagged, takes out its own WID 3: 10.50, WID 9 / 29.00
       02-09 BO3 bills GAD 5 @ 8.00 with no goods receipt: moves nothing
-    On hand: WID 9 / 29.71, GAD 2 / 14.00, all at the default location."""
+    On hand: WID 9 / 29.00, GAD 2 / 14.00, all at the default location."""
     return [
         *_stocked_masters(),
-        obj("InventoryItem", "GAD", {1: "GAD-1", 11: "Gadget", 13: "each", 32: True, 3: SALE_PRICES["GAD"], 31: True,
-                                     38: 1}),
+        obj("InventoryItem", "GAD", {1: "GAD-1", 11: "Gadget", 13: "each", 32: True, 3: SALE_PRICES["GAD"], 31: True}),
+        obj("InventoryUnitCost", "UCW1", {1: date(2026, 2, 1), 2: k("WID"), 3: D("3.20")}),
+        obj("InventoryUnitCost", "UCW2", {1: date(2026, 2, 8), 2: k("WID"), 3: D("3.50")}),
+        obj("InventoryUnitCost", "UCG", {1: date(2026, 2, 1), 2: k("GAD"), 3: D("7")}),
         _bill("BO1", date(2026, 2, 2), {"WID": (D("10"), D("3")), "GAD": (D("4"), D("7"))}),
         goods_receipt("GRO1", date(2026, 2, 3), "BO1", {"WID": D("10"), "GAD": D("3")}),
         goods_receipt("GRA", date(2026, 2, 4), "BO4", {"WID": D("2")}),
@@ -695,10 +696,11 @@ def cutover_dependency_objects() -> list[Obj]:
     """A bill and an invoice each settled in full before the 01-15 cutover, whose goods move
     only after it. BILLS brings in its own 5 widgets @ 4.00 on 01-03. BILLC bills 10 @ 4.00
     on 01-05, PAYC pays it on 01-06 and GRC receives the 10 on 01-20. INVC sells 2 on 01-07,
-    at the 4.00 average of the 15 owned: cost of sales 8.00. RECC pays it on 01-08 and DNC
+    at the 4.00 unit cost set from 01-01: cost of sales 8.00. RECC pays it on 01-08 and DNC
     delivers the 2 on 01-21. Opening stock 5 / 20.00; on hand at the end 13 / 52.00."""
     return [
         *_stocked_masters(),
+        obj("InventoryUnitCost", "UCC", {1: date(2026, 1, 1), 2: k("WID"), 3: D("4")}),
         _bill("BILLS", date(2026, 1, 3), {"WID": (D("5"), D("4"))}, {64: True}),
         _bill("BILLC", date(2026, 1, 5), {"WID": (D("10"), D("4"))}),
         obj("Payment", "PAYC", {1: date(2026, 1, 6), 2: "P-C", 3: PAID_BY_SUPPLIER, 5: k("SA"), 7: k("OPB"), 11: [
@@ -716,11 +718,13 @@ def cutover_dependency_objects() -> list[Obj]:
 def batched_delivery_objects() -> list[Obj]:
     """One invoice line shipped in two batches, with dearer stock arriving between them.
     BILLS brings in its own 6 widgets @ 4.00 and BILLT 1 @ 5.00; BILLU bills 2 @ 10.00 on
-    01-02, received by GRU on 01-07. INVB sells 3 on 01-05, when 9 are owned for 49.00:
-    cost of sales 49.00 x 3 / 9 = 16.33. DNB1 delivers 1 on 01-06 (16.33 / 3 = 5.44) and
-    DNB2 the other 2 on 01-09 (16.33 - 5.44 = 10.89). On hand at the end 6 / 32.67."""
+    01-02, received by GRU on 01-07. INVB sells 3 on 01-05, when 9 are owned for 49.00, at
+    the 5.4433 unit cost set from 01-01: cost of sales 3 x 5.4433 = 16.33. DNB1 delivers 1 on
+    01-06 (16.33 / 3 = 5.44) and DNB2 the other 2 on 01-09 (16.33 - 5.44 = 10.89). On hand at
+    the end 6 / 32.67."""
     return [
         *_stocked_masters(),
+        obj("InventoryUnitCost", "UCB", {1: date(2026, 1, 1), 2: k("WID"), 3: D("5.4433")}),
         _bill("BILLU", date(2026, 1, 2), {"WID": (D("2"), D("10"))}),
         _bill("BILLS", date(2026, 1, 3), {"WID": (D("6"), D("4"))}, {64: True}),
         _bill("BILLT", date(2026, 1, 4), {"WID": (D("1"), D("5"))}, {64: True}),
@@ -737,10 +741,10 @@ OWNERSHIP_CUTOVER = date(2026, 1, 10)
 def ownership_interleaving_objects() -> list[Obj]:
     """Goods sold and delivered after a purchase is billed but before it arrives. BILL1 bills
     10 @ 4.00 on 01-02, received by GR1 on 01-03. BILL2 bills 10 @ 6.00 on 01-05; its goods
-    arrive with GR2 on 01-12. INVO sells 5 on 01-07 and DNO delivers them on 01-08. Manager
-    owns 20 widgets worth 100.00 when INVO is invoiced, so its cost of sales is 5 @ 5.00 =
-    25.00, though only the 10 @ 4.00 are physically held when they leave. On hand at the
-    end 15 / 75.00, which is the inventory account's balance: 40.00 + 60.00 - 25.00."""
+    arrive with GR2 on 01-12. INVO sells 5 on 01-07 and DNO delivers them on 01-08. No unit
+    cost is set, so Manager books INVO at no cost, though it owns 20 widgets worth 100.00
+    and 10 @ 4.00 are physically held when they leave. On hand at the end 15 / 100.00,
+    which is the inventory account's balance: 40.00 + 60.00 - 0.00."""
     return [
         *_stocked_masters(),
         _bill("BILL1", date(2026, 1, 2), {"WID": (D("10"), D("4"))}),

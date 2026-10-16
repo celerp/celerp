@@ -4,9 +4,10 @@
 
 A cutover keeps every document a later stock movement depends on. Each delivery of an
 invoice line becomes its own sold lot, so a later revert brings back exactly what that
-delivery took. An invoice's cost of sales is what Manager booked from the stock it owned
-when invoicing, whatever had physically arrived, and the goods delivered leave at that
-cost. Every figure is worked by hand in the docstring of its spec."""
+delivery took. An invoice's cost of sales is what Manager booked: the item's unit cost on
+the invoice date, or nothing when none is set, whatever had physically arrived, and the
+goods delivered leave at that cost. Every figure is worked by hand in the docstring of its
+spec."""
 
 from __future__ import annotations
 
@@ -150,36 +151,39 @@ async def test_each_delivery_of_an_invoice_line_is_its_own_sold_lot(real_engine,
 
 @pytest.mark.parametrize("decisions", [MigrationDecisions(mode=CIFMode.FULL_HISTORY),
                                        _cutover(specs.OWNERSHIP_CUTOVER)])
-def test_cost_of_sales_follows_what_manager_owned_not_what_had_arrived(tmp_path, decisions):
-    """RED before the change: with no unit cost set, INV-O books no cost of sales, and DN-O
-    takes its 5 widgets out at the 4.00 of what had physically arrived.
+def test_cost_of_sales_with_no_unit_cost_is_none_as_manager_books_it(tmp_path, decisions):
+    """RED before the change: INV-O is costed at 25.00 from the 20 widgets worth 100.00
+    Manager owns, a cost of sales Manager's books never show.
 
-    Manager owns 20 widgets worth 100.00 when INV-O is invoiced, so it books 25.00; DN-O
-    takes that out; the 15 on hand are worth 75.00, as is the inventory account."""
+    With no unit cost set Manager books INV-O at no cost; DN-O takes nothing out of the
+    value; the 15 on hand are worth 100.00, as is the inventory account."""
     manifest = _manifest(_write(tmp_path, "ownership", specs.ownership_interleaving_objects()), decisions)
     invoice = _documents(manifest)[ref("INVO")]
-    assert invoice.line_items[0].cost_basis == D("25.00")
-    assert _links(invoice) == [(ref("DNO"), "2026-01-08", 0, D("5"), D("25.00"))]
-    assert _held(manifest) == (D("15"), D("75.00"))
-    assert _reconciled(manifest) == {("inventory_quantity", WID): D("15"), ("inventory_value", WID): D("75.00"),
-                                     ("trial_balance", INVENTORY_ACCOUNT): D("75.00")}
+    assert invoice.line_items[0].cost_basis is None
+    assert _links(invoice) == [(ref("DNO"), "2026-01-08", 0, D("5"), D("0.00"))]
+    assert _held(manifest) == (D("15"), D("100.00"))
+    assert _reconciled(manifest) == {("inventory_quantity", WID): D("15"), ("inventory_value", WID): D("100.00"),
+                                     ("trial_balance", INVENTORY_ACCOUNT): D("100.00")}
 
 
 @pytest.mark.parametrize("decisions", [{"mode": "full_history"},
                                        {"mode": "cutover", "cutover_date": specs.OWNERSHIP_CUTOVER.isoformat()}])
 async def test_migrated_sale_recognizes_the_cost_manager_booked(real_engine, monkeypatch, tmp_path, decisions):
-    """RED before the change: INV-O recognizes no cost of sales and its sold lot is worth
-    the 20.00 physical average, so stock and the inventory account disagree by 5.00."""
+    """RED before the change: INV-O recognizes 25.00 and its sold lot is worth 25.00, where
+    Manager's books cost it at nothing.
+
+    The 5 widgets leave as a sold lot worth nothing; no cost of sales is recognized; the
+    15 on hand and the inventory account are both 100.00, as in Manager."""
     from celerp.services import auto_je
 
     books = await _migrated(real_engine, monkeypatch, tmp_path, decisions,
                             _write(tmp_path, "ownership", specs.ownership_interleaving_objects()))
     ((lot, item),) = (await _sold_lots(books, "INVO")).items()
-    assert (D(str(item["quantity"])), D(str(item["cost_total"])).quantize(D("0.01"))) == (D("5"), D("25.00"))
+    assert (D(str(item["quantity"])), D(str(item["cost_total"])).quantize(D("0.01"))) == (D("5"), D("0.00"))
     async with maker(real_engine)() as s:
         recognized = await auto_je.recognized_cogs(s, books.run.company_id, books.id("SalesInvoice", "INVO"))
-    assert recognized.allocations["0"]["amount"] == 25.0
-    assert await _position(books) == {"stock": (D("15"), D("75.00")), "inventory": D("75.00")}
+    assert recognized is None
+    assert await _position(books) == {"stock": (D("15"), D("100.00")), "inventory": D("100.00")}
 
 
 def test_sale_with_nothing_owned_and_no_unit_cost_refused_at_scan(tmp_path):

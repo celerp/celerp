@@ -155,29 +155,27 @@ def test_bank_clearance_date_is_disclosed(tmp_path):
     assert rows["Receipt (bank clearance date)"].coverage_class == CoverageClass.MAPPED_WITH_LOSS
 
 
-def test_manual_inventory_valuation_stops_the_item(tmp_path):
-    """RED before the change: the field stops the scan as unknown rather than naming the
-    valuation method Celerp cannot reproduce."""
-    changes = {**UPGRADE, "WID": {38: 2}}
-    rows = _rows(_source(tmp_path, _upgraded(changes)))
-    blocked = rows["InventoryItem (unsupported feature)"]
-    assert blocked.coverage_class == CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER
-    assert "valuation" in blocked.note
-
-
-@pytest.mark.parametrize(("method", "cost"), [({}, D("70")), ({38: 0}, D("70")), ({38: 1}, D("75"))])
-def test_cost_of_sales_follows_the_item_valuation_method(tmp_path, method, cost):
-    """10 bought at 4, then 10 at 6, then 15 sold. First in, first out (Manager's default,
-    stored as nothing) costs 10 x 4 + 5 x 6 = 70; average cost costs 15 x 5 = 75.
-    RED before the change: every item is costed at the average, and field 38 stops the scan."""
+@pytest.mark.parametrize("method", [{}, {38: 0}, {38: 1}, {38: 2}], ids=["default", "fifo", "average", "manual"])
+@pytest.mark.parametrize(("unit_costs", "cost"), [((), None), ((("UCF1", date(2026, 1, 1), D("4.5")),), D("67.50"))],
+                         ids=["no_unit_cost", "unit_cost"])
+def test_cost_of_sales_is_the_unit_cost_whatever_the_valuation_method(tmp_path, method, unit_costs, cost):
+    """10 bought at 4, then 10 at 6, then 15 sold. Manager books the sale at 15 x the unit
+    cost set on or before its date, 15 x 4.50 = 67.50, or at nothing when none is set,
+    whatever the item's valuation method: the method only shapes what its cost correction
+    suggests. RED before the change: first in, first out costs 70, average 75, and a manual
+    method stops the scan."""
     def valued(o):
         return {**{n: v for n, v in o.fields.items() if n != 38}, **method}
     objects = [dataclasses.replace(o, fields=valued(o)) if o.key == specs.k("WID") else o
                for o in specs._stocked_masters()]
+    objects += [specs.obj("InventoryUnitCost", label, {1: day, 2: specs.k("WID"), 3: unit})
+                for label, day, unit in unit_costs]
     objects += [specs._bill("BF1", date(2026, 1, 5), {"WID": (D("10"), D("4"))}),
                 specs._bill("BF2", date(2026, 1, 6), {"WID": (D("10"), D("6"))}),
                 specs._sale("SF1", date(2026, 1, 10), {"WID": D("15")})]
-    bundle = adapter().build_manifest([_source(tmp_path, objects, "fifo.manager")], FULL).bundle
+    source = _source(tmp_path, objects, "costed.manager")
+    assert "InventoryItem (unsupported feature)" not in _rows(source)
+    bundle = adapter().build_manifest([source], FULL).bundle
     sale = next(d for d in bundle.documents if d.source_external_id == str(specs.k("SF1")))
     assert sale.line_items[0].cost_basis == cost
 
