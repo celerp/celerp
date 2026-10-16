@@ -157,6 +157,10 @@ class FakeMigrationAPI:
         self.with_questions = True
         self.draft_view: dict | None = None   # an export set the API keeps as a draft
         self.scan_bodies: list[bytes] = []
+        self.export_requests: list[dict] = []  # newest first, as the API lists them
+        self.export_sends: list[dict] = []
+        self.export_adds: list[tuple[str, dict]] = []
+        self.export_refusal: tuple[int, str] | None = None
         self._n = 0
 
     def add_run(self, status: str, **kw) -> str:
@@ -216,6 +220,8 @@ class FakeMigrationAPI:
                 return _json(201, {"run_id": run_id})
             return _json(201, {"access_token": make_test_token("owner"),
                                "refresh_token": "refresh-new", "run_id": run_id})
+        if path.startswith("/migrations/export-requests"):
+            return self._export_request(method, path, json.loads(body) if body else {})
         m = re.fullmatch(r"/migrations/([0-9a-f-]{36})(/[a-z/-]+)?", path)
         if not m or m.group(1) not in self.runs:
             return _json(404, {"detail": "Migration not found."})
@@ -250,6 +256,37 @@ class FakeMigrationAPI:
             del self.runs[run_id]
             return _json(200, {"redirect": "/"})
         return _json(405, {"detail": "Method not allowed"})
+
+    def _export_request(self, method: str, path: str, data: dict) -> httpx.Response:
+        if method == "GET" and path == "/migrations/export-requests":
+            return _json(200, {"items": self.export_requests})
+        if self.export_refusal is not None:
+            return _json(self.export_refusal[0], {"detail": self.export_refusal[1]})
+        if method == "POST" and path == "/migrations/export-requests":
+            self.export_sends.append(data)
+            row = _export_request(client_name=data["client_name"], source=data["source"])
+            self.export_requests.insert(0, row)
+            return _json(201, {k: row[k] for k in ("id", "link_id", "status")})
+        m = re.fullmatch(r"/migrations/export-requests/([0-9a-f-]{36})/(add|revoke)", path)
+        row = next((r for r in self.export_requests if m and r["id"] == m.group(1)), None)
+        if row is None:
+            return _json(404, {"detail": "Export request not found."})
+        if m.group(2) == "revoke":
+            row.update(status="revoked", readable=False)
+            return _json(200, {"status": "revoked"})
+        self.export_adds.append((row["id"], data))
+        self._n += 1
+        return _json(200, {"draft_token": f"drafttoken{self._n:04d}secretvalue", "checklist": self.draft_view})
+
+
+def _export_request(**kw) -> dict:
+    """One export request as the API lists it."""
+    return {"id": str(uuid.uuid4()), "link_id": str(uuid.uuid4()), "operation_id": str(uuid.uuid4()),
+            "firm_name": "Example Accounting", "client_name": "Client Ltd", "source": "xero",
+            "items": [{"label": "General Ledger", "menu": "Accounting > Reports > General Ledger > Export",
+                       "range": "From the first transaction to the last"}],
+            "status": "sent", "created_at": "2026-10-17T08:00:00+00:00",
+            "expires_at": "2026-10-31T08:00:00+00:00", "files": [], "stored": True, "readable": True, **kw}
 
 
 class Router(httpx.AsyncBaseTransport):
@@ -763,6 +800,102 @@ async def test_an_expired_draft_is_dropped_with_the_reason(ui, router, fake_api,
     assert r.status_code == 200 and "This scan has expired" in _page(r)
     assert _cleared(r, DRAFT_COOKIE) and "X-Export-Draft-Kept" not in r.headers
     assert "Files to export from Xero" in _page(r)    # the blank list stays to start again
+
+
+# ---------------------------------------------------------------------------
+# Asking a client for their export files
+# ---------------------------------------------------------------------------
+
+REQUESTS = "/setup/new-company/migrate/requests"
+
+
+async def test_a_firm_emails_a_client_the_checklist_and_adds_what_arrives(ui, router, fake_api, monkeypatch):
+    blank = _export_set_sources(monkeypatch)
+    router.overrides[("GET", "/company-backups/sender")] = _respond(
+        200, {"firm_name": "Example Accounting", "reply_to": "firm@example.com"})
+    _owner(ui)
+    page = _page(await ui.get("/setup/new-company/migrate"))
+    section = re.search(r'<div[^>]*id="export-requests"[^>]*>', page).group(0)
+    assert _attr(section, "hx-get") == REQUESTS and _attr(section, "hx-trigger") == "load"
+    assert 'id="export-requests"' not in _page(await ui.get("/setup/migrate"))   # no firm before setup
+
+    r = await ui.get(REQUESTS)
+    panel = _page(r)
+    assert panel.startswith('<div id="export-requests"')
+    assert "Ask a client for their export files" in panel and "only this installation can read" in panel
+    assert "No export requests yet." in panel
+    assert _attr(_inputs(panel, "firm_name")[0], "value") == "Example Accounting"
+    assert _attr(_inputs(panel, "reply_to")[0], "value") == "firm@example.com"
+    operation = _attr(_inputs(panel, "operation_id")[0], "value")
+    assert str(uuid.UUID(operation)) == operation
+    # Only a source with a list of files to export can be asked for.
+    assert re.findall(r'<option value="([^"]*)"', panel) == ["xero"]
+    form = re.search(r'<form[^>]*id="export-request-form"[^>]*>', panel).group(0)
+    assert _attr(form, "hx-post") == REQUESTS and _attr(form, "hx-target") == "#export-requests"
+
+    typed = {"operation_id": operation, "client_name": "Client Ltd", "recipient": "client@example.com",
+             "source": "xero", "firm_name": "Example Accounting", "reply_to": "firm@example.com"}
+    fake_api.export_refusal = (502, "The email could not be sent. Try again")
+    failed = _page(await ui.post(REQUESTS, data=typed))
+    assert "The email could not be sent" in failed
+    assert _attr(_inputs(failed, "operation_id")[0], "value") == operation        # a retry is the same send
+    assert _attr(_inputs(failed, "client_name")[0], "value") == "Client Ltd"
+    fake_api.export_refusal = (428, "Sign in to a free Celerp account to email an export checklist.")
+    needed = _page(await ui.post(REQUESTS, data=typed))
+    assert 'id="celerp-account-panel"' in needed and "export-send" in needed
+    fake_api.export_refusal = None
+
+    sent = _page(await ui.post(REQUESTS, data=typed))
+    assert fake_api.export_sends == [typed]
+    assert "Export checklist sent to client@example.com." in sent
+    assert _attr(_inputs(sent, "operation_id")[0], "value") != operation          # the next send is new
+    assert "Waiting for exports" in sent and "Client Ltd" in sent and "No export requests yet." not in sent
+
+    older = _export_request(client_name="Older Client", created_at="2026-10-01T08:00:00+00:00")
+    arrived = _export_request(client_name="Second Client",
+                              files=[{"id": str(uuid.uuid4()), "name": "Contacts.csv", "size": 20,
+                                      "received_at": "2026-10-17T09:00:00+00:00"}])
+    fake_api.export_requests = [arrived, *fake_api.export_requests, older]
+    panel = _page(await ui.get(REQUESTS))
+    assert panel.index("Second Client") < panel.index("Client Ltd") < panel.index("Older Client")   # newest first
+    assert "Contacts.csv" in panel and "cannot be undone" in panel
+    add = f"{REQUESTS}/{arrived['id']}/add"
+    assert re.search(rf'<form[^>]*action="{re.escape(add)}"', panel)
+    assert f'action="{REQUESTS}/{older["id"]}/add"' not in panel                  # nothing arrived to add
+
+    fake_api.draft_view = {**blank, "uploads": [{"name": "Contacts.csv", "stored_name": "artifact-1"}]}
+    ui.cookies.set(DRAFT_COOKIE, "drafttoken0001secretvalue", path="/setup/new-company/migrate")
+    r = await ui.post(add)
+    assert r.status_code == 303 and r.headers["location"] == "/setup/new-company/migrate?source=xero"
+    assert fake_api.export_adds == [(arrived["id"], {"draft_token": "drafttoken0001secretvalue"})]
+    token = _cookie_value(r, DRAFT_COOKIE)
+    ui.cookies.set(DRAFT_COOKIE, token, path="/setup/new-company/migrate")
+    page = _page(await ui.get("/setup/new-company/migrate?source=xero"))
+    assert "Contacts.csv" in page and '"remove": "artifact-1"' in page        # the files are in the upload
+    assert _form_field(fake_api.scan_bodies[-1], "draft") == token
+
+    revoked = _page(await ui.post(f"{REQUESTS}/{older['id']}/revoke"))
+    assert revoked.startswith('<div id="export-requests"') and older["status"] == "revoked"
+    assert "Revoked" in revoked
+
+
+async def test_only_the_owner_asks_for_exports_and_failures_are_said(ui, router, fake_api, monkeypatch):
+    _export_set_sources(monkeypatch)
+    for role in ("admin", "viewer"):
+        _owner(ui, role)
+        router.calls.clear()
+        for r in (await ui.get(REQUESTS), await ui.post(REQUESTS, data={"client_name": "x"})):
+            assert "Only the company owner can move a company into Celerp." in _page(r), role
+        assert router.migration_calls() == [], role
+
+    _owner(ui)
+    fake_api.export_requests = [_export_request(files=[{"id": str(uuid.uuid4()), "name": "Contacts.csv",
+                                                        "size": 20, "received_at": "2026-10-17T09:00:00+00:00"}])]
+    fake_api.export_refusal = (409, "This installation does not hold the key for these files.")
+    r = await ui.post(f"{REQUESTS}/{fake_api.export_requests[0]['id']}/add")
+    assert r.status_code == 200 and "does not hold the key" in _page(r)
+    router.overrides[("GET", "/migrations/export-requests")] = _respond(502, {"detail": "Cloud unreachable"})
+    assert "Cloud unreachable" in _page(await ui.get(REQUESTS))
 
 
 # ---------------------------------------------------------------------------
