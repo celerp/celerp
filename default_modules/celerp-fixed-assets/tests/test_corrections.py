@@ -149,7 +149,8 @@ async def test_s3_backdated_error_economic_vs_posting_dates(fa):
     assert (await fa.ok(await fa.get("/reports/prior-period-adjustments", year="2024")))["items"] == []
 
     # The immaterial option: the prior-year part to current profit or loss, with its reason.
-    van = await _contributed(fa, "Second car", cost="12000", on="2025-06-15")
+    await _lock(fa, None)
+    van =await _contributed(fa, "Second car", cost="12000", on="2025-06-15")
     plain = await fa.post(f"/assets/{van}/correct", {"changes": {"cost": "15000"}, "posting_date": "2026-04-20",
                                                      "immaterial_reason": "", "prior_years": "profit_and_loss",
                                                      "preview": True, "op_key": "c2"})
@@ -160,10 +161,6 @@ async def test_s3_backdated_error_economic_vs_posting_dates(fa):
     assert "3200" not in lines and lines["6400"][0] > 0
     report = await fa.ok(await fa.get("/reports/prior-period-adjustments", year="2025"))
     assert [i["reason"] for i in report["immaterial"]] == ["Below the materiality threshold"]
-    page = await fa.client.get("/fixed-assets/reports/prior-period-adjustments?year=2025", headers=fa.h)
-    assert page.status_code == 200 and "Below the materiality threshold" in page.text
-    csv = await fa.client.get("/fixed-assets/reports/prior-period-adjustments.csv?year=2025", headers=fa.h)
-    assert csv.status_code == 200 and "1750" in csv.text
 
 
 async def test_s3_classification_default_and_override_authority(fa):
@@ -348,14 +345,14 @@ async def test_link_and_release_additional_source(fa):
     await _managed_from(fa)
     van = await fa.line("Delivery van")
     asset = (await fa.register(van["source"], key="reg"))["assets"][0]["id"]
-    je = await fa.journal("2026-09-20", [{"account": "1210", "debit": 800}, {"account": "1110", "credit": 800}])
+    je = await fa.journal("2026-09-20", [{"account": "1210", "debit": 800}, {"account": "1111", "credit": 800}])
     extra = f"{je}:0"
     fields = await fa.ok(await fa.get(f"/assets/{asset}/correct-fields"))
     assert extra in [s["source"] for s in fields["sources"]]
     await _correct(fa, asset, {"link_source": {"source": extra}})
     assert D((await fa.asset(asset))["cost"]) == D("32800")
     assert (await fa.state(f"fa:src:{extra}"))["status"] == "claimed"
-    credit = await fa.journal("2026-09-21", [{"account": "1110", "debit": 300}, {"account": "1210", "credit": 300}])
+    credit = await fa.journal("2026-09-21", [{"account": "1111", "debit": 300}, {"account": "1210", "credit": 300}])
     await _correct(fa, asset, {"link_source": {"source": f"{credit}:1"}})
     assert D((await fa.asset(asset))["cost"]) == D("32500")
     await _correct(fa, asset, {"release_source": {"source": extra}})

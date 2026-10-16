@@ -527,7 +527,7 @@ async def test_invariant_projection_rebuilds_from_movements(fa):
 async def test_asset_history_query_uses_index(fa):
     from sqlalchemy import text
 
-    from celerp_fixed_assets.routes import movements_query
+    from celerp_fixed_assets.operations import movements_query
 
     car = await _contributed(fa)
     cid = fa.auth["company_id"]

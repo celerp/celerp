@@ -239,13 +239,8 @@ def method_params(method: str, params) -> dict:
     return out
 
 
-async def _check_class(session, company_id, data: dict) -> None:
-    from celerp.services.journal_accounts import require_destinations
-
-    if not str(data.get("name") or "").strip():
-        raise unprocessable("A class needs a name.")
-    if data.get("kind") not in KINDS:
-        raise unprocessable("A class is tangible or intangible.")
+def check_policy(data: dict) -> None:
+    """Check the policy fields of a class or an asset, normalising its method settings."""
     if data.get("method") not in METHODS:
         raise unprocessable("Choose a depreciation method.")
     if data.get("convention") not in (None, *CONVENTIONS):
@@ -259,6 +254,16 @@ async def _check_class(session, company_id, data: dict) -> None:
     residual = Decimal(_money(data.get("residual_percent"), "Residual percent") or 0)
     if residual >= 100:
         raise unprocessable("The residual percent is below 100.")
+
+
+async def _check_class(session, company_id, data: dict) -> None:
+    from celerp.services.journal_accounts import require_destinations
+
+    if not str(data.get("name") or "").strip():
+        raise unprocessable("A class needs a name.")
+    if data.get("kind") not in KINDS:
+        raise unprocessable("A class is tangible or intangible.")
+    check_policy(data)
     await require_destinations(session, company_id, {
         data[k] for k in ("asset_account", "accumulated_depreciation_account", "depreciation_account") if data.get(k)})
 

@@ -19,14 +19,14 @@ from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import (
     assert_role_permission, get_current_company_settings, require_permission, role_has_permission)
-from celerp_fixed_assets import operations, runs, setup, sources
+from celerp_fixed_assets import corrections, operations, runs, setup, sources
 from celerp_fixed_assets.events import register_events
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
 
 # Journal operation types this module posts, and the permission each needs.
 OPERATION_TYPES = {name: ("manage_accounting",)
-                   for name in ("registration", "acquisition", "expense", "maintenance", "undo", "run")}
+                   for name in ("registration", "acquisition", "expense", "maintenance", "undo", "run", "correction")}
 
 _MONEY_FIELDS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "nbv")
 _VIEW = [require_permission("view_fixed_assets")]
@@ -207,14 +207,6 @@ async def financial_details(asset_id: str, body: dict = Body(...), company_id=De
     return await _write(session, operations.add_financial_details, company_id, user.id, asset_id, body)
 
 
-def movements_query(company_id, asset_id: str):
-    """An asset's movements, read through the index on the asset a projection belongs to."""
-    from celerp.models.projections import ASSET_ID
-
-    return select(Projection.entity_id, Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "fa_movement", ASSET_ID == asset_id)
-
-
 @router.get("/assets/{asset_id}/movements", dependencies=_VIEW)
 async def list_movements(asset_id: str, limit: int = 50, offset: int = 0,
                          company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
@@ -223,8 +215,7 @@ async def list_movements(asset_id: str, limit: int = 50, offset: int = 0,
     if limit < 1 or limit > 500 or offset < 0:
         raise setup.unprocessable("Choose a page of 1 to 500 movements.")
     await _asset(session, company_id, asset_id)
-    rows = (await session.execute(movements_query(company_id, asset_id))).all()
-    items = sorted(({"id": eid, **s} for eid, s in rows),
+    items = sorted(await operations.asset_movements(session, company_id, asset_id),
                    key=lambda m: (m.get("posting_date") or "", int(m["id"].rsplit(":", 1)[1])), reverse=True)
     if not _shows_money(company_settings, role):
         items = [{**m, "amounts": None, "contributions": None} for m in items]
@@ -283,6 +274,69 @@ async def skip_month(asset_id: str, body: dict = Body(...), company_id=Depends(g
 async def withdraw_skip(asset_id: str, month: str, company_id=Depends(get_current_company_id),
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, runs.withdraw_skip, company_id, user.id, asset_id, month)
+
+
+# ── Corrections ──────────────────────────────────────────────────────────────
+
+
+@router.get("/assets/{asset_id}/correct-fields", dependencies=_VIEW)
+async def correct_fields(asset_id: str, company_id=Depends(get_current_company_id),
+                         session: AsyncSession = Depends(get_session)) -> dict:
+    return await corrections.fields(session, company_id, asset_id)
+
+
+@router.post("/assets/{asset_id}/correct", dependencies=_ACCOUNTING)
+async def correct(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                  user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, corrections.correct, company_id, user.id, asset_id, body)
+
+
+@router.post("/assets/{asset_id}/corrections", dependencies=[require_permission("manage_fixed_assets")])
+async def request_correction(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                             user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, corrections.request, company_id, user.id, asset_id, body)
+
+
+@router.get("/corrections", dependencies=_VIEW)
+async def list_corrections(asset_id: str | None = None, company_id=Depends(get_current_company_id),
+                           session: AsyncSession = Depends(get_session)) -> dict:
+    return {"items": await corrections.records(session, company_id, asset_id)}
+
+
+@router.get("/corrections/{correction_id}", dependencies=_VIEW)
+async def get_correction(correction_id: str, company_id=Depends(get_current_company_id),
+                         session: AsyncSession = Depends(get_session)) -> dict:
+    return {"id": correction_id, **await corrections.record(session, company_id, correction_id)}
+
+
+@router.post("/corrections/{correction_id}/apply", dependencies=_ACCOUNTING)
+async def apply_correction(correction_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, corrections.apply_request, company_id, user.id, correction_id, body)
+
+
+@router.post("/corrections/{correction_id}/withdraw", dependencies=[require_permission("manage_fixed_assets")])
+async def withdraw_correction(correction_id: str, company_id=Depends(get_current_company_id),
+                              user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, corrections.withdraw, company_id, user.id, correction_id)
+
+
+@router.post("/corrections/{correction_id}/undo", dependencies=_ACCOUNTING)
+async def undo_correction(correction_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                          user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, corrections.undo, company_id, user.id, correction_id, body)
+
+
+@router.post("/classes/{class_id}/apply-to-assets", dependencies=_ACCOUNTING)
+async def apply_to_assets(class_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                          user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, corrections.apply_to_assets, company_id, user.id, class_id, body)
+
+
+@router.get("/reports/prior-period-adjustments", dependencies=[require_permission("view_financial_reports")])
+async def prior_period_adjustments(year: int, company_id=Depends(get_current_company_id),
+                                   session: AsyncSession = Depends(get_session)) -> dict:
+    return await corrections.prior_period_report(session, company_id, year)
 
 
 def setup_api_routes(app) -> None:

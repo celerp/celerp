@@ -91,6 +91,8 @@ async def _manual_lines(session, company_id, asset_accounts: set[str], accum_acc
                 kind, amount = "acquisition", debit
             elif credit > 0 and account in accum_accounts:
                 kind, amount = "depreciation", credit
+            elif credit > 0 and account in asset_accounts:
+                kind, amount = "reduction", credit
             else:
                 continue
             out.append({
@@ -135,9 +137,11 @@ async def _claims(session, company_id, sources: list[str]) -> dict[str, dict]:
 
 
 async def intake(session, company_id) -> list[dict]:
-    """The lines waiting to be registered: unclaimed and after the cutover, newest first."""
+    """The lines waiting to be registered: unclaimed and after the cutover, newest first. A
+    line reducing an asset account is not registered; it is linked to its asset by Correct."""
     return [{k: v for k, v in f.items() if k not in ("claim", "before_cutover")}
-            for f in await lines(session, company_id) if not f["claim"] and not f["before_cutover"]]
+            for f in await lines(session, company_id)
+            if not f["claim"] and not f["before_cutover"] and f["kind"] != "reduction"]
 
 
 async def line(session, company_id, source: str) -> dict:

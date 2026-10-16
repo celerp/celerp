@@ -61,10 +61,16 @@ class JournalLine:
 @dataclass(frozen=True)
 class JournalSource:
     """The module record a journal belongs to, the in-app page showing it, and the
-    label the journal keeps for it (read even while the module is off)."""
+    label the journal keeps for it (read even while the module is off). ``tags`` are
+    named markers a report reads back, e.g. the prior years a correction restates."""
     entity_id: str
     href: str
     label: str
+    tags: dict | None = None
+
+    def fields(self) -> dict:
+        """The source's fields; an untagged source carries no tags key."""
+        return {k: v for k, v in asdict(self).items() if v is not None}
 
 
 @dataclass(frozen=True)
@@ -239,7 +245,7 @@ async def _check_accounts(session, company_id, module: str, lines: list[JournalL
 
 
 def _intent_hash(operation: str, date: str, lines: list[JournalLine], source: JournalSource, intent: dict) -> str:
-    body = {"operation": operation, "date": date, "source": asdict(source), "intent": intent,
+    body = {"operation": operation, "date": date, "source": source.fields(), "intent": intent,
             "lines": [{**asdict(ln), "debit": str(_amount(ln.debit)), "credit": str(_amount(ln.credit))}
                       for ln in lines]}
     return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
@@ -278,7 +284,7 @@ async def post_journal(session, *, company_id, user_id, module: str, key: str, o
             session, company_id=company_id, user_id=user_id, je_id=je_id,
             idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p", memo=memo, entries=entries,
             metadata_={"module": module, "operation": operation}, ts=date,
-            extra={"source": {"module": module, **asdict(source)}, "intent_hash": intent_hash})
+            extra={"source": {"module": module, **source.fields()}, "intent_hash": intent_hash})
     except UnbalancedJournalEntry as exc:
         raise _refuse(422, "module_journal.unbalanced",
                       "The journal does not balance once rounded to the company currency.") from exc

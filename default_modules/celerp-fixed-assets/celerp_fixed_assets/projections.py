@@ -44,6 +44,12 @@ def apply_fixed_asset_event(state: dict, event_type: str, data: dict) -> dict:
     if event_type in ("fa.class.created", "fa.movement.recorded", "fa.maint.recorded", "fa.op.recorded",
                       "fa.run.prepared", "fa.run.posted"):
         return deepcopy(data)
+    if event_type == "fa.correction.requested":
+        return {**deepcopy(data), "state": "requested"}
+    if event_type == "fa.correction.applied":
+        return {**current, **deepcopy(data), "state": "applied"}
+    if event_type in ("fa.correction.withdrawn", "fa.correction.undone"):
+        return {**current, "state": event_type.rsplit(".", 1)[1], "closed_by_op": data.get("op_key")}
     if event_type == "fa.run.reversed":
         return {**current, "status": "reversed", "reversed_by_op": data["op_key"]}
     if event_type == "fa.reading.recorded":

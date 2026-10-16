@@ -222,3 +222,107 @@ async def test_settings_page_saves_the_run_day(owner_ui):
     assert (await owner_ui.api.get(f"{API}/setup")).json()["settings"]["run_day"] == 5
     bad = await owner_ui.post("/settings/fixed-assets", data={"run_day": "31"})
     assert "error" in bad.headers.get("HX-Trigger", "")
+
+
+async def _car(ui, name: str) -> str:
+    vehicles = next(c for c in (await ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == "Vehicles")
+    href = await _review_and_confirm(ui, "add-asset", {
+        "kind": "contributed", "name": name, "class_id": vehicles["id"], "available_date": "2025-06-15",
+        "cost": "12000", "credit_account": "3100"})
+    return href.rsplit("/", 1)[1]
+
+
+async def test_correct_an_asset_then_the_corrections_pages_and_report(owner_ui):
+    await _demo(owner_ui)
+    await owner_ui.post("/fixed-assets/start")
+    r = await owner_ui.api.patch(f"{API}/settings", json={"first_managed_period": "2025-01-01"})
+    assert r.status_code == 200, r.text
+    empty = await owner_ui.get("/fixed-assets/corrections")
+    assert empty.status_code == 200 and t("fixed_assets.corrections_empty") in empty.text
+    car = await _car(owner_ui, "Delivery car")
+    await _review_and_confirm(owner_ui, "run", {"month": "2025-12"})
+    await _review_and_confirm(owner_ui, "run", {"month": "2026-03"})
+
+    for field in ("settings", "cost", "available_date", "opening_values", "maintenance", "link_source"):
+        form = await owner_ui.get(f"/fixed-assets/assets/{car}/correct", params={"field": field})
+        assert form.status_code == 200 and t("fixed_assets.request_title") in form.text, field
+        assert "fixed_assets." not in form.text, field
+
+    # An error: restates 2025 and posts the difference on the chosen day.
+    review = await owner_ui.post("/fixed-assets/op/correct/review", data={
+        "asset_id": car, "field": "cost", "cost": "15000", "posting_date": "2026-04-20",
+        "prior_years": "retained_earnings", "idempotency_key": str(uuid.uuid4())})
+    assert t("fixed_assets.classification.error") in review.text and t("fixed_assets.prior_years_title") in review.text
+    assert "1,750.00" in review.text and "fixed_assets." not in review.text
+    href = await _review_and_confirm(owner_ui, "correct", {
+        "asset_id": car, "field": "cost", "cost": "15000", "posting_date": "2026-04-20",
+        "prior_years": "retained_earnings"})
+    assert href.startswith("/fixed-assets/corrections/")
+    first = href.rsplit("/", 1)[1]
+    detail = await owner_ui.get(href)
+    assert detail.status_code == 200 and t("fixed_assets.undo_correction") in detail.text
+    assert "fixed_assets." not in detail.text
+
+    # A change in estimate from the settings tab, from the month after the last run.
+    policy = (await owner_ui.api.get(f"{API}/assets/{car}")).json()["policy"]
+    was = {f"was:{k}": "" if policy.get(k) is None else str(policy[k])
+           for k in ("method", "life_months", "residual_percent", "convention")}
+    estimate = {"asset_id": car, "field": "settings", **was, "was:params": "{}", "method": policy["method"],
+                "life_months": str(int(policy["life_months"]) + 12), "residual_percent": was["was:residual_percent"],
+                "convention": policy["convention"]}
+    review = await owner_ui.post("/fixed-assets/op/correct/review", data={**estimate,
+                                                                          "idempotency_key": str(uuid.uuid4())})
+    assert t("fixed_assets.classification.estimate") in review.text and t("fixed_assets.future_title") in review.text
+    await _review_and_confirm(owner_ui, "correct", estimate)
+    assert (await owner_ui.api.get(f"{API}/assets/{car}")).json()["policy"]["life_months"] == \
+        int(policy["life_months"]) + 12
+
+    asset = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert t("fixed_assets.corrections_title") in asset.text and f"/fixed-assets/corrections/{first}" in asset.text
+    listing = await owner_ui.get("/fixed-assets/corrections")
+    assert t("fixed_assets.correction_state.applied") in listing.text and "fixed_assets." not in listing.text
+    assert listing.text.index(t("fixed_assets.classification.estimate")) < \
+        listing.text.index(f"/fixed-assets/corrections/{first}"), "newest first"
+
+    # The immaterial option: the earlier years' effect through this year's profit and loss.
+    second = await _car(owner_ui, "Second car")
+    immaterial = await _review_and_confirm(owner_ui, "correct", {
+        "asset_id": second, "field": "cost", "cost": "15000", "posting_date": "2026-04-20",
+        "prior_years": "profit_and_loss", "immaterial_reason": "Below the materiality threshold"})
+    report = await owner_ui.get("/fixed-assets/reports/prior-period-adjustments", params={"year": "2025"})
+    assert report.status_code == 200 and t("fixed_assets.ppa_title_year", year=2025) in report.text
+    assert "Below the materiality threshold" in report.text and "1,750.00" in report.text
+    assert "fixed_assets." not in report.text
+    csv_file = await owner_ui.get("/fixed-assets/reports/prior-period-adjustments.csv", params={"year": "2025"})
+    assert csv_file.status_code == 200 and csv_file.headers["content-type"].startswith("text/csv")
+    assert "1750" in csv_file.text and "Below the materiality threshold" in csv_file.text
+    none = await owner_ui.get("/fixed-assets/reports/prior-period-adjustments", params={"year": "2024"})
+    assert t("fixed_assets.ppa_empty", year=2024) in none.text
+
+    # Undo the latest correction on an asset: its cost goes back. An earlier one with a later correction
+    # on the same asset stays put, so the history is unwound newest first.
+    assert await _review_and_confirm(owner_ui, "undo-correction", {
+        "correction_id": immaterial.rsplit("/", 1)[1]}) == immaterial
+    assert t("fixed_assets.correction_state.undone") in (await owner_ui.get(immaterial)).text
+    assert float((await owner_ui.api.get(f"{API}/assets/{second}")).json()["cost"]) == 12000
+    blocked = await owner_ui.post("/fixed-assets/op/undo-correction/review", data={
+        "correction_id": first, "idempotency_key": str(uuid.uuid4())})
+    assert t("fixed_assets.confirm") not in blocked.text and "FA-0001" in blocked.text
+
+    # A request waits for someone to apply it; withdrawing discards it.
+    asked = await owner_ui.post(f"/fixed-assets/assets/{second}/request-correction", data={
+        "field": "available_date", "available_date": "2025-07-01", "reason": "Delivered in July"})
+    assert asked.headers.get("HX-Redirect", "").startswith("/fixed-assets/corrections/"), asked.text
+    waiting = await owner_ui.get(asked.headers["HX-Redirect"])
+    assert t("fixed_assets.apply_correction") in waiting.text and t("fixed_assets.withdraw_correction") in waiting.text
+    assert "fixed_assets." not in waiting.text
+    assert t("fixed_assets.notice.corrections.body", count=1) in (await owner_ui.get("/fixed-assets/corrections")).text
+    withdrawn = await owner_ui.post(asked.headers["HX-Redirect"] + "/withdraw")
+    assert withdrawn.headers.get("HX-Redirect") == asked.headers["HX-Redirect"], withdrawn.text
+    assert t("fixed_assets.correction_closed") in (await owner_ui.get(asked.headers["HX-Redirect"])).text
+
+    # Applying a class's settings to its assets has its own page.
+    vehicles = next(c for c in (await owner_ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == "Vehicles")
+    apply = await owner_ui.get(f"/fixed-assets/classes/{vehicles['id']}/apply")
+    assert apply.status_code == 200 and t("fixed_assets.apply_to_assets_hint", name="Vehicles") in apply.text
+    assert "fixed_assets." not in apply.text

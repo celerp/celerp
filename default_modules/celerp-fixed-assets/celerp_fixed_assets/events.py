@@ -114,6 +114,23 @@ class AssetException(_Event):
     exception: dict | None
 
 
+class CorrectionRequested(_Event):
+    asset_id: str
+    changes: dict
+    classification: str
+    requested_by: str
+
+
+class CorrectionApplied(_Event):
+    asset_id: str
+    classification: str
+    op_key: str
+
+
+class CorrectionClosed(_Event):
+    op_key: str | None = None
+
+
 EVENTS: dict[str, type[BaseModel]] = {
     "fa.class.created": ClassCreated,
     "fa.class.updated": Changes,
@@ -136,6 +153,10 @@ EVENTS: dict[str, type[BaseModel]] = {
     "fa.skip.recorded": SkipRecorded,
     "fa.skip.withdrawn": SkipWithdrawn,
     "fa.asset.exception": AssetException,
+    "fa.correction.requested": CorrectionRequested,
+    "fa.correction.applied": CorrectionApplied,
+    "fa.correction.withdrawn": CorrectionClosed,
+    "fa.correction.undone": CorrectionClosed,
 }
 
 

@@ -93,6 +93,20 @@ async def _entities(session, company_id, entity_type: str) -> list[tuple[str, di
         Projection.company_id == company_id, Projection.entity_type == entity_type))).all())
 
 
+def movements_query(company_id, asset_id: str):
+    """An asset's movements, read through the index on the asset a projection belongs to."""
+    from celerp.models.projections import ASSET_ID
+
+    return select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "fa_movement", ASSET_ID == asset_id)
+
+
+async def asset_movements(session, company_id, asset_id: str) -> list[dict]:
+    """An asset's movements in the order they were recorded."""
+    rows = (await session.execute(movements_query(company_id, asset_id))).all()
+    return sorted(({"id": eid, **s} for eid, s in rows), key=lambda m: int(m["id"].rsplit(":", 1)[1]))
+
+
 async def _next_numbers(session, company_id, count: int) -> list[str]:
     """The next ``count`` asset numbers. Numbers are never reused, undone assets included."""
     used = [int(s["number"][3:]) for _, s in await _entities(session, company_id, "fa_asset")
@@ -107,14 +121,16 @@ def _journal_view(lines) -> dict:
 
 
 async def _post(session, company_id, user_id, *, key: str, operation: str, day: str, memo: str, lines,
-                source_id: str, href: str, label: str, op_key: str, intent: dict | None = None) -> str:
+                source_id: str, href: str, label: str, op_key: str, intent: dict | None = None,
+                tags: dict | None = None) -> str:
     """Post one module journal. Its intent is the operation key unless ``intent`` names
-    what the journal is for (a run month's journal is the same whichever operation posts it)."""
+    what the journal is for (a run month's journal is the same whichever operation posts it).
+    ``tags`` are the markers a report reads back from the journal's source."""
     from celerp.services.module_journals import JournalSource, post_journal
 
     posted = await post_journal(session, company_id=company_id, user_id=user_id, module=MODULE, key=key,
                                 operation=operation, date=day, memo=memo, lines=lines,
-                                source=JournalSource(source_id, href, label), intent=intent or {"op_key": op_key})
+                                source=JournalSource(source_id, href, label, tags), intent=intent or {"op_key": op_key})
     return posted.je_id
 
 
@@ -148,7 +164,7 @@ async def _claim(session, company_id, user_id, line: dict, *, allocation: str, o
     event = await _emit(session, company_id, user_id, claim, "fa_src", "fa.src.claimed", {
         "source": line["source"], "allocation": allocation, "generation": line["generation"], "op_key": op_key,
         "description": line["description"], "amount": line["amount"], "journal_id": line["journal_id"],
-        **extra}, key=f"{claim}:claim:{line['generation']}")
+        "line_index": line["line_index"], **extra}, key=f"{claim}:claim:{line['generation']}")
     if getattr(event, "was_deduped", False):
         raise conflict(f"{line['description']} was already registered.")
 
@@ -232,6 +248,9 @@ async def register(session, company_id, user_id, body: dict) -> dict:
 
     async def plan(fa):
         line = await _open_line(session, company_id, body.get("source"))
+        if line["kind"] == "reduction":
+            raise setup.unprocessable("This line reduces an asset account. Use Correct on the asset it belongs "
+                                      "to and link the line there.")
         if line["kind"] != "acquisition":
             raise setup.unprocessable("This line records depreciation. Link it to the assets it belongs to.")
         mode = body.get("mode") or "separate"

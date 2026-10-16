@@ -135,8 +135,13 @@ def _first(movements: list[dict]) -> int | None:
     """The month index the asset entered service (the month after the cutover for an opening asset)."""
     starts = [month_index(date.fromisoformat(m["posting_date"])) + 1 for m in movements
               if m.get("operation") == "opening"]
-    starts += [month_index(date.fromisoformat(m["effective_date"])) for m in movements
-               if m.get("operation") not in OPENING_OPERATIONS and _dec((m.get("amounts") or {}).get("cost"))]
+    # Net cost per day, so a correction moving the available date leaves no start behind.
+    by_day: dict[str, Decimal] = {}
+    for m in movements:
+        if m.get("operation") not in OPENING_OPERATIONS:
+            day = m["effective_date"]
+            by_day[day] = by_day.get(day, Decimal(0)) + _dec((m.get("amounts") or {}).get("cost"))
+    starts += [month_index(date.fromisoformat(day)) for day, cost in by_day.items() if cost]
     return min(starts, default=None)
 
 
@@ -269,8 +274,15 @@ class Charge:
             self.held_from, self.action = min(found)
 
     async def _void_source(self, session, company_id) -> bool:
-        journals = {c["journal_id"] for m in self.movements for c in m.get("contributions") or []
-                    if not str(c.get("journal_id")).startswith(_JOURNAL)}
+        """Whether the asset still holds part of a voided journal's line. A source replaced
+        by Correct nets to nothing and no longer holds it."""
+        net: dict[tuple, Decimal] = {}
+        for m in self.movements:
+            for c in m.get("contributions") or []:
+                if not str(c.get("journal_id")).startswith(_JOURNAL):
+                    key = (c["journal_id"], c.get("line_index"))
+                    net[key] = net.get(key, Decimal(0)) + _dec(c.get("amount"))
+        journals = {je for (je, _), amount in net.items() if amount}
         for je in journals:
             state = await _state(session, company_id, je)
             if state is not None and state.get("status") == "void":
