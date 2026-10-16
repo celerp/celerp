@@ -73,3 +73,19 @@ async def test_untraceable_disposal_refuses_cost_correction(client, session, aut
     edit = await _set_cost(client, auth, lot, 50.0)
     assert edit.status_code == 200, edit.text
     assert not await _journals(session, auth, f"je:auto:{writeoff}:cost:")
+
+
+async def test_writeoff_refusal_explains_next_step(client, session, auth):
+    """A lot that left stock without a write-off is refused in plain words with what to do instead."""
+    from test_consignment_in_sale import _consign
+
+    con, lot = await _consign(client, session, auth, qty=2, cost_price=4.0)
+    back = await client.post(f"/docs/{con}/return-items", headers=auth["headers"],
+                             json={"items": [{"item_id": lot, "quantity_returned": 2}]})
+    assert back.status_code == 200, back.text
+    assert (await _state(session, auth, lot))["status"] == "disposed"
+    edit = await _set_cost(client, auth, lot, 50.0)
+    assert edit.status_code == 409, edit.text
+    detail = edit.json()["detail"]
+    assert "write-off" in detail and "journal entry" in detail, detail
+    assert "verifiably" not in detail and "restated" not in detail, detail
