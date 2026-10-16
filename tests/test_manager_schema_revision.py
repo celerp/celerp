@@ -187,7 +187,7 @@ async def test_manager_missing_or_unknown_revision_refused(client, migration_env
         messages.add(_refused_everywhere(unknown)[0])
         assert await _scan_refusals(client, unknown) == messages
     assert len(messages) == 1
-    assert "format version" in messages.pop()
+    assert messages.pop() == t("migration.err_manager_unknown", "en") + " " + _supported()
 
 
 async def test_manager_revision_enforced_on_every_adapter_entry(real_client, real_engine, monkeypatch, tmp_path):

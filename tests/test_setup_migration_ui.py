@@ -626,7 +626,7 @@ async def test_source_selection_offers_source_request_link(ui, router, fake_api,
     from celerp.importers.adapters.registry import list_adapters
     body = r.json()
     assert [s["key"] for s in body] == [a.key for a in list_adapters()]
-    assert all(set(s) == {"key", "display_name", "artifacts"} for s in body)
+    assert all(set(s) == {"key", "display_name", "accepts", "artifacts"} for s in body)
 
     r = await ui.post("/setup/migrate/scan", files=_UPLOAD,
                       data={"source": "manager_io", "prepared_by": "Example Bookkeeping"})

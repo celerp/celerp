@@ -348,6 +348,7 @@ async def _source_page(request: Request, mode: WizardMode, *, selected: str = ""
     several = any(len(s.get("artifacts", [])) > 1 for s in sources)
     accepted = ", ".join(f"{a['label']} ({', '.join(a.get('extensions', []))})" for a in artifacts)
     guidance = [P(t(_EXPORT_HELP[s["key"]]), cls="form-hint") for s in sources if s["key"] in _EXPORT_HELP]
+    guidance += [P(s["accepts"], cls="form-hint") for s in sources if s.get("accepts")]
     options = [("", t("migration.detect_source"))] + [(s["key"], s["display_name"]) for s in sources]
     radios = [
         Label(

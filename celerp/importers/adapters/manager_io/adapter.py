@@ -21,7 +21,7 @@ from celerp.importers.adapters.manager_io.book import MERGED_CONTROLS, PAYSLIP_I
 from celerp.importers.adapters.manager_io.ledger import Ledger, Posting, build_ledger
 from celerp.importers.adapters.manager_io.mappings import SOURCE_SYSTEM, build_bundle, carried
 from celerp.importers.adapters.manager_io.reconcile import expectations_from
-from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader
+from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader, supported
 from celerp.importers.schema import (
     CIFImportBundle,
     CIFImportManifest,
@@ -101,6 +101,10 @@ class ManagerIOAdapter:
     display_name = "Manager.io"
     adapter_version = "2"
     artifact_specs = (ArtifactSpec("business_file", "Manager business file", (".manager",), MAX_FILE_BYTES),)
+
+    @property
+    def accepts(self) -> str:
+        return supported()
 
     def detect(self, artifacts: ArtifactSet) -> DetectionResult:
         try:

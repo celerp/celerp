@@ -273,7 +273,7 @@ async def _owned_run(session: AsyncSession, run_id: uuid.UUID, ctx: AuthContext)
 @router.get("/sources")
 async def sources() -> list[dict]:
     return [{
-        "key": a.key, "display_name": a.display_name,
+        "key": a.key, "display_name": a.display_name, "accepts": a.accepts,
         "artifacts": [{"key": s.key, "label": s.label, "extensions": list(s.extensions), "max_bytes": s.max_bytes}
                       for s in a.artifact_specs],
     } for a in list_adapters()]

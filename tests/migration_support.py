@@ -93,6 +93,7 @@ class FakeAdapter:
     key = FAKE_KEY
     display_name = "Fake source"
     adapter_version = "1"
+    accepts = ""
 
     def __init__(self, max_bytes: int = 64 * 1024 * 1024) -> None:
         self.artifact_specs = (ArtifactSpec("source_file", "Source file", (".fake",), max_bytes),)
