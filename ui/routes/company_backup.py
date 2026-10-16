@@ -997,8 +997,16 @@ async def _send_page(request: Request, *, error: str | None = None, values: dict
     error; once verified it submits this same form again (same operation)."""
     if (denied := await _gate(request, SETTINGS)) is not None:
         return denied
-    # Resend from the copies list arrives with the firm and recipient filled in.
-    values = values or {k: request.query_params.get(k, "") for k in ("firm_name", "recipient")}
+    if not values:
+        # The firm name and reply address start as the last send's; Resend from the
+        # copies list brings the firm and the client's email.
+        try:
+            last = await api.company_backup_sender(get_token(request))
+        except APIError:
+            last = {}
+        values = {"firm_name": request.query_params.get("firm_name") or last.get("firm_name") or "",
+                  "recipient": request.query_params.get("recipient", ""),
+                  "reply_to": last.get("reply_to") or ""}
     notice = flash(error) if error else ""
     if account:
         try:

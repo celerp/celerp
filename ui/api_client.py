@@ -3970,6 +3970,14 @@ async def company_backup_handoffs(token: str) -> dict:
     return _raise(response).json()
 
 
+async def company_backup_sender(token: str) -> dict:
+    """The firm name and reply address of the last company copy sent here."""
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            response = await c.get("/company-backups/sender")
+    return _raise(response).json()
+
+
 async def company_backup_revoke_handoff(token: str, copy_id: str) -> dict:
     async with _local_error_mapping():
         async with _local_client(token) as c:

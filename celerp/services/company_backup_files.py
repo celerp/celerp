@@ -227,6 +227,27 @@ def sent_copy(company_id, copy_id) -> dict:
     return facts if isinstance(facts, dict) else {}
 
 
+def remember_sender(firm_name: str, reply_to: str) -> None:
+    """Keep the firm name and reply address of the last confirmed send, so the next send
+    from any company on this installation starts with them."""
+    path = _private_dir(SENT) / f"sender{META_SUFFIX}"
+    partial = path.with_suffix(META_SUFFIX + ".partial")
+    partial.unlink(missing_ok=True)
+    with private_file(partial) as out:
+        out.write(json.dumps({"firm_name": firm_name, "reply_to": reply_to}).encode())
+    partial.replace(path)
+
+
+def last_sender() -> dict:
+    """The last send's firm name and reply address; empty strings when there was none."""
+    try:
+        facts = json.loads((_private_dir(SENT) / f"sender{META_SUFFIX}").read_text())
+    except (OSError, ValueError):
+        facts = {}
+    facts = facts if isinstance(facts, dict) else {}
+    return {k: facts[k] if isinstance(facts.get(k), str) else "" for k in ("firm_name", "reply_to")}
+
+
 def forget_sent_copy(company_id, copy_id) -> None:
     _sent_record(company_id, copy_id).unlink(missing_ok=True)
 

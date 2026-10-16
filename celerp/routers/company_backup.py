@@ -117,7 +117,7 @@ async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(u
     async def export(destination: Path):
         await cb.export_company_snapshot(ctx.company_id, destination)
     try:
-        return await sender.send_company_backup(
+        sent = await sender.send_company_backup(
             export=export, company_id=ctx.company_id, operation_id=payload.operation_id,
             secret=secret, firm_name=payload.firm_name,
             recipient=payload.recipient, reply_to=payload.reply_to, note=payload.note,
@@ -129,6 +129,14 @@ async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(u
         raise HTTPException(status_code=428, detail=str(exc)) from None
     except sender.HandoffSendError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
+    await asyncio.to_thread(files.remember_sender, payload.firm_name, payload.reply_to)
+    return sent
+
+
+@router.get("/sender")
+async def last_sender(ctx: AuthContext = Depends(user_owner)):
+    """The firm name and reply address of the last send, for the next send form."""
+    return await asyncio.to_thread(files.last_sender)
 
 
 async def _copies_call(call):
