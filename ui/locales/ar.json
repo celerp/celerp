@@ -9,6 +9,7 @@
   "account.gate_buy_benefit": "ترتبط المشتريات ببريدك الإلكتروني حتى تتمكن من استعادتها على أي جهاز كمبيوتر.",
   "account.gate_community_benefit": "وحدات المجتمع مجانية. سجّل الدخول بحساب Celerp المجاني لتنزيلها.",
   "account.gate_doc_send_benefit": "أرسل {n} مستندات شهريًا عبر Celerp مجانًا. بدون إعداد.",
+  "account.gate_copy_send_benefit": "يرسل حساب Celerp المجاني الرابط من بريدك الإلكتروني الموثق. يبقى النموذج كما هو ويستمر الإرسال بعد تسجيل الدخول.",
   "account.google_unavailable": "تسجيل الدخول عبر Google غير متاح حاليًا. استخدم البريد الإلكتروني.",
   "account.google_open_hint": "إذا لم تُفتح علامة تبويب في المتصفح تلقائيًا، افتح هذا الرابط لإكمال تسجيل الدخول عبر Google:",
   "account.google_open_link": "افتح تسجيل الدخول عبر Google",

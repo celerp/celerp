@@ -9,6 +9,7 @@
   "account.gate_buy_benefit": "Pembelian ditautkan ke email Anda sehingga dapat dipulihkan di komputer mana pun.",
   "account.gate_community_benefit": "Modul komunitas gratis. Masuk dengan akun Celerp gratis Anda untuk mengunduh.",
   "account.gate_doc_send_benefit": "Kirim {n} dokumen per bulan melalui Celerp secara gratis. Tanpa penyiapan.",
+  "account.gate_copy_send_benefit": "Akun Celerp gratis mengirim tautan dari email Anda yang terverifikasi. Formulir Anda tetap tersimpan dan pengiriman berlanjut setelah Anda masuk.",
   "account.google_unavailable": "Masuk dengan Google tidak tersedia saat ini. Gunakan email.",
   "account.google_open_hint": "Jika tab browser tidak terbuka otomatis, buka tautan ini untuk menyelesaikan masuk dengan Google:",
   "account.google_open_link": "Buka masuk dengan Google",

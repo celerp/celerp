@@ -9,6 +9,7 @@
   "account.gate_buy_benefit": "購入はメールアドレスに紐づくため、どのコンピュータでも復元できます。",
   "account.gate_community_benefit": "コミュニティモジュールは無料です。無料のCelerpアカウントでサインインしてダウンロードしてください。",
   "account.gate_doc_send_benefit": "Celerpを通じて毎月{n}件のドキュメントを無料で送信できます。設定は不要です。",
+  "account.gate_copy_send_benefit": "無料の Celerp アカウントで、確認済みのメールアドレスからリンクを送信します。入力内容は保持され、サインイン後に送信が続行されます。",
   "account.google_unavailable": "Googleサインインは現在利用できません。メールをご利用ください。",
   "account.google_open_hint": "ブラウザのタブが自動的に開かなかった場合は、このリンクを開いてGoogleサインインを完了してください。",
   "account.google_open_link": "Googleサインインを開く",

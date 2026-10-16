@@ -9,6 +9,7 @@
   "account.gate_buy_benefit": "Purchases are linked to your email so you can restore them on any computer.",
   "account.gate_community_benefit": "Community modules are free. Sign in with your free Celerp account to download.",
   "account.gate_doc_send_benefit": "Send {n} documents a month through Celerp free. No setup.",
+  "account.gate_copy_send_benefit": "A free Celerp account sends the link from your verified email. Your form is kept and the send continues after you sign in.",
   "account.google_unavailable": "Google sign-in isn't available right now. Use email instead.",
   "account.google_open_hint": "If a browser tab did not open automatically, open this link to finish signing in with Google:",
   "account.google_open_link": "Open Google sign-in",

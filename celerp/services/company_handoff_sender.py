@@ -22,6 +22,13 @@ class HandoffSendError(Exception):
     """The delivery was refused or its result is unconfirmed; retry the same operation."""
 
 
+class HandoffAccountNeeded(HandoffSendError):
+    """Sending a link needs a free, verified Celerp account on this installation."""
+
+
+_ACCOUNT_NEEDED = "Sign in to a free Celerp account to send a company copy link."
+
+
 def _upload_url(value: object, copy_id: uuid.UUID) -> str:
     if not isinstance(value, str) or len(value) > 4096:
         raise HandoffSendError("The upload destination is unavailable")
@@ -45,10 +52,16 @@ async def _cloud(method: str, path: str, *, payload: dict | None = None,
             method, path, json=payload, params=params, total_s=35)
     except (httpx.HTTPError, TimeoutError) as exc:
         raise HandoffSendError("Could not confirm the company copy. Retry the same operation") from exc
-    if response is None:
-        raise HandoffSendError("Connect this installation before sending a company copy")
+    if response is None or response.status_code == 401:
+        raise HandoffAccountNeeded(_ACCOUNT_NEEDED)
+    if response.status_code == 403 and (method, path) == ("POST", "/handoffs"):
+        # The relay's only refusal on create is an account it has not verified.
+        raise HandoffAccountNeeded(_ACCOUNT_NEEDED)
     if response.status_code != expected:
-        raise HandoffSendError("Could not confirm the company copy. Retry the same operation")
+        # A refusal the relay explains (a limit and its way out, a reply-to
+        # mismatch) is shown as is; anything else is unconfirmed.
+        detail = _detail(response) if 400 <= response.status_code < 500 else None
+        raise HandoffSendError(detail or "Could not confirm the company copy. Retry the same operation")
     try:
         data = response.json()
     except ValueError:
@@ -56,6 +69,14 @@ async def _cloud(method: str, path: str, *, payload: dict | None = None,
     if not isinstance(data, dict):
         raise HandoffSendError("Invalid company copy response")
     return data
+
+
+def _detail(response: httpx.Response) -> str | None:
+    try:
+        detail = response.json().get("detail")
+    except (ValueError, AttributeError):
+        return None
+    return detail if isinstance(detail, str) and detail else None
 
 
 async def _existing(company_id: uuid.UUID, operation_id: uuid.UUID) -> dict | None:

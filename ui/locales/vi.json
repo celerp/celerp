@@ -9,6 +9,7 @@
   "account.gate_buy_benefit": "Giao dịch mua được liên kết với email của bạn nên có thể khôi phục trên bất kỳ máy tính nào.",
   "account.gate_community_benefit": "Mô-đun cộng đồng miễn phí. Đăng nhập bằng tài khoản Celerp miễn phí của bạn để tải xuống.",
   "account.gate_doc_send_benefit": "Gửi {n} tài liệu mỗi tháng qua Celerp miễn phí. Không cần thiết lập.",
+  "account.gate_copy_send_benefit": "Tài khoản Celerp miễn phí gửi liên kết từ email đã xác minh của bạn. Biểu mẫu được giữ lại và việc gửi tiếp tục sau khi bạn đăng nhập.",
   "account.google_unavailable": "Hiện không dùng được đăng nhập Google. Hãy dùng email.",
   "account.google_open_hint": "Nếu trình duyệt không tự mở tab, hãy mở liên kết này để hoàn tất đăng nhập với Google:",
   "account.google_open_link": "Mở đăng nhập Google",

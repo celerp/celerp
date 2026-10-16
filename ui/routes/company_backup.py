@@ -54,7 +54,8 @@ from ui.api_client import APIError
 from ui.components.shell import flash
 from ui.components.table import format_value
 from ui.config import cookie_domain, get_company_id, get_token, session_cookie_secure, set_session_cookies
-from ui.i18n import t
+from ui.i18n import get_lang, t
+from ui.routes.account import account_panel
 from ui.routes.auth import START_COMPANY as START_COMPANY_PAGE
 from ui.routes.auth import START_COMPANY_RESTORE, auth_header
 from ui.routes.migrations import (
@@ -919,16 +920,25 @@ async def _revoke_handoff(request: Request):
 
 
 async def _send_page(request: Request, *, error: str | None = None, values: dict | None = None,
-                     status_code: int = 200):
+                     status_code: int = 200, account: bool = False):
+    """The send form. *account* embeds the free-account sign-in in place of the
+    error; once verified it submits this same form again (same operation)."""
     if (denied := await _gate(request, SETTINGS)) is not None:
         return denied
     values = values or {}
+    notice = flash(error) if error else ""
+    if account:
+        try:
+            google = bool((await api.account_methods(get_token(request))).get("google"))
+        except APIError:
+            google = False
+        notice = account_panel(get_lang(request), google=google, next_action="copy-send")
     operation = values.get("operation_id") or str(uuid.uuid4())
     secret = values.get("key") or base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
     return wizard_page(
         request,
         auth_header(t("company_backup.send_title")),
-        flash(error) if error else "",
+        notice,
         Form(
             Input(type="hidden", name="operation_id", value=operation),
             Input(type="hidden", name="key", value=secret),
@@ -945,9 +955,11 @@ async def _send_page(request: Request, *, error: str | None = None, values: dict
                 Textarea(values.get("note", ""), id="note", name="note", maxlength="1500",
                          cls="form-input"), cls="form-group"),
             Button(t("company_backup.send_title"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=SEND, cls="auth-form",
+            method="post", action=SEND, id="company-copy-send-form", cls="auth-form",
         ),
-        A(t("company_backup.handoffs_title"), href=HANDOFFS, cls="auth-link"),
+        Div(A(t("company_backup.ready_download"), href=DOWNLOAD, cls="auth-link"),
+            A(t("company_backup.handoffs_title"), href=HANDOFFS, cls="auth-link"),
+            cls="flex-col gap-sm"),
         back_link(BACKUP_TAB), status_code=status_code,
         title="company_backup.send_title",
     )
@@ -969,7 +981,8 @@ async def _send_handoff(request: Request):
         sent = await api.company_backup_send_handoff(get_token(request), values)
     except APIError as exc:
         # Retain the same operation and secret for ambiguous delivery retries.
-        return await _send_page(request, error=_message(exc), values=values, status_code=_status(exc))
+        return await _send_page(request, error=_message(exc), values=values, status_code=_status(exc),
+                                account=exc.status == 428)
     return await _ready_page(request, values, sent)
 
 

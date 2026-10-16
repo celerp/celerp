@@ -9,6 +9,7 @@
   "account.gate_buy_benefit": "ግዢዎች ከኢሜይልዎ ጋር የተያያዙ ናቸው፣ ስለዚህ በማንኛውም ኮምፒዩተር ላይ መልሰው ማግኘት ይችላሉ።",
   "account.gate_community_benefit": "የማህበረሰብ ሞጁሎች ነጻ ናቸው። ለማውረድ በነጻ የCelerp መለያዎ ይግቡ።",
   "account.gate_doc_send_benefit": "በወር {n} ሰነዶችን በCelerp በነጻ ይላኩ። ማዋቀር አያስፈልግም።",
+  "account.gate_copy_send_benefit": "ነጻ የCelerp መለያ ሊንኩን ከተረጋገጠው ኢሜይልዎ ይልካል። ቅጽዎ ይቀመጣል፣ ከገቡ በኋላ መላኩ ይቀጥላል።",
   "account.google_unavailable": "በGoogle መግባት አሁን አይገኝም። በምትኩ ኢሜይል ይጠቀሙ።",
   "account.google_open_hint": "የአሳሽ ትር በራስ-ሰር ካልተከፈተ፣ በGoogle በኩል መግባትን ለማጠናቀቅ ይህን አገናኝ ይክፈቱ፦",
   "account.google_open_link": "የGoogle መግቢያ ክፈት",

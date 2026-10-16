@@ -9,6 +9,7 @@
   "account.gate_buy_benefit": "Les achats sont liés à votre adresse e-mail afin de pouvoir les restaurer sur n'importe quel ordinateur.",
   "account.gate_community_benefit": "Les modules communautaires sont gratuits. Connectez-vous avec votre compte Celerp gratuit pour les télécharger.",
   "account.gate_doc_send_benefit": "Envoyez {n} documents par mois via Celerp gratuitement. Aucune configuration.",
+  "account.gate_copy_send_benefit": "Un compte Celerp gratuit envoie le lien depuis votre adresse e-mail vérifiée. Votre formulaire est conservé et l'envoi reprend après la connexion.",
   "account.google_unavailable": "La connexion Google est indisponible pour le moment. Utilisez l'e-mail.",
   "account.google_open_hint": "Si aucun onglet de navigateur ne s'est ouvert automatiquement, ouvrez ce lien pour terminer la connexion avec Google :",
   "account.google_open_link": "Ouvrir la connexion Google",

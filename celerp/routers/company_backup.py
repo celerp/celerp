@@ -110,7 +110,9 @@ class SendCompanyHandoff(BaseModel):
 @router.post("/send-handoff")
 async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(user_owner),
                        session: AsyncSession = Depends(get_session)):
-    from celerp.services.company_handoff_sender import HandoffSendError, send_company_backup
+    from celerp.services.company_handoff_sender import (
+        HandoffAccountNeeded, HandoffSendError, send_company_backup,
+    )
     try:
         secret = base64.urlsafe_b64decode(payload.key + "=")
     except (ValueError, binascii.Error):
@@ -129,6 +131,9 @@ async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(u
         )
     except cb.BackupError as exc:
         return _error(exc)
+    except HandoffAccountNeeded as exc:
+        # 428: the page offers a free account in place and resumes this operation.
+        raise HTTPException(status_code=428, detail=str(exc)) from None
     except HandoffSendError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
 

@@ -52,6 +52,7 @@ _NEXT_RES = (
     re.compile(r"^buy:[a-z0-9_-]+:(monthly|once)$"),
     re.compile(r"^community:[a-z0-9_-]+$"),
     re.compile(r"^doc-send$"),
+    re.compile(r"^copy-send$"),
 )
 
 # Every gate delivers its panel inside the shared modal dialog, floating over
@@ -62,6 +63,7 @@ _GATE_BENEFIT_KEYS = {
     "buy": "account.gate_buy_benefit",
     "community": "account.gate_community_benefit",
     "doc-send": "account.gate_doc_send_benefit",
+    "copy-send": "account.gate_copy_send_benefit",
 }
 
 
@@ -216,11 +218,11 @@ def _signup_body(lang: str, panel_id: str, google: bool,
     ]
     if next_action:
         # State the concrete reason the sign-in stands between the user and the
-        # action they clicked, above the generic hint.
+        # action they clicked, in place of the generic hint.
         kind = next_action.split(":", 1)[0]
         benefit = (t(_GATE_BENEFIT_KEYS[kind], lang, n=free_quota)
                    if kind == "doc-send" else t(_GATE_BENEFIT_KEYS[kind], lang))
-        parts.insert(1, P(benefit, cls="settings-hint account-panel__benefit"))
+        parts[1] = P(benefit, cls="settings-hint account-panel__benefit")
     if method_toggle is not None:
         parts.append(method_toggle)
     parts.append(email_path)
@@ -434,6 +436,12 @@ def _resume_parts(next_action: str) -> list:
         return [_resume_guard_script(next_action,
                                      "sessionStorage.setItem('celerp_open_send','1');"
                                      "location.reload();")]
+    if next_action == "copy-send":
+        # The send page kept every typed value and the same operation; submit
+        # it again so the staged copy is reused, never re-exported.
+        return [_resume_guard_script(next_action,
+                                     "var f=document.getElementById('company-copy-send-form');"
+                                     "if(f){f.requestSubmit();}")]
     if next_action.startswith("buy:"):
         _, slug, kind = next_action.split(":")
         fire = Div(id="account-resume",
