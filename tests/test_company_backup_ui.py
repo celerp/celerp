@@ -1193,3 +1193,23 @@ async def test_restore_success_shows_reconciled_totals(ui, real_engine, real_cli
         assert await _key_totals(real_client, restored_tok) == expected
         assert ("Your company is ready." in page and "Prepared for you by North Ledger." in page) is firm
         assert ("Company restored" in page) is not firm
+
+
+async def test_copies_page_shows_the_cloud_refusal(ui, real_engine, monkeypatch):
+    """A refusal the owner can act on is shown in its own words; an unconfirmed result
+    keeps the general message. RED before the change: every refusal read as unavailable."""
+    from ui import api_client as api
+    from ui.routes import company_backup as route
+    _, _, tok = await _setup(real_engine, name="Company handoff refusal")
+    ui.cookies.set("celerp_token", tok)
+    refusal = {"error": api.APIError(428, "Sign in to a free Celerp account to send a company copy link.")}
+
+    async def refused(token):
+        raise refusal["error"]
+
+    monkeypatch.setattr(api, "company_backup_handoffs", refused)
+    page = _page(await ui.get(route.HANDOFFS))
+    assert "Sign in to a free Celerp account" in page
+    refusal["error"] = api.APIError(502, "Could not confirm the company copy. Retry the same operation")
+    page = _page(await ui.get(route.HANDOFFS))
+    assert t("company_backup.handoffs_unavailable") in page and "Could not confirm" not in page
