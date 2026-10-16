@@ -27,8 +27,8 @@ async def _dispose(fa: FA, asset_id: str, on: str, **body) -> dict:
 
 
 async def _disposal_journal(fa: FA, asset_id: str) -> dict:
-    found = [je for je in await fa.module_journals()
-             if je.get("source", {}).get("entity_id") == asset_id and je["metadata_"]["operation"] == "disposal"]
+    key = f"je:mod:celerp-fixed-assets:asset:{asset_id.removeprefix('fa:asset:')}:disposal:"
+    found = [je for je in await fa.module_journals() if je["entity_id"].startswith(key)]
     assert len(found) == 1, found
     return found[0]
 
@@ -36,6 +36,7 @@ async def _disposal_journal(fa: FA, asset_id: str) -> dict:
 async def test_dispose_posts_depreciation_to_date_and_derecognizes(fa):
     await _managed_from(fa)
     car = await _contributed(fa)
+    await _contributed(fa, name="Van")
     await _run(fa, "2026-03")
     preview = await fa.ok(await fa.post(f"/assets/{car}/dispose", {"date": "2026-05-20", "reason": "scrapped",
                                                                    "preview": True, "op_key": "dp"}))
@@ -99,12 +100,13 @@ async def test_partial_dispose_by_percentage_splits_pro_rata_and_depreciates_on(
     await _run(fa, "2026-06")
     await _dispose(fa, car, "2026-07-10", percent="25")
     je = await _disposal_journal(fa, car)
-    # July for the kept three quarters (150), then a quarter of cost and of 1,350 out.
-    assert _lines(je) == {"6400": (D("150"), D(0)), "1220": (D("337.50"), D("150")), "1210": (D(0), D("3000")),
-                          "6980": (D("2662.50"), D(0))}
+    # July for the kept three quarters (150); the quarter disposed of charged 50 a month
+    # through June and nothing in July, so 300 of accumulated depreciation goes with it.
+    assert _lines(je) == {"6400": (D("150"), D(0)), "1220": (D("300"), D("150")), "1210": (D(0), D("3000")),
+                          "6980": (D("2700"), D(0))}
     got = await fa.asset(car)
     assert got["status"] == "active"
-    assert D(got["cost"]) == D("9000") and D(got["accumulated_depreciation"]) == D("1012.50")
+    assert D(got["cost"]) == D("9000") and D(got["accumulated_depreciation"]) == D("1050")
     await _run(fa, "2026-08")
     run_moves = [m for m in await _movements(fa, car) if m["operation"] == "run"]
     assert D(run_moves[-1]["amounts"]["accumulated_depreciation"]) == D("150")
@@ -148,7 +150,7 @@ async def test_undo_disposal_refused_once_its_period_is_locked(fa):
     await _dispose(fa, car, "2026-05-20")
     await _lock(fa, "2026-05-31")
     r = await fa.post(f"/assets/{car}/undo-disposal", {"preview": True, "op_key": "u"})
-    assert r.status_code == 409 and "Correct" in r.json()["detail"]
+    assert r.status_code == 409 and "2026-05-20 is locked" in r.json()["detail"]
 
 
 async def test_disposed_asset_refuses_another_disposal(fa):

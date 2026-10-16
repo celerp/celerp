@@ -8,7 +8,8 @@ by month under the timing convention. An estimate change merges the layers into 
 the carrying amount less the new residual over the new remaining life, from the month
 of the change. An estimate change may also change the method, its parameters and the
 timing convention from then on; every layer depreciates under the method it was laid
-down with.
+down with. A partial disposal splits every layer: the share disposed of takes the
+convention's part of the disposal month and stops, the rest depreciates on.
 
 Rounding is cumulative: a month's amount is the rounded cumulative charge less the
 rounded cumulative of the month before, so the total lands exactly on the depreciable
@@ -64,7 +65,10 @@ class EstimateChange:
 
 @dataclass(frozen=True)
 class Dispose:
+    """Out of service on ``on``. A ``share`` below one disposes of that share of what is
+    left; the rest depreciates on."""
     on: date
+    share: Decimal = _ONE
 
 
 @dataclass(frozen=True)
@@ -136,10 +140,22 @@ class Layer:
             index += 1
 
 
+    def split(self, share: Decimal) -> Layer:
+        """Take ``share`` of this layer out as a layer of its own, with the same history;
+        this layer keeps the rest. Every method scales with basis and residual."""
+        gone = Layer(self.basis * share, self.residual * share, self.life, self.start, self.weights, self.method,
+                     self.params, list(self.fractions))
+        self.basis -= gone.basis
+        self.residual -= gone.residual
+        return gone
+
+
 @dataclass(frozen=True)
 class Schedule:
+    """``parted`` is what each partial disposal's share was charged, in date order."""
     periods: list[PeriodAmount]
     layers: list[Layer]
+    parted: list[Decimal] = field(default_factory=list)
 
 
 def _charges(layer: Layer) -> list[Decimal]:
@@ -172,6 +188,21 @@ def _first_month(movement: Movement) -> int:
     return month_index(movement.on) + (1 if isinstance(movement, Opening) else 0)
 
 
+def _consume(layer: Layer, index: int, reading: Decimal | None, convention, fy_start: int,
+             disposal: date | None) -> None:
+    """Append the life ``layer`` consumes in month ``index``; in the month it is disposed
+    of, the convention's share of that month."""
+    remaining = layer.life - layer.position
+    if layer.method.uses_readings:
+        fraction = min(reading or _ZERO, remaining)
+    else:
+        fraction = min(layer.normal_fraction(index), remaining)
+        if disposal is not None:
+            fy_consumed = sum(layer.fractions[max(fy_start - layer.start, 0):], _ZERO)
+            fraction = convention.disposal(fraction, disposal, fy_consumed, remaining)
+    layer.fractions.append(max(fraction, -layer.position))
+
+
 def schedule(movements: list[Movement], policy: Policy, *, through: str, currency: str,
              readings: dict[str, Decimal] | None = None) -> Schedule:
     """Monthly depreciation from the first month in service through ``through``
@@ -187,6 +218,7 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
     if not starts:
         return Schedule([], [])
     layers: list[Layer] = []
+    shares: list[list[Layer]] = []
     retired: list[Layer] = []
     months: list[tuple[int, MissingReading | None]] = []
     with localcontext() as ctx:
@@ -194,6 +226,7 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
         index = min(starts)
         while index <= last:
             disposal = None
+            leaving: list[tuple[Layer, date]] = []
             while pending and _first_month(pending[0]) <= index:
                 m = pending.pop(0)
                 if isinstance(m, Acquire):
@@ -219,25 +252,24 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
                     life = _life(method, policy.life_months, params)
                     layers = [Layer(carrying - m.residual, m.residual, Decimal(str(m.life_months)), index, [_ONE],
                                     method, params)]
+                elif m.share < _ONE:
+                    gone = [ly.split(m.share) for ly in layers]
+                    shares.append(gone)
+                    leaving.extend((ly, m.on) for ly in gone)
                 else:
                     disposal = m.on
             exception = None
             reading = None
-            if any(ly.method.uses_readings for ly in layers):
+            if any(ly.method.uses_readings for ly in (*layers, *(ly for ly, _ in leaving))):
                 reading = readings.get(period_label(index))
                 if reading is None:
                     exception = MissingReading(period_label(index))
             fy_start = fiscal_year_start_index(index, policy.fiscal_year_start)
             for layer in layers:
-                remaining = layer.life - layer.position
-                if layer.method.uses_readings:
-                    fraction = min(reading or _ZERO, remaining)
-                else:
-                    fraction = min(layer.normal_fraction(index), remaining)
-                    if disposal is not None:
-                        fy_consumed = sum(layer.fractions[max(fy_start - layer.start, 0):], _ZERO)
-                        fraction = convention.disposal(fraction, disposal, fy_consumed, remaining)
-                layer.fractions.append(max(fraction, -layer.position))
+                _consume(layer, index, reading, convention, fy_start, disposal)
+            for layer, on in leaving:
+                _consume(layer, index, reading, convention, fy_start, on)
+                retired.append(layer)
             months.append((index, exception))
             if disposal is not None:
                 break
@@ -252,4 +284,5 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
             rounded = round_money(cumulative, currency)
             periods.append(PeriodAmount(period_label(index), rounded - posted, cumulative, exception))
             posted = rounded
-    return Schedule(periods, layers)
+        parted_charges = [sum((sum(_charges(ly), _ZERO) for ly in gone), _ZERO) for gone in shares]
+    return Schedule(periods, layers, parted_charges)

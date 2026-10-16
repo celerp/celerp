@@ -115,6 +115,15 @@ async def _next_numbers(session, company_id, count: int) -> list[str]:
     return [f"FA-{n:04d}" for n in range(start, start + count)]
 
 
+def _lines(debit_account: str, credit_account: str, amount: Decimal):
+    """Two lines moving ``amount`` from ``credit_account`` to ``debit_account``, flipped when negative."""
+    from celerp.services.module_journals import JournalLine
+
+    if amount < 0:
+        debit_account, credit_account, amount = credit_account, debit_account, -amount
+    return [JournalLine(account=debit_account, debit=amount), JournalLine(account=credit_account, credit=amount)]
+
+
 def _journal_view(lines) -> dict:
     return {"lines": [{"account": ln.account, "debit": _cents(ln.debit), "credit": _cents(ln.credit)}
                       for ln in lines]}

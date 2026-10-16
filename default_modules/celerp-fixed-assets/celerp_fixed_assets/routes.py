@@ -19,14 +19,15 @@ from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import (
     assert_role_permission, get_current_company_settings, require_permission, role_has_permission)
-from celerp_fixed_assets import corrections, operations, runs, setup, sources
+from celerp_fixed_assets import corrections, disposal, operations, runs, setup, sources
 from celerp_fixed_assets.events import register_events
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
 
 # Journal operation types this module posts, and the permission each needs.
 OPERATION_TYPES = {name: ("manage_accounting",)
-                   for name in ("registration", "acquisition", "expense", "maintenance", "undo", "run", "correction")}
+                   for name in ("registration", "acquisition", "expense", "maintenance", "undo", "run", "correction",
+                                "disposal")}
 
 _MONEY_FIELDS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "nbv")
 _VIEW = [require_permission("view_fixed_assets")]
@@ -283,6 +284,24 @@ async def withdraw_skip(asset_id: str, month: str, company_id=Depends(get_curren
 async def correct_fields(asset_id: str, company_id=Depends(get_current_company_id),
                          session: AsyncSession = Depends(get_session)) -> dict:
     return await corrections.fields(session, company_id, asset_id)
+
+
+@router.post("/assets/{asset_id}/dispose", dependencies=_ACCOUNTING)
+async def dispose_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                        user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, disposal.dispose, company_id, user.id, body, [asset_id])
+
+
+@router.post("/dispose", dependencies=_ACCOUNTING)
+async def dispose_assets(body: dict = Body(...), company_id=Depends(get_current_company_id),
+                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, disposal.dispose, company_id, user.id, body)
+
+
+@router.post("/assets/{asset_id}/undo-disposal", dependencies=_ACCOUNTING)
+async def undo_disposal(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                        user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, disposal.undo, company_id, user.id, asset_id, body)
 
 
 @router.post("/assets/{asset_id}/correct", dependencies=_ACCOUNTING)

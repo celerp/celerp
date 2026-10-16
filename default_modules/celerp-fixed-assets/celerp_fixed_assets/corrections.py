@@ -26,8 +26,8 @@ from fastapi import HTTPException
 from celerp_fixed_assets import notices, runs, setup, sources
 from celerp_fixed_assets.calc.periods import fiscal_year_start_index, month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
-    MODULE, _amount, _cents, _claim, _date, _dec, _emit, _entities, _journal_view, _move, _open_line, _post,
-    _reversed_lines, _run, _state, asset_movements, conflict)
+    MODULE, _amount, _cents, _claim, _date, _dec, _emit, _entities, _journal_view, _lines, _move, _open_line,
+    _post, _reversed_lines, _run, _state, asset_movements, conflict)
 from celerp_fixed_assets.projections import BUCKETS
 
 ESTIMATE_FIELDS = setup.POLICY_FIELDS
@@ -163,15 +163,6 @@ class Draft:
         if any(m.get("operation") == "estimate" for m in self.live):
             raise setup.unprocessable("This asset's depreciation settings were changed as an estimate. Undo that "
                                       "change first, or correct them as another change in estimate.")
-
-
-def _lines(debit_account: str, credit_account: str, amount: Decimal):
-    """Two lines moving ``amount`` from ``credit_account`` to ``debit_account``, flipped when negative."""
-    from celerp.services.module_journals import JournalLine
-
-    if amount < 0:
-        debit_account, credit_account, amount = credit_account, debit_account, -amount
-    return [JournalLine(account=debit_account, debit=amount), JournalLine(account=credit_account, credit=amount)]
 
 
 # ── Error corrections, one per field ─────────────────────────────────────────

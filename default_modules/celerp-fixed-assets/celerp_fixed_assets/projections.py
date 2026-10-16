@@ -77,6 +77,8 @@ def apply_fixed_asset_event(state: dict, event_type: str, data: dict) -> dict:
         return current
     if event_type in ("fa.asset.status", "fa.maint.status"):
         current["status"] = data["status"]
+        # A disposal records itself and clears what held the asset; undoing it clears the record.
+        current.update({k: deepcopy(data[k]) for k in ("disposal", "exception") if k in data})
         return current
     if event_type == "fa.asset.financials":
         current.update(deepcopy(data))
