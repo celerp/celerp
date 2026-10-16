@@ -135,9 +135,12 @@ async def demo_owner(client) -> dict:
 
 
 async def start_demo(client, session) -> FA:
-    """A demo company carrying its asset bills (the reseed seeds them), started."""
+    """A demo company carrying its asset bills (the reseed seeds them), started and managed
+    from the first period the setup suggests."""
     fa = FA(client, session, await demo_owner(client))
     r = await client.post("/companies/me/demo/reseed", headers=fa.h)
     assert r.status_code == 200, r.text
     await fa.ok(await fa.post("/start"))
+    suggested = (await fa.ok(await fa.get("/setup")))["first_period"]["suggested"]
+    await fa.ok(await fa.patch("/settings", {"first_managed_period": suggested}))
     return fa
