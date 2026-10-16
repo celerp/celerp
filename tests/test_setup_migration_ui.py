@@ -409,7 +409,7 @@ async def test_setup_form_offers_restore_and_move(ui, router, session, sample_mo
     assert r.status_code == 200
     page = _page(r)
     assert re.search(r'<form\b[^>]*action="/setup"', page)
-    assert _link(page, "/setup/restore-backup", "Restore a Celerp backup")
+    assert _link(page, "/setup/restore-backup", "Open a company copy")
     assert _link(page, "/setup/migrate", "Move your books from another system")
 
     for path in ("/setup/restore-backup", "/setup/migrate"):
@@ -750,7 +750,7 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert _link(complete, f"/switch-company/{company_id}", "Open company")
     assert not _link(complete, "/dashboard")
     assert _link(complete, f"/setup/new-company/migrate?from_run={run_id}", "Move another company")
-    assert _link(complete, f"/company-backup/download?from_run={run_id}", "Download company backup")
+    assert _link(complete, f"/company-backup/download?from_run={run_id}", "Download company copy")
     order = [complete.find(text) for text in ("Open company", "Send company copy", "Invite client",
                                               "Move another company")]
     assert -1 not in order and order == sorted(order)
@@ -776,7 +776,7 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert "That's the whole migration." in page
     assert _link(page, "/setup/new-company/migrate", "Move your first company")
     assert _link(page, f"/switch-company/{fake_api.runs[sample_id]['company_id']}", "Open")
-    assert "Download company backup" not in page
+    assert "Download company copy" not in page
 
 
 _FAILED_ROW = {"check": "ar_control", "key": "", "currency": "USD", "source": "3120.00",

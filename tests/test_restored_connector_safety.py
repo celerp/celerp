@@ -29,7 +29,7 @@ RELAY = "https://relay.test"
 STORE = "https://store.example.test"
 LIVE_SHOPIFY = {"product_id": "9001", "variant_id": "9002", "sync_enabled": True}
 LIVE_WOO = {"product_id": "77", "sync_enabled": True}
-NOTICE = "Connections to other services, such as stores and accounting, are not restored from a backup. Connect each one again in Web Access."
+NOTICE = "Connections to other services, such as stores and accounting, are not included in a company copy. Connect each one again in Web Access."
 
 
 def _local(monkeypatch, tmp_path) -> None:

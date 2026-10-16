@@ -292,9 +292,9 @@ async def test_setup_options_and_later_note_present(ui_client):
     assert "Additional options" in html
     assert 'href="/setup/restore-backup"' in html
     assert 'href="/setup/migrate"' in html
-    assert "Restore a Celerp backup" in html
+    assert "Open a company copy" in html
     assert "Not sure yet? Create your workspace now." in html
-    assert "You can restore a backup or move your books in later from the dashboard." in html
+    assert "You can open a company copy or move your books in later from the dashboard." in html
     assert len(re.findall(r'class="[^"]*\bbtn--primary\b', html)) == 1
     assert "Try sample company" not in html
 

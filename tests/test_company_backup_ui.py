@@ -34,7 +34,7 @@ CONTENTS = ("Contains this company's records, settings and attachments. Users, p
 SEPARATE = ("Celerp restores this as a separate company so your current company is not "
             "overwritten. You can verify the restored company before deactivating the old one.")
 NOTHING_WRITTEN = "Nothing has been written yet."
-RESTORED = "Restored from the backup of "
+RESTORED = "Restored from the company copy made on "
 RECOVER = "Recover an entire Celerp installation"
 REPO = Path(__file__).resolve().parents[1]
 
@@ -186,7 +186,7 @@ async def test_settings_backup_tab_one_click_download(ui, real_engine):
     ui.cookies.set("celerp_token", tok)
     r = await ui.get("/settings/general?tab=backup")
     assert r.status_code == 200, r.text
-    assert _link(_page(r), "/company-backup/download", "Download company backup")
+    assert _link(_page(r), "/company-backup/download", "Download company copy")
 
     r = await ui.get("/company-backup/download")
     assert r.status_code == 200, r.text
@@ -202,7 +202,7 @@ async def test_settings_backup_tab_states_contents_once(ui, real_engine):
     ui.cookies.set("celerp_token", tok)
     page = _page(await ui.get("/settings/general?tab=backup"))
     assert page.count(CONTENTS) == 1
-    assert _link(page, "/settings/restore-backup", "Restore company backup")
+    assert _link(page, "/settings/restore-backup", "Open a company copy")
 
 
 async def test_settings_restore_explains_and_notices_backup_date(ui, real_engine, real_client):
@@ -238,16 +238,15 @@ async def test_settings_restore_explains_and_notices_backup_date(ui, real_engine
 # ── Add-company chooser ──────────────────────────────────────────────────────
 
 async def test_add_company_chooser_restore_from_backup(ui, real_engine):
-    """The add-company chooser offers Restore from backup and no company copy."""
+    """The add-company chooser offers Open a company copy through the one restore wizard."""
     _, _, tok = await _setup(real_engine)
     ui.cookies.set("celerp_token", tok)
     r = await ui.get("/setup/new-company")
     assert r.status_code == 200, r.text
     page = _page(r)
     base = "/setup/new-company/restore-backup"
-    assert _link(page, base, "Restore from backup")
+    assert _link(page, base, "Open a company copy")
     assert "/setup/new-company/open-copy" not in page
-    assert re.search(r"company copy", page, re.I) is None
 
     r = await ui.get(base)
     assert r.status_code == 200, r.text
@@ -294,7 +293,7 @@ async def test_bootstrap_restore_ui_journey(ui, real_engine, real_client, code_c
     r = await ui.get("/setup")
     assert r.status_code == 200, r.text
     base = "/setup/restore-backup"
-    assert _link(_page(r), base, "Restore a Celerp backup")
+    assert _link(_page(r), base, "Open a company copy")
     r = await ui.get(base)
     assert r.status_code == 200, r.text
     assert 'name="setup_code"' in r.text and 'type="file"' in r.text
@@ -370,7 +369,7 @@ async def test_migration_complete_download_uses_company_exporter(routed_ui, real
     assert r.status_code == 200, r.text
     page = _page(r)
     href = f"/company-backup/download?from_run={run_id}"
-    assert _link(page, href, "Download company backup")
+    assert _link(page, href, "Download company copy")
     assert "/company-copy" not in page
 
     r = await ui.get(href)
@@ -513,8 +512,8 @@ async def test_choose_other_file_deletes_upload(ui, real_engine, real_client, tm
     assert any(c.startswith(f"{UPLOAD_COOKIE}=") and "Max-Age=0" in c for c in r.headers.get_list("set-cookie"))
 
 
-OPENED = "This backup was already restored. Celerp opened the existing company; no duplicate was created."
-DISCONNECTED = "Connections to other services, such as stores and accounting, are not restored from a backup. Connect each one again in Web Access."
+OPENED = "This company copy was already restored. Celerp opened the existing company; no duplicate was created."
+DISCONNECTED = "Connections to other services, such as stores and accounting, are not included in a company copy. Connect each one again in Web Access."
 
 
 async def test_done_page_states_outcome_from_server(ui, real_engine, real_client):
