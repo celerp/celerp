@@ -3,26 +3,55 @@
 //
 // A Windows package carries the Visual C++ runtime next to every bundled
 // PostgreSQL binary, and the build stops when the runtime is not there to copy.
+// It also leaves out every file win-prune.json lists, after checking each one
+// belongs to the owner the list names.
 "use strict";
 
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const afterPack = require("../after-pack").default;
+const PRUNE = require("../win-prune.json");
 
 const RUNTIME = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
+const KEPT = [
+  `${PRUNE.postgres}/bin/postgres.exe`,
+  `${PRUNE.postgres}/lib/libpq.lib`,
+  `${PRUNE.sitePackages}/numpy/linalg/linalg.py`,
+  `${PRUNE.sitePackages}/pip/__init__.py`,
+  `${PRUNE.python}/Lib/os.py`,
+  "resources/app/celerp/main.py",
+];
 
+// A packaged Windows tree holding every win-prune.json entry, each owned as
+// the entry says, plus the files around them that must survive.
 function windowsPackage() {
   const appOutDir = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-winpack-"));
-  const resources = path.join(appOutDir, "resources");
-  const serverBin = path.join(resources, "app.asar.unpacked", "node_modules",
-    "@embedded-postgres", "windows-x64", "native", "bin");
-  const toolsBin = path.join(resources, "pg-win", "bin");
-  fs.mkdirSync(serverBin, { recursive: true });
+  const at = (rel) => path.join(appOutDir, rel);
+  const put = (rel, text = "") => {
+    fs.mkdirSync(path.dirname(at(rel)), { recursive: true });
+    fs.writeFileSync(at(rel), text);
+  };
+  const records = {};
+  for (const e of PRUNE.entries) {
+    if (e.match) continue;
+    const file = path.extname(e.path) ? e.path : `${e.path}/x.py`;
+    put(file, e.sameAs ? "licence text" : "");
+    if (e.sameAs) put(e.sameAs, "licence text");
+    if (e.path.startsWith(`${PRUNE.sitePackages}/`)) {
+      (records[e.owner] ||= []).push(path.posix.relative(PRUNE.sitePackages, file));
+    }
+  }
+  for (const [owner, files] of Object.entries(records)) {
+    put(`${PRUNE.sitePackages}/${owner}-1.0.dist-info/RECORD`, files.map((f) => `${f},,`).join("\n"));
+  }
+  const serverBin = at(`${PRUNE.postgres}/bin`);
+  const toolsBin = at("resources/pg-win/bin");
+  for (const f of KEPT) put(f);
+  put(`${PRUNE.postgres}/bin/wxbase329u_vc_x64_custom.dll`);
+  put(`${PRUNE.postgres}/bin/libcurl.dll`);
   fs.mkdirSync(toolsBin, { recursive: true });
-  fs.writeFileSync(path.join(serverBin, "postgres.exe"), "");
-  fs.writeFileSync(path.join(serverBin, "wxbase329u_vc_x64_custom.dll"), "");
-  return { appOutDir, serverBin, toolsBin };
+  return { appOutDir, at, put, serverBin, toolsBin };
 }
 
 function runtimeDir(files = RUNTIME) {
@@ -50,6 +79,40 @@ describe("afterPack on Windows", () => {
     expect(fs.existsSync(path.join(pkg.serverBin, "wxbase329u_vc_x64_custom.dll"))).toBe(false);
   });
 
+  test("removes every win-prune.json entry and nothing around them", async () => {
+    const pkg = windowsPackage();
+    process.env.CELERP_VC_RUNTIME_DIR = runtimeDir();
+    await run(pkg.appOutDir);
+    expect(PRUNE.entries.filter((e) => !e.match && fs.existsSync(pkg.at(e.path))).map((e) => e.path)).toEqual([]);
+    expect(fs.readdirSync(pkg.serverBin).sort()).toEqual(["postgres.exe", ...RUNTIME].sort());
+    for (const f of KEPT.filter((f) => !f.includes("/bin/"))) expect(fs.existsSync(pkg.at(f))).toBe(true);
+    for (const e of PRUNE.entries.filter((e) => e.sameAs)) expect(fs.existsSync(pkg.at(e.sameAs))).toBe(true);
+  });
+
+  test("stops the build when a listed entry is not in the package", async () => {
+    const pkg = windowsPackage();
+    fs.rmSync(pkg.at("resources/python-x64/python/tcl"), { recursive: true });
+    process.env.CELERP_VC_RUNTIME_DIR = runtimeDir();
+    await expect(run(pkg.appOutDir)).rejects.toThrow(/python\/tcl is listed in win-prune.json but not in the package/);
+  });
+
+  test("stops the build when a package folder holds a file its package did not install", async () => {
+    const pkg = windowsPackage();
+    pkg.put(`${PRUNE.sitePackages}/numpy/tests/added_later.py`);
+    process.env.CELERP_VC_RUNTIME_DIR = runtimeDir();
+    await expect(run(pkg.appOutDir)).rejects.toThrow(/added_later\.py under .*numpy\/tests is not installed by numpy/);
+    expect(fs.existsSync(pkg.at(`${PRUNE.sitePackages}/numpy/tests/added_later.py`))).toBe(true);
+  });
+
+  test("stops the build when a duplicate licence differs from the copy that is kept", async () => {
+    const pkg = windowsPackage();
+    const dup = PRUNE.entries.find((e) => e.sameAs);
+    pkg.put(dup.sameAs, "a different licence text");
+    process.env.CELERP_VC_RUNTIME_DIR = runtimeDir();
+    await expect(run(pkg.appOutDir)).rejects.toThrow(/is not identical to/);
+    expect(fs.existsSync(pkg.at(dup.path))).toBe(true);
+  });
+
   test("stops the build when the runtime folder is not set", async () => {
     delete process.env.CELERP_VC_RUNTIME_DIR;
     await expect(run(windowsPackage().appOutDir)).rejects.toThrow(/CELERP_VC_RUNTIME_DIR/);
@@ -68,9 +131,9 @@ describe("afterPack on Windows", () => {
   });
 });
 
-test("other platforms need no runtime folder", async () => {
-  const appOutDir = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-linuxpack-"));
-  fs.mkdirSync(path.join(appOutDir, "resources"));
+test("other platforms need no runtime folder and keep every win-prune.json path", async () => {
+  const { appOutDir, at } = windowsPackage();
   delete process.env.CELERP_VC_RUNTIME_DIR;
   await expect(afterPack({ electronPlatformName: "linux", appOutDir })).resolves.toBeUndefined();
+  expect(PRUNE.entries.filter((e) => !fs.existsSync(at(e.path))).map((e) => e.path)).toEqual([]);
 });

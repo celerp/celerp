@@ -598,17 +598,6 @@ jobs:
             test -d "$RES/licenses/postgresql"   # from the built-from-source pg_dump tools
             test -d "$RES/licenses/openssl"
           fi
-          # Windows: the StackBuilder DLLs (wxWidgets + libcurl) must have been
-          # pruned by afterPack — fail loudly if any leaked into the package
-          # (otherwise we'd ship the wxWindows-licensed DLLs without attribution).
-          if [ "$OS" = "windows-latest" ]; then
-            BIN="$RES/app.asar.unpacked/node_modules/@embedded-postgres/windows-x64/native/bin"
-            if ls "$BIN"/wx*.dll "$BIN"/libcurl.dll >/dev/null 2>&1; then
-              echo "ERROR: StackBuilder DLLs leaked into the Windows package" >&2
-              ls "$BIN"/wx*.dll "$BIN"/libcurl.dll 2>/dev/null >&2
-              exit 1
-            fi
-          fi
           # Backup and restore run these tools from the package: each must be
           # executable, built for its architecture, and start with only the
           # libraries the package ships plus the system's.
@@ -650,6 +639,23 @@ jobs:
               done ;;
           esac
           echo "OK: third-party licenses and PostgreSQL tools present in packaged artifact"
+
+      # The Windows package leaves out the macOS PostgreSQL builds, the
+      # celerp-postgres wheel and everything electron/win-prune.json lists
+      # (the StackBuilder DLLs among them), keeps what the app runs on, and
+      # still carries a licence for every Python package that ships.
+      - name: Check the Windows bundle
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -eo pipefail
+          RES="electron/dist/win-unpacked/resources"
+          PY="$RES/python-x64/python/python.exe"
+          "$PY" electron/scripts/check_win_bundle.py check electron/dist/win-unpacked
+          "$PY" electron/scripts/collect_licenses.py --check --out "$RES/licenses" \
+            --site-packages "$RES/python-x64/python/Lib/site-packages" \
+            --extra-python electron/licenses-extra/python-standalone \
+            --extra-psycopg2 electron/licenses-extra/psycopg2
 
       # Every DLL a bundled Windows binary imports must ship beside it or be part
       # of Windows itself; anything else fails on a clean PC with 0xC0000135.
