@@ -680,8 +680,40 @@ async def test_preview_offers_prepare_for_disabled_module(routed_ui, real_engine
     assert re.search(r'name="consent"[^>]*value="acme-widgets"', page)
     assert 'value="celerp-labels"' not in page
 
-async def test_handoff_link_uses_existing_backup_preview(ui, real_engine, real_client, monkeypatch, tmp_path):
-    """A handoff is staged for the canonical backup importer, not restored directly."""
+OPENING = "celerp_company_copy_opening"
+
+
+async def _status_of(ui, base: str = "/settings/restore-backup") -> dict:
+    r = await ui.get(f"{base}/opening/status")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _until(ui, state: str, base: str = "/settings/restore-backup") -> dict:
+    import asyncio
+    for _ in range(200):
+        status = await _status_of(ui, base)
+        if status["state"] == state:
+            return status
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"opening never reached {state}: {status}")
+
+
+def _verified(monkeypatch, backup: bytes, link: str):
+    from celerp.services import company_handoff_transfer
+    from ui.routes import company_backup as page
+
+    async def verify(copy_id, proof, digest):
+        assert copy_id == str(page.parse_handoff_link(link).copy_id)
+        assert proof == page.parse_handoff_link(link).proof_hash
+        assert digest == __import__("hashlib").sha256(backup).hexdigest()
+    monkeypatch.setattr(company_handoff_transfer, "verify_company_handoff", verify)
+
+
+async def test_open_link_runs_as_background_job(ui, real_engine, real_client, monkeypatch, tmp_path):
+    """Opening a company copy link answers at once and downloads in the background; the
+    finished copy is staged for the usual preview and nothing is imported."""
+    import asyncio
     from celerp.services.company_handoff_links import handoff_page_link
     from ui.routes import company_backup as page
 
@@ -689,27 +721,90 @@ async def test_handoff_link_uses_existing_backup_preview(ui, real_engine, real_c
     backup = await download(real_client, tok)
     ui.cookies.set("celerp_token", tok)
     link = handoff_page_link(uuid.uuid4(), bytes(range(32)))
+    release = asyncio.Event()
     called = []
 
-    async def retrieve(value, destination):
+    async def retrieve(value, destination, progress=None):
         called.append(value)
+        progress("requesting")
+        progress("downloading", 400, 1000)
+        await release.wait()
+        progress("downloading", 1000, 1000)
+        progress("decrypting")
         destination.write_bytes(backup)
 
     monkeypatch.setattr(page, "download_company_handoff", retrieve)
-    from celerp.services import company_handoff_transfer
-    async def verify(copy_id, proof, digest):
-        assert copy_id == str(page.parse_handoff_link(link).copy_id)
-        assert proof == page.parse_handoff_link(link).proof_hash
-        assert digest == __import__("hashlib").sha256(backup).hexdigest()
-    monkeypatch.setattr(company_handoff_transfer, "verify_company_handoff", verify)
+    _verified(monkeypatch, backup, link)
     before = await _company_ids(real_engine)
     r = await ui.post("/settings/restore-backup/read", data={"handoff_link": link})
+    assert r.status_code == 303 and r.headers["location"] == "/settings/restore-backup/opening"
+    assert OPENING in r.headers.get("set-cookie", "")
+    assert link not in r.text and link not in r.headers.get("set-cookie", "")
+    running = await _until(ui, "running")
+    assert running["percent"] == 40
+    release.set()
+    await _until(ui, "ready")
+    r = await ui.get("/settings/restore-backup/opened")
     assert r.status_code == 200, r.text
     assert "Alpha Trading" in _page(r)
-    assert await _company_ids(real_engine) == before
-    assert called == [link]
+    assert NOTHING_WRITTEN in _page(r)
+    assert UPLOAD_COOKIE in r.headers.get("set-cookie", "")
     assert link not in r.text
+    assert called == [link]
+    assert await _company_ids(real_engine) == before
     assert not list(tmp_path.glob("celerp-handoff-*"))
+
+
+async def test_open_link_progress_page(ui, real_engine, real_client, monkeypatch):
+    """The opening page shows what is happening and how far it has got, can be cancelled,
+    and a copy that cannot be opened says why and how to try again."""
+    import asyncio
+    from celerp.services.company_handoff_links import handoff_page_link
+    from ui.routes import company_backup as page
+
+    _, _, tok = await _setup(real_engine)
+    ui.cookies.set("celerp_token", tok)
+    link = handoff_page_link(uuid.uuid4(), bytes(range(32)))
+    hold = asyncio.Event()
+
+    async def slow(value, destination, progress=None):
+        progress("downloading", 250, 1000)
+        await hold.wait()
+
+    monkeypatch.setattr(page, "download_company_handoff", slow)
+    await ui.post("/settings/restore-backup/read", data={"handoff_link": link})
+    await _until(ui, "running")
+    r = await ui.get("/settings/restore-backup/opening")
+    text_ = _page(r)
+    assert r.status_code == 200
+    assert t("company_backup.opening_downloading", percent=25) in text_
+    assert t("company_backup.opening_nothing_imported") in text_
+    assert 'class="import-progress"' in r.text
+    assert re.search(r'<form[^>]*action="/settings/restore-backup/opening/cancel"', r.text)
+
+    # Another browser has no opening to look at.
+    import httpx as _httpx
+    async with _httpx.AsyncClient(transport=ui._transport, base_url="http://localhost") as other:
+        other.cookies.set("celerp_token", tok)
+        r = await other.get("/settings/restore-backup/opening/status")
+        assert r.status_code == 404
+
+    r = await ui.post("/settings/restore-backup/opening/cancel")
+    assert r.status_code == 303 and r.headers["location"] == "/settings/restore-backup"
+    r = await ui.get("/settings/restore-backup/opening/status")
+    assert r.status_code == 404
+
+    async def unavailable(value, destination, progress=None):
+        from celerp.services.company_handoff_transfer import HandoffDownloadError
+        raise HandoffDownloadError("expired")
+
+    monkeypatch.setattr(page, "download_company_handoff", unavailable)
+    await ui.post("/settings/restore-backup/read", data={"handoff_link": link})
+    failed = await _until(ui, "failed")
+    assert failed["message"] == t("company_backup.handoff_unavailable")
+    r = await ui.get("/settings/restore-backup/opened")
+    assert t("company_backup.handoff_unavailable") in _page(r)
+    assert 'name="handoff_link"' in r.text
 
 
 async def test_invalid_handoff_link_is_not_downloaded(ui, real_engine, monkeypatch):

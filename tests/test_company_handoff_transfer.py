@@ -178,3 +178,25 @@ async def test_archive_verification_is_bound_to_original_content(monkeypatch):
     with pytest.raises(HandoffDownloadError):
         await verify_company_handoff("../bad", proof, original)
     assert len(requests) == 2
+
+
+def test_download_reports_each_stage_and_the_bytes_received(tmp_path, monkeypatch):
+    """The opening page can say what is happening: requesting, how much of the copy has
+    arrived out of how much, then decrypting."""
+    hid, secret = uuid.uuid4(), bytes(range(32))
+    original = tmp_path / "source"
+    original.write_bytes(b"synthetic company backup" * 90000)
+    encrypted = tmp_path / "encrypted"
+    encrypt_file(original, encrypted, secret)
+    body = encrypted.read_bytes()
+    _run_with_remote(monkeypatch, hid, body, content_length=len(body))
+    seen = []
+    asyncio.run(transfer.download_company_handoff(
+        handoff_page_link(hid, secret), tmp_path / "restored",
+        progress=lambda stage, received=0, total=None: seen.append((stage, received, total))))
+    stages = [s for s, _, _ in seen]
+    assert stages[0] == "requesting" and stages[-1] == "decrypting"
+    downloads = [(r, t) for s, r, t in seen if s == "downloading"]
+    assert downloads and downloads[-1] == (len(body), len(body))
+    assert all(t == len(body) for _, t in downloads)
+    assert [r for r, _ in downloads] == sorted(r for r, _ in downloads)
