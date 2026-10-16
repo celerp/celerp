@@ -887,7 +887,7 @@ def _handoff_status(item: dict) -> str:
 
 def _copy_actions(item: dict) -> FT:
     path = f"{HANDOFFS}/{item['id']}"
-    swap = {"hx_target": "#company-copies", "hx_swap": "outerHTML"}
+    swap = {"hx_target": "#copies-list", "hx_swap": "outerHTML"}
     actions = []
     if item.get("link"):
         actions.append(Button(t("company_backup.ready_copy_link"), type="button", cls="btn btn--secondary btn--sm",
@@ -929,7 +929,7 @@ def _copies_table(items: list[dict], *, notice: str | None = None, warning: str 
                      Tbody(*rows))
         if rows else P(t("company_backup.handoffs_empty")),
         P(t("company_backup.copies_revoke_reason"), cls="form-hint") if rows else "",
-        id="company-copies",
+        id="copies-list",
     )
 
 
@@ -968,7 +968,7 @@ async def _copy_action(request: Request, act, done: str):
     try:
         rows = (await api.company_backup_handoffs(token))["items"]
     except (APIError, KeyError, TypeError):
-        return _html(Div(flash(warning or t("company_backup.handoffs_unavailable")), id="company-copies"))
+        return _html(Div(flash(warning or t("company_backup.handoffs_unavailable")), id="copies-list"))
     return _html(_copies_table(rows, notice=notice, warning=warning))
 
 
@@ -1028,7 +1028,7 @@ async def _send_page(request: Request, *, error: str | None = None, values: dict
                 Textarea(values.get("note", ""), id="note", name="note", maxlength="1500",
                          cls="form-input"), cls="form-group"),
             Button(t("company_backup.send_title"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=SEND, id="company-copy-send-form", cls="auth-form",
+            method="post", action=SEND, id="copy-send-form", cls="auth-form",
         ),
         Div(A(t("company_backup.ready_download"), href=DOWNLOAD, cls="auth-link"),
             A(t("company_backup.handoffs_title"), href=HANDOFFS, cls="auth-link"),

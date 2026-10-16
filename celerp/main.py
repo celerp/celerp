@@ -141,7 +141,7 @@ async def _try_auto_activate() -> None:
             backup_encryption_key=data.get("backup_encryption_key"),
             tier=data.get("tier"), status=data.get("status"),
             expected_verifier=verifier if verifier else None,
-            acknowledged_handoff_id=data.get("acknowledged_handoff_id"))
+            acknowledged_copy_id=data.get("acknowledged_copy_id"))
         _log.info("Recovered cloud relay activation (instance_id=%s)", iid)
     except Exception as exc:
         logging.getLogger(__name__).debug(

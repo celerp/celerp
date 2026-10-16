@@ -142,7 +142,7 @@ async def apply_activation_state(
     expected_verifier: str | None = None,
     keep_disconnected: bool = False,
     restart_transport: bool = False,
-    acknowledged_handoff_id: str | None = None,
+    acknowledged_copy_id: str | None = None,
 ) -> bool:
     """Persist authoritative activation first, then converge local runtime."""
     from celerp.config import record_cloud_activation, settings
@@ -174,10 +174,10 @@ async def apply_activation_state(
     )
     if not accepted:
         return False
-    if acknowledged_handoff_id:
+    if acknowledged_copy_id:
         try:
             from celerp.services.company_backup_files import acknowledge_handoff
-            await asyncio.to_thread(acknowledge_handoff, acknowledged_handoff_id)
+            await asyncio.to_thread(acknowledge_handoff, acknowledged_copy_id)
         except OSError:
             log.warning("Could not clear a confirmed company handoff receipt")
 
@@ -317,7 +317,7 @@ async def sync_existing_entitlement(
             backup_encryption_key=data.get("backup_encryption_key"),
             tier=data.get("tier"), status=data.get("status"),
             expected_api_key=expected_key,
-            acknowledged_handoff_id=data.get("acknowledged_handoff_id"),
+            acknowledged_copy_id=data.get("acknowledged_copy_id"),
         )
     except Exception as exc:
         log.warning(

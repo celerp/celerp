@@ -440,7 +440,7 @@ def _resume_parts(next_action: str) -> list:
         # The send page kept every typed value and the same operation; submit
         # it again so the staged copy is reused, never re-exported.
         return [_resume_guard_script(next_action,
-                                     "var f=document.getElementById('company-copy-send-form');"
+                                     "var f=document.getElementById('copy-send-form');"
                                      "if(f){f.requestSubmit();}")]
     if next_action.startswith("buy:"):
         _, slug, kind = next_action.split(":")

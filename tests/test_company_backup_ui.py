@@ -885,7 +885,7 @@ async def test_send_link_without_connect(ui, real_engine, monkeypatch):
     page = _page(r)
     assert r.status_code == 428
     assert 'id="celerp-account-panel"' in page and 'value="copy-send"' in page
-    assert 'id="company-copy-send-form"' in page
+    assert 'id="copy-send-form"' in page
     assert _hidden(page)["key"] == initial["key"] and "Example Accounting" in page
     assert f'href="{DOWNLOAD}"' in page
     assert "Connect" not in page
@@ -896,7 +896,7 @@ async def test_copy_send_resumes_the_same_form_after_sign_in():
     from ui.routes import account
     assert account._next_from("copy-send") == "copy-send"
     script = to_xml(account._resume_parts("copy-send")[0])
-    assert "company-copy-send-form" in script and "requestSubmit" in script
+    assert "copy-send-form" in script and "requestSubmit" in script
 
 
 async def test_company_handoff_activity_revoke_and_navigation(ui, real_engine, monkeypatch):
@@ -994,7 +994,7 @@ async def test_handoffs_table_header_dates_order_revoke_undo(ui, real_engine, mo
 
     swap = {"HX-Request": "true"}
     revoked = await ui.post(f"{route.HANDOFFS}/{older['id']}/revoke", headers=swap)
-    assert revoked.status_code == 200 and 'id="company-copies"' in revoked.text
+    assert revoked.status_code == 200 and 'id="copies-list"' in revoked.text
     assert "<html" not in revoked.text.lower()  # swapped in place, no reload
     assert t("company_backup.copies_revoked") in _page(revoked)
     undone = await ui.post(f"{route.HANDOFFS}/{newer['id']}/restore", headers=swap)

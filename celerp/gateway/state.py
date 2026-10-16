@@ -858,8 +858,8 @@ def activate_payload(
             pending = []
         if pending:
             receipt = pending[0][1]
-            payload["handoff_id"] = receipt["copy_id"]
-            payload["handoff_receipt"] = receipt["proof"]
+            payload["copy_id"] = receipt["copy_id"]
+            payload["copy_receipt"] = receipt["proof"]
     return payload
 
 

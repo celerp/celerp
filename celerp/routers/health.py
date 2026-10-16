@@ -321,7 +321,7 @@ async def _apply_gateway_token_api(
     expected_verifier: str | None = None,
     keep_disconnected: bool = False,
     restart_transport: bool = False,
-    acknowledged_handoff_id: str | None = None,
+    acknowledged_copy_id: str | None = None,
 ) -> bool:
     from celerp.services.cloud_entitlement import apply_activation_state
     return await apply_activation_state(
@@ -333,7 +333,7 @@ async def _apply_gateway_token_api(
         expected_verifier=expected_verifier,
         keep_disconnected=keep_disconnected,
         restart_transport=restart_transport,
-        acknowledged_handoff_id=acknowledged_handoff_id,
+        acknowledged_copy_id=acknowledged_copy_id,
     )
 
 @settings_router.post("/cloud-activate", dependencies=[Depends(require_install_owner)])
@@ -500,7 +500,7 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
         expected_verifier=verifier if authority["kind"] == "verifier" else None,
         keep_disconnected=keep_disconnected,
         restart_transport=(intent == "connect"),
-        acknowledged_handoff_id=data.get("acknowledged_handoff_id"),
+        acknowledged_copy_id=data.get("acknowledged_copy_id"),
     )
     if not accepted:
         return {
@@ -947,7 +947,7 @@ async def _activate_after_claim(
         tier=data.get("tier"), status=data.get("status"),
         expected_verifier=verifier,
         keep_disconnected=keep_disconnected,
-        acknowledged_handoff_id=data.get("acknowledged_handoff_id"),
+        acknowledged_copy_id=data.get("acknowledged_copy_id"),
     )
     if not accepted:
         return None
