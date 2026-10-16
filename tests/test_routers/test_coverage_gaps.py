@@ -14,6 +14,8 @@ import pytest
 
 from test_helpers import import_sent_po
 
+pytestmark = pytest.mark.usefixtures("no_module_demo_records")
+
 
 # ---------------------------------------------------------------------------
 # Helpers

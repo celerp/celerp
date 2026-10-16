@@ -10,6 +10,8 @@ import uuid
 import pytest
 from ui.i18n import t
 
+pytestmark = pytest.mark.usefixtures("no_module_demo_records")
+
 
 async def _register(client, email: str | None = None) -> str:
     addr = email or f"pay-{uuid.uuid4().hex[:8]}@test.example"

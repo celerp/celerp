@@ -29,6 +29,8 @@ import pytest
 from ui.i18n import t
 from celerp.services.permissions import missing_permission_text
 
+pytestmark = pytest.mark.usefixtures("no_module_demo_records")
+
 
 async def _reg(client) -> str:
     addr = f"jgs-{uuid.uuid4().hex[:8]}@jgs.test"

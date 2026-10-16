@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("no_module_demo_records")
+
 
 # ---------------------------------------------------------------------------
 # Helpers

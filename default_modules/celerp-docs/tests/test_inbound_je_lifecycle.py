@@ -11,6 +11,8 @@ import pytest
 
 from stock_books import SAMPLE_STOCK_ENTRY
 
+pytestmark = pytest.mark.usefixtures("no_module_demo_records")
+
 
 async def _register(client) -> str:
     addr = f"admin-{uuid.uuid4().hex[:8]}@inlife.test"

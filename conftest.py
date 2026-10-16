@@ -801,6 +801,16 @@ async def session(_db_engine) -> AsyncSession:
 
 
 @pytest.fixture
+def no_module_demo_records(monkeypatch):
+    """Companies registered in the test start with the core sample stock only, without
+    the sample records modules add (Fixed assets seeds asset bills). For tests that read
+    a new company's whole journal, payables or statements."""
+    from celerp.modules import slots
+
+    monkeypatch.setitem(slots._slots, "demo_records", [])
+
+
+@pytest.fixture
 def ids():
     """Fresh company and user ids for ``auth``."""
     return {"company_id": uuid.uuid4(), "user_id": uuid.uuid4()}
