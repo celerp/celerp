@@ -736,6 +736,10 @@ def stock_records_objects() -> list[Obj]:
     ]
 
 
+def build_stock_records(path: Path) -> Path:
+    return write_manager_file(path, stock_records_objects())
+
+
 def unpriced_write_off_objects() -> list[Obj]:
     """A write-off with no unit cost set. BILLS brings in its own 5 widgets @ 4.00 on 01-03;
     WO0 writes off 1 on 01-05, which Manager books at nothing: 4 widgets worth 20.00 are

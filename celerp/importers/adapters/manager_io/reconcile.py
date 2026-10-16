@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from decimal import Decimal
 
-from celerp.importers.adapters.manager_io.book import AP, AR, INBOUND, JOURNAL_DOCUMENTS, Book
+from celerp.importers.adapters.manager_io.book import AP, AR, INBOUND, JOURNAL_DOCUMENTS, STOCK_RECORDS, Book, Movement
 from celerp.importers.adapters.manager_io.ledger import Ledger
 from celerp.importers.schema import (
     CIFTolerance,
@@ -31,14 +31,37 @@ CONTROL_MEASURES = {"receivable": M.AR_CONTROL, "payable": M.AP_CONTROL, "tax": 
 CREDIT_TYPES = frozenset({"liability", "equity", "revenue"})
 
 
+def _at_unit_cost(book: Book, movement: Movement) -> list[tuple[str, Decimal, Decimal]]:
+    """(item, signed quantity, signed value) for each line a write-off or production order
+    states, the item a production order makes last."""
+    code = book.base_code or ""
+
+    def cost(item: str) -> Decimal:
+        dated = [c for on, c in sorted(book.unit_costs.get(item, [])) if on <= movement.date]
+        return dated[-1] if dated else ZERO
+
+    lines = list(movement.source_lines)
+    made = lines.pop() if movement.source_type == "ProductionOrder" else None
+    out = [(item, quantity, -round_money(-quantity * cost(item), code)) for item, quantity in lines]
+    if made:
+        added = sum((amount for _, amount in movement.expenses), ZERO)
+        out.append((*made, -sum((value for _, _, value in out), ZERO) + added))
+    return out
+
+
 def _stock_from_source(book: Book) -> dict[str, tuple[Decimal, Decimal]]:
     """Quantity and base value held per item from its starting balance and after every stock
     movement in the book, in the order stock moved, receipts first on a day: goods received
     carry their share of the bill line's net, goods delivered their share of the cost of
-    sales the invoice line booked."""
+    sales the invoice line booked. A write-off or production order takes each item out at its
+    unit cost on its date, and a production order brings in what it makes at what it took out
+    plus the expenses it adds."""
     code = book.base_code or ""
     events: list[tuple] = []
     for key, movement in book.movements.items():
+        if movement.source_type in STOCK_RECORDS and not book.is_blocked(key):
+            events.append((movement.date, True, key, None, _at_unit_cost(book, movement)))
+            continue
         doc = book.documents.get(movement.document) if movement.document else None
         if book.is_blocked(key) or doc is None:
             continue
@@ -57,6 +80,11 @@ def _stock_from_source(book: Book) -> dict[str, tuple[Decimal, Decimal]]:
     held: dict[str, tuple[Decimal, Decimal]] = dict(book.starting_stock())
     taken: dict[tuple[str, int], Decimal] = defaultdict(lambda: ZERO)
     for _, _, _, doc, lines in sorted(events, key=lambda e: e[:3]):
+        if doc is None:
+            for item, quantity, value in lines:
+                on_hand, worth = held.get(item, (ZERO, ZERO))
+                held[item] = (on_hand + quantity, worth + value)
+            continue
         for item, quantity, index in lines:
             on_hand, worth = held.get(item, (ZERO, ZERO))
             source = doc.lines[index]

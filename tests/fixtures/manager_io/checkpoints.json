@@ -557,6 +557,18 @@
       }
     }
   },
+  "stock": {
+    "_comment": "specs.stock_records_objects, worked by hand in its docstring: a bill bringing stock into a second location, a write-off, a transfer and a production order. Locations are (label, name) in the order they are carried, Manager's default first.",
+    "locations": [["@DefaultInventoryLocation", "Main warehouse"], ["LOC2", "Store 2"]],
+    "full_history": {
+      "trial_balance": {
+        "@BalanceSheetInventoryOnHandAccount": "38.00", "@BalanceSheetAccountsPayableAccount": "-40.00",
+        "OFF": "-6.00", "@ProfitAndLossStatementAccountInventoryWriteOffs": "8.00"
+      },
+      "inventory_quantity": {"WID": "5", "GAD": "1"},
+      "inventory_value": {"WID": "20.00", "GAD": "18.00"}
+    }
+  },
   "type_checkpoints": {
     "DepreciationEntry": ["history.full_history.trial_balance"],
     "AmortizationEntry": ["history.full_history.trial_balance"],
@@ -739,8 +751,13 @@
       "inventory.cutover.opening_quantity"
     ],
     "DefaultInventoryLocation": [
-      "inventory.full_history.inventory_quantity"
+      "inventory.full_history.inventory_quantity",
+      "stock.locations"
     ],
+    "CustomInventoryLocation": ["stock.locations"],
+    "InventoryWriteOff": ["stock.full_history.trial_balance", "stock.full_history.inventory_value"],
+    "ProductionOrder": ["stock.full_history.trial_balance", "stock.full_history.inventory_value"],
+    "ProfitAndLossStatementAccountInventoryWriteOffs": ["stock.full_history.trial_balance"],
     "InventoryUnitCost": [
       "inventory.full_history.balances"
     ],

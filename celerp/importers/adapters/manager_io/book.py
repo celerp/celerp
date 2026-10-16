@@ -23,6 +23,7 @@ from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader
 from celerp.importers.adapters.manager_io.types import CONTENT_TYPES, GUIDS, NOTES, TARGETS, TYPE_NAMES
 from celerp.importers.schema import CIFCoverageEntry, CoverageClass
 from celerp.services.money import checked_exchange_rate, currency_dp, round_money, split_to_base
+from celerp.services.provisioning import DEFAULT_LOCATION_NAME
 
 MAX_NOTE = 300
 
@@ -91,6 +92,7 @@ FA_DEPRECIATION = GUIDS["ProfitAndLossStatementAccountFixedAssetDepreciation"]
 FA_DISPOSAL = GUIDS["ProfitAndLossStatementAccountFixedAssetLossOnDisposal"]
 IA_AMORTIZATION = GUIDS["ProfitAndLossStatementAccountIntangibleAssetsAmortization"]
 IA_DISPOSAL = GUIDS["ProfitAndLossStatementAccountIntangibleAssetsGainsLossOnDisposal"]
+INVENTORY_WRITE_OFFS = GUIDS["ProfitAndLossStatementAccountInventoryWriteOffs"]
 ACTIVITY_BUILTINS: dict[str, tuple[str, str]] = {
     BILLABLE_TIME: ("asset", "Billable time"),
     WITHHOLDING_TAX: ("asset", "Withholding tax"),
@@ -101,6 +103,7 @@ ACTIVITY_BUILTINS: dict[str, tuple[str, str]] = {
     FA_DISPOSAL: ("expense", "Fixed assets - loss on disposal"),
     IA_AMORTIZATION: ("expense", "Intangible assets - amortization"),
     IA_DISPOSAL: ("expense", "Intangible assets - gain (loss) on disposal"),
+    INVENTORY_WRITE_OFFS: ("expense", "Inventory - write-offs"),
 }
 # Custom control accounts, each reported in place of the built-in one of its kind.
 CONTROL_KINDS = {
@@ -145,14 +148,10 @@ JOURNAL_DOCUMENTS = frozenset({"DebitNote"})
 # The document each physical stock record moves goods for.
 MOVEMENT_OF = {"DeliveryNote": "SalesInvoice", "GoodsReceipt": "PurchaseInvoice"}
 INBOUND = frozenset({"GoodsReceipt", "PurchaseInvoice"})
-LOCATION_NOTE = "Stock held at a location other than the default one; Celerp keeps each item at one location."
-# Inventory records Celerp cannot carry yet: each blocks under its own reason.
-INVENTORY_BLOCKERS = {
-    "CustomInventoryLocation": ("multiple locations", "A second inventory location; Celerp keeps each item at one "
-                                "location."),
-    "InventoryTransfer": ("inter-location transfer", "Stock moved between locations; Celerp keeps each item at one "
-                          "location."),
-}
+# Records that move stock with no invoice or bill: valued at the item's unit cost on their date.
+STOCK_RECORDS = frozenset({"InventoryWriteOff", "ProductionOrder"})
+LOCATION_NOTE = ("Stock held at another location is carried at the default location; move it with a transfer "
+                 "after the import.")
 
 
 class Blocked(Exception):
@@ -332,8 +331,9 @@ class MoveLine:
 
 @dataclass
 class Movement:
-    """Goods physically moved into or out of stock: a goods receipt, a delivery note, or an
-    invoice that moves its own stock."""
+    """Goods physically moved into or out of stock: a goods receipt, a delivery note, an
+    invoice that moves its own stock, or a write-off or production order, which belong to no
+    document and are valued at unit cost."""
     key: str
     source_type: str
     date: date
@@ -342,6 +342,9 @@ class Movement:
     location: str | None
     lines: list[MoveLine]
     source_lines: tuple[tuple[str, Decimal], ...] = ()   # (item, signed quantity) as the record states them
+    description: str | None = None
+    account: str | None = None                 # the account a write-off posts its cost to
+    expenses: tuple[tuple[str, Decimal], ...] = ()       # (account, amount) a production order adds to its cost
 
 
 @dataclass
@@ -486,6 +489,8 @@ class Book:
     transfers: dict[str, Transfer] = field(default_factory=dict)
     journals: dict[str, Journal] = field(default_factory=dict)
     movements: dict[str, Movement] = field(default_factory=dict)
+    default_location: str | None = None                          # the default location's name
+    locations: dict[str, str] = field(default_factory=dict)      # custom location key -> name
     unit_costs: dict[str, list[tuple[date, Decimal]]] = field(default_factory=dict)   # item -> dated costs
     moves: list[Movement] = field(default_factory=list)          # valued movements, in the order stock moved
     attachments: dict[str, AttachmentRef] = field(default_factory=dict)
@@ -577,6 +582,11 @@ class Book:
 
     def live_starting(self) -> list[StartingBalance]:
         return [sb for key, sb in self.starting.items() if not self.is_blocked(key)]
+
+    @property
+    def default_location_name(self) -> str:
+        """The default location's name, or the name Celerp gives its own when Manager's has none."""
+        return (self.default_location or "").strip() or DEFAULT_LOCATION_NAME
 
     def starting_stock(self) -> dict[str, tuple[Decimal, Decimal]]:
         """Quantity and base value per item the business started with."""
@@ -763,6 +773,59 @@ def _movement(source_type: str, key: str, m: Message) -> Movement:
     document = _ref(m.guid(19 if source_type == "DeliveryNote" else 17))
     return Movement(key, source_type, _require_date(m, 3), m.str(1), document, _ref(m.guid(11)), lines,
                     tuple((line.item, line.quantity) for line in lines))
+
+
+def _quantity(m: Message, at: int) -> Decimal:
+    quantity = m.decimal(at) if m.values(at) else Decimal(1)
+    if quantity <= 0:
+        raise Blocked("unsupported feature", "A zero or negative quantity.")
+    return quantity
+
+
+def _consumed(m: Message) -> list[MoveLine]:
+    """The items a write-off or production order takes out of stock."""
+    lines = []
+    for raw in m.messages(3):
+        item = _ref(raw.guid(1))
+        if item is None:
+            raise Blocked("unknown reference", "A line names no inventory item.")
+        lines.append(MoveLine(item, -_quantity(raw, 3)))
+    return lines
+
+
+def _stock_record(source_type: str, key: str, m: Message) -> Movement:
+    """A write-off, which takes stock out against its write-off account, or a production
+    order, which takes out what it consumes and brings in what it makes."""
+    lines = _consumed(m)
+    if source_type == "InventoryWriteOff":
+        if m.values(9) or m.values(6):
+            raise Blocked("unsupported feature", "A write-off to a fixed asset or with a tax code.")
+        return Movement(key, source_type, _require_date(m, 1), m.str(12), None, _ref(m.guid(10)), lines,
+                        tuple((line.item, line.quantity) for line in lines), m.str(2),
+                        _ref(m.guid(4)) or INVENTORY_WRITE_OFFS)
+    finished = _ref(m.guid(4))
+    if finished is None:
+        raise Blocked("unknown reference", "The production order names no item it makes.")
+    if any(line.item == finished for line in lines):
+        raise Blocked("unsupported feature", "Consumes the item it makes.")
+    if m.messages(10) and not m.bool(9):
+        raise Blocked("unsupported feature", "Lists expenses it does not add to the cost of what it makes. Manager "
+                                             "leaves them out of its books, and Celerp cannot carry them apart.")
+    expenses = []
+    for raw in m.messages(10):
+        account = _ref(raw.guid(1))
+        if account is None:
+            raise Blocked("unknown reference", "An expense names no account.")
+        expenses.append((account, _money(raw.decimal(2))))
+    lines.append(MoveLine(finished, _quantity(m, 18)))
+    return Movement(key, source_type, _require_date(m, 1), m.str(17), None, _ref(m.guid(13)), lines,
+                    tuple((line.item, line.quantity) for line in lines), m.str(2), expenses=tuple(expenses))
+
+
+def _held_elsewhere(book: Book, name: str, key: str, location: str | None) -> None:
+    """Stock a record holds at a location other than the default is carried at the default."""
+    if location not in (None, DEFAULT_LOCATION):
+        book.losses[(key, f"{name} (location)")] = LOCATION_NOTE
 
 
 def _settlement(source_type: str, key: str, m: Message) -> Settlement:
@@ -1025,6 +1088,9 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
         book.sub_accounts[key] = m.str(1) or ""
     elif name in STARTING_TYPES:
         book.starting[key] = _starting_balance(name, key, m)
+        if name == "InventoryItemStartingBalance":
+            for line in m.messages(3):
+                _held_elsewhere(book, name, key, _ref(line.guid(1)))
     elif name == "TaxCode":
         if m.int(5, 0) == 1 or m.int(6, 0) == 1 or m.bool(11):
             raise Blocked("unsupported feature", "A total-rate, multiple-rate or reverse-charge tax code.")
@@ -1046,8 +1112,14 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
         book.documents[key] = _document(name, key, m)
     elif name in ORDER_TYPES:
         book.orders[key] = _order(name, key, m)
-    elif name in MOVEMENT_OF:
-        book.movements[key] = _movement(name, key, m)
+    elif name in MOVEMENT_OF or name in STOCK_RECORDS:
+        movement = (_movement if name in MOVEMENT_OF else _stock_record)(name, key, m)
+        _held_elsewhere(book, name, key, movement.location)
+        book.movements[key] = movement
+    elif name == "DefaultInventoryLocation":
+        book.default_location = m.str(1)
+    elif name == "CustomInventoryLocation":
+        book.locations[key] = m.str(1) or ""
     elif name == "InventoryUnitCost":
         item, cost = _ref(m.guid(2)), m.decimal(3)
         if item is None or cost is None:
@@ -1189,8 +1261,6 @@ def _starting_balance(name: str, key: str, m: Message) -> StartingBalance:
         return StartingBalance(key, name, target, (_money(m.decimal(2)),))
     _unsupported(m, (4, 5, 6, 7), "a starting stock value other than an average cost")
     lines = m.messages(3)
-    if any(_ref(line.guid(1)) not in (None, DEFAULT_LOCATION) for line in lines):
-        raise Blocked("multiple locations", LOCATION_NOTE)
     quantity = sum((_money(line.decimal(2)) for line in lines), Decimal(0))
     if not m.bool(2) or quantity <= 0:
         raise Blocked("unsupported feature", "A starting stock with no quantity, which Celerp cannot reproduce yet.")
@@ -1297,8 +1367,8 @@ def _resolve_document(book: Book, doc: Document) -> None:
         target = book.documents.get(doc.applies_to)
         _check(target is not None and target.source_type == NOTE_OF[doc.source_type], "the invoice it settles")
     _price_lines(book, doc.currency, doc.lines, doc.include_tax)
-    if doc.moves_stock and doc.location not in (None, DEFAULT_LOCATION):
-        raise Blocked("multiple locations", LOCATION_NOTE)
+    if doc.moves_stock:
+        _held_elsewhere(book, doc.source_type, doc.key, doc.location)
 
 
 def _resolve_order(book: Book, order: Document) -> None:
@@ -1341,6 +1411,51 @@ def _unit_cost(book: Book, item: str, day: date) -> Decimal | None:
     return costs[-1] if costs else None
 
 
+def _locations(book: Book) -> None:
+    """Celerp names each location once, so a custom location named like the default one, or
+    like another custom location, is blocked. Its stock arrives at the default location."""
+    seen = {book.default_location_name.casefold()}
+    for key, name in book.locations.items():
+        folded = name.strip().casefold()
+        if not folded:
+            book.block("CustomInventoryLocation", key, "missing name", "The location has no name.")
+        elif folded in seen:
+            book.block("CustomInventoryLocation", key, "duplicate name", "Another location has the same name. "
+                       "Rename one of them in Manager, then upload the file again.")
+        seen.add(folded)
+
+
+def _resolve_stock_record(book: Book, movement: Movement) -> None:
+    """Value a write-off or production order as Manager books it, and post what it books.
+
+    Each item taken out leaves at its unit cost on the record's date, or at nothing when none
+    is set. A write-off posts that cost from inventory on hand to its write-off account; a
+    production order's finished item comes in at the cost of what it consumes plus the
+    expenses it adds, which post from their accounts to inventory on hand."""
+    code = book.base_code or ""
+    for line in movement.lines:
+        _check(line.item in book.items and not book.is_blocked(line.item), "an inventory item")
+    out = movement.lines if movement.source_type == "InventoryWriteOff" else movement.lines[:-1]
+    for line in out:
+        line.value = -round_money(-line.quantity * (_unit_cost(book, line.item, movement.date) or Decimal(0)), code)
+    taken = -sum((line.value for line in out), Decimal(0))
+    title = "Inventory write-off" if movement.source_type == "InventoryWriteOff" else "Production order"
+    narration = movement.description or f"{title} {movement.ref or ''}".strip()
+    if movement.source_type == "InventoryWriteOff":
+        _add_builtin(book, movement.account)
+        account = _place(book, movement.account, None)
+        if taken:
+            _install(book, f"{movement.key}:cost", movement.source_type, movement.date, narration,
+                     [_posting(account, taken), _posting(INVENTORY, -taken)])
+        return
+    added = sum((amount for _, amount in movement.expenses), Decimal(0))
+    movement.lines[-1].value = taken + added
+    expenses = [_posting(_place(book, account, None), -amount) for account, amount in movement.expenses]
+    if added:
+        _install(book, f"{movement.key}:cost", movement.source_type, movement.date, narration,
+                 [_posting(INVENTORY, added), *expenses])
+
+
 def _cost_sales(book: Book) -> None:
     """Work out each sales invoice's cost of sales as Manager books it.
 
@@ -1355,13 +1470,27 @@ def _cost_sales(book: Book) -> None:
     selling more of an item than is owned is blocked, even with goods on hand or a unit cost
     set: Manager clears negative inventory through an account Celerp does not rebuild.
     Every later sale of that item is blocked too, as its cost depends on that clearing.
-    An item that is not carried leaves its documents blocked already and is not costed."""
+    An item that is not carried leaves its documents blocked already and is not costed.
+    Write-offs and production orders change what is owned on their own date, and one that
+    takes out more than is owned, or takes out an item after that happened, is blocked alike."""
     code = book.base_code or ""
-    trading = sorted((doc for doc in book.documents.values() if doc.source_type in ("PurchaseInvoice", "SalesInvoice")),
+    trading = sorted([*(doc for doc in book.documents.values() if doc.source_type in ("PurchaseInvoice", "SalesInvoice")),
+                      *(m for m in book.movements.values() if m.source_type in STOCK_RECORDS)],
                      key=lambda d: (d.date, d.source_type != "PurchaseInvoice", d.key))
     owned: dict[str, Decimal] = {item: qty for item, (qty, _) in book.starting_stock().items()}
     oversold: set[str] = set()
     for doc in trading:
+        if isinstance(doc, Movement):
+            for line in (ln for ln in doc.lines if ln.item in book.items):
+                held = owned.get(line.item, Decimal(0))
+                if line.quantity < 0 and (-line.quantity > held or line.item in oversold):
+                    oversold.add(line.item)
+                    if not book.is_blocked(doc.key):
+                        book.block(doc.source_type, doc.key, "negative quantity owned", "Takes out more of an item "
+                                   "than the business owned on its date, or takes it out after such a record. Manager "
+                                   "settles that through negative inventory clearing. Celerp does not carry that yet.")
+                owned[line.item] = held + line.quantity
+            continue
         for line in (ln for ln in doc.lines if ln.item in book.items):
             held = owned.get(line.item, Decimal(0))
             if doc.source_type == "PurchaseInvoice":
@@ -1598,8 +1727,17 @@ def _resolve(book: Book) -> None:
             _resolve_starting(book, sb)
         except Blocked as blocked:
             book.block(sb.source_type, key, blocked.reason, blocked.note)
+    _locations(book)
+    stock_records = {k: m for k, m in book.movements.items() if m.source_type in STOCK_RECORDS}
+    for key, movement in stock_records.items():
+        try:
+            _resolve_stock_record(book, movement)
+        except Blocked as blocked:
+            book.block(movement.source_type, key, blocked.reason, blocked.note)
     _cost_sales(book)
     for key, movement in book.movements.items():
+        if key in stock_records:
+            continue
         try:
             _link(book, movement)
         except Blocked as blocked:
@@ -1759,8 +1897,6 @@ def _link(book: Book, movement: Movement) -> None:
     doc = book.documents.get(movement.document)
     _check(doc is not None and doc.source_type == MOVEMENT_OF[movement.source_type],
            "the invoice or bill it moves goods for")
-    if movement.location not in (None, DEFAULT_LOCATION):
-        raise Blocked("multiple locations", LOCATION_NOTE)
     if book.is_blocked(doc.key):
         raise Blocked("blocked document", "Moves goods for a document that cannot be migrated.")
     if doc.moves_stock:
@@ -1794,7 +1930,8 @@ def _value_stock(book: Book) -> None:
 
     Goods received carry their share of the bill line's net and goods delivered their share
     of the cost of sales the invoice line booked, the last movement of a line taking what is
-    left of it. A movement that takes more than its document lists, moves a line of zero or
+    left of it; a write-off or production order keeps the unit cost value it was given. A
+    movement that takes more than its document lists, moves a line of zero or
     negative quantity, or takes more stock than is held, is blocked and moves nothing."""
     code = book.base_code or ""
     movements = [m for k, m in book.movements.items() if not book.is_blocked(k)]
@@ -1803,10 +1940,16 @@ def _value_stock(book: Book) -> None:
     held = book.starting_stock()
     taken: dict[tuple[str, int], tuple[Decimal, Decimal]] = {}
     for movement in sorted(movements, key=lambda m: (m.date, m.source_type not in INBOUND, m.key)):
-        doc = book.documents[movement.document]
+        doc = book.documents.get(movement.document) if movement.document else None
         now_held, now_taken = dict(held), dict(taken)
         try:
             for line in movement.lines:
+                if doc is None:                         # a write-off or production order, valued already
+                    on_hand, worth = now_held.get(line.item, (Decimal(0), Decimal(0)))
+                    if on_hand + line.quantity < 0:
+                        raise Blocked("negative stock", "Moves more stock out than is on hand at the time.")
+                    now_held[line.item] = (on_hand + line.quantity, worth + line.value)
+                    continue
                 source = doc.lines[line.line]
                 qty, value = now_taken.get((doc.key, line.line), (Decimal(0), Decimal(0)))
                 if qty + abs(line.quantity) > source.quantity:
@@ -1911,9 +2054,6 @@ def read_book(reader: ManagerReader) -> Book:
             continue
         book.names[key] = name
         book.accept(name, key)
-        if name in INVENTORY_BLOCKERS:
-            book.block(name, key, *INVENTORY_BLOCKERS[name])
-            continue
         if CONTENT_TYPES[ctype] not in (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS):
             continue
         try:

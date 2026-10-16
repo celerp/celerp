@@ -18,6 +18,7 @@ FX = HERE / "fx.manager"
 INVENTORY = HERE / "inventory.manager"
 STARTING = HERE / "starting.manager"
 HISTORY = HERE / "history.manager"
+STOCK = HERE / "stock.manager"
 CHECKPOINTS = json.loads((HERE / "checkpoints.json").read_text())
 
 # Measures whose checkpoint values carry a currency: [currency, amount].

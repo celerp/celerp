@@ -10,7 +10,7 @@ write-off takes its stock out at the item's unit cost on its date, or at nothing
 is set, as Manager books it, against its write-off account. A production order takes the
 items it consumes out at their unit cost and brings in what it makes at that cost plus the
 expenses it adds, credited to their accounts. Every figure is worked by hand in the
-docstring of its spec."""
+docstring of its spec; the committed stock file's are kept with the other checkpoints."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ import pytest
 from celerp.importers.adapters.base import MigrationDecisions, ScanError
 from celerp.importers.schema import CIFMode, CoverageClass
 from fixtures.manager_io import specs
-from fixtures.manager_io.support import actual_rows, adapter, artifact, ref
+from fixtures.manager_io.support import CHECKPOINTS, STOCK, actual_rows, adapter, artifact, expected_rows, ref
 from migration_support import real_client, real_engine  # noqa: F401 - fixtures
 from test_migration_inventory_provenance import OFF_HAND, _migrated, _position
 
@@ -31,6 +31,7 @@ WID, GAD = ref("WID"), ref("GAD")
 INVENTORY = ref("@BalanceSheetInventoryOnHandAccount")
 WRITE_OFFS = ref("@ProfitAndLossStatementAccountInventoryWriteOffs")
 STOPPING = (CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER, CoverageClass.UNCLASSIFIED)
+_STOCK = CHECKPOINTS["stock"]
 
 
 def _source(tmp_path, objects, name: str = "stock.manager"):
@@ -61,11 +62,11 @@ def _stock_rows(rows) -> dict[tuple[str, str], D]:
                                   ("inventory_value", GAD), ("trial_balance", INVENTORY)}}
 
 
-def test_locations_transfers_write_offs_and_production_scan_without_blockers(tmp_path):
+def test_locations_transfers_write_offs_and_production_scan_without_blockers():
     """RED before the change: the custom location, the transfer, the write-off, the
     production order and the automatic revaluation each stop the scan, and so does the
     flagged bill that brings stock into Store 2."""
-    rows = _rows(_source(tmp_path, specs.stock_records_objects()))
+    rows = _rows(artifact(STOCK))
     assert {label: r.note for label, r in rows.items() if r.coverage_class in STOPPING} == {}
     assert (rows["CustomInventoryLocation"].coverage_class, rows["CustomInventoryLocation"].target) == (
         CoverageClass.MAPPED_WITH_LOSS, "location")
@@ -79,22 +80,22 @@ def test_locations_transfers_write_offs_and_production_scan_without_blockers(tmp
         assert "default location" in rows[label].note, label
 
 
-def test_every_location_is_carried_with_the_default_first(tmp_path):
+def test_every_location_is_carried_with_the_default_first():
     """RED before the change: the scan stops on the custom location, so no location is
     carried and Manager's default location arrives under Celerp's own default name."""
-    manifest = adapter().build_manifest([_source(tmp_path, specs.stock_records_objects())], FULL)
+    manifest = adapter().build_manifest([artifact(STOCK)], FULL)
     assert [(loc.source_external_id, loc.name) for loc in manifest.bundle.locations] == [
-        (str(specs.T["DefaultInventoryLocation"]), "Main warehouse"), (ref("LOC2"), "Store 2")]
+        (ref(label), name) for label, name in _STOCK["locations"]]
 
 
-def test_write_off_and_production_move_stock_and_post_as_manager_books_them(tmp_path):
+def test_write_off_and_production_move_stock_and_post_as_manager_books_them():
     """RED before the change: the scan stops, so nothing is carried.
 
     WO1 takes 2 widgets out at 4.00 against Inventory - write-offs; PO1 takes 3 widgets out
     at 12.00 and brings in 1 gadget at 18.00, the 6.00 of expenses it adds credited to
     office expenses. 5 widgets / 20.00 and 1 gadget / 18.00 are left, and the inventory
     account is 38.00, in the bundle and in the figures the import is checked against."""
-    manifest = adapter().build_manifest([_source(tmp_path, specs.stock_records_objects())], FULL)
+    manifest = adapter().build_manifest([artifact(STOCK)], FULL)
     moved = {(a.source_type, a.item_external_id): (a.quantity, a.value)
              for a in manifest.bundle.inventory_adjustments if a.source_type in ("InventoryWriteOff", "ProductionOrder")}
     assert moved == {("InventoryWriteOff", WID): (D("-2"), D("-8.00")), ("ProductionOrder", WID): (D("-3"), D("-12.00")),
@@ -102,12 +103,9 @@ def test_write_off_and_production_move_stock_and_post_as_manager_books_them(tmp_
     assert _held(manifest) == {WID: (D("5"), D("20.00")), GAD: (D("1"), D("18.00"))}
     assert _journal(manifest, "WO1") == [(INVENTORY, D(0), D("8.00")), (WRITE_OFFS, D("8.00"), D(0))]
     assert _journal(manifest, "PO1") == [(INVENTORY, D("6.00"), D(0)), (ref("OFF"), D(0), D("6.00"))]
-    expected = {("inventory_quantity", WID): D("5"), ("inventory_value", WID): D("20.00"),
-                ("inventory_quantity", GAD): D("1"), ("inventory_value", GAD): D("18.00"),
-                ("trial_balance", INVENTORY): D("38.00")}
-    assert _stock_rows(actual_rows(manifest.reconciliation_expectations)) == expected
-    source = adapter().source_expectations([_source(tmp_path, specs.stock_records_objects())], FULL)
-    assert _stock_rows(actual_rows(source)) == expected
+    expected = expected_rows(_STOCK["full_history"], "USD")
+    assert expected <= actual_rows(manifest.reconciliation_expectations)
+    assert expected <= actual_rows(adapter().source_expectations([artifact(STOCK)], FULL))
 
 
 def test_write_off_with_no_unit_cost_takes_out_nothing(tmp_path):

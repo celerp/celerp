@@ -113,6 +113,9 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("ProfitAndLossStatementAccountLatePaymentFees", "841b2acb-8bb5-4742-864e-4226fa421f44", _M),
     ("ProfitAndLossStatementCapitalGainsOnInvestments", "de8d014f-e862-4ab5-88cc-335d464315a6", _M),
     ("LatePaymentFee", "4dada073-022f-464e-bdb3-ff38c83e577f", _M),
+    ("InventoryWriteOff", "d7ff6694-f1ef-419f-8ae2-55527a02e95f", _M),
+    ("ProductionOrder", "da996523-e77e-493c-b134-31c6c6ccae4a", _M),
+    ("ProfitAndLossStatementAccountInventoryWriteOffs", "eff068c3-5cc6-4746-b73b-850d30534cbb", _M),
     # mapped_with_loss
     ("ControlAccountForCustomers", "7a57978e-583d-4997-86c7-c557de0e7fdd", _L),
     ("ControlAccountForSuppliers", "78e7aefb-9dff-4ae5-981e-4165b14fd963", _L),
@@ -129,13 +132,9 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("ProfitAndLossStatementGroup", "5770616c-0e01-46ca-a172-f7042275da6c", _L),
     ("DefaultInventoryLocation", "d63413bc-622e-4e39-86bc-15e95eb4e81c", _L),
     ("InventoryUnitCost", "d5d7bad5-0abd-4501-af7f-cb6289cabc30", _L),
-    # unsupported_financial_blocker
-    ("CustomInventoryLocation", "fae8151d-252e-45e3-b1f4-e048075b8983", _B),
-    ("InventoryTransfer", "7eaafddc-54c9-4235-98d2-e8a1ee438150", _B),
-    ("InventoryAutomaticRevaluation", "ffbec913-dcc6-420b-b591-a27822f60648", _B),
-    ("InventoryWriteOff", "d7ff6694-f1ef-419f-8ae2-55527a02e95f", _B),
-    ("ProductionOrder", "da996523-e77e-493c-b134-31c6c6ccae4a", _B),
+    ("CustomInventoryLocation", "fae8151d-252e-45e3-b1f4-e048075b8983", _L),
     # unsupported_nonfinancial
+    ("InventoryTransfer", "7eaafddc-54c9-4235-98d2-e8a1ee438150", _N),
     ("Division", "cc7fc110-e3e4-4b3b-823d-86c4a4cdabbc", _N),
     ("ExchangeRate", "14240c19-3d08-4fe6-94bb-6dd17c4bcda6", _L),
     ("Forecast", "821030a6-9820-4cba-8879-eda07853b9a6", _N),
@@ -227,6 +226,7 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("IntangibleAssetSummary", "d76b3a1a-bb37-4767-9f65-f0389ec9d5df", _I),
     ("InterAccountTransferFooter", "12479269-1209-4684-8d6a-ccc7a447fd62", _I),
     ("InternalPdfGenerator", "7e9fe6d7-d3a4-4456-981f-8112184b5517", _I),
+    ("InventoryAutomaticRevaluation", "ffbec913-dcc6-420b-b591-a27822f60648", _I),
     ("InventoryCostingCalculationWorksheet", "fa064288-9c14-404b-9dce-da46957d46e2", _I),
     ("InventoryPriceList", "14da35e1-9b94-4403-8575-9d64ade4d7b4", _I),
     ("InventoryProfitMargin", "796da7cf-3551-4ff4-afad-942d4fc750cc", _I),
@@ -251,7 +251,6 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("ProfitAndLossStatementAccountBillableExpensesCost", "234d263d-cf0e-4e3e-85ca-ef899016e58a", _I),
     ("ProfitAndLossStatementAccountBillableExpensesInvoiced", "1ae41f36-c83a-428c-be23-a99714110807", _I),
     ("ProfitAndLossStatementAccountBillableTimeInvoiced", "8d86390b-b90f-4cf6-862b-9b4050449b91", _I),
-    ("ProfitAndLossStatementAccountInventoryWriteOffs", "eff068c3-5cc6-4746-b73b-850d30534cbb", _I),
     ("ProfitAndLossStatementAccountRoundingExpense", "2aa99eac-faca-4017-a157-edbbbcb160ac", _I),
     ("ProfitAndLossStatementActualVsBudget", "25c7aa0e-536c-42be-a75c-1b5ac71e955a", _I),
     ("ProfitAndLossStatementByGroup", "41ec3bd5-c95a-49e5-973b-ee26509a6a8c", _I),
@@ -477,7 +476,10 @@ TARGETS: dict[str, str] = {
     "DeliveryNote": "inventory_adjustment",
     "GoodsReceipt": "inventory_adjustment",
     "DefaultInventoryLocation": "location",
+    "CustomInventoryLocation": "location",
     "InventoryUnitCost": "inventory_adjustment",
+    "InventoryWriteOff": "inventory_adjustment",
+    "ProductionOrder": "inventory_adjustment",
     "CreditNote": "document",
     "SalesQuote": "document",
     "SalesOrder": "document",
@@ -525,7 +527,18 @@ NOTES: dict[str, str] = {
     "Assets": "Sets the account type of the accounts in the group; the group itself is not carried.",
     "Liabilities": "Sets the account type of the accounts in the group; the group itself is not carried.",
     "Equity": "Sets the account type of the accounts in the group; the group itself is not carried.",
-    "DefaultInventoryLocation": "Stock held here is carried at the company's default location; the location name is not carried.",
+    "DefaultInventoryLocation": "Carried as the company's default location, which holds every item imported.",
+    "CustomInventoryLocation": ("Carried as a location. The stock Manager holds here arrives at the default "
+                                "location; move it with a transfer after the import. The code and inactive flag "
+                                "are not carried."),
+    "InventoryTransfer": ("Moves stock between locations and changes no figure in the books; not carried. Stock "
+                          "arrives at the default location, to be moved with a transfer after the import."),
+    "InventoryAutomaticRevaluation": "Holds no figures of its own; not carried.",
+    "InventoryWriteOff": ("Takes its stock out at the item's unit cost on its date, or at nothing when none is set, "
+                          "as Manager books it, and posts that cost as a journal to its write-off account."),
+    "ProductionOrder": ("Takes the items it consumes out at their unit cost on its date and brings in what it makes "
+                        "at that cost plus the expenses it adds, which post as a journal from their accounts to "
+                        "inventory on hand."),
     "InventoryUnitCost": "Sets the cost of each sale and delivery; the unit cost itself is not carried.",
     "LockDate": "Installed as the company lock date when the migration finishes.",
     **{name: ("Carried on one opening journal dated the day before the first transaction, balanced against "

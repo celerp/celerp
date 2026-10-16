@@ -172,7 +172,8 @@ SCHEMAS: dict[str, Schema] = {
         "ProfitAndLossStatementAccountFixedAssetLossOnDisposal",
         "ProfitAndLossStatementAccountIntangibleAssetsAmortization",
         "ProfitAndLossStatementAccountIntangibleAssetsGainsLossOnDisposal",
-        "ProfitAndLossStatementAccountLatePaymentFees", "ProfitAndLossStatementCapitalGainsOnInvestments")},
+        "ProfitAndLossStatementAccountLatePaymentFees", "ProfitAndLossStatementCapitalGainsOnInvestments",
+        "ProfitAndLossStatementAccountInventoryWriteOffs")},
     # Balance sheet built-ins with a position and code, holder accounts' among them.
     **{name: _HOLDER_BUILTIN for name in (
         "BalanceSheetBillableTimeAccount", "BalanceSheetWithholdingTaxAccount", "BalanceSheetCapitalAccountsAccount",
@@ -223,8 +224,12 @@ SCHEMAS: dict[str, Schema] = {
     "InventoryItem": _fields(read=(1, 10, 11, 13, 31, 32), numbers=(2, 3)) | {
         38: ignored("The valuation method. Manager's books cost every sale at the item's unit cost on its date; "
                     "the method only shapes the unit costs Manager's cost correction suggests.")},
-    "DefaultInventoryLocation": _fields(f1=ignored("The location's name. Every item is held at the one "
-                                                   "default location, so no location is carried.")),
+    "DefaultInventoryLocation": _fields(read=(1,)),
+    "CustomInventoryLocation": _fields(read=(1,),
+                                       f2=lost("inactive", "Whether the location is inactive is not carried. "
+                                                           "The location is carried as active."),
+                                       f3=lost("code", "The location's code is not carried. Celerp locations "
+                                                       "have a name only.")),
     "InventoryUnitCost": _fields(refs=(2,), numbers=(3,), days=(1,)),
     "SalesInvoice": _fields(read=(2, 4, 8, 12, 22, 28, 29, 31, 32, 35, 54, 69), refs=(3, 30, 50, 51), days=(1, 6),
                             f49=_lines(_SALES_LINE), f64=NUMBER, f65=READ, f48=_LINE_DESCRIPTION),
@@ -268,6 +273,11 @@ SCHEMAS: dict[str, Schema] = {
                               f3=lost("invoice link", "The invoice a late fee is charged on is not carried: the fee "
                                                       "stays on the customer's balance, not on the invoice it was "
                                                       "charged on.", GUID)),
+    "InventoryWriteOff": _fields(read=(2, 12), refs=(4, 6, 9, 10), days=(1,),
+                                 f3=_lines(_fields(refs=(1,), numbers=(3,))), f5=_DIVISION, **_printed(13, 14)),
+    "ProductionOrder": _fields(read=(2, 9, 17), refs=(4, 13), numbers=(18,), days=(1,),
+                               f3=_lines(_fields(refs=(1,), numbers=(3,))),
+                               f10=_lines(_fields(refs=(1,), numbers=(2,), f3=_DIVISION)), **_printed(14, 15)),
     "WithholdingTaxReceipt": _fields(read=(4,), refs=(1,), days=(2,), numbers=(3,)),
     "BillableTime": _fields(read=(3, 14), refs=(13,), days=(1, 15), f16=_DIVISION,
                             **{f"f{n}": _TIME_DETAIL for n in (6, 7, 9)}, f8=_TIME_RATE),
@@ -319,6 +329,8 @@ _OBSOLETE: dict[str, tuple[int, ...]] = {
     **{name: (2,) for name in ("PayslipEarningsItem", "PayslipDeductionItem", "PayslipContributionItem")},
     "ExpenseClaim": (2, 4, 6, 11),
     "LatePaymentFee": (5,),
+    "InventoryWriteOff": (8, 11, 18, 20, 21),
+    "ProductionOrder": (5, 7, 8, 11, 12),
     "BillableTime": (2, 4, 10, 11),
     "Attachment": (3, 5, 7, 8, 9, 10, 11),
     "ExchangeRate": (3, 4, 5),

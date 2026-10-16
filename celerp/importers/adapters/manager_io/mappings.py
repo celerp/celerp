@@ -20,7 +20,7 @@ from decimal import Decimal
 
 from celerp.importers.adapters.manager_io.attachments import Screened
 from celerp.importers.adapters.manager_io.book import (
-    INVENTORY, INVENTORY_PURCHASES, STARTING, Book, Document, Line, line_account,
+    DEFAULT_LOCATION, INVENTORY, INVENTORY_PURCHASES, STARTING, Book, Document, Line, line_account,
 )
 from celerp.importers.adapters.manager_io.ledger import Ledger, Posting, foreign_holders, holding_stock, posting_holder
 from celerp.importers.adapters.manager_io.types import GUIDS
@@ -39,6 +39,7 @@ from celerp.importers.schema import (
     CIFJournalEntry,
     CIFJournalLine,
     CIFLineItem,
+    CIFLocation,
     CIFSettlement,
     CIFTaxCode,
 )
@@ -68,6 +69,17 @@ def _currencies(book: Book) -> list[CIFCurrency]:
     foreign = [CIFCurrency(**_src("ForeignCurrency", c.key), code=c.code, name=c.name, precision=c.precision)
                for c in book.currencies.values() if c.code != book.base_code]
     return [base, *sorted(foreign, key=lambda c: c.code)]
+
+
+def _locations(book: Book) -> list[CIFLocation]:
+    """With a custom location, every location, the default first so it stays the default.
+    With none, Celerp gives the company its own default location."""
+    if not book.locations:
+        return []
+    custom = [CIFLocation(**_src("CustomInventoryLocation", key), name=name.strip())
+              for key, name in book.locations.items() if not book.is_blocked(key)]
+    return [CIFLocation(**_src("DefaultInventoryLocation", DEFAULT_LOCATION), name=book.default_location_name),
+            *custom]
 
 
 def _accounts(book: Book) -> list[CIFAccount]:
@@ -119,7 +131,7 @@ def _movements(book: Book) -> dict[str, list[dict]]:
     """The physical records that moved each document's goods, in the order stock moved.
     A document flagged to move its own stock names itself."""
     out: dict[str, list[dict]] = defaultdict(list)
-    for movement in book.moves:
+    for movement in (m for m in book.moves if m.document):
         out[movement.document].append({
             "source": movement.key, "date": movement.date.isoformat(),
             "lines": [{"line": ln.line, "item": ln.item, "quantity": str(abs(ln.quantity)), "value": str(abs(ln.value))}
@@ -307,6 +319,7 @@ def build_bundle(book: Book, ledger: Ledger, screened: Screened) -> CIFImportBun
     return CIFImportBundle(
         company=_company(book),
         currencies=_currencies(book),
+        locations=_locations(book),
         accounts=_accounts(book),
         tax_codes=_tax_codes(book),
         contacts=_contacts(book),
