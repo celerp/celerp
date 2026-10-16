@@ -150,3 +150,45 @@ async def test_send_link_without_connect_is_refused_with_account_needed(real_eng
     assert r.status_code == 428, r.text
     assert "free Celerp account" in r.json()["detail"]
     assert not exported
+
+
+@pytest.mark.asyncio
+async def test_send_form_remembers_firm(real_engine, real_client, monkeypatch, tmp_path):
+    """The firm name and reply address of the last confirmed send are kept for the next
+    send from any company here; a refused send changes nothing."""
+    from celerp.services import company_backup, company_handoff_sender
+    user = await owner(real_engine)
+    first = await company(real_engine, user, "Client One", "remember-sender-one")
+    second = await company(real_engine, user, "Client Two", "remember-sender-two")
+    first_headers = {"Authorization": f"Bearer {await token(real_engine, user, first)}"}
+    second_headers = {"Authorization": f"Bearer {await token(real_engine, user, second)}"}
+    refuse = []
+
+    async def export(cid, destination):
+        destination.write_bytes(b"synthetic company archive")
+
+    async def send(**kwargs):
+        if refuse:
+            raise company_handoff_sender.HandoffSendError("Delivery not confirmed")
+        await kwargs["export"](tmp_path / "source.celerp-company")
+        return {"id": str(uuid.uuid4()), "link": "synthetic-link"}
+
+    monkeypatch.setattr(company_backup, "export_company_snapshot", export)
+    monkeypatch.setattr(company_handoff_sender, "send_company_backup", send)
+
+    def body(firm, reply_to):
+        return {"operation_id": str(uuid.uuid4()),
+                "key": base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("="),
+                "firm_name": firm, "recipient": "client@example.com", "reply_to": reply_to, "note": ""}
+
+    assert (await real_client.get("/company-backups/sender")).status_code == 401
+    r = await real_client.post("/company-backups/send-handoff", json=body("North Ledger", "desk@north.example"),
+                               headers=first_headers)
+    assert r.status_code == 200, r.text
+    expected = {"firm_name": "North Ledger", "reply_to": "desk@north.example"}
+    assert (await real_client.get("/company-backups/sender", headers=second_headers)).json() == expected
+    refuse.append(True)
+    r = await real_client.post("/company-backups/send-handoff", json=body("Typo Firm", "typo@example.com"),
+                               headers=second_headers)
+    assert r.status_code == 502
+    assert (await real_client.get("/company-backups/sender", headers=first_headers)).json() == expected

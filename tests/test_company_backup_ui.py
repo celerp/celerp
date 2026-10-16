@@ -891,6 +891,36 @@ async def test_send_link_without_connect(ui, real_engine, monkeypatch):
     assert "Connect" not in page
 
 
+async def test_send_form_prefills_the_last_firm(ui, real_engine, monkeypatch):
+    """The firm name and reply address start as the last send's, editable; the client's
+    email is always typed. Without the last send the fields start empty."""
+    from ui.routes.company_backup import SEND
+    from ui import api_client as api
+
+    _, _, tok = await _setup(real_engine)
+    ui.cookies.set("celerp_token", tok)
+
+    async def last(token):
+        return {"firm_name": "North Ledger", "reply_to": "desk@north.example"}
+    monkeypatch.setattr(api, "company_backup_sender", last)
+
+    def field(page: str, name: str) -> str:
+        tag = re.search(rf'<input[^>]*id="{name}"[^>]*>', page).group(0)
+        value = re.search(r'value="([^"]*)"', tag)
+        return value.group(1) if value else ""
+
+    page = _page(await ui.get(SEND))
+    assert field(page, "firm_name") == "North Ledger"
+    assert field(page, "reply_to") == "desk@north.example"
+    assert field(page, "recipient") == ""
+
+    async def unavailable(token):
+        raise api.APIError(502, "Unavailable")
+    monkeypatch.setattr(api, "company_backup_sender", unavailable)
+    page = _page(await ui.get(SEND))
+    assert 'id="copy-send-form"' in page and field(page, "firm_name") == ""
+
+
 async def test_copy_send_resumes_the_same_form_after_sign_in():
     from fasthtml.common import to_xml
     from ui.routes import account
