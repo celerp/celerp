@@ -108,13 +108,14 @@ def products() -> bytes:
     return _xlsx("Product/Service List", "", ["Product/Service", "SKU", "Type", "Description", "Price", "Cost"], rows)
 
 
-def _period() -> str:
-    return f"{_long(date(YEARS[0], 1, 1))} - {_long(END)}"
+def _period(start: date = date(YEARS[0], 1, 1), end: date = END) -> str:
+    return f"{_long(start)} - {_long(end)}"
 
 
-def journal(books: Books) -> bytes:
+def journal(books: Books, start: date = date(YEARS[0], 1, 1), end: date = END) -> bytes:
+    """The Journal report for one period; QuickBooks Online is exported a year at a time."""
     rows: list[list] = []
-    for j in books.journals:
+    for j in (j for j in books.journals if start <= j.on <= end):
         kind = TRANSACTION_TYPES[j.source]
         num = j.invoice if kind in ("Invoice", "Credit Memo", "Bill", "Vendor Credit") else (
             str(j.number) if kind == "Journal Entry" else "")
@@ -126,7 +127,7 @@ def journal(books: Books) -> bytes:
         debit = sum((p.amount for p in j.postings if p.amount > 0), ZERO)
         rows.append(["", "", "", "", "", "", float(debit), float(debit), "", ""])
         rows.append([])
-    return _xlsx("Journal", _period(), ["Date", "Transaction Type", "Num", "Name", "Memo/Description", "Account", "Debit",
+    return _xlsx("Journal", _period(start, end), ["Date", "Transaction Type", "Num", "Name", "Memo/Description", "Account", "Debit",
                                         "Credit", "Currency", "Foreign Amount"], rows)
 
 
