@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import func, select
 
-from celerp.accounting_roles import POSTING_ACCOUNTS_PATH, ROLES_KEY, SEEDED_TARGETS
+from celerp.accounting_roles import POSTING_ACCOUNTS_PATH, ROLES_KEY, SEEDED_TARGETS, UNGUESSED_ROLES
 from celerp.models.company import Company
 from celerp.services import auto_je
 from celerp.services.account_roles import PostingRoleError, set_role
@@ -82,9 +82,9 @@ async def test_reconcile_never_creates_an_account_and_changes_nothing_when_run_a
 
     unmapped = await reconcile_company(session, cid)
     first = dict((await session.get(Company, cid)).settings)
-    # Work in progress and the consignor payable take their seeded accounts only when
-    # Celerp has just created them.
-    assert set(unmapped) == {"landed_freight", "work_in_progress", "consignor_payable"}
+    # The unguessed roles (work in progress, the consignor payable, the fixed asset roles)
+    # take their seeded accounts only when Celerp has just created them.
+    assert set(unmapped) == {"landed_freight", *(r.value for r in UNGUESSED_ROLES)}
     assert "landed_freight" not in first[ROLES_KEY]
     assert await reconcile_company(session, cid) == unmapped
     assert dict((await session.get(Company, cid)).settings) == first

@@ -53,7 +53,7 @@ from celerp.services.business_time import business_date_of
 from celerp.services.company_lock import lock_company
 from celerp.services.document_lines import line_item_id
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
-from celerp.services.journal_accounts import lock_accounts
+from celerp.services.journal_accounts import UnbalancedJournalEntry, lock_accounts
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value, in_stock, is_stock_type, recorded_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, received_share, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
@@ -201,10 +201,6 @@ async def _with_fx_difference(session, company_id, entries: list[dict]) -> list[
     return _balanced_with_fx_difference(entries, _line(acc[fx_role], fx_role))
 
 
-class UnbalancedJournalEntry(ValueError):
-    """An automatic journal entry whose lines do not balance in the company currency."""
-
-
 async def company_currency(session, company_id) -> str:
     """The currency the company keeps its books in."""
     from celerp.models.company import Company
@@ -238,11 +234,13 @@ async def _emit_auto_posted_je(
     metadata_: dict,
     ts: str | None = None,
     currency: str | None = None,
+    extra: dict | None = None,
 ) -> None:
     """Post an automatic JE. The one place its amounts become money: every line is rounded
     to the company currency (*currency* when the producer already holds the books it posts
     on), and an entry that does not balance after rounding is refused, so producers build
-    their lines to balance once rounded."""
+    their lines to balance once rounded. *extra* adds fields the created event records
+    with the entry (a module journal's source and request hash)."""
     currency = currency or await company_currency(session, company_id)
     entries = [
         {**e,
@@ -256,7 +254,7 @@ async def _emit_auto_posted_je(
         raise UnbalancedJournalEntry(
             t("error.auto_je_unbalanced", memo=memo, debits=debits, credits=credits, currency=currency)
         )
-    payload = {"memo": memo, "entries": entries}
+    payload = {**(extra or {}), "memo": memo, "entries": entries}
     if ts:
         payload["ts"] = ts
 

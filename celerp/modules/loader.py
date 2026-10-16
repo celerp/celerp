@@ -91,6 +91,8 @@ _PROTECTED_BSL_INTERNALS: frozenset[str] = frozenset({
     "celerp.gateway",
     "celerp.connectors",
     "celerp.credentials",
+    "celerp.services.auto_je",
+    "celerp.services.module_journals",
 })
 
 _BSL_DOCS_URL = "https://celerp.com/licenses/bsl"

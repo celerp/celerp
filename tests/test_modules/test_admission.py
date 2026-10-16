@@ -2856,6 +2856,10 @@ for pkg in packages():
         if protected(info.name) or ".migrations.versions." in info.name:
             continue
         for name, value in vars(importlib.import_module(info.name)).items():
+            # A package binds each imported submodule under its own name; that is the
+            # protected module's own address, which admission refuses by name.
+            if isinstance(value, types.ModuleType) and value.__name__ == f"{info.name}.{name}":
+                continue
             if any(protected(source) for source in sources(value, set())):
                 held.append(f"{info.name}.{name}")
 print("\\n".join(held))

@@ -29,6 +29,14 @@ def test_library_resolves_through_module_loader_when_not_enabled():
     assert vp.load_category("diamond") is not None
 
 
+def test_presets_enable_fixed_assets():
+    """Every preset that keeps books keeps a fixed asset register beside them."""
+    presets = [json.loads(f.read_text()) for f in sorted((vp._data_dir() / "presets").glob("*.json"))]
+    books = [p for p in presets if "celerp-accounting" in p.get("modules", [])]
+    assert len(books) == 19
+    assert [p["name"] for p in books if "celerp-fixed-assets" not in p["modules"]] == []
+
+
 def test_missing_package_gives_empty_catalog():
     with patch.object(vp, "_data_dir", return_value=None):
         assert vp.list_presets() == []

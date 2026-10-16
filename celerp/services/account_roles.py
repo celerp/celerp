@@ -31,6 +31,7 @@ from celerp.accounting_roles import (
     SEEDED_TARGETS,
     SOURCE_CONTROLS_KEY,
     UNGUESSED_ROLES,
+    pair_of,
     AccountRole,
     is_role,
     needs_accounting,
@@ -591,10 +592,10 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
     before = dict(company.settings or {})
     settings = with_role(before, role, code)
     new_map = role_map(settings)
-    # Exchange gain and loss are judged as a pair: moving one side can change what
-    # the other side's account is allowed to be.
-    fx_pair = (AccountRole.FX_GAIN.value, AccountRole.FX_LOSS.value)
-    checked = [role, *(r for r in fx_pair if role in fx_pair and r != role and new_map.get(r))]
+    # A gain and loss pair is judged together: moving one side can change what the
+    # other side's account is allowed to be.
+    pair = pair_of(role) or ()
+    checked = [role, *(r.value for r in pair if r != role and new_map.get(r.value))]
     accounts = await lock_accounts(session, company_id, {new_map[r] for r in checked})
     if accounts is None:
         raise HTTPException(status_code=409, detail=needs_accounting())

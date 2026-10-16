@@ -25,7 +25,7 @@ from celerp.compat import StrEnum
 
 # Bumped when a release adds a role. Older companies and backups stay readable:
 # an unmapped role only fails the operation that needs it.
-POSTING_ROLES_SCHEMA = 3
+POSTING_ROLES_SCHEMA = 4
 
 # Company.settings keys. ``posting_roles`` is the current target per role;
 # ``posting_role_scopes`` is every account that has legitimately served the role,
@@ -90,6 +90,14 @@ class AccountRole(StrEnum):
     STOCK_SHRINKAGE = "stock_shrinkage"
     WORK_IN_PROGRESS = "work_in_progress"
     CONSIGNOR_PAYABLE = "consignor_payable"
+    ACCUMULATED_DEPRECIATION = "accumulated_depreciation"
+    DEPRECIATION_EXPENSE = "depreciation_expense"
+    ASSETS_UNDER_CONSTRUCTION = "assets_under_construction"
+    ASSET_DISPOSAL_CLEARING = "asset_disposal_clearing"
+    DISPOSAL_GAIN = "disposal_gain"
+    DISPOSAL_LOSS = "disposal_loss"
+    IMPAIRMENT_LOSS = "impairment_loss"
+    REVALUATION_SURPLUS = "revaluation_surplus"
 
 
 R = AccountRole
@@ -119,6 +127,14 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.STOCK_SHRINKAGE: "Stock shrinkage and write-offs",
     R.WORK_IN_PROGRESS: "Work in progress",
     R.CONSIGNOR_PAYABLE: "Consignor payable",
+    R.ACCUMULATED_DEPRECIATION: "Accumulated depreciation",
+    R.DEPRECIATION_EXPENSE: "Depreciation expense",
+    R.ASSETS_UNDER_CONSTRUCTION: "Assets under construction",
+    R.ASSET_DISPOSAL_CLEARING: "Asset sale clearing",
+    R.DISPOSAL_GAIN: "Gain on disposal of assets",
+    R.DISPOSAL_LOSS: "Loss on disposal of assets",
+    R.IMPAIRMENT_LOSS: "Impairment of assets",
+    R.REVALUATION_SURPLUS: "Revaluation surplus",
 }
 
 _ASSET = frozenset({"asset"})
@@ -150,6 +166,15 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.STOCK_SHRINKAGE: _EXPENSE,
     R.WORK_IN_PROGRESS: _ASSET,
     R.CONSIGNOR_PAYABLE: frozenset({"liability"}),
+    # A contra asset: it holds a credit balance against the cost on the asset accounts.
+    R.ACCUMULATED_DEPRECIATION: _ASSET,
+    R.DEPRECIATION_EXPENSE: _EXPENSE,
+    R.ASSETS_UNDER_CONSTRUCTION: _ASSET,
+    R.ASSET_DISPOSAL_CLEARING: _ASSET,
+    R.DISPOSAL_GAIN: _REVENUE,
+    R.DISPOSAL_LOSS: _EXPENSE,
+    R.IMPAIRMENT_LOSS: _EXPENSE,
+    R.REVALUATION_SURPLUS: frozenset({"equity"}),
 }
 
 # Roles a posting lands on directly, so the target must be a concrete account,
@@ -185,6 +210,14 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.STOCK_SHRINKAGE: "6970",
     R.WORK_IN_PROGRESS: "1130-WIP",
     R.CONSIGNOR_PAYABLE: "2115",
+    R.ACCUMULATED_DEPRECIATION: "1220",
+    R.DEPRECIATION_EXPENSE: "6400",
+    R.ASSETS_UNDER_CONSTRUCTION: "1240",
+    R.ASSET_DISPOSAL_CLEARING: "1160",
+    R.DISPOSAL_GAIN: "6980",
+    R.DISPOSAL_LOSS: "6980",
+    R.IMPAIRMENT_LOSS: "6410",
+    R.REVALUATION_SURPLUS: "3400",
 }
 
 # Landed-cost clearing role per landed-cost kind, and back.
@@ -217,7 +250,9 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
                   R.STOCK_GAIN, R.STOCK_SHRINKAGE),
     "landed_cost": (R.LANDED_FREIGHT, R.LANDED_INSURANCE, R.LANDED_DUTY, R.LANDED_IMPORT_VAT),
     "fx": (R.FX_GAIN, R.FX_LOSS),
-    "fixed_assets": (R.FIXED_ASSETS,),
+    "fixed_assets": (R.FIXED_ASSETS, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE,
+                     R.ASSETS_UNDER_CONSTRUCTION, R.ASSET_DISPOSAL_CLEARING, R.DISPOSAL_GAIN,
+                     R.DISPOSAL_LOSS, R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS),
     "manufacturing": (R.WORK_IN_PROGRESS,),
     "consignment": (R.CONSIGNOR_PAYABLE,),
 }
@@ -225,7 +260,20 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
 # Roles a company whose chart came from elsewhere (a migration or a restored backup)
 # never has mapped by default code: its chart predates the role, so an account that
 # happens to carry the default number proves nothing about what it holds.
-UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE})
+UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({
+    R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE,
+    R.ASSETS_UNDER_CONSTRUCTION, R.ASSET_DISPOSAL_CLEARING, R.DISPOSAL_GAIN, R.DISPOSAL_LOSS,
+    R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS})
+
+# Gain and loss pairs that may share one net account (then of either type) or be split
+# (gain revenue, loss expense).
+SHARED_PAIRS: tuple[tuple[AccountRole, AccountRole], ...] = (
+    (R.FX_GAIN, R.FX_LOSS), (R.DISPOSAL_GAIN, R.DISPOSAL_LOSS))
+
+
+def pair_of(role: str) -> tuple[AccountRole, AccountRole] | None:
+    """The gain and loss pair ``role`` belongs to, if any."""
+    return next((pair for pair in SHARED_PAIRS if role in pair), None)
 
 
 def is_role(value: object) -> bool:
@@ -235,12 +283,14 @@ def is_role(value: object) -> bool:
 def allowed_types(role: str, role_map: dict[str, str]) -> frozenset[str]:
     """Account types a target of ``role`` may have under ``role_map``.
 
-    Exchange gain and loss either share one net account, which may then be revenue
-    or expense, or are split, when gain must be revenue and loss expense.
+    Exchange gain and loss, and disposal gain and loss, either share one net account,
+    which may then be revenue or expense, or are split, when gain must be revenue and
+    loss expense.
     """
     role = AccountRole(role)
-    if role in (R.FX_GAIN, R.FX_LOSS):
-        gain, loss = role_map.get(R.FX_GAIN.value), role_map.get(R.FX_LOSS.value)
+    pair = pair_of(role)
+    if pair:
+        gain, loss = role_map.get(pair[0].value), role_map.get(pair[1].value)
         if gain and gain == loss:
             return _REVENUE | _EXPENSE
     return ROLE_TYPES[role]

@@ -84,10 +84,12 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "1130-WIP", "name": "Inventory - Work in Progress", "account_type": "asset", "parent_code": "1130"},
     {"code": "1140", "name": "Prepaid Expenses", "account_type": "asset", "parent_code": "1100"},
     {"code": "1150", "name": "VAT Receivable (Input VAT)", "account_type": "asset", "parent_code": "1100"},
+    {"code": "1160", "name": "Asset Sale Clearing", "account_type": "asset", "parent_code": "1100"},
     {"code": "1200", "name": "Non-Current Assets", "account_type": "asset", "parent_code": "1000", "cash_flow_category": "investing"},
     {"code": "1210", "name": "Property, Plant and Equipment", "account_type": "asset", "parent_code": "1200"},
     {"code": "1220", "name": "Accumulated Depreciation", "account_type": "asset", "parent_code": "1200"},
     {"code": "1230", "name": "Intangible Assets", "account_type": "asset", "parent_code": "1200"},
+    {"code": "1240", "name": "Assets Under Construction", "account_type": "asset", "parent_code": "1200"},
     # --- Liabilities ---
     {"code": "2000", "name": "Liabilities", "account_type": "liability", "parent_code": None},
     {"code": "2100", "name": "Current Liabilities", "account_type": "liability", "parent_code": "2000"},
@@ -104,6 +106,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "3100", "name": "Registered Capital", "account_type": "equity", "parent_code": "3000"},
     {"code": "3200", "name": "Retained Earnings", "account_type": "equity", "parent_code": "3000"},
     {"code": "3300", "name": "Current Year Earnings", "account_type": "equity", "parent_code": "3000"},
+    {"code": "3400", "name": "Revaluation Surplus", "account_type": "equity", "parent_code": "3000"},
     # --- Revenue ---
     {"code": "4000", "name": "Revenue", "account_type": "revenue", "parent_code": None},
     {"code": "4100", "name": "Sales Revenue", "account_type": "revenue", "parent_code": "4000"},
@@ -121,6 +124,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "6200", "name": "Rent", "account_type": "expense", "parent_code": "6000"},
     {"code": "6300", "name": "Utilities", "account_type": "expense", "parent_code": "6000"},
     {"code": "6400", "name": "Depreciation", "account_type": "expense", "parent_code": "6000"},
+    {"code": "6410", "name": "Impairment of Assets", "account_type": "expense", "parent_code": "6000"},
     {"code": "6500", "name": "Professional Fees", "account_type": "expense", "parent_code": "6000"},
     {"code": "6600", "name": "Marketing and Advertising", "account_type": "expense", "parent_code": "6000"},
     {"code": "6700", "name": "Insurance", "account_type": "expense", "parent_code": "6000"},
@@ -129,6 +133,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "6950", "name": "Miscellaneous Expenses", "account_type": "expense", "parent_code": "6000"},
     {"code": "6960", "name": "Foreign Exchange Difference", "account_type": "expense", "parent_code": "6000"},
     {"code": "6970", "name": "Inventory Shrinkage & Write-offs", "account_type": "expense", "parent_code": "6000"},
+    {"code": "6980", "name": "Gain or Loss on Disposal of Assets", "account_type": "expense", "parent_code": "6000"},
 ]
 
 
@@ -255,16 +260,31 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
 _SEEDED_ANCHORS: dict[AccountRole, tuple[str, ...]] = {
     AccountRole.WORK_IN_PROGRESS: ("1130", "1130-P", "1130-OB"),
     AccountRole.CONSIGNOR_PAYABLE: ("2100", "2110"),
+    AccountRole.ACCUMULATED_DEPRECIATION: ("1200", "1210"),
+    AccountRole.DEPRECIATION_EXPENSE: ("6000", "6950"),
+    AccountRole.ASSETS_UNDER_CONSTRUCTION: ("1200", "1210"),
+    AccountRole.ASSET_DISPOSAL_CLEARING: ("1100", "1120"),
+    AccountRole.DISPOSAL_GAIN: ("6000", "6950"),
+    AccountRole.DISPOSAL_LOSS: ("6000", "6950"),
+    AccountRole.IMPAIRMENT_LOSS: ("6000", "6400"),
+    AccountRole.REVALUATION_SURPLUS: ("3000", "3200"),
 }
+
+# Roles whose seeded account every seeded chart has always held, so the account found
+# there exactly as seeded is the one to map. Any other role's code already in the chart
+# belongs to the company.
+_ALWAYS_SEEDED = frozenset({AccountRole.ACCUMULATED_DEPRECIATION, AccountRole.DEPRECIATION_EXPENSE})
 
 
 async def _add_seeded_accounts(session: AsyncSession, company_id: uuid.UUID) -> frozenset:
     """Add the seeded account of each role added after the chart was written, only where
     the chart is provably Celerp's own seeded one: the role's anchor accounts are present
-    exactly as seeded and nothing holds the role's code yet. A chart from a migration or a
-    restored backup is never extended; its company chooses the account in Posting
-    Accounts. An existing account is never changed. Returns the roles whose account was
-    added, which the caller may then map to it."""
+    exactly as seeded and nothing holds the role's code yet, or the role's account is
+    one every seeded chart has held and is still there exactly as seeded. Roles
+    sharing one account add it once. A chart from a migration or a restored backup is
+    never extended; its company chooses the account in Posting Accounts. An existing
+    account is never changed. Returns the roles whose account was added or found as
+    seeded, which the caller may then map to it."""
     from celerp.accounting_roles import ROLES_KEY, SOURCE_CONTROLS_KEY, SEEDED_TARGETS
     from sqlalchemy import select as _select
 
@@ -287,14 +307,19 @@ async def _add_seeded_accounts(session: AsyncSession, company_id: uuid.UUID) -> 
         return row is not None and row.is_active and (row.account_type, row.parent_code) == (
             want["account_type"], want["parent_code"])
 
-    added = set()
+    added, fresh = set(), set()
     for role, anchors in wanted.items():
         code = SEEDED_TARGETS[role]
-        if code in rows or not all(as_seeded(a) for a in anchors):
+        if not all(as_seeded(a) for a in anchors):
             continue
-        session.add(_seeded_account(company_id, chart[code]))
+        if code not in rows:
+            session.add(_seeded_account(company_id, chart[code]))
+            rows[code] = None
+            fresh.add(code)
+        elif code not in fresh and not (role in _ALWAYS_SEEDED and as_seeded(code)):
+            continue
         added.add(role)
-    if added:
+    if fresh:
         await session.flush()
     return frozenset(added)
 
@@ -1337,6 +1362,7 @@ async def _journal_payload(
             # Set on an entry voided out of a locked period and on its reversal row.
             "reversed_on": state.get("reversed_on"),
             "source_doc": {"doc_id": ref["doc_id"], "doc_ref": ref["doc_ref"]} if ref else None,
+            "module_source": _module_source(state),
             "lines": lines,
             "fx": entry_fx,
         }
@@ -1768,6 +1794,18 @@ async def create_manual_journal_entry(
         "je_type": "manual",
         "status": "posted",
     }
+
+
+def _module_source(state: dict) -> dict | None:
+    """The module record a module's journal belongs to: its page and the label the
+    journal kept for it, so the link reads the same while the module is off."""
+    source = state.get("source")
+    if not isinstance(source, dict) or not source.get("module"):
+        return None
+    from celerp.modules.loader import module_label
+
+    return {"label": f"{module_label(source['module'])}: {source.get('label') or source.get('entity_id')}",
+            "href": source.get("href")}
 
 
 async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: str | None,
