@@ -480,7 +480,7 @@ def test_windows_build_ships_the_visual_cpp_runtime_and_checks_every_dll_import(
     assert stage["if"] == "runner.os == 'Windows'"
     assert '"${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe" -latest -property installationPath' in stage["run"]
     assert "\\x64\\Microsoft.VC143.CRT" in stage["run"]
-    assert 'foreach ($dll in "vcruntime140.dll", "msvcp140.dll")' in stage["run"]
+    assert 'foreach ($dll in "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")' in stage["run"]
     assert '"CELERP_VC_RUNTIME_DIR=$dest" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV' in stage["run"]
     for build in ("Build (Windows / Linux - release tag)", "Build (Windows / Linux - dev build)"):
         assert names.index(stage["name"]) < names.index(build)

@@ -18,7 +18,7 @@
  *    pre-build `rm` on a fixed path unreliable (windows-x64 is transitive, not a
  *    top-level entry).
  *
- * 4. Windows: copy the Visual C++ runtime (vcruntime140.dll, msvcp140.dll) from
+ * 4. Windows: copy the Visual C++ runtime (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll) from
  *    the folder named by CELERP_VC_RUNTIME_DIR into the embedded server's bin
  *    folder and the pg-win tools bin folder. The PostgreSQL binaries link it, and
  *    a PC without the Visual C++ Redistributable has no copy of its own. A
@@ -29,7 +29,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const VC_RUNTIME_DLLS = ["vcruntime140.dll", "msvcp140.dll"];
+const VC_RUNTIME_DLLS = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
 
 exports.default = async function afterPack(context) {
   const plat = context.electronPlatformName;

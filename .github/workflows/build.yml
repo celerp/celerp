@@ -505,7 +505,7 @@ jobs:
           $src = "$($crt.FullName)\x64\Microsoft.VC143.CRT"
           $dest = Join-Path $env:RUNNER_TEMP "vc-runtime"
           New-Item -ItemType Directory -Force $dest | Out-Null
-          foreach ($dll in "vcruntime140.dll", "msvcp140.dll") { Copy-Item (Join-Path $src $dll) $dest }
+          foreach ($dll in "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll") { Copy-Item (Join-Path $src $dll) $dest }
           Write-Host "staged the Visual C++ runtime from $src"
           "CELERP_VC_RUNTIME_DIR=$dest" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
