@@ -20,8 +20,13 @@ pytestmark = pytest.mark.asyncio
 
 
 async def migrate(engine, data: bytes, name: str, decisions: dict, monkeypatch, tmp_path):
-    """Scan, decide and run one source file into a staged company named as the source
-    names itself, as the wizard proposes.
+    """Scan, decide and run one source file; see `migrate_set`."""
+    return await migrate_set(engine, [(name, data)], decisions, monkeypatch, tmp_path)
+
+
+async def migrate_set(engine, files: list[tuple[str, bytes]], decisions: dict, monkeypatch, tmp_path):
+    """Scan, decide and run one upload of source files into a staged company named as the
+    source names itself, as the wizard proposes.
 
     Returns the finished run and every record a sink rejected, as
     (source_type, source_external_id, message).
@@ -45,7 +50,7 @@ async def migrate(engine, data: bytes, name: str, decisions: dict, monkeypatch, 
         s.add(user)
         await s.flush()
         owner = ("user", user.id)
-        scan = await store.create_scan(upload_parts((name, data)), owner=owner)
+        scan = await store.create_scan(upload_parts(*files), owner=owner)
         chosen = migrations.validate_decisions(scan, decisions)
         scan = store.save_decisions(scan.token, owner=owner, decisions=chosen)
         company = await provisioning.provision_migration_company(s, owner=user, company_name=scan.scan.company_name)
