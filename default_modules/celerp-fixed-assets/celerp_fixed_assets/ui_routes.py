@@ -6,7 +6,9 @@ GET  /fixed-assets                      The register: start panel, or the asset 
 GET  /fixed-assets/intake               Bill and journal lines not yet registered
 GET  /fixed-assets/intake/line          What to do with one line
 GET  /fixed-assets/assets/new           Add an asset by hand
-GET  /fixed-assets/assets/{id}          One asset: details, figures, sources, movements
+GET  /fixed-assets/assets/{id}          One asset: details, figures, what holds it, sources, movements
+GET  /fixed-assets/runs                 Depreciation runs: run a month, every month's run newest first
+GET  /fixed-assets/runs/{month}         One month's run: its journal and the assets held out of it
 GET  /settings/fixed-assets             Settings and asset classes
 
 Every financial action is one form with two steps: Review shows the exact journal lines
@@ -15,6 +17,7 @@ and the assets it creates, Confirm does what was reviewed (POST /fixed-assets/op
 from __future__ import annotations
 
 import logging
+from datetime import date
 from urllib.parse import quote, urlencode
 
 from fasthtml.common import *
@@ -126,14 +129,16 @@ def _preview(action: str, result: dict, currency: str) -> FT:
                                     _money_th(t("fixed_assets.amount")))),
                            Tbody(*rows), cls="data-table"))
     journals = result.get("journals") or []
-    for je in journals:
-        lines = [Tr(Td(ln["account"]), _money_td(ln.get("debit") if ln.get("debit") != "0.00" else None, currency),
-                    _money_td(ln.get("credit") if ln.get("credit") != "0.00" else None, currency))
-                 for ln in je.get("lines") or []]
-        parts.append(Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.debit")),
-                                    _money_th(t("fixed_assets.credit")))),
-                           Tbody(*lines), cls="data-table"))
-    if not journals:
+    parts += [_lines_table(je.get("lines") or [], currency) for je in journals]
+    for month in result.get("months") or []:
+        parts.append(H4(f"{month['month']}: {_money(month['total'], currency)}"))
+        parts.append(_lines_table(month["lines"], currency) if month["lines"]
+                     else P(t("fixed_assets.month_posts_nothing"), cls="form-hint"))
+        if month["exceptions"]:
+            parts.append(_held_table(month["exceptions"], currency))
+    if result.get("empty"):
+        parts.append(P(t("fixed_assets.nothing_to_depreciate"), cls="form-hint"))
+    elif not journals and not result.get("months"):
         parts.append(P(t("fixed_assets.posts_nothing"), cls="form-hint"))
     return Div(H3(t("fixed_assets.review_title"), cls="section-title"), *parts,
                Input(type="hidden", name="fingerprint", value=result.get("fingerprint", "")),
@@ -142,6 +147,21 @@ def _preview(action: str, result: dict, currency: str) -> FT:
                           hx_target="#fa-preview", hx_swap="outerHTML"),
                    cls="form-actions"),
                cls="detail-card section-card", id="fa-preview")
+
+
+def _lines_table(lines: list[dict], currency: str) -> FT:
+    rows = [Tr(Td(ln["account"]), _money_td(ln.get("debit") if ln.get("debit") != "0.00" else None, currency),
+               _money_td(ln.get("credit") if ln.get("credit") != "0.00" else None, currency)) for ln in lines]
+    return Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.debit")),
+                          _money_th(t("fixed_assets.credit")))), Tbody(*rows), cls="data-table")
+
+
+def _held_table(held: list[dict], currency: str) -> FT:
+    """Assets held out of a run, what they would have posted, and what clears them."""
+    rows = [Tr(Td(A(h["number"], href=f"/fixed-assets/assets/{h['asset_id']}")), _money_td(h.get("amount"), currency),
+               Td(t(f"fixed_assets.action.{h['action']}"))) for h in held]
+    return Table(Thead(Tr(Th(t("fixed_assets.held_asset")), _money_th(t("fixed_assets.held_amount")),
+                          Th(t("fixed_assets.held_action")))), Tbody(*rows), cls="data-table")
 
 
 def _op_form(action: str, *fields: FT, review_label: str | None = None) -> FT:
@@ -211,6 +231,9 @@ _OPERATIONS = {
                           _financials_body, lambda r, f: f"/fixed-assets/assets/{f.get('asset_id')}"),
     "undo-asset": (lambda f: f"/assets/{quote(str(f.get('asset_id') or ''), safe=':')}/undo",
                    lambda f: {}, lambda r, f: "/fixed-assets"),
+    "run": (lambda f: "/runs", lambda f: {"month": str(f.get("month") or "")}, lambda r, f: "/fixed-assets/runs"),
+    "reverse-run": (lambda f: f"/runs/{quote(str(f.get('month') or ''), safe='')}/reverse", lambda f: {},
+                    lambda r, f: f"/fixed-assets/runs/{f.get('month')}"),
 }
 
 
@@ -283,6 +306,8 @@ def _settings_form(settings: dict) -> FT:
         _field(t("fixed_assets.run_mode"), Select(
             *[Option(t(f"fixed_assets.run_mode.{m}"), value=m, selected=m == settings.get("run_mode"))
               for m in RUN_MODES], name="run_mode", cls="form-input"), t("fixed_assets.run_mode_hint")),
+        _field(t("fixed_assets.run_day"), _input("run_day", settings.get("run_day"), type_="number", min="1",
+                                                 max="28", step="1"), t("fixed_assets.run_day_hint")),
         _field(t("fixed_assets.convention"), Select(
             *[Option(t(f"fixed_assets.convention.{c}"), value=c, selected=c == settings.get("convention"))
               for c in CONVENTIONS], name="convention", cls="form-input")),
@@ -399,6 +424,79 @@ def _sources_card(asset: dict, currency: str) -> FT:
     return Div(H2(t("fixed_assets.sources"), cls="section-title"), body, cls="detail-card section-card")
 
 
+def _exception_card(asset: dict, currency: str) -> FT:
+    """What holds an asset out of depreciation, and what clears it."""
+    held = asset["exception"]
+    months = ", ".join(held.get("months") or [])
+    return Div(H2(t("fixed_assets.exception_title"), cls="section-title"),
+               P(t("fixed_assets.exception_months", months=months), " ",
+                 t("fixed_assets.exception_amount"), ": ", _money(held.get("amount"), currency)),
+               P(Strong(t(f"fixed_assets.action.{held['action']}")), " ", t(f"fixed_assets.action_hint.{held['action']}")),
+               cls="flash flash--warning", id="fa-exception")
+
+
+def _skips_card(asset: dict) -> FT:
+    """Months held out of depreciation with a reason, and the form that adds one."""
+    asset_id = quote(asset["id"], safe=":")
+    skips = sorted((asset.get("skips") or {}).items(), reverse=True)
+    rows = [Tr(Td(month), Td(reason),
+               Td(Button(t("fixed_assets.withdraw_skip"), type="button", cls="btn btn--sm btn--secondary",
+                         hx_delete=f"/fixed-assets/assets/{asset_id}/skip/{month}", hx_swap="none")))
+            for month, reason in skips]
+    table = Table(Thead(Tr(Th(t("fixed_assets.month")), Th(t("fixed_assets.reason")), Th(""))), Tbody(*rows),
+                  cls="data-table") if rows else P(t("fixed_assets.no_skips"), cls="form-hint")
+    form = Form(_field(t("fixed_assets.month"), _input("month", type_="month", required=True)),
+                _field(t("fixed_assets.reason"), _input("reason", required=True)),
+                Div(Button(t("fixed_assets.skip_month"), type="submit", cls="btn btn--secondary"), cls="form-actions"),
+                hx_post=f"/fixed-assets/assets/{asset_id}/skip", hx_swap="none", cls="flex-row")
+    return Div(H2(t("fixed_assets.skips_title"), cls="section-title"), P(t("fixed_assets.skips_hint"), cls="settings-hint"),
+               table, form, cls="detail-card section-card")
+
+
+def _readings_card(asset: dict) -> FT:
+    """Units an asset produced per month, for a class that depreciates by units."""
+    asset_id = quote(asset["id"], safe=":")
+    readings = sorted((asset.get("readings") or {}).items(), reverse=True)
+    table = Table(Thead(Tr(Th(t("fixed_assets.month")), Th(t("fixed_assets.units"), cls="cell--number"))),
+                  Tbody(*[Tr(Td(p), Td(u, cls="cell--number")) for p, u in readings]),
+                  cls="data-table") if readings else P(t("fixed_assets.no_readings"), cls="form-hint")
+    form = Form(_field(t("fixed_assets.month"), _input("period", type_="month", required=True)),
+                _field(t("fixed_assets.units"), _input("units", type_="number", step="any", min="0", required=True)),
+                Div(Button(t("fixed_assets.record_reading"), type="submit", cls="btn btn--secondary"),
+                    cls="form-actions"),
+                hx_post=f"/fixed-assets/assets/{asset_id}/readings", hx_swap="none", cls="flex-row")
+    return Div(H2(t("fixed_assets.readings_title"), cls="section-title"), table, form, cls="detail-card section-card")
+
+
+def _attention_card(items: list[dict]) -> FT:
+    return Div(H3(t("fixed_assets.attention_title")), P(t("fixed_assets.attention_hint")),
+               Ul(*[Li(A(f"{a['number']} {a.get('name') or ''}".strip(), href=f"/fixed-assets/assets/{a['asset_id']}"),
+                       " ", t(f"fixed_assets.action.{a['exception']['action']}")) for a in items]),
+               cls="flash flash--warning", id="fa-attention")
+
+
+def _last_month(today: date) -> str:
+    return f"{today.year - 1}-12" if today.month == 1 else f"{today.year}-{today.month - 1:02d}"
+
+
+def _runs_table(items: list[dict], currency: str) -> FT:
+    rows = [Tr(Td(A(r["month"], href=f"/fixed-assets/runs/{r['month']}")),
+               Td(t(f"fixed_assets.run_status.{r['status']}")), _money_td(r.get("total"), currency),
+               Td(str(len(r.get("exceptions") or [])), cls="cell--number")) for r in items]
+    return Table(Thead(Tr(Th(t("fixed_assets.month")), Th(t("fixed_assets.status")), _money_th(t("label.total")),
+                          Th(t("fixed_assets.held_count"), cls="cell--number"))),
+                 Tbody(*rows), cls="data-table", id="fa-runs")
+
+
+async def _hx_write(token: str, method: str, path: str, body: dict, done: str) -> Response:
+    """A plain write from a small form: on success go to ``done`` with a toast, else say why."""
+    try:
+        await api.fixed_assets_send(token, method, path, body)
+    except APIError as e:
+        return Response(headers=toast_header(_error_text(e), "error", persist=True))
+    return Response(headers={"HX-Redirect": done, **toast_header(t("fixed_assets.done"))})
+
+
 def _class_select(classes: list[dict], value: str = "") -> FT:
     return _picker("class_id", [(c["id"], c["name"]) for c in classes], value, label=t("fixed_assets.class"))
 
@@ -448,9 +546,11 @@ def setup_ui_routes(app) -> None:
             params = {k: v for k, v in {"q": q, "class_id": class_id}.items() if v}
             found = await api.fixed_assets_get(token, "/assets", {**params, "limit": per_page,
                                                                    "offset": (page - 1) * per_page})
+            held = (await api.fixed_assets_get(token, "/attention"))["items"]
         except APIError as e:
             return await _refused(request, e, "fixed_assets.title")
-        actions = (A(t("fixed_assets.register_from_bills"), href="/fixed-assets/intake", cls="btn btn--secondary"),
+        actions = (A(t("fixed_assets.runs_title"), href="/fixed-assets/runs", cls="btn btn--secondary"),
+                   A(t("fixed_assets.register_from_bills"), href="/fixed-assets/intake", cls="btn btn--secondary"),
                    A(t("fixed_assets.add_asset"), href="/fixed-assets/assets/new", cls="btn btn--primary"))
         if not found["items"] and not params:
             body = Div(empty_state_cta(t("fixed_assets.empty"), t("fixed_assets.register_from_bills"),
@@ -462,6 +562,7 @@ def setup_ui_routes(app) -> None:
                        pagination(page, found["total"], per_page, "/fixed-assets", urlencode(params)))
         return await _page(request, page_header(t("fixed_assets.title"), *actions),
                            P(t("fixed_assets.register_hint"), cls="settings-hint"),
+                           _attention_card(held) if held else "",
                            _filters(q, class_id, [c for c in classes if not c.get("archived")]), body,
                            title_key="fixed_assets.title")
 
@@ -661,8 +762,16 @@ def setup_ui_routes(app) -> None:
                                   Input(type="hidden", name="kind", value=kind),
                                   *_asset_fields(kind, classes, chart, with_name=False)),
                          cls="detail-card section-card")]
+        if asset.get("status") == "active":
+            from celerp_fixed_assets.calc.rules import METHODS
+
+            cls = next((c for c in classes if c["id"] == asset.get("class_id")), {})
+            if cls.get("method") in METHODS and METHODS[cls["method"]].uses_readings:
+                extra.append(_readings_card(asset))
+            extra.append(_skips_card(asset))
         title = f"{asset['number']} {asset.get('name') or ''}".strip()
         return await _page(request, crumbs, page_header(title),
+                           _exception_card(asset, currency) if asset.get("exception") else "",
                            Div(_details_card(asset),
                                _figures_card(asset, _class_names(classes).get(asset.get("class_id")), currency),
                                cls="detail-grid"),
@@ -716,6 +825,97 @@ def setup_ui_routes(app) -> None:
             return Td(P(_error_text(e), cls="cell-error"))
         return _asset_cell(asset, field)
 
+    @app.post("/fixed-assets/assets/{asset_id}/skip")
+    async def skip_month(request: Request, asset_id: str):
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        form = await request.form()
+        return await _hx_write(token, "POST", f"/assets/{quote(asset_id, safe=':')}/skip",
+                               {"month": str(form.get("month") or ""), "reason": str(form.get("reason") or "")},
+                               f"/fixed-assets/assets/{asset_id}")
+
+    @app.delete("/fixed-assets/assets/{asset_id}/skip/{month}")
+    async def withdraw_skip(request: Request, asset_id: str, month: str):
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        return await _hx_write(token, "DELETE", f"/assets/{quote(asset_id, safe=':')}/skip/{quote(month, safe='')}",
+                               {}, f"/fixed-assets/assets/{asset_id}")
+
+    @app.post("/fixed-assets/assets/{asset_id}/readings")
+    async def record_reading(request: Request, asset_id: str):
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        form = await request.form()
+        return await _hx_write(token, "POST", f"/assets/{quote(asset_id, safe=':')}/readings",
+                               {"period": str(form.get("period") or ""), "units": str(form.get("units") or "")},
+                               f"/fixed-assets/assets/{asset_id}")
+
+    @app.get("/fixed-assets/runs")
+    async def runs_page(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            setup, currency = await _context(token)
+            if not setup["started"]:
+                return RedirectResponse("/fixed-assets", status_code=302)
+            items = (await api.fixed_assets_get(token, "/runs"))["items"]
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.runs_title")
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.runs_title"), None)])
+        form = _op_form("run", _field(t("fixed_assets.run_through"),
+                                      _input("month", _last_month(date.today()), type_="month", required=True),
+                                      t("fixed_assets.run_through_hint")))
+        body = _runs_table(items, currency) if items else empty_state_cta(t("fixed_assets.runs_empty"))
+        mode = t(f"fixed_assets.run_mode.{setup['settings']['run_mode']}")
+        return await _page(request, crumbs, page_header(t("fixed_assets.runs_title")),
+                           P(t("fixed_assets.runs_hint", mode=mode, day=setup["settings"]["run_day"]),
+                             " ", A(t("fixed_assets.settings_title"), href="/settings/fixed-assets"),
+                             cls="settings-hint"),
+                           form, body, title_key="fixed_assets.runs_title")
+
+    @app.get("/fixed-assets/runs/{month}")
+    async def run_page(request: Request, month: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            _, currency = await _context(token)
+            items = (await api.fixed_assets_get(token, "/runs"))["items"]
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.runs_title")
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
+                              (t("fixed_assets.runs_title"), "/fixed-assets/runs"), (month, None)])
+        record = next((r for r in items if r["month"] == month), None)
+        if record is None:
+            return await _page(request, crumbs, page_header(month),
+                               empty_state_cta(t("fixed_assets.run_missing"), t("fixed_assets.runs_title"),
+                                               "/fixed-assets/runs"),
+                               title_key="fixed_assets.runs_title")
+        summary = Table(Tbody(
+            Tr(Th(t("fixed_assets.status")), Td(t(f"fixed_assets.run_status.{record['status']}"))),
+            Tr(Th(t("label.total")), _money_td(record.get("total"), currency)),
+            # The journal's source label in accounting reads the same: "Depreciation <month>".
+            Tr(Th(t("fixed_assets.journal")),
+               Td(*[A(f"{t('fixed_assets.movement.run')} {month}", href=f"/accounting?{urlencode({'q': j})}")
+                    for j in record.get("journal_ids") or []] or [empty_mark()]))),
+            cls="data-table detail-table")
+        parts: list[FT] = [Div(summary, cls="detail-card section-card")]
+        if record.get("exceptions"):
+            parts.append(Div(H2(t("fixed_assets.held_title"), cls="section-title"),
+                             _held_table(record["exceptions"], currency), cls="detail-card section-card"))
+        if record["status"] in ("posted", "posted_with_exceptions"):
+            parts.append(Div(H2(t("fixed_assets.reverse_run"), cls="section-title"),
+                             _op_form("reverse-run", Input(type="hidden", name="month", value=month),
+                                      P(t("fixed_assets.reverse_run_hint"), cls="settings-hint"),
+                                      review_label=t("fixed_assets.reverse_run")),
+                             cls="detail-card section-card"))
+        return await _page(request, crumbs, page_header(t("fixed_assets.run_title", month=month)), *parts,
+                           title_key="fixed_assets.runs_title")
+
     @app.get("/settings/fixed-assets")
     async def settings_page(request: Request):
         token = _token(request)
@@ -739,7 +939,9 @@ def setup_ui_routes(app) -> None:
             return Response(status_code=401)
         form = await request.form()
         body = {k: str(form.get(k) or "").strip() or None
-                for k in ("run_mode", "convention", "threshold", "first_managed_period") if k in form}
+                for k in ("run_mode", "run_day", "convention", "threshold", "first_managed_period") if k in form}
+        if (body.get("run_day") or "").isdigit():
+            body["run_day"] = int(body["run_day"])
         try:
             await api.fixed_assets_send(token, "PATCH", "/settings", body)
         except APIError as e:
