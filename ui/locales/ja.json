@@ -5760,5 +5760,6 @@
   "accountant_access.address_invalid": "https:// で始まり、ホスト名の後に何も付かない Celerp アドレスを入力してください。アドレスは Celerp Cloud に接続すると取得できます。",
   "accountant_access.copy_link": "リンクをコピー",
   "connectors.send_to_accountant": "このページを会計士に送る",
-  "msg.take_photo": "写真を撮る"
+  "msg.take_photo": "写真を撮る",
+  "inventory.err_cost_disposed_no_writeoff": "{label} は、それを記載した完了済みの廃棄記録なしに在庫から出たため、原価を自動で修正できません。代わりに仕訳で修正してください。"
 }

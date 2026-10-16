@@ -5760,5 +5760,6 @@
   "accountant_access.address_invalid": "Geben Sie Ihre Celerp-Adresse ein, beginnend mit https:// und ohne etwas nach dem Hostnamen. Verbinden Sie sich mit Celerp Cloud, um eine zu erhalten.",
   "accountant_access.copy_link": "Link kopieren",
   "connectors.send_to_accountant": "Diese Seite an Ihren Steuerberater senden",
-  "msg.take_photo": "Foto aufnehmen"
+  "msg.take_photo": "Foto aufnehmen",
+  "inventory.err_cost_disposed_no_writeoff": "{label} hat den Bestand ohne abgeschlossene Abschreibung verlassen, die es nennt, daher kann der Einstandswert nicht automatisch korrigiert werden. Korrigieren Sie ihn stattdessen mit einer Journalbuchung."
 }

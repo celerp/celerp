@@ -5760,5 +5760,6 @@
   "accountant_access.address_invalid": "Inserisci il tuo indirizzo Celerp che inizia con https:// e senza nulla dopo il nome host. Connettiti a Celerp Cloud per ottenerne uno.",
   "accountant_access.copy_link": "Copia link",
   "connectors.send_to_accountant": "Invia questa pagina al tuo commercialista",
-  "msg.take_photo": "Scatta una foto"
+  "msg.take_photo": "Scatta una foto",
+  "inventory.err_cost_disposed_no_writeoff": "{label} è uscito dal magazzino senza una svalutazione chiusa che lo indichi, quindi il suo costo non può essere corretto automaticamente. Correggilo invece con una scrittura contabile."
 }

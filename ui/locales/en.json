@@ -5760,5 +5760,6 @@
   "accountant_access.address_invalid": "Enter your Celerp address starting with https:// and with nothing after the host name. Connect to Celerp Cloud to get one.",
   "accountant_access.copy_link": "Copy link",
   "connectors.send_to_accountant": "Send this page to your accountant",
-  "msg.take_photo": "Take a photo"
+  "msg.take_photo": "Take a photo",
+  "inventory.err_cost_disposed_no_writeoff": "{label} left stock without a closed write-off that names it, so its cost cannot be corrected automatically. Correct it with a journal entry instead."
 }

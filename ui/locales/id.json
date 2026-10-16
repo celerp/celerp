@@ -5760,5 +5760,6 @@
   "accountant_access.address_invalid": "Masukkan alamat Celerp Anda yang diawali https:// tanpa apa pun setelah nama host. Hubungkan ke Celerp Cloud untuk mendapatkannya.",
   "accountant_access.copy_link": "Salin tautan",
   "connectors.send_to_accountant": "Kirim halaman ini ke akuntan Anda",
-  "msg.take_photo": "Ambil foto"
+  "msg.take_photo": "Ambil foto",
+  "inventory.err_cost_disposed_no_writeoff": "{label} keluar dari stok tanpa penghapusan tertutup yang menyebutkannya, sehingga biayanya tidak dapat dikoreksi otomatis. Koreksi dengan entri jurnal sebagai gantinya."
 }

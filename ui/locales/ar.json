@@ -5760,5 +5760,6 @@
   "accountant_access.address_invalid": "أدخل عنوان Celerp الخاص بك بحيث يبدأ بـ https:// ولا يأتي بعد اسم المضيف شيء. اتصل بـ Celerp Cloud للحصول على عنوان.",
   "accountant_access.copy_link": "نسخ الرابط",
   "connectors.send_to_accountant": "أرسل هذه الصفحة إلى محاسبك",
-  "msg.take_photo": "التقط صورة"
+  "msg.take_photo": "التقط صورة",
+  "inventory.err_cost_disposed_no_writeoff": "خرج {label} من المخزون دون شطب مغلق يذكره، لذا لا يمكن تصحيح تكلفته تلقائيًا. صحّحها بقيد يومية بدلًا من ذلك."
 }

@@ -5760,5 +5760,6 @@
   "accountant_access.address_invalid": "กรอกที่อยู่ Celerp ที่ขึ้นต้นด้วย https:// และไม่มีอะไรต่อท้ายชื่อโฮสต์ เชื่อมต่อ Celerp Cloud เพื่อรับที่อยู่",
   "accountant_access.copy_link": "คัดลอกลิงก์",
   "connectors.send_to_accountant": "ส่งหน้านี้ให้นักบัญชีของคุณ",
-  "msg.take_photo": "ถ่ายรูป"
+  "msg.take_photo": "ถ่ายรูป",
+  "inventory.err_cost_disposed_no_writeoff": "{label} ออกจากสต็อกโดยไม่มีรายการตัดจำหน่ายที่ปิดแล้วซึ่งระบุถึงรายการนี้ จึงแก้ไขต้นทุนโดยอัตโนมัติไม่ได้ ให้แก้ไขด้วยรายการบันทึกบัญชีแทน"
 }

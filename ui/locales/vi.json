@@ -5760,5 +5760,6 @@
   "accountant_access.address_invalid": "Nhập địa chỉ Celerp của bạn bắt đầu bằng https:// và không có gì sau tên máy chủ. Kết nối Celerp Cloud để có một địa chỉ.",
   "accountant_access.copy_link": "Sao chép liên kết",
   "connectors.send_to_accountant": "Gửi trang này cho kế toán của bạn",
-  "msg.take_photo": "Chụp ảnh"
+  "msg.take_photo": "Chụp ảnh",
+  "inventory.err_cost_disposed_no_writeoff": "{label} đã rời kho mà không có phiếu xóa sổ đã đóng nêu tên nó, nên không thể tự động sửa giá vốn. Hãy sửa bằng bút toán nhật ký."
 }

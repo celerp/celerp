@@ -5760,5 +5760,6 @@
   "accountant_access.address_invalid": "የCelerp አድራሻዎን በhttps:// የሚጀምር እና ከአስተናጋጁ ስም በኋላ ምንም የሌለው አድርገው ያስገቡ። አድራሻ ለማግኘት ከCelerp Cloud ጋር ይገናኙ።",
   "accountant_access.copy_link": "ሊንክ ቅዳ",
   "connectors.send_to_accountant": "ይህን ገጽ ለሂሳብ ባለሙያዎ ይላኩ",
-  "msg.take_photo": "ፎቶ አንሳ"
+  "msg.take_photo": "ፎቶ አንሳ",
+  "inventory.err_cost_disposed_no_writeoff": "{label} ስሙን የሚጠቅስ የተዘጋ የመሰረዝ መዝገብ ሳይኖር ከክምችት ወጥቷል፣ ስለዚህ ወጪው በራስ-ሰር ሊስተካከል አይችልም። በምትኩ በጆርናል ግቤት ያስተካክሉት።"
 }
