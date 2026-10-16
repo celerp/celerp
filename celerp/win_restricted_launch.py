@@ -8,7 +8,9 @@ turned off (or as the built-in Administrator) Explorer is elevated too. The app
 then starts postgres through this script, which does what pg_ctl does for the
 same reason: it makes a restricted copy of its own token with the Administrators
 and Power Users groups set to deny-only and every privilege but change-notify
-removed, starts the program with that token and the same standard handles, waits,
+removed, adds the user to that token's default access list (an administrator's
+grants only Administrators, so the program could not reach the processes and pipes
+it creates, and Postgres fails its "postgres -V" self-check), starts the program with that token and the same standard handles, waits,
 and exits with the program's exit code. Like pg_ctl, it puts the program in a job
 object that ends it when this script ends, so killing the script (the process the
 app started) stops the program too.
@@ -43,7 +45,14 @@ STARTF_USESTDHANDLES = 0x100
 STD_HANDLES = (-10, -11, -12)  # input, output, error
 INFINITE = 0xFFFFFFFF
 TOKEN_QUERY = 0x8
+TOKEN_USER_CLASS = 1  # TOKEN_INFORMATION_CLASS TokenUser
+TOKEN_DEFAULT_DACL_CLASS = 6  # TOKEN_INFORMATION_CLASS TokenDefaultDacl
 TOKEN_ELEVATION_TYPE_CLASS = 18  # TOKEN_INFORMATION_CLASS TokenElevationType
+GENERIC_ALL = 0x10000000
+GRANT_ACCESS = 1
+NO_INHERITANCE = 0
+TRUSTEE_IS_SID = 0
+TRUSTEE_IS_USER = 1
 TOKEN_ELEVATION_DEFAULT = 1
 TOKEN_ELEVATION_FULL = 2
 TOKEN_ELEVATION_LIMITED = 3
@@ -80,6 +89,14 @@ def _api():
 
     class SidAndAttributes(ctypes.Structure):
         _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+    class Trustee(ctypes.Structure):
+        _fields_ = [("pMultipleTrustee", ctypes.c_void_p), ("MultipleTrusteeOperation", ctypes.c_int),
+                    ("TrusteeForm", ctypes.c_int), ("TrusteeType", ctypes.c_int), ("ptstrName", ctypes.c_void_p)]
+
+    class ExplicitAccess(ctypes.Structure):
+        _fields_ = [("grfAccessPermissions", wintypes.DWORD), ("grfAccessMode", ctypes.c_int),
+                    ("grfInheritance", wintypes.DWORD), ("Trustee", Trustee)]
 
     class StartupInfo(ctypes.Structure):
         _fields_ = [
@@ -134,6 +151,10 @@ def _api():
         (advapi32, "CreateRestrictedToken"): (wintypes.BOOL, [
             wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(SidAndAttributes),
             wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(wintypes.HANDLE)]),
+        (advapi32, "SetTokenInformation"): (wintypes.BOOL, [
+            wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]),
+        (advapi32, "SetEntriesInAclW"): (wintypes.DWORD, [
+            wintypes.ULONG, ctypes.POINTER(ExplicitAccess), ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]),
         (advapi32, "CreateProcessAsUserW"): (wintypes.BOOL, [
             wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
             wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
@@ -142,7 +163,40 @@ def _api():
     for (dll, name), (restype, argtypes) in signatures.items():
         fn = getattr(dll, name)
         fn.restype, fn.argtypes = restype, argtypes
-    return kernel32, advapi32, wintypes, SidAndAttributes, StartupInfo, ProcessInformation, ExtendedLimitInformation
+    return (kernel32, advapi32, wintypes, SidAndAttributes, StartupInfo, ProcessInformation,
+            ExtendedLimitInformation, ExplicitAccess)
+
+
+def _token_information(advapi32, wintypes, token, info_class: int, call: str):
+    """The token's `info_class` record, in a buffer that starts with the record."""
+    size = wintypes.DWORD()
+    advapi32.GetTokenInformation(token, info_class, None, 0, ctypes.byref(size))
+    buffer = ctypes.create_string_buffer(size.value)
+    _check(advapi32.GetTokenInformation(token, info_class, buffer, size, ctypes.byref(size)), call)
+    return buffer
+
+
+def _add_user_to_default_dacl(kernel32, advapi32, wintypes, ExplicitAccess, token) -> None:
+    """Grant the token's user full access in its default access list, as pg_ctl does
+    (AddUserToTokenDacl): every object the program creates gets that list."""
+    user = _token_information(advapi32, wintypes, token, TOKEN_USER_CLASS, "GetTokenInformation(TokenUser)")
+    dacl = _token_information(advapi32, wintypes, token, TOKEN_DEFAULT_DACL_CLASS,
+                              "GetTokenInformation(TokenDefaultDacl)")
+    grant = ExplicitAccess(GENERIC_ALL, GRANT_ACCESS, NO_INHERITANCE)
+    grant.Trustee.TrusteeForm, grant.Trustee.TrusteeType = TRUSTEE_IS_SID, TRUSTEE_IS_USER
+    # Both records start with a pointer: TOKEN_USER to the user's SID, TOKEN_DEFAULT_DACL to the list.
+    grant.Trustee.ptstrName = ctypes.c_void_p.from_buffer(user).value
+    widened = ctypes.c_void_p()
+    error = advapi32.SetEntriesInAclW(1, ctypes.byref(grant), ctypes.c_void_p.from_buffer(dacl).value,
+                                      ctypes.byref(widened))
+    if error:
+        raise LaunchError(f"SetEntriesInAclW failed (error {error})")
+    try:
+        record = ctypes.c_void_p(widened.value)
+        _check(advapi32.SetTokenInformation(token, TOKEN_DEFAULT_DACL_CLASS, ctypes.byref(record),
+                                            ctypes.sizeof(record)), "SetTokenInformation(TokenDefaultDacl)")
+    finally:
+        kernel32.LocalFree(widened)
 
 
 def _check(ok, call: str) -> None:
@@ -192,7 +246,8 @@ def token_state() -> str:
 
 def run_restricted(argv: list[str]) -> int:
     """Start `argv` with the restricted token, wait for it, and return its exit code."""
-    kernel32, advapi32, wintypes, SidAndAttributes, StartupInfo, ProcessInformation, ExtendedLimitInformation = _api()
+    (kernel32, advapi32, wintypes, SidAndAttributes, StartupInfo, ProcessInformation,
+     ExtendedLimitInformation, ExplicitAccess) = _api()
 
     token = wintypes.HANDLE()
     _check(advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), TOKEN_ALL_ACCESS, ctypes.byref(token)),
@@ -215,6 +270,7 @@ def run_restricted(argv: list[str]) -> int:
     limits = ExtendedLimitInformation()
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     try:
+        _add_user_to_default_dacl(kernel32, advapi32, wintypes, ExplicitAccess, restricted)
         _check(job, "CreateJobObjectW")
         _check(kernel32.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
                                                 ctypes.byref(limits), ctypes.sizeof(limits)),
