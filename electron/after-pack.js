@@ -17,10 +17,19 @@
  *    the real packaged tree, because the pnpm node_modules layout makes a
  *    pre-build `rm` on a fixed path unreliable (windows-x64 is transitive, not a
  *    top-level entry).
+ *
+ * 4. Windows: copy the Visual C++ runtime (vcruntime140.dll, msvcp140.dll) from
+ *    the folder named by CELERP_VC_RUNTIME_DIR into the embedded server's bin
+ *    folder and the pg-win tools bin folder. The PostgreSQL binaries link it, and
+ *    a PC without the Visual C++ Redistributable has no copy of its own. A
+ *    Windows build without it stops here rather than ship a database that cannot
+ *    start.
  */
 
 const fs = require("fs");
 const path = require("path");
+
+const VC_RUNTIME_DLLS = ["vcruntime140.dll", "msvcp140.dll"];
 
 exports.default = async function afterPack(context) {
   const plat = context.electronPlatformName;
@@ -54,8 +63,7 @@ exports.default = async function afterPack(context) {
     "@embedded-postgres", "windows-x64", "native", "bin"
   );
   if (!fs.existsSync(binDir)) {
-    console.log(`afterPack: ${binDir} not found — nothing to prune`);
-    return;
+    throw new Error(`afterPack: the embedded PostgreSQL bin folder is missing: ${binDir}`);
   }
 
   const prune = (f) => /^wx(base|msw)329u_.*\.dll$/i.test(f) || /^libcurl\.dll$/i.test(f);
@@ -67,4 +75,15 @@ exports.default = async function afterPack(context) {
     }
   }
   console.log(`afterPack: pruned ${removed} StackBuilder DLLs (wxWidgets + libcurl)`);
+
+  const runtimeDir = process.env.CELERP_VC_RUNTIME_DIR;
+  if (!runtimeDir) {
+    throw new Error("afterPack: CELERP_VC_RUNTIME_DIR is not set; it names the folder holding the Visual C++ runtime DLLs");
+  }
+  for (const dll of VC_RUNTIME_DLLS) {
+    const source = path.join(runtimeDir, dll);
+    if (!fs.existsSync(source)) throw new Error(`afterPack: ${dll} is not in ${runtimeDir}`);
+    for (const dir of [binDir, path.join(resourcesDir, "pg-win", "bin")]) fs.copyFileSync(source, path.join(dir, dll));
+  }
+  console.log(`afterPack: copied ${VC_RUNTIME_DLLS.join(", ")} next to the PostgreSQL binaries`);
 };
