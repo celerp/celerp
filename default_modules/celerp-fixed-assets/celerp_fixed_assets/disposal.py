@@ -23,7 +23,7 @@ from celerp_fixed_assets import projections, runs, setup
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
     MODULE, _cents, _date, _dec, _effects, _journal_view, _lines, _move, _post, _reversed_lines, _run,
-    asset_movements, conflict)
+    asset_movements, conflict, reverse_move)
 from celerp_fixed_assets.store import _emit, _state
 
 REASONS = ("scrapped", "lost", "donated", "other")
@@ -190,25 +190,29 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
 
 
 async def record(session, company_id, user_id, item: dict, day: str, reason: str, note: str | None,
-                 op_key: str) -> tuple[str, str]:
-    """Post and record one planned disposal (``_plan_asset``): its journal and movement."""
+                 op_key: str, *, key: str = "disposal", operation: str = "disposal", memo: str = "disposed of",
+                 **extra) -> tuple[str, str]:
+    """Post and record one planned disposal (``_plan_asset``): its journal and movement.
+    ``key`` and ``operation`` name the journal (a transfer posts its own), and ``extra``
+    is kept on the movement and the disposal record."""
     asset_id, asset = item["asset_id"], item["asset"]
     short = asset_id.removeprefix("fa:asset:")
     je_id = await _post(session, company_id, user_id,
-                        key=f"asset:{short}:disposal:{int(asset.get('movement_count') or 0) + 1}",
-                        operation="disposal", day=day, memo=f"{asset['number']} {asset['name']} disposed of",
+                        key=f"asset:{short}:{key}:{int(asset.get('movement_count') or 0) + 1}",
+                        operation=operation, day=day, memo=f"{asset['number']} {asset['name']} {memo}",
                         lines=item["lines"], source_id=asset_id, href=f"/fixed-assets/assets/{asset_id}",
                         label=asset["number"], op_key=op_key)
     movement_id = await _move(session, company_id, user_id, asset_id, kind="posted", operation="disposal",
                               effective=day, posting=day, amounts=item["amounts"], op_key=op_key,
                               quantity=str(-item["quantity"]), periods=item["periods"],
                               share=str(item["share"]), reason=reason, note=note, journal_id=je_id,
-                              gain_or_loss=_cents(item["gain"]))
+                              gain_or_loss=_cents(item["gain"]), **extra)
     if item["full"]:
         await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.status", {
             "status": "disposed", "exception": None,
             "disposal": {"date": day, "reason": reason, "note": note, "op_key": op_key,
-                         "movement_id": movement_id, "journal_id": je_id, "gain_or_loss": _cents(item["gain"])}})
+                         "movement_id": movement_id, "journal_id": je_id, "gain_or_loss": _cents(item["gain"]),
+                         **extra}})
     return je_id, movement_id
 
 
@@ -288,6 +292,9 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         if latest.get("reason") == "replaced":
             raise conflict(f"{asset['number']} left the books when its replacement was added. Undo the replacement "
                            "on the asset it belongs to instead.")
+        if latest.get("reason") == "transferred":
+            raise conflict(f"{asset['number']} was transferred to {latest['target']['company_name']}. Undo the "
+                           "transfer with Undo latest instead.")
         if latest.get("reason") == "sold":
             from celerp_fixed_assets.sales import doc_number
 
@@ -312,10 +319,7 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         await reverse_journal(session, company_id=company_id, user_id=user_id, module=MODULE,
                               key=mv["journal_id"].removeprefix(f"je:mod:{MODULE}:"), operation="undo",
                               reason="Disposal undone")
-        await _move(session, company_id, user_id, asset_id, kind="reversal", operation="undo",
-                    effective=mv["effective_date"], posting=mv["posting_date"],
-                    amounts={k: -_dec(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
-                    quantity=str(-_dec(mv.get("quantity"))), reverses=mv["id"])
+        await reverse_move(session, company_id, user_id, mv["id"], mv, op_key)
         if asset.get("status") == "disposed":
             await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.status",
                         {"status": "active", "disposal": None})

@@ -24,7 +24,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
-from celerp_fixed_assets import disposal, operations, projections, runs, setup
+from celerp_fixed_assets import disposal, operations, projections, runs, setup, transfer
 from celerp_fixed_assets.operations import (
     _cents, _claim, _create_asset, _date, _dec, _effects, _journal_view, _move, _next_numbers, _open_line, _post,
     _reclass, _run, asset_movements, conflict)
@@ -305,12 +305,13 @@ def _latest(movements: list[dict]) -> dict | None:
 
 async def undoable(session, company_id, asset_id: str) -> str | None:
     """The change Undo latest undoes from the asset page, while it is the asset's latest
-    movement: an addition, a placement in service or a remeasurement."""
+    movement: an addition, a placement in service, a remeasurement, a reclassification or a
+    transfer to another company."""
     latest = _latest(await asset_movements(session, company_id, asset_id))
     if latest is None:
         return None
-    if latest["operation"] == "disposal" and latest.get("reason") == "replaced":
-        return "replacement"
+    if latest["operation"] == "disposal" and latest.get("reason") in ("replaced", "transferred"):
+        return {"replaced": "replacement", "transferred": "transfer"}[latest["reason"]]
     return latest["operation"] if latest["operation"] in UNDOABLE else None
 
 
@@ -329,4 +330,6 @@ async def undo_latest(session, company_id, user_id, asset_id: str, body: dict) -
     op = await _state(session, company_id, f"fa:op:{latest['op_key']}") or {}
     if op.get("type") in ("disposal", "sale"):
         return await disposal.undo(session, company_id, user_id, asset_id, body)
+    if op.get("type") == "transfer":
+        return await transfer.undo(session, company_id, user_id, asset_id, body)
     return await operations._undo(session, company_id, user_id, latest["op_key"], body)

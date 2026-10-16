@@ -176,7 +176,8 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
     the preview shows, which the fingerprint covers, and what ``apply`` needs to do it.
     ``context["generation"]`` (a source line's claim generation) names a stale form, and
     ``context["basis"]``, when given, is what the plan was read from that the preview does
-    not show (the fingerprint covers it too). Only a physical record, which carries no
+    not show (the fingerprint covers it too). ``apply`` finds the intent's hash in
+    ``context["intent_hash"]``. Only a physical record, which carries no
     money, is recorded before the first managed period is confirmed (``managed=False``)."""
     from celerp.services.permissions import locked_authority
 
@@ -200,6 +201,7 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
         if previewed.split(".", 1)[0] != str(generation):
             raise conflict("Line was registered and released since you opened this form. Review again.")
         raise conflict("Assets, accounts or postings changed since preview. Review again.")
+    context["intent_hash"] = intent_hash
     result, effects = await apply(context, op_key)
     await _emit(session, company_id, user_id, f"fa:op:{op_key}", "fa_op", "fa.op.recorded", {
         "type": op_type, "intent_hash": intent_hash, "result": result, "effects": effects},
@@ -595,6 +597,15 @@ def _reversed_lines(je: dict) -> dict:
                       for e in je.get("entries") or []]}
 
 
+async def reverse_move(session, company_id, user_id, movement_id: str, mv: dict, op_key: str) -> str:
+    """Record the movement that undoes ``mv``: every amount, contribution and quantity negated."""
+    return await _move(session, company_id, user_id, mv["asset_id"], kind="reversal", operation="undo",
+                       effective=mv["effective_date"], posting=mv["posting_date"],
+                       amounts={k: -_dec(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
+                       contributions=[{**c, "amount": str(-_dec(c.get("amount")))} for c in mv.get("contributions") or []],
+                       quantity=str(-_dec(mv.get("quantity"))), reverses=movement_id)
+
+
 async def _undo(session, company_id, user_id, target_key: str, body: dict) -> dict:
     from celerp.services.company_lock import lock_projections
     from celerp.services.module_journals import reverse_journal
@@ -605,6 +616,10 @@ async def _undo(session, company_id, user_id, target_key: str, body: dict) -> di
             raise setup.unprocessable("There is nothing to undo here.")
         if op.get("undone_by"):
             raise conflict("This was already undone.")
+        if op.get("type") == "transfer_in":
+            source = op["result"]["source"]
+            raise conflict(f"This asset was transferred in from {source['company_name']}. Undo the transfer on "
+                           f"{source['number']} there instead.")
         effects = op.get("effects") or {}
         claims = [sources.claim_id(s) for s in effects.get("claims") or []]
         rows = await lock_projections(session, company_id, [*effects.get("assets", []), *claims])
@@ -637,11 +652,7 @@ async def _undo(session, company_id, user_id, target_key: str, body: dict) -> di
                                   key=je_id.removeprefix(f"je:mod:{MODULE}:"), operation="undo",
                                   reason="Undone")
         for movement_id, mv in context["movements"].items():
-            await _move(session, company_id, user_id, mv["asset_id"], kind="reversal", operation="undo",
-                        effective=mv["effective_date"], posting=mv["posting_date"],
-                        amounts={k: -_dec(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
-                        contributions=[{**c, "amount": str(-_dec(c.get("amount")))} for c in mv.get("contributions") or []],
-                        quantity=str(-_dec(mv.get("quantity"))), reverses=movement_id)
+            await reverse_move(session, company_id, user_id, movement_id, mv, op_key)
         for claim in context["claims"]:
             state = await _state(session, company_id, claim)
             await _emit(session, company_id, user_id, claim, "fa_src", "fa.src.released", {

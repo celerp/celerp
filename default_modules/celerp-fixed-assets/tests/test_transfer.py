@@ -293,7 +293,7 @@ async def test_s5_transfer_uses_related_party_accounts_no_clearing(fa):
     assert D(theirs["cost"]) == D("11000") and theirs["status"] == "active"
     assert theirs["available_date"] == "2026-04-20" and theirs["policy"]["life_months"] == 56
     assert theirs["transferred_from"]["number"] == (await fa.asset(car))["number"]
-    assert [m["operation"] for m in theirs["transferred_from"]["history"]][0] == "acquisition"
+    assert [m["operation"] for m in theirs["transferred_from"]["history"]][0] == "contributed"
     their_lines = _journal_lines(await _journals_of(b, target["asset_id"], "ict"))
     assert their_lines == {"1210": (D("11000"), D(0)), "2110": (D(0), D("11000"))}
     assert await b.balance("1160") == 0
@@ -327,12 +327,12 @@ async def test_s5_transfer_atomic_both_or_neither(fa):
     locked = await _refused_transfer(fa, b, car)
     assert locked.status_code == 409 and "Beta Co" in locked.json()["detail"]
     await _lock(b, None)
-    r = await b.client.patch("/accounting/accounts/2110", headers=b.h, json={"is_active": False})
+    r = await b.client.patch("/accounting/accounts/2140", headers=b.h, json={"is_active": False})
     assert r.status_code == 200, r.text
-    inactive = await _refused_transfer(fa, b, car)
-    assert inactive.status_code == 422 and "2110" in inactive.json()["detail"]
+    inactive = await _refused_transfer(fa, b, car, payable_account="2140")
+    assert inactive.status_code == 422 and "2140" in inactive.json()["detail"]
     await _set_module(b, False)
-    off = await _refused_transfer(fa, b, car, payable_account="2140")
+    off = await _refused_transfer(fa, b, car)
     assert off.status_code == 409 and "Beta Co" in off.json()["detail"]
     assert await _snapshot(fa, car) == before
     assert [a for a in await b.entities("fa_asset") if a.get("transferred_from")] == []
@@ -451,6 +451,8 @@ async def test_s5_concurrent_transfers_one_wins(committed_engine):
     async def attempt(key: str):
         async with factory() as s:
             preview = await transfer.transfer(s, cid, uid, car, {**body, "op_key": key, "preview": True})
+            await s.rollback()
+        async with factory() as s:
             try:
                 done = await transfer.transfer(s, cid, uid, car, {**body, "op_key": key,
                                                                   "fingerprint": preview["fingerprint"]})

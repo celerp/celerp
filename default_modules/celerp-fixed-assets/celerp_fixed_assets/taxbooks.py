@@ -115,17 +115,26 @@ async def _assets(session, company_id, regime) -> list[_Asset]:
             continue
         book = books.get(asset_id) or {}
         category = book.get("category") or (cls.get("tax_categories") or {}).get(regime.key)
-        gone = (asset.get("disposal") or {}).get("date") if asset.get("status") in ("sold", "disposed") else None
-        sale = asset.get("sale") or {}
-        sold = sale.get("date") if asset.get("status") == "sold" else None
+        left = asset.get("disposal") or {}
+        gone = left.get("date") if asset.get("status") in ("sold", "disposed") else None
+        sold, proceeds = None, _ZERO
+        if asset.get("status") == "sold":
+            sold, proceeds = (asset.get("sale") or {}).get("date"), _dec((asset.get("sale") or {}).get("proceeds"))
+        elif gone and left.get("reason") == "transferred":
+            # Transferred to a related company: it leaves at the value the regime carries across.
+            sold, proceeds = gone, _dec((left.get("tax_values") or {}).get(regime.key, left.get("price")))
+        # Transferred in from a related company: it comes in at the value carried across.
+        carried_in = asset.get("tax_values") or {}
         out.append(_Asset(
             id=asset_id, number=asset.get("number") or "", name=asset.get("name") or "",
             available=date.fromisoformat(asset["available_date"]),
             category=category if category in categories else None, elections=dict(book.get("elections") or {}),
-            movements=tuple((date.fromisoformat(m["effective_date"]), _dec((m.get("amounts") or {}).get("cost")))
+            movements=tuple((date.fromisoformat(m["effective_date"]),
+                             _dec(carried_in[regime.key]) if m.get("operation") == "transfer_in" and regime.key
+                             in carried_in else _dec((m.get("amounts") or {}).get("cost")))
                             for m in live(movements.get(asset_id, [])) if m.get("operation") not in _NOT_ADDED),
             gone=date.fromisoformat(gone) if gone else None, sold=date.fromisoformat(sold) if sold else None,
-            proceeds=_dec(sale.get("proceeds")) if sold else _ZERO))
+            proceeds=proceeds))
     return out
 
 
@@ -153,9 +162,11 @@ def _row(a: _Asset, status: str, **figures) -> dict:
             "reason": figures.get("reason")}
 
 
-def _years(regime, end_setting: str, assets: list[_Asset], frozen: dict[int, dict], through: int) -> dict[int, dict]:
+def _years(regime, end_setting: str, assets: list[_Asset], frozen: dict[int, dict], through: int,
+           seen: dict | None = None) -> dict[int, dict]:
     """Every tax year of the book through ``through``: its asset rows, and its pools on a
-    pool basis. A closed year is taken as it was closed."""
+    pool basis. A closed year is taken as it was closed. ``seen``, when given, collects
+    each open year's inputs by (year, asset)."""
     if not assets:
         return {}
     first = min(_year_of(regime, end_setting, a.available) for a in assets)
@@ -186,6 +197,8 @@ def _years(regime, end_setting: str, assets: list[_Asset], frozen: dict[int, dic
                 asset_id=a.id, category=a.category, elections=a.elections, year=year, start=start, end=end,
                 available_date=a.available, opening=carried.get(a.id, _ZERO), additions=additions,
                 disposals=disposals, disposed=a.gone is not None and a.gone <= end)
+            if seen is not None and inputs is not None:
+                seen[(year, a.id)] = inputs
             moved.append((a, inputs))
         out[year] = (_asset_year if regime.basis == "asset" else _pool_year)(regime, year, moved, carried, counted, end)
     return out
@@ -242,6 +255,32 @@ def _pool_year(regime, year, moved, carried, counted, end) -> dict:
         out.append({"key": key, "category": pool["category"], "status": "ok", "reason": None,
                     "assets": pool["assets"], **{k: _cents(getattr(result, k)) for k in FIGURES}})
     return {"rows": rows, "pools": out}
+
+
+async def transfer_values(session, company_id, settings: dict, asset_id: str, day: date) -> dict[str, str]:
+    """Per tax regime the company keeps, the written-down value ``asset_id`` carries to a
+    related company on ``day``, as its regime's ``related_party_transfer`` works it out
+    from the asset's tax year so far. A regime that is unavailable, has the asset in a
+    closed year or no category, or fails gives none: the transfer price stands for it."""
+    out = {}
+    end_setting = tax_year_end(settings)
+    for key in setup.settings_of(settings).get("tax_regimes") or []:
+        if unavailable(settings, key):
+            continue
+        regime = rules.regime(key)
+        year = _year_of(regime, end_setting, day)
+        seen: dict = {}
+        _years(regime, end_setting, await _assets(session, company_id, regime),
+               await _frozen(session, company_id, key), year, seen)
+        inputs = seen.get((year, asset_id))
+        if inputs is None:
+            continue
+        try:
+            result = regime.related_party_transfer(inputs)
+        except Exception:  # a module's own code: the transfer price stands instead
+            continue
+        out[key] = _cents(result.written_down_value)
+    return out
 
 
 # ── The book of one year ─────────────────────────────────────────────────────
