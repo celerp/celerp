@@ -261,3 +261,18 @@ def test_peer_financial_status_must_match_net_source_receipts():
     assert validate_source_payments(fully_refunded)[0][1]["amount"] == 200
     assert validate_source_payments({
         "currency": "USD", "status": "final", "payments": [], "amount_paid": 0}) == []
+
+
+@pytest.mark.parametrize("side", [
+    {"method": "credit_note", "source_doc_id": "doc:source-note"},
+    {"method": "applied", "target_doc_id": "doc:source-invoice"},
+])
+def test_a_credit_applied_between_documents_is_entered_by_hand(side):
+    payment = {"index": 1, "amount": 30, "payment_date": "2026-10-12", "currency": "USD",
+               "paired_index": 0, "status": "active", **side}
+    with pytest.raises(HTTPException) as err:
+        validate_source_payments({"status": "paid", "currency": "USD", "amount_paid": 30,
+                                  "payments": [payment]})
+    assert err.value.status_code == 409
+    assert err.value.detail == ("A credit note applied to a document is not copied automatically. "
+                                "Enter it in the accountant's copy by hand.")

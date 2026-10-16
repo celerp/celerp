@@ -24,6 +24,9 @@ class _Session:
     async def execute(self, query):
         return SimpleNamespace(first=lambda: SimpleNamespace(id=uuid.uuid4(), role="owner"))
 
+    async def scalar(self, query):
+        return None  # no source revision held yet
+
 
 @pytest.mark.asyncio
 async def test_draft_document_uses_existing_importer_and_maps_dependencies(monkeypatch):
@@ -490,3 +493,40 @@ async def test_real_service_invoice_mirror_posts_once_in_second_company(client, 
             source_revision=source_revision, data={**payload, "notes": "Changed receipt"},
         )
     assert conflicting.value.status_code == 409
+
+
+def _applied_credit(**extra) -> dict:
+    return {"index": 1, "amount": 30, "payment_date": "2026-10-12", "currency": "USD",
+            "method": "credit_note", "source_doc_id": "doc:source-note", "paired_index": 0,
+            "status": "active", **extra}
+
+
+class _Held(_Session):
+    """A receiving copy that already holds revision 5 of the source document, as a company
+    copy with its source identities kept does."""
+    async def scalar(self, query):
+        return SimpleNamespace(source_entity_id="doc:source", last_revision=5, last_payload_hash=None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revision", [4, 5])
+async def test_a_revision_the_copy_already_holds_is_skipped_before_its_payload_is_checked(monkeypatch, revision):
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("A held revision is not claimed again")
+    monkeypatch.setattr(documents, "claim_peer_revision", unexpected)
+    assert await documents.receive_document(
+        _Held(), grant=_grant(), source_entity_id="doc:source", source_revision=revision,
+        data={"doc_type": "invoice", "status": "paid", "currency": "USD", "total": 30,
+              "amount_paid": 30, "payments": [_applied_credit()]}) == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_a_held_revision_sent_again_with_other_content_is_refused(monkeypatch):
+    class _Hashed(_Session):
+        async def scalar(self, query):
+            return SimpleNamespace(source_entity_id="doc:source", last_revision=5, last_payload_hash="0" * 64)
+    with pytest.raises(HTTPException) as err:
+        await documents.receive_document(
+            _Hashed(), grant=_grant(), source_entity_id="doc:source", source_revision=5,
+            data={"doc_type": "invoice", "status": "draft"})
+    assert err.value.status_code == 409 and err.value.detail == "Source revision already used"

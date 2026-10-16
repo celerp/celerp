@@ -282,6 +282,17 @@ async def test_firm_lock_applies_forward_once(real_client, real_engine, monkeypa
     assert lock["lock_date"] == "2026-09-30" and lock["firm_lock"]["date"] == "2026-06-30"
 
 
+async def test_an_unchanged_firm_lock_is_not_counted_as_an_update(real_client, real_engine, monkeypatch):
+    """The sync history counts the firm's lock date as updated only on the run that brings
+    a new date, not on every run after it."""
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    _route_to_app(monkeypatch, [])
+    await _lock(real_client, firm_tok, "2026-03-31")
+    first = (await _two_way(client_company, credential))["period_lock"]
+    again = (await _two_way(client_company, credential))["period_lock"]
+    assert (first.updated, again.updated, again.skipped) == (1, 0, 1)
+
+
 async def test_firm_cannot_void_what_the_client_sent(real_client, real_engine, monkeypatch):
     """AC4: a journal or document that arrived through sync cannot be voided or edited by
     a firm user; the refusal says to post a journal entry instead."""
