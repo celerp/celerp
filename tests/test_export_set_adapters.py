@@ -19,6 +19,7 @@ import pytest
 from celerp.importers.adapters.base import MigrationDecisions, ScanError
 from celerp.importers.schema import CIFMode, CoverageClass, ReconciliationMeasure as M
 from fixtures.manager_io.support import BASIC, artifact
+from fixtures.qbo_export import build as qbo
 from fixtures.xero_export import build
 from migration_support import maker, real_engine  # noqa: F401
 from test_migration_e2e import _maps, _passing, migrate_set
@@ -30,6 +31,11 @@ CUTOVER = date(2025, 6, 30)
 @cache
 def _xero() -> tuple[tuple[str, bytes], ...]:
     return tuple(build.files().items())
+
+
+@cache
+def _qbo() -> tuple[tuple[str, bytes], ...]:
+    return tuple(qbo.files().items())
 
 
 def _set(tmp_path, files) -> list:
@@ -46,6 +52,12 @@ def _adapter():
     from celerp.importers.adapters.exports import XeroAdapter
 
     return XeroAdapter()
+
+
+def _qbo_adapter():
+    from celerp.importers.adapters.exports import QuickBooksOnlineAdapter
+
+    return QuickBooksOnlineAdapter()
 
 
 def _without(*names: str) -> list[tuple[str, bytes]]:
@@ -203,19 +215,114 @@ def test_xero_expectations_come_from_the_reports_not_the_conversion(tmp_path):
          if p.account == "610"), Decimal(0))
 
 
+# ── QuickBooks Online ─────────────────────────────────────────────────────────
+
+def test_quickbooks_online_export_set_is_recognised_by_content_alone(tmp_path):
+    from celerp.importers.adapters.registry import detect_adapter
+
+    files = _set(tmp_path, [(f"report-{n}.xlsx", data) for n, (_, data) in enumerate(_qbo())])
+    assert detect_adapter(files).key == "quickbooks_online"
+    scan = _qbo_adapter().inspect(files)
+    assert scan.company_name == build.COMPANY
+    assert scan.base_currency == "GBP"
+    assert scan.currencies == ("GBP", "USD")
+    assert (scan.period_start, scan.period_end) == (date(2023, 1, 1), date(2025, 12, 31))
+    assert "foreign_currency" in scan.features
+    # Neither export-set adapter claims the other's set.
+    assert _adapter().detect(files).matched is False
+    assert _qbo_adapter().detect(_set(tmp_path, _xero())).matched is False
+
+
+def test_quickbooks_online_export_set_in_one_zip_reads_the_same(tmp_path):
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as z:
+        for name, data in _qbo():
+            z.writestr(f"Harbour/{name}", data)
+    zipped = _qbo_adapter().inspect(_set(tmp_path, [("quickbooks-export.zip", archive.getvalue())]))
+    assert zipped == _qbo_adapter().inspect(_set(tmp_path, _qbo()))
+
+
+def test_a_quickbooks_online_set_missing_its_journal_names_it(tmp_path):
+    with pytest.raises(ScanError, match="Journal") as caught:
+        _qbo_adapter().inspect(_set(tmp_path, [(n, d) for n, d in _qbo() if n != "Journal.xlsx"]))
+    assert "Account List.xlsx (Account List)" in str(caught.value)
+
+
+def test_a_quickbooks_online_year_without_its_closing_trial_balance_is_refused(tmp_path):
+    files = [(n, d) for n, d in _qbo() if n != "Trial Balance 2024-12-31.xlsx"]
+    with pytest.raises(ScanError, match="Trial Balance.*31 Dec 2024"):
+        _qbo_adapter().inspect(_set(tmp_path, files))
+
+
+def test_quickbooks_online_masters_and_documents_carry_into_cif(tmp_path):
+    manifest = _qbo_adapter().build_manifest(_set(tmp_path, _qbo()), FULL)
+    bundle = manifest.bundle
+    assert bundle.company.name == build.COMPANY and bundle.company.base_currency == "GBP"
+    accounts = {a.code: a for a in bundle.accounts}
+    assert set(accounts) == {code for code, *_ in build.CHART}
+    assert accounts["499"].name == "Exchange Gain or Loss"
+    assert (accounts["091"].control, accounts["091"].currency) == ("bank", "USD")
+    assert (accounts["610"].control, accounts["800"].control, accounts["820"].control) == (
+        "receivable", "payable", "tax")
+    assert (accounts["499"].control, accounts["960"].control) == ("exchange_difference", "retained_earnings")
+    assert (accounts["270"].account_type, accounts["310"].account_type, accounts["721"].account_type) == (
+        "revenue", "cogs", "asset")
+
+    taxes = {tc.name: tc.rate_percent for tc in bundle.tax_codes}
+    assert taxes["20.0% S"] == Decimal(20) and taxes["0.0% Z"] == 0
+
+    contacts = {c.name: c for c in bundle.contacts}
+    assert contacts["Keystone Imports Inc"].currency == "USD"
+    assert contacts["Keystone Imports Inc"].roles == ["customer"]
+    assert contacts["Mill Timber Supply"].roles == ["supplier"]
+    assert {i.sku for i in bundle.items} == {code for code, *_ in build.ITEMS}
+
+    docs = {d.source_external_id: d for d in bundle.documents}
+    source = {d.number: d for d in build.simulate().documents if d.status not in ("Deleted", "Draft")}
+    assert set(docs) == {f"{'S' if d.sales else 'P'}:{n}" for n, d in source.items()}
+    assert [docs[f"S:{n}"].status for n, d in source.items() if d.status == "Voided"] == ["void"] * 6
+    usd = next(d for d in docs.values() if d.currency == "USD" and d.status == "paid")
+    assert usd.exchange_rate is not None and usd.line_items[0].tax_code_external_id
+    notes = [d for d in docs.values() if d.doc_type == "credit_note"]
+    assert len(notes) == 3 and all(n.metadata["applies_to"] == f"S:{source[n.ref].reference}" for n in notes)
+    assert docs["S:INV-0001"].line_items[0].item_external_id is not None
+    assert docs["S:INV-0001"].metadata["tracking"] == [{"Class": "North", "Location": "Beta"}]
+
+    # Payments are matched to what they settled, so few stay plain journals.
+    settled = [s for s in bundle.settlements if s.settlement_type == "receipt"]
+    assert len(settled) > 100
+    assert all(row.coverage_class != CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER for row in manifest.coverage)
+
+
+def test_quickbooks_online_expectations_come_from_the_reports(tmp_path):
+    expectations = _qbo_adapter().source_expectations(_set(tmp_path, _qbo()), FULL).expectations
+    by = {(e.measure, e.key): e.expected for e in expectations}
+    books = build.simulate()
+    end = books.balances(build.END)
+    assert by[(M.TRIAL_BALANCE, "090")] == end["090"]
+    assert by[(M.BANK_CASH, "091")] == end["091"]
+    assert by[(M.TRIAL_BALANCE_AT, "090@2024-06-30")] == books.balances(date(2024, 6, 30))["090"]
+    assert by[(M.TRIAL_BALANCE_AT, "200@2024-06-30")] == books.balances(date(2024, 6, 30))["200"]
+    assert by[(M.AR_BY_CUSTOMER, "Lakeshore Trading Co")] == sum(
+        (p.amount for j in books.journals if j.contact == "Lakeshore Trading Co" for p in j.postings
+         if p.account == "610"), Decimal(0))
+
+
 # ── End to end ────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)  # three years of trading through the real runner
 @pytest.mark.parametrize("decisions", [{"mode": "full_history"},
                                        {"mode": "cutover", "cutover_date": CUTOVER.isoformat()}])
-async def test_quickbooks_and_xero_adapters(real_engine, monkeypatch, tmp_path, decisions):
+@pytest.mark.parametrize("source", ["quickbooks_online", "xero"])
+async def test_quickbooks_and_xero_adapters(real_engine, monkeypatch, tmp_path, decisions, source):
     """An export set migrates through the real runner with nothing rejected and every
     reconciliation check passing, month-end trial balances included; every fallback is
     listed as mapped with loss."""
     from celerp.services import migrations
 
-    run, rejected = await migrate_set(real_engine, list(_xero()), decisions, monkeypatch, tmp_path)
+    files = list(_qbo() if source == "quickbooks_online" else _xero())
+    run, rejected = await migrate_set(real_engine, files, decisions, monkeypatch, tmp_path)
     assert rejected == []
     _passing(run)
     measures = {r["check"] for r in run.reconciliation["rows"]}
