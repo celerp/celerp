@@ -101,3 +101,34 @@ async def test_handoff_activity_rejects_cross_company_cloud_response(real_engine
     assert (await real_client.post(f"/company-backups/handoffs/{uuid.uuid4()}/revoke",
                                    headers=headers)).status_code == 502
     assert calls == ["GET", "GET"]
+
+
+@pytest.mark.asyncio
+async def test_send_link_without_connect_is_refused_with_account_needed(real_engine, real_client, monkeypatch):
+    """With no Celerp account the API answers 428 so the page can offer a free account
+    in place; nothing is exported."""
+    from celerp.services import company_backup, cloud_entitlement
+    user = await owner(real_engine)
+    company_id = await company(real_engine, user, "No account books", "no-account-sender")
+    bearer = await token(real_engine, user, company_id)
+    exported = []
+
+    async def export(cid, destination):
+        exported.append(cid)
+        destination.write_bytes(b"synthetic company archive")
+
+    async def no_account(*a, **kw):
+        return None
+    monkeypatch.setattr(company_backup, "export_company_snapshot", export)
+    monkeypatch.setattr(cloud_entitlement, "authenticated_request", no_account)
+    body = {
+        "operation_id": str(uuid.uuid4()),
+        "key": base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("="),
+        "firm_name": "Owner books", "recipient": "client@example.com",
+        "reply_to": "verified@example.com", "note": "",
+    }
+    r = await real_client.post("/company-backups/send-handoff", json=body,
+                               headers={"Authorization": f"Bearer {bearer}"})
+    assert r.status_code == 428, r.text
+    assert "free Celerp account" in r.json()["detail"]
+    assert not exported

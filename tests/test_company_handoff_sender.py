@@ -143,3 +143,44 @@ def test_untrusted_upload_url_never_used(tmp_path, monkeypatch, bad):
         _run(_send(source, uuid.uuid4(), uuid.uuid4(), bytes(range(32))))
     assert len(calls) == 2  # lookup + creation, never mail
     assert len(list(tmp_path.glob("*.upload"))) == 1  # retry retains ciphertext
+
+
+def test_send_link_without_connect_asks_for_a_free_account(tmp_path, monkeypatch):
+    """No Celerp account on this installation, or one the relay has not verified: the
+    send stops before anything is staged and asks for a free account, never Connect."""
+    _private_staging(monkeypatch, tmp_path)
+    plain = tmp_path / "plain"
+    plain.write_bytes(b"books")
+
+    async def no_account(method, path, **kw):
+        return None
+    monkeypatch.setattr(sender.cloud_entitlement, "authenticated_request", no_account)
+    with pytest.raises(sender.HandoffAccountNeeded) as missing:
+        _run(_send(plain, uuid.uuid4(), uuid.uuid4(), bytes(32)))
+    assert "free Celerp account" in str(missing.value) and "Connect" not in str(missing.value)
+
+    async def unverified(method, path, **kw):
+        if method == "GET":
+            return httpx.Response(200, json={"items": []})
+        return httpx.Response(403, json={"detail": "Verify your Celerp account before sending a company copy"})
+    monkeypatch.setattr(sender.cloud_entitlement, "authenticated_request", unverified)
+    with pytest.raises(sender.HandoffAccountNeeded):
+        _run(_send(plain, uuid.uuid4(), uuid.uuid4(), bytes(32)))
+
+
+def test_relay_refusal_reason_reaches_the_sender(tmp_path, monkeypatch):
+    """A limit the relay names (50 active copies, daily email limit) is shown as is, with
+    its way out, instead of a generic retry message."""
+    _private_staging(monkeypatch, tmp_path)
+    plain = tmp_path / "plain"
+    plain.write_bytes(b"books")
+    limit = "50 active copies is the limit. Revoke an old copy or download one."
+
+    async def full(method, path, **kw):
+        if method == "GET":
+            return httpx.Response(200, json={"items": []})
+        return httpx.Response(409, json={"detail": limit})
+    monkeypatch.setattr(sender.cloud_entitlement, "authenticated_request", full)
+    with pytest.raises(sender.HandoffSendError) as refused:
+        _run(_send(plain, uuid.uuid4(), uuid.uuid4(), bytes(32)))
+    assert str(refused.value) == limit

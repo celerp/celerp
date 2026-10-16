@@ -860,6 +860,44 @@ async def test_company_handoff_send_form_retries_original_operation(ui, real_eng
     assert all(call[1]["key"] == initial["key"] for call in calls)
 
 
+async def test_send_link_without_connect(ui, real_engine, monkeypatch):
+    """No Celerp account: the send page keeps every typed value, offers a free account in
+    place and resumes the same send once it is verified; Download copy is the other way
+    out. Connect is never mentioned."""
+    from ui.routes.company_backup import DOWNLOAD, SEND
+    from ui import api_client as api
+
+    _, _, tok = await _setup(real_engine)
+    ui.cookies.set("celerp_token", tok)
+    initial = _hidden(_page(await ui.get(SEND)))
+    payload = {**initial, "firm_name": "Example Accounting", "recipient": "client@example.com",
+               "reply_to": "firm@example.com", "note": "Your books"}
+
+    async def no_account(token, body):
+        raise api.APIError(428, "Sign in to a free Celerp account to send a company copy link.")
+
+    async def methods(token):
+        return {"google": False}
+    monkeypatch.setattr(api, "company_backup_send_handoff", no_account)
+    monkeypatch.setattr(api, "account_methods", methods)
+    r = await ui.post(SEND, data=payload)
+    page = _page(r)
+    assert r.status_code == 428
+    assert 'id="celerp-account-panel"' in page and 'value="copy-send"' in page
+    assert 'id="company-copy-send-form"' in page
+    assert _hidden(page)["key"] == initial["key"] and "Example Accounting" in page
+    assert f'href="{DOWNLOAD}"' in page
+    assert "Connect" not in page
+
+
+async def test_copy_send_resumes_the_same_form_after_sign_in():
+    from fasthtml.common import to_xml
+    from ui.routes import account
+    assert account._next_from("copy-send") == "copy-send"
+    script = to_xml(account._resume_parts("copy-send")[0])
+    assert "company-copy-send-form" in script and "requestSubmit" in script
+
+
 async def test_company_handoff_activity_revoke_and_navigation(ui, real_engine, monkeypatch):
     from ui.routes import company_backup as route
     from ui import api_client as api
