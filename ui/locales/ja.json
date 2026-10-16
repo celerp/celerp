@@ -5249,6 +5249,8 @@
   "event.fa.correction.applied": "固定資産の修正を適用",
   "event.fa.correction.withdrawn": "固定資産の修正を取り下げ",
   "event.fa.correction.undone": "固定資産の修正を取り消し",
+  "event.fa.review.recorded": "減損の検討を記録",
+  "event.fa.review.status": "減損の検討を取り下げ",
   "event.mfg.order.wip_opened": "仕掛品を開始しました",
   "event.mfg.order.wip_unresolved": "仕掛品の照合が必要です",
   "event.acc.period.closed": "期間を締めました",

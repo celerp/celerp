@@ -480,6 +480,8 @@ async def plan(session, company_id, asset_id: str, body: dict, fa: dict) -> tupl
     books = await runs._books(session, company_id)
     live = runs.live(movements)
     start = _first_open(books, runs._first(live))
+    # A remeasurement measured the asset as it then stood, so nothing before it is restated.
+    remeasured = max((m["effective_date"] for m in live if m.get("operation") in runs.REMEASUREMENTS), default=None)
     shown = {"asset": {"id": asset_id, "number": asset["number"], "name": asset.get("name")},
              "classification": classification, "default_classification": default, "override_reason": reason}
     treatment = body.get("prior_years") or "retained_earnings"
@@ -503,11 +505,17 @@ async def plan(session, company_id, asset_id: str, body: dict, fa: dict) -> tupl
                 raise setup.unprocessable(f"A change in estimate takes effect from {period_label(start)} or later, "
                                           "the first month not yet depreciated.")
         day = _first_day(effective)
+        if remeasured and day <= remeasured:
+            raise setup.unprocessable(f"{asset['number']} was remeasured on {remeasured}. A change in estimate "
+                                      "takes effect after that.")
         d.move("estimate", day, {}, posting=day, policy=policy, previous=asset["policy"])
         d.changes["policy"] = policy
         shown.update(effective_date=day, posting_date=None)
         treatment, immaterial = None, None
     else:
+        if remeasured:
+            raise setup.unprocessable(f"{asset['number']} was remeasured on {remeasured}, so what came before it "
+                                      "is not restated. Undo the remeasurement first while it is the latest change.")
         original = min(m["posting_date"] for m in live)
         d = Draft(session, company_id, asset_id, asset, cls, movements, books,
                   await _posting_day(session, company_id, books, original, body.get("posting_date")))

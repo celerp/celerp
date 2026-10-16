@@ -33,7 +33,17 @@ from sqlalchemy import func, select
 from celerp.models.projections import Projection
 from celerp.services.money import round_money
 from celerp_fixed_assets import notices, operations, setup
-from celerp_fixed_assets.calc.engine import Acquire, Dispose, EstimateChange, Opening, Policy, schedule
+from celerp_fixed_assets.calc.engine import (
+    Acquire,
+    Dispose,
+    EstimateChange,
+    Impair,
+    Improve,
+    Opening,
+    Policy,
+    Revalue,
+    schedule,
+)
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.calc.rules import METHODS
 from celerp_fixed_assets.operations import MODULE, _cents, _dec, _emit, _entities, _move, _state, conflict
@@ -123,8 +133,11 @@ async def _ledger_basis(session, company_id, books: Books) -> list:
 
 # The operations that bring an asset in at the cutover, and the correction of those values.
 OPENING_OPERATIONS = ("opening", "opening_values")
-# Operations whose cost is not an acquisition: the asset leaving the books, in whole or part.
-_NOT_ACQUIRED = (*OPENING_OPERATIONS, "disposal")
+# Measurements that restate the carrying amount (calc.engine Revalue and Impair).
+REMEASUREMENTS = ("revaluation", "impairment", "impairment_reversal")
+# Operations whose cost is not an acquisition: the asset leaving the books in whole or part,
+# a remeasurement, an improvement (a layer of its own), and construction placed in service.
+_NOT_ACQUIRED = (*OPENING_OPERATIONS, *REMEASUREMENTS, "disposal", "improvement", "construction_out")
 
 
 def live(movements: list[dict]) -> list[dict]:
@@ -177,6 +190,14 @@ def engine_movements(asset: dict, movements: list[dict], currency: str) -> list:
         if m.get("operation") not in _NOT_ACQUIRED and cost:
             by_day[m["effective_date"]] = by_day.get(m["effective_date"], Decimal(0)) + cost
     out += [Acquire(date.fromisoformat(day), cost) for day, cost in sorted(by_day.items()) if cost]
+    for m in movements:
+        on = date.fromisoformat(m["effective_date"])
+        if m.get("operation") == "improvement":
+            out.append(Improve(on, _dec(m["amounts"].get("cost")), m.get("life_months")))
+        elif m.get("operation") == "revaluation":
+            out.append(Revalue(on, _dec(m["carrying_amount"])))
+        elif m.get("operation") in REMEASUREMENTS:
+            out.append(Impair(on, _dec(m["carrying_amount"])))
     disposals = sorted((m for m in movements if m.get("operation") == "disposal"), key=lambda m: m["effective_date"])
     out += [Dispose(date.fromisoformat(m["effective_date"]), _dec(m.get("share") or 1)) for m in disposals]
     start = _first(movements)
@@ -209,8 +230,10 @@ def full_schedule(asset: dict, movements: list[dict], settings: dict, through: i
     """The asset's calc.engine Schedule through month ``through``."""
     currency = settings.get("currency") or "USD"
     policy = base_policy(asset, movements)
+    # The residual is a share of what the asset was acquired or brought in at.
     cost = sum((_dec((m.get("amounts") or {}).get("cost")) for m in live(movements)
-                if m.get("operation") != "disposal"), Decimal(0))
+                if m.get("operation") not in (*REMEASUREMENTS, "disposal", "improvement", "construction_out")),
+               Decimal(0))
     engine_policy = Policy(policy["method"], int(policy.get("life_months") or 0),
                            round_money(cost * _dec(policy.get("residual_percent")) / 100, currency),
                            policy.get("convention") or "full_month",
@@ -222,14 +245,13 @@ def full_schedule(asset: dict, movements: list[dict], settings: dict, through: i
 
 def charged_by_month(movements: list[dict]) -> dict[int, Decimal]:
     """Depreciation already on the asset, by the month it belongs to. Opening values are
-    not charges; a correction says which months it charged for."""
+    not charges; a correction or remeasurement says which months it charged for."""
     out: dict[int, Decimal] = {}
     for m in live(movements):
         if m.get("operation") in OPENING_OPERATIONS:
             continue
-        periods = m.get("periods")
-        if periods:
-            for p, amount in periods.items():
+        if m.get("periods") is not None:
+            for p, amount in m["periods"].items():
                 out[parse_period(p)] = out.get(parse_period(p), Decimal(0)) + _dec(amount)
             continue
         amount = _dec((m.get("amounts") or {}).get("accumulated_depreciation"))
@@ -677,6 +699,9 @@ async def tick(session, company_id, today: date) -> str | None:
         if fa.get("run_mode") == "post" and not fa.get("auto_post_paused"):
             await _set(session, company_id, auto_post_paused=True)
         return "off"
+    from celerp_fixed_assets import remeasure
+
+    await remeasure.tell_reviews(session, company_id, today)
     if fa.get("run_mode", "prepare") == "manual" or today.day < int(fa.get("run_day") or 1):
         return None
     month = month_index(today) - 1

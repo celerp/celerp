@@ -5251,6 +5251,8 @@
   "event.fa.correction.applied": "Corrección de activo fijo aplicada",
   "event.fa.correction.withdrawn": "Corrección de activo fijo retirada",
   "event.fa.correction.undone": "Corrección de activo fijo deshecha",
+  "event.fa.review.recorded": "Revisión de deterioro registrada",
+  "event.fa.review.status": "Revisión de deterioro retirada",
   "event.mfg.order.wip_opened": "Trabajo en curso abierto",
   "event.mfg.order.wip_unresolved": "El trabajo en curso necesita conciliación",
   "event.acc.period.closed": "Período cerrado",

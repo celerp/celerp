@@ -5251,6 +5251,8 @@
   "event.fa.correction.applied": "Correção de ativo imobilizado aplicada",
   "event.fa.correction.withdrawn": "Correção de ativo imobilizado retirada",
   "event.fa.correction.undone": "Correção de ativo imobilizado desfeita",
+  "event.fa.review.recorded": "Revisão de recuperabilidade registada",
+  "event.fa.review.status": "Revisão de recuperabilidade retirada",
   "event.mfg.order.wip_opened": "Produção em andamento aberta",
   "event.mfg.order.wip_unresolved": "A produção em andamento precisa de conciliação",
   "event.acc.period.closed": "Período encerrado",

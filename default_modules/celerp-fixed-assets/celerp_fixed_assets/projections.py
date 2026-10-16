@@ -41,7 +41,7 @@ def _moved(state: dict, data: dict) -> dict:
 
 def apply_fixed_asset_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state or {})
-    if event_type in ("fa.class.created", "fa.movement.recorded", "fa.maint.recorded", "fa.op.recorded",
+    if event_type in ("fa.class.created", "fa.movement.recorded", "fa.maint.recorded", "fa.op.recorded", "fa.review.recorded",
                       "fa.run.prepared", "fa.run.posted"):
         return deepcopy(data)
     if event_type == "fa.correction.requested":
@@ -75,7 +75,7 @@ def apply_fixed_asset_event(state: dict, event_type: str, data: dict) -> dict:
         current.update(deepcopy(data["changes"]))
         current["version"] = int(current.get("version") or 0) + 1
         return current
-    if event_type in ("fa.asset.status", "fa.maint.status"):
+    if event_type in ("fa.asset.status", "fa.maint.status", "fa.review.status"):
         current["status"] = data["status"]
         # A disposal records itself and clears what held the asset; undoing it clears the record.
         # A sale records where it stands with its invoice.

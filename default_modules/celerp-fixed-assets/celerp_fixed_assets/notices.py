@@ -14,6 +14,7 @@ PAUSED = ("Automatic depreciation posting paused", "fixed_assets.notice.paused")
 NO_USER = ("Automatic depreciation posting needs a user", "fixed_assets.notice.no_user")
 ATTENTION = ("Assets held out of depreciation", "fixed_assets.notice.attention")
 CORRECTIONS = ("Corrections waiting", "fixed_assets.notice.corrections")
+REVIEWS = ("Impairment reviews due", "fixed_assets.notice.reviews")
 
 
 async def tell(session, company_id, notice: tuple[str, str], body: str, *, action_url: str = RUNS_URL,

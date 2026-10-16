@@ -5251,6 +5251,8 @@
   "event.fa.correction.applied": "طُبّق تصحيح أصل ثابت",
   "event.fa.correction.withdrawn": "سُحب تصحيح أصل ثابت",
   "event.fa.correction.undone": "تُراجع عن تصحيح أصل ثابت",
+  "event.fa.review.recorded": "سُجّلت مراجعة انخفاض القيمة",
+  "event.fa.review.status": "سُحبت مراجعة انخفاض القيمة",
   "event.mfg.order.wip_opened": "تم فتح الإنتاج قيد التشغيل",
   "event.mfg.order.wip_unresolved": "الإنتاج قيد التشغيل يحتاج إلى تسوية",
   "event.acc.period.closed": "تم إقفال الفترة",

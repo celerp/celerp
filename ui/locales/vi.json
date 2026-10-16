@@ -5251,6 +5251,8 @@
   "event.fa.correction.applied": "Đã áp dụng điều chỉnh tài sản cố định",
   "event.fa.correction.withdrawn": "Đã rút lại điều chỉnh tài sản cố định",
   "event.fa.correction.undone": "Đã hoàn tác điều chỉnh tài sản cố định",
+  "event.fa.review.recorded": "Đã ghi nhận rà soát ghi giảm",
+  "event.fa.review.status": "Đã rút lại rà soát ghi giảm",
   "event.mfg.order.wip_opened": "Đã mở sản phẩm dở dang",
   "event.mfg.order.wip_unresolved": "Sản phẩm dở dang cần đối chiếu",
   "event.acc.period.closed": "Đã khóa kỳ",

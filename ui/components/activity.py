@@ -41,6 +41,7 @@ _EVENT_TYPES: tuple[str, ...] = (
     "fa.asset.financials", "fa.asset.moved", "fa.movement.recorded", "fa.maint.recorded", "fa.maint.status",
     "fa.asset.exception", "fa.reading.recorded", "fa.skip.recorded", "fa.skip.withdrawn",
     "fa.correction.requested", "fa.correction.applied", "fa.correction.withdrawn", "fa.correction.undone",
+    "fa.review.recorded", "fa.review.status",
     "doc.created", "doc.updated", "doc.finalized", "doc.paid", "doc.voided",
     "doc.sent", "doc.marked_sent", "doc.converted", "doc.converted_to_bill",
     "doc.payment.received", "doc.payment.refunded", "doc.payment.refund_reversed", "doc.payment.stripe_released",

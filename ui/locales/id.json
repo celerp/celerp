@@ -5251,6 +5251,8 @@
   "event.fa.correction.applied": "Koreksi aset tetap diterapkan",
   "event.fa.correction.withdrawn": "Koreksi aset tetap ditarik",
   "event.fa.correction.undone": "Koreksi aset tetap dibatalkan",
+  "event.fa.review.recorded": "Tinjauan penurunan nilai dicatat",
+  "event.fa.review.status": "Tinjauan penurunan nilai ditarik",
   "event.mfg.order.wip_opened": "Barang dalam proses dibuka",
   "event.mfg.order.wip_unresolved": "Barang dalam proses perlu direkonsiliasi",
   "event.acc.period.closed": "Periode ditutup",

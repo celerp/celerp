@@ -74,10 +74,12 @@ def _role(books: runs.Books, role: str, label: str) -> str:
 
 
 def accounts(books: runs.Books) -> dict:
-    """The posting accounts a disposal or sale may need, each read only when a line uses it."""
+    """The posting accounts a disposal, sale or remeasurement may need, each read only when
+    a line uses it."""
     return {"gain": lambda: _role(books, "disposal_gain", "gain on disposal"),
             "loss": lambda: _role(books, "disposal_loss", "loss on disposal"),
             "surplus": lambda: _role(books, "revaluation_surplus", "revaluation surplus"),
+            "impairment": lambda: _role(books, "impairment_loss", "impairment loss"),
             "retained": lambda: _role(books, "retained_earnings", "retained earnings"),
             "clearing": lambda: _role(books, "asset_disposal_clearing", "asset sale clearing")}
 
@@ -91,20 +93,23 @@ def _split(amount: Decimal, share: Decimal, currency: str) -> Decimal:
     return allocate_pro_rata(amount, [share, 1 - share], currency)[0]
 
 
-def _check_date(books: runs.Books, asset: dict, live: list[dict], day: str) -> None:
+def check_date(books: runs.Books, asset: dict, live: list[dict], day: str, *, what: str = "disposal",
+               verb: str = "Dispose") -> None:
+    """``day`` is open, in service, not ahead of today and not before the asset's latest
+    change other than depreciation. ``what`` names the date, ``verb`` the action."""
     from celerp.services.business_time import business_date_of
 
     if day < (asset.get("available_date") or day):
-        raise setup.unprocessable(f"The disposal date is before {asset['number']} was available for use "
+        raise setup.unprocessable(f"The {what} date is before {asset['number']} was available for use "
                                   f"({asset['available_date']}).")
     if day > business_date_of(None, books.settings.get("timezone")):
-        raise setup.unprocessable(f"The disposal date {day} is after today.")
+        raise setup.unprocessable(f"The {what} date {day} is after today.")
     if books.lock is not None and date.fromisoformat(day) <= books.lock:
-        raise setup.unprocessable(f"{day} is in a locked period. Dispose on or after "
+        raise setup.unprocessable(f"{day} is in a locked period. {verb} on or after "
                                   f"{(books.lock + timedelta(days=1)).isoformat()}.")
     changed = max((m["effective_date"] for m in live if m.get("operation") not in _CHARGES), default=day)
     if changed > day:
-        raise setup.unprocessable(f"{asset['number']} changed on {changed}. Dispose on or after that date.")
+        raise setup.unprocessable(f"{asset['number']} changed on {changed}. {verb} on or after that date.")
 
 
 def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: list[dict], day: str,
@@ -118,7 +123,7 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     if asset.get("status") != "active":
         raise conflict(f"{asset['number']} is not in use, so it cannot be disposed of.")
     live = runs.live(movements)
-    _check_date(books, asset, live, day)
+    check_date(books, asset, live, day)
     cost = _dec(asset.get("cost"))
     gone_cost = _split(cost, share, currency)
     month = month_index(date.fromisoformat(day))
@@ -176,6 +181,29 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
             "periods": {period_label(k): str(v) for k, v in diff.items()}, "share": share}
 
 
+async def record(session, company_id, user_id, item: dict, day: str, reason: str, note: str | None,
+                 op_key: str) -> tuple[str, str]:
+    """Post and record one planned disposal (``_plan_asset``): its journal and movement."""
+    asset_id, asset = item["asset_id"], item["asset"]
+    short = asset_id.removeprefix("fa:asset:")
+    je_id = await _post(session, company_id, user_id,
+                        key=f"asset:{short}:disposal:{int(asset.get('movement_count') or 0) + 1}",
+                        operation="disposal", day=day, memo=f"{asset['number']} {asset['name']} disposed of",
+                        lines=item["lines"], source_id=asset_id, href=f"/fixed-assets/assets/{asset_id}",
+                        label=asset["number"], op_key=op_key)
+    movement_id = await _move(session, company_id, user_id, asset_id, kind="posted", operation="disposal",
+                              effective=day, posting=day, amounts=item["amounts"], op_key=op_key,
+                              quantity=str(-item["quantity"]), periods=item["periods"],
+                              share=str(item["share"]), reason=reason, note=note, journal_id=je_id,
+                              gain_or_loss=_cents(item["gain"]))
+    if item["full"]:
+        await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.status", {
+            "status": "disposed", "exception": None,
+            "disposal": {"date": day, "reason": reason, "note": note, "op_key": op_key,
+                         "movement_id": movement_id, "journal_id": je_id, "gain_or_loss": _cents(item["gain"])}})
+    return je_id, movement_id
+
+
 async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str] | None = None) -> dict:
     """Dispose of one asset (in whole or part), or of several in whole."""
     from celerp.services.company_lock import lock_projections
@@ -224,25 +252,8 @@ async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str]
         day, reason, note = context["day"], context["reason"], context["note"]
         assets, journals, movements = [], [], []
         for item in context["items"]:
-            asset_id, asset = item["asset_id"], item["asset"]
-            short = asset_id.removeprefix("fa:asset:")
-            je_id = await _post(session, company_id, user_id,
-                                key=f"asset:{short}:disposal:{int(asset.get('movement_count') or 0) + 1}",
-                                operation="disposal", day=day, memo=f"{asset['number']} {asset['name']} disposed of",
-                                lines=item["lines"], source_id=asset_id, href=f"/fixed-assets/assets/{asset_id}",
-                                label=asset["number"], op_key=op_key)
-            movement_id = await _move(session, company_id, user_id, asset_id, kind="posted", operation="disposal",
-                                      effective=day, posting=day, amounts=item["amounts"], op_key=op_key,
-                                      quantity=str(-item["quantity"]), periods=item["periods"],
-                                      share=str(item["share"]), reason=reason, note=note, journal_id=je_id,
-                                      gain_or_loss=_cents(item["gain"]))
-            if item["full"]:
-                await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.status", {
-                    "status": "disposed", "exception": None,
-                    "disposal": {"date": day, "reason": reason, "note": note, "op_key": op_key,
-                                 "movement_id": movement_id, "journal_id": je_id,
-                                 "gain_or_loss": _cents(item["gain"])}})
-            assets.append({"id": asset_id, "number": asset["number"]})
+            je_id, movement_id = await record(session, company_id, user_id, item, day, reason, note, op_key)
+            assets.append({"id": item["asset_id"], "number": item["asset"]["number"]})
             journals.append(je_id)
             movements.append(movement_id)
         return {"assets": assets, "journals": journals}, _effects(movements=movements, journals=journals)
@@ -266,6 +277,9 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         if not disposals:
             raise setup.unprocessable(f"{asset['number']} has no disposal to undo.")
         latest = disposals[-1]
+        if latest.get("reason") == "replaced":
+            raise conflict(f"{asset['number']} left the books when its replacement was added. Undo the replacement "
+                           "on the asset it belongs to instead.")
         if latest.get("reason") == "sold":
             from celerp_fixed_assets.sales import doc_number
 

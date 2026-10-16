@@ -5249,6 +5249,8 @@
   "event.fa.correction.applied": "Fixed asset correction applied",
   "event.fa.correction.withdrawn": "Fixed asset correction withdrawn",
   "event.fa.correction.undone": "Fixed asset correction undone",
+  "event.fa.review.recorded": "Impairment review recorded",
+  "event.fa.review.status": "Impairment review withdrawn",
   "event.mfg.order.wip_opened": "Work in progress opened",
   "event.mfg.order.wip_unresolved": "Work in progress needs reconciling",
   "event.acc.period.closed": "Period closed",

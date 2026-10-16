@@ -6,7 +6,10 @@ An asset is a set of layers: the acquisition (or opening balance) and each
 improvement. Each layer depreciates its own amount over its own life, consumed month
 by month under the timing convention. An estimate change merges the layers into one:
 the carrying amount less the new residual over the new remaining life, from the month
-of the change. An estimate change may also change the method, its parameters and the
+of the change. A revaluation merges them the same way at the fair value, over the life
+left. An impairment, or its reversal, restates each layer pro rata to its carrying
+amount and keeps the layers apart. Both are month-end measurements: they take effect
+from the month after their date. An estimate change may also change the method, its parameters and the
 timing convention from then on; every layer depreciates under the method it was laid
 down with. A partial disposal splits every layer: the share disposed of takes the
 convention's part of the disposal month and stops, the rest depreciates on.
@@ -81,7 +84,24 @@ class Opening:
     life_months: int
 
 
-Movement = Acquire | Improve | EstimateChange | Dispose | Opening
+@dataclass(frozen=True)
+class Revalue:
+    """Measured at fair value on ``on``: one layer of ``fair_value`` over the life left."""
+    on: date
+    fair_value: Decimal
+
+
+@dataclass(frozen=True)
+class Impair:
+    """Carrying amount restated to ``carrying`` on ``on`` (down for an impairment, up for
+    its reversal), spread over the layers by their carrying amounts."""
+    on: date
+    carrying: Decimal
+
+
+Movement = Acquire | Improve | EstimateChange | Dispose | Opening | Revalue | Impair
+
+_MONTH_END = (Opening, Revalue, Impair)
 
 
 @dataclass(frozen=True)
@@ -163,7 +183,7 @@ def _charges(layer: Layer) -> list[Decimal]:
 
 
 def _carrying(layers: list[Layer]) -> Decimal:
-    return sum((ly.basis + ly.residual - sum(_charges(ly), _ZERO) for ly in layers), _ZERO)
+    return sum((_carrying_of(ly) for ly in layers), _ZERO)
 
 
 def _life(method, policy_life, params: dict) -> Decimal:
@@ -184,8 +204,37 @@ def _keep_end_life(layers: list[Layer], index: int, weights: list[Decimal]) -> D
     return life
 
 
+def _left(layer: Layer) -> Decimal:
+    return max(layer.life - layer.position, _ZERO)
+
+
+def _carrying_of(layer: Layer) -> Decimal:
+    return layer.basis + layer.residual - sum(_charges(layer), _ZERO)
+
+
+def _merged(layers: list[Layer], value: Decimal, index: int, method, params: dict) -> Layer:
+    """One layer carrying ``value`` over the longest life left among ``layers``."""
+    residual = min(sum((ly.residual for ly in layers), _ZERO), value)
+    life = max((_left(ly) for ly in layers), default=_ZERO)
+    return Layer(value - residual, residual, life, index, [_ONE], method, params)
+
+
+def _restated(layers: list[Layer], carrying: Decimal, index: int, method, params: dict) -> list[Layer]:
+    """Each layer at its share of ``carrying``, pro rata to its carrying amount now."""
+    now = [_carrying_of(ly) for ly in layers]
+    total = sum(now, _ZERO)
+    if total <= 0:
+        return [_merged(layers, carrying, index, method, params)]
+    out = []
+    for ly, value in zip(layers, now):
+        value = carrying * value / total
+        residual = min(ly.residual, value)
+        out.append(Layer(value - residual, residual, _left(ly), index, [_ONE], ly.method, ly.params))
+    return out
+
+
 def _first_month(movement: Movement) -> int:
-    return month_index(movement.on) + (1 if isinstance(movement, Opening) else 0)
+    return month_index(movement.on) + (1 if isinstance(movement, _MONTH_END) else 0)
 
 
 def _consume(layer: Layer, index: int, reading: Decimal | None, convention, fy_start: int,
@@ -252,6 +301,12 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
                     life = _life(method, policy.life_months, params)
                     layers = [Layer(carrying - m.residual, m.residual, Decimal(str(m.life_months)), index, [_ONE],
                                     method, params)]
+                elif isinstance(m, Revalue):
+                    retired.extend(layers)
+                    layers = [_merged(layers, m.fair_value, index, method, params)]
+                elif isinstance(m, Impair):
+                    retired.extend(layers)
+                    layers = _restated(layers, m.carrying, index, method, params)
                 elif m.share < _ONE:
                     gone = [ly.split(m.share) for ly in layers]
                     shares.append(gone)

@@ -618,6 +618,10 @@ async def _undo(session, company_id, user_id, target_key: str, body: dict) -> di
                  > int(m.rsplit(":", 1)[1])]
         if later:
             raise conflict("These assets have changed since. Use Correct instead.")
+        lock = (await setup.company_settings(session, company_id)).get("lock_date")
+        locked = sorted(s["posting_date"] for s in movements.values() if s and lock and s["posting_date"] <= lock)
+        if locked:
+            raise conflict(f"{locked[0]} is in a locked period, so this can no longer be undone. Use Correct instead.")
         journals = {j: await _state(session, company_id, j) for j in effects.get("journals", [])}
         shown = {"assets": [{"number": a["number"]} for a in assets],
                  "journals": [_reversed_lines(je) for je in journals.values() if je and je.get("status") == "posted"]}
@@ -644,6 +648,14 @@ async def _undo(session, company_id, user_id, target_key: str, body: dict) -> di
             await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.status", {"status": "undone"})
         for maint_id in effects.get("maint", []):
             await _emit(session, company_id, user_id, maint_id, "fa_maint", "fa.maint.status", {"status": "undone"})
+        # An asset the operation disposed of or placed in service, and a class it moved to
+        # another model, go back to what they were.
+        for status in effects.get("statuses", []):
+            await _emit(session, company_id, user_id, status["id"], "fa_asset", "fa.asset.status",
+                        {"status": status["before"], "disposal": None})
+        for cls in effects.get("classes", []):
+            await _emit(session, company_id, user_id, cls["id"], "fa_class", "fa.class.updated",
+                        {"changes": cls["before"]})
         await _emit(session, company_id, user_id, f"fa:op:{target_key}", "fa_op", "fa.op.undone", {"undo_key": op_key})
         return {"undone": target_key, "assets": [], "journals": []}, _effects()
 

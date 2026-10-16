@@ -5251,6 +5251,8 @@
   "event.fa.correction.applied": "Anlagenkorrektur angewendet",
   "event.fa.correction.withdrawn": "Anlagenkorrektur zurückgezogen",
   "event.fa.correction.undone": "Anlagenkorrektur rückgängig gemacht",
+  "event.fa.review.recorded": "Werthaltigkeitsprüfung erfasst",
+  "event.fa.review.status": "Werthaltigkeitsprüfung zurückgezogen",
   "event.mfg.order.wip_opened": "Unfertige Erzeugnisse eröffnet",
   "event.mfg.order.wip_unresolved": "Unfertige Erzeugnisse müssen abgestimmt werden",
   "event.acc.period.closed": "Periode abgeschlossen",

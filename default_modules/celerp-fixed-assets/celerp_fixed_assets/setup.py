@@ -35,7 +35,11 @@ STARTER_CLASSES = (
 )
 
 CLASS_FIELDS = ("name", "kind", "asset_account", "accumulated_depreciation_account", "depreciation_account",
-                "method", "life_months", "residual_percent", "convention", "params", "archived")
+                "method", "life_months", "residual_percent", "convention", "params", "archived",
+                "measurement_policy", "active_market", "construction")
+# How a class measures its assets after recognition. A class moves to revaluation only by
+# revaluing every asset in it on one date (celerp_fixed_assets.remeasure).
+MEASUREMENT_POLICIES = ("cost", "revaluation")
 
 
 # What an asset depreciates under, copied from its class when it is added: a later class
@@ -135,7 +139,8 @@ async def start(session, company_id, user_id) -> dict:
                 "accumulated_depreciation_account": roles.get("accumulated_depreciation") or "",
                 "depreciation_account": roles.get("depreciation_expense") or "",
                 "method": method, "life_months": life, "residual_percent": "0", "convention": None,
-                "params": {}, "archived": False, "seq": seq}
+                "params": {}, "archived": False, "seq": seq, "measurement_policy": "cost", "active_market": None,
+                "construction": role == "assets_under_construction"}
         await _emit(session, company_id, user_id, f"fa:class:{uuid.uuid4()}", "fa.class.created", data,
                     key=f"fa:class:starter:{seq}")
     fa.update(started=True, run_mode="prepare", convention="full_month", threshold=None,
@@ -256,6 +261,22 @@ def check_policy(data: dict) -> None:
         raise unprocessable("The residual percent is below 100.")
 
 
+def _active_market(value) -> dict | None:
+    """The evidence of an active market an intangible class is revalued against."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) - {"date", "basis"}:
+        raise unprocessable("An active market has a date and a basis.")
+    try:
+        day = date.fromisoformat(str(value.get("date"))).isoformat()
+    except ValueError:
+        raise unprocessable("The active market date is a date.") from None
+    basis = str(value.get("basis") or "").strip()
+    if not basis:
+        raise unprocessable("Say where the active market is quoted.")
+    return {"date": day, "basis": basis}
+
+
 async def _check_class(session, company_id, data: dict) -> None:
     from celerp.services.journal_accounts import require_destinations
 
@@ -263,6 +284,10 @@ async def _check_class(session, company_id, data: dict) -> None:
         raise unprocessable("A class needs a name.")
     if data.get("kind") not in KINDS:
         raise unprocessable("A class is tangible or intangible.")
+    if not isinstance(data.get("construction"), bool):
+        raise unprocessable("Under construction is true or false.")
+    if data["construction"] and data.get("method") != "none":
+        raise unprocessable("A class for assets under construction is not depreciated. Choose no depreciation.")
     check_policy(data)
     await require_destinations(session, company_id, {
         data[k] for k in ("asset_account", "accumulated_depreciation_account", "depreciation_account") if data.get(k)})
@@ -282,11 +307,34 @@ async def create_class(session, company_id, user_id, body: dict) -> dict:
             "depreciation_account": body.get("depreciation_account") or roles.get("depreciation_expense") or "",
             "method": body.get("method") or "straight_line", "life_months": body.get("life_months"),
             "residual_percent": str(body.get("residual_percent") or "0"), "convention": body.get("convention"),
-            "params": body.get("params"), "archived": False, "seq": len(await classes(session, company_id, include_archived=True))}
+            "params": body.get("params"), "archived": False, "seq": len(await classes(session, company_id, include_archived=True)),
+            "measurement_policy": "cost", "active_market": None, "construction": body.get("construction", False)}
+    if body.get("measurement_policy") not in (None, "cost"):
+        raise unprocessable("A new class uses the cost model. Change class to revaluation once its assets are in.")
+    data["active_market"] = _active_market(body.get("active_market"))
     await _check_class(session, company_id, data)
     entity_id = f"fa:class:{uuid.uuid4()}"
     await _emit(session, company_id, user_id, entity_id, "fa.class.created", data)
     return {"id": entity_id, **data}
+
+
+def measurement(cls: dict) -> str:
+    return cls.get("measurement_policy") or "cost"
+
+
+async def _check_measurement(session, company_id, class_id: str, policy) -> None:
+    """A class moves to revaluation only through its revaluation table; it moves back to
+    cost while none of its assets carries a revaluation."""
+    from celerp_fixed_assets import remeasure
+
+    if policy not in MEASUREMENT_POLICIES:
+        raise unprocessable("A class is measured at cost or by revaluation.")
+    if policy == "revaluation":
+        raise unprocessable("Use Change class to revaluation, which revalues every asset in the class on one date.")
+    revalued = await remeasure.revalued_numbers(session, company_id, class_id)
+    if revalued:
+        raise HTTPException(status_code=409, detail=f"{', '.join(revalued)} are revalued, so this class stays on "
+                                                    "the revaluation model.")
 
 
 async def update_class(session, company_id, user_id, class_id: str, body: dict) -> dict:
@@ -306,7 +354,11 @@ async def update_class(session, company_id, user_id, class_id: str, body: dict) 
         changes["name"] = str(changes["name"] or "").strip()
     if "archived" in changes and not isinstance(changes["archived"], bool):
         raise unprocessable("Archived is true or false.")
-    checked = {**row.state, **changes}
+    if "measurement_policy" in changes:
+        await _check_measurement(session, company_id, class_id, changes["measurement_policy"])
+    if "active_market" in changes:
+        changes["active_market"] = _active_market(changes["active_market"])
+    checked = {"construction": False, **row.state, **changes}
     await _check_class(session, company_id, checked)
     if "params" in changes:
         changes["params"] = checked["params"]

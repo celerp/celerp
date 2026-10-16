@@ -5251,6 +5251,8 @@
   "event.fa.correction.applied": "Rettifica del cespite applicata",
   "event.fa.correction.withdrawn": "Rettifica del cespite ritirata",
   "event.fa.correction.undone": "Rettifica del cespite annullata",
+  "event.fa.review.recorded": "Verifica di impairment registrata",
+  "event.fa.review.status": "Verifica di impairment ritirata",
   "event.mfg.order.wip_opened": "Semilavorati aperti",
   "event.mfg.order.wip_unresolved": "I semilavorati devono essere riconciliati",
   "event.acc.period.closed": "Periodo chiuso",

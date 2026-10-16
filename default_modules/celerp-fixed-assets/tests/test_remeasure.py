@@ -171,8 +171,8 @@ async def test_s2_intangible_indefinite_and_active_market(fa):
     assert [(r["number"], r["due"], r["overdue"]) for r in due] == [(number, "2026-09-01", True)]
     await _tick(fa, date(2026, 10, 16))
     assert any(n.title == "Impairment reviews due" for n in await _notices(fa))
-    await _run(fa, "2026-03")
-    assert [m for m in await _movements(fa, licence) if m["operation"] == "run"] == []
+    nothing = await fa.ok(await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "r3"}))
+    assert nothing["empty"] and D(nothing["total"]) == 0
     await fa.ok(await fa.post(f"/assets/{licence}/reviews", {"date": "2026-10-01", "outcome": "no_indication",
                                                              "basis": "Licence renewed to 2036"}))
     assert (await fa.ok(await fa.get("/reviews")))["items"] == []

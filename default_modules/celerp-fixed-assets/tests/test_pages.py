@@ -442,3 +442,134 @@ async def test_a_deleted_sale_draft_is_reissued_or_cancelled_from_the_asset_page
     assert await _review_and_confirm(owner_ui, "sale-cancel", {"asset_id": car}) == f"/fixed-assets/assets/{car}"
     page = await owner_ui.get(f"/fixed-assets/assets/{car}")
     assert t("fixed_assets.cancel_sale") not in page.text and f'href="/fixed-assets/assets/{car}/sell"' in page.text
+
+
+async def _class(ui, name: str) -> dict:
+    return next(c for c in (await ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == name)
+
+
+async def test_impair_from_the_asset_page_then_undo_it(owner_ui):
+    car = await _managed_car(owner_ui)
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert f'href="/fixed-assets/assets/{car}/remeasure"' in page.text
+    assert f'href="/fixed-assets/assets/{car}/add"' in page.text
+
+    revalue = await owner_ui.get(f"/fixed-assets/assets/{car}/remeasure")
+    assert revalue.status_code == 200 and t("fixed_assets.cost_model_hint") in revalue.text
+    assert "fixed_assets." not in revalue.text
+    form = await owner_ui.get(f"/fixed-assets/assets/{car}/remeasure", params={"op": "impairment"})
+    assert t("fixed_assets.remeasure_hint.impairment") in form.text and 'name="recoverable_amount"' in form.text
+
+    data = {"asset_id": car, "date": "2026-09-30", "recoverable_amount": "9000", "basis": "Dealer quote",
+            "idempotency_key": str(uuid.uuid4())}
+    review = await owner_ui.post("/fixed-assets/op/impair/review", data=data)
+    assert t("fixed_assets.remeasure.new_carrying_amount") in review.text and "fixed_assets." not in review.text
+    href = await _review_and_confirm(owner_ui, "impair", data)
+    assert href == f"/fixed-assets/assets/{car}"
+    page = await owner_ui.get(href)
+    assert t("fixed_assets.movement.impairment") in page.text and t("fixed_assets.undo_latest") in page.text
+    movements = page.text.split(f">{t('fixed_assets.movements')}<", 1)[1]
+    assert t("fixed_assets.accumulated_impairment") in movements, "the impairment shows in the movements"
+    assert "fixed_assets." not in page.text
+
+    await _review_and_confirm(owner_ui, "undo-latest", {"asset_id": car})
+    page = await owner_ui.get(href)
+    assert t("fixed_assets.undo_latest") not in page.text
+    assert (await owner_ui.api.get(f"{API}/assets/{car}")).json()["accumulated_impairment"] in ("0", "0.00")
+
+
+async def test_add_an_improvement_and_see_the_repair_route(owner_ui):
+    car = await _managed_car(owner_ui)
+    repair = await owner_ui.get(f"/fixed-assets/assets/{car}/add", params={"kind": "repair"})
+    assert t("fixed_assets.add_hint.repair") in repair.text and 'href="/fixed-assets/intake"' in repair.text
+    replacement = await owner_ui.get(f"/fixed-assets/assets/{car}/add", params={"kind": "replacement"})
+    assert t("fixed_assets.old_part_estimate") in replacement.text and "fixed_assets." not in replacement.text
+
+    form = await owner_ui.get(f"/fixed-assets/assets/{car}/add")
+    assert form.status_code == 200 and t("fixed_assets.add_hint.improvement") in form.text
+    data = {"asset_id": car, "kind": "improvement", "amount": "1200", "credit_account": "3100",
+            "date": "2026-09-15", "idempotency_key": str(uuid.uuid4())}
+    review = await owner_ui.post("/fixed-assets/op/add-to-asset/review", data=data)
+    assert t("fixed_assets.keep_end_date") in review.text and "fixed_assets." not in review.text
+    href = await _review_and_confirm(owner_ui, "add-to-asset", data)
+    assert href == f"/fixed-assets/assets/{car}"
+    page = await owner_ui.get(href)
+    assert t("fixed_assets.movement.improvement") in page.text
+
+
+async def test_place_construction_in_service(owner_ui):
+    await _managed_car(owner_ui)
+    site = await _review_and_confirm(owner_ui, "add-asset", {
+        "kind": "contributed", "name": "Office fit-out", "class_id": (await _class(owner_ui, "Assets under construction"))["id"],
+        "available_date": "2026-08-10", "cost": "20000", "credit_account": "3100"})
+    site = site.rsplit("/", 1)[1]
+    page = await owner_ui.get(f"/fixed-assets/assets/{site}")
+    assert f'href="/fixed-assets/assets/{site}/place-in-service"' in page.text
+    assert f'href="/fixed-assets/assets/{site}/remeasure"' not in page.text
+
+    form = await owner_ui.get(f"/fixed-assets/assets/{site}/place-in-service")
+    assert form.status_code == 200 and 'name="row:2:amount"' in form.text and "fixed_assets." not in form.text
+    row = await owner_ui.get(f"/fixed-assets/assets/{site}/place-in-service/row", params={"n": 3})
+    assert 'name="row:3:name"' in row.text
+
+    buildings = await _class(owner_ui, "Buildings")
+    data = {"asset_id": site, "date": "2026-09-30", "row:0:name": "Partitions", "row:0:class_id": buildings["id"],
+            "row:0:amount": "15000", "row:1:name": "", "idempotency_key": str(uuid.uuid4())}
+    review = await owner_ui.post("/fixed-assets/op/place-in-service/review", data=data)
+    assert t("fixed_assets.construction.remainder") in review.text and "fixed_assets." not in review.text
+    href = await _review_and_confirm(owner_ui, "place-in-service", data)
+    assert href == f"/fixed-assets/assets/{site}"
+    assert t("fixed_assets.movement.construction_out") in (await owner_ui.get(href)).text
+
+
+async def test_revalue_a_class_from_settings(owner_ui):
+    await _demo(owner_ui)
+    await owner_ui.post("/fixed-assets/start")
+    r = await owner_ui.api.patch(f"{API}/settings", json={"first_managed_period": "2026-08-01"})
+    assert r.status_code == 200, r.text
+    land = await _class(owner_ui, "Land")
+    plot = await _review_and_confirm(owner_ui, "add-asset", {
+        "kind": "contributed", "name": "Yard plot", "class_id": land["id"], "available_date": "2026-08-10",
+        "cost": "600", "credit_account": "3100"})
+    plot = plot.rsplit("/", 1)[1]
+
+    settings = await owner_ui.get("/settings/fixed-assets")
+    assert f'href="/fixed-assets/classes/{land["id"]}/revalue"' in settings.text
+    page = await owner_ui.get(f"/fixed-assets/classes/{land['id']}/revalue")
+    assert page.status_code == 200 and f'name="fair_value:{plot}"' in page.text and "fixed_assets." not in page.text
+
+    data = {"class_id": land["id"], "date": "2026-09-30", "basis": "Valuer report", f"fair_value:{plot}": "700",
+            "idempotency_key": str(uuid.uuid4())}
+    review = await owner_ui.post("/fixed-assets/op/revalue-class/review", data=data)
+    assert t("label.total") in review.text and "fixed_assets." not in review.text
+    assert await _review_and_confirm(owner_ui, "revalue-class", data) == "/settings/fixed-assets"
+    assert (await _class(owner_ui, "Land"))["measurement_policy"] == "revaluation"
+    assert t("fixed_assets.revaluation_surplus") in (await owner_ui.get(f"/fixed-assets/assets/{plot}")).text
+
+
+async def test_record_an_impairment_review_that_found_a_loss(owner_ui):
+    await _demo(owner_ui)
+    await owner_ui.post("/fixed-assets/start")
+    other = await _class(owner_ui, "Other intangibles")
+    r = await owner_ui.api.patch(f"{API}/classes/{other['id']}", json={"method": "none", "life_months": None})
+    assert r.status_code == 200, r.text
+    licence = await _review_and_confirm(owner_ui, "add-asset", {
+        "kind": "contributed", "name": "Broadcast licence", "class_id": other["id"], "available_date": "2025-09-01",
+        "cost": "5000", "credit_account": "3100"})
+    licence = licence.rsplit("/", 1)[1]
+
+    register = await owner_ui.get("/fixed-assets")
+    assert t("fixed_assets.reviews_due_title") in register.text and 'href="/fixed-assets/reviews"' in register.text
+    due = await owner_ui.get("/fixed-assets/reviews")
+    assert f'href="/fixed-assets/assets/{licence}"' in due.text and t("fixed_assets.overdue") in due.text
+    page = await owner_ui.get(f"/fixed-assets/assets/{licence}")
+    assert t("fixed_assets.reviews_title") in page.text and t("fixed_assets.record_review") in page.text
+    assert "fixed_assets." not in page.text
+
+    found = await owner_ui.post(f"/fixed-assets/assets/{licence}/reviews", data={
+        "date": "2026-10-05", "outcome": "recoverable_amount", "recoverable_amount": "4000", "basis": "Value in use"})
+    target = found.headers["HX-Redirect"]
+    assert target.startswith(f"/fixed-assets/assets/{licence}/remeasure?op=impairment")
+    form = await owner_ui.get(target)
+    assert 'value="4000.00"' in form.text and 'value="Value in use"' in form.text and 'value="2026-10-05"' in form.text
+    assert t("fixed_assets.reviews_empty") in (await owner_ui.get("/fixed-assets/reviews")).text

@@ -19,7 +19,7 @@ from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import (
     assert_role_permission, get_current_company_settings, require_permission, role_has_permission)
-from celerp_fixed_assets import corrections, disposal, operations, runs, sales, setup, sources
+from celerp_fixed_assets import additions, corrections, disposal, operations, remeasure, runs, sales, setup, sources
 from celerp_fixed_assets.events import register_events
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
@@ -30,7 +30,8 @@ SALE_OPERATIONS = ("sale", "sale_adjust", "sale_return", "sale_reverse")
 # Journal operation types this module posts, and the permission each needs.
 OPERATION_TYPES = {name: ("manage_accounting",)
                    for name in ("registration", "acquisition", "expense", "maintenance", "undo", "run", "correction",
-                                "disposal")} | dict.fromkeys(SALE_OPERATIONS, sales.SALE_KEYS)
+                                "disposal", "improvement", "replacement", "place_in_service", "revaluation",
+                                "impairment", "impairment_reversal")} | dict.fromkeys(SALE_OPERATIONS, sales.SALE_KEYS)
 
 _MONEY_FIELDS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "nbv")
 _VIEW = [require_permission("view_fixed_assets")]
@@ -187,8 +188,10 @@ async def create_asset(body: dict = Body(...), company_id=Depends(get_current_co
 async def get_asset(asset_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
                     company_settings: dict = Depends(get_current_company_settings),
                     session: AsyncSession = Depends(get_session)) -> dict:
-    return asset_out(asset_id, await _asset(session, company_id, asset_id),
-                     money=_shows_money(company_settings, role))
+    state = await _asset(session, company_id, asset_id)
+    return {**asset_out(asset_id, state, money=_shows_money(company_settings, role)),
+            **await remeasure.asset_facts(session, company_id, asset_id, state),
+            "undoable": await additions.undoable(session, company_id, asset_id)}
 
 
 @router.patch("/assets/{asset_id}", dependencies=[require_permission("manage_fixed_assets")])
@@ -369,6 +372,96 @@ async def withdraw_correction(correction_id: str, company_id=Depends(get_current
 async def undo_correction(correction_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, corrections.undo, company_id, user.id, correction_id, body)
+
+
+# ── Remeasurement and the annual review ──────────────────────────────────────
+
+
+@router.post("/assets/{asset_id}/revalue", dependencies=_ACCOUNTING)
+async def revalue(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                  user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, remeasure.remeasure, company_id, user.id, asset_id, body, "revaluation")
+
+
+@router.post("/assets/{asset_id}/impair", dependencies=_ACCOUNTING)
+async def impair(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                 user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, remeasure.remeasure, company_id, user.id, asset_id, body, "impairment")
+
+
+@router.post("/assets/{asset_id}/reverse-impairment", dependencies=_ACCOUNTING)
+async def reverse_impairment(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                             user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, remeasure.remeasure, company_id, user.id, asset_id, body, "impairment_reversal")
+
+
+@router.post("/classes/{class_id}/revalue", dependencies=_ACCOUNTING)
+async def revalue_class(class_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                        user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, remeasure.revalue_class, company_id, user.id, class_id, body)
+
+
+@router.get("/reviews", dependencies=_VIEW)
+async def due_reviews(company_id=Depends(get_current_company_id),
+                      company_settings: dict = Depends(get_current_company_settings),
+                      session: AsyncSession = Depends(get_session)) -> dict:
+    from datetime import date
+
+    from celerp.services.business_time import business_date_of
+
+    today = date.fromisoformat(business_date_of(None, company_settings.get("timezone")))
+    return {"items": await remeasure.due_reviews(session, company_id, today)}
+
+
+@router.get("/assets/{asset_id}/reviews", dependencies=_VIEW)
+async def list_reviews(asset_id: str, company_id=Depends(get_current_company_id),
+                       session: AsyncSession = Depends(get_session)) -> dict:
+    await _asset(session, company_id, asset_id)
+    return {"items": list(reversed(await remeasure.reviews(session, company_id, asset_id)))}
+
+
+@router.post("/assets/{asset_id}/reviews", dependencies=_ACCOUNTING)
+async def record_review(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                        user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, remeasure.record_review, company_id, user.id, asset_id, body)
+
+
+@router.post("/assets/{asset_id}/reviews/{review_id}/withdraw", dependencies=_ACCOUNTING)
+async def withdraw_review(asset_id: str, review_id: str, company_id=Depends(get_current_company_id),
+                          user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, remeasure.withdraw_review, company_id, user.id, asset_id, review_id)
+
+
+# ── Additions and construction ───────────────────────────────────────────────
+
+
+@router.post("/assets/{asset_id}/add", dependencies=_ACCOUNTING)
+async def add_to_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, additions.add, company_id, user.id, asset_id, body)
+
+
+@router.get("/assets/{asset_id}/components", dependencies=_VIEW)
+async def list_components(asset_id: str, company_id=Depends(get_current_company_id),
+                          role: str = Depends(get_current_role),
+                          company_settings: dict = Depends(get_current_company_settings),
+                          session: AsyncSession = Depends(get_session)) -> dict:
+    await _asset(session, company_id, asset_id)
+    money = _shows_money(company_settings, role)
+    return {"items": [asset_out(c.pop("id"), c, money=money)
+                      for c in await additions.components(session, company_id, asset_id)]}
+
+
+@router.post("/assets/{asset_id}/place-in-service", dependencies=_ACCOUNTING)
+async def place_in_service(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, additions.place_in_service, company_id, user.id, asset_id, body)
+
+
+@router.post("/assets/{asset_id}/undo-latest", dependencies=_ACCOUNTING)
+async def undo_latest(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, additions.undo_latest, company_id, user.id, asset_id, body)
 
 
 @router.post("/classes/{class_id}/apply-to-assets", dependencies=_ACCOUNTING)

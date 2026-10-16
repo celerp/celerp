@@ -131,6 +131,13 @@ class CorrectionClosed(_Event):
     op_key: str | None = None
 
 
+class ReviewRecorded(_Event):
+    asset_id: str
+    date: str
+    outcome: str
+    basis: str
+
+
 EVENTS: dict[str, type[BaseModel]] = {
     "fa.class.created": ClassCreated,
     "fa.class.updated": Changes,
@@ -157,6 +164,8 @@ EVENTS: dict[str, type[BaseModel]] = {
     "fa.correction.applied": CorrectionApplied,
     "fa.correction.withdrawn": CorrectionClosed,
     "fa.correction.undone": CorrectionClosed,
+    "fa.review.recorded": ReviewRecorded,
+    "fa.review.status": AssetStatus,
 }
 
 

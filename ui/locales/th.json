@@ -5249,6 +5249,8 @@
   "event.fa.correction.applied": "นำการแก้ไขสินทรัพย์ถาวรไปใช้แล้ว",
   "event.fa.correction.withdrawn": "ถอนคำขอแก้ไขสินทรัพย์ถาวรแล้ว",
   "event.fa.correction.undone": "ยกเลิกการแก้ไขสินทรัพย์ถาวรแล้ว",
+  "event.fa.review.recorded": "บันทึกการทบทวนการด้อยค่าแล้ว",
+  "event.fa.review.status": "ถอนการทบทวนการด้อยค่าแล้ว",
   "event.mfg.order.wip_opened": "เปิดงานระหว่างทำแล้ว",
   "event.mfg.order.wip_unresolved": "งานระหว่างทำต้องกระทบยอด",
   "event.acc.period.closed": "ปิดงวดแล้ว",

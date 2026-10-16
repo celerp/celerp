@@ -5251,6 +5251,8 @@
   "event.fa.correction.applied": "Correction d'immobilisation appliquée",
   "event.fa.correction.withdrawn": "Correction d'immobilisation retirée",
   "event.fa.correction.undone": "Correction d'immobilisation annulée",
+  "event.fa.review.recorded": "Test de dépréciation enregistré",
+  "event.fa.review.status": "Test de dépréciation retiré",
   "event.mfg.order.wip_opened": "En-cours de production ouvert",
   "event.mfg.order.wip_unresolved": "L'en-cours de production doit être rapproché",
   "event.acc.period.closed": "Période clôturée",
