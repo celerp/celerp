@@ -36,6 +36,8 @@ SEPARATE = ("Celerp restores this as a separate company so your current company 
             "overwritten. You can verify the restored company before deactivating the old one.")
 NOTHING_WRITTEN = "Nothing has been written yet."
 RESTORED = "Restored from the company copy made on "
+CLIENT_EMAIL = "client@example.com"
+SENT_TO_CLIENT = f"Sent to {CLIENT_EMAIL}."
 RECOVER = "Recover an entire Celerp installation"
 REPO = Path(__file__).resolve().parents[1]
 
@@ -969,7 +971,7 @@ async def test_company_handoff_send_form_retries_original_operation(ui, real_eng
     assert _hidden(_page(refused))["key"] == initial["key"]
     assert _hidden(_page(refused))["operation_id"] == initial["operation_id"]
     sent = await ui.post(SEND, data=payload)
-    assert sent.status_code == 200 and "Sent to client@example.com." in _page(sent)
+    assert sent.status_code == 200 and SENT_TO_CLIENT in _page(sent)
     assert [call[1]["operation_id"] for call in calls] == [initial["operation_id"]] * 2
     assert all(call[1]["key"] == initial["key"] for call in calls)
 
@@ -1231,7 +1233,7 @@ async def test_sent_page_has_copy_and_next_steps(ui, real_engine, monkeypatch):
         {"id": copy_id, "status": "sent", "opened": False, "downloaded": False,
          "company_opened": False, "expires_at": "2026-10-30T09:00:00+00:00"}]})
     page, raw = _page(raw), raw.text
-    assert "<h1" in page and "Sent to client@example.com." in page
+    assert "<h1" in page and SENT_TO_CLIENT in page
     # The three actions, in the journey's order.
     copy_at = raw.index(f'data-copy-text="{link}"')
     download_at = page.index(f'href="{DOWNLOAD}"')
@@ -1258,7 +1260,7 @@ async def test_company_copy_ready_state(ui, real_engine, monkeypatch):
 
     raw, link = await _sent_page(ui, real_engine, monkeypatch, activity=unavailable)
     page, raw = _page(raw), raw.text
-    assert "Sent to client@example.com." in page
+    assert SENT_TO_CLIENT in page
     assert f'data-copy-text="{link}"' in raw
     assert "The link expires 14 days after it was sent." in page
     assert "The link expires on" not in page

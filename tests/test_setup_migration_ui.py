@@ -907,7 +907,7 @@ async def test_a_firm_emails_a_client_the_checklist_and_adds_what_arrives(ui, ro
 
     sent = _page(await ui.post(REQUESTS, data=typed))
     assert fake_api.export_sends == [typed]
-    assert "Export checklist sent to client@example.com." in sent
+    assert f"Export checklist sent to {typed['recipient']}." in sent
     assert _attr(_inputs(sent, "operation_id")[0], "value") != operation          # the next send is new
     assert "Waiting for exports" in sent and "Client Ltd" in sent and "No export requests yet." not in sent
 
