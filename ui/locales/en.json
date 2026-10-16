@@ -4066,9 +4066,6 @@
   "company_backup.reply_label": "Your verified Celerp account email",
   "company_backup.send_invalid": "This form expired. Start a new company copy.",
   "company_backup.send_title": "Send company copy",
-  "company_backup.sent_link_label": "Company copy link",
-  "company_backup.sent_notice": "The encrypted company copy was emailed to the recipient.",
-  "company_backup.sent_title": "Company copy sent",
   "company_backup.handoff_status_company_opened": "Company opened",
   "company_backup.handoff_status_downloaded": "Downloaded",
   "company_backup.handoff_status_expired": "Expired",
@@ -5723,5 +5720,15 @@
   "notice.peer_key_expiring_here.title": "Sync key expiring",
   "notice.peer_key_expiring_here.body": "The sync key for {firm} expires on {date}. Ask {firm} to renew it.",
   "notice.peer_key_expired.title": "Sync key expired",
-  "notice.peer_key_expired.body": "The sync key has expired. Ask {firm} to renew it."
+  "notice.peer_key_expired.body": "The sync key has expired. Ask {firm} to renew it.",
+  "company_backup.ready_title": "Company copy ready",
+  "company_backup.ready_sent_to": "Sent to {email}.",
+  "company_backup.ready_copy_link": "Copy link",
+  "company_backup.ready_download": "Download copy",
+  "company_backup.ready_next": "What happens next",
+  "company_backup.ready_receives": "{email} receives an email from {firm} with the link. Opening it gives them their own Celerp with this company in it.",
+  "company_backup.ready_expires_on": "The link expires on {date}.",
+  "company_backup.ready_expires_rule": "The link expires 14 days after it was sent.",
+  "company_backup.ready_watch": "See when they open it in Company copies.",
+  "company_backup.ready_new_link": "To send a new link, send the company copy again."
 }

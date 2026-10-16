@@ -4066,9 +4066,6 @@
   "company_backup.reply_label": "የተረጋገጠ የCelerp መለያ ኢሜይልዎ",
   "company_backup.send_invalid": "ይህ ቅጽ ጊዜው አልፏል። አዲስ ቅጂ ይጀምሩ።",
   "company_backup.send_title": "የኩባንያ ቅጂ ላክ",
-  "company_backup.sent_link_label": "የኩባንያ ቅጂ አገናኝ",
-  "company_backup.sent_notice": "የተመሰጠረው የኩባንያ ቅጂ በኢሜይል ተልኳል።",
-  "company_backup.sent_title": "የኩባንያ ቅጂ ተልኳል",
   "company_backup.handoff_status_company_opened": "ኩባንያው ተከፍቷል",
   "company_backup.handoff_status_downloaded": "ወርዷል",
   "company_backup.handoff_status_expired": "ጊዜው አልፏል",
@@ -5723,5 +5720,15 @@
   "notice.peer_key_expiring_here.title": "የማመሳሰያ ቁልፍ ጊዜው ሊያልፍ ነው",
   "notice.peer_key_expiring_here.body": "የ{firm} የማመሳሰያ ቁልፍ በ{date} ጊዜው ያልፋል። {firm} እንዲያድሰው ይጠይቁ።",
   "notice.peer_key_expired.title": "የማመሳሰያ ቁልፍ ጊዜው አልፏል",
-  "notice.peer_key_expired.body": "የማመሳሰያ ቁልፉ ጊዜው አልፏል። {firm} እንዲያድሰው ይጠይቁ።"
+  "notice.peer_key_expired.body": "የማመሳሰያ ቁልፉ ጊዜው አልፏል። {firm} እንዲያድሰው ይጠይቁ።",
+  "company_backup.ready_title": "የኩባንያ ቅጂ ዝግጁ ነው",
+  "company_backup.ready_sent_to": "ወደ {email} ተልኳል።",
+  "company_backup.ready_copy_link": "ሊንክ ቅዳ",
+  "company_backup.ready_download": "ቅጂ አውርድ",
+  "company_backup.ready_next": "ቀጥሎ ምን ይሆናል",
+  "company_backup.ready_receives": "{email} ከ{firm} ሊንኩን የያዘ ኢሜይል ይደርሰዋል። ሲከፍቱት ይህን ኩባንያ የያዘ የራሳቸው Celerp ያገኛሉ።",
+  "company_backup.ready_expires_on": "ሊንኩ በ{date} ጊዜው ያልፋል።",
+  "company_backup.ready_expires_rule": "ሊንኩ ከተላከ ከ14 ቀናት በኋላ ጊዜው ያልፋል።",
+  "company_backup.ready_watch": "መቼ እንደከፈቱት በየኩባንያ ቅጂዎች ውስጥ ይመልከቱ።",
+  "company_backup.ready_new_link": "አዲስ ሊንክ ለመላክ የኩባንያውን ቅጂ እንደገና ይላኩ።"
 }

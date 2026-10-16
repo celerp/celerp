@@ -57,6 +57,7 @@ from ui.i18n import t
 from ui.routes.auth import START_COMPANY as START_COMPANY_PAGE
 from ui.routes.auth import START_COMPANY_RESTORE, auth_header
 from ui.routes.migrations import (
+    COMPANY,
     WizardMode,
     account_error,
     account_fields,
@@ -848,15 +849,31 @@ async def _send_handoff(request: Request):
     except APIError as exc:
         # Retain the same operation and secret for ambiguous delivery retries.
         return await _send_page(request, error=_message(exc), values=values, status_code=_status(exc))
+    return await _ready_page(request, values, sent)
+
+
+async def _ready_page(request: Request, values: dict, sent: dict):
+    """The company copy ready page: the copy's actions, then what happens next."""
+    try:
+        rows = (await api.company_backup_handoffs(get_token(request)))["items"]
+        expires = next(item["expires_at"] for item in rows if item["id"] == sent["id"])
+        expiry = t("company_backup.ready_expires_on", date=format_value(expires, "date"))
+    except (APIError, KeyError, TypeError, StopIteration):
+        expiry = t("company_backup.ready_expires_rule")
     return wizard_page(
         request,
-        auth_header(t("company_backup.sent_title")),
-        P(t("company_backup.sent_notice"), cls="flash flash--success"),
-        Div(Label(t("company_backup.sent_link_label"), For="company_handoff_link", cls="form-label"),
-            Input(type="text", id="company_handoff_link", value=sent["link"], readonly=True,
-                  cls="form-input"), cls="form-group"),
-        A(t("company_backup.handoffs_title"), href=HANDOFFS, cls="auth-link"),
-        back_link(BACKUP_TAB), title="company_backup.sent_title",
+        auth_header(t("company_backup.ready_sent_to", email=values["recipient"])),
+        Div(Button(t("company_backup.ready_copy_link"), type="button", cls="btn btn--primary btn--full",
+                   **{"data-copy": "", "data-copy-text": sent["link"]}),
+            A(t("company_backup.ready_download"), href=DOWNLOAD, cls="btn btn--secondary btn--full"),
+            A(t("migration.move_another"), href=COMPANY.base, cls="btn btn--secondary btn--full"),
+            cls="flex-col gap-sm"),
+        H2(t("company_backup.ready_next"), cls="mt-md"),
+        Ul(Li(t("company_backup.ready_receives", email=values["recipient"], firm=values["firm_name"])),
+           Li(expiry),
+           Li(A(t("company_backup.ready_watch"), href=HANDOFFS)),
+           Li(t("company_backup.ready_new_link"))),
+        back_link(BACKUP_TAB), title="company_backup.ready_title",
     )
 
 

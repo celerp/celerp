@@ -4066,9 +4066,6 @@
   "company_backup.reply_label": "Email verificata del tuo account Celerp",
   "company_backup.send_invalid": "Questo modulo è scaduto. Avvia una nuova copia.",
   "company_backup.send_title": "Invia copia aziendale",
-  "company_backup.sent_link_label": "Link alla copia aziendale",
-  "company_backup.sent_notice": "La copia aziendale crittografata è stata inviata via email.",
-  "company_backup.sent_title": "Copia aziendale inviata",
   "company_backup.handoff_status_company_opened": "Azienda aperta",
   "company_backup.handoff_status_downloaded": "Scaricata",
   "company_backup.handoff_status_expired": "Scaduta",
@@ -5723,5 +5720,15 @@
   "notice.peer_key_expiring_here.title": "La chiave di sincronizzazione sta per scadere",
   "notice.peer_key_expiring_here.body": "La chiave di sincronizzazione per {firm} scade il {date}. Chiedi a {firm} di rinnovarla.",
   "notice.peer_key_expired.title": "Chiave di sincronizzazione scaduta",
-  "notice.peer_key_expired.body": "La chiave di sincronizzazione è scaduta. Chiedi a {firm} di rinnovarla."
+  "notice.peer_key_expired.body": "La chiave di sincronizzazione è scaduta. Chiedi a {firm} di rinnovarla.",
+  "company_backup.ready_title": "Copia aziendale pronta",
+  "company_backup.ready_sent_to": "Inviata a {email}.",
+  "company_backup.ready_copy_link": "Copia link",
+  "company_backup.ready_download": "Scarica copia",
+  "company_backup.ready_next": "Cosa succede ora",
+  "company_backup.ready_receives": "{email} riceve un’email da {firm} con il link. Aprendolo ottiene il proprio Celerp con questa azienda.",
+  "company_backup.ready_expires_on": "Il link scade il {date}.",
+  "company_backup.ready_expires_rule": "Il link scade 14 giorni dopo l’invio.",
+  "company_backup.ready_watch": "Vedi quando viene aperto in Copie aziendali.",
+  "company_backup.ready_new_link": "Per inviare un nuovo link, invia di nuovo la copia aziendale."
 }

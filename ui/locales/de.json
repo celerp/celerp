@@ -4066,9 +4066,6 @@
   "company_backup.reply_label": "Verifizierte E-Mail Ihres Celerp-Kontos",
   "company_backup.send_invalid": "Dieses Formular ist abgelaufen. Beginnen Sie eine neue Kopie.",
   "company_backup.send_title": "Firmensicherung senden",
-  "company_backup.sent_link_label": "Link zur Firmensicherung",
-  "company_backup.sent_notice": "Die verschlüsselte Firmensicherung wurde per E-Mail versandt.",
-  "company_backup.sent_title": "Firmensicherung gesendet",
   "company_backup.handoff_status_company_opened": "Unternehmen geöffnet",
   "company_backup.handoff_status_downloaded": "Heruntergeladen",
   "company_backup.handoff_status_expired": "Abgelaufen",
@@ -5723,5 +5720,15 @@
   "notice.peer_key_expiring_here.title": "Synchronisierungsschlüssel läuft ab",
   "notice.peer_key_expiring_here.body": "Der Synchronisierungsschlüssel für {firm} läuft am {date} ab. Bitten Sie {firm}, ihn zu erneuern.",
   "notice.peer_key_expired.title": "Synchronisierungsschlüssel abgelaufen",
-  "notice.peer_key_expired.body": "Der Synchronisierungsschlüssel ist abgelaufen. Bitten Sie {firm}, ihn zu erneuern."
+  "notice.peer_key_expired.body": "Der Synchronisierungsschlüssel ist abgelaufen. Bitten Sie {firm}, ihn zu erneuern.",
+  "company_backup.ready_title": "Unternehmenskopie bereit",
+  "company_backup.ready_sent_to": "Gesendet an {email}.",
+  "company_backup.ready_copy_link": "Link kopieren",
+  "company_backup.ready_download": "Kopie herunterladen",
+  "company_backup.ready_next": "Wie es weitergeht",
+  "company_backup.ready_receives": "{email} erhält eine E-Mail von {firm} mit dem Link. Damit erhält die Person ein eigenes Celerp mit diesem Unternehmen.",
+  "company_backup.ready_expires_on": "Der Link läuft am {date} ab.",
+  "company_backup.ready_expires_rule": "Der Link läuft 14 Tage nach dem Versand ab.",
+  "company_backup.ready_watch": "Unter Unternehmenskopien sehen Sie, wann der Link geöffnet wird.",
+  "company_backup.ready_new_link": "Für einen neuen Link senden Sie die Unternehmenskopie erneut."
 }

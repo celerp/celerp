@@ -4066,9 +4066,6 @@
   "company_backup.reply_label": "البريد الإلكتروني الموثق لحساب Celerp",
   "company_backup.send_invalid": "انتهت صلاحية هذا النموذج. ابدأ نسخة جديدة.",
   "company_backup.send_title": "إرسال نسخة الشركة",
-  "company_backup.sent_link_label": "رابط نسخة الشركة",
-  "company_backup.sent_notice": "تم إرسال نسخة الشركة المشفرة إلى المستلم بالبريد الإلكتروني.",
-  "company_backup.sent_title": "تم إرسال نسخة الشركة",
   "company_backup.handoff_status_company_opened": "تم فتح الشركة",
   "company_backup.handoff_status_downloaded": "تم تنزيلها",
   "company_backup.handoff_status_expired": "منتهية الصلاحية",
@@ -5723,5 +5720,15 @@
   "notice.peer_key_expiring_here.title": "مفتاح المزامنة على وشك الانتهاء",
   "notice.peer_key_expiring_here.body": "ينتهي مفتاح المزامنة لـ {firm} في {date}. اطلب من {firm} تجديده.",
   "notice.peer_key_expired.title": "انتهى مفتاح المزامنة",
-  "notice.peer_key_expired.body": "انتهت صلاحية مفتاح المزامنة. اطلب من {firm} تجديده."
+  "notice.peer_key_expired.body": "انتهت صلاحية مفتاح المزامنة. اطلب من {firm} تجديده.",
+  "company_backup.ready_title": "نسخة الشركة جاهزة",
+  "company_backup.ready_sent_to": "أُرسلت إلى {email}.",
+  "company_backup.ready_copy_link": "نسخ الرابط",
+  "company_backup.ready_download": "تنزيل النسخة",
+  "company_backup.ready_next": "الخطوات التالية",
+  "company_backup.ready_receives": "يتلقى {email} بريدًا من {firm} يحتوي على الرابط. عند فتحه يحصل على Celerp خاص به يضم هذه الشركة.",
+  "company_backup.ready_expires_on": "تنتهي صلاحية الرابط في {date}.",
+  "company_backup.ready_expires_rule": "تنتهي صلاحية الرابط بعد 14 يومًا من إرساله.",
+  "company_backup.ready_watch": "اعرف متى فُتح الرابط في نسخ الشركات.",
+  "company_backup.ready_new_link": "لإرسال رابط جديد، أرسل نسخة الشركة مرة أخرى."
 }

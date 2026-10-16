@@ -4066,9 +4066,6 @@
   "company_backup.reply_label": "Adresse vérifiée de votre compte Celerp",
   "company_backup.send_invalid": "Ce formulaire a expiré. Commencez une nouvelle copie.",
   "company_backup.send_title": "Envoyer une copie d’entreprise",
-  "company_backup.sent_link_label": "Lien de la copie d’entreprise",
-  "company_backup.sent_notice": "La copie chiffrée a été envoyée au destinataire par e-mail.",
-  "company_backup.sent_title": "Copie d’entreprise envoyée",
   "company_backup.handoff_status_company_opened": "Entreprise ouverte",
   "company_backup.handoff_status_downloaded": "Téléchargée",
   "company_backup.handoff_status_expired": "Expirée",
@@ -5723,5 +5720,15 @@
   "notice.peer_key_expiring_here.title": "La clé de synchronisation expire bientôt",
   "notice.peer_key_expiring_here.body": "La clé de synchronisation de {firm} expire le {date}. Demandez à {firm} de la renouveler.",
   "notice.peer_key_expired.title": "Clé de synchronisation expirée",
-  "notice.peer_key_expired.body": "La clé de synchronisation a expiré. Demandez à {firm} de la renouveler."
+  "notice.peer_key_expired.body": "La clé de synchronisation a expiré. Demandez à {firm} de la renouveler.",
+  "company_backup.ready_title": "Copie d’entreprise prête",
+  "company_backup.ready_sent_to": "Envoyée à {email}.",
+  "company_backup.ready_copy_link": "Copier le lien",
+  "company_backup.ready_download": "Télécharger la copie",
+  "company_backup.ready_next": "Et ensuite",
+  "company_backup.ready_receives": "{email} reçoit un e-mail de {firm} avec le lien. En l’ouvrant, la personne obtient son propre Celerp avec cette entreprise.",
+  "company_backup.ready_expires_on": "Le lien expire le {date}.",
+  "company_backup.ready_expires_rule": "Le lien expire 14 jours après l’envoi.",
+  "company_backup.ready_watch": "Voyez quand le lien est ouvert dans Copies d’entreprise.",
+  "company_backup.ready_new_link": "Pour envoyer un nouveau lien, renvoyez la copie d’entreprise."
 }

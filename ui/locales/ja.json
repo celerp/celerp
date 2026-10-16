@@ -4066,9 +4066,6 @@
   "company_backup.reply_label": "認証済みCelerpアカウントのメール",
   "company_backup.send_invalid": "フォームの有効期限が切れました。新しいコピーを開始してください。",
   "company_backup.send_title": "会社のコピーを送信",
-  "company_backup.sent_link_label": "会社のコピーのリンク",
-  "company_backup.sent_notice": "暗号化された会社のコピーをメールで送信しました。",
-  "company_backup.sent_title": "会社のコピーを送信しました",
   "company_backup.handoff_status_company_opened": "会社を開きました",
   "company_backup.handoff_status_downloaded": "ダウンロード済み",
   "company_backup.handoff_status_expired": "期限切れ",
@@ -5723,5 +5720,15 @@
   "notice.peer_key_expiring_here.title": "同期キーの期限が近づいています",
   "notice.peer_key_expiring_here.body": "{firm} の同期キーは {date} に期限切れになります。{firm} に更新を依頼してください。",
   "notice.peer_key_expired.title": "同期キーの期限切れ",
-  "notice.peer_key_expired.body": "同期キーの期限が切れました。{firm} に更新を依頼してください。"
+  "notice.peer_key_expired.body": "同期キーの期限が切れました。{firm} に更新を依頼してください。",
+  "company_backup.ready_title": "会社のコピーの準備ができました",
+  "company_backup.ready_sent_to": "{email} に送信しました。",
+  "company_backup.ready_copy_link": "リンクをコピー",
+  "company_backup.ready_download": "コピーをダウンロード",
+  "company_backup.ready_next": "次の流れ",
+  "company_backup.ready_receives": "{email} に {firm} からリンク付きのメールが届きます。開くと、この会社が入った専用の Celerp を使えます。",
+  "company_backup.ready_expires_on": "リンクの有効期限は {date} です。",
+  "company_backup.ready_expires_rule": "リンクは送信から14日後に期限切れになります。",
+  "company_backup.ready_watch": "開封されたかどうかは「会社のコピー」で確認できます。",
+  "company_backup.ready_new_link": "新しいリンクを送るには、会社のコピーをもう一度送信してください。"
 }
