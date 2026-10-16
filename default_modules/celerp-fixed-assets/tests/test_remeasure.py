@@ -190,3 +190,19 @@ async def test_s2_intangible_indefinite_and_active_market(fa):
     await fa.ok(await fa.patch(f"/classes/{other['id']}", {
         "active_market": {"date": "2026-10-01", "basis": "Quoted on the licence exchange"}}))
     await fa.ok(await fa.post(path, body))
+
+
+async def test_corrections_do_not_restate_across_a_remeasurement(fa):
+    """Impaired at the end of March: an error correction would restate what the impairment
+    measured, so it is refused; a change in estimate from April on is still made."""
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    await _impair(fa, car, "2026-03-31", "8550")
+    path = f"/assets/{car}/correct"
+    error = await fa.post(path, {"changes": {"cost": "13000"}, "preview": True, "op_key": "c1"})
+    assert error.status_code == 422 and "remeasured on 2026-03-31" in error.json()["detail"]
+    early = await fa.post(path, {"changes": {"life_months": 48}, "classification": "estimate",
+                                 "effective_date": "2026-03-01", "preview": True, "op_key": "c2"})
+    assert early.status_code == 422, early.text
+    await fa.ok(await fa.post(path, {"changes": {"life_months": 48}, "classification": "estimate",
+                                     "effective_date": "2026-04-01", "preview": True, "op_key": "c3"}))
