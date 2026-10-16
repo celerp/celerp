@@ -541,8 +541,13 @@ async def test_copy_without_a_module_installed_here_opens_with_it_off_and_empty(
     write_config({"modules": {"enabled": ["acme-widgets"]}})
     _start_running(monkeypatch, "acme-widgets")
     _, _, tok = await _setup(real_engine)
-    data = await download(real_client, tok)
-    preview = await read(real_client, tok, data)
+    parts = members(await download(real_client, tok))
+    meta = json.loads(parts["manifest.json"])
+    # A copy made where the module is not installed.
+    meta["modules"]["enabled"] = [m for m in meta["modules"]["enabled"] if m != "acme-widgets"]
+    meta["modules"].get("versions", {}).pop("acme-widgets", None)
+    parts["manifest.json"] = json.dumps(meta).encode()
+    preview = await read(real_client, tok, rezip(parts))
     assert preview.status_code == 200, preview.text
     assert preview.json()["modules_ready"] is True
     assert all(m["name"] != "acme-widgets" for m in preview.json()["modules"])
