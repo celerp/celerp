@@ -62,16 +62,12 @@ def _probe(path: Path = _PROBE_FILE) -> dict:
 
 
 @pytest.fixture
-def registry():
+def registry(monkeypatch):
     """The operation-type registry, open for the test's own types and restored after it."""
-    from dataclasses import replace
-
     from celerp.services import module_journals as mj
 
-    saved = mj.snapshot_registry()
-    mj.restore_registry(replace(saved, frozen=False))
-    yield mj
-    mj.restore_registry(saved)
+    monkeypatch.setattr(mj, "_registry", mj._Registry(dict(mj._registry.types), frozen=False))
+    return mj
 
 
 def _refused(exc: pytest.ExceptionInfo, status: int, key: str) -> dict:
@@ -248,7 +244,7 @@ def test_s6_registration_opens_again_when_modules_start_again(registry):
     registry.freeze_operation_types()
     loader.register_api_routes(FastAPI(), [])
     probe["register"]({"s6_again": ("manage_accounting",)}, source_prefix="fa:")
-    assert {(MODULE, "s6_first"), (MODULE, "s6_again")} <= set(registry.snapshot_registry().types)
+    assert {(MODULE, "s6_first"), (MODULE, "s6_again")} <= set(registry._registry.types)
 
 
 # ── Accounts ───────────────────────────────────────────────────────────────────

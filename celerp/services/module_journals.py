@@ -148,14 +148,6 @@ def freeze_operation_types() -> None:
     _registry.frozen = True
 
 
-def snapshot_registry() -> _Registry:
-    return _Registry(dict(_registry.types), _registry.frozen)
-
-
-def restore_registry(saved: _Registry) -> None:
-    _registry.types, _registry.frozen = dict(saved.types), saved.frozen
-
-
 def _refuse(status: int, key: str, message: str, **params):
     return HTTPException(status_code=status, detail=refusal(key, message, **params))
 
