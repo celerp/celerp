@@ -1131,3 +1131,65 @@ async def test_company_copy_ready_state(ui, real_engine, monkeypatch):
     assert "The link expires 14 days after it was sent." in page
     assert "The link expires on" not in page
     assert "Company copy sent" not in page
+
+
+async def _demo_company(real_client, real_engine):
+    """The demo company as seed_demo builds it: postings, money owed both ways."""
+    from test_company_copy_round_trip import seed_demo
+    registered = await real_client.post("/auth/register", json={
+        "company_name": "Demo Trading", "email": "demo-owner@example.test",
+        "name": "Demo Owner", "password": "demopw1234"})
+    assert registered.status_code == 200, registered.text
+    tok = registered.json()["access_token"]
+    await seed_demo.seed_items(real_client, tok)
+    contacts = await seed_demo.seed_contacts(real_client, tok)
+    await seed_demo.seed_docs(real_client, tok, contacts, "invoice", 8)
+    await seed_demo.seed_docs(real_client, tok, contacts, "purchase_order", 5)
+    return tok
+
+
+async def _key_totals(real_client, tok: str) -> tuple[str, str, str]:
+    from ui.components.table import fmt_money
+    headers = {"Authorization": f"Bearer {tok}"}
+    currency = (await real_client.get("/companies/me", headers=headers)).json().get("currency")
+    tb = (await real_client.get("/accounting/trial-balance", headers=headers)).json()
+    ar = (await real_client.get("/reports/ar-aging", headers=headers)).json()
+    ap = (await real_client.get("/reports/ap-aging", headers=headers)).json()
+    return (fmt_money(tb["total_debit"], currency), fmt_money(sum(ar["buckets"].values()), currency),
+            fmt_money(sum(ap["buckets"].values()), currency))
+
+
+async def test_restore_success_shows_reconciled_totals(ui, real_engine, real_client, monkeypatch, tmp_path):
+    """Opening a company copy a firm prepared ends on the company's own key balances
+    (trial balance, owed to you, you owe), names the firm, and says the company is free to
+    use locally with no time limit. A plain copy shows the same balances without a firm."""
+    from celerp.services import company_handoff_sender
+    tok = await _demo_company(real_client, real_engine)
+    expected = await _key_totals(real_client, tok)
+    assert all(figure != "--" for figure in expected)
+    sent = tmp_path / "sent.celerp-company"
+
+    async def send(**kwargs):
+        await kwargs["export"](sent)
+        return {"id": str(uuid.uuid4()), "link": "synthetic-link"}
+
+    monkeypatch.setattr(company_handoff_sender, "send_company_backup", send)
+    r = await real_client.post("/company-backups/send-handoff", headers={"Authorization": f"Bearer {tok}"}, json={
+        "operation_id": str(uuid.uuid4()), "key": base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("="),
+        "firm_name": "North Ledger", "recipient": "client@example.com", "reply_to": "desk@north.example",
+        "note": ""})
+    assert r.status_code == 200, r.text
+
+    base = "/settings/restore-backup"
+    for data, firm in ((sent.read_bytes(), True), (await download(real_client, tok), False)):
+        ui.cookies.set("celerp_token", tok)
+        preview = _page(await _upload_and_preview(ui, base, data))
+        r = await ui.post(f"{base}/restore", data=_hidden(preview))
+        restored_tok = _cookie(r, "celerp_token")
+        page = _page(await _follow(ui, r))
+        assert "Free to use locally with no time limit." in page
+        for label, figure in zip(("Trial balance", "Owed to you", "You owe"), await _key_totals(real_client, restored_tok)):
+            assert re.search(rf"<td>{label}</td>\s*<td[^>]*>{re.escape(figure)}</td>", page), (label, figure)
+        assert await _key_totals(real_client, restored_tok) == expected
+        assert ("Your company is ready." in page and "Prepared for you by North Ledger." in page) is firm
+        assert ("Company restored" in page) is not firm
