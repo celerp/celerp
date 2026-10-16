@@ -506,7 +506,13 @@ def test_windows_boot_smoke_runs_as_an_administrator_with_uac_off():
             < names.index("Installer version check (Windows)")
             < names.index(admin["name"]))
     run = admin["run"]
-    assert "if ($lua -ne 0)" in run and "net session" in run
+    assert "if ($lua -ne 0)" in run
+    # Both sides of the restricted launcher, read from the installed app's own token
+    # check: this account is "admin", the launcher's child "standard".
+    assert '--token-state).Trim()' in run and '$state -ne "admin"' in run and '$child -ne "standard"' in run
+    # The app must not depend on the Server service to read its token.
+    assert "net session" not in run
+    assert run.index("Stop-Service LanmanServer -Force") < run.index("Start-Process -FilePath $exe")
     assert "-Credential" not in run
     assert "Start-Process -FilePath $exe" in run
     assert "/health/ready" in run and '"db"\\s*:\\s*"ok"' in run
