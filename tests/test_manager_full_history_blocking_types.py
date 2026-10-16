@@ -274,7 +274,7 @@ def test_intangible_asset_disposal_posts_its_gain_to_the_account_it_names(tmp_pa
     """A disposal clears the asset's cost and what was written off it and posts the
     difference to the disposal account the asset names. The patent was written down to 260
     and an offer of 300 came in: a gain of 40. RED before the change: disposal blocks."""
-    objects = [*_history_with("PAT", {6: True, 7: date(2026, 3, 6), 21: specs.k("GAIN")}),
+    objects = [*_history_with("PAT", {6: True, 7: date(2026, 3, 6), 17: specs.k("GAIN")}),
                specs.obj("ProfitAndLossStatementAccount", "GAIN", {1: "Gain on patent", 11: "4900",
                                                                     3: specs.INCOME}),
                specs.obj("JournalEntry", "HJ7", {1: date(2026, 3, 6), 2: "HJ-7", 3: "Patent sold", 14: [
