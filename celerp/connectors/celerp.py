@@ -575,9 +575,9 @@ class CelerpConnector(ConnectorBase):
         async with RateLimitedClient(public_only=True) as client:
             body = await self._fetch(client, ctx, "period_lock")
         if body is not None:
-            await peer_journals.apply_firm_lock(uuid.UUID(ctx.company_id),
-                                                key_ids(ctx.access_token)[1], body)
-            result.record("updated")
+            changed = await peer_journals.apply_firm_lock(uuid.UUID(ctx.company_id),
+                                                          key_ids(ctx.access_token)[1], body)
+            result.record("updated" if changed else "noop")
         return result
 
     async def sync_journals_out(self, ctx: ConnectorContext) -> SyncResult:

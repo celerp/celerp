@@ -539,11 +539,11 @@ async def answered(company_id: uuid.UUID, grant_id: uuid.UUID, item: dict, decli
         await session.commit()
 
 
-async def apply_firm_lock(company_id: uuid.UUID, grant_id: uuid.UUID, body: dict) -> None:
+async def apply_firm_lock(company_id: uuid.UUID, grant_id: uuid.UUID, body: dict) -> bool:
     """Keep the firm's lock date beside the client's own and move the client's forward to
     it once, with a notice: never back, and the same date never again, so the client may
     move its own back. A record the firm refused is sent once more when the firm's date
-    changes."""
+    changes. Returns whether anything changed."""
     from celerp.db import get_session_ctx
     from celerp.services.lot_origin import place_after_lock_change
 
@@ -552,7 +552,8 @@ async def apply_firm_lock(company_id: uuid.UUID, grant_id: uuid.UUID, body: dict
         raise ValueError("The accountant's lock date could not be read")
     async with get_session_ctx() as session:
         company = await locked_company(session, company_id)
-        settings = dict(company.settings or {})
+        original = dict(company.settings or {})
+        settings = dict(original)
         before = _firm_lock_of(settings)
         if lock is None:
             settings.pop("firm_lock", None)
@@ -578,6 +579,7 @@ async def apply_firm_lock(company_id: uuid.UUID, grant_id: uuid.UUID, body: dict
             await _notify(session, company_id, "notice.peer_lock_applied", firm=firm, date=lock)
             await place_after_lock_change(session, company_id)
         await session.commit()
+        return settings != original
 
 
 async def from_accountant(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:

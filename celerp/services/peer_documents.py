@@ -17,8 +17,9 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.services import peer_accounts
 from celerp.services.company_lock import locked_company
+from celerp.services.peer_payments import BY_HAND
 from celerp.services.peer_identity import (
-    claim_peer_revision, commit_peer_revision, peer_identity,
+    claim_peer_revision, commit_peer_revision, holds_peer_revision, peer_identity,
 )
 
 # The source may supply only document inputs. Payments, receipts and fulfilment arrive as
@@ -40,8 +41,7 @@ _RECEIPT_KEYS = ("po_line_index", "item_id", "quantity_received", "condition", "
 _RECEIVING_TYPES = frozenset({"bill", "purchase_order"})
 _FULFILLING_TYPES = frozenset({"invoice"})
 # Issued documents of other types (credit notes, memos, returns, consignments) and other
-# statuses are refused with this reason, which the sender shows as needing attention.
-_BY_HAND = "{} is not copied automatically. Enter it in the accountant's copy by hand."
+# statuses are refused with the BY_HAND reason, which the sender shows as needing attention.
 _ISSUED_STATUSES = frozenset({
     "final", "sent", "partial", "paid", "awaiting_payment", "received", "partially_received",
 })
@@ -105,6 +105,12 @@ async def receive_document(
         raise HTTPException(422, "Unsupported document type") from None
     data = dict(data)
     accounts = peer_accounts.parse(data.pop("accounts", None))
+    # A revision this company already holds (a company copy holds every revision it was
+    # made from) is acknowledged as it stands, even one that could not be sent today.
+    if await holds_peer_revision(
+            session, grant=grant, entity_type="doc", source_entity_id=source_entity_id,
+            source_revision=source_revision, data=data):
+        return "skipped"
     from celerp.services.peer_payments import (
         validate_source_payments, validate_source_refunds, apply_source_payments,
     )
@@ -121,9 +127,9 @@ async def receive_document(
         return "skipped"
     source_status = data.get("status", "draft")
     if source_status not in _ISSUED_STATUSES | {"draft", "void"}:
-        raise HTTPException(409, _BY_HAND.format(f"A {source_status} document"))
+        raise HTTPException(409, BY_HAND.format(f"A {source_status} document"))
     if source_status != "draft" and data["doc_type"] not in _RECEIVING_TYPES | _FULFILLING_TYPES:
-        raise HTTPException(409, _BY_HAND.format(
+        raise HTTPException(409, BY_HAND.format(
             "An issued " + str(data["doc_type"]).replace("_", " ")))
     if (receipts and data["doc_type"] not in _RECEIVING_TYPES) or (
             fulfilled and data["doc_type"] not in _FULFILLING_TYPES):

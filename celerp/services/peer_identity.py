@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.models.company import Company
 from celerp.models.company_peer import CompanyPeerIdentity
 from celerp.models.projections import Projection
 from celerp.services.company_lock import locked_company
@@ -150,6 +151,48 @@ class PeerRevisionClaim:
     replay: bool
 
 
+def _payload_digest(data: dict) -> str:
+    return hashlib.sha256(json.dumps(
+        data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+def _held(mapping: CompanyPeerIdentity, source_revision: int, digest: str) -> bool:
+    """Whether the company already holds this source revision. The same revision sent
+    again with other content is refused."""
+    if source_revision < mapping.last_revision:
+        return True
+    if source_revision == mapping.last_revision:
+        if mapping.last_payload_hash and mapping.last_payload_hash != digest:
+            raise HTTPException(409, "Source revision already used")
+        return True
+    return False
+
+
+async def holds_peer_revision(
+    session: AsyncSession, *, grant, entity_type: str,
+    source_entity_id: str, source_revision: int, data: dict,
+) -> bool:
+    """Read-only: whether a source revision is one the company already holds, so it can
+    be acknowledged before its content is checked. A company copy that kept its source
+    identities holds every revision it was made from. Anything else goes to
+    claim_peer_revision, which takes the lock and decides."""
+    if (entity_type not in ENTITY_TYPES or type(source_revision) is not int
+            or not isinstance(source_entity_id, str)):
+        return False
+    company = await session.get(Company, grant.company_id)
+    if company is None or not company.is_active or company.is_migration_staged:
+        return False
+    mapping = await session.scalar(select(CompanyPeerIdentity).where(
+        CompanyPeerIdentity.company_id == grant.company_id,
+        CompanyPeerIdentity.source_company_id == grant.source_company_id,
+        CompanyPeerIdentity.entity_type == entity_type,
+        CompanyPeerIdentity.source_key_hash == _digest(source_entity_id),
+    ))
+    if mapping is None or mapping.source_entity_id != source_entity_id:
+        return False
+    return _held(mapping, source_revision, _payload_digest(data))
+
+
 async def claim_peer_revision(
     session: AsyncSession, *, grant, entity_type: str,
     source_entity_id: str, source_revision: int, data: dict,
@@ -165,8 +208,7 @@ async def claim_peer_revision(
     if company is None or not company.is_active or company.is_migration_staged:
         raise HTTPException(403, "Company unavailable")
     source_key = _digest(source_entity_id)
-    digest = hashlib.sha256(json.dumps(
-        data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    digest = _payload_digest(data)
     mapping = await session.scalar(select(CompanyPeerIdentity).where(
         CompanyPeerIdentity.company_id == company_id,
         CompanyPeerIdentity.source_company_id == source_company,
@@ -183,13 +225,8 @@ async def claim_peer_revision(
             row = await session.get(Projection, (company_id, target))
             if (row.state or {}).get("is_self"):
                 raise HTTPException(403, "Company-owned contacts cannot be updated by an integration")
-        if source_revision < mapping.last_revision:
-            return PeerRevisionClaim(mapping, target, source_key, digest, True)
-        if source_revision == mapping.last_revision:
-            if mapping.last_payload_hash and mapping.last_payload_hash != digest:
-                raise HTTPException(409, "Source revision already used")
-            return PeerRevisionClaim(mapping, target, source_key, digest, True)
-        return PeerRevisionClaim(mapping, target, source_key, digest, False)
+        return PeerRevisionClaim(mapping, target, source_key, digest,
+                                 _held(mapping, source_revision, digest))
     if entity_type == "doc":
         existing_source = await session.scalar(select(CompanyPeerIdentity.id).where(
             CompanyPeerIdentity.company_id == company_id,

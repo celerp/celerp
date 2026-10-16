@@ -15,6 +15,9 @@ from celerp.events.engine import find_event_by_idempotency
 from celerp.models.projections import Projection
 from celerp.services.money import round_money, to_decimal
 
+# What a peer copy leaves to the person keeping the receiving company's books.
+BY_HAND = "{} is not copied automatically. Enter it in the accountant's copy by hand."
+
 
 def _payment_key(source_company, doc_id: str, index: int) -> str:
     raw = f"{source_company}:{doc_id}:{index}"
@@ -66,6 +69,8 @@ def validate_source_payments(data: dict) -> list[tuple[int, dict]]:
             raise HTTPException(409, "Source payment refund is inconsistent")
         if refunded and not data.get("payment_events"):
             raise HTTPException(409, "Refund history required for booked payments")
+        if payment.get("source_doc_id") or payment.get("target_doc_id"):
+            raise HTTPException(409, BY_HAND.format("A credit note applied to a document"))
         if not payment.get("bank_account"):
             raise HTTPException(409, "Source payment has no deposit account")
         fields = ("amount", "payment_date", "currency", "method", "reference",
