@@ -524,3 +524,17 @@ def test_windows_boot_smoke_runs_as_an_administrator_with_uac_off():
     assert "/health/ready" in smoke and '"db"\\s*:\\s*"ok"' in smoke
     launch = smoke.split("function Launch(", 1)[1].split("\n}\n", 1)[0]
     assert launch.index("Electron stdout/stderr") < launch.index('Fail "$what`: db:ok not reached')
+
+
+def test_checks_that_run_the_packaged_python_leave_the_build_unchanged():
+    """The Windows smokes compare each install file by file with win-unpacked, so a
+    check that runs the packaged Python must not write bytecode into it."""
+    steps = _workflow("build.yml")["jobs"]["build"]["steps"]
+    names = [s.get("name") for s in steps]
+    built = names.index("Build (Windows / Linux - dev build)")
+    first_smoke = min(i for i, n in enumerate(names) if n and n.startswith("Boot smoke"))
+    runs_packaged_python = [s for s in steps[built:first_smoke] if '"$PY"' in s.get("run", "")]
+    assert {s["name"] for s in runs_packaged_python} == {
+        "Check the Windows bundle", "Check bundled modules in the packaged artifact"}
+    for step in runs_packaged_python:
+        assert step.get("env", {}).get("PYTHONDONTWRITEBYTECODE") == "1", step["name"]

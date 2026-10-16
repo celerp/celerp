@@ -647,6 +647,9 @@ jobs:
       - name: Check the Windows bundle
         if: runner.os == 'Windows'
         shell: bash
+        # The smokes compare each install with win-unpacked file by file.
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -eo pipefail
           RES="electron/dist/win-unpacked/resources"
@@ -672,6 +675,9 @@ jobs:
       # the same content. The packaged Python runs the packaged loader's check.
       - name: Check bundled modules in the packaged artifact
         shell: bash
+        # The smokes compare each install with win-unpacked file by file.
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -eo pipefail
           case "${{ matrix.os }}" in
