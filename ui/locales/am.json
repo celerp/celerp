@@ -4082,6 +4082,7 @@
   "company_backup.reply_label": "የተረጋገጠ የCelerp መለያ ኢሜይልዎ",
   "company_backup.send_invalid": "ይህ ቅጽ ጊዜው አልፏል። አዲስ ቅጂ ይጀምሩ።",
   "company_backup.send_title": "የኩባንያ ቅጂ ላክ",
+  "company_backup.send_privacy": "Celerp ይህን ቅጂ በኮምፒውተርዎ ላይ ያመሰጥራል፣ ሊንኩ እስኪያልፍ ወይም እስኪሰርዙት ድረስ የተመሰጠረውን ፋይል ብቻ ይይዛል። የሚከፍተው ቁልፍ በሊንኩ ውስጥ ነው፤ Celerp ሊንኩን ለተቀባዩ በኢሜይል ያስተላልፋል እንጂ አያስቀምጠውም።",
   "company_backup.handoff_status_company_opened": "ኩባንያው ተከፍቷል",
   "company_backup.handoff_status_downloaded": "ወርዷል",
   "company_backup.handoff_status_expired": "ጊዜው አልፏል",

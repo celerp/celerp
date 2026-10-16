@@ -4082,6 +4082,7 @@
   "company_backup.reply_label": "البريد الإلكتروني الموثق لحساب Celerp",
   "company_backup.send_invalid": "انتهت صلاحية هذا النموذج. ابدأ نسخة جديدة.",
   "company_backup.send_title": "إرسال نسخة الشركة",
+  "company_backup.send_privacy": "يشفّر Celerp هذه النسخة على جهازك ولا يحتفظ إلا بالملف المشفّر، حتى تنتهي صلاحية الرابط أو تلغيه. مفتاح فتحها موجود في الرابط، ويمرّره Celerp إلى المستلم بالبريد الإلكتروني ولا يحتفظ به.",
   "company_backup.handoff_status_company_opened": "تم فتح الشركة",
   "company_backup.handoff_status_downloaded": "تم تنزيلها",
   "company_backup.handoff_status_expired": "منتهية الصلاحية",

@@ -4082,6 +4082,7 @@
   "company_backup.reply_label": "Email verificata del tuo account Celerp",
   "company_backup.send_invalid": "Questo modulo è scaduto. Avvia una nuova copia.",
   "company_backup.send_title": "Invia copia aziendale",
+  "company_backup.send_privacy": "Celerp cifra questa copia sul tuo computer e conserva solo il file cifrato, finché il link scade o lo revochi. La chiave per aprirla è nel link, che Celerp inoltra al destinatario via email senza conservarlo.",
   "company_backup.handoff_status_company_opened": "Azienda aperta",
   "company_backup.handoff_status_downloaded": "Scaricata",
   "company_backup.handoff_status_expired": "Scaduta",

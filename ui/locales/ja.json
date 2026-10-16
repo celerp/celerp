@@ -4082,6 +4082,7 @@
   "company_backup.reply_label": "認証済みCelerpアカウントのメール",
   "company_backup.send_invalid": "フォームの有効期限が切れました。新しいコピーを開始してください。",
   "company_backup.send_title": "会社のコピーを送信",
+  "company_backup.send_privacy": "Celerp はこのコピーをお使いのコンピューターで暗号化し、リンクの有効期限が切れるか取り消されるまで、暗号化されたファイルのみを保管します。開くための鍵はリンクに含まれ、Celerp はそのリンクを受信者へメールで渡すだけで保管しません。",
   "company_backup.handoff_status_company_opened": "会社を開きました",
   "company_backup.handoff_status_downloaded": "ダウンロード済み",
   "company_backup.handoff_status_expired": "期限切れ",

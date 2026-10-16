@@ -4082,6 +4082,7 @@
   "company_backup.reply_label": "อีเมลบัญชี Celerp ที่ยืนยันแล้ว",
   "company_backup.send_invalid": "แบบฟอร์มหมดอายุแล้ว โปรดเริ่มส่งสำเนาใหม่",
   "company_backup.send_title": "ส่งสำเนาบริษัท",
+  "company_backup.send_privacy": "Celerp เข้ารหัสสำเนานี้บนคอมพิวเตอร์ของคุณ และเก็บไว้เพียงไฟล์ที่เข้ารหัสแล้ว จนกว่าลิงก์จะหมดอายุหรือคุณเพิกถอน กุญแจสำหรับเปิดอยู่ในลิงก์ ซึ่ง Celerp ส่งต่อให้ผู้รับทางอีเมลและไม่เก็บไว้",
   "company_backup.handoff_status_company_opened": "เปิดบริษัทแล้ว",
   "company_backup.handoff_status_downloaded": "ดาวน์โหลดแล้ว",
   "company_backup.handoff_status_expired": "หมดอายุ",

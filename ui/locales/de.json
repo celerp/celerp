@@ -4082,6 +4082,7 @@
   "company_backup.reply_label": "Verifizierte E-Mail Ihres Celerp-Kontos",
   "company_backup.send_invalid": "Dieses Formular ist abgelaufen. Beginnen Sie eine neue Kopie.",
   "company_backup.send_title": "Unternehmenskopie senden",
+  "company_backup.send_privacy": "Celerp verschlüsselt diese Kopie auf Ihrem Computer und bewahrt nur die verschlüsselte Datei auf, bis der Link abläuft oder Sie ihn widerrufen. Der Schlüssel zum Öffnen steckt im Link, den Celerp per E-Mail an den Empfänger weiterleitet und nicht speichert.",
   "company_backup.handoff_status_company_opened": "Unternehmen geöffnet",
   "company_backup.handoff_status_downloaded": "Heruntergeladen",
   "company_backup.handoff_status_expired": "Abgelaufen",

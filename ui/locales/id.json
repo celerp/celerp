@@ -4082,6 +4082,7 @@
   "company_backup.reply_label": "Email akun Celerp terverifikasi Anda",
   "company_backup.send_invalid": "Formulir ini kedaluwarsa. Mulai salinan baru.",
   "company_backup.send_title": "Kirim salinan perusahaan",
+  "company_backup.send_privacy": "Celerp mengenkripsi salinan ini di komputer Anda dan hanya menyimpan file terenkripsi, sampai tautan kedaluwarsa atau Anda mencabutnya. Kunci untuk membukanya ada di tautan, yang diteruskan Celerp ke penerima lewat email dan tidak disimpan.",
   "company_backup.handoff_status_company_opened": "Perusahaan dibuka",
   "company_backup.handoff_status_downloaded": "Diunduh",
   "company_backup.handoff_status_expired": "Kedaluwarsa",

@@ -4082,6 +4082,7 @@
   "company_backup.reply_label": "Correo verificado de su cuenta Celerp",
   "company_backup.send_invalid": "Este formulario ha caducado. Inicie una copia nueva.",
   "company_backup.send_title": "Enviar copia de empresa",
+  "company_backup.send_privacy": "Celerp cifra esta copia en su equipo y solo guarda el archivo cifrado, hasta que el enlace caduque o usted lo revoque. La clave para abrirla está en el enlace, que Celerp entrega al destinatario por correo electrónico y no conserva.",
   "company_backup.handoff_status_company_opened": "Empresa abierta",
   "company_backup.handoff_status_downloaded": "Descargada",
   "company_backup.handoff_status_expired": "Caducada",

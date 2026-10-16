@@ -1058,6 +1058,7 @@ async def _send_page(request: Request, *, error: str | None = None, values: dict
             Div(Label(t("company_backup.note_label"), For="note", cls="form-label"),
                 Textarea(values.get("note", ""), id="note", name="note", maxlength="1500",
                          cls="form-input"), cls="form-group"),
+            P(t("company_backup.send_privacy"), cls="form-hint"),
             Button(t("company_backup.send_title"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action=SEND, id="copy-send-form", cls="auth-form",
         ),

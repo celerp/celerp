@@ -4082,6 +4082,7 @@
   "company_backup.reply_label": "Adresse vérifiée de votre compte Celerp",
   "company_backup.send_invalid": "Ce formulaire a expiré. Commencez une nouvelle copie.",
   "company_backup.send_title": "Envoyer une copie d’entreprise",
+  "company_backup.send_privacy": "Celerp chiffre cette copie sur votre ordinateur et ne conserve que le fichier chiffré, jusqu’à l’expiration du lien ou sa révocation. La clé qui l’ouvre se trouve dans le lien, que Celerp transmet au destinataire par e-mail sans le conserver.",
   "company_backup.handoff_status_company_opened": "Entreprise ouverte",
   "company_backup.handoff_status_downloaded": "Téléchargée",
   "company_backup.handoff_status_expired": "Expirée",

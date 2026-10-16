@@ -4082,6 +4082,7 @@
   "company_backup.reply_label": "Email tài khoản Celerp đã xác minh",
   "company_backup.send_invalid": "Biểu mẫu đã hết hạn. Hãy bắt đầu bản sao mới.",
   "company_backup.send_title": "Gửi bản sao công ty",
+  "company_backup.send_privacy": "Celerp mã hóa bản sao này trên máy tính của bạn và chỉ giữ tệp đã mã hóa, cho đến khi liên kết hết hạn hoặc bạn thu hồi. Khóa để mở nằm trong liên kết, Celerp chuyển liên kết này cho người nhận qua email và không lưu lại.",
   "company_backup.handoff_status_company_opened": "Đã mở công ty",
   "company_backup.handoff_status_downloaded": "Đã tải xuống",
   "company_backup.handoff_status_expired": "Hết hạn",

@@ -4082,6 +4082,7 @@
   "company_backup.reply_label": "Your verified Celerp account email",
   "company_backup.send_invalid": "This form expired. Start a new company copy.",
   "company_backup.send_title": "Send company copy",
+  "company_backup.send_privacy": "Celerp encrypts this copy on your computer and keeps only the encrypted file, until the link expires or you revoke it. The key that opens it is in the link, which Celerp passes to the recipient by email in transit and does not keep.",
   "company_backup.handoff_status_company_opened": "Company opened",
   "company_backup.handoff_status_downloaded": "Downloaded",
   "company_backup.handoff_status_expired": "Expired",
