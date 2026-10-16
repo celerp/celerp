@@ -128,3 +128,14 @@ def test_the_program_ends_when_the_launcher_is_killed():
 def _running(pid: int) -> bool:
     listed = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
     return str(pid) in listed
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="restricted tokens are a Windows API")
+def test_the_program_can_use_the_private_folders_it_creates():
+    # The servers run restricted and make owner-only temp folders (tempfile.mkdtemp,
+    # used by backup and restore); the restricted token must own what it creates.
+    probe = ("import os, tempfile; d = tempfile.mkdtemp(); p = os.path.join(d, 'x');"
+             " open(p, 'w').write('ok'); print(open(p).read())")
+    result = subprocess.run([sys.executable, "-I", launch.__file__, sys.executable, "-I", "-c", probe],
+                            capture_output=True, text=True)
+    assert (result.returncode, result.stdout) == (0, "ok\n"), result.stderr
