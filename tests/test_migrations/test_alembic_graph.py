@@ -41,7 +41,8 @@ RELEASE_HEAD = "o2d3e4f5a6b7"
 # What this release adds on top of it, oldest first: session companies, then the
 # payment revisions, then per-company modules for companies from 2.5, then the invoice
 # an unmatched payment is recorded on, then cash flow sections, notice translations and
-# generated account codes, then import reversibility, then per-user notice reads.
+# generated account codes, then import reversibility, then per-user notice reads,
+# then company peer grants, then removing per-user API keys.
 RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1", "t7i8j9k0l1m2",
                  "u8j9k0l1m2n3", "c7f1a2b3d4e5", "d8e9f0a1b2c3", "e9f0a1b2c3d4", "v0m1n2o3p4q5",
                  "w1n2o3p4q5r6", "x2p3q4r5s6t7", "y3q4r5s6t7u8"]

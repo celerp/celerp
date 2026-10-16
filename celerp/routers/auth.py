@@ -320,13 +320,6 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
     )
 
 
-@router.post("/api-key")
-async def create_api_key(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    user.api_key = str(uuid.uuid4())
-    await session.commit()
-    return {"api_key": user.api_key}
-
-
 @router.get("/my-companies")
 async def my_companies(
     user: User = Depends(get_current_user),
