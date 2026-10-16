@@ -194,7 +194,11 @@ FX_LOCKED_THROUGH = date(2026, 1, 31)
 
 def fx_objects() -> list[Obj]:
     """USD base with EUR customer, supplier and bank, books locked through 01-31. Rates are
-    USD per EUR unless inverse."""
+    USD per EUR unless inverse. Every foreign record type that settles or posts: invoices and
+    bills at their own rates, a receipt and a payment at a different rate, a credit and a debit
+    note applied at a rate other than their invoice's, a transfer from the euro bank to the
+    base bank, and a euro journal with no rate of its own. Figures are worked out in
+    checkpoints.json under "fx"."""
     eur = k("EUR")
     cust, supp, ebank = k("ECUST"), k("ESUPP"), k("EBANK")
     return [
@@ -219,6 +223,29 @@ def fx_objects() -> list[Obj]:
         ]}),
         obj("PurchaseInvoice", "BILLE1", {1: date(2026, 2, 15), 2: "BILL-E1", 3: supp, 61: D("0.8"), 62: True, 23: [
             {2: k("PURCH"), 18: D("1"), 19: D("80")},
+        ]}),
+        obj("SalesInvoice", "INVE2", {1: date(2026, 2, 20), 2: "INV-E2", 3: cust, 64: D("1.25"), 49: [
+            {2: k("SALES"), 17: "Part 1", 18: D("1"), 19: D("10.01")},
+            {2: k("SALES"), 17: "Part 2", 18: D("1"), 19: D("10.01")},
+            {2: k("SALES"), 17: "Part 3", 18: D("1"), 19: D("10.01")},
+        ]}),
+        obj("CreditNote", "CNE1", {1: date(2026, 2, 25), 2: "CN-E1", 3: cust, 8: k("INVE2"), 30: D("1.28"), 22: [
+            {2: k("SALES"), 17: "Returned part", 18: D("1"), 19: D("10")},
+        ]}),
+        obj("Payment", "PE1", {1: date(2026, 3, 1), 2: "P-E1", 3: PAID_BY_SUPPLIER, 5: supp, 7: ebank, 46: D("1.27"), 11: [
+            {2: AP, 7: supp, 8: k("BILLE1"), 18: D("80")},
+        ]}),
+        obj("PurchaseInvoice", "BILLE2", {1: date(2026, 3, 2), 2: "BILL-E2", 3: supp, 61: D("1.26"), 23: [
+            {2: k("PURCH"), 18: D("1"), 19: D("40")},
+        ]}),
+        obj("DebitNote", "DNE1", {1: date(2026, 3, 5), 2: "DN-E1", 3: supp, 6: k("BILLE2"), 22: D("1.3"), 16: [
+            {2: k("PURCH"), 17: "Short delivery", 18: D("1"), 19: D("10")},
+        ]}),
+        obj("InterAccountTransfer", "IATE1", {1: date(2026, 3, 10), 6: "T-E1", 2: ebank, 8: D("20"), 3: k("MBANK"),
+                                              9: D("26")}),
+        obj("JournalEntry", "JEE1", {1: date(2026, 3, 15), 2: "JE-E1", 3: "Euro bank adjustment", 8: eur, 14: [
+            {1: CASH_AT_BANK, 29: ebank, 13: D("10")},
+            {1: k("SALES"), 14: D("10")},
         ]}),
     ]
 

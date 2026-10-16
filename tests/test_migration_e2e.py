@@ -311,6 +311,58 @@ async def test_manager_cutover_reconciles_synthetic_fixture(real_engine, monkeyp
     assert {row: Decimal(held[row]) if held.get(row) is not None else None for row in expected} == expected
 
 
+@pytest.mark.parametrize("mode", ["full_history", "cutover"])
+async def test_manager_foreign_currency_full_history_and_cutover(real_engine, monkeypatch, tmp_path, mode):
+    """Euro invoices, bills, notes, a receipt, a payment, a transfer and a journal migrate at
+    their own rates: Celerp posts the same exchange differences the source books, documents
+    keep their euro figures, and the company ends at the source's position either way."""
+    from decimal import Decimal
+
+    from fixtures.manager_io.support import CHECKPOINTS, FX, expected_rows, ref
+
+    fixture = CHECKPOINTS["fx"]
+    section = fixture[mode]
+    decisions = {"mode": mode, **({"cutover_date": section["cutover_date"]} if mode == "cutover" else {})}
+    run, rejected = await migrate(real_engine, FX.read_bytes(), FX.name, decisions, monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    held = {(r["check"], r["key"], r["currency"]): r["celerp"] for r in run.reconciliation["rows"]}
+    expected = {(check, key, currency): figure for check, key, currency, figure in expected_rows(section, "USD")}
+    assert {row: Decimal(held[row]) if held.get(row) is not None else None for row in expected} == expected
+
+    maps = await _maps(real_engine, run)
+    target = {m.source_external_id: m.target_entity_id for m in maps if m.target_entity_type in ("doc", "journal_entry")}
+    source_account = {m.target_entity_id: m.source_external_id for m in maps if m.target_entity_type == "account"}
+    docs = await _projections(real_engine, run, "doc")
+    invoice = docs[target[ref("INVE2")]]
+    assert (invoice["currency"], Decimal(str(invoice["conversion_rate"])), Decimal(str(invoice["total"]))) == (
+        "EUR", Decimal("1.25"), Decimal("30.03"))
+    entries = await _projections(real_engine, run, "journal_entry")
+
+    def fx_lines(source_id: str) -> dict[str, tuple]:
+        return {source_account[ln["account"]]: (Decimal(str(ln.get("fx_debit") or 0)) - Decimal(str(ln.get("fx_credit") or 0)),
+                                                ln.get("fx_currency"))
+                for ln in entries[target[source_id]]["entries"] if ln.get("fx_currency")}
+
+    if mode == "full_history":
+        [(amount, rate)] = section["euro_journal"].values()
+        [line] = [ln for ln in entries[target[ref("JEE1")]]["entries"] if source_account[ln["account"]] == ref("EBANK")]
+        assert (Decimal(str(line["fx_debit"])), line["fx_currency"], Decimal(str(line["fx_rate"]))) == (
+            Decimal(amount), "EUR", Decimal(rate))
+    else:
+        mapped = {m.source_external_id for m in maps}
+        assert {ref(label) for label in section["native"]} <= mapped
+        assert not {ref(label) for label in section["closed"]} & mapped
+        opening = f"opening:{section['cutover_date']}"
+        lines: dict[str, Decimal] = {}
+        for line in entries[target[opening]]["entries"]:
+            account = source_account[line["account"]]
+            lines[account] = lines.get(account, Decimal(0)) + Decimal(str(line["debit"])) - Decimal(str(line["credit"]))
+        assert lines == {ref(label): Decimal(amount) for label, amount in section["opening_journal"].items()}
+        assert fx_lines(opening) == {ref(label): (Decimal(amount), currency)
+                                     for label, (currency, amount) in section["opening_native"].items()}
+
+
 async def test_manager_on_account_money_reaches_the_customer_statement(real_engine, monkeypatch, tmp_path):
     """A receipt line naming only the customer is money on account: it lands once, as a journal
     with the customer on the receivable line, and never as a payment on a document. A mixed

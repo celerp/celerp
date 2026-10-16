@@ -365,12 +365,92 @@
     ]
   },
   "fx": {
-    "blocked": {
-      "SalesInvoice (foreign currency)": 1,
-      "PurchaseInvoice (foreign currency)": 1,
-      "Receipt (foreign currency)": 1
+    "_comment": "specs.fx_objects. Base is each record's own rate applied to its native amounts, line by line on the running total so the lines sum to the rounded document total; a record with no rate of its own takes the latest exchange rate on or before its date. A receipt or payment relieves the document at the document's rate and moves the bank at its own; a note relieves its invoice or bill at that document's rate; each difference is on the exchange gains and losses account. INVE1 120.00, RE1 bank 125.00 FX -5.00, BILLE1 100.00, INVE2 12.51 + 12.52 + 12.51 = 37.54, CNE1 12.80 relieving 12.50 FX -0.30, PE1 bank -101.60 relieving 100.00 FX 1.60, BILLE2 50.40, DNE1 13.00 relieving 12.60 FX 0.40, IATE1 26.00 from the base side, JEE1 10 EUR at 1.2 = 12.00. Unrealized differences revalue foreign bank and party balances at the latest rate and are reported, not posted.",
+    "lock_date": "2026-01-31",
+    "summary": {
+      "realized": "-3.30",
+      "unrealized": {
+        "as_of": "2026-03-31",
+        "rates": {"EUR": "1.3"},
+        "entries": {"EBANK": "3.60", "ECUST": "1.00", "ESUPP": "-1.20"},
+        "net": "3.40"
+      }
     },
-    "lock_date": "2026-01-31"
+    "full_history": {
+      "debits_equal_credits": "0.00",
+      "trial_balance": {
+        "EBANK": "9.40",
+        "MBANK": "26.00",
+        "SALES": "-156.74",
+        "PURCH": "137.40",
+        "@BalanceSheetAccountsReceivableAccount": "25.04",
+        "@BalanceSheetAccountsPayableAccount": "-37.80",
+        "@BalanceSheetTaxPayableAccount": "0.00",
+        "@BalanceSheetRetainedEarningsAccount": "0.00",
+        "@BalanceSheetInventoryOnHandAccount": "0.00",
+        "@ProfitAndLossStatementAccountCurrencyGainsLosses": "-3.30"
+      },
+      "ar_document_residual": "0.00",
+      "ap_document_residual": "0.00",
+      "ar_control": {"@BalanceSheetAccountsReceivableAccount": "25.04"},
+      "ap_control": {"@BalanceSheetAccountsPayableAccount": "-37.80"},
+      "ar_by_customer": {"ECUST": "25.04"},
+      "ap_by_supplier": {"ESUPP": "-37.80"},
+      "bank_cash": {"EBANK": ["USD", "9.40"], "MBANK": ["USD", "26.00"]},
+      "tax_control": {"@BalanceSheetTaxPayableAccount": "0.00"},
+      "document_count": {"invoice": ["EUR", 2], "credit_note": ["EUR", 1], "bill": ["EUR", 2]},
+      "document_total": {"invoice": ["EUR", "130.03"], "credit_note": ["EUR", "10.00"], "bill": ["EUR", "120.00"]},
+      "document_status": {
+        "invoice:paid": 1,
+        "invoice:awaiting_payment": 1,
+        "credit_note:paid": 1,
+        "bill:paid": 1,
+        "bill:awaiting_payment": 1
+      },
+      "settlement_allocation": {"receipt": ["EUR", "100.00"], "payment": ["EUR", "80.00"]},
+      "euro_journal": {"EBANK": ["10.00", "1.2"]}
+    },
+    "cutover": {
+      "cutover_date": "2026-02-28",
+      "debits_equal_credits": "0.00",
+      "trial_balance": {
+        "EBANK": "9.40",
+        "MBANK": "26.00",
+        "SALES": "-156.74",
+        "PURCH": "137.40",
+        "@BalanceSheetAccountsReceivableAccount": "25.04",
+        "@BalanceSheetAccountsPayableAccount": "-37.80",
+        "@BalanceSheetTaxPayableAccount": "0.00",
+        "@BalanceSheetRetainedEarningsAccount": "0.00",
+        "@BalanceSheetInventoryOnHandAccount": "0.00",
+        "@ProfitAndLossStatementAccountCurrencyGainsLosses": "-3.30"
+      },
+      "ar_document_residual": "0.00",
+      "ap_document_residual": "0.00",
+      "ar_control": {"@BalanceSheetAccountsReceivableAccount": "25.04"},
+      "ap_control": {"@BalanceSheetAccountsPayableAccount": "-37.80"},
+      "ar_by_customer": {"ECUST": "25.04"},
+      "ap_by_supplier": {"ESUPP": "-37.80"},
+      "bank_cash": {"EBANK": ["USD", "9.40"], "MBANK": ["USD", "26.00"]},
+      "tax_control": {"@BalanceSheetTaxPayableAccount": "0.00"},
+      "document_count": {"invoice": ["EUR", 1], "credit_note": ["EUR", 1], "bill": ["EUR", 2]},
+      "document_total": {"invoice": ["EUR", "30.03"], "credit_note": ["EUR", "10.00"], "bill": ["EUR", "120.00"]},
+      "document_status": {
+        "invoice:awaiting_payment": 1,
+        "credit_note:paid": 1,
+        "bill:paid": 1,
+        "bill:awaiting_payment": 1
+      },
+      "settlement_allocation": {"payment": ["EUR", "80.00"]},
+      "opening_journal": {
+        "EBANK": "125.00",
+        "SALES": "-120.00",
+        "@ProfitAndLossStatementAccountCurrencyGainsLosses": "-5.00"
+      },
+      "opening_native": {"EBANK": ["EUR", "100.00"]},
+      "native": ["BILLE1", "INVE2", "CNE1", "PE1", "BILLE2", "DNE1", "IATE1", "JEE1"],
+      "closed": ["INVE1", "RE1"]
+    }
   },
   "inventory": {
     "_comment": "specs.inventory_lifecycle_objects, worked by hand in its docstring. Moves are (source type, movement, date, quantity, value) in the order stock moved; links are each document's physical records as (movement, date, line, quantity, value).",
@@ -418,7 +498,11 @@
       "basic.company"
     ],
     "ForeignCurrency": [
-      "fx.blocked"
+      "fx.full_history.bank_cash",
+      "fx.full_history.document_total"
+    ],
+    "ExchangeRate": [
+      "fx.full_history.euro_journal"
     ],
     "LockDate": [
       "fx.lock_date"
@@ -480,30 +564,35 @@
     ],
     "SalesInvoice": [
       "basic.full_history.documents",
-      "fx.blocked"
+      "fx.full_history.document_total"
     ],
     "PurchaseInvoice": [
       "basic.full_history.documents",
-      "fx.blocked"
+      "fx.full_history.document_total"
     ],
     "CreditNote": [
-      "basic.full_history.documents"
+      "basic.full_history.documents",
+      "fx.full_history.document_total"
     ],
     "DebitNote": [
-      "basic.full_history.documents"
+      "basic.full_history.documents",
+      "fx.full_history.trial_balance"
     ],
     "Receipt": [
       "basic.full_history.settlement_allocation",
-      "fx.blocked"
+      "fx.full_history.settlement_allocation"
     ],
     "Payment": [
-      "basic.full_history.settlement_allocation"
+      "basic.full_history.settlement_allocation",
+      "fx.full_history.settlement_allocation"
     ],
     "InterAccountTransfer": [
-      "basic.full_history.bank_cash"
+      "basic.full_history.bank_cash",
+      "fx.full_history.bank_cash"
     ],
     "JournalEntry": [
-      "basic.full_history.trial_balance"
+      "basic.full_history.trial_balance",
+      "fx.full_history.euro_journal"
     ],
     "Attachment": [
       "basic.attachments"

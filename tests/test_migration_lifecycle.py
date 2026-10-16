@@ -168,10 +168,10 @@ async def test_cutover_date_and_opening_scope_validation(migration_env):
     assert (chosen.mode, chosen.cutover_date) == ("cutover", date(2026, 2, 1))
     assert validate_decisions(scan, {"mode": "full_history", "cutover_date": "2026-02-01"}).cutover_date is None
 
-    # An open-document snapshot the source cannot carry at cutover is refused with its reason.
+    # A business with foreign currency balances can cut over like any other.
     fx = await _manager_scan(FX)
-    errors = _field_errors(lambda: validate_decisions(fx, {"mode": "cutover", "cutover_date": "2026-02-01"}))
-    assert "foreign currency" in errors["cutover_date"]
+    chosen = validate_decisions(fx, {"mode": "cutover", "cutover_date": "2026-02-28"})
+    assert (chosen.mode, chosen.cutover_date) == ("cutover", date(2026, 2, 28))
 
     # Historical effects are carried once: before the cutover only open documents and their
     # settlements survive, and balances arrive as openings dated at the cutover.
