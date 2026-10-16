@@ -326,3 +326,52 @@ async def test_correct_an_asset_then_the_corrections_pages_and_report(owner_ui):
     apply = await owner_ui.get(f"/fixed-assets/classes/{vehicles['id']}/apply")
     assert apply.status_code == 200 and t("fixed_assets.apply_to_assets_hint", name="Vehicles") in apply.text
     assert "fixed_assets." not in apply.text
+
+
+async def test_dispose_from_the_asset_page_and_undo_it(owner_ui):
+    car = await _managed_car(owner_ui)
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert f'href="/fixed-assets/assets/{car}/dispose"' in page.text
+
+    form = await owner_ui.get(f"/fixed-assets/assets/{car}/dispose")
+    assert form.status_code == 200 and t("fixed_assets.dispose_hint") in form.text
+    assert 'name="percent"' in form.text and t("fixed_assets.disposal_reason.donated") in form.text
+    assert "fixed_assets." not in form.text
+
+    review = await owner_ui.post("/fixed-assets/op/dispose/review", data={
+        "asset_id": car, "date": "2026-10-05", "reason": "scrapped", "idempotency_key": str(uuid.uuid4())})
+    assert t("fixed_assets.gain_or_loss") in review.text and "fixed_assets." not in review.text
+    href = await _review_and_confirm(owner_ui, "dispose", {"asset_id": car, "date": "2026-10-05",
+                                                           "reason": "scrapped"})
+    assert href == f"/fixed-assets/assets/{car}"
+    page = await owner_ui.get(href)
+    assert t("fixed_assets.disposal_title") in page.text and t("fixed_assets.status.disposed") in page.text
+    assert t("fixed_assets.movement.disposal") in page.text and t("fixed_assets.undo_disposal") in page.text
+    assert f'href="/fixed-assets/assets/{car}/dispose"' not in page.text, "a disposed asset offers no second disposal"
+
+    await _review_and_confirm(owner_ui, "undo-disposal", {"asset_id": car})
+    page = await owner_ui.get(href)
+    assert t("fixed_assets.disposal_title") not in page.text and t("fixed_assets.status.active") in page.text
+
+
+async def test_dispose_of_several_from_the_register(owner_ui):
+    car = await _managed_car(owner_ui)
+    vehicles = next(c for c in (await owner_ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == "Vehicles")
+    van = (await _review_and_confirm(owner_ui, "add-asset", {
+        "kind": "contributed", "name": "Van", "class_id": vehicles["id"], "available_date": "2026-08-10",
+        "cost": "8000", "credit_account": "3100"})).rsplit("/", 1)[1]
+    register = await owner_ui.get("/fixed-assets")
+    assert 'class="bulk-select"' in register.text and "/fixed-assets/dispose/selected" in register.text
+
+    chosen = await owner_ui.post("/fixed-assets/dispose/selected", data={"selected": [car, van]})
+    target = chosen.headers["HX-Redirect"]
+    assert target.startswith("/fixed-assets/dispose?ids=")
+    form = await owner_ui.get(target)
+    assert form.status_code == 200 and t("fixed_assets.dispose_several_title", n=2) in form.text
+    assert 'name="percent"' not in form.text and "Van" in form.text and "fixed_assets." not in form.text
+
+    href = await _review_and_confirm(owner_ui, "dispose", {"asset_ids": [car, van], "date": "2026-10-05",
+                                                           "reason": "donated"})
+    assert href == "/fixed-assets"
+    for asset_id in (car, van):
+        assert (await owner_ui.api.get(f"{API}/assets/{asset_id}")).json()["status"] == "disposed"

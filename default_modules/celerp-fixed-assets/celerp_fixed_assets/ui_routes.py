@@ -8,6 +8,8 @@ GET  /fixed-assets/intake/line          What to do with one line
 GET  /fixed-assets/assets/new           Add an asset by hand
 GET  /fixed-assets/assets/{id}          One asset: details, figures, what holds it, sources, corrections, movements
 GET  /fixed-assets/assets/{id}/correct  Correct an asset: depreciation settings, an error, or a source line
+GET  /fixed-assets/assets/{id}/dispose  Dispose of an asset, in whole or part
+GET  /fixed-assets/dispose?ids=         Dispose of the assets ticked on the register, each in whole
 GET  /fixed-assets/corrections          Every correction newest first, and those waiting to be applied
 GET  /fixed-assets/corrections/{id}     One correction: what it changed and posted; apply, withdraw or undo it
 GET  /fixed-assets/classes/{id}/apply   Apply a class's depreciation settings to the assets on older ones
@@ -36,7 +38,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.operation_key import FIELD as OP_KEY_FIELD, operation_key_input
 from ui.components.shell import base_shell, page_header, page_title, toast_header
-from ui.components.table import (EMPTY, breadcrumbs, display_cell, editable_cell, empty_mark, empty_state_cta,
+from ui.components.table import (EMPTY, breadcrumbs, bulk_toolbar, display_cell, editable_cell, empty_mark, empty_state_cta,
                                  fmt_money, pagination, searchable_select, _SEARCHABLE_THRESHOLD)
 from ui.config import get_token as _token
 from ui.i18n import refusal_text, t
@@ -138,6 +140,10 @@ def _preview(action: str, result: dict, currency: str) -> FT:
                            Tbody(*rows), cls="data-table"))
     if result.get("classification"):
         parts += _correction_preview(result, currency)
+    if "gain_or_loss" in result:
+        parts.append(Table(Tbody(*[Tr(Th(t(f"fixed_assets.{k}")), _money_td(result[k], currency))
+                                   for k in ("depreciation", "carrying_amount", "gain_or_loss")]),
+                           cls="data-table detail-table"))
     journals = result.get("journals") or []
     parts += [_lines_table(je.get("lines") or [], currency) for je in journals]
     for month in result.get("months") or []:
@@ -322,6 +328,17 @@ def _correct_body(form) -> dict:
     return {k: v for k, v in body.items() if v is not None}
 
 
+def _dispose_body(form) -> dict:
+    """A disposal from the Dispose form: when, why, and for one asset what share of it."""
+    body = {"date": str(form.get("date") or ""), "reason": str(form.get("reason") or ""),
+            "note": str(form.get("note") or "").strip() or None,
+            "percent": _amount(form, "percent"), "quantity": _amount(form, "quantity")}
+    ids = form.getlist("asset_ids")
+    if ids:
+        body["asset_ids"] = [str(i) for i in ids]
+    return {k: v for k, v in body.items() if v is not None}
+
+
 # action -> (API path for the form, body from the form, where the done result leads)
 _OPERATIONS = {
     "register": (lambda f: "/register", _register_body,
@@ -350,6 +367,11 @@ _OPERATIONS = {
     "apply-class": (lambda f: f"/classes/{_q(f, 'class_id')}/apply-to-assets",
                     lambda f: {k: v for k, v in {"effective_date": _month_start(f, "effective_month")}.items() if v},
                     lambda r, f: "/fixed-assets/corrections"),
+    "dispose": (lambda f: f"/assets/{_q(f, 'asset_id')}/dispose" if f.get("asset_id") else "/dispose",
+                _dispose_body,
+                lambda r, f: f"/fixed-assets/assets/{f.get('asset_id')}" if f.get("asset_id") else "/fixed-assets"),
+    "undo-disposal": (lambda f: f"/assets/{_q(f, 'asset_id')}/undo-disposal", lambda f: {},
+                      lambda r, f: f"/fixed-assets/assets/{f.get('asset_id')}"),
 }
 
 
@@ -391,16 +413,72 @@ def _class_names(classes: list[dict]) -> dict[str, str]:
 
 
 def _register_table(items: list[dict], classes: dict[str, str], currency: str) -> FT:
-    rows = [Tr(Td(A(a["number"], href=f"/fixed-assets/assets/{a['id']}")), Td(_text(a.get("name"))),
+    """The asset list, each row ticked to dispose of several at once from the toolbar above it.
+    Every row can be ticked: an asset that cannot be disposed of is refused at review with
+    the reason, rather than its box going missing."""
+    rows = [Tr(Td(Input(type="checkbox", cls="bulk-select", name="selected", value=a["id"]), cls="col-checkbox"),
+               Td(A(a["number"], href=f"/fixed-assets/assets/{a['id']}")), Td(_text(a.get("name"))),
                Td(_text(classes.get(a.get("class_id")))), Td(_text(a.get("available_date"))),
                _money_td(a.get("cost"), currency), _money_td(a.get("accumulated_depreciation"), currency),
-               _money_td(a.get("nbv"), currency), Td(t(f"fixed_assets.status.{a.get('status')}")))
+               _money_td(a.get("nbv"), currency), Td(t(f"fixed_assets.status.{a.get('status')}")), cls="data-row")
             for a in items]
-    return Table(Thead(Tr(Th(t("fixed_assets.number")), Th(t("fixed_assets.name")), Th(t("fixed_assets.class")),
+    return Table(Thead(Tr(Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")),
+                             cls="col-checkbox"),
+                          Th(t("fixed_assets.number")), Th(t("fixed_assets.name")), Th(t("fixed_assets.class")),
                           Th(t("fixed_assets.available_date")), _money_th(t("fixed_assets.cost")),
                           _money_th(t("fixed_assets.accumulated_depreciation")), _money_th(t("fixed_assets.nbv")),
                           Th(t("fixed_assets.status")))),
                  Tbody(*rows), cls="data-table", id="fa-register")
+
+
+def _register_toolbar() -> FT:
+    return bulk_toolbar("fa-register", [{"value": "dispose", "label": t("fixed_assets.dispose"), "method": "post",
+                                         "url": "/fixed-assets/dispose/selected", "swap": "none"}])
+
+
+def _disposal_fields(asset: dict | None) -> list[FT]:
+    """When and why an asset leaves; for one asset, the share of it that does (blank for all)."""
+    from celerp_fixed_assets.disposal import REASONS
+
+    fields = [_field(t("fixed_assets.disposal_date"), _input("date", date.today().isoformat(), type_="date",
+                                                             required=True)),
+              _field(t("fixed_assets.reason"),
+                     Select(*[Option(t(f"fixed_assets.disposal_reason.{r}"), value=r) for r in REASONS],
+                            name="reason", cls="form-input")),
+              _field(t("fixed_assets.note"), _input("note"), t("fixed_assets.disposal_note_hint"))]
+    if asset is None:
+        return fields
+    if float(asset.get("quantity") or 1) > 1:
+        share = _field(t("fixed_assets.quantity_disposed"),
+                       _input("quantity", type_="number", step="any", min="0", max=str(asset["quantity"])),
+                       t("fixed_assets.quantity_disposed_hint", quantity=asset["quantity"]))
+    else:
+        share = _field(t("fixed_assets.percent_disposed"), _input("percent", type_="number", step="any", min="0",
+                                                                  max="100"), t("fixed_assets.percent_disposed_hint"))
+    return [*fields, share]
+
+
+def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | str:
+    """The latest disposal still standing, what it posted, and the form that undoes it."""
+    undone = {m.get("reverses") for m in movements}
+    live = [m for m in movements if m.get("operation") == "disposal" and m["id"] not in undone]
+    if not live:
+        return ""
+    latest = live[-1]
+    asset_id = quote(asset["id"], safe=":")
+    rows = [(t("fixed_assets.disposal_date"), _text(latest.get("effective_date"))),
+            (t("fixed_assets.reason"), t(f"fixed_assets.disposal_reason.{latest.get('reason')}")),
+            (t("fixed_assets.note"), _text(latest.get("note"))),
+            (t("fixed_assets.gain_or_loss"), _money(latest.get("gain_or_loss"), currency)),
+            (t("fixed_assets.journal"), A(t("fixed_assets.journal"),
+                                          href=f"/accounting?{urlencode({'q': latest['journal_id']})}")
+             if latest.get("journal_id") else empty_mark())]
+    undo = _op_form("undo-disposal", Input(type="hidden", name="asset_id", value=asset["id"]),
+                    P(t("fixed_assets.undo_disposal_hint"), cls="settings-hint"),
+                    review_label=t("fixed_assets.undo_disposal"))
+    return Div(H2(t("fixed_assets.disposal_title"), cls="section-title"),
+               Table(Tbody(*[Tr(Th(label), Td(value)) for label, value in rows]), cls="data-table detail-table"),
+               undo, cls="detail-card section-card", id=f"fa-disposal-{asset_id}")
 
 
 def _filters(q: str, class_id: str, classes: list[dict]) -> FT:
@@ -869,7 +947,7 @@ def setup_ui_routes(app) -> None:
         elif not found["items"]:
             body = P(t("fixed_assets.no_match"), cls="form-hint")
         else:
-            body = Div(_register_table(found["items"], _class_names(classes), currency),
+            body = Div(_register_toolbar(), _register_table(found["items"], _class_names(classes), currency),
                        pagination(page, found["total"], per_page, "/fixed-assets", urlencode(params)))
         return await _page(request, page_header(t("fixed_assets.title"), *actions),
                            P(t("fixed_assets.register_hint"), cls="settings-hint"),
@@ -1083,9 +1161,12 @@ def setup_ui_routes(app) -> None:
             extra.append(_skips_card(asset))
         if asset.get("status") == "active" or fixes:
             extra.append(_corrections_card(asset, fixes))
-        title =f"{asset['number']} {asset.get('name') or ''}".strip()
-        return await _page(request, crumbs, page_header(title),
+        title = f"{asset['number']} {asset.get('name') or ''}".strip()
+        actions = (A(t("fixed_assets.dispose"), href=f"/fixed-assets/assets/{asset_id}/dispose",
+                     cls="btn btn--secondary"),) if asset.get("status") == "active" else ()
+        return await _page(request, crumbs, page_header(title, *actions),
                            _exception_card(asset, currency) if asset.get("exception") else "",
+                           _disposal_card(asset, movements, currency),
                            Div(_details_card(asset),
                                _figures_card(asset, _class_names(classes).get(asset.get("class_id")), currency),
                                cls="detail-grid"),
@@ -1268,6 +1349,52 @@ def setup_ui_routes(app) -> None:
                         Input(type="hidden", name="field", value=field), *fields, ask)
         title = t("fixed_assets.correct_title", number=asset["number"])
         return await _page(request, crumbs, page_header(title), tabs, form, title_key="fixed_assets.correct")
+
+    @app.get("/fixed-assets/assets/{asset_id}/dispose")
+    async def dispose_page(request: Request, asset_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            await _context(token)
+            asset = await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}")
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.dispose")
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
+                              (asset["number"], f"/fixed-assets/assets/{asset_id}"), (t("fixed_assets.dispose"), None)])
+        form = _op_form("dispose", Input(type="hidden", name="asset_id", value=asset_id),
+                        P(t("fixed_assets.dispose_hint"), cls="settings-hint"), *_disposal_fields(asset))
+        return await _page(request, crumbs, page_header(t("fixed_assets.dispose_title", number=asset["number"])),
+                           form, title_key="fixed_assets.dispose")
+
+    @app.post("/fixed-assets/dispose/selected")
+    async def dispose_selected(request: Request):
+        """The register's ticked rows, carried to the disposal form in the URL."""
+        ids = [str(i) for i in (await request.form()).getlist("selected")]
+        return Response(headers={"HX-Redirect": f"/fixed-assets/dispose?{urlencode({'ids': ','.join(ids)})}"})
+
+    @app.get("/fixed-assets/dispose")
+    async def dispose_several_page(request: Request, ids: str = ""):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        chosen = [i for i in ids.split(",") if i]
+        try:
+            _, currency = await _context(token)
+            assets = [await api.fixed_assets_get(token, f"/assets/{quote(i, safe=':')}") for i in chosen]
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.dispose")
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.dispose"), None)])
+        listed = Table(Thead(Tr(Th(t("fixed_assets.number")), Th(t("fixed_assets.name")),
+                                _money_th(t("fixed_assets.nbv")))),
+                       Tbody(*[Tr(Td(A(a["number"], href=f"/fixed-assets/assets/{a['id']}")), Td(_text(a.get("name"))),
+                                  _money_td(a.get("nbv"), currency)) for a in assets]), cls="data-table")
+        form = _op_form("dispose", *[Input(type="hidden", name="asset_ids", value=a["id"]) for a in assets],
+                        P(t("fixed_assets.dispose_several_hint"), cls="settings-hint"), listed,
+                        *_disposal_fields(None))
+        return await _page(request, crumbs, page_header(t("fixed_assets.dispose_several_title", n=len(assets))),
+                           form if assets else P(t("label.select_rows_first"), cls="form-hint"),
+                           title_key="fixed_assets.dispose")
 
     @app.post("/fixed-assets/assets/{asset_id}/request-correction")
     async def request_correction(request: Request, asset_id: str):
