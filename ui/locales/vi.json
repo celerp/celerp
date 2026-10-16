@@ -33,6 +33,7 @@
   "accountant_access.direction_warning": "Các quyền này chỉ cho phép nhận dữ liệu từ công ty gửi được chỉ định, không cấp quyền truy cập người dùng nói chung. Không dùng đồng bộ hai chiều thay cho việc cùng làm việc trên một sổ cái chung.",
   "accountant_access.documents": "Hóa đơn dịch vụ và hóa đơn chi phí, cùng các khoản thanh toán, hoàn tiền và tệp đính kèm (chứng từ tồn kho cần bản sao công ty hoặc quyền truy cập chung)",
   "accountant_access.expires": "Hết hạn",
+  "accountant_access.inventory": "Kiểm đếm tồn kho",
   "accountant_access.give_code": "Sao chép mã này và gửi cho kế toán của bạn. Kế toán dán mã để cấp khóa cho công ty này, không ai phải gõ ID công ty.",
   "accountant_access.invalid": "Kiểm tra mã ghép nối và các quyền đã chọn.",
   "accountant_access.issue": "Tạo khóa công ty",

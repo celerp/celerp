@@ -33,6 +33,7 @@
   "accountant_access.direction_warning": "Diese Berechtigungen erlauben nur den Empfang von Daten des benannten Absenderunternehmens. Sie gewähren keinen allgemeinen Benutzerzugriff. Nutzen Sie keine bidirektionale Synchronisierung als Ersatz für die Arbeit in einem gemeinsamen Hauptbuch.",
   "accountant_access.documents": "Dienstleistungsrechnungen und Ausgabenbelege mit Zahlungen, Erstattungen und Anhängen (Lagerbelege erfordern eine Unternehmenskopie oder gemeinsamen Zugriff)",
   "accountant_access.expires": "Läuft ab",
+  "accountant_access.inventory": "Bestandszählungen",
   "accountant_access.give_code": "Kopieren Sie diesen Code und senden Sie ihn an Ihren Buchhalter. Er fügt ihn ein, um einen Schlüssel für dieses Unternehmen auszustellen, sodass niemand eine Unternehmens-ID eintippen muss.",
   "accountant_access.invalid": "Prüfen Sie den Kopplungscode und die ausgewählten Berechtigungen.",
   "accountant_access.issue": "Unternehmensschlüssel erstellen",

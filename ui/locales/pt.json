@@ -33,6 +33,7 @@
   "accountant_access.direction_warning": "Estas permissões permitem apenas receber dados da empresa remetente indicada e não concedem acesso geral como usuário. Não use a sincronização bidirecional como alternativa a trabalhar em um único livro contábil compartilhado.",
   "accountant_access.documents": "Faturas de serviços e despesas, com pagamentos, reembolsos e anexos (documentos de estoque exigem uma cópia da empresa ou acesso compartilhado)",
   "accountant_access.expires": "Expira em",
+  "accountant_access.inventory": "Contagens de estoque",
   "accountant_access.give_code": "Copie este código e envie-o ao seu contador. Ele o cola para emitir uma chave para esta empresa, sem precisar digitar um ID de empresa.",
   "accountant_access.invalid": "Verifique o código de pareamento e as permissões selecionadas.",
   "accountant_access.issue": "Criar chave da empresa",

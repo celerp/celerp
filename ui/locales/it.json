@@ -33,6 +33,7 @@
   "accountant_access.direction_warning": "Queste autorizzazioni consentono solo di ricevere dati dall'azienda mittente indicata. Non concedono un accesso utente generale. Non usare la sincronizzazione bidirezionale in sostituzione del lavoro su un unico libro contabile condiviso.",
   "accountant_access.documents": "Fatture per servizi e spese, con pagamenti, rimborsi e allegati (i documenti di magazzino richiedono una copia aziendale o un accesso condiviso)",
   "accountant_access.expires": "Scade",
+  "accountant_access.inventory": "Conteggi di magazzino",
   "accountant_access.give_code": "Copia questo codice e invialo al tuo commercialista. Lo incolla per emettere una chiave per questa azienda, senza digitare un ID azienda.",
   "accountant_access.invalid": "Controlla il codice di abbinamento e le autorizzazioni selezionate.",
   "accountant_access.issue": "Crea chiave aziendale",

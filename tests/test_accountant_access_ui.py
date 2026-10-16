@@ -197,7 +197,7 @@ async def test_scopes_derived_from_entities(monkeypatch):
     from celerp.routers.company_peers import Scope
     from celerp.services.peer_access import ENTITY_SCOPE, SCOPES
 
-    sent = {name[len("sync_"):-len("_out")] for name in dir(CelerpConnector)
+    sent = {name[len("sync_"):-len("_out")] for name in vars(CelerpConnector)
             if name.startswith("sync_") and name.endswith("_out")}
     assert sent == set(ENTITY_SCOPE)
     assert set(typing.get_args(Scope)) == SCOPES == set(ENTITY_SCOPE.values())

@@ -33,6 +33,7 @@
   "accountant_access.direction_warning": "እነዚህ ፈቃዶች ከተጠቀሰው ላኪ ኩባንያ መረጃ መቀበልን ብቻ ይፈቅዳሉ። አጠቃላይ የተጠቃሚ መዳረሻ አይሰጡም። በአንድ የጋራ መዝገብ ውስጥ ከመስራት ይልቅ ሁለት-አቅጣጫ ማመሳሰልን አይጠቀሙ።",
   "accountant_access.documents": "የአገልግሎት ደረሰኞች፣ የወጪ ሂሳቦች፣ ክፍያዎች፣ ተመላሽ ገንዘቦች እና አባሪዎች (የእቃ ክምችት ሰነዶች የኩባንያ ቅጂ ወይም የጋራ መዳረሻ ይፈልጋሉ)",
   "accountant_access.expires": "የሚያበቃበት ቀን",
+  "accountant_access.inventory": "የክምችት ቆጠራዎች",
   "accountant_access.give_code": "ይህን ኮድ ቀድተው ለሂሳብ ባለሙያዎ ይላኩ። ለዚህ ኩባንያ ቁልፍ ለማውጣት ይለጥፉታል፤ ማንም የኩባንያ መለያ መተየብ አያስፈልገውም።",
   "accountant_access.invalid": "የማጣመሪያ ኮዱን እና የተመረጡ ፈቃዶችን ያረጋግጡ።",
   "accountant_access.issue": "የኩባንያ ቁልፍ ፍጠር",

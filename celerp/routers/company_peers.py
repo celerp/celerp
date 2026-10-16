@@ -20,13 +20,13 @@ from celerp.services import peer_access
 
 router = APIRouter(prefix="/company-peers", tags=["company-peers"])
 
-Scope = Literal["contacts", "products", "documents", "inventory"]
+Scope = Literal[peer_access.SCOPE_ORDER]
 
 
 class GrantRequest(BaseModel):
     source_company_id: uuid.UUID
     label: str = Field(min_length=1, max_length=128)
-    scopes: set[Scope] = Field(min_length=1, max_length=4)
+    scopes: set[Scope] = Field(min_length=1, max_length=len(peer_access.SCOPES))
     lifetime_days: int = Field(default=30, ge=1, le=90)
 
 

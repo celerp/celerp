@@ -14,6 +14,7 @@ from celerp.connectors.base import (
 )
 from celerp.connectors.http import RateLimitedClient
 from celerp.models.projections import Projection
+from celerp.services.peer_access import ENTITY_SCOPE
 
 _PAGE = 100
 _FIELDS = frozenset({
@@ -36,7 +37,7 @@ def _target_url(ctx: ConnectorContext, entity: str = "contacts") -> str:
         valid = False
     if not valid:
         raise ValueError("The receiving Celerp address is invalid")
-    if entity not in ("contacts", "products", "documents", "inventory", "attachments"):
+    if entity not in ENTITY_SCOPE:
         raise ValueError("Unsupported peer entity")
     return raw.rstrip("/") + "/company-peers/" + entity
 

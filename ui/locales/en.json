@@ -33,6 +33,7 @@
   "accountant_access.direction_warning": "These grants permit inbound data from the named sending company only. They do not give that company general user access. Do not use two-way sync as a substitute for working in one shared ledger.",
   "accountant_access.documents": "Service invoices and expense bills, their payments/refunds, and attachments (stock documents require a company copy or shared access)",
   "accountant_access.expires": "Expires",
+  "accountant_access.inventory": "Stock counts",
   "accountant_access.give_code": "Copy this code and send it to your accountant. They paste it to issue a key for this company, so nobody has to type a company ID.",
   "accountant_access.invalid": "Check the pairing code and selected permissions.",
   "accountant_access.issue": "Create company key",

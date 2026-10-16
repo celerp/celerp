@@ -17,7 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.models.company_peer import CompanyPeerGrant
 from celerp.services.company_lock import locked_company, lock_company
 
-SCOPES = frozenset({"contacts", "products", "documents", "inventory"})
+# Each entity the Celerp connector sends, and the grant scope that authorizes it.
+ENTITY_SCOPE = {
+    "contacts": "contacts", "products": "products", "documents": "documents",
+    "attachments": "documents", "inventory": "inventory",
+}
+SCOPE_ORDER = tuple(dict.fromkeys(ENTITY_SCOPE.values()))
+SCOPES = frozenset(SCOPE_ORDER)
 MAX_ACTIVE = 5
 MAX_DAYS = 90
 PAIRING_PREFIX = "cpair1"

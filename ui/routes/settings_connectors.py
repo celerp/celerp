@@ -1095,6 +1095,7 @@ def _pairing_card(company_id: str, name: str, lang: str) -> FT:
 
 
 def _grant_form(lang: str) -> FT:
+    from celerp.services.peer_access import SCOPE_ORDER
     return Form(
         Label(t("accountant_access.pairing_code", lang)),
         Input(name="pairing_code", type="text", maxlength="1024", cls="form-input"),
@@ -1102,14 +1103,12 @@ def _grant_form(lang: str) -> FT:
         Input(name="label", maxlength="128",
               placeholder=t("accountant_access.label_example", lang),
               cls="form-input"),
-        Div(
-            Label(Input(type="checkbox", name="scopes", value="contacts",
-                        checked=True), t("accountant_access.contacts", lang)),
-            Label(Input(type="checkbox", name="scopes", value="products",
-                        checked=True), t("accountant_access.products", lang)),
-            Label(Input(type="checkbox", name="scopes", value="documents"),
-                  t("accountant_access.documents", lang)),
-        ),
+        Div(*(
+            Label(Input(type="checkbox", name="scopes", value=scope,
+                        checked=scope in ("contacts", "products")),
+                  t(f"accountant_access.{scope}", lang))
+            for scope in SCOPE_ORDER
+        ), cls="flex-col gap-sm"),
         Label(t("accountant_access.lifetime", lang)),
         Select(
             Option("14", value="14"),
@@ -1198,7 +1197,7 @@ def setup_routes(app):
 
     @app.post("/settings/accountant-access/grants")
     async def accountant_access_issue(request: Request):
-        from celerp.services.peer_access import parse_pairing_code
+        from celerp.services.peer_access import SCOPES, parse_pairing_code
         from ui import api_client as api
         from ui.security import not_permitted_redirect
         token = _token(request)
@@ -1217,7 +1216,7 @@ def setup_routes(app):
             lifetime = int(form.get("lifetime_days") or "30")
             scopes = sorted(set(str(scope) for scope in form.getlist("scopes")))
             if not (1 <= len(label) <= 128 and 1 <= lifetime <= 90
-                    and scopes and set(scopes) <= {"contacts", "products", "documents"}):
+                    and scopes and set(scopes) <= SCOPES):
                 raise ValueError("Invalid grant selection")
         except (ValueError, TypeError):
             return Span(t("accountant_access.invalid", lang),
