@@ -24,6 +24,10 @@ class HandoffDownloadError(Exception):
     """The copy could not be retrieved or authenticated; nothing is imported."""
 
 
+class HandoffUnreachable(HandoffDownloadError):
+    """The cloud could not be asked, so nothing is known about the copy; trying again may work."""
+
+
 def _validated_object_url(value: object, copy_id) -> str:
     """Accept only the expected ciphertext on the supported object host."""
     if not isinstance(value, str) or len(value) > 4096:
@@ -63,7 +67,9 @@ async def verify_company_handoff(copy_id: str | None, proof_hash: str | None,
                 json={"proof": proof_hash, "backup_sha256": backup_sha256},
             )
     except (httpx.HTTPError, TimeoutError) as exc:
-        raise HandoffDownloadError("Company copy verification is unavailable") from exc
+        raise HandoffUnreachable("Company copy verification is unavailable") from exc
+    if response.status_code == 429 or response.status_code >= 500:
+        raise HandoffUnreachable("Company copy verification is unavailable")
     if response.status_code != 200:
         raise HandoffDownloadError("This file does not match the company copy")
     try:
