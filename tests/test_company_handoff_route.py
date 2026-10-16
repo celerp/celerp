@@ -192,3 +192,31 @@ async def test_send_form_remembers_firm(real_engine, real_client, monkeypatch, t
                                headers=second_headers)
     assert r.status_code == 502
     assert (await real_client.get("/company-backups/sender", headers=first_headers)).json() == expected
+
+
+@pytest.mark.asyncio
+async def test_import_preview_shows_firm_name(real_engine, real_client, monkeypatch, tmp_path):
+    """A sent copy carries the firm that prepared it, and the preview of opening it names
+    that firm before anything is written."""
+    from company_backup_support import read
+    from celerp.services import company_handoff_sender
+    user = await owner(real_engine)
+    company_id = await company(real_engine, user, "Client books", "firm-on-preview")
+    bearer = await token(real_engine, user, company_id)
+    sent = tmp_path / "sent.celerp-company"
+
+    async def send(**kwargs):
+        await kwargs["export"](sent)
+        return {"id": str(uuid.uuid4()), "link": "synthetic-link"}
+
+    monkeypatch.setattr(company_handoff_sender, "send_company_backup", send)
+    body = {"operation_id": str(uuid.uuid4()),
+            "key": base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("="),
+            "firm_name": "North Ledger", "recipient": "client@example.com",
+            "reply_to": "desk@north.example", "note": ""}
+    r = await real_client.post("/company-backups/send-handoff", json=body,
+                               headers={"Authorization": f"Bearer {bearer}"})
+    assert r.status_code == 200, r.text
+    preview = await read(real_client, bearer, sent.read_bytes())
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["provenance"]["prepared_by"] == "North Ledger"
