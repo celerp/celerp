@@ -471,23 +471,14 @@ async def test_checkin_payload_has_no_handoff(real_engine, real_client, tmp_path
 
 async def test_company_copy_names_removed(real_engine, real_client):
     """No shipped code or copy uses the old company copy names, and the old API is gone."""
-    patterns = ["company_copy", "company-copies", "company-copy", "Independent company copy", "open-copy"]
+    patterns = ["company_copy", "company-copies", "company-copy", "Independent company copy",
+                "handoff_id", "open-copy"]
     args = ["git", "grep", "-n", "-I", "-F"]
     for p in patterns:
         args += ["-e", p]
     args += ["--", ".", ":(exclude)tests", ":(exclude,glob)**/migrations/**"]
     found = subprocess.run(args, cwd=REPO_ROOT, capture_output=True, text=True)
     assert found.returncode == 1, found.stdout or found.stderr
-    legacy = subprocess.run(
-        ["git", "grep", "-n", "-I", "-F", "handoff_id", "--", ".",
-         ":(exclude)tests", ":(exclude,glob)**/migrations/**"],
-        cwd=REPO_ROOT, capture_output=True, text=True)
-    allowed = {
-        "celerp/gateway/state.py", "celerp/main.py",
-        "celerp/routers/health.py", "celerp/services/cloud_entitlement.py",
-    }
-    paths = {line.split(":", 1)[0] for line in legacy.stdout.splitlines()}
-    assert paths <= allowed, paths - allowed
 
 
     _, _, tok = await _bk_setup(real_engine)
