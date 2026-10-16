@@ -7,7 +7,7 @@ its reversals go up, and each side is told what the other did."""
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
@@ -15,6 +15,7 @@ from sqlalchemy import select
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
 from test_company_backup_lifecycle import _data_dir  # noqa: F401
 from test_company_handoff_identity_restore import _link_verified  # noqa: F401
+from test_firm_view import _locked_invoice, _today
 from test_peer_sync_end_to_end import FIRM, _company_of, _paired, _route_to_app
 
 pytestmark = pytest.mark.asyncio
@@ -200,7 +201,7 @@ async def test_reverse_dates_follow_both_locks(real_client, real_engine, monkeyp
     await _lock(real_client, firm_tok, "2026-06-30")
     await _two_way(client_company, credential)
     row = next(i for i in await _received(real_client, tok) if i["memo"] == "Firm closed March")
-    today = date.today().isoformat()
+    today = (await _today(real_engine, client_company)).isoformat()
     assert row["reverse_on"] == today
     r = await real_client.post(f"/accounting/journal-entries/{row['id']}/reverse", headers=auth(tok))
     assert r.status_code == 200 and r.json()["ts"] == today, r.text
@@ -246,7 +247,7 @@ async def test_client_reversal_reaches_the_firm_view(real_client, real_engine, m
     page = await real_client.get(f"/accounting/journal-entries/{firm_je}/prefill", headers=auth(firm_tok))
     assert page.status_code == 200, page.text
     prefill = page.json()
-    assert prefill["memo"] == "Reclass fees" and prefill["ts"] >= date.today().isoformat()
+    assert prefill["memo"] == "Reclass fees" and prefill["ts"] >= (await _today(real_engine, firm_company)).isoformat()
     assert len(await _journals(real_engine, firm_company)) == count  # posts nothing
 
     undo = await real_client.post(
@@ -294,8 +295,7 @@ async def test_firm_cannot_void_what_the_client_sent(real_client, real_engine, m
     r = await real_client.post(f"/accounting/journal-entries/{arrived}/void", json={}, headers=auth(firm_tok))
     assert r.status_code == 422 and "journal entry" in r.json()["detail"].lower(), r.text
 
-    from test_firm_view import _locked_invoice
-    invoice = await _locked_invoice(real_client, tok, firm_tok, contacts)
+    invoice = await _locked_invoice(real_client, real_engine, tok, firm_tok, client_company, contacts)
     await _lock(real_client, firm_tok, None)
     await _two_way(client_company, credential)
     docs = (await real_client.get("/docs", params={"doc_type": "invoice", "limit": 200},
@@ -312,10 +312,9 @@ async def test_firm_cannot_void_what_the_client_sent(real_client, real_engine, m
 async def test_lock_refusal_told_once_and_not_resent(real_client, real_engine, monkeypatch):
     """AC29: a document the firm's lock refused gives the client one notice naming the
     lock date and is not sent again until it changes; a change retries it once."""
-    from test_firm_view import _locked_invoice
     tok, firm_tok, client_company, credential, contacts = await _pair_journals(real_client, real_engine)
-    invoice = await _locked_invoice(real_client, tok, firm_tok, contacts)
-    today = date.today().isoformat()
+    invoice = await _locked_invoice(real_client, real_engine, tok, firm_tok, client_company, contacts)
+    today = (await _today(real_engine, client_company)).isoformat()
     sent: list = []
     _route_to_app(monkeypatch, sent)
     await _two_way(client_company, credential)
@@ -327,7 +326,7 @@ async def test_lock_refusal_told_once_and_not_resent(real_client, real_engine, m
     assert ("POST", "/docs/import/batch") not in sent
     assert len([n for n in await _notices(real_engine, client_company) if invoice["ref_id"] in n[1]]) == 1
 
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    yesterday = (await _today(real_engine, client_company) - timedelta(days=1)).isoformat()
     await _lock(real_client, firm_tok, yesterday)
     sent.clear()
     await _two_way(client_company, credential)

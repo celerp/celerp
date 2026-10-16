@@ -9,7 +9,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import update
 
 from company_backup_support import token
 from migration_support import auth, maker, migration_env, real_client, real_engine, staged_run  # noqa: F401
@@ -30,10 +30,20 @@ def _row(view: dict, name: str) -> dict:
     return next(row for row in view["items"] if row["company_name"] == name)
 
 
-async def _locked_invoice(real_client, tok: str, firm_tok: str, contacts: list) -> dict:
-    """The firm closes the books through today; the client then finalizes a new invoice
-    dated today. Returns the invoice."""
-    today = date.today().isoformat()
+async def _today(engine, company_id: str) -> date:
+    """Today in the company's business timezone, the day the app dates a reversal or a lock."""
+    from celerp.models.company import Company
+    from celerp.services.business_time import business_date_of
+    async with maker(engine)() as s:
+        company = await s.get(Company, uuid.UUID(company_id))
+        return date.fromisoformat(business_date_of(None, (company.settings or {}).get("timezone")))
+
+
+async def _locked_invoice(real_client, engine, tok: str, firm_tok: str, client_company: str,
+                          contacts: list) -> dict:
+    """The firm closes the books through the client's today; the client then finalizes a
+    new invoice dated today. Returns the invoice."""
+    today = (await _today(engine, client_company)).isoformat()
     r = await real_client.post("/accounting/period-lock", json={"lock_date": today},
                                headers=auth(firm_tok))
     assert r.status_code == 200, r.text
@@ -61,7 +71,7 @@ async def test_accountant_role_and_firm_console(real_client, real_engine, monkey
     assert copy["sync"] == "on" and copy["last_sync"] is None
     assert _row(view, "Firm Practice")["sync"] == "off"
 
-    invoice = await _locked_invoice(real_client, tok, firm_tok, contacts)
+    invoice = await _locked_invoice(real_client, real_engine, tok, firm_tok, client_company, contacts)
     sent: list = []
     _route_to_app(monkeypatch, sent)
     await _sync(client_company, credential)
@@ -73,7 +83,7 @@ async def test_accountant_role_and_firm_console(real_client, real_engine, monkey
     assert copy["last_sync"] is not None
     refused = [item for item in copy["attention"] if item["kind"] == "refused"]
     assert [item["label"] for item in refused] == [invoice["ref_id"]], copy["attention"]
-    assert date.today().isoformat() in refused[0]["reason"]
+    assert (await _today(real_engine, client_company)).isoformat() in refused[0]["reason"]
     assert _row(view, "Firm Practice")["attention"] == []
 
     # The client sees only its own company; it has no accountant key of its own.
