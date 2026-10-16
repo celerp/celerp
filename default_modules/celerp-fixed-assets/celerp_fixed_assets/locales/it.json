@@ -186,6 +186,8 @@
   "fixed_assets.movement.reverse_run": "Ammortamento stornato",
   "fixed_assets.notice.ready.title": "Ammortamento pronto da registrare",
   "fixed_assets.notice.ready.body": "L'ammortamento di {month} è pronto da registrare: {total}.",
+  "fixed_assets.notice.auto_posted.title": "Ammortamento registrato automaticamente",
+  "fixed_assets.notice.auto_posted.body": "L'ammortamento di {month} è stato registrato automaticamente: {total}.",
   "fixed_assets.notice.paused.title": "Registrazione automatica dell'ammortamento in pausa",
   "fixed_assets.notice.paused.body": "La registrazione automatica è in pausa perché i cespiti sono stati disattivati. Registra questa esecuzione a mano per riprenderla.",
   "fixed_assets.notice.no_user.title": "La registrazione automatica dell'ammortamento richiede un utente",

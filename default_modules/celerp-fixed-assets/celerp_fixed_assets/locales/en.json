@@ -186,6 +186,8 @@
   "fixed_assets.movement.reverse_run": "Depreciation reversed",
   "fixed_assets.notice.ready.title": "Depreciation ready to post",
   "fixed_assets.notice.ready.body": "Depreciation for {month} is ready to post: {total}.",
+  "fixed_assets.notice.auto_posted.title": "Depreciation posted automatically",
+  "fixed_assets.notice.auto_posted.body": "Depreciation for {month} was posted automatically: {total}.",
   "fixed_assets.notice.paused.title": "Automatic depreciation posting paused",
   "fixed_assets.notice.paused.body": "Automatic posting is paused because fixed assets was turned off. Post this run by hand to resume it.",
   "fixed_assets.notice.no_user.title": "Automatic depreciation posting needs a user",

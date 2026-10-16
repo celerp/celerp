@@ -186,6 +186,8 @@
   "fixed_assets.movement.reverse_run": "Amortización revertida",
   "fixed_assets.notice.ready.title": "Amortización lista para contabilizar",
   "fixed_assets.notice.ready.body": "La amortización de {month} está lista para contabilizar: {total}.",
+  "fixed_assets.notice.auto_posted.title": "Amortización contabilizada automáticamente",
+  "fixed_assets.notice.auto_posted.body": "La amortización de {month} se contabilizó automáticamente: {total}.",
   "fixed_assets.notice.paused.title": "Contabilización automática de amortización en pausa",
   "fixed_assets.notice.paused.body": "La contabilización automática está en pausa porque se desactivó activos fijos. Contabilice esta ejecución a mano para reanudarla.",
   "fixed_assets.notice.no_user.title": "La contabilización automática de amortización necesita un usuario",

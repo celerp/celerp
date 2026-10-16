@@ -10,6 +10,7 @@ CORRECTIONS_URL = "/fixed-assets/corrections"
 
 # Title (stored in English, as every notice is) and message key of each notice.
 READY = ("Depreciation ready to post", "fixed_assets.notice.ready")
+AUTO_POSTED = ("Depreciation posted automatically", "fixed_assets.notice.auto_posted")
 PAUSED = ("Automatic depreciation posting paused", "fixed_assets.notice.paused")
 NO_USER = ("Automatic depreciation posting needs a user", "fixed_assets.notice.no_user")
 ATTENTION = ("Assets held out of depreciation", "fixed_assets.notice.attention")

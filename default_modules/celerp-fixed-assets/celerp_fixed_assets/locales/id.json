@@ -186,6 +186,8 @@
   "fixed_assets.movement.reverse_run": "Penyusutan dibatalkan",
   "fixed_assets.notice.ready.title": "Penyusutan siap dibukukan",
   "fixed_assets.notice.ready.body": "Penyusutan {month} siap dibukukan: {total}.",
+  "fixed_assets.notice.auto_posted.title": "Penyusutan dibukukan otomatis",
+  "fixed_assets.notice.auto_posted.body": "Penyusutan {month} telah dibukukan otomatis: {total}.",
   "fixed_assets.notice.paused.title": "Pembukuan penyusutan otomatis dijeda",
   "fixed_assets.notice.paused.body": "Pembukuan otomatis dijeda karena aset tetap dinonaktifkan. Bukukan proses ini secara manual untuk melanjutkannya.",
   "fixed_assets.notice.no_user.title": "Pembukuan penyusutan otomatis memerlukan pengguna",

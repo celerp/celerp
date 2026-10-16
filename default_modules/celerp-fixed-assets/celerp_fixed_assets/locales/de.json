@@ -186,6 +186,8 @@
   "fixed_assets.movement.reverse_run": "Abschreibung storniert",
   "fixed_assets.notice.ready.title": "Abschreibung bereit zum Buchen",
   "fixed_assets.notice.ready.body": "Die Abschreibung für {month} ist bereit zum Buchen: {total}.",
+  "fixed_assets.notice.auto_posted.title": "Abschreibung automatisch gebucht",
+  "fixed_assets.notice.auto_posted.body": "Die Abschreibung für {month} wurde automatisch gebucht: {total}.",
   "fixed_assets.notice.paused.title": "Automatisches Buchen der Abschreibung pausiert",
   "fixed_assets.notice.paused.body": "Das automatische Buchen ist pausiert, weil Anlagen deaktiviert wurde. Buchen Sie diesen Lauf von Hand, um es fortzusetzen.",
   "fixed_assets.notice.no_user.title": "Automatisches Buchen der Abschreibung braucht einen Benutzer",

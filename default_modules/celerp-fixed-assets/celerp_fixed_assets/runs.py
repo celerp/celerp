@@ -739,7 +739,12 @@ async def tick(session, company_id, today: date) -> str | None:
     if shown["empty"]:
         return None
     if fa.get("run_mode") == "post" and not fa.get("auto_post_paused") and may_post:
-        await _post(session, company_id, uuid.UUID(user), context, f"auto.{period_label(month)}", manual=False)
+        done = await _post(session, company_id, uuid.UUID(user), context, f"auto.{period_label(month)}", manual=False)
+        total = _cents(sum((Decimal(r["total"]) for r in done["runs"]), Decimal(0)))
+        await notices.tell(session, company_id, notices.AUTO_POSTED,
+                           f"Depreciation for {_long(month)} was posted automatically: {total}.",
+                           action_url=f"{notices.RUNS_URL}/{period_label(month)}", month=period_label(month),
+                           total=total)
         return "posted"
     await _prepare(session, company_id, context)
     if fa.get("run_mode") == "post" and fa.get("auto_post_paused"):

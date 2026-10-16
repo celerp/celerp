@@ -186,6 +186,8 @@
   "fixed_assets.movement.reverse_run": "የእርጅና ቅነሳ ተቀልብሷል",
   "fixed_assets.notice.ready.title": "የእርጅና ቅነሳ ለመመዝገብ ዝግጁ ነው",
   "fixed_assets.notice.ready.body": "የ{month} የእርጅና ቅነሳ ለመመዝገብ ዝግጁ ነው: {total}።",
+  "fixed_assets.notice.auto_posted.title": "የእርጅና ቅነሳ በራስ-ሰር ተመዝግቧል",
+  "fixed_assets.notice.auto_posted.body": "የ{month} የእርጅና ቅነሳ በራስ-ሰር ተመዝግቧል: {total}።",
   "fixed_assets.notice.paused.title": "ራስ-ሰር የእርጅና ቅነሳ ምዝገባ ቆሟል",
   "fixed_assets.notice.paused.body": "ቋሚ ንብረቶች ስለጠፉ ራስ-ሰር ምዝገባ ቆሟል። እንደገና ለመጀመር ይህን ሂደት በእጅ ይመዝግቡ።",
   "fixed_assets.notice.no_user.title": "ራስ-ሰር የእርጅና ቅነሳ ምዝገባ ተጠቃሚ ያስፈልገዋል",
