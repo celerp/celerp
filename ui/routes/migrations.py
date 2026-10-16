@@ -23,9 +23,11 @@ in request bodies to the API, never in a URL.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -114,18 +116,22 @@ PREPARED_BY_COOKIE = "celerp_migration_prepared_by"
 EMAIL_COOKIE = "celerp_migration_email"
 
 
+def _set_cookie(resp, name: str, value: str, mode: WizardMode, request: Request) -> None:
+    resp.set_cookie(name, value, max_age=SCAN_TTL_SECONDS, path=mode.base, httponly=True,
+                    samesite="strict", secure=session_cookie_secure(request), domain=cookie_domain(request))
+
+
 def _set_scan_cookies(resp, token: str, prepared_by: str, mode: WizardMode, request: Request,
                       email: str = "") -> None:
     for name, value in ((SCAN_COOKIE, token), (PREPARED_BY_COOKIE, prepared_by), (EMAIL_COOKIE, email)):
         if name == EMAIL_COOKIE and not email:
             continue
-        resp.set_cookie(name, value, max_age=SCAN_TTL_SECONDS, path=mode.base, httponly=True,
-                        samesite="strict", secure=session_cookie_secure(request),
-                        domain=cookie_domain(request))
+        _set_cookie(resp, name, value, mode, request)
+    resp.delete_cookie(DRAFT_COOKIE, path=mode.base, domain=cookie_domain(request))   # the draft became the scan
 
 
 def _clear_scan_cookie(resp, mode: WizardMode, request: Request) -> None:
-    for name in (SCAN_COOKIE, PREPARED_BY_COOKIE, EMAIL_COOKIE):
+    for name in (SCAN_COOKIE, PREPARED_BY_COOKIE, EMAIL_COOKIE, DRAFT_COOKIE):
         resp.delete_cookie(name, path=mode.base, domain=cookie_domain(request))
 
 
@@ -337,22 +343,78 @@ def setup_code_field() -> FT:
 # Where each source's file comes from, in the words of that system's own menus.
 _EXPORT_HELP = {"manager_io": "migration.export_help.manager_io"}
 
+# An export set still short of files, kept by the API as a draft the next upload adds to.
+DRAFT_COOKIE = "celerp_migration_draft"
+KEPT_HEADER = "X-Export-Draft-Kept"   # the chosen files are now in the draft
+_EXPORT_BADGE = {"received": "badge--active", "missing": "badge--danger", "pending": "badge--pending",
+                 "optional": "badge--neutral", "not_needed": "badge--neutral"}
+
+
+def _source_checklist(sources: list[dict], key: str) -> dict | None:
+    """The export checklist of the source ``key``; None for a source read from one file."""
+    return next((s.get("checklist") for s in sources if s["key"] == key), None)
+
+
+def _checklist_panel(mode: WizardMode, source: str, checklist: dict | None, error: str | None = None) -> FT:
+    """Every file an export-set source needs, the menu that exports it and the dates to
+    choose, against what the upload holds so far. Files are checked as they are added and
+    each can be taken out; a source read from one file shows nothing here.
+
+    The table follows the source's export order, not newest first: it is a list of steps."""
+    if checklist is None:
+        return Div(id="export-checklist")
+    remove = {"hx_post": f"{mode.base}/check", "hx_target": "#export-checklist", "hx_swap": "outerHTML",
+              "hx_include": "closest form", "hx_encoding": "multipart/form-data"}
+    uploads = checklist.get("uploads", [])
+    problems = checklist.get("problems", []) if uploads else []   # the table's statuses say it before any file
+    return Div(
+        Div(checklist["warning"], cls="flash flash--warning", role="alert"),
+        H3(t("migration.export_checklist_title", source=checklist["source"])),
+        P(t("migration.export_checklist_hint"), cls="form-hint"),
+        wizard_table(
+            Thead(Tr(Th(t("migration.export_col_file")), Th(t("migration.export_col_menu")),
+                     Th(t("migration.export_col_range")), Th(t("migration.export_col_status")),
+                     Th(t("migration.export_col_received")))),
+            Tbody(*(Tr(Td(item["label"]), Td(item["menu"]), Td(item["range"]),
+                       Td(_badge(item["status_label"], _EXPORT_BADGE[item["status"]])),
+                       Td(", ".join(item["files"]) or EMPTY))
+                    for item in checklist["items"])),
+        ),
+        flash(error) if error else "",
+        Div(Ul(*(Li(p) for p in problems)), cls="flash flash--error", role="alert") if problems else "",
+        P(t("migration.export_complete"), cls="form-hint") if checklist.get("complete") else "",
+        Div(
+            H4(t("migration.export_uploaded")),
+            Ul(*(Li(u["name"], " ", Button(t("migration.export_remove"), type="button", cls="btn btn--ghost btn--xs",
+                                         hx_vals=json.dumps({"remove": u["stored_name"]}), **remove))
+                 for u in uploads)),
+            P(t("migration.export_remove_hint"), cls="form-hint"),
+        ) if uploads else "",
+        P(A(t("migration.export_print"), href=f"{mode.base}/checklist?{urlencode({'source': source})}",
+            target="_blank", rel="noopener", cls="auth-link"), cls="export-print-link"),
+        id="export-checklist", cls="export-checklist",
+    )
+
 
 async def _source_page(request: Request, mode: WizardMode, *, selected: str = "", prepared_by: str = "",
-                       error: str | None = None, back: str | None = None, email: str = ""):
+                       error: str | None = None, back: str | None = None, email: str = "",
+                       draft: dict | None = None):
     sources, sources_error = await _sources()
+    swap = {"hx_target": "#export-checklist", "hx_swap": "outerHTML"}
     code_required = await setup_code_required(mode)
     artifacts = [a for s in sources for a in s.get("artifacts", [])]
     extensions = sorted({ext for a in artifacts for ext in a.get("extensions", [])})
-    # One file per source unless a source reads several together.
-    several = any(len(s.get("artifacts", [])) > 1 for s in sources)
+    # One file per source unless a source reads several together, as an export set does.
+    several = any(len(s.get("artifacts", [])) > 1 or s.get("checklist") for s in sources)
     accepted = ", ".join(f"{a['label']} ({', '.join(a.get('extensions', []))})" for a in artifacts)
     guidance = [P(t(_EXPORT_HELP[s["key"]]), cls="form-hint") for s in sources if s["key"] in _EXPORT_HELP]
     guidance += [P(s["accepts"], cls="form-hint") for s in sources if s.get("accepts")]
     options = [("", t("migration.detect_source"))] + [(s["key"], s["display_name"]) for s in sources]
     radios = [
         Label(
-            Input(type="radio", name="source", value=key, checked=(key == selected)),
+            Input(type="radio", name="source", value=key, checked=(key == selected),
+                  hx_get=f"{mode.base}/checklist?{urlencode({'source': key})}", hx_select="#export-checklist",
+                  hx_trigger="change", **swap),
             Span(label),
             cls="migration-source",
         )
@@ -362,12 +424,20 @@ async def _source_page(request: Request, mode: WizardMode, *, selected: str = ""
         Fieldset(Legend(t("migration.source_label"), cls="form-label"), *radios, cls="form-group"),
         Div(
             Label(t("migration.files_label"), For="files", cls="form-label"),
+            # An export set's files are checked against its checklist as soon as they are
+            # chosen; once the draft holds them the field empties for the next ones.
             Input(type="file", id="files", name="files", multiple=several,
-                  accept=",".join(extensions) if extensions else None, cls="form-input"),
+                  accept=",".join(extensions) if extensions else None, cls="form-input",
+                  hx_post=f"{mode.base}/check", hx_trigger="change", hx_include="closest form",
+                  hx_encoding="multipart/form-data",
+                  hx_on__after_request=f"if (event.detail.xhr.getResponseHeader('{KEPT_HEADER}')) this.value=''",
+                  **swap),
             P(t("migration.accepted_files", files=accepted), cls="form-hint") if accepted else "",
             *guidance,
             cls="form-group",
         ),
+        # A draft's error sits in its panel, so the next check that swaps the panel clears it.
+        _checklist_panel(mode, selected, draft or _source_checklist(sources, selected), error if draft else None),
         Div(
             Label(t("migration.prepared_by"), For="prepared_by", cls="form-label"),
             Input(type="text", id="prepared_by", name="prepared_by", value=prepared_by, cls="form-input"),
@@ -391,7 +461,7 @@ async def _source_page(request: Request, mode: WizardMode, *, selected: str = ""
         _steps(1),
         auth_header(t("migration.title"), t("migration.source_subtitle")),
         P(t("migration.start_company_hint"), cls="form-hint") if mode.start_company else "",
-        flash(error) if error else "",
+        flash(error) if error and not draft else "",
         flash(sources_error) if sources_error else "",
         upload,
         sample,
@@ -462,18 +532,44 @@ def _with_cleared_scan(resp, request: Request, mode: WizardMode):
     return resp
 
 
+def _with_draft(resp, request: Request, mode: WizardMode, token: str | None):
+    """``resp`` keeping the export-set draft ``token``, or dropping a draft the API no longer holds."""
+    if not isinstance(resp, HTMLResponse):
+        resp = HTMLResponse(to_xml(resp))
+    if token:
+        _set_cookie(resp, DRAFT_COOKIE, token, mode, request)
+    else:
+        resp.delete_cookie(DRAFT_COOKIE, path=mode.base, domain=cookie_domain(request))
+    return resp
+
+
+async def _draft_for(request: Request, source: str | None) -> str | None:
+    """The draft an upload adds to: only an export set has one, so a source read from one
+    file never takes in the draft's files."""
+    token = request.cookies.get(DRAFT_COOKIE) or None
+    if token is None or source is None:
+        return token
+    sources, _ = await _sources()
+    return token if _source_checklist(sources, source) is not None else None
+
+
 async def _scan_and_continue(request: Request, mode: WizardMode, files: list, source: str | None,
-                             prepared_by: str, setup_code: str | None, credentials: tuple[str, str] | None):
+                             prepared_by: str, setup_code: str | None, credentials: tuple[str, str] | None,
+                             draft: str | None = None):
     email = credentials[0] if credentials else ""
+    page = {"selected": source or "", "prepared_by": prepared_by, "email": email}
     if mode.start_company and credentials is None:
-        return await _source_page(request, mode, selected=source or "", prepared_by=prepared_by, email=email,
-                                  error=t("auth.email_password_required"))
+        return await _source_page(request, mode, **page, error=t("auth.email_password_required"))
     try:
         result = await api.migration_scan(api_token(request, mode), files, source, setup_code=setup_code,
-                                          group=mode.api_group, credentials=credentials)
+                                          group=mode.api_group, credentials=credentials, draft=draft)
     except APIError as e:
-        return await _source_page(request, mode, selected=source or "", prepared_by=prepared_by, email=email,
-                                  error=str(e.detail))
+        resp = await _source_page(request, mode, **page, error=str(e.detail))
+        return _with_draft(resp, request, mode, None) if draft and e.status == 410 else resp
+    if "draft_token" in result:
+        resp = await _source_page(request, mode, **page, draft=result["checklist"],
+                                  error=t("migration.export_not_ready"))
+        return _with_draft(resp, request, mode, result["draft_token"])
     resp = RedirectResponse(f"{mode.base}/coverage", status_code=303)
     _set_scan_cookies(resp, result["scan_token"], prepared_by, mode, request, email)
     return resp
@@ -488,11 +584,62 @@ async def _upload(request: Request, mode: WizardMode):
     setup_code = str(form.get("setup_code", "")).strip() or None
     credentials = _credentials(form) if mode.start_company else None
     uploads = [f for f in form.getlist("files") if getattr(f, "filename", "")]
-    if not uploads:
+    draft = await _draft_for(request, source)
+    if not uploads and not draft:
         return await _source_page(request, mode, selected=source or "", prepared_by=prepared_by,
                                   email=str(form.get("email", "")).strip(), error=t("migration.choose_file"))
     files = [(f.filename, f.file) for f in uploads]
-    return await _scan_and_continue(request, mode, files, source, prepared_by, setup_code, credentials)
+    return await _scan_and_continue(request, mode, files, source, prepared_by, setup_code, credentials, draft)
+
+
+async def _check(request: Request, mode: WizardMode):
+    """Check an export set as its files are chosen or taken out, keeping it as a draft.
+    Answers with the checklist panel alone; a source read from one file has none."""
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    form = await request.form()
+    source = str(form.get("source", "")).strip()
+    sources, sources_error = await _sources()
+    blank = _source_checklist(sources, source)
+    if blank is None:
+        return _checklist_panel(mode, source, None, sources_error)
+    uploads = [f for f in form.getlist("files") if getattr(f, "filename", "")]
+    remove = [str(r) for r in form.getlist("remove") if str(r)]
+    draft = request.cookies.get(DRAFT_COOKIE) or None
+    if not uploads and not draft:
+        return _checklist_panel(mode, source, blank)
+    credentials = _credentials(form) if mode.start_company else None
+    if mode.start_company and credentials is None:
+        return _checklist_panel(mode, source, blank, t("auth.email_password_required"))
+    try:
+        result = await api.migration_scan(
+            api_token(request, mode), [(f.filename, f.file) for f in uploads], source,
+            setup_code=str(form.get("setup_code", "")).strip() or None, group=mode.api_group,
+            credentials=credentials, draft=draft, remove=remove, check=True)
+    except APIError as e:
+        resp = _checklist_panel(mode, source, blank, str(e.detail))
+        return _with_draft(resp, request, mode, None) if draft and e.status == 410 else resp
+    resp = _with_draft(_checklist_panel(mode, source, result["checklist"]), request, mode, result["draft_token"])
+    resp.headers[KEPT_HEADER] = "1"
+    return resp
+
+
+async def _printable_checklist(request: Request, mode: WizardMode):
+    """The export checklist of one source on its own page, to print or keep open beside
+    the old system while exporting."""
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    source = request.query_params.get("source", "")
+    sources, sources_error = await _sources()
+    checklist = _source_checklist(sources, source)
+    return wizard_page(
+        request,
+        flash(sources_error) if sources_error else "",
+        _checklist_panel(mode, source, checklist),     # the upload page swaps this in as a source is chosen
+        "" if checklist else P(t("migration.export_no_checklist")),
+        Button(t("btn.print"), type="button", cls="btn btn--primary", onclick="window.print()"),
+        back_link(f"{mode.base}?{urlencode({'source': source})}"),
+    )
 
 
 async def _sample(request: Request, mode: WizardMode):
@@ -1072,6 +1219,7 @@ def migrations_routes(app) -> None:
 def _register_wizard(app, mode: WizardMode) -> None:
     steps = (
         ("get", "", _choose_source), ("post", "/scan", _upload), ("post", "/sample", _sample),
+        ("post", "/check", _check), ("get", "/checklist", _printable_checklist),
         ("get", "/coverage", _coverage), ("get", "/mapping", _mapping),
         ("post", "/decisions", _save_decisions), ("get", "/review", _review), ("post", "/start", _start),
     )

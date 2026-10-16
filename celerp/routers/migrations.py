@@ -276,7 +276,15 @@ async def sources() -> list[dict]:
         "key": a.key, "display_name": a.display_name, "accepts": a.accepts,
         "artifacts": [{"key": s.key, "label": s.label, "extensions": list(s.extensions), "max_bytes": s.max_bytes}
                       for s in a.artifact_specs],
+        "checklist": a.checklist().view() if hasattr(a, "checklist") else None,
     } for a in list_adapters()]
+
+
+def _scan_result(result: store.ScanSession | store.DraftSession) -> dict:
+    """An upload's answer: the scan to review, or the export set still being brought in."""
+    if isinstance(result, store.DraftSession):
+        return {"draft_token": result.token, "checklist": result.view()}
+    return {"scan_token": result.token, "scan": migrations.scan_view(result)}
 
 
 # ── Bootstrap (no user exists yet) ───────────────────────────────────────────
@@ -287,8 +295,7 @@ async def bootstrap_scan(request: Request, session: AsyncSession = Depends(get_s
                          x_setup_code: str | None = Header(None)) -> dict:
     await ensure_not_bootstrapped(session)
     bootstrap.verify_setup_code(x_setup_code)
-    scan = await store.create_scan(_upload_parts(request), owner=BOOTSTRAP)
-    return {"scan_token": scan.token, "scan": migrations.scan_view(scan)}
+    return _scan_result(await store.create_scan(_upload_parts(request), owner=BOOTSTRAP))
 
 
 @router.post("/bootstrap/scan/read")
@@ -346,8 +353,7 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
 
 @router.post("/scan")
 async def scan(request: Request, ctx: AuthContext = Depends(user_owner)) -> dict:
-    result = await store.create_scan(_upload_parts(request), owner=("user", ctx.user.id))
-    return {"scan_token": result.token, "scan": migrations.scan_view(result)}
+    return _scan_result(await store.create_scan(_upload_parts(request), owner=("user", ctx.user.id)))
 
 
 @router.post("/scan/read")
@@ -419,8 +425,7 @@ async def start_company_scan(request: Request, credentials: HTTPBasicCredentials
     user_id = (await companyless_login(session, credentials.username, credentials.password,
                                        request_caller(request))).id
     await session.rollback()  # nothing is held while the upload streams in
-    scan = await store.create_scan(_upload_parts(request), owner=(START_COMPANY, user_id))
-    return {"scan_token": scan.token, "scan": migrations.scan_view(scan)}
+    return _scan_result(await store.create_scan(_upload_parts(request), owner=(START_COMPANY, user_id)))
 
 
 @router.post("/start-company/scan/read")

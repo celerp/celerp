@@ -4,9 +4,12 @@
 
 Each upload is a comma or tab separated text file, a workbook, or a plain zip
 archive of them. Every file is matched to one of the source's layouts by its
-header row and, for a report, the title printed above it; never by its name. A
-set that is missing a required file, holds a file no layout matches, or holds a
-file twice is refused with a message naming each file.
+header row and, for a report, the title printed above it; never by its name. The
+set is checked against the source's checklist: each file is received, missing,
+optional, not needed, or pending until the ledger shows whether it is needed. A set
+that is missing a required file, holds a file no layout matches or a file twice, or
+holds a report exported a period at a time whose periods overlap or leave a gap, is
+refused with a message naming each file and what to export instead.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import io
 import re
 import zipfile
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from celerp.importers import tabular
@@ -39,6 +42,10 @@ class Layout:
     columns: frozenset[str]                    # normalized header cells the file must carry
     title: str | None = None                   # a report's title, printed above its header
     many: bool = False                         # the source writes it in batches or per year
+    menu: str = ""                             # where the source's menus export it, in the source's words
+    range_key: str = ""                        # the dates to choose when exporting it; a list has none
+    joined: bool = False                       # exported a period at a time: the periods must join
+    optional: bool = False                     # carried when present, never required
 
 
 @dataclass
@@ -117,16 +124,33 @@ def _match(lines: list[list[str]], layouts: tuple[Layout, ...]) -> tuple[Layout,
     return layout, index
 
 
-def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...]) -> tuple[list[Table], list[str]]:
-    """Every file of the set matched to its layout, and the names of files no layout matches."""
+@dataclass(frozen=True)
+class Stranger:
+    """An uploaded file no layout matches, with its lines, or why it could not be read."""
+    name: str
+    lines: list[list[str]]
+    reason: str = ""
+
+
+def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...]) -> tuple[list[Table], list[Stranger]]:
+    """Every file of the set matched to its layout, and the files no layout matches."""
     tables: list[Table] = []
-    unknown: list[str] = []
+    strangers: list[Stranger] = []
     for artifact in artifacts:
-        for name, data in _members(artifact.original_name, artifact.path.read_bytes()):
-            lines = _lines(name, data)
+        try:
+            members = _members(artifact.original_name, artifact.path.read_bytes())
+        except ScanError as exc:
+            strangers.append(Stranger(artifact.original_name, [], str(exc)))
+            continue
+        for name, data in members:
+            try:
+                lines = _lines(name, data)
+            except ScanError as exc:
+                strangers.append(Stranger(name, [], str(exc)))
+                continue
             matched = _match(lines, layouts)
             if matched is None:
-                unknown.append(name)
+                strangers.append(Stranger(name, lines[:HEADER_SEARCH]))
                 continue
             layout, index = matched
             header = [normalize(c) for c in lines[index]]
@@ -137,19 +161,120 @@ def read_set(artifacts: ArtifactSet, layouts: tuple[Layout, ...]) -> tuple[list[
                     table.rows.append({h: (line[i] if i < len(line) else "") for i, h in enumerate(header)
                                        if h or i == 0})
             tables.append(table)
-    return tables, unknown
+    return tables, strangers
 
 
-def refuse_incomplete(tables: list[Table], unknown: list[str], required: list[Layout]) -> None:
-    """Refuse a set missing a required file or holding an unrecognised one or a duplicate,
-    naming what was recognised so the user sees what to add or take out."""
-    found = ", ".join(f"{tb.name} ({tb.layout.label})" for tb in tables) or "--"
+def of(tables: list[Table], layout: Layout) -> list[Table]:
+    return [tb for tb in tables if tb.layout.kind == layout.kind]
+
+
+# ── The checklist ────────────────────────────────────────────────────────────
+
+RECEIVED, MISSING, PENDING, OPTIONAL, NOT_NEEDED = "received", "missing", "pending", "optional", "not_needed"
+
+
+@dataclass(frozen=True)
+class Item:
+    """One file of the checklist: what the upload so far holds of it."""
+    layout: Layout
+    status: str
+    files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SetCheck:
+    """An upload checked against its source's checklist: every file the source can export,
+    and every problem that keeps the set from being read."""
+    source: str
+    warning: str
+    items: tuple[Item, ...]
+    problems: tuple[str, ...]
+    recognised: str
+
+    @property
+    def complete(self) -> bool:
+        return not self.problems
+
+    def view(self) -> dict:
+        return {
+            "source": self.source, "warning": self.warning, "complete": self.complete,
+            "problems": list(self.problems),
+            "items": [{"kind": i.layout.kind, "label": i.layout.label, "menu": i.layout.menu,
+                       "range": t(i.layout.range_key) if i.layout.range_key else "--",
+                       "status": i.status, "status_label": t(f"migration.export_status_{i.status}"),
+                       "files": list(i.files)} for i in self.items],
+        }
+
+    def refuse(self) -> None:
+        """Refuse the set while anything is wrong, naming what was recognised so the user
+        sees what to add or take out."""
+        if self.problems:
+            raise ScanError(" ".join([*self.problems, t("migration.err_export_recognised", files=self.recognised)]))
+
+
+def check_set(tables: list[Table], strangers: list[Stranger], layouts: tuple[Layout, ...], required: list[Layout],
+              *, decider: Layout, source: str, warning_key: str) -> SetCheck:
+    """The checklist for an upload. A file the source needs only when the ledger posts to
+    it is pending until the *decider* arrives."""
+    have = {tb.layout.kind for tb in tables}
+    items: list[Item] = []
     problems: list[str] = []
-    missing = [layout.label for layout in required if not any(tb.layout.kind == layout.kind for tb in tables)]
-    if missing:
-        problems.append(t("migration.err_export_missing", files=", ".join(missing)))
-    if unknown:
-        problems.append(t("migration.err_export_unrecognised", files=", ".join(unknown)))
+    for layout in layouts:
+        names = tuple(tb.name for tb in of(tables, layout))
+        if names:
+            status = RECEIVED
+        elif layout in required:
+            status = MISSING
+            problems.append(t("migration.err_export_missing_from", label=layout.label, menu=layout.menu))
+        elif layout.optional:
+            status = OPTIONAL
+        else:
+            status = NOT_NEEDED if decider.kind in have else PENDING
+        items.append(Item(layout, status, names))
+    company = company_name(tables)
+    problems += [_stranger_problem(s, layouts, source, company) for s in strangers]
+    problems += _duplicates(tables)
+    problems += _joins(tables, layouts)
+    recognised = ", ".join(f"{tb.name} ({tb.layout.label})" for tb in tables) or "--"
+    return SetCheck(source, t(warning_key), tuple(items), tuple(problems), recognised)
+
+
+def _stranger_problem(stranger: Stranger, layouts: tuple[Layout, ...], source: str, company: str) -> str:
+    """Why a file is not part of the set: unreadable, a listed file short of columns, a
+    report the set does not use, or a file of something else entirely."""
+    if stranger.reason:
+        return stranger.reason
+    best: tuple[int, Layout, frozenset[str]] | None = None
+    for index, line in enumerate(stranger.lines):
+        cells = {normalize(c) for c in line if c.strip()}
+        titles = {normalize(c) for above in stranger.lines[:index] for c in above if c.strip()}
+        for layout in layouts:
+            if layout.title and normalize(layout.title) not in titles:
+                continue
+            found = len(layout.columns & cells)
+            if found >= 2 and found * 2 >= len(layout.columns) and (best is None or found > best[0]):
+                best = (found, layout, layout.columns - cells)
+    if best is not None:
+        _, layout, lacking = best
+        key = "migration.err_export_lacks_column" if len(lacking) == 1 else "migration.err_export_lacks_columns"
+        return t(key, name=stranger.name, label=layout.label, columns=", ".join(sorted(lacking)), menu=layout.menu)
+    title = _report_title(stranger.lines, company)
+    if title:
+        return t("migration.err_export_wrong_report", name=stranger.name, title=title, source=source)
+    return t("migration.err_export_unknown_file", name=stranger.name, source=source)
+
+
+def _report_title(lines: list[list[str]], company: str) -> str:
+    """A report's title: the line above its dated heading that is not the company's name."""
+    for index, line in enumerate(lines[:HEADER_SEARCH]):
+        if any(report_heading(c) for c in line if c.strip()):
+            above = [cells[0] for cells in ([c.strip() for c in ln if c.strip()] for ln in lines[:index]) if cells]
+            return next((c for c in above if normalize(c) != normalize(company)), "")
+    return ""
+
+
+def _duplicates(tables: list[Table]) -> list[str]:
+    problems: list[str] = []
     seen: dict[str, str] = {}
     for tb in tables:
         if tb.layout.many:
@@ -158,12 +283,36 @@ def refuse_incomplete(tables: list[Table], unknown: list[str], required: list[La
             problems.append(t("migration.err_export_twice", label=tb.layout.label,
                               files=f"{seen[tb.layout.kind]}, {tb.name}"))
         seen[tb.layout.kind] = tb.name
-    if problems:
-        raise ScanError(" ".join([*problems, t("migration.err_export_recognised", files=found)]))
+    return problems
 
 
-def of(tables: list[Table], layout: Layout) -> list[Table]:
-    return [tb for tb in tables if tb.layout.kind == layout.kind]
+def short_date(on: date) -> str:
+    return f"{on.day} {on:%b %Y}"
+
+
+def _joins(tables: list[Table], layouts: tuple[Layout, ...]) -> list[str]:
+    """A report exported a period at a time: each file's period starts the day after the
+    one before it ends."""
+    problems: list[str] = []
+    day = timedelta(days=1)
+    for layout in (lt for lt in layouts if lt.joined):
+        spans: list[tuple[date, date, str]] = []
+        for tb in of(tables, layout):
+            try:
+                spans.append((*period(tb), tb.name))
+            except ScanError as exc:
+                problems.append(str(exc))
+        spans.sort()
+        for (_, end, earlier), (start, later_end, later) in zip(spans, spans[1:]):
+            if later_end <= end:
+                problems.append(t("migration.err_export_period_inside", later=later, earlier=earlier))
+            elif start <= end:
+                problems.append(t("migration.err_export_period_overlap", later=later, earlier=earlier,
+                                  start=short_date(start), again=short_date(end + day)))
+            elif start > end + day:
+                problems.append(t("migration.err_export_period_gap", label=layout.label,
+                                  start=short_date(end + day), end=short_date(start - day)))
+    return problems
 
 
 def report_heading(text: str) -> bool:

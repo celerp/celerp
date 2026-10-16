@@ -21,27 +21,40 @@ from celerp.importers.adapters.exports.book import (
     ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, TaxCode,
 )
 from celerp.importers.adapters.exports.files import (
-    DateReader, Layout, Table, amount, as_at, company_name, money, normalize, of, read_set, refuse_incomplete,
-    report_date,
+    DateReader, Layout, SetCheck, Stranger, Table, amount, as_at, check_set, company_name, money, normalize, of,
+    read_set, report_date,
 )
 from ui.i18n import t
 
 SOURCE_SYSTEM = "xero"
 
-CHART = Layout("chart", "Chart of accounts", frozenset({"code", "name", "type", "tax code"}))
-CONTACTS = Layout("contacts", "Contacts", frozenset({"contactname", "firstname", "lastname"}))
-ITEMS = Layout("items", "Inventory items", frozenset({"itemcode", "itemname"}))
+SOURCE_NAME = "Xero"
+WARNING_KEY = "migration.export_warning_xero"
+
+CHART = Layout("chart", "Chart of accounts", frozenset({"code", "name", "type", "tax code"}),
+               menu="Accounting > Chart of accounts > Export")
+CONTACTS = Layout("contacts", "Contacts", frozenset({"contactname", "firstname", "lastname"}),
+                  menu="Contacts > All contacts > Export")
+ITEMS = Layout("items", "Inventory items", frozenset({"itemcode", "itemname"}),
+               menu="Business > Products and services > Export", optional=True)
 DOCUMENTS = Layout("documents", "Invoices and bills", frozenset({
     "contactname", "invoicenumber", "invoicedate", "total", "description", "quantity", "unitamount",
-    "accountcode", "taxtype", "currency", "type", "status"}), many=True)
+    "accountcode", "taxtype", "currency", "type", "status"}), many=True,
+    menu="Business > Invoices > Export, and Business > Bills to pay > Export",
+    range_key="migration.export_range_all_documents")
 LEDGER = Layout("ledger", "General Ledger", frozenset({
-    "journal number", "date", "source", "account code", "debit", "credit"}))
+    "journal number", "date", "source", "account code", "debit", "credit"}),
+    menu="Accounting > Reports > General Ledger > Export", range_key="migration.export_range_ledger")
 TRIAL_BALANCE = Layout("trial_balance", "Trial Balance", frozenset({"account code", "account"}),
-                       title="Trial Balance", many=True)
+                       title="Trial Balance", many=True, menu="Accounting > Reports > Trial Balance > Export",
+                       range_key="migration.export_range_tb_months")
 AGED_RECEIVABLES = Layout("aged_receivable", "Aged Receivables Detail", frozenset({"invoice number", "total"}),
-                          title="Aged Receivables Detail")
+                          title="Aged Receivables Detail",
+                          menu="Accounting > Reports > Aged Receivables Detail > Export",
+                          range_key="migration.export_range_last_day")
 AGED_PAYABLES = Layout("aged_payable", "Aged Payables Detail", frozenset({"invoice number", "total"}),
-                       title="Aged Payables Detail")
+                       title="Aged Payables Detail", menu="Accounting > Reports > Aged Payables Detail > Export",
+                       range_key="migration.export_range_last_day")
 LAYOUTS = (CHART, CONTACTS, ITEMS, DOCUMENTS, LEDGER, TRIAL_BALANCE, AGED_RECEIVABLES, AGED_PAYABLES)
 
 # Xero account type -> (account type, control)
@@ -290,9 +303,19 @@ def _dates(tables: list[Table]) -> DateReader:
     return DateReader(samples)
 
 
+def _check(tables: list[Table], strangers: list[Stranger]) -> SetCheck:
+    return check_set(tables, strangers, LAYOUTS, _required(tables), decider=LEDGER, source=SOURCE_NAME,
+                     warning_key=WARNING_KEY)
+
+
+def check(artifacts: ArtifactSet) -> SetCheck:
+    """The upload checked against the Xero export checklist."""
+    return _check(*read_set(artifacts, LAYOUTS))
+
+
 def read_xero(artifacts: ArtifactSet) -> Book:
-    tables, unknown = read_set(artifacts, LAYOUTS)
-    refuse_incomplete(tables, unknown, _required(tables))
+    tables, strangers = read_set(artifacts, LAYOUTS)
+    _check(tables, strangers).refuse()
     read_date = _dates(tables)
     book = Book(SOURCE_SYSTEM)
     _accounts(book, tables)
@@ -319,8 +342,5 @@ def read_xero(artifacts: ArtifactSet) -> Book:
 
 def matches(artifacts: ArtifactSet) -> bool:
     """Whether any file of the upload is laid out as a Xero export: a ledger, a chart, or a report."""
-    try:
-        tables, _ = read_set(artifacts, LAYOUTS)
-    except ScanError:
-        return False
+    tables, _ = read_set(artifacts, LAYOUTS)
     return any(tb.layout in (LEDGER, CHART, DOCUMENTS, TRIAL_BALANCE) for tb in tables)

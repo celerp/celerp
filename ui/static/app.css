@@ -1566,7 +1566,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   /* Hide chrome */
   .sidebar, .topbar, .brand-footer,
   .doc-actions, .payment-section, .refund-section, .receive-section,
-  .btn, button, .sidebar-toggle { display: none !important; }
+  .btn, button, .sidebar-toggle, .export-print-link { display: none !important; }
 
   /* Remove shell layout so doc fills page */
   .app-shell, .content-area, .main-content { display: block !important; }

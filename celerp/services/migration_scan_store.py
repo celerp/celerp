@@ -26,7 +26,7 @@ import time
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -45,6 +45,7 @@ from celerp.importers.adapters.base import (
     SourceRevisionError,
     SourceScan,
 )
+from celerp.importers.adapters.exports.files import SetCheck
 from celerp.importers.schema import CIFCoverageEntry, CIFMode
 from ui.i18n import t
 
@@ -90,6 +91,36 @@ class ScanSession:
     scan: SourceScan
     decisions: MigrationDecisions | None
     expires_at: datetime
+
+
+@dataclass(frozen=True)
+class DraftSession:
+    """An export set still being brought in: its files so far, checked against the
+    source's checklist, and why the set could not be read when it was checked as whole."""
+    token: str
+    owner: ScanOwner
+    adapter_key: str
+    artifacts: ArtifactSet
+    check: SetCheck
+    error: str
+    expires_at: datetime
+
+    def view(self) -> dict:
+        view = self.check.view()
+        return {**view, "complete": view["complete"] and not self.error,
+                "problems": [*view["problems"], *([self.error] if self.error else [])],
+                "uploads": [{"name": a.original_name, "stored_name": a.path.name} for a in self.artifacts]}
+
+
+@dataclass
+class _Upload:
+    """What one upload request carries: new files, the chosen source, and for an export
+    set, the draft it adds to, the draft files it takes out, and whether only to check."""
+    artifacts: ArtifactSet
+    adapter: SourceAdapter | None
+    draft: str = ""
+    remove: set[str] = field(default_factory=set)
+    check_only: bool = False
 
 
 # ── Filesystem primitives (single points tests can fault) ────────────────────
@@ -298,31 +329,63 @@ async def _stream_file(part: UploadPart, path: Path, *, per_file: int, remaining
     return Artifact(path, _sanitize_name(part.filename), size, digest.hexdigest())
 
 
-async def _receive(files: AsyncIterable[UploadPart], directory: Path) -> tuple[ArtifactSet, SourceAdapter | None]:
+async def _receive(files: AsyncIterable[UploadPart], directory: Path) -> _Upload:
     artifacts: ArtifactSet = []
-    adapter: SourceAdapter | None = None
+    upload = _Upload(artifacts, None)
     total = 0
     async for part in files:
         if part.name == "source":
             key = await _read_text(part.chunks)
             if key:
-                adapter = registry.get_adapter(key)
-                if adapter is None:
+                upload.adapter = registry.get_adapter(key)
+                if upload.adapter is None:
                     raise ScanStoreError(422, t("migration.err_source_unavailable"))
+        elif part.name == "draft":
+            upload.draft = await _read_text(part.chunks)
+        elif part.name == "remove":
+            upload.remove.add(await _read_text(part.chunks))
+        elif part.name == "check":
+            upload.check_only = await _read_text(part.chunks) == "1"
         elif part.name == "files" and part.filename:
             if len(artifacts) >= MAX_ARTIFACTS:
                 raise ScanStoreError(413, t("migration.err_too_many_files", count=MAX_ARTIFACTS))
             path = directory / f"artifact-{len(artifacts) + 1}"
-            artifact = await _stream_file(part, path, per_file=_per_file_limit(adapter),
+            artifact = await _stream_file(part, path, per_file=_per_file_limit(upload.adapter),
                                           remaining=MAX_AGGREGATE_BYTES - total)
             total += artifact.size_bytes
             artifacts.append(artifact)
         else:
             async for _ in part.chunks:
                 pass
-    if not artifacts:
+    if not artifacts and not upload.draft:
         raise ScanStoreError(422, "Choose a file to upload.")
-    return artifacts, adapter
+    return upload
+
+
+def _add_draft(upload: _Upload, directory: Path, owner: ScanOwner) -> None:
+    """Bring the owner's draft files, less those taken out, into the new upload. They are
+    linked, not moved, so the draft stays whole until the new upload is stored."""
+    old = _directory(upload.draft)
+    try:
+        data = json.loads((old / "scan.json").read_text())
+        if data["owner"] != _owner_json(owner) or not data.get("draft") or float(data["expires_at"]) <= _now():
+            raise ScanStoreError(410, EXPIRED)
+        kept = [a for a in data["artifacts"] if a["stored_name"] not in upload.remove]
+        if len(upload.artifacts) + len(kept) > MAX_ARTIFACTS:
+            raise ScanStoreError(413, t("migration.err_too_many_files", count=MAX_ARTIFACTS))
+        if sum(a.size_bytes for a in upload.artifacts) + sum(int(a["size_bytes"]) for a in kept) > MAX_AGGREGATE_BYTES:
+            raise ScanStoreError(413, t("migration.err_upload_too_large"))
+        carried: ArtifactSet = []
+        for n, a in enumerate(kept, len(upload.artifacts) + 1):
+            if not _STORED_RE.fullmatch(a["stored_name"]):
+                raise ValueError("stored artifact name is not a scan artifact")
+            path = directory / f"artifact-{n}"
+            os.link(old / a["stored_name"], path)
+            carried.append(Artifact(path, str(a["original_name"]), int(a["size_bytes"]), str(a["sha256"])))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ScanStoreError(410, EXPIRED) from exc
+    upload.artifacts[:0] = carried
+    upload.adapter = upload.adapter or registry.get_adapter(data["adapter_key"])
 
 
 def _accepted(adapters) -> str:
@@ -365,8 +428,29 @@ def _owned_tokens(owner: ScanOwner) -> list[str]:
     return tokens
 
 
-async def create_scan(files: AsyncIterable[UploadPart], *, owner: ScanOwner) -> ScanSession:
-    """Store and inspect an upload. The owner's previous scan is replaced on success."""
+async def _inspect(adapter: SourceAdapter, artifacts: ArtifactSet, check_only: bool) -> SourceScan | DraftSession:
+    """The scan of a whole set. An export set short of a file, holding a file it should not,
+    that the reader refuses, or sent only to be checked stays a draft (token and owner
+    filled in by the caller) so the user can add or take out files."""
+    check = getattr(adapter, "check", None)
+    if check is None:
+        try:
+            return await asyncio.to_thread(adapter.inspect, artifacts)
+        except (ScanError, SourceRevisionError) as exc:
+            raise ScanStoreError(422, str(exc)) from exc
+    checked = await asyncio.to_thread(check, artifacts)
+    error = ""
+    if checked.complete and not check_only:
+        try:
+            return await asyncio.to_thread(adapter.inspect, artifacts)
+        except (ScanError, SourceRevisionError) as exc:
+            error = str(exc)
+    return DraftSession("", ("", None), adapter.key, artifacts, checked, error, datetime.now(timezone.utc))
+
+
+async def create_scan(files: AsyncIterable[UploadPart], *, owner: ScanOwner) -> ScanSession | DraftSession:
+    """Store and inspect an upload, or keep an unfinished export set as a draft. The owner's
+    previous scan or draft is replaced on success."""
     purge_expired()
     token = secrets.token_urlsafe(32)
     root = _scans_root()
@@ -374,14 +458,18 @@ async def create_scan(files: AsyncIterable[UploadPart], *, owner: ScanOwner) -> 
     directory = root / token
     directory.mkdir(mode=0o700)
     try:
-        artifacts, chosen = await _receive(files, directory)
-        adapter = _recognise(artifacts, chosen)
-        try:
-            scan = await asyncio.to_thread(adapter.inspect, artifacts)
-        except (ScanError, SourceRevisionError) as exc:
-            raise ScanStoreError(422, str(exc)) from exc
+        upload = await _receive(files, directory)
+        if upload.draft:
+            _add_draft(upload, directory, owner)
+        artifacts = upload.artifacts
+        if upload.draft and upload.adapter is not None and hasattr(upload.adapter, "check"):
+            adapter = upload.adapter            # a draft is checked, never refused, for what it holds
+        else:
+            adapter = _recognise(artifacts, upload.adapter)
+        result = await _inspect(adapter, artifacts, upload.check_only)
         previous = _owned_tokens(owner)
         expires_at = _now() + SCAN_TTL_SECONDS
+        draft = result if isinstance(result, DraftSession) else None
         try:
             _write_json(directory / "scan.json", {
                 "owner": _owner_json(owner),
@@ -389,8 +477,9 @@ async def create_scan(files: AsyncIterable[UploadPart], *, owner: ScanOwner) -> 
                 "artifacts": [{"original_name": a.original_name, "stored_name": a.path.name,
                                "size_bytes": a.size_bytes, "sha256": a.sha256} for a in artifacts],
                 "expires_at": expires_at,
-                "scan": _scan_json(scan),
+                "scan": None if draft else _scan_json(result),
                 "decisions": None,
+                "draft": draft is not None,
             })
         except OSError as exc:
             raise ScanStoreError(500, t(STORE_FAILED)) from exc
@@ -399,8 +488,10 @@ async def create_scan(files: AsyncIterable[UploadPart], *, owner: ScanOwner) -> 
         raise
     for old in previous:
         _discard(root / old)
-    return ScanSession(token, owner, adapter.key, artifacts, scan, None,
-                       datetime.fromtimestamp(expires_at, timezone.utc))
+    expires = datetime.fromtimestamp(expires_at, timezone.utc)
+    if draft is not None:
+        return DraftSession(token, owner, adapter.key, artifacts, draft.check, draft.error, expires)
+    return ScanSession(token, owner, adapter.key, artifacts, result, None, expires)
 
 
 # ── Token access ─────────────────────────────────────────────────────────────
@@ -417,6 +508,8 @@ def _directory(token: str) -> Path:
 def _read(token: str, directory: Path, owner: ScanOwner) -> ScanSession:
     try:
         data = json.loads((directory / "scan.json").read_text())
+        if data.get("draft"):
+            raise ScanStoreError(410, EXPIRED)      # a draft is added to, never analysed
         session = _session_from_json(token, directory, data)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         _discard(directory)

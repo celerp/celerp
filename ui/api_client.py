@@ -3871,16 +3871,22 @@ def _migration_path(token: str | None, step: str, group: str) -> str:
 
 async def migration_scan(token: str | None, files: list[tuple[str, BinaryIO]], source: str | None,
                          setup_code: str | None = None, *, group: str = "bootstrap",
-                         credentials: tuple[str, str] | None = None) -> dict:
-    """Upload source files for analysis. Returns {"scan_token", "scan"}. A login with no
-    company signs the upload with its ``credentials`` (email, password)."""
+                         credentials: tuple[str, str] | None = None, draft: str | None = None,
+                         remove: list[str] = (), check: bool = False) -> dict:
+    """Upload source files for analysis. Returns {"scan_token", "scan"}, or for an export
+    set still short of files {"draft_token", "checklist"}. ``draft`` adds the files to that
+    draft less its ``remove`` files; ``check`` only checks the set. A login with no company
+    signs the upload with its ``credentials`` (email, password)."""
+    # Every field travels as a multipart part, so a request with no new file stays multipart.
+    fields = [("source", source), ("draft", draft), *(("remove", name) for name in remove),
+              ("check", "1" if check else None)]
     async with _local_error_mapping():
         async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True,
                                  headers=None if token else _setup_code_headers(setup_code)) as c:
             r = await c.post(
                 _migration_path(token, "scan", group),
-                files=[("files", (name, content, "application/octet-stream")) for name, content in files],
-                data={"source": source} if source else None,
+                files=[*((name, (None, value)) for name, value in fields if value),
+                       *(("files", (name, content, "application/octet-stream")) for name, content in files)],
                 auth=httpx.BasicAuth(*credentials) if credentials else httpx.USE_CLIENT_DEFAULT,
             )
     return _raise(r).json()

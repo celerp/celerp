@@ -8,7 +8,9 @@ List, the Customer and Vendor Contact Lists, the Product/Service List, the Journ
 (one row per invoice or bill line), Invoices and Received Payments and Bills and Applied
 Payments (each invoice or bill followed by what was applied to it), a Trial Balance for
 each financial year's end and the last ledger date, and A/R and A/P Aging Detail as of
-the last ledger date. QuickBooks Online keeps no drafts and exports no deleted records.
+the last ledger date. The transaction reports may be exported a year at a time; the
+files of one report are read in date order and their periods must join. QuickBooks
+Online keeps no drafts and exports no deleted records.
 """
 
 from __future__ import annotations
@@ -23,34 +25,53 @@ from celerp.importers.adapters.exports.book import (
     ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, TaxCode,
 )
 from celerp.importers.adapters.exports.files import (
-    DateReader, Layout, Table, amount, as_at, company_name, money, normalize, of, period, read_set, refuse_incomplete,
+    DateReader, Layout, SetCheck, Stranger, Table, amount, as_at, check_set, company_name, money, normalize, of,
+    period, read_set,
 )
 from celerp.importers.adapters.exports.ledger import find_document
 from ui.i18n import t
 
 SOURCE_SYSTEM = "quickbooks_online"
 
-ACCOUNTS = Layout("accounts", "Account List", frozenset({"account", "type", "detail type"}), title="Account List")
+SOURCE_NAME = "QuickBooks Online"
+WARNING_KEY = "migration.export_warning_qbo"
+
+
+def _report(title: str) -> str:
+    return f"Reports > {title} > Export to Excel"
+
+
+def _yearly(kind: str, label: str, columns: frozenset[str]) -> Layout:
+    """A transaction report: every date, in one file or a file per period that join."""
+    return Layout(kind, label, columns, title=label, many=True, joined=True, menu=_report(label),
+                  range_key="migration.export_range_by_year")
+
+
+ACCOUNTS = Layout("accounts", "Account List", frozenset({"account", "type", "detail type"}), title="Account List",
+                  menu=_report("Account List"))
 CUSTOMERS = Layout("customers", "Customer Contact List", frozenset({"customer", "email"}),
-                   title="Customer Contact List")
-VENDORS = Layout("vendors", "Vendor Contact List", frozenset({"vendor", "email"}), title="Vendor Contact List")
+                   title="Customer Contact List", menu=_report("Customer Contact List"))
+VENDORS = Layout("vendors", "Vendor Contact List", frozenset({"vendor", "email"}), title="Vendor Contact List",
+                 menu=_report("Vendor Contact List"))
 PRODUCTS = Layout("products", "Product/Service List", frozenset({"product/service", "type"}),
-                  title="Product/Service List")
-JOURNAL = Layout("journal", "Journal", frozenset({
-    "date", "transaction type", "num", "name", "account", "debit", "credit"}), title="Journal")
+                  title="Product/Service List", menu=_report("Product/Service List"), optional=True)
+JOURNAL = _yearly("journal", "Journal", frozenset({
+    "date", "transaction type", "num", "name", "account", "debit", "credit"}))
 _LINES = frozenset({"date", "transaction type", "num", "product/service", "qty", "amount", "account"})
-SALES = Layout("sales", "Sales by Customer Detail", _LINES | {"customer"}, title="Sales by Customer Detail")
-PURCHASES = Layout("purchases", "Purchases by Vendor Detail", _LINES | {"vendor"}, title="Purchases by Vendor Detail")
-RECEIVED = Layout("received", "Invoices and Received Payments", frozenset({
-    "date", "transaction type", "num", "customer", "amount"}), title="Invoices and Received Payments")
-APPLIED = Layout("applied", "Bills and Applied Payments", frozenset({
-    "date", "transaction type", "num", "vendor", "amount"}), title="Bills and Applied Payments")
+SALES = _yearly("sales", "Sales by Customer Detail", _LINES | {"customer"})
+PURCHASES = _yearly("purchases", "Purchases by Vendor Detail", _LINES | {"vendor"})
+RECEIVED = _yearly("received", "Invoices and Received Payments", frozenset({
+    "date", "transaction type", "num", "customer", "amount"}))
+APPLIED = _yearly("applied", "Bills and Applied Payments", frozenset({
+    "date", "transaction type", "num", "vendor", "amount"}))
 TRIAL_BALANCE = Layout("trial_balance", "Trial Balance", frozenset({"debit", "credit"}), title="Trial Balance",
-                       many=True)
+                       many=True, menu=_report("Trial Balance"), range_key="migration.export_range_tb_year_end")
 AR_AGING = Layout("ar_aging", "A/R Aging Detail", frozenset({"transaction type", "num", "customer", "open balance"}),
-                  title="A/R Aging Detail")
+                  title="A/R Aging Detail", menu=_report("A/R Aging Detail"),
+                  range_key="migration.export_range_last_day")
 AP_AGING = Layout("ap_aging", "A/P Aging Detail", frozenset({"transaction type", "num", "vendor", "open balance"}),
-                  title="A/P Aging Detail")
+                  title="A/P Aging Detail", menu=_report("A/P Aging Detail"),
+                  range_key="migration.export_range_last_day")
 LAYOUTS = (ACCOUNTS, CUSTOMERS, VENDORS, PRODUCTS, JOURNAL, SALES, PURCHASES, RECEIVED, APPLIED, TRIAL_BALANCE,
            AR_AGING, AP_AGING)
 
@@ -157,10 +178,9 @@ def _items(book: Book, tables: list[Table]) -> dict[str, str]:
 def _journal(book: Book, tables: list[Table], read_date: DateReader, account: _Accounts) -> None:
     """One block per transaction: its date, type, number and name on the first row, one
     account per row, then a totals row with no account."""
-    tb = of(tables, JOURNAL)[0]
     missing: set[str] = set()
     current: GLJournal | None = None
-    for row in tb.rows:
+    for tb, row in ((tb, row) for tb in sorted(of(tables, JOURNAL), key=period) for row in tb.rows):
         if tb.value(row, "date"):
             where = f"{tb.name} {tb.value(row, 'date')} {tb.value(row, 'num')}".strip()
             source = tb.value(row, "transaction type")
@@ -339,9 +359,19 @@ def _dates(tables: list[Table]) -> DateReader:
     return DateReader([s for s in samples if s])
 
 
+def _check(tables: list[Table], strangers: list[Stranger]) -> SetCheck:
+    return check_set(tables, strangers, LAYOUTS, _required(tables), decider=JOURNAL, source=SOURCE_NAME,
+                     warning_key=WARNING_KEY)
+
+
+def check(artifacts: ArtifactSet) -> SetCheck:
+    """The upload checked against the QuickBooks Online export checklist."""
+    return _check(*read_set(artifacts, LAYOUTS))
+
+
 def read_qbo(artifacts: ArtifactSet) -> Book:
-    tables, unknown = read_set(artifacts, LAYOUTS)
-    refuse_incomplete(tables, unknown, _required(tables))
+    tables, strangers = read_set(artifacts, LAYOUTS)
+    _check(tables, strangers).refuse()
     read_date = _dates(tables)
     book = Book(SOURCE_SYSTEM)
     _accounts(book, tables)
@@ -370,8 +400,5 @@ def read_qbo(artifacts: ArtifactSet) -> Book:
 def matches(artifacts: ArtifactSet) -> bool:
     """Whether any file of the upload is laid out as a QuickBooks Online export: the journal,
     the account list, a line detail report or a trial balance."""
-    try:
-        tables, _ = read_set(artifacts, LAYOUTS)
-    except ScanError:
-        return False
+    tables, _ = read_set(artifacts, LAYOUTS)
     return any(tb.layout in (JOURNAL, ACCOUNTS, SALES, PURCHASES, TRIAL_BALANCE) for tb in tables)

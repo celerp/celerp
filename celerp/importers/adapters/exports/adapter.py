@@ -40,6 +40,7 @@ class ExportSetAdapter:
     accepts_key: str
     read: Callable[[ArtifactSet], Book]            # the source's reader
     matches: Callable[[ArtifactSet], bool]         # whether any uploaded file is laid out as this source's
+    check: Callable[[ArtifactSet], files.SetCheck]  # the upload against the source's export checklist
     adapter_version = "1"
     # Records the export counts but no migration carries, by coverage label.
     skipped: dict[str, CoverageClass] = {}
@@ -52,6 +53,10 @@ class ExportSetAdapter:
     @property
     def accepts(self) -> str:
         return t(self.accepts_key)
+
+    def checklist(self) -> files.SetCheck:
+        """Every file the source exports for a migration, before any is uploaded."""
+        return self.check([])
 
     def _read(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> tuple[Book, Ledger]:
         book = self.read(artifacts)
@@ -103,16 +108,18 @@ class ExportSetAdapter:
 
 class XeroAdapter(ExportSetAdapter):
     key = xero.SOURCE_SYSTEM
-    display_name = "Xero"
+    display_name = xero.SOURCE_NAME
     accepts_key = "migration.xero_accepts"
     skipped = {xero.DELETED: CoverageClass.IGNORED_NON_BUSINESS}
     read = staticmethod(xero.read_xero)
     matches = staticmethod(xero.matches)
+    check = staticmethod(xero.check)
 
 
 class QuickBooksOnlineAdapter(ExportSetAdapter):
     key = qbo.SOURCE_SYSTEM
-    display_name = "QuickBooks Online"
+    display_name = qbo.SOURCE_NAME
     accepts_key = "migration.qbo_accepts"
     read = staticmethod(qbo.read_qbo)
     matches = staticmethod(qbo.matches)
+    check = staticmethod(qbo.check)
