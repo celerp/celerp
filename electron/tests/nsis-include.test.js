@@ -92,3 +92,19 @@ test("an interactive install names each stage before it starts",
     before(extract, "Installing application files...", "CopyFiles /SILENT");
     before(section, "Finishing installation...", "!insertmacro registryAddInstallInfo");
   });
+
+// When the app files cannot be copied into place (a full disk, a file still in
+// use), setup retries, then asks. Cancelling, which is also the silent answer,
+// stops setup with exit code 2. It never unpacks over the top while ignoring
+// errors, which reported success with files missing
+// (patches/app-builder-lib@25.1.8.patch).
+test("setup stops with an error when the app files cannot be copied",
+  function test_nsis_copy_failure_stops() {
+    const extract = fs.readFileSync(path.join(templatesDir(), "include/extractAppPackage.nsh"), "utf8");
+    const macro = extract.split("!macro extractUsing7za FILE")[1].split("!macroend")[0];
+    const failed = macro.split("IfErrors 0 DoneExtract7za")[1].split("RetryExtract7za:")[0];
+    expect(failed).toContain("/SD IDCANCEL IDRETRY RetryExtract7za");
+    expect(failed).toContain("could not copy its files to $OUTDIR. Make sure the disk has enough free space");
+    expect(failed.trim().split(/\s*\n\s*/).slice(-2)).toEqual(["SetErrorLevel 2", "Quit"]);
+    expect(macro.split('Nsis7z::Extract "${FILE}"').length).toBe(2);
+  });

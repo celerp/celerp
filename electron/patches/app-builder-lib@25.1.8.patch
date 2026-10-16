@@ -29,7 +29,7 @@ index 3de631bf0ce5095d03062ba98a68c5249904911e..056ec058124617c39743a3341e4bc8c2
      ${endif}
  
 diff --git a/templates/nsis/include/extractAppPackage.nsh b/templates/nsis/include/extractAppPackage.nsh
-index f5470bf..df1f132 100644
+index f5470bf..71e20b2 100644
 --- a/templates/nsis/include/extractAppPackage.nsh
 +++ b/templates/nsis/include/extractAppPackage.nsh
 @@ -1,3 +1,14 @@
@@ -71,6 +71,32 @@ index f5470bf..df1f132 100644
      CopyFiles /SILENT "$PLUGINSDIR\7z-out\*" $OUTDIR
      IfErrors 0 DoneExtract7za
  
+@@ -113,21 +127,12 @@
+       # Try copying a few times before asking for a user action.
+       Goto RetryExtract7za
+     ${else}
+-      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDRETRY IDCANCEL AbortExtract7za
++      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${PRODUCT_NAME} could not copy its files to $OUTDIR. Make sure the disk has enough free space and that ${PRODUCT_NAME} is closed, then click Retry." /SD IDCANCEL IDRETRY RetryExtract7za
+     ${endIf}
+ 
+-    # As an absolutely last resort after a few automatic attempts and user
+-    # intervention - we will just overwrite everything with `Nsis7z::Extract`
+-    # even though it is not atomic and will ignore errors.
+-
+-    # Clear the temporary folder first to make sure we don't use twice as
+-    # much disk space.
+-    RMDir /r "$PLUGINSDIR\7z-out"
+-
+-    Nsis7z::Extract "${FILE}"
+-    Goto DoneExtract7za
+-
+-  AbortExtract7za:
++    # Stop rather than extract over the top while ignoring errors: that reports
++    # success with files missing, for example on a full disk.
++    SetErrorLevel 2
+     Quit
+ 
+   RetryExtract7za:
 diff --git a/templates/nsis/installSection.nsh b/templates/nsis/installSection.nsh
 index 053772f..223a5c6 100644
 --- a/templates/nsis/installSection.nsh
