@@ -20,6 +20,34 @@ from celerp.services.company_lock import locked_company, lock_company
 SCOPES = frozenset({"contacts", "products", "documents", "inventory"})
 MAX_ACTIVE = 5
 MAX_DAYS = 90
+PAIRING_PREFIX = "cpair1"
+MAX_LABEL = 128
+
+
+def pairing_code(company_id: uuid.UUID, name: str) -> str:
+    """The code a sending company shares so the receiving owner never types its ID."""
+    label = base64.urlsafe_b64encode(name.strip()[:MAX_LABEL].encode()).decode().rstrip("=")
+    return f"{PAIRING_PREFIX}.{company_id}.{label}"
+
+
+def parse_pairing_code(code: object) -> tuple[uuid.UUID, str]:
+    """Return the sending company's ID and name, or raise ValueError for anything else."""
+    if not isinstance(code, str) or len(code) > 1024:
+        raise ValueError("Invalid pairing code")
+    bits = code.strip().split(".")
+    if len(bits) != 3 or bits[0] != PAIRING_PREFIX:
+        raise ValueError("Invalid pairing code")
+    company_id = uuid.UUID(bits[1])
+    if str(company_id) != bits[1]:
+        raise ValueError("Invalid pairing code")
+    try:
+        raw = base64.urlsafe_b64decode(bits[2] + "=" * (-len(bits[2]) % 4))
+        name = raw.decode().strip()
+    except (ValueError, UnicodeDecodeError, base64.binascii.Error):
+        raise ValueError("Invalid pairing code") from None
+    if base64.urlsafe_b64encode(raw).decode().rstrip("=") != bits[2] or len(name) > MAX_LABEL:
+        raise ValueError("Invalid pairing code")
+    return company_id, name
 
 
 def _instant(value: datetime) -> datetime:

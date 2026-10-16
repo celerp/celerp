@@ -1075,6 +1075,57 @@ async def connectors_tab_content(lang: str, token: str, category: str, company_i
     )
 
 
+def _pairing_card(company_id: str, name: str, lang: str) -> FT:
+    """The sending company's pairing code, copied once and pasted by the receiving owner."""
+    import uuid
+    from celerp.services.peer_access import pairing_code
+    return Div(
+        P(t("accountant_access.your_code", lang)),
+        Div(
+            Code(pairing_code(uuid.UUID(company_id), name), cls="cell--mono",
+                 id="peer-pairing-code"),
+            Button(t("btn.copy", lang), type="button",
+                   **{"data-copy": "#peer-pairing-code"},
+                   cls="btn btn--xs btn--secondary ml-sm"),
+            cls="flex-row align-center gap-sm",
+        ),
+        P(t("accountant_access.give_code", lang), cls="settings-hint"),
+        cls="settings-card",
+    )
+
+
+def _grant_form(lang: str) -> FT:
+    return Form(
+        Label(t("accountant_access.pairing_code", lang)),
+        Input(name="pairing_code", type="text", maxlength="1024", cls="form-input"),
+        Label(t("accountant_access.label", lang)),
+        Input(name="label", maxlength="128",
+              placeholder=t("accountant_access.label_example", lang),
+              cls="form-input"),
+        Div(
+            Label(Input(type="checkbox", name="scopes", value="contacts",
+                        checked=True), t("accountant_access.contacts", lang)),
+            Label(Input(type="checkbox", name="scopes", value="products",
+                        checked=True), t("accountant_access.products", lang)),
+            Label(Input(type="checkbox", name="scopes", value="documents"),
+                  t("accountant_access.documents", lang)),
+        ),
+        Label(t("accountant_access.lifetime", lang)),
+        Select(
+            Option("14", value="14"),
+            Option("30", value="30", selected=True),
+            Option("90", value="90"),
+            name="lifetime_days",
+            cls="form-input"),
+        Button(t("accountant_access.issue", lang), type="submit",
+               cls="btn btn--primary"),
+        hx_post="/settings/accountant-access/grants",
+        hx_target="#accountant-access-result",
+        hx_swap="innerHTML",
+        cls="form-card",
+    )
+
+
 def setup_routes(app):
 
     @app.get("/settings/accountant-access")
@@ -1126,37 +1177,7 @@ def setup_routes(app):
             P(t("accountant_access.description", lang)),
             P(t("accountant_access.direction_warning", lang), cls="settings-hint"),
             P(t("accountant_access.source_help", lang)),
-            Form(
-                Label(t("accountant_access.client_id", lang)),
-                Input(name="source_company_id", type="text", required=True,
-                      maxlength="36", placeholder="00000000-0000-0000-0000-000000000000",
-                      cls="form-input"),
-                Label(t("accountant_access.label", lang)),
-                Input(name="label", required=True, maxlength="128",
-                      placeholder=t("accountant_access.label_example", lang),
-                      cls="form-input"),
-                Div(
-                    Label(Input(type="checkbox", name="scopes", value="contacts",
-                                checked=True), t("accountant_access.contacts", lang)),
-                    Label(Input(type="checkbox", name="scopes", value="products",
-                                checked=True), t("accountant_access.products", lang)),
-                    Label(Input(type="checkbox", name="scopes", value="documents"),
-                          t("accountant_access.documents", lang)),
-                ),
-                Label(t("accountant_access.lifetime", lang)),
-                Select(
-                    Option("14", value="14"),
-                    Option("30", value="30", selected=True),
-                    Option("90", value="90"),
-                    name="lifetime_days",
-                    cls="form-input"),
-                Button(t("accountant_access.issue", lang), type="submit",
-                       cls="btn btn--primary"),
-                hx_post="/settings/accountant-access/grants",
-                hx_target="#accountant-access-result",
-                hx_swap="innerHTML",
-                cls="form-card",
-            ),
+            _grant_form(lang),
             Div(id="accountant-access-result"),
             notice,
             H3(t("accountant_access.active_grants", lang)),
@@ -1177,7 +1198,7 @@ def setup_routes(app):
 
     @app.post("/settings/accountant-access/grants")
     async def accountant_access_issue(request: Request):
-        import uuid
+        from celerp.services.peer_access import parse_pairing_code
         from ui import api_client as api
         from ui.security import not_permitted_redirect
         token = _token(request)
@@ -1190,8 +1211,9 @@ def setup_routes(app):
         lang = get_lang(request)
         form = await request.form()
         try:
-            source_id = str(uuid.UUID(str(form.get("source_company_id") or "")))
-            label = str(form.get("label") or "").strip()
+            source, source_name = parse_pairing_code(form.get("pairing_code"))
+            source_id = str(source)
+            label = str(form.get("label") or "").strip() or source_name
             lifetime = int(form.get("lifetime_days") or "30")
             scopes = sorted(set(str(scope) for scope in form.getlist("scopes")))
             if not (1 <= len(label) <= 128 and 1 <= lifetime <= 90
@@ -1634,12 +1656,8 @@ def setup_routes(app):
                 A(t("connectors.back_to_connectors", lang), href=f"/settings/cloud?tab={c.get('category', 'website')}",
                   cls="btn btn--secondary btn--sm"),
             ),
-            Div(
-                P(t("accountant_access.your_id", lang)),
-                Code(company_id),
-                P(t("accountant_access.give_id", lang)),
-                cls="settings-card",
-            ) if platform == "celerp" else "",
+            _pairing_card(company_id, str(getattr(request.state, "auth_company", {}).get("name") or ""), lang)
+            if platform == "celerp" else "",
             _connector_detail_body(c, runs, config, lang, deposit=deposit,
                                    attention=await _attention(company_id, platform)),
             title=f"{name} - Celerp",
