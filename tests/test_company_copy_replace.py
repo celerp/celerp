@@ -57,10 +57,10 @@ def _cid(tok: str) -> str:
 
 
 async def _copy_then_more_work(client, engine):
-    """A copy of the demo company, then two more invoices entered after it was made."""
+    """A copy of the demo company, then two purchase orders entered after it was made."""
     tok, contacts = await _demo(client)
     data = await download(client, tok)
-    await seed_demo.seed_docs(client, tok, contacts, "invoice", 2)
+    await seed_demo.seed_docs(client, tok, contacts, "purchase_order", 2)
     return tok, data
 
 
@@ -77,7 +77,7 @@ async def test_copy_of_the_same_company_offers_replace_with_what_would_be_lost(r
     assert incoming["documents"] == current["documents"] - 2
     assert incoming["items"] == current["items"] > 0
     assert current["last_changed"] > incoming["last_changed"]
-    # The copy is older than the data here: the two invoices entered since would be lost.
+    # The copy is older than the data here: the two purchase orders entered since would be lost.
     assert replace["older"]["documents"] == 2 and replace["older"]["since"] == incoming["last_changed"]
     assert replace["changed_after_copy"] >= 2
     # Opening it as a separate company stays available, under a name of its own.
@@ -144,9 +144,12 @@ async def test_replace_needs_the_typed_name_and_the_owner(real_client, real_engi
         assert "Nothing was replaced." in r.json()["detail"]
     assert await _companies(real_engine) == [(cid, NAME)]
 
+    # An admin of Demo Trading who owns a company of their own opens the copy from there.
+    from company_backup_support import company
     admin = await owner(real_engine, "admin@example.test", "Admin")
     await member(real_engine, admin, uuid.UUID(cid), role="admin")
-    admin_tok = await token(real_engine, admin, cid, role="admin")
+    own = await company(real_engine, admin, "Admin Books", "admin-marker")
+    admin_tok = await token(real_engine, admin, own)
     theirs = (await read(real_client, admin_tok, data, mode="new_company")).json()
     assert theirs["replace"]["can_replace"] is False
     r = await real_client.post("/company-backups/replace", json={
@@ -154,7 +157,7 @@ async def test_replace_needs_the_typed_name_and_the_owner(real_client, real_engi
         "plan_fingerprint": theirs["plan_fingerprint"], "company_name": NAME}, headers=auth(admin_tok))
     assert r.status_code == 403, r.text
     assert r.json()["detail"] == f"Only the owner of {NAME} can replace it."
-    assert await _companies(real_engine) == [(cid, NAME)]
+    assert (cid, NAME) in await _companies(real_engine)
 
 
 async def test_failed_backup_replaces_nothing(real_client, real_engine, monkeypatch):
@@ -177,7 +180,7 @@ async def test_failed_backup_replaces_nothing(real_client, real_engine, monkeypa
 
 
 async def test_a_copy_of_an_opened_copy_is_the_same_company(real_client, real_engine):
-    """A company opened from a copy keeps the original's company id as its own lineage, so
+    """A company opened from a copy keeps the original's lineage, never its company id, so
     the copy it sends back is recognised where the original lives."""
     tok, _ = await _demo(real_client)
     data = await download(real_client, tok)
@@ -187,4 +190,8 @@ async def test_a_copy_of_an_opened_copy_is_the_same_company(real_client, real_en
         "plan_fingerprint": preview["plan_fingerprint"]}, headers=auth(tok))
     assert opened.status_code == 201, opened.text
     back = await download(real_client, opened.json()["access_token"])
-    assert manifest(back)["company"]["lineage_id"] == _cid(tok)
+    assert manifest(back)["company"]["lineage_id"] == manifest(data)["company"]["lineage_id"] != _cid(tok)
+    again = await read(real_client, tok, back)
+    assert again.status_code == 200, again.text
+    replace = again.json()["replace"]
+    assert replace["company_id"] in (_cid(tok), _cid(opened.json()["access_token"]))

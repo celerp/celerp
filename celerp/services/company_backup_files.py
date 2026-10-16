@@ -8,7 +8,8 @@ can read. A download is written in its company's folder, so deleting the company
 it too, and is deleted once it is sent. An upload is kept only while its
 restore can still go on: beside it a small metadata file names the file the owner
 chose, and, once the restore is done, only the company it opened, so a retry whose
-response was lost can be answered without the backup itself.
+response was lost can be answered without the backup itself. A backup taken of a company
+before a copy replaced it is kept, by the company's lineage, until its owner deletes it.
 """
 
 from __future__ import annotations
@@ -32,7 +33,8 @@ logger = logging.getLogger(__name__)
 UPLOAD_TTL_SECONDS = 24 * 3600
 RECEIPT_TTL_SECONDS = 90 * 24 * 3600
 UPLOADS = "uploads"
-UPLOAD_SUFFIX, EXPORT_SUFFIX, META_SUFFIX = ".upload", ".export", ".json"
+KEPT = "kept"
+UPLOAD_SUFFIX, EXPORT_SUFFIX, META_SUFFIX, KEPT_SUFFIX = ".upload", ".export", ".json", ".celerp-company"
 _CHUNK = 1024 * 1024
 
 
@@ -70,12 +72,17 @@ def _meta(stage: Path) -> Path:
     return stage.with_suffix(META_SUFFIX)
 
 
-def _write_meta(stage: Path, facts: dict) -> None:
-    partial = stage.with_suffix(META_SUFFIX + ".partial")
+def _write_json(path: Path, facts: dict) -> None:
+    """Write ``facts`` to the metadata file ``path`` whole, or leave it as it was."""
+    partial = path.with_suffix(META_SUFFIX + ".partial")
     partial.unlink(missing_ok=True)
     with private_file(partial) as out:
         out.write(json.dumps(facts).encode())
-    partial.replace(_meta(stage))
+    partial.replace(path)
+
+
+def _write_meta(stage: Path, facts: dict) -> None:
+    _write_json(_meta(stage), facts)
 
 
 def stage_upload(source: BinaryIO, stage: Path, *, limit: int, owner: str, mode: str,
@@ -217,12 +224,7 @@ def _sent_record(company_id, copy_id) -> Path:
 def remember_sent_copy(company_id, copy_id, facts: dict) -> None:
     """Keep what this installation alone knows about a copy it sent: the link's key
     and who it went to. The cloud never stores the key, so Copy link needs this."""
-    path = _sent_record(company_id, copy_id)
-    partial = path.with_suffix(META_SUFFIX + ".partial")
-    partial.unlink(missing_ok=True)
-    with private_file(partial) as out:
-        out.write(json.dumps(facts).encode())
-    partial.replace(path)
+    _write_json(_sent_record(company_id, copy_id), facts)
 
 
 def sent_copy(company_id, copy_id) -> dict:
@@ -237,12 +239,7 @@ def sent_copy(company_id, copy_id) -> dict:
 def remember_sender(firm_name: str, reply_to: str) -> None:
     """Keep the firm name and reply address of the last confirmed send, so the next send
     from any company on this installation starts with them."""
-    path = _private_dir(SENT) / f"sender{META_SUFFIX}"
-    partial = path.with_suffix(META_SUFFIX + ".partial")
-    partial.unlink(missing_ok=True)
-    with private_file(partial) as out:
-        out.write(json.dumps({"firm_name": firm_name, "reply_to": reply_to}).encode())
-    partial.replace(path)
+    _write_json(_private_dir(SENT) / f"sender{META_SUFFIX}", {"firm_name": firm_name, "reply_to": reply_to})
 
 
 def last_sender() -> dict:
@@ -257,6 +254,50 @@ def last_sender() -> dict:
 
 def forget_sent_copy(company_id, copy_id) -> None:
     _sent_record(company_id, copy_id).unlink(missing_ok=True)
+
+
+def _kept_dir(lineage) -> Path:
+    folder = _private_dir(KEPT) / str(uuid.UUID(str(lineage)))
+    folder.mkdir(exist_ok=True)
+    os.chmod(folder, 0o700)
+    return folder
+
+
+def new_kept(lineage) -> tuple[str, Path]:
+    """A new kept backup's id and where to write it, among its lineage's."""
+    kept_id = uuid.uuid4().hex
+    return kept_id, _kept_dir(lineage) / f"{kept_id}{KEPT_SUFFIX}"
+
+
+def remember_kept(lineage, kept_id: str, facts: dict) -> None:
+    _write_json(_kept_dir(lineage) / f"{kept_id}{META_SUFFIX}", facts)
+
+
+def kept_path(lineage, kept_id: str) -> Path | None:
+    """The kept backup ``kept_id`` of ``lineage``; None when there is none."""
+    if not re.fullmatch(r"[0-9a-f]{32}", kept_id or ""):
+        return None
+    path = _kept_dir(lineage) / f"{kept_id}{KEPT_SUFFIX}"
+    return path if path.is_file() and path.with_suffix(META_SUFFIX).is_file() else None
+
+
+def kept_backups(lineage) -> list[dict]:
+    """Every kept backup of ``lineage`` with its facts, the newest kept first."""
+    found = []
+    for meta in _kept_dir(lineage).glob(f"*{META_SUFFIX}"):
+        try:
+            facts = json.loads(meta.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(facts, dict) and kept_path(lineage, meta.stem) is not None:
+            found.append({**facts, "id": meta.stem})
+    return sorted(found, key=lambda f: str(f.get("kept_at", "")), reverse=True)
+
+
+def discard_kept(lineage, kept_id: str) -> None:
+    folder = _kept_dir(lineage)
+    for suffix in (KEPT_SUFFIX, META_SUFFIX):
+        (folder / f"{kept_id}{suffix}").unlink(missing_ok=True)
 
 
 def _is_uuid(name: str) -> bool:
@@ -282,3 +323,7 @@ def sweep_transient_files() -> None:
     for f in company_backups_dir().iterdir():
         if f.is_dir() and _is_uuid(f.name):
             shutil.rmtree(f, ignore_errors=True)
+    # A kept backup a stopped process left half made has no metadata yet.
+    for f in _private_dir(KEPT).glob("*/*"):
+        if f.name.endswith(".partial") or (f.suffix == KEPT_SUFFIX and not f.with_suffix(META_SUFFIX).exists()):
+            f.unlink(missing_ok=True)

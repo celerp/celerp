@@ -206,14 +206,16 @@ async def _preview(session: AsyncSession, stage: Path, token: str, mode: str, us
         await cb.check_backup(session, backup)
     except cb.ModulesRequired:
         pass
+    replace = None
     if user_id is None:
         plan = cb.plan_bootstrap_restore(backup)
     else:
         plan = await cb.plan_existing_restore(session, backup, mode, user_id, current_company_id)
         if plan.action == cb.REFUSE:
             raise cb.BackupError(409, t(cb.NOT_A_MEMBER))
+        replace = await cb.replace_offer(session, backup, plan, user_id)
     return {"upload_token": token, "file_name": files.stage_facts(stage).get("file_name", ""),
-            **backup.summary(), **plan.public()}
+            **backup.summary(), **plan.public(), "replace": replace}
 
 
 async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str = _BOOTSTRAP,
@@ -298,12 +300,12 @@ async def _import_module(file: UploadFile, session: AsyncSession, owner: str, to
     return await _staged(session, owner, token, ctx, mode)
 
 
-def _restored(result: cb.RestoreResult, tokens: dict) -> JSONResponse:
+def _restored(result: cb.RestoreResult, tokens: dict, **extra) -> JSONResponse:
     """The restore response, with the session *tokens* for the company it opened."""
     return JSONResponse(status_code=201 if result.outcome == cb.CREATED else 200, content={
         "company_id": result.company_id, "company_name": result.company_name, "outcome": result.outcome,
         "backup_created_at": result.backup_created_at, "team_members": result.team_members,
-        "role_permissions": result.role_permissions, **tokens})
+        "role_permissions": result.role_permissions, **extra, **tokens})
 
 
 RestoreMode = Literal["settings", "new_company"]
@@ -385,6 +387,92 @@ async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_own
         files.finish_stage(stage, result.company_id)
     return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
                                                     expected_snonce=ctx.snonce))
+
+
+class ReplaceIn(BaseModel):
+    company_name: str = ""
+
+
+class ReplaceUploadIn(ReplaceIn, UploadIn):
+    mode: RestoreMode
+    plan_fingerprint: str
+
+
+@router.post("/replace")
+async def replace_with_copy(payload: ReplaceUploadIn, ctx: AuthContext = Depends(user_owner),
+                            session: AsyncSession = Depends(get_session)):
+    """Replace the caller's company of the same lineage with a staged copy of it, as the
+    preview offered, once its owner typed its name; a backup of it is kept first. Switches
+    the caller to the company the copy became."""
+    from celerp.credentials import issue_token_pair
+    stage = _stage(str(ctx.user.id), payload.upload_token)
+    if not stage.is_file():
+        result = await cb.reopen_restored(files.restored_company(stage), user_id=ctx.user.id)
+        if result is None:
+            raise HTTPException(status_code=409, detail=t("company_backup.upload_expired"))
+        kept_id = None
+    else:
+        user_id, company_id = ctx.user.id, ctx.company_id
+        await session.rollback()  # the replace deletes a company through a transaction of its own
+        try:
+            result, kept_id = await cb.replace_company(
+                stage, mode=payload.mode, user_id=user_id, current_company_id=company_id,
+                plan_fingerprint=payload.plan_fingerprint, typed_name=payload.company_name,
+                retain_peer_identities=files.staged_handoff(stage) is not None)
+        except cb.BackupError as exc:
+            return _error(exc, stage)
+        files.finish_stage(stage, result.company_id)
+        await session.refresh(ctx.user)
+    return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
+                                                    expected_snonce=ctx.snonce), kept_backup_id=kept_id)
+
+
+@router.get("/kept")
+async def kept_backups(ctx: AuthContext = Depends(user_owner)):
+    """The backups kept of this company each time a copy replaced it, newest first."""
+    return {"items": await cb.kept_backups(ctx.company_id)}
+
+
+@router.get("/kept/{kept_id}/download")
+async def download_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_owner)):
+    try:
+        path = await cb.kept_backup(ctx.company_id, kept_id)
+    except cb.BackupError as exc:
+        return _error(exc)
+    return FileResponse(path, media_type="application/octet-stream",
+                        filename=f"{ctx.company.slug}-before-replace{cb.EXTENSION}")
+
+
+@router.delete("/kept/{kept_id}", status_code=204)
+async def delete_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_owner)) -> Response:
+    """Delete a kept backup. Not undoable: it is the file itself, so the page asks first."""
+    try:
+        await cb.forget_kept_backup(ctx.company_id, kept_id)
+    except cb.BackupError as exc:
+        return _error(exc)
+    return Response(status_code=204)
+
+
+@router.post("/kept/{kept_id}/replace")
+async def restore_kept_backup(kept_id: str, payload: ReplaceIn, ctx: AuthContext = Depends(user_owner),
+                              session: AsyncSession = Depends(get_session)):
+    """Undo a replace: put a kept backup back in place of this company, the same way, so
+    the version it replaces is kept in turn."""
+    from celerp.credentials import issue_token_pair
+    user_id, company_id = ctx.user.id, ctx.company_id
+    await session.rollback()  # as for a replace
+    try:
+        path = await cb.kept_backup(company_id, kept_id)
+        lineage = await cb.company_lineage(company_id)
+        result, kept = await cb.replace_company(
+            path, mode="settings", user_id=user_id, current_company_id=company_id,
+            plan_fingerprint=None, typed_name=payload.company_name)
+    except cb.BackupError as exc:
+        return _error(exc)
+    files.discard_kept(lineage, kept_id)
+    await session.refresh(ctx.user)
+    return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
+                                                    expected_snonce=ctx.snonce), kept_backup_id=kept)
 
 
 @router.post("/reactivate")

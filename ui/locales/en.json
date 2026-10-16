@@ -4041,7 +4041,7 @@
   "company_backup.err_too_large": "This company copy is too large to restore here. Nothing was restored. For help moving this company, ask on GitHub Issues or Discussions.",
   "company_backup.err_handoff_unchecked": "Celerp could not reach the cloud to check this company copy. Nothing was restored. Check your internet connection and try again.",
   "company_backup.err_handoff_mismatch": "This file does not match the company copy its link names. Nothing was restored. Open the company copy from its link again.",
-  "company_backup.err_too_large_upload":"This file is larger than 2 GB, the most a company copy upload can be. Nothing was restored. Check that you chose the right file; if you did, ask on GitHub Issues or Discussions.",
+  "company_backup.err_too_large_upload": "This file is larger than 2 GB, the most a company copy upload can be. Nothing was restored. Check that you chose the right file; if you did, ask on GitHub Issues or Discussions.",
   "company_backup.err_too_large_to_back_up": "This company has more data than a company copy can hold. No copy was made. Use System Recovery in Global Config, Backup instead.",
   "company_backup.err_row_too_large": "One record in this company is too large for a company copy. No copy was made. Use System Recovery in Global Config, Backup instead.",
   "company_backup.err_undeclared": "The {label} module doesn't support company copies yet. No copy was made. Turn the module off on the Modules page, or ask its developer for an updated version.",
@@ -5769,5 +5769,11 @@
   "accountant_access.copy_link": "Copy link",
   "connectors.send_to_accountant": "Send this page to your accountant",
   "msg.take_photo": "Take a photo",
-  "inventory.err_cost_disposed_no_writeoff": "{label} left stock without a closed write-off that names it, so its cost cannot be corrected automatically. Correct it with a journal entry instead."
+  "inventory.err_cost_disposed_no_writeoff": "{label} left stock without a closed write-off that names it, so its cost cannot be corrected automatically. Correct it with a journal entry instead.",
+  "company_backup.err_replace_owner_only": "Only the owner of {company} can replace it.",
+  "company_backup.err_replace_name": "The name you typed does not match {company}. Type it exactly as it is written. Nothing was replaced.",
+  "company_backup.err_replace_changed": "{company} changed while Celerp was backing it up. Nothing was replaced. Try again.",
+  "company_backup.err_replace_not_backed_up": "Celerp could not back up {company} before replacing it: {reason} Nothing was replaced.",
+  "company_backup.err_kept_not_found": "This saved copy is no longer here.",
+  "company_backup.err_replace_gone": "There is no company here that this copy can replace. Nothing was replaced."
 }

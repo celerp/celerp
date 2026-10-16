@@ -27,6 +27,12 @@ Any failure rolls everything back, including attachment files already stored. A 
 that never finishes, because the process or host stopped, leaves a landing marker for its
 new company; ``reconcile_landings`` removes the attachment files of every such company that
 was never committed.
+
+Every backup names its company's lineage: an opaque id derived from the company it was
+first made from (never that company's id), kept by each company restored from it. A copy of a company opened where that company,
+or another restored from the same lineage, already exists can replace it
+(``replace_company``): its owner types its name, a backup of it is kept first, and the
+copy takes its place in one transaction.
 """
 
 from __future__ import annotations
@@ -63,8 +69,9 @@ from celerp.modules.registry import commit_with_load_set, company_modules, hold_
 from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, password_attempts
 from celerp.services.company_settings import SET_BY_KEYS
+from celerp.services import company_backup_files as files
 from celerp.services.company_backup_files import private_file
-from celerp.services.company_lock import hold_company, lock_company, locked_company
+from celerp.services.company_lock import hold_company, lock_company, lock_company_for_deletion, locked_company
 from celerp.services.lot_origin import place_company_stock
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
 from celerp.services.provisioning import create_install_owner, provision_restored_company
@@ -105,8 +112,11 @@ EXCLUDED_TABLES = {
 # Settings that describe this installation or its people, not the business.
 DROPPED_SETTINGS = frozenset({
     "ai_memory", "reorder_alert_email", "column_prefs",
-    "pay_tip_shown", "reorder_last_scan_at", "restored_backup",
+    "pay_tip_shown", "reorder_last_scan_at", "restored_backup", "lineage_id",
 }) | SET_BY_KEYS
+
+# The company a restored company descends from, carried in the manifest, never remapped.
+LINEAGE_SETTING = "lineage_id"
 
 # What role permissions allow is installation policy. A backup carries the company's own
 # customizations, but a restore applies them only to a copy beside the company it came
@@ -150,6 +160,7 @@ BATCH_BYTES = 1024 ** 2
 
 _NOT_RESTORED = " Nothing was restored."
 _NO_COPY_MADE = " No copy was made."
+_NOT_REPLACED = " Nothing was replaced."
 # Refusals, as locale keys: each is translated where the BackupError is raised.
 NOT_A_BACKUP = "company_backup.err_not_a_backup"
 SYSTEM_BACKUP = "company_backup.err_system_backup"
@@ -181,6 +192,12 @@ OLDER = "company_backup.err_older"
 RESHAPED = "company_backup.err_reshaped"
 RESTORE_RUNNING = "company_backup.err_restore_running"
 OTHER_RESTORE_RUNNING = "company_backup.err_other_restore_running"
+REPLACE_OWNER_ONLY = "company_backup.err_replace_owner_only"
+REPLACE_NAME = "company_backup.err_replace_name"
+REPLACE_CHANGED = "company_backup.err_replace_changed"
+REPLACE_NOT_BACKED_UP = "company_backup.err_replace_not_backed_up"
+KEPT_NOT_FOUND = "company_backup.err_kept_not_found"
+REPLACE_GONE = "company_backup.err_replace_gone"
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _RAW_NUL = re.compile(rb"(?<!\\)(?:\\\\)*\\u0000")
@@ -524,6 +541,34 @@ def _kept_settings(settings: dict | None) -> dict:
             if k not in DROPPED_SETTINGS and k != ROLE_PERMISSIONS_SETTING}
 
 
+_LINEAGE_NAMESPACE = uuid.UUID("8c1f6a52-3b7e-4d0a-9f25-6e4b1d7c2a90")
+
+
+def _first_lineage(company_id) -> str:
+    """The lineage of a company not restored from a copy: derived from its id, so the copies
+    of it share a lineage while no restored company holds the id itself."""
+    return str(uuid.uuid5(_LINEAGE_NAMESPACE, str(company_id)))
+
+
+def lineage_of(company: Company) -> str:
+    """The lineage of the company ``company`` was first made from."""
+    lineage = (company.settings or {}).get(LINEAGE_SETTING)
+    return lineage if _is_uuid(lineage) else _first_lineage(company.id)
+
+
+async def _of_lineage(session: AsyncSession, company_ids, lineage: str) -> bool:
+    """Whether every one of these companies is of ``lineage``."""
+    if any(not _is_uuid(c) for c in company_ids):
+        return False
+    found = (await session.scalars(select(Company).where(Company.id.in_([uuid.UUID(c) for c in company_ids])))).all()
+    return len(found) == len(set(company_ids)) and all(lineage_of(c) == lineage for c in found)
+
+
+def _copy_lineage(manifest_company: dict) -> str:
+    """The lineage a copy names; one made before copies named it is of its own company's."""
+    return manifest_company.get("lineage_id") or _first_lineage(manifest_company["id"])
+
+
 async def _batches(session: AsyncSession, table: db_catalog.Table, company_id, expr: str):
     """The company's rows of one table as JSON text, in primary-key order, in batches of at
     most BATCH_ROWS rows and BATCH_BYTES of JSON (a batch always holds at least one row).
@@ -716,7 +761,8 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
             "format": FORMAT, "format_version": FORMAT_VERSION, "celerp_version": running_version(),
             "backup_id": str(uuid.uuid4()),
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "company": {"id": str(company.id), "name": company.name, "settings": settings},
+            "company": {"id": str(company.id), "lineage_id": lineage_of(company), "name": company.name,
+                        "settings": settings},
             **({"provenance": provenance} if provenance else {}),
             "modules": {"enabled": sorted(enabled),
                         "versions": {name: modules.version(name) for name in sorted(enabled | owners)
@@ -840,6 +886,7 @@ def _check_manifest(m) -> None:
     company, modules, tables, files = m.get("company"), m.get("modules"), m.get("tables"), m.get("attachments")
     ok = (_is_uuid(m.get("backup_id")) and isinstance(m.get("created_at"), str)
           and isinstance(company, dict) and _is_uuid(company.get("id"))
+          and ("lineage_id" not in company or _is_uuid(company["lineage_id"]))
           and isinstance(company.get("name"), str) and company["name"].strip()
           and len(company["name"]) <= COMPANY_NAME_MAX and isinstance(company.get("settings"), dict)
           and isinstance(m.get("provenance", {}), dict)
@@ -1086,10 +1133,11 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
     return ids, digests, seen - ids - {source}
 
 
-async def _check_foreign(session: AsyncSession, plan: _Plan, source: str, values: set[str]) -> None:
+async def _check_foreign(session: AsyncSession, plan: _Plan, source: str, lineage: str, values: set[str]) -> None:
     """Refuse a backup holding the id of another company here, or of a record another
-    company owns. The source company's own ids in tables that stay with the installation
-    name nothing the restored company can reach, so they are left as they are."""
+    company owns. Ids in tables that stay with the installation, of the source company or
+    of a company of the same lineage (a copy coming back to where it was first made), name
+    nothing the restored company can reach, so they are left as they are."""
     if not values:
         return
     wanted = sorted(values)
@@ -1102,10 +1150,11 @@ async def _check_foreign(session: AsyncSession, plan: _Plan, source: str, values
         key = table.columns[table.pk[0]].udt
         if key not in _KEY_TYPES:
             continue
-        kept = "CAST(company_id AS text) IS DISTINCT FROM :s" if name in EXCLUDED_TABLES else "true"
-        if await session.scalar(text(
-                f"SELECT 1 FROM {db_catalog.ident(name)} WHERE {db_catalog.ident(table.pk[0])} = ANY(CAST(:v AS {key}[])) "
-                f"AND {kept} LIMIT 1"), {"v": wanted, "s": source}):
+        owners = (await session.execute(text(
+            f"SELECT DISTINCT CAST(company_id AS text) FROM {db_catalog.ident(name)} "
+            f"WHERE {db_catalog.ident(table.pk[0])} = ANY(CAST(:v AS {key}[])) "
+            f"AND CAST(company_id AS text) IS DISTINCT FROM :s"), {"v": wanted, "s": source})).scalars().all()
+        if owners and (name not in EXCLUDED_TABLES or not await _of_lineage(session, owners, lineage)):
             raise BackupError(422, t(FOREIGN))
 
 
@@ -1130,7 +1179,8 @@ async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
             raise BackupError(422, t(OLDER) if _older(backup.manifest) else t(NEWER))
     order = [t for t in plan.order if t in tables]
     ids, digests, others = await asyncio.to_thread(_scan_rows, backup, order, plan)
-    await _check_foreign(session, plan, backup.manifest["company"]["id"], others)
+    await _check_foreign(session, plan, backup.manifest["company"]["id"], _copy_lineage(backup.manifest["company"]),
+                         others)
     return _Checked(plan=plan, order=order, ids=ids, digests=digests)
 
 
@@ -1140,6 +1190,7 @@ CREATED = "created"
 OPENED_EXISTING = "opened_existing"
 TEAM_ADDED = "opened_existing_team_added"
 REACTIVATED = "reactivated"
+REPLACED = "replaced"
 
 
 @dataclass(frozen=True)
@@ -1285,6 +1336,8 @@ class RestorePlan:
     modules: requirements.RequirementPlan
     fingerprint: str
     role_grants: dict | None = None
+    # The caller's company of the same lineage a new company could replace instead.
+    replace_id: str | None = None
 
     def public(self) -> dict:
         return {"action": self.action, "destination_id": self.destination_id,
@@ -1298,18 +1351,20 @@ class RestorePlan:
 
 def _planned(backup: BackupFile, mode: str, action: str, destination: Company | None = None, *,
              name: str | None = None, team: tuple[tuple[str, str], ...] = (), blocked: int = 0,
-             carry: bool = False, grants: dict | None = None) -> RestorePlan:
+             carry: bool = False, grants: dict | None = None, replace: Company | None = None) -> RestorePlan:
     modules = requirement_plan(backup)
     facts = {"backup_id": backup.manifest["backup_id"], "file_sha256": backup.sha256, "mode": mode, "action": action,
              "destination_id": str(destination.id) if destination is not None else None,
              "name": destination.name if destination is not None else name,
              "team": [list(m) for m in team], "blocked": blocked,
              "policy": "source" if carry else "destination", "grants": grants if carry else None,
-             "modules": modules.public()}
+             "modules": modules.public(),
+             "replace": [str(replace.id), replace.name] if replace is not None else None}
     digest = hashlib.sha256(json.dumps(facts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return RestorePlan(action=action, destination_id=facts["destination_id"], destination_name=facts["name"],
                        team_to_add=team, team_blocked=blocked, role_permissions=facts["policy"], modules=modules,
-                       fingerprint=digest, role_grants=facts["grants"])
+                       fingerprint=digest, role_grants=facts["grants"],
+                       replace_id=str(replace.id) if replace is not None else None)
 
 
 def _name_key(name: str) -> str:
@@ -1362,6 +1417,20 @@ def _same_lineage(mode: str, current_company_id, source: str) -> bool:
     return mode == "settings" and current_company_id is not None and str(current_company_id) == source
 
 
+async def _replaceable(session: AsyncSession, backup: BackupFile, mode: str, user_id: uuid.UUID) -> Company | None:
+    """The caller's active company this backup is a copy of: the company it was made from,
+    else the newest of the same lineage. None for another company's copy."""
+    if mode not in ("settings", "new_company"):
+        return None
+    source, lineage = backup.manifest["company"]["id"], _copy_lineage(backup.manifest["company"])
+    mine = (await session.scalars(
+        select(Company).join(UserCompany, UserCompany.company_id == Company.id)
+        .where(UserCompany.user_id == user_id, UserCompany.is_active.is_(True), Company.is_active.is_(True),
+               Company.is_migration_staged.is_(False))
+        .order_by((Company.id != uuid.UUID(source)), Company.created_at.desc(), Company.id))).all()
+    return next((c for c in mine if str(c.id) == source or lineage_of(c) == lineage), None)
+
+
 async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, current_company_id, *,
                 lock: bool) -> tuple[RestorePlan, Company | None]:
     """The plan and the destination company. With ``lock`` the source and destination
@@ -1381,7 +1450,9 @@ async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, c
         team = await _missing_team(session, source, me, None) if same_lineage else ()
         grants = await _source_grants(session, source) if same_lineage else None
         name = _default_name(m["company"]["name"], await _taken_names(session, me))
-        return _planned(backup, mode, CREATE, name=name, team=team, carry=same_lineage, grants=grants), None
+        replace = await _replaceable(session, backup, mode, me)
+        return _planned(backup, mode, CREATE, name=name, team=team, carry=same_lineage, grants=grants,
+                        replace=replace), None
     destination = await locked_company(session, found.id) if lock else found
     membership = select(UserCompany.role, UserCompany.is_active).where(
         UserCompany.user_id == me, UserCompany.company_id == destination.id)
@@ -1551,7 +1622,8 @@ def _chosen_name(name: str) -> str:
 async def restore_company(path: Path, *, mode: str, user_id=None, current_company_id=None,
                           owner_account: dict | None = None, plan_fingerprint: str | None = None,
                           company_name: str | None = None, caller: str | None = None,
-                          retain_peer_identities: bool = False) -> RestoreResult:
+                          retain_peer_identities: bool = False,
+                          replacing: _Replacing | None = None) -> RestoreResult:
     """Restore a backup file as a new company and commit it.
 
     ``settings`` and ``new_company`` restore it for the signed-in ``user_id`` as the
@@ -1564,7 +1636,9 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
     restored here opens that company for its members, unrenamed (outcome
     ``opened_existing``, or ``opened_existing_team_added`` when it gave its team access),
     never reactivating it when it is deactivated. Restored stock recording no inventory
-    account is placed before the commit (lot_origin.place_company_stock)."""
+    account is placed before the commit (lot_origin.place_company_stock). With
+    ``replacing`` the new company takes the place of the company it names, in the same
+    transaction (``replace_company``)."""
     if mode not in MODES:
         raise ValueError(f"Unknown restore mode: {mode}")
     if mode == "bootstrap" and not (isinstance(owner_account, dict)
@@ -1575,12 +1649,19 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
     backup_id, source = m["backup_id"], m["company"]["id"]
     new_id = uuid.uuid4()
     stored = False
+    closure = task_id = None
     await reconcile_landings()
     async with AsyncSession(bind=celerp.db.engine, expire_on_commit=False) as session:
         try:
             await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
             # Before any lock that waits, so a restore started twice is refused at once.
             await _claim(session, backup_id, source)
+            if replacing is not None:
+                # As a company reset takes them: before any other lock on the company.
+                from celerp.connectors.ownership import lock_connector_maintenance
+                await lock_connector_maintenance(session)
+                if not await lock_company_for_deletion(session, replacing.company_id):
+                    raise BackupError(404, t("error.company_unavailable") + _NOT_REPLACED)
             await hold_module_state(session)
             checked = await check_backup(session, backup)
             if mode == "bootstrap":
@@ -1612,6 +1693,10 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 settled = plan.action == RETURN_EXISTING and not plan.team_blocked
                 if not settled and plan.fingerprint != plan_fingerprint:
                     raise StalePreview(plan)
+                if replacing is not None:
+                    if plan.action != CREATE or plan.replace_id != str(replacing.company_id):
+                        raise StalePreview(plan)
+                    target = await _check_replacing(session, replacing, user_id)
                 if destination is not None:
                     team = await _apply_existing(session, plan, destination, source)
                     result = RestoreResult(company_id=str(destination.id), company_name=destination.name,
@@ -1621,7 +1706,9 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     await session.commit()
                     return result
                 name = plan.destination_name
-                if company_name is not None:
+                if replacing is not None:
+                    name = target.name
+                elif company_name is not None:
                     name = _chosen_name(company_name)
                     if _name_key(name) in await _taken_names(session, user_id):
                         raise BackupError(409, t(NAME_TAKEN), "name_taken")
@@ -1648,16 +1735,22 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 id_map = {source: str(new_id), **{old: str(uuid.uuid4()) for old in checked.ids}, **url_map}
                 settings = remap(_kept_settings(m["company"]["settings"]), id_map)
                 settings = set_enabled(settings, set(m["modules"]["enabled"]))  # the checked list, never the copied key
+                settings[LINEAGE_SETTING] = _copy_lineage(m["company"])
+                team_to_add, grants = plan.team_to_add, plan.role_grants
+                if replacing is not None:
+                    # The team of the company replaced keeps its access, roles and role permissions.
+                    team_to_add = await _missing_team(session, str(target.id), user.id, None)
+                    grants = (target.settings or {}).get(ROLE_PERMISSIONS_SETTING)
                 settings["restored_backup"] = {
                     "backup_id": backup_id, "sha256": backup.sha256, "created_at": m["created_at"],
                     "source_company_name": m["company"]["name"],
                     "restored_at": datetime.now(timezone.utc).isoformat(),
                     **({"provenance": m["provenance"]} if m.get("provenance") else {}),
-                    "team_policy_carried": plan.role_permissions == "source",
+                    "team_policy_carried": plan.role_permissions == "source" or replacing is not None,
                 }
                 # The carried team keeps what its roles may do in the current company.
-                if plan.role_grants:
-                    settings["role_grants"] = plan.role_grants
+                if grants:
+                    settings["role_grants"] = grants
                 company = await provision_restored_company(session, owner=user, company_name=name,
                                                            company_id=new_id, settings=settings)
                 try:
@@ -1671,14 +1764,18 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 from celerp.services.peer_identity import seed_restored_identities
                 await seed_restored_identities(
                     session, target_company=new_id, source_company=uuid.UUID(source), id_map=id_map)
-            if _same_lineage(mode, current_company_id, source):
+            if replacing is not None or _same_lineage(mode, current_company_id, source):
                 await _rebind_actors(session, new_id)
             await _turn_off_shop_sync(session, new_id, user.id)
             await place_company_stock(session, new_id)
-            team = await _add_team(session, new_id, plan.team_to_add) if plan.team_to_add else 0
+            team = await _add_team(session, new_id, team_to_add) if team_to_add else 0
+            if replacing is not None:
+                # Last, once its team has the new company, so no one is signed out by it.
+                closure, task_id = await _reset_replaced(session, target, replacing.typed_name)
             await session.commit()
-        except BaseException:
+        except BaseException as exc:
             await session.rollback()
+            await _settle_replaced(session, getattr(exc, "closure", None) or closure, task_id)
             if stored:
                 try:
                     await attachments.delete_company_files(str(new_id))
@@ -1686,11 +1783,13 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 except Exception:
                     logger.warning("Removing attachment files of a failed company restore failed", exc_info=True)
             raise
+        await _settle_replaced(session, closure, task_id)
         # The restore has committed: rewriting the load set's mirror never undoes it.
         await commit_with_load_set(session)
     if stored:
         await asyncio.to_thread(attachments.clear_landing, str(new_id))
-    return RestoreResult(company_id=str(company.id), company_name=company.name, outcome=CREATED,
+    return RestoreResult(company_id=str(company.id), company_name=company.name,
+                         outcome=CREATED if replacing is None else REPLACED,
                          backup_created_at=m["created_at"], user_id=str(user.id), team_members=team,
                          role_permissions=plan.role_permissions)
 
@@ -1742,3 +1841,215 @@ async def reactivate_restored(path: Path, *, mode: str, user_id, current_company
             return await company_lifecycle.reactivate_company(session, destination.id, user_id)
         except company_lifecycle.NotAnOwner:
             raise BackupError(409, t(NOT_A_MEMBER)) from None
+
+
+# ── Replacing a company with a copy of it ────────────────────────────────────
+
+# What the preview compares: records by kind, as the owner knows them.
+_COMPARED = {"doc": "documents", "journal_entry": "journals", "item": "items"}
+
+
+@dataclass(frozen=True)
+class _Replacing:
+    """The company a restore replaces, the name its owner typed, and the manifest of the
+    backup of it kept first."""
+    company_id: uuid.UUID
+    typed_name: str
+    kept: dict
+
+
+def _when(value) -> str | None:
+    """A time as the preview states it: ISO 8601 in UTC."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _copy_facts(backup: BackupFile) -> dict:
+    """How many documents, journals and items the copy holds, and when one last changed."""
+    facts: dict = {**dict.fromkeys(_COMPARED.values(), 0), "last_changed": None}
+    if "projections" not in backup.manifest["tables"]:
+        return facts
+    latest = None
+    with zipfile.ZipFile(backup.path) as zf:
+        for line in _lines(zf, "tables/projections.jsonl"):
+            row = json.loads(line)
+            kind = _COMPARED.get(row.get("entity_type"))
+            if kind is None:
+                continue
+            facts[kind] += 1
+            changed = datetime.fromisoformat(row["updated_at"])
+            latest = changed if latest is None or changed > latest else latest
+    facts["last_changed"] = _when(latest)
+    return facts
+
+
+async def _company_facts(session: AsyncSession, company_id, *, since: str | None, made: str) -> tuple[dict, dict, int]:
+    """The same facts for a company here; what of it changed after ``since`` (the copy's
+    last change), by kind; and how many records changed after ``made`` (when the copy
+    was made)."""
+    rows = (await session.execute(text(
+        "SELECT entity_type, count(*), max(updated_at), "
+        "count(*) FILTER (WHERE updated_at > :since), count(*) FILTER (WHERE updated_at > :made) "
+        "FROM projections WHERE company_id = :c AND entity_type IN ('doc', 'journal_entry', 'item') "
+        "GROUP BY entity_type"),
+        {"c": company_id, "since": since and datetime.fromisoformat(since), "made": datetime.fromisoformat(made)})).all()
+    current: dict = {**dict.fromkeys(_COMPARED.values(), 0), "last_changed": None}
+    newer: dict = dict.fromkeys(_COMPARED.values(), 0)
+    latest, after = None, 0
+    for kind, count, changed, newer_count, after_count in rows:
+        current[_COMPARED[kind]] = count
+        newer[_COMPARED[kind]] = newer_count
+        latest = changed if latest is None or (changed is not None and changed > latest) else latest
+        after += after_count
+    current["last_changed"] = _when(latest)
+    return current, newer, after
+
+
+async def replace_offer(session: AsyncSession, backup: BackupFile, plan: RestorePlan, user_id) -> dict | None:
+    """What replacing the caller's company of the same lineage with this copy would mean,
+    side by side, for the preview: None when the copy opens as a company of its own
+    only. ``older`` (what of the company would be lost because the copy is older) and
+    ``changed_after_copy`` (records changed here since the copy was made) are what the
+    owner is warned of."""
+    if plan.replace_id is None:
+        return None
+    company = await session.get(Company, uuid.UUID(plan.replace_id))
+    if company is None:
+        return None
+    from celerp.services.permissions import read_authority, role_has_permission
+    role, settings = await read_authority(session, company.id, uuid.UUID(str(user_id)))
+    incoming = await asyncio.to_thread(_copy_facts, backup)
+    current, newer, after = await _company_facts(
+        session, company.id, since=incoming["last_changed"], made=backup.manifest["created_at"])
+    older = None
+    if incoming["last_changed"] is not None and any(newer.values()):
+        older = {**newer, "since": incoming["last_changed"]}
+    return {"company_id": str(company.id), "company_name": company.name,
+            "can_replace": role_has_permission(settings, role, "manage_company_lifecycle"),
+            "current": current, "incoming": incoming, "older": older, "changed_after_copy": after}
+
+
+async def _check_replacing(session: AsyncSession, replacing: _Replacing, user_id) -> Company:
+    """The company to replace, once its owner typed its name and it is as it was backed
+    up, under the lock the caller holds."""
+    from celerp.services.permissions import read_authority, role_has_permission
+    company = await session.get(Company, replacing.company_id, populate_existing=True)
+    role, settings = await read_authority(session, company.id, uuid.UUID(str(user_id)))
+    if not role_has_permission(settings, role, "manage_company_lifecycle"):
+        raise BackupError(403, t(REPLACE_OWNER_ONLY, company=company.name), "not_owner")
+    if replacing.typed_name != company.name:
+        raise BackupError(422, t(REPLACE_NAME, company=company.name), "name_mismatch")
+    ledger = await session.scalar(text("SELECT count(*) FROM ledger WHERE company_id = :c"), {"c": company.id})
+    canonical = lambda value: json.dumps(value, sort_keys=True)  # noqa: E731
+    if (ledger != replacing.kept["tables"].get("ledger", {}).get("rows", 0)
+            or canonical(_kept_settings(company.settings)) != canonical(replacing.kept["company"]["settings"])):
+        raise BackupError(409, t(REPLACE_CHANGED, company=company.name), "changed")
+    return company
+
+
+async def _reset_replaced(session: AsyncSession, company: Company, typed_name: str):
+    """Delete the replaced company in the restore's transaction; its payment closure and
+    cleanup task, for after the transaction ends."""
+    from celerp.services import company_reset
+    try:
+        done = await company_reset.reset(session, company, typed_name)
+    except company_reset.ResetRefused as exc:
+        refused = BackupError(exc.status, exc.detail, "not_replaced")
+        refused.closure = exc.closure
+        raise refused from exc
+    return done.closure, done.task_id
+
+
+async def _settle_replaced(session: AsyncSession, closure, task_id) -> None:
+    """Once the transaction ended: reopen or close the replaced company's online payments,
+    and delete its files when its deletion committed. Nothing for a plain restore."""
+    if closure is None and task_id is None:
+        return
+    from celerp.services import payments
+    from celerp.services.migrations import run_cleanup_task
+    await payments.settle_company_closure(closure)
+    if task_id is not None:
+        session.expunge_all()
+        await run_cleanup_task(session, task_id)
+
+
+async def _keep_backup(company_id, name: str) -> tuple[str, dict]:
+    """Back up the company about to be replaced into its lineage's kept backups."""
+    async with AsyncSession(bind=celerp.db.engine) as session:
+        company = await session.get(Company, company_id)
+        lineage = lineage_of(company) if company is not None else _first_lineage(company_id)
+    kept_id, path = files.new_kept(lineage)
+    try:
+        manifest = await export_company_snapshot(company_id, path)
+    except BackupError as exc:
+        reason = exc.detail if isinstance(exc.detail, str) else t("company_backup.err_damaged")
+        raise BackupError(409, t(REPLACE_NOT_BACKED_UP, company=name,
+                                 reason=reason.removesuffix(_NO_COPY_MADE).strip()), "not_backed_up") from None
+    files.remember_kept(lineage, kept_id, {
+        "company_name": name, "created_at": manifest["created_at"],
+        "kept_at": datetime.now(timezone.utc).isoformat(), "size": path.stat().st_size})
+    return kept_id, manifest
+
+
+async def replace_company(path: Path, *, mode: str, user_id, current_company_id, plan_fingerprint: str | None,
+                          typed_name: str, retain_peer_identities: bool = False) -> tuple[RestoreResult, str]:
+    """Replace the caller's company of the same lineage with this copy, as the preview
+    identified by ``plan_fingerprint`` offered it (None: as it is offered now, for Undo).
+    Only its owner replaces it, typing its name exactly; a backup of it is kept first,
+    and a failure anywhere replaces nothing and drops that backup. Returns the result
+    and the kept backup's id."""
+    backup = await asyncio.to_thread(read_backup, path)
+    async with AsyncSession(bind=celerp.db.engine) as session:
+        plan, _ = await _plan(session, backup, mode, user_id, current_company_id, lock=False)
+        offer = await replace_offer(session, backup, plan, user_id)
+    if plan_fingerprint is None and (plan.action != CREATE or offer is None):
+        raise BackupError(409, t(REPLACE_GONE))
+    if plan.action != CREATE or offer is None or plan.fingerprint != (plan_fingerprint or plan.fingerprint):
+        raise StalePreview(plan)
+    if not offer["can_replace"]:
+        raise BackupError(403, t(REPLACE_OWNER_ONLY, company=offer["company_name"]), "not_owner")
+    if typed_name != offer["company_name"]:
+        raise BackupError(422, t(REPLACE_NAME, company=offer["company_name"]), "name_mismatch")
+    target = uuid.UUID(offer["company_id"])
+    kept_id, kept = await _keep_backup(target, offer["company_name"])
+    lineage = kept["company"]["lineage_id"]
+    try:
+        result = await restore_company(path, mode=mode, user_id=user_id, current_company_id=current_company_id,
+                                       plan_fingerprint=plan.fingerprint,
+                                       retain_peer_identities=retain_peer_identities,
+                                       replacing=_Replacing(target, typed_name, kept))
+    except BaseException:
+        files.discard_kept(lineage, kept_id)
+        raise
+    return result, kept_id
+
+
+async def company_lineage(company_id) -> str:
+    async with AsyncSession(bind=celerp.db.engine) as session:
+        company = await session.get(Company, company_id)
+        if company is None:
+            raise BackupError(404, t("error.company_unavailable"))
+        return lineage_of(company)
+
+
+async def kept_backups(company_id) -> list[dict]:
+    """The backups kept of this company's lineage when a copy replaced it, newest first."""
+    return await asyncio.to_thread(files.kept_backups, await company_lineage(company_id))
+
+
+async def kept_backup(company_id, kept_id: str) -> Path:
+    """The file of one kept backup of this company's lineage."""
+    path = files.kept_path(await company_lineage(company_id), kept_id)
+    if path is None:
+        raise BackupError(404, t(KEPT_NOT_FOUND))
+    return path
+
+
+async def forget_kept_backup(company_id, kept_id: str) -> None:
+    lineage = await company_lineage(company_id)
+    if files.kept_path(lineage, kept_id) is None:
+        raise BackupError(404, t(KEPT_NOT_FOUND))
+    files.discard_kept(lineage, kept_id)
