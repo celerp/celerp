@@ -97,9 +97,15 @@ def test_manufacturing_slots_are_public_with_their_keyword_contracts():
         "item_lineage_guard": ("session", "entry", "transition"),
         "demo_records": ("session", "company_id", "user_id"),
         "background_loop": (),
+        "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),
     }
     assert set(loader._HANDLER_KEYWORDS) <= set(loader._SLOT_VALIDATORS)
     assert all(loader._CALLABLE_SLOTS[s] == ("handler", True) for s in loader._HANDLER_KEYWORDS)
+
+
+def test_document_asset_lines_slot_is_first_party():
+    assert "doc_asset_lines" in slots.FIRST_PARTY_SLOTS
+    assert loader._CALLABLE_SLOTS["doc_asset_lines"] == ("handler", True)
 
 
 def test_the_chart_of_accounts_is_not_a_slot():

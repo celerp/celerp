@@ -35,6 +35,7 @@ _CODE = {
         "async def misnamed_in_production(*, db, company_id):\n    return 0\n"
         "async def extra_in_production(*, session, company_id, when=None):\n    return 0\n"
         "async def demo(*, session, company_id, user_id):\n    return None\n"
+        "async def asset_lines(*, session, company_id, user_id, doc_id, doc, change):\n    return None\n"
     ),
 }
 
@@ -66,6 +67,7 @@ _VALID = {
     "inventory_in_production": [{"handler": "{inner}.lineage:in_production"}],
     "demo_records": [{"handler": "{inner}.lineage:demo"}],
     "background_loop": [{"handler": "{inner}.hooks:loop"}],
+    "doc_asset_lines": [{"handler": "{inner}.lineage:asset_lines"}],
 }
 
 # (slot, the entry's wrong key and value, the text the refusal names).
