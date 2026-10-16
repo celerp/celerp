@@ -685,17 +685,23 @@ async def delete_location(
         raise HTTPException(status_code=404, detail=t("company.err_location_not_found"))
     if loc.is_default:
         raise HTTPException(status_code=409, detail=t("company.err_location_default"))
-    item_count = (await session.execute(
-        select(_func.count()).where(
+    # Items are counted as items; any other record placed here (a fixed asset) as an asset.
+    counts = dict((await session.execute(
+        select(Projection.entity_type, _func.count()).where(
             Projection.company_id == company_id,
-            Projection.entity_type == "item",
             Projection.location_id == loc_uuid,
-        )
-    )).scalar_one()
+        ).group_by(Projection.entity_type)
+    )).all())
+    item_count = counts.pop("item", 0)
     if item_count > 0:
         raise HTTPException(
             status_code=409,
             detail=t("company.err_location_in_use", count=item_count),
+        )
+    if counts:
+        raise HTTPException(
+            status_code=409,
+            detail=t("company.err_location_has_assets", count=sum(counts.values())),
         )
     await session.delete(loc)
     await session.commit()

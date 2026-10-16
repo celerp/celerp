@@ -5,7 +5,8 @@
 The schedule rolls each asset forward over a period: what it stood at when the period
 opened, what moved it during the period by kind of movement, and where it closed, with
 the depreciation the schedule plans for the period that no run has posted yet. Assets are
-grouped under the class they were in when the period closed. Depreciation by period lists
+grouped under the class each movement belongs to, so a reclassification moves the asset
+between classes in the transfers column. Depreciation by period lists
 each month's posted charge, the months skipped with their reason, and the forecast left
 to post; disposals lists each asset leaving the books with what it fetched.
 """
@@ -25,7 +26,7 @@ _ZERO = Decimal(0)
 _COST_COLUMNS = {
     "improvement": "improvements", "replacement": "improvements",
     "construction_out": "transfers", "place_in_service": "transfers",
-    "transfer_in": "transfers", "transfer_out": "transfers", "reclassify": "transfers",
+    "reclassify": "transfers",
     "revaluation": "revaluation",
     "disposal": "disposals", "sale_return": "disposals", "sale_reverse": "disposals",
 }
@@ -103,6 +104,19 @@ def _roll(movements: list[dict], start: str, end: str) -> dict[str, Decimal]:
     return out
 
 
+def _by_class(movements: list[dict], closing: str | None) -> dict[str | None, list[dict]]:
+    """An asset's live movements by the class they belong to. Each reclassification's
+    movement out of a class names that class, which everything recorded before it belongs
+    to; what follows the last one belongs to the class the period closes in."""
+    out: dict[str | None, list[dict]] = {}
+    current = closing
+    for mv in reversed(projections.live(movements)):
+        if mv.get("operation") == "reclassify" and mv.get("side") == "out":
+            current = mv["class_id"]
+        out.setdefault(current, []).insert(0, mv)
+    return out
+
+
 def _scheduled(asset: dict, movements: list[dict], settings: dict, through: int) -> dict[int, Decimal]:
     """What the asset's schedule charges each month through ``through``; nothing for an
     asset no longer in use or not depreciated."""
@@ -129,18 +143,20 @@ async def schedule(session, company_id, date_from, date_to) -> dict:
         moved = movements.get(asset_id) or []
         if not projections.live(moved):
             continue
-        figures = _roll(moved, start.isoformat(), end.isoformat())
-        figures["planned_not_posted"] = _planned(_scheduled(asset, moved, settings, months[-1]),
-                                                 runs.charged_by_month(moved), months)
-        if not any(figures.values()):
-            continue
-        class_id = recon._class_at(asset, (end + timedelta(days=1)).isoformat())
-        group = groups.setdefault(class_id, {"id": class_id, "name": (classes.get(class_id) or {}).get("name"),
-                                             "figures": {k: _ZERO for k in FIGURES}, "assets": []})
-        for k in FIGURES:
-            group["figures"][k] += figures[k]
-        group["assets"].append({"id": asset_id, "number": asset.get("number"), "name": asset.get("name"),
-                                **_shown(figures)})
+        closing = recon._class_at(asset, (end + timedelta(days=1)).isoformat())
+        for class_id, held in _by_class(moved, closing).items():
+            figures = _roll(held, start.isoformat(), end.isoformat())
+            if class_id == closing:
+                figures["planned_not_posted"] = _planned(_scheduled(asset, moved, settings, months[-1]),
+                                                         runs.charged_by_month(moved), months)
+            if not any(figures.values()):
+                continue
+            group = groups.setdefault(class_id, {"id": class_id, "name": (classes.get(class_id) or {}).get("name"),
+                                                 "figures": {k: _ZERO for k in FIGURES}, "assets": []})
+            for k in FIGURES:
+                group["figures"][k] += figures[k]
+            group["assets"].append({"id": asset_id, "number": asset.get("number"), "name": asset.get("name"),
+                                    **_shown(figures)})
     totals = {k: sum((g["figures"][k] for g in groups.values()), _ZERO) for k in FIGURES}
     rows = sorted(groups.values(), key=lambda g: g["name"] or "")
     return {"date_from": start.isoformat(), "date_to": end.isoformat(), "currency": settings.get("currency"),

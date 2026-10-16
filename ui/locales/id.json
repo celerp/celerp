@@ -4983,6 +4983,7 @@
   "company.err_location_not_found": "Celerp tidak dapat menemukan lokasi ini. Mungkin sudah dihapus. Muat ulang halaman.",
   "company.err_location_default": "Ini adalah lokasi default Anda, jadi tidak dapat dihapus. Jadikan lokasi lain sebagai default terlebih dahulu.",
   "company.err_location_in_use": "Masih ada {count} barang di lokasi ini, jadi tidak dapat dihapus. Pindahkan ke lokasi lain terlebih dahulu.",
+  "company.err_location_has_assets": "Masih ada {count} aset di lokasi ini, jadi tidak dapat dihapus. Pindahkan ke lokasi lain terlebih dahulu.",
   "company.err_role_above_own": "Anda tidak dapat memberi seseorang peran yang lebih tinggi dari peran Anda. Minta pemilik perusahaan melakukannya.",
   "company.err_user_already_member": "Orang ini sudah memiliki akses ke perusahaan ini. Ubah perannya di daftar pengguna sebagai gantinya.",
   "company.err_user_not_added": "Celerp tidak dapat menambahkan pengguna ini. Tidak ada yang tersimpan. Coba lagi; jika terus terjadi, tanyakan di GitHub Issues atau Discussions.",

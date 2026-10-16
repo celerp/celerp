@@ -4983,6 +4983,7 @@
   "company.err_location_not_found": "Celerp n'a pas trouvé cet emplacement. Il a peut-être été supprimé. Actualisez la page.",
   "company.err_location_default": "C'est votre emplacement par défaut, il ne peut donc pas être supprimé. Définissez d'abord un autre emplacement par défaut.",
   "company.err_location_in_use": "{count} article(s) se trouvent encore à cet emplacement, il ne peut donc pas être supprimé. Déplacez-les d'abord vers un autre emplacement.",
+  "company.err_location_has_assets": "{count} immobilisation(s) se trouvent encore à cet emplacement, il ne peut donc pas être supprimé. Déplacez-les d'abord vers un autre emplacement.",
   "company.err_role_above_own": "Vous ne pouvez pas donner à quelqu'un un rôle supérieur au vôtre. Demandez au propriétaire de l'entreprise de le faire.",
   "company.err_user_already_member": "Cette personne a déjà accès à cette entreprise. Modifiez plutôt son rôle dans la liste des utilisateurs.",
   "company.err_user_not_added": "Celerp n'a pas pu ajouter cet utilisateur. Rien n'a été enregistré. Réessayez ; si cela continue, posez la question sur GitHub Issues ou Discussions.",

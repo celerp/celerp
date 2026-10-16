@@ -137,7 +137,7 @@ async def _ledger_basis(session, company_id, books: Books) -> list:
 OPENING_OPERATIONS = ("opening", "opening_values")
 # Operations whose cost is not an acquisition: the asset leaving the books in whole or part,
 # a remeasurement, an improvement (a layer of its own), and construction placed in service.
-_NOT_ACQUIRED = (*OPENING_OPERATIONS, *REMEASUREMENTS, "disposal", "improvement", "construction_out")
+_NOT_ACQUIRED = (*OPENING_OPERATIONS, *REMEASUREMENTS, "disposal", "improvement", "construction_out", "reclassify")
 
 
 def _first(movements: list[dict]) -> int | None:
@@ -154,12 +154,18 @@ def _first(movements: list[dict]) -> int | None:
     return min(starts, default=None)
 
 
+def estimates(movements: list[dict]) -> list[dict]:
+    """The live changes in estimate, by date: each carries the policy from its date on and
+    the one it replaced. A reclassification brings in the new class's policy as one."""
+    return sorted((m for m in live(movements) if m.get("operation") == "estimate"
+                   or (m.get("operation") == "reclassify" and m.get("policy"))), key=lambda m: m["effective_date"])
+
+
 def base_policy(asset: dict, movements: list[dict]) -> dict:
     """The policy the asset started under: the one its first change in estimate replaced,
     or its policy when it has none."""
-    estimates = sorted((m for m in live(movements) if m.get("operation") == "estimate"),
-                       key=lambda m: m["effective_date"])
-    return estimates[0]["previous"] if estimates else asset["policy"]
+    changes = estimates(movements)
+    return changes[0]["previous"] if changes else asset["policy"]
 
 
 def engine_movements(asset: dict, movements: list[dict], currency: str) -> list:
@@ -196,7 +202,7 @@ def engine_movements(asset: dict, movements: list[dict], currency: str) -> list:
     out += [Dispose(date.fromisoformat(m["effective_date"]), _dec(m.get("share") or 1)) for m in disposals]
     start = _first(movements)
     readings = asset.get("readings") or {}
-    for m in sorted((m for m in movements if m.get("operation") == "estimate"), key=lambda m: m["effective_date"]):
+    for m in estimates(movements):
         on, new = date.fromisoformat(m["effective_date"]), m["policy"]
         method = rules.method(new["method"])
         if method.uses_readings:
@@ -218,7 +224,7 @@ def engine_movements(asset: dict, movements: list[dict], currency: str) -> list:
 def unavailable_rule(asset: dict, movements: list[dict], settings: dict) -> str | None:
     """Why the asset cannot be depreciated for this company: a method or convention it
     uses comes from a module the company has turned off, or that is no longer installed."""
-    policies = [base_policy(asset, movements), *(m["policy"] for m in live(movements) if m.get("operation") == "estimate")]
+    policies = [base_policy(asset, movements), *(m["policy"] for m in estimates(movements))]
     for policy in policies:
         for kind, key in (("method", policy.get("method")), ("convention", policy.get("convention") or "full_month")):
             if not rules.is_available(kind, key, settings):

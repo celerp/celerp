@@ -613,9 +613,12 @@ async def _undo(session, company_id, user_id, target_key: str, body: dict) -> di
             if int(a.get("movement_count") or 0) > 1:
                 raise conflict(f"{a['number']} has changed since it was registered. Use Correct instead.")
         movements = {m: await _state(session, company_id, m) for m in effects.get("movements", [])}
-        later = [m for m, s in movements.items() if s and s.get("asset_id") not in effects.get("assets", [])
-                 and (await _state(session, company_id, s["asset_id"]) or {}).get("movement_count", 0)
-                 > int(m.rsplit(":", 1)[1])]
+        # Per asset it did not create, the operation's last movement is still the asset's latest.
+        last: dict[str, int] = {}
+        for m, s in movements.items():
+            if s and s.get("asset_id") not in effects.get("assets", []):
+                last[s["asset_id"]] = max(last.get(s["asset_id"], 0), int(m.rsplit(":", 1)[1]))
+        later = [a for a, n in last.items() if (await _state(session, company_id, a) or {}).get("movement_count", 0) > n]
         if later:
             raise conflict("These assets have changed since. Use Correct instead.")
         lock = (await setup.company_settings(session, company_id)).get("lock_date")
@@ -648,11 +651,14 @@ async def _undo(session, company_id, user_id, target_key: str, body: dict) -> di
             await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.status", {"status": "undone"})
         for maint_id in effects.get("maint", []):
             await _emit(session, company_id, user_id, maint_id, "fa_maint", "fa.maint.status", {"status": "undone"})
-        # An asset the operation disposed of or placed in service, and a class it moved to
-        # another model, go back to what they were.
+        # An asset the operation disposed of, placed in service or reclassified, and a class
+        # it moved to another model, go back to what they were.
         for status in effects.get("statuses", []):
             await _emit(session, company_id, user_id, status["id"], "fa_asset", "fa.asset.status",
                         {"status": status["before"], "disposal": None})
+        for asset in effects.get("changes", []):
+            await _emit(session, company_id, user_id, asset["id"], "fa_asset", "fa.asset.updated",
+                        {"changes": asset["before"]})
         for cls in effects.get("classes", []):
             await _emit(session, company_id, user_id, cls["id"], "fa_class", "fa.class.updated",
                         {"changes": cls["before"]})

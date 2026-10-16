@@ -113,6 +113,24 @@ def check_date(books: runs.Books, asset: dict, live: list[dict], day: str, *, wh
         raise setup.unprocessable(f"{asset['number']} changed on {changed}. {verb} on or after that date.")
 
 
+def owed(books: runs.Books, asset: dict, movements: list[dict], month: int, through: int) -> tuple[dict, object]:
+    """What the schedule charges per month through ``through`` beyond what is on the asset
+    (negative where more was charged), and the schedule itself (None for an asset not
+    depreciated). Refused while a reading through ``month`` is missing."""
+    restated: dict[int, Decimal] = {}
+    planned = None
+    if asset["policy"]["method"] != "none":
+        planned = runs.full_schedule(asset, movements, books.settings, through)
+        missing = [p.period for p in planned.periods if p.exception is not None and parse_period(p.period) <= month]
+        if missing:
+            raise setup.unprocessable(f"Enter the reading for {missing[0]} on {asset['number']} first.")
+        restated = {parse_period(p.period): p.amount for p in planned.periods}
+    charged = runs.charged_by_month(movements)
+    diff = {k: restated.get(k, Decimal(0)) - charged.get(k, Decimal(0))
+            for k in sorted({*restated, *charged}) if k <= through}
+    return {k: v for k, v in diff.items() if v}, planned
+
+
 def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: list[dict], day: str,
                 share: Decimal, quantity: Decimal, accounts: dict, *, proceeds: Decimal = Decimal(0),
                 clearing: str | None = None) -> dict:
@@ -131,19 +149,8 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     through = max(month, books.last if books.last is not None else month)
     leaving = {"id": "fa:mv:disposal", "operation": "disposal", "effective_date": day, "share": str(share),
                "amounts": {"cost": str(-gone_cost)}}
-    restated: dict[int, Decimal] = {}
-    parted = Decimal(0)
-    if asset["policy"]["method"] != "none":
-        planned = runs.full_schedule(asset, [*movements, leaving], books.settings, through)
-        missing = [p.period for p in planned.periods if p.exception is not None and parse_period(p.period) <= month]
-        if missing:
-            raise setup.unprocessable(f"Enter the reading for {missing[0]} on {asset['number']} first.")
-        restated = {parse_period(p.period): p.amount for p in planned.periods}
-        parted = planned.parted[-1] if share < 1 else Decimal(0)
-    charged = runs.charged_by_month(movements)
-    diff = {k: restated.get(k, Decimal(0)) - charged.get(k, Decimal(0))
-            for k in sorted({*restated, *charged}) if k <= through}
-    diff = {k: v for k, v in diff.items() if v}
+    diff, planned = owed(books, asset, [*movements, leaving], month, through)
+    parted = planned.parted[-1] if planned is not None and share < 1 else Decimal(0)
     depreciation = sum(diff.values(), Decimal(0))
     if share == 1:
         gone_ad = _dec(asset.get(_AD)) + depreciation

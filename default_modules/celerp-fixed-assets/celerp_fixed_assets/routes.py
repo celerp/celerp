@@ -20,8 +20,8 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.permissions import (
     assert_role_permission, get_current_company_settings, require_permission, role_has_permission)
 from celerp_fixed_assets import (
-    additions, classtable, corrections, disposal, opening, operations, recon, remeasure, reports, runs, sales, setup,
-    sources, taxbooks, yearend)
+    additions, classtable, corrections, disposal, moves, opening, operations, recon, reclassify, remeasure, reports,
+    runs, sales, setup, sources, taxbooks, transfer, yearend)
 from celerp_fixed_assets.events import register_events
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
@@ -33,11 +33,13 @@ SALE_OPERATIONS = ("sale", "sale_adjust", "sale_return", "sale_reverse")
 OPERATION_TYPES = {name: ("manage_accounting",)
                    for name in ("registration", "acquisition", "expense", "maintenance", "undo", "run", "correction",
                                 "disposal", "improvement", "replacement", "place_in_service", "revaluation",
-                                "impairment", "impairment_reversal")} | dict.fromkeys(SALE_OPERATIONS, sales.SALE_KEYS)
+                                "impairment", "impairment_reversal", "reclassify", "transfer_out",
+                                "transfer_in")} | dict.fromkeys(SALE_OPERATIONS, sales.SALE_KEYS)
 
 _MONEY_FIELDS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "nbv")
 _VIEW = [require_permission("view_fixed_assets")]
 _ACCOUNTING = [require_permission("manage_accounting")]
+_MANAGE = [require_permission("manage_fixed_assets")]
 _REPORTS = [require_permission("view_financial_reports")]
 _SELL = [require_permission("edit_documents"), require_permission("manage_fixed_assets")]
 
@@ -500,6 +502,45 @@ async def place_in_service(asset_id: str, body: dict = Body(...), company_id=Dep
 async def undo_latest(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, additions.undo_latest, company_id, user.id, asset_id, body)
+
+
+# ── Move, reclassify and transfer ────────────────────────────────────────────
+
+
+@router.post("/assets/{asset_id}/move", dependencies=_MANAGE)
+async def move_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                     user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, moves.move, company_id, user.id, body, [asset_id])
+
+
+@router.post("/move", dependencies=_MANAGE)
+async def move_assets(body: dict = Body(...), company_id=Depends(get_current_company_id),
+                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, moves.move, company_id, user.id, body)
+
+
+@router.post("/assets/{asset_id}/undo-move", dependencies=_MANAGE)
+async def undo_move(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                    user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, moves.undo_move, company_id, user.id, asset_id, body)
+
+
+@router.post("/assets/{asset_id}/reclassify", dependencies=_ACCOUNTING)
+async def reclassify_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, reclassify.reclassify, company_id, user.id, asset_id, body)
+
+
+@router.get("/transfer-targets", dependencies=_ACCOUNTING)
+async def transfer_targets(company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+                           session: AsyncSession = Depends(get_session)) -> dict:
+    return {"items": await transfer.targets(session, company_id, user.id)}
+
+
+@router.post("/assets/{asset_id}/transfer", dependencies=_ACCOUNTING)
+async def transfer_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, transfer.transfer, company_id, user.id, asset_id, body)
 
 
 @router.post("/classes/{class_id}/apply-to-assets", dependencies=_ACCOUNTING)

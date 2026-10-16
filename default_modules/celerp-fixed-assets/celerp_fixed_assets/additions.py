@@ -33,7 +33,7 @@ from celerp_fixed_assets.store import _emit, _entities, _state
 KINDS = ("improvement", "replacement")
 # What Undo latest offers on the asset page; registration and disposal have their own Undo.
 UNDOABLE = ("improvement", "replacement", "place_in_service", "construction_out", "revaluation", "impairment",
-            "impairment_reversal")
+            "impairment_reversal", "reclassify")
 _ZERO = Decimal(0)
 
 

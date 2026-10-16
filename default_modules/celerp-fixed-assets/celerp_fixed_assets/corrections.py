@@ -23,7 +23,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
-from celerp_fixed_assets import notices, projections, runs, setup, sources
+from celerp_fixed_assets import notices, projections, reclassify, runs, setup, sources
 from celerp_fixed_assets.calc.periods import fiscal_year_start_index, month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
     MODULE, _amount, _cents, _claim, _date, _dec, _journal_view, _lines, _move, _open_line, _post, _reversed_lines,
@@ -161,7 +161,7 @@ class Draft:
         return account
 
     def without_estimates(self) -> None:
-        if any(m.get("operation") == "estimate" for m in self.live):
+        if runs.estimates(self.live):
             raise setup.unprocessable("This asset's depreciation settings were changed as an estimate. Undo that "
                                       "change first, or correct them as another change in estimate.")
 
@@ -227,15 +227,10 @@ async def _class_id(d: Draft, value, fa: dict) -> None:
     # balance is mapped to the accounts it stood on then.
     d.changes.update(class_id=new["id"], policy=setup.policy_of(new, fa),
                      class_history=[*(d.asset.get("class_history") or []), {"until": d.posting, "class_id": d.cls["id"]}])
-    number = d.asset["number"]
-    # The accumulated depreciation account carries the accumulated impairment too.
-    cost = _dec(d.asset.get("cost"))
-    depreciation = _dec(d.asset.get(_AD)) + _dec(d.asset.get("accumulated_impairment"))
-    if new["asset_account"] != d.cls["asset_account"] and cost:
-        d.journal(_lines(new["asset_account"], d.cls["asset_account"], cost), f"{number} moved to {new['name']}")
-    old_ad, new_ad = d.cls["accumulated_depreciation_account"], new["accumulated_depreciation_account"]
-    if old_ad != new_ad and depreciation:
-        d.journal(_lines(old_ad, new_ad, depreciation), f"{number} depreciation moved to {new['name']}")
+    for lines, memo in reclassify.balance_moves(
+            d.asset["number"], d.cls, new, _dec(d.asset.get("cost")),
+            _dec(d.asset.get(_AD)) + _dec(d.asset.get("accumulated_impairment"))):
+        d.journal(lines, memo)
 
 
 async def _opening_values(d: Draft, value, fa: dict) -> None:

@@ -4983,6 +4983,7 @@
   "company.err_location_not_found": "Celerp ይህን ቦታ ማግኘት አልቻለም። ተሰርዞ ሊሆን ይችላል። ገጹን ያድሱ።",
   "company.err_location_default": "ይህ ነባሪ ቦታዎ ስለሆነ ሊሰረዝ አይችልም። መጀመሪያ ሌላ ቦታ ነባሪ ያድርጉ።",
   "company.err_location_in_use": "በዚህ ቦታ አሁንም {count} ዕቃ(ዎች) ስላሉ ሊሰረዝ አይችልም። መጀመሪያ ወደ ሌላ ቦታ ያዛውሯቸው።",
+  "company.err_location_has_assets": "በዚህ ቦታ አሁንም {count} ንብረት(ዎች) ስላሉ ሊሰረዝ አይችልም። መጀመሪያ ወደ ሌላ ቦታ ያዛውሯቸው።",
   "company.err_role_above_own": "ለማንም ከራስዎ ሚና ከፍ ያለ ሚና መስጠት አይችሉም። የኩባንያውን ባለቤት እንዲያደርገው ይጠይቁ።",
   "company.err_user_already_member": "ይህ ሰው አስቀድሞ የዚህ ኩባንያ መዳረሻ አለው። በምትኩ በተጠቃሚዎች ዝርዝር ውስጥ ሚናውን ይቀይሩ።",
   "company.err_user_not_added": "Celerp ይህን ተጠቃሚ ማከል አልቻለም። ምንም አልተቀመጠም። እንደገና ይሞክሩ፤ መከሰቱን ከቀጠለ በGitHub Issues ወይም Discussions ላይ ይጠይቁ።",

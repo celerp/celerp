@@ -4983,6 +4983,7 @@
   "company.err_location_not_found": "Celerp không tìm thấy địa điểm này. Có thể nó đã bị xóa. Hãy tải lại trang.",
   "company.err_location_default": "Đây là địa điểm mặc định của bạn nên không thể xóa. Hãy đặt một địa điểm khác làm mặc định trước.",
   "company.err_location_in_use": "Vẫn còn {count} mặt hàng ở địa điểm này nên không thể xóa. Hãy chuyển chúng sang địa điểm khác trước.",
+  "company.err_location_has_assets": "Vẫn còn {count} tài sản ở địa điểm này nên không thể xóa. Hãy chuyển chúng sang địa điểm khác trước.",
   "company.err_role_above_own": "Bạn không thể cấp cho người khác vai trò cao hơn vai trò của mình. Hãy nhờ chủ sở hữu công ty làm việc này.",
   "company.err_user_already_member": "Người này đã có quyền truy cập công ty này. Hãy đổi vai trò của họ trong danh sách người dùng.",
   "company.err_user_not_added": "Celerp không thêm được người dùng này. Không có gì được lưu. Hãy thử lại; nếu vẫn xảy ra, hãy hỏi trên GitHub Issues hoặc Discussions.",

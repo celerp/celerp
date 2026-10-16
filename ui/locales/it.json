@@ -4983,6 +4983,7 @@
   "company.err_location_not_found": "Celerp non ha trovato questa ubicazione. Potrebbe essere stata eliminata. Aggiorna la pagina.",
   "company.err_location_default": "Questa è la tua ubicazione predefinita, quindi non può essere eliminata. Prima imposta un'altra ubicazione come predefinita.",
   "company.err_location_in_use": "In questa ubicazione ci sono ancora {count} articolo/i, quindi non può essere eliminata. Prima spostali in un'altra ubicazione.",
+  "company.err_location_has_assets": "In questa ubicazione ci sono ancora {count} cespite/i, quindi non può essere eliminata. Prima spostali in un'altra ubicazione.",
   "company.err_role_above_own": "Non puoi dare a qualcuno un ruolo superiore al tuo. Chiedi al proprietario dell'azienda di farlo.",
   "company.err_user_already_member": "Questa persona ha già accesso a questa azienda. Cambia invece il suo ruolo nell'elenco utenti.",
   "company.err_user_not_added": "Celerp non è riuscito ad aggiungere questo utente. Non è stato salvato nulla. Riprova; se continua, chiedi su GitHub Issues o Discussions.",

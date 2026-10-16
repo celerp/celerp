@@ -4983,6 +4983,7 @@
   "company.err_location_not_found": "Celerp couldn't find this location. It may have been deleted. Refresh the page.",
   "company.err_location_default": "This is your default location, so it can't be deleted. Make another location the default first.",
   "company.err_location_in_use": "{count} item(s) are still at this location, so it can't be deleted. Move them to another location first.",
+  "company.err_location_has_assets": "{count} asset(s) are still at this location, so it can't be deleted. Move them to another location first.",
   "company.err_role_above_own": "You can't give someone a higher role than your own. Ask the company owner to do it.",
   "company.err_user_already_member": "This person already has access to this company. Change their role in the user list instead.",
   "company.err_user_not_added": "Celerp couldn't add this user. Nothing was saved. Try again; if it keeps happening, ask on GitHub Issues or Discussions.",
