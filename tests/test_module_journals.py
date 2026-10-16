@@ -272,6 +272,47 @@ async def test_s6_accounts_validated(session, auth, registry):
     _refused(exc, 422, "module_journal.moves_more_than_recognized")
 
 
+@pytest.mark.asyncio
+async def test_s6_moves_what_a_named_journal_recognized(session, auth, registry):
+    """A line may move a balance another posted journal recognized (a bill's asset line
+    reclassified at registration), up to what that journal holds on the account less
+    what the module already moved from it; a voided journal holds nothing."""
+    from datetime import datetime, timezone
+
+    from celerp.models.projections import Projection
+    from celerp.services.module_journals import JournalLine
+
+    probe = _probe()
+    probe["register"]({"s6_capitalize": ("manage_accounting",)}, source_prefix="fa:")
+    source = await _asset_record(session, auth["company_id"])
+    cid = auth["company_id"]
+
+    async def journal(status: str) -> str:
+        je_id = f"je:manual:{uuid.uuid4()}"
+        session.add(Projection(company_id=cid, entity_id=je_id, entity_type="journal_entry", version=1,
+                               updated_at=datetime.now(timezone.utc), state={"status": status, "entries": [
+                                   {"account": "1210", "debit": 100.0, "credit": 0.0},
+                                   {"account": "1111", "debit": 0.0, "credit": 100.0}]}))
+        await session.flush()
+        return je_id
+
+    def moving(amount: str, je_id: str):
+        return [JournalLine(account="1240", debit=Decimal(amount)),
+                JournalLine(account="1210", credit=Decimal(amount), moves_recognized=True, recognized_in=je_id)]
+
+    bill = await journal("posted")
+    await _post(probe, session, auth, source, lines=moving("60.00", bill))
+    with pytest.raises(HTTPException) as exc:
+        await _post(probe, session, auth, source, lines=moving("50.00", bill))
+    assert _refused(exc, 422, "module_journal.moves_more_than_recognized")["params"]["code"] == "1210"
+    await _post(probe, session, auth, source, lines=moving("40.00", bill))
+
+    voided = await journal("void")
+    with pytest.raises(HTTPException) as exc:
+        await _post(probe, session, auth, source, lines=moving("1.00", voided))
+    _refused(exc, 422, "module_journal.moves_more_than_recognized")
+
+
 # ── Source and namespace ───────────────────────────────────────────────────────
 
 
