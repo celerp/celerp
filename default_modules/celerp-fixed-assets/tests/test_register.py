@@ -18,6 +18,8 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from fa_fixtures import FA, demo_owner
+
 
 pytestmark = pytest.mark.asyncio
 
@@ -51,6 +53,17 @@ async def test_start_creates_starter_classes_and_default_settings(fa):
     # Start again changes nothing.
     await fa.ok(await fa.post("/start"))
     assert list(await fa.classes()) == list(classes)
+
+
+@pytest.mark.parametrize("vertical", [None, "retail"])
+async def test_a_new_demo_company_carries_asset_bills_without_a_reseed(client, session, vertical):
+    fa = FA(client, session, await demo_owner(client))
+    if vertical:
+        r = await client.post("/companies/me/business-type", headers=fa.h, json={"vertical": vertical})
+        assert r.status_code == 200, r.text
+    await fa.ok(await fa.post("/start"))
+    assert sorted(i["description"] for i in await fa.intake()) == [
+        "Delivery van", "Forklift", "Laptop", "Office fit-out"]
 
 
 async def test_demo_reseed_seeds_asset_bills_once(fa):

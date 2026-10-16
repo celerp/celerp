@@ -68,5 +68,5 @@ async def seed_demo_assets(session, company_id, user_id) -> None:
 
 
 async def seed_demo_assets_hook(*, session, company_id, user_id) -> None:
-    """The demo_records slot: called when a demo company is seeded again."""
+    """The demo_records slot: called whenever a company's demo data is seeded."""
     await seed_demo_assets(session, company_id, user_id)

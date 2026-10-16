@@ -2451,7 +2451,7 @@ _CALLABLE_SLOTS = {
 # Callable slots core calls with keyword arguments only, and those arguments. The
 # handler takes exactly these: no other parameter, none positional-only, and no
 # *args or **kwargs (lot_origin._in_production, events.engine._item_applied,
-# routers.companies.reseed_demo_items).
+# services.demo.seed_demo_items, routers.companies.reseed_demo_items).
 _HANDLER_KEYWORDS = {
     "inventory_in_production": ("session", "company_id"),
     "item_lineage_guard": ("session", "entry", "transition"),

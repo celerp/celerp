@@ -718,6 +718,19 @@ async def test_s4_module_off_void_and_credit_correct_disposal(fa):
     assert (await fa.state(truck_inv))["status"] == "draft"
 
 
+async def test_s4_module_off_unvoid_completes_the_sale(fa):
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    await _run(fa, "2026-03")
+    inv = await _sell(fa, car)
+    await _finalize(fa, inv)
+    await fa.ok(await _doc(fa, inv, "void"))
+    await _set_module(fa, False)
+    await fa.ok(await _doc(fa, inv, "unvoid"))
+    assert (await fa.asset(car))["status"] == "sold"
+    await _assert_clearing(fa, car, "10000")
+
+
 # ── 3.1 invariants ───────────────────────────────────────────────────────────
 
 

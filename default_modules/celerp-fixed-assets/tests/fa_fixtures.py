@@ -186,7 +186,7 @@ async def demo_owner(client) -> dict:
 
 
 async def start_demo(client, session) -> FA:
-    """A demo company carrying its asset bills (the reseed seeds them), started and managed
+    """A demo company carrying its asset bills, started and managed
     from the first period the setup suggests."""
     fa = FA(client, session, await demo_owner(client))
     r = await client.post("/companies/me/demo/reseed", headers=fa.h)

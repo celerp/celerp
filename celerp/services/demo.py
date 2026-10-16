@@ -1785,13 +1785,14 @@ async def seed_demo_items(
     vertical: str | None = None,
     default_location_id: uuid.UUID | None = None,
 ) -> None:
-    """Seed vertical-aware demo items and default price lists in company settings.
+    """Seed default price lists in company settings, the modules' own sample records (the
+    demo_records slot) and then vertical-aware demo items, so the items are the newest activity.
 
     A demo SKU already held by an item is skipped, so seeding never duplicates a SKU.
     The stock seeded is booked as opening stock (lot_origin.recognize_opening_lots)."""
+    from celerp.modules.slots import fire_lifecycle
     from celerp.projections.engine import ProjectionEngine
     from celerp.services.company_lock import locked_company
-    from celerp.services.lot_origin import recognize_opening_lots
 
     # Seed default price lists into company settings if not already set
     company = await locked_company(session, company_id)
@@ -1811,8 +1812,16 @@ async def seed_demo_items(
         if "terms_conditions" not in settings:
             settings["terms_conditions"] = terms_conditions_for(vertical)
         company.settings = settings
-    if not ProjectionEngine.replayable("item.created"):
-        return  # starter items are written only through the loaded Inventory module
+    await fire_lifecycle("demo_records", session=session, company_id=company_id, user_id=actor_id)
+    # Starter items are written only through the loaded Inventory module.
+    if ProjectionEngine.replayable("item.created"):
+        await _seed_items(session, company_id, actor_id, vertical, default_location_id)
+
+
+async def _seed_items(session: AsyncSession, company_id: uuid.UUID, actor_id: uuid.UUID,
+                      vertical: str | None, default_location_id: uuid.UUID | None) -> None:
+    from celerp.services.lot_origin import recognize_opening_lots
+
     items = _VERTICAL_ITEMS.get(vertical or "", _GENERIC_ITEMS) if vertical else _GENERIC_ITEMS
     taken = await _skus_in_use(session, company_id, [data["sku"] for data in items])
     seeded: list[str] = []

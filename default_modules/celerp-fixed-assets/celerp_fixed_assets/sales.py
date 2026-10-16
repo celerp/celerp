@@ -565,7 +565,7 @@ async def on_asset_lines(*, session, company_id, user_id, doc_id: str, doc: dict
     numbers = ", ".join(rows[li["asset_id"]].state["number"] for li in lines)
     settings = await _authorize(session, company_id, user_id, change, numbers)
     invoice = doc.get("doc_type") == "invoice"
-    if invoice and change in ("write", "finalize", "unvoid") and not uses_module(settings, MODULE):
+    if invoice and change in ("write", "finalize") and not uses_module(settings, MODULE):
         raise conflict(f"{numbers}: turn on Fixed Assets to sell an asset.")
     op_key = f"{doc_id}:{change}"
     for li in lines:
