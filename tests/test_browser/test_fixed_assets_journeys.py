@@ -673,3 +673,37 @@ def test_j17_unknown_tag_is_named_and_the_correct_tag_scan_is_recorded(page: Pag
     expect(tag).to_have_value("")
     checks = _ok(c.get(f"{API}/checks"))["items"]
     assert [(k["asset_id"], k["date"]) for k in checks] == [(car, date.today().isoformat())]
+
+
+def test_j18_cutover_difference_kept_open_carries_the_banner_until_acknowledged(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _operate(c, "/assets", {"kind": "opening", "class_id": _classes(c)["Buildings"]["id"], "name": "Warehouse",
+                            "available_date": "2020-01-01", "cost": "250000", "accumulated_depreciation": "40000"})
+
+    page.goto("/fixed-assets/opening")
+    page.get_by_role("button", name="Finish").click()
+    expect(page.locator(".toast-container .toast--error").last).to_contain_text("keep the differences open")
+    with page.expect_navigation():
+        page.get_by_role("button", name="Keep differences open").click()
+    expect(page.locator("main")).to_contain_text("finished with their differences kept open")
+
+    page.goto("/fixed-assets")
+    banner = page.locator("#fa-recon-banner")
+    expect(banner).to_be_visible()
+    banner.get_by_role("link").click()
+    page.wait_for_url("**/fixed-assets/reconciliation")
+    expect(page.locator("main")).to_contain_text("Differences open")
+    for account in ("1210", "1220"):
+        row = page.locator("#fa-recon-differences tbody tr", has_text=account)
+        row.locator("select[name=state]").select_option("noted")
+        row.locator("input[name=reason]").fill("Valuer's report due")
+        with page.expect_navigation():
+            row.get_by_role("button", name="Save").click()
+        row = page.locator("#fa-recon-differences tbody tr", has_text=account)
+        expect(row.locator("input[name=reason]")).to_have_value("Valuer's report due")
+        expect(page.locator("#fa-recon-accounts tr", has_text=account)).to_contain_text("Differences acknowledged")
+    assert _ok(c.get(f"{API}/reconciliation"))["status"] == "Differences acknowledged"
+
+    page.goto("/fixed-assets")
+    expect(page.locator("#fa-recon-banner")).to_have_count(0)

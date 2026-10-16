@@ -1762,7 +1762,7 @@ def setup_ui_routes(app) -> None:
         if not notice:
             try:
                 report = await api.fixed_assets_get(token, "/reconciliation")
-                notice = _recon_banner() if report["status"] != "Reconciled" else ""
+                notice = _recon_banner() if report["status"] == "Differences open" else ""
             except APIError:
                 notice = ""  # The reconciliation is shown to those who manage accounting.
         actions = (A(t("fixed_assets.reports_title"), href="/fixed-assets/reports", cls="btn btn--secondary"),
