@@ -118,7 +118,9 @@ def _picker(name: str, options: list[tuple[str, str]], value: str = "", *, label
 
 
 def _account_options(chart: list[dict]) -> list[tuple[str, str]]:
-    return [(a["code"], f"{a['code']} {a['name']}") for a in _postable(chart)]
+    """Every account in the chart. A header or inactive one is refused on save, by name,
+    rather than hidden (rule e)."""
+    return [(a["code"], f"{a['code']} {a['name']}") for a in chart]
 
 
 def _field(label: str, control: FT, hint: str | None = None) -> FT:
@@ -264,6 +266,19 @@ def _correction_preview(result: dict, currency: str) -> list[FT]:
                      Th(t("fixed_assets.posting_date")))),
             Tbody(*[Tr(Td(t(f"fixed_assets.movement.{m['operation']}")), Td(_text(m.get("effective_date"))),
                        Td(_text(m.get("posting_date")))) for m in result["movements"]]), cls="data-table")]
+    if result.get("corrected"):
+        # A replaced source: the movements that stay as they posted, and the ones it rewrites.
+        parts += [H4(t("fixed_assets.kept_title")), Table(
+            Thead(Tr(Th(t("fixed_assets.movement")), Th(t("fixed_assets.effective_date")),
+                     Th(t("fixed_assets.posting_date")))),
+            Tbody(*[Tr(Td(t(f"fixed_assets.movement.{m['operation']}")), Td(_text(m.get("effective_date"))),
+                       Td(_text(m.get("posting_date")))) for m in sorted(
+                result.get("kept") or [], key=lambda m: m["effective_date"], reverse=True)]), cls="data-table"),
+            H4(t("fixed_assets.corrected_title")), Table(
+            Thead(Tr(Th(t("fixed_assets.effective_date")), Th(t("fixed_assets.posting_date")),
+                     _money_th(t("fixed_assets.cost")))),
+            Tbody(*[Tr(Td(_text(m.get("effective_date"))), Td(_text(m.get("posting_date"))),
+                       _money_td(m.get("cost"), currency)) for m in result["corrected"]]), cls="data-table")]
     if result.get("future"):
         parts += [H4(t("fixed_assets.future_title")), Table(
             Thead(Tr(Th(t("fixed_assets.month")), _money_th(t("fixed_assets.amount")))),
@@ -1033,12 +1048,20 @@ def _exception_card(asset: dict, currency: str) -> FT:
     """What holds an asset out of depreciation, and what clears it."""
     held = asset["exception"]
     months = ", ".join(held.get("months") or [])
+    asset_id = quote(asset["id"], safe=":")
+    fixes = {"review_source": ("fixed_assets.replace_source",
+                               f"/fixed-assets/assets/{asset_id}/correct?field=replace_source"),
+             "enter_reading": ("fixed_assets.enter_reading", "#fa-readings"),
+             "disposition_journal": ("fixed_assets.register_from_bills", "/fixed-assets/intake")}
+    if asset.get("class_id"):
+        fixes["fix_account"] = ("fixed_assets.action.fix_account",
+                                f"/fixed-assets/classes/{quote(asset['class_id'], safe=':')}/fix-account")
+    fix = fixes.get(held["action"])
     return Div(H2(t("fixed_assets.exception_title"), cls="section-title"),
                P(t("fixed_assets.exception_months", months=months), " ",
                  t("fixed_assets.exception_amount"), ": ", _money(held.get("amount"), currency)),
                P(Strong(t(f"fixed_assets.action.{held['action']}")), " ", t(f"fixed_assets.action_hint.{held['action']}")),
-               *([A(t("fixed_assets.action.fix_account"), href=f"/fixed-assets/classes/{asset['class_id']}/fix-account",
-                    cls="btn btn--sm btn--primary")] if held["action"] == "fix_account" and asset.get("class_id") else []),
+               *([A(t(fix[0]), href=fix[1], cls="btn btn--sm btn--primary write-only")] if fix else []),
                cls="flash flash--warning", id="fa-exception")
 
 
@@ -1072,7 +1095,8 @@ def _readings_card(asset: dict) -> FT:
                 Div(Button(t("fixed_assets.record_reading"), type="submit", cls="btn btn--secondary"),
                     cls="form-actions"),
                 hx_post=f"/fixed-assets/assets/{asset_id}/readings", hx_swap="none", cls="flex-row")
-    return Div(H2(t("fixed_assets.readings_title"), cls="section-title"), table, form, cls="detail-card section-card")
+    return Div(H2(t("fixed_assets.readings_title"), cls="section-title"), table, form, cls="detail-card section-card",
+               id="fa-readings")
 
 
 def _components_card(asset: dict, components: list[dict], currency: str) -> FT:
@@ -3179,6 +3203,9 @@ def setup_ui_routes(app) -> None:
         token = _token(request)
         if not token or field not in _CLASS_EDITABLE:
             return P(t("fixed_assets.error"), cls="cell-error")
+        return await _class_editor(token, class_id, field)
+
+    async def _class_editor(token: str, class_id: str, field: str) -> FT:
         try:
             cls, chart = await _class_and_chart(token, class_id)
         except APIError as e:
@@ -3223,7 +3250,8 @@ def setup_ui_routes(app) -> None:
             cls = await api.fixed_assets_send(token, "PATCH", f"/classes/{quote(class_id, safe=':')}",
                                               {field: value})
         except APIError as e:
-            return Td(P(_error_text(e), cls="cell-error"))
+            # The editor stays open on the refused row, the reason under it.
+            return (await _class_editor(token, class_id, field))(P(_error_text(e), cls="cell-error"))
         return _class_cell(cls, field, [])
 
     from celerp_fixed_assets.ui_physical import physical_cards, setup_physical_routes
