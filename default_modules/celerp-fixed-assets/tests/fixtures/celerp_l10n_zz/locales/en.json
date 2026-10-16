@@ -1,0 +1,17 @@
+{
+  "zz.method.fixed_rate": "ZZ fixed rate",
+  "zz.method.broken": "ZZ broken",
+  "zz.convention.quarter_start": "ZZ quarter start",
+  "zz.regime.asset": "ZZ asset allowances",
+  "zz.regime.pool": "ZZ pools",
+  "zz.regime.pool_plain": "ZZ pools without deferred tax",
+  "zz.category.plant": "Plant",
+  "zz.category.buildings": "Buildings",
+  "zz.category.none": "No allowance",
+  "zz.category.general": "General pool",
+  "zz.category.cars": "Cars pool",
+  "zz.form.a": "Form A",
+  "zz.form.pool": "Pool",
+  "zz.form.allowance": "Allowance",
+  "zz.form.closing": "Written-down value"
+}

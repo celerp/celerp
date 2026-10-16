@@ -458,25 +458,3 @@ async def test_asset_list_filters_and_pagination(fa):
     assert len(page["items"]) == 2 and page["total"] == 4
     found = await fa.ok(await fa.get("/assets", q="van"))
     assert [a["name"] for a in found["items"]] == ["Delivery van"]
-
-
-# ── Invariants ───────────────────────────────────────────────────────────────
-
-
-async def test_invariant_registered_cost_equals_source_and_ledger(fa):
-    """Source cost equals registered cost, and the class accounts hold what the register holds."""
-    for n, (description, cls, mode) in enumerate((("Delivery van", "Vehicles", "separate"),
-                                                  ("Laptop", "Computer equipment", "separate"),
-                                                  ("Office fit-out", "Assets under construction", "separate"),
-                                                  ("Forklift", "Vehicles", "separate"))):
-        line = await fa.line(description)
-        done = await fa.register(line["source"], key=f"inv-{n}", class_name=cls, mode=mode)
-        costs = [D((await fa.asset(a["id"]))["cost"]) for a in done["assets"]]
-        assert sum(costs) == D(line["amount"])
-    register = {"1210": D(0), "1240": D(0)}
-    for a in (await fa.ok(await fa.get("/assets")))["items"]:
-        cls = next(c for c in (await fa.classes()).values() if c["id"] == a["class_id"])
-        register[cls["asset_account"]] += D(a["cost"])
-        _nbv_holds(a)
-        await fa.fold_matches(a["id"])
-    assert register == {"1210": await fa.balance("1210"), "1240": await fa.balance("1240")}

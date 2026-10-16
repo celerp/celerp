@@ -1,0 +1,124 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
+"""Tax books: each asset's tax figures per regime and year, kept beside the books and
+never posted. Uses the ZZ test module's asset regime (zz_plant at 20%, a full
+expensing election) on tax years ending 30 June."""
+from __future__ import annotations
+
+from decimal import Decimal
+
+import pytest
+
+from fa_fixtures import FA
+from test_l10n import _map, _tax_book
+from test_runs import _contributed, _managed_from, _run
+from test_year_end import _accept_all
+
+pytestmark = pytest.mark.asyncio
+
+D = Decimal
+
+
+async def _setup(fa: FA, *, mapped: bool = True) -> str:
+    await fa.ok(await fa.patch("/settings", {"tax_regimes": ["zz_asset"], "tax_year_end": "06-30"}))
+    if mapped:
+        await _map(fa, "Vehicles", {"zz_asset": "zz_plant"})
+    await _managed_from(fa, "2024-01-01")
+    car = await _contributed(fa, on="2025-01-15")
+    await _run(fa, "2026-06")
+    return car
+
+
+def _row(book: dict, asset_id: str) -> dict:
+    (row,) = [r for r in book["rows"] if r["asset_id"] == asset_id]
+    return row
+
+
+def _figures(row: dict) -> tuple:
+    return tuple(D(row[k]) for k in ("opening", "additions", "disposals", "allowance", "closing"))
+
+
+async def test_tax_book_asset_regime_years(fa, zz):
+    car = await _setup(fa)
+    book = await _tax_book(fa, "zz_asset", 2025)
+    assert book["basis"] == "asset" and (book["start"], book["end"]) == ("2024-07-01", "2025-06-30")
+    row = _row(book, car)
+    assert row["status"] == "ok" and row["category"] == "zz_plant"
+    assert _figures(row) == (D(0), D("12000"), D(0), D("2400"), D("9600"))
+    assert _figures(_row(await _tax_book(fa, "zz_asset", 2026), car)) == (D("9600"), D(0), D(0), D("1920"), D("7680"))
+    # Before the asset was available for use it has no tax figures.
+    assert (await _tax_book(fa, "zz_asset", 2024))["rows"] == []
+    # A regime the company has not chosen, or one no module provides, is refused.
+    assert (await fa.get("/tax-books", regime="zz_pool", year=2025)).status_code == 422
+    assert (await fa.get("/tax-books", regime="xx_unknown", year=2025)).status_code == 404
+
+
+async def test_tax_book_elections(fa, zz):
+    car = await _setup(fa)
+    await fa.ok(await fa.patch(f"/tax-books/{car}/zz_asset", {"elections": {"full_expensing": True}}))
+    assert _figures(_row(await _tax_book(fa, "zz_asset", 2025), car)) == (D(0), D("12000"), D(0), D("12000"), D(0))
+    bad = await fa.patch(f"/tax-books/{car}/zz_asset", {"elections": {"bonus": True}})
+    assert bad.status_code == 422 and "bonus" in bad.json()["detail"]
+    wrong_type = await fa.patch(f"/tax-books/{car}/zz_asset", {"elections": {"full_expensing": "yes"}})
+    assert wrong_type.status_code == 422
+    operator = await fa.role_headers("operator")
+    assert (await fa.patch(f"/tax-books/{car}/zz_asset", {"elections": {}}, headers=operator)).status_code == 403
+
+
+async def test_tax_book_no_category_then_mapped(fa, zz):
+    car = await _setup(fa, mapped=False)
+    row = _row(await _tax_book(fa, "zz_asset", 2025), car)
+    assert row["status"] == "no_category" and row["allowance"] is None
+    refused = await fa.patch(f"/tax-books/{car}/zz_asset", {"category": "zz_cars"})
+    assert refused.status_code == 422 and "zz_cars" in refused.json()["detail"]
+    await fa.ok(await fa.patch(f"/tax-books/{car}/zz_asset", {"category": "zz_buildings"}))
+    row = _row(await _tax_book(fa, "zz_asset", 2025), car)
+    assert row["status"] == "ok" and row["category"] == "zz_buildings" and D(row["allowance"]) == D("600")
+
+
+async def test_tax_year_close_freezes_figures(fa, zz):
+    car = await _setup(fa)
+    await _accept_all(fa, 2025)
+    closed = await fa.ok(await fa.post("/tax-years/zz_asset/2025/close", {}))
+    assert closed["status"] == "closed"
+    # An election made afterwards changes the open years only.
+    await fa.ok(await fa.patch(f"/tax-books/{car}/zz_asset", {"elections": {"full_expensing": True}}))
+    book = await _tax_book(fa, "zz_asset", 2025)
+    assert book["status"] == "closed" and D(_row(book, car)["allowance"]) == D("2400")
+    later = _row(await _tax_book(fa, "zz_asset", 2026), car)
+    assert (D(later["opening"]), D(later["allowance"]), D(later["closing"])) == (D("9600"), D("9600"), D(0))
+    again = await fa.post("/tax-years/zz_asset/2025/close", {})
+    assert again.status_code == 409
+
+
+async def test_tax_year_reopen_with_history(fa, zz):
+    car = await _setup(fa)
+    await _accept_all(fa, 2025)
+    await fa.ok(await fa.post("/tax-years/zz_asset/2025/close", {}))
+    await fa.ok(await fa.patch(f"/tax-books/{car}/zz_asset", {"elections": {"full_expensing": True}}))
+    no_reason = await fa.post("/tax-years/zz_asset/2025/reopen", {})
+    assert no_reason.status_code == 422
+    await fa.ok(await fa.post("/tax-years/zz_asset/2025/reopen", {"reason": "Election made late"}))
+    book = await _tax_book(fa, "zz_asset", 2025)
+    assert book["status"] == "open" and D(_row(book, car)["allowance"]) == D("12000")
+    assert [h["action"] for h in book["history"]] == ["reopened", "closed"]
+    assert book["history"][0]["reason"] == "Election made late"
+
+
+async def test_tax_year_close_order_and_timing(fa, zz):
+    await _setup(fa)
+    # 2026 cannot close before 2025, which has figures.
+    await _accept_all(fa, 2026)
+    first = await fa.post("/tax-years/zz_asset/2026/close", {})
+    assert first.status_code == 409 and "2025" in first.json()["detail"]
+    await _accept_all(fa, 2025)
+    await fa.ok(await fa.post("/tax-years/zz_asset/2025/close", {}))
+    await fa.ok(await fa.post("/tax-years/zz_asset/2026/close", {}))
+    # 2025 cannot reopen while 2026 stands closed.
+    refused = await fa.post("/tax-years/zz_asset/2025/reopen", {"reason": "Late election"})
+    assert refused.status_code == 409 and "2026" in refused.json()["detail"]
+    # A year that has not ended cannot close.
+    early = await fa.post("/tax-years/zz_asset/2027/close", {})
+    assert early.status_code == 409 and "2027-06-30" in early.json()["detail"]
+    operator = await fa.role_headers("operator")
+    assert (await fa.post("/tax-years/zz_asset/2026/reopen", {"reason": "x"}, headers=operator)).status_code == 403
