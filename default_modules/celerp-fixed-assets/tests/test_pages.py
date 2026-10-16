@@ -617,3 +617,34 @@ async def test_record_an_impairment_review_that_found_a_loss(owner_ui):
     form = await owner_ui.get(target)
     assert 'value="4000.00"' in form.text and 'value="Value in use"' in form.text and 'value="2026-10-05"' in form.text
     assert t("fixed_assets.reviews_empty") in (await owner_ui.get("/fixed-assets/reviews")).text
+
+
+async def test_reports_index_schedule_page_print_and_csv(owner_ui):
+    await _demo(owner_ui)
+    await owner_ui.post("/fixed-assets/start")
+    r = await owner_ui.api.patch(f"{API}/settings", json={"first_managed_period": "2025-01-01"})
+    assert r.status_code == 200, r.text
+    params = {"date_from": "2025-01-01", "date_to": "2025-12-31"}
+    empty = await owner_ui.get("/fixed-assets/reports/schedule", params=params)
+    assert empty.status_code == 200 and t("fixed_assets.schedule_empty") in empty.text
+    await _car(owner_ui, "Owner's car")
+    index = await owner_ui.get("/fixed-assets/reports")
+    assert index.status_code == 200 and "fixed_assets." not in index.text
+    for path in ("schedule", "register", "depreciation", "disposals", "prior-period-adjustments"):
+        assert f'href="/fixed-assets/reports/{path}' in index.text, path
+    page = await owner_ui.get("/fixed-assets/reports/schedule", params=params)
+    assert page.status_code == 200 and "12,000.00" in page.text and "fixed_assets." not in page.text
+    assert 'cell--number' in page.text and "date_from=2025-01-01" in page.text
+    printed = await owner_ui.get("/fixed-assets/reports/schedule/print", params=params)
+    assert printed.status_code == 200 and "12,000.00" in printed.text
+    sheet = await owner_ui.get("/fixed-assets/reports/schedule.csv", params=params)
+    assert sheet.status_code == 200 and sheet.headers["content-type"].startswith("text/csv")
+    assert "Owner's car" in sheet.text and "12000.00" in sheet.text
+    for path in ("register", "depreciation", "disposals"):
+        got = await owner_ui.get(f"/fixed-assets/reports/{path}", params=params)
+        assert got.status_code == 200 and "fixed_assets." not in got.text, path
+        assert (await owner_ui.get(f"/fixed-assets/reports/{path}.csv", params=params)).status_code == 200, path
+        assert (await owner_ui.get(f"/fixed-assets/reports/{path}/print", params=params)).status_code == 200, path
+    refused = await owner_ui.get("/fixed-assets/reports/schedule", params={"date_from": "2024-01-01",
+                                                                          "date_to": "2024-12-31"})
+    assert refused.status_code == 200 and "first managed period" in refused.text
