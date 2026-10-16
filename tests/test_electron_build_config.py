@@ -415,10 +415,10 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
 
     unix = by_name["Boot smoke (launch the packaged app, require db:ok)"]
     win = by_name["Boot smoke (Windows, require db:ok)"]
-    for smoke in (unix, win):
+    for smoke, minutes in ((unix, 15), (win, 20)):
         assert names.index(check["name"]) < names.index(smoke["name"])
         # A hung app fails the step with its log instead of holding the runner for hours.
-        assert smoke["timeout-minutes"] == 15
+        assert smoke["timeout-minutes"] == minutes
     assert ('json.load(open("../default_modules/first_party.lock.json"))' in unix["run"]
             and "export ENABLED_MODULES" in unix["run"])
     # A boot that never gets ready shows the app's output and logs, then ends the app,
@@ -432,7 +432,7 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
     assert 'PG_PIDFILE="$PG_DATA/postmaster.pid"' in unix["run"] and 'find "$HOME"' not in unix["run"].split("boot smoke OK")[1]
     # Linux and macOS: a force-quit app (SIGKILL) must leave no API or database running.
     assert 'kill -9 "$ELECTRON"' in unix["run"] and "left the API or the database running" in unix["run"]
-    assert win["run"] == "./scripts/win-boot-smoke.ps1 -Account standard" and win["working-directory"] == "electron"
+    assert win["run"] == "./scripts/win-boot-smoke.ps1 -Account standard -OverRunning" and win["working-directory"] == "electron"
     smoke = _win_boot_smoke()
     assert 'Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json' in smoke
     assert "set ENABLED_MODULES=$enabled" in smoke
@@ -520,6 +520,7 @@ def test_windows_boot_smoke_runs_as_an_administrator_with_uac_off():
     # Both sides of the restricted launcher, read from the installed app's own token
     # check run as that account: "admin", and the launcher's child "standard".
     assert 'if ($state -ne $Account)' in smoke and '$child -ne "standard"' in smoke
-    assert smoke.index("--token-state") < smoke.index('Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred')
+    assert smoke.index("--token-state") < smoke.index('$port = Launch $exe "first launch"')
     assert "/health/ready" in smoke and '"db"\\s*:\\s*"ok"' in smoke
-    assert 'Fail "db:ok not reached' in smoke.split("if (-not $ok) {", 1)[1]
+    launch = smoke.split("function Launch(", 1)[1].split("\n}\n", 1)[0]
+    assert launch.index("Electron stdout/stderr") < launch.index('Fail "$what`: db:ok not reached')

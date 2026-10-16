@@ -6,6 +6,8 @@
   carve <Celerp-Setup.exe> <out.7z>   copy the application archive out of an installer
   inventory <win-unpacked> [--json F] file count, bytes and per-root totals, app.asar included
   check <win-unpacked>                the packaged-tree assertions below; exit 1 on any failure
+  installed <win-unpacked> <folder>   an installed folder holds exactly the build's files and
+                                      the uninstaller; exit 1 otherwise
 
 `check` reads the final tree, including the app.asar index, and reports every
 assertion. Those marked "removed" are what the Windows build now leaves out;
@@ -178,6 +180,28 @@ def check(root: Path) -> int:
     return 1 if failed else 0
 
 
+UNINSTALLER = "Uninstall Celerp.exe"
+
+
+def files(root: Path) -> set[str]:
+    return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+
+
+def installed(build: Path, folder: Path) -> int:
+    """The installer writes the build's files and its own uninstaller, so anything
+    else was left by an earlier copy, and anything short was never written."""
+    want, have = files(build), files(folder) - {UNINSTALLER}
+    missing, extra = sorted(want - have), sorted(have - want)
+    for kind, names in (("missing", missing), ("extra", extra)):
+        for name in names[:40]:
+            print(f"{kind}: {name}")
+    if missing or extra:
+        print(f"FAIL {folder}: {len(missing)} missing, {len(extra)} extra against {build}")
+        return 1
+    print(f"PASS {folder}: the build's {len(want)} files and the uninstaller")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -189,7 +213,12 @@ def main() -> int:
     i.add_argument("--json", type=Path)
     k = sub.add_parser("check")
     k.add_argument("root", type=Path)
+    n = sub.add_parser("installed")
+    n.add_argument("build", type=Path)
+    n.add_argument("folder", type=Path)
     a = p.parse_args()
+    if a.cmd == "installed":
+        return installed(a.build, a.folder)
     if a.cmd == "carve":
         return carve(a.setup, a.out)
     if a.cmd == "inventory":

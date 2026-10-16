@@ -90,3 +90,37 @@ def test_update_e2e_waits_for_module_pages_through_the_same_helper():
     assert _e2e.module_get.__module__ == "smoke_records"
     assert _e2e.module_get.__code__.co_filename == _smoke.module_get.__code__.co_filename
     assert _e2e.http.__code__.co_filename == _smoke.http.__code__.co_filename
+
+
+def _snapshot_file(tmp_path, name, version, ledger, served):
+    path = tmp_path / f"{name}.json"
+    path.write_text(json.dumps({"version": version, "ledger": ledger, "served": served}), "utf-8")
+    return str(path)
+
+
+_LEDGER = [[1, "company.created", "c"]]
+
+
+def test_carried_accepts_an_upgrade_that_kept_the_records_and_serves_every_page(tmp_path, capsys):
+    before = _snapshot_file(tmp_path, "before", "2.5.6", _LEDGER, {"/items": 404, "/crm/contacts": ["seeded"]})
+    after = _snapshot_file(tmp_path, "after", "2.5.7", _LEDGER, {"/items": [], "/crm/contacts": ["seeded"]})
+
+    _smoke.carried(before, after)
+
+    assert "carried from 2.5.6 to 2.5.7" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("ledger, served, why", [
+    ([], {"/items": ["seeded"]}, "the ledger changed"),
+    (_LEDGER, {"/items": []}, "records changed"),
+    (_LEDGER, {"/items": ["seeded"], "/crm/contacts": 500}, "pages not served"),
+])
+def test_carried_fails_when_the_upgrade_lost_records_or_a_page(tmp_path, capsys, ledger, served, why):
+    before = _snapshot_file(tmp_path, "before", "2.5.6", _LEDGER, {"/items": ["seeded"]})
+    after = _snapshot_file(tmp_path, "after", "2.5.7", ledger, served)
+
+    with pytest.raises(SystemExit) as exc:
+        _smoke.carried(before, after)
+
+    assert exc.value.code == 1
+    assert why in capsys.readouterr().err

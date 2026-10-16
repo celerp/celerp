@@ -8,16 +8,51 @@
 #                      place with its servers started at a restricted token. The runner's
 #                      own account cannot stand in for this: UAC is on there.
 #
+# For a standard account:
+#   -UserName      the account to create. A name with spaces and non-ASCII letters puts
+#                  them in the profile path, so in the data folder and the install folder.
+#   -Install machine  the runner's administrator installs for all users (/allusers) into
+#                  a Program Files folder with spaces whose deepest file is 259 characters
+#                  long, the most a path may hold without long-path support; the account
+#                  then runs that install. Default: the account installs for itself.
+#   -Previous      a released installer: the account installs it, it opens fresh data and
+#                  keeps records in it, then this build installs over it and must serve the
+#                  same records (scripts/smoke_records.py).
+#   -OverRunning   once the app is ready, the account runs this build's installer again
+#                  with the app open; it must close the app, install, and boot again.
+#
+# After every install the installed folder must hold exactly the build's files plus the
+# uninstaller (scripts/check_win_bundle.py installed). Install and start times go to the job summary; they are reported, never
+# compared against a limit.
+#
 # Run from the electron folder after the build, as the runner's administrator account.
-param([Parameter(Mandatory)][ValidateSet("standard", "admin")][string]$Account)
+param(
+  [Parameter(Mandatory)][ValidateSet("standard", "admin")][string]$Account,
+  [string]$UserName = "celerpci",
+  [ValidateSet("user", "machine")][string]$Install = "user",
+  [string]$Previous = "",
+  [switch]$OverRunning
+)
 $ErrorActionPreference = "Stop"
 
-function Fail([string]$why) { Write-Host "::error::boot smoke ($Account) FAILED on Windows - $why"; exit 1 }
+$smoke = "$Account account, $Install install"
+function Fail([string]$why) { Write-Host "::error::boot smoke ($smoke) FAILED on Windows - $why"; exit 1 }
+if ($Account -eq "admin" -and ($Install -ne "user" -or $Previous -or $OverRunning -or $PSBoundParameters.ContainsKey("UserName"))) {
+  Fail "the administrator smoke runs the built-in Administrator on a fresh install for itself; -UserName, -Install machine, -Previous and -OverRunning are for a standard account"
+}
+if ($Previous -and $Install -eq "machine") { Fail "-Previous upgrades an install for the account itself; it does not combine with -Install machine" }
+if ($Previous -and -not (Test-Path $Previous)) { Fail "no previous installer at $Previous" }
+
+function Timing([string]$what, [Diagnostics.Stopwatch]$watch) {
+  $line = "- Windows $smoke ($u): $what {0:N1} s" -f $watch.Elapsed.TotalSeconds
+  Write-Host "timing: $line"
+  if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY $line }
+}
 
 $pw  = "Ci-" + [guid]::NewGuid().ToString("N").Substring(0,16) + "!Aa9"
 $sec = ConvertTo-SecureString $pw -AsPlainText -Force
 if ($Account -eq "standard") {
-  $u = "celerpci"
+  $u = $UserName
   New-LocalUser -Name $u -Password $sec -AccountNeverExpires -PasswordNeverExpires | Out-Null
   Add-LocalGroupMember -Group "Users" -Member $u -ErrorAction SilentlyContinue
 } else {
@@ -88,85 +123,170 @@ Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "exit 0" -Credential $cred
 $sid = (New-Object System.Security.Principal.NTAccount("$env:COMPUTERNAME\$u")).Translate([System.Security.Principal.SecurityIdentifier]).Value
 $profileDir = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid }).LocalPath
 if (-not $profileDir) { Fail "no profile created for $u" }
+# The wrappers are UTF-8 and switch cmd to UTF-8 first, so a profile path with non-ASCII
+# letters reaches the app as it is.
 $envSet = "set USERPROFILE=$profileDir`r`nset APPDATA=$profileDir\AppData\Roaming`r`nset LOCALAPPDATA=$profileDir\AppData\Local`r`nset TEMP=$profileDir\AppData\Local\Temp`r`nset TMP=$profileDir\AppData\Local\Temp`r`nif not exist `"%APPDATA%`" mkdir `"%APPDATA%`"`r`nif not exist `"%TEMP%`" mkdir `"%TEMP%`""
+function Wrapper([string]$path, [string]$body) {
+  Set-Content -Encoding utf8NoBOM $path "@echo off`r`nchcp 65001 >nul`r`n$envSet`r`n$body"
+}
 
-# Runs one command line as the account, with its profile, and returns what it printed.
+# Runs one command line as the account, with its profile; returns what it printed and
+# its exit code.
 function RunAs([string]$name, [string]$commandLine, [int]$timeoutMs) {
   $cmd = Join-Path $pub "celerp-$name.cmd"
   $out = Join-Path $pub "celerp-$name.out"
   Remove-Item $out -EA SilentlyContinue
-  Set-Content -Encoding Ascii $cmd "@echo off`r`n$envSet`r`n$commandLine > `"$out`" 2>&1`r`necho exit %ERRORLEVEL% >> `"$out`""
+  Wrapper $cmd "$commandLine > `"$out`" 2>&1`r`necho exit %ERRORLEVEL% >> `"$out`""
   $p = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$cmd`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub -PassThru
   if (-not $p.WaitForExit($timeoutMs)) { Fail "$name did not finish in $($timeoutMs/1000)s" }
-  if (Test-Path $out) { return (Get-Content $out) } else { return @() }
+  $lines = if (Test-Path $out) { @(Get-Content -Encoding utf8 $out) } else { @() }
+  $last = $lines | Where-Object { $_ -match '^exit (-?\d+)\s*$' } | Select-Object -Last 1
+  if (-not $last) { Fail "$name printed no exit code" }
+  [pscustomobject]@{ Lines = @($lines | Where-Object { $_ -ne $last }); Code = [int]($last -replace '^exit (-?\d+)\s*$', '$1') }
 }
 
-# Install the release installer as the account and launch the installed app exactly as a
-# user would: default data directory, no --user-data-dir.
+$build = (Resolve-Path "dist/win-unpacked").Path
 $setup = Join-Path $pub "Celerp-Setup.exe"
 Copy-Item "dist/Celerp-Setup.exe" $setup -Force
-Write-Host "smoke: installing $setup as $Account account $u (profile $profileDir)"
-RunAs "install" "`"$setup`" /S /currentuser" 300000 | Write-Host
-$exe = Get-ChildItem -Path "$profileDir\AppData\Local\Programs" -Recurse -Filter "Celerp.exe" -EA SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-if (-not $exe) { Fail "Celerp.exe not installed under $profileDir" }
-$installDir = Split-Path $exe
 $udd = "$profileDir\AppData\Roaming"
-
-# The installed app's own token check must read the account the way the app will.
-$py = Join-Path $installDir "resources\python-x64\python\python.exe"
-$launcher = Join-Path $installDir "resources\app\celerp\win_restricted_launch.py"
-$state = (RunAs "token" "`"$py`" -I `"$launcher`" --token-state" 60000 | Select-Object -First 1).Trim()
-if ($state -ne $Account) { Fail "token state '$state' (want $Account)" }
-if ($Account -eq "admin") {
-  $child = (RunAs "child-token" "`"$py`" -I `"$launcher`" `"$py`" -I `"$launcher`" --token-state" 60000 | Select-Object -First 1).Trim()
-  if ($child -ne "standard") { Fail "restricted launcher child token state '$child' (want standard)" }
+if ($Install -eq "machine") {
+  $deepest = (Get-ChildItem $build -Recurse -File | ForEach-Object { $_.FullName.Length - $build.Length - 1 } | Measure-Object -Maximum).Maximum
+  $base = "$env:ProgramFiles\Celerp CI long path with spaces"
+  $pad = 259 - $deepest - 1 - $base.Length - 1
+  if ($pad -lt 1) { Fail "the deepest build file is $deepest characters, too long for a Program Files folder within 259" }
+  $machineDir = "$base\" + ("d" * $pad)
+  Write-Host "smoke: per-machine folder $machineDir ($($machineDir.Length) characters, deepest file $($machineDir.Length + 1 + $deepest)); LongPathsEnabled=$((Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem).LongPathsEnabled)"
 }
-Write-Host "token states OK for $Account"
+
+# Runs one installer the way this smoke installs, times it, and returns the install folder.
+function InstallSetup([string]$installer, [string]$what) {
+  Write-Host "smoke: $what ($installer) for $smoke, account $u (profile $profileDir)"
+  $watch = [Diagnostics.Stopwatch]::StartNew()
+  if ($Install -eq "machine") {
+    # /D must come last and unquoted.
+    $code = (Start-Process -FilePath $installer -ArgumentList "/S /allusers /D=$machineDir" -Wait -PassThru).ExitCode
+  } else {
+    $r = RunAs "install" "`"$installer`" /S /currentuser" 600000
+    $r.Lines | Write-Host
+    $code = $r.Code
+  }
+  $watch.Stop()
+  if ($code -ne 0) { Fail "$what exited $code" }
+  Timing $what $watch
+  $root = if ($Install -eq "machine") { $machineDir } else { "$profileDir\AppData\Local\Programs" }
+  $found = Get-ChildItem -Path $root -Recurse -Filter "Celerp.exe" -EA SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+  if (-not $found) { Fail "Celerp.exe not installed under $root after $what" }
+  Split-Path $found
+}
+
+# The installed folder holds exactly the build's files plus the uninstaller: nothing left
+# from an earlier copy and nothing missing.
+function TreeMatches([string]$dir, [string]$what) {
+  python scripts\check_win_bundle.py installed $build $dir
+  if ($LASTEXITCODE -ne 0) { Fail "after $what the install folder differs from the build" }
+}
 
 # Every module in the lock is enabled; a bundled module that is missing or fails to load
 # stops startup, so readiness also proves they all load.
 $enabled = ((Get-Content "..\default_modules\first_party.lock.json" -Raw | ConvertFrom-Json).PSObject.Properties.Name | Sort-Object) -join ","
 Write-Host "smoke: enabling $enabled"
-$boot = Join-Path $pub "celerp-boot.out"
-$run  = Join-Path $pub "celerp-run.cmd"
-Remove-Item $boot -EA SilentlyContinue
-Set-Content -Encoding Ascii $run "@echo off`r`n$envSet`r`nset ELECTRON_ENABLE_LOGGING=1`r`nset ENABLED_MODULES=$enabled`r`n`"$exe`" > `"$boot`" 2>&1"
-Write-Host "smoke: launching installed $exe as $Account account $u (default data dir $udd, output $boot)"
-Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub
 
-$deadline = (Get-Date).AddSeconds(240)
-$ok = $false; $port = $null; $tick = 0
-while ((Get-Date) -lt $deadline) {
-  if (-not $port) {
-    $pf = Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
-    if ($pf) { $port = (Get-Content $pf.FullName -Raw).Trim(); Write-Host "smoke: app published API port $port ($($pf.FullName))" }
+# Launches the installed app exactly as a user would (default data directory, no
+# --user-data-dir) and waits for db:ok; returns the API port.
+function Launch([string]$exe, [string]$what) {
+  Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Remove-Item -Force
+  $boot = Join-Path $pub "celerp-boot.out"
+  $run  = Join-Path $pub "celerp-run.cmd"
+  Remove-Item $boot -EA SilentlyContinue
+  Wrapper $run "set ELECTRON_ENABLE_LOGGING=1`r`nset ENABLED_MODULES=$enabled`r`n`"$exe`" > `"$boot`" 2>&1"
+  Write-Host "smoke: $what, launching $exe as $u (default data dir $udd, output $boot)"
+  $watch = [Diagnostics.Stopwatch]::StartNew()
+  Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub
+  $deadline = (Get-Date).AddSeconds(240)
+  $port = $null; $tick = 0
+  while ((Get-Date) -lt $deadline) {
+    if (-not $port) {
+      $pf = Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
+      if ($pf) { $port = (Get-Content $pf.FullName -Raw).Trim(); Write-Host "smoke: app published API port $port ($($pf.FullName))" }
+    }
+    if ($port) {
+      try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { $watch.Stop(); Timing "$what, launch to db:ok" $watch; return $port } } catch { }
+    }
+    if (($tick % 10) -eq 0) { Write-Host "smoke: t+$($tick*2)s Celerp procs=$(@(Get-Process Celerp -EA SilentlyContinue).Count) portFound=$([bool]$port)" }
+    $tick++; Start-Sleep -Seconds 2
   }
-  if ($port) {
-    try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { $ok = $true; break } } catch { }
-  }
-  if (($tick % 10) -eq 0) { Write-Host "smoke: t+$($tick*2)s Celerp procs=$(@(Get-Process Celerp -EA SilentlyContinue).Count) portFound=$([bool]$port)" }
-  $tick++; Start-Sleep -Seconds 2
-}
-$ours = { @(Get-Process postgres, python -EA SilentlyContinue | Where-Object { $_.Path -like "$installDir\*" }) }
-$before = (& $ours).Count
-taskkill /IM Celerp.exe /F 2>$null | Out-Null
-if (-not $ok) {
+  taskkill /IM Celerp.exe /F 2>$null | Out-Null
   Write-Host "===== Electron stdout/stderr ($boot) ====="
   if (Test-Path $boot) { Get-Content $boot -Tail 200 } else { Write-Host "(no captured output)" }
   Write-Host "===== boot-relevant files (logs / postgres state) ====="
   Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
     Where-Object { -not $_.PSIsContainer -and $_.Name -match '(?i)\.log$|logfile|PG_VERSION|postmaster|\.pid$|migrat|deelevate' } |
     ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
-  Fail "db:ok not reached (port=$port)"
+  Fail "$what`: db:ok not reached (port=$port)"
 }
-Write-Host "boot smoke OK on Windows as $Account account (port $port)"
 
-# The force-quit above must leave no API or database running (the app's job object ends them).
-if ($before -eq 0) { Fail "force-quit check could not see the app's API and database processes" }
-for ($i = 0; $i -lt 15; $i++) {
-  $left = @(& $ours) + @(Get-NetTCPConnection -LocalPort $port -State Listen -EA SilentlyContinue)
-  if ($left.Count -eq 0) { break }
-  Start-Sleep -Seconds 2
+function Ours([string]$dir) { @(Get-Process Celerp, postgres, python -EA SilentlyContinue | Where-Object { $_.Path -like "$dir\*" }) }
+
+# Force-quits the app: no API or database may stay running (the app's job object ends them).
+function ForceQuit([string]$dir, [string]$port, [string]$what) {
+  $before = @(Ours $dir | Where-Object { $_.Name -ne "Celerp" }).Count
+  taskkill /IM Celerp.exe /F 2>$null | Out-Null
+  if ($before -eq 0) { Fail "$what`: force-quit check could not see the app's API and database processes" }
+  for ($i = 0; $i -lt 15; $i++) {
+    $left = @(Ours $dir) + @(Get-NetTCPConnection -LocalPort $port -State Listen -EA SilentlyContinue)
+    if ($left.Count -eq 0) { break }
+    Start-Sleep -Seconds 2
+  }
+  if ($left.Count -ne 0) { $left | Format-Table | Out-String | Write-Host; Fail "$what`: force-quit left the API or the database running" }
+  Write-Host "force-quit OK on Windows ($smoke, $what): the API and the database stopped ($before processes before)"
 }
-if ($left.Count -ne 0) { $left | Format-Table | Out-String | Write-Host; Fail "force-quit left the API or the database running" }
-Write-Host "force-quit OK on Windows as $Account account: the API and the database stopped ($before processes before)"
+
+# Business records through the running copy's API, from the repository's scripts folder.
+function Records([string]$command, [string]$port, [string]$out) {
+  python ..\scripts\smoke_records.py $command "http://127.0.0.1:$port" > $out
+  if ($LASTEXITCODE -ne 0) { Get-Content $out -EA SilentlyContinue | Write-Host; Fail "smoke_records.py $command against port $port exited $LASTEXITCODE" }
+}
+
+if ($Previous) {
+  $installDir = InstallSetup $Previous "previous release install"
+  $port = Launch (Join-Path $installDir "Celerp.exe") "previous release"
+  Records seed $port (Join-Path $pub "celerp-previous.seed")
+  Records snapshot $port (Join-Path $pub "celerp-previous.snapshot")
+  Write-Host "smoke: previous release $(Get-Content (Join-Path $pub 'celerp-previous.seed'))"
+  ForceQuit $installDir $port "previous release"
+}
+
+$installDir = InstallSetup $setup "install"
+TreeMatches $installDir "install"
+$exe = Join-Path $installDir "Celerp.exe"
+
+# The installed app's own token check must read the account the way the app will.
+$py = Join-Path $installDir "resources\python-x64\python\python.exe"
+$launcher = Join-Path $installDir "resources\app\celerp\win_restricted_launch.py"
+$state = ((RunAs "token" "`"$py`" -I `"$launcher`" --token-state" 60000).Lines | Select-Object -First 1).Trim()
+if ($state -ne $Account) { Fail "token state '$state' (want $Account)" }
+if ($Account -eq "admin") {
+  $child = ((RunAs "child-token" "`"$py`" -I `"$launcher`" `"$py`" -I `"$launcher`" --token-state" 60000).Lines | Select-Object -First 1).Trim()
+  if ($child -ne "standard") { Fail "restricted launcher child token state '$child' (want standard)" }
+}
+Write-Host "token states OK for $Account"
+
+$port = Launch $exe "first launch"
+Write-Host "boot smoke OK on Windows ($smoke, account $u, port $port)"
+
+if ($Previous) {
+  Records snapshot $port (Join-Path $pub "celerp-candidate.snapshot")
+  python ..\scripts\smoke_records.py carried (Join-Path $pub "celerp-previous.snapshot") (Join-Path $pub "celerp-candidate.snapshot")
+  if ($LASTEXITCODE -ne 0) { Fail "the upgrade from the previous release did not keep its records" }
+}
+
+if ($OverRunning) {
+  $running = @(Ours $installDir).Count
+  $installDir = InstallSetup $setup "install over the running app ($running app processes)"
+  $left = @(Ours $installDir)
+  if ($left.Count) { $left | Format-Table Id, Name, Path | Out-String | Write-Host; Fail "the installer left the app running" }
+  TreeMatches $installDir "install over the running app"
+  $port = Launch $exe "launch after installing over the running app"
+}
+
+ForceQuit $installDir $port "last launch"

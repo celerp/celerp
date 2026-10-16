@@ -13,6 +13,11 @@ any release.
       and the customers and items or the status their pages answer once
       Celerp has finished starting, as one JSON line. Two snapshots of the same data are equal when nothing was lost or
       changed, including which of those pages the company is served.
+  python scripts/smoke_records.py carried BEFORE.json AFTER.json
+      Compares a snapshot an older copy took with one a newer copy took of the
+      same data. The older copy may not serve every module page on fresh data,
+      so the ledger must match exactly, every page it served must match, and the
+      newer copy must serve every page. Exits 1 with the difference otherwise.
 """
 from __future__ import annotations
 
@@ -107,7 +112,24 @@ def snapshot(api: str) -> None:
     }, sort_keys=True))
 
 
+def carried(before_path: str, after_path: str) -> None:
+    before, after = (json.loads(open(p, encoding="utf-8").read()) for p in (before_path, after_path))
+    if before["ledger"] != after["ledger"]:
+        fail(f"the ledger changed:\n before {before['ledger']}\n after  {after['ledger']}")
+    changed = {path: (rows, after["served"].get(path)) for path, rows in before["served"].items()
+               if isinstance(rows, list) and after["served"].get(path) != rows}
+    if changed:
+        fail(f"records changed (before, after): {changed}")
+    unserved = {path: status for path, status in after["served"].items() if not isinstance(status, list)}
+    if unserved:
+        fail(f"pages not served after the upgrade: {unserved}")
+    print(f"ledger ({len(after['ledger'])} events) and records carried from {before['version']} to {after['version']}")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] not in ("seed", "snapshot"):
+    if len(sys.argv) == 4 and sys.argv[1] == "carried":
+        carried(sys.argv[2], sys.argv[3])
+    elif len(sys.argv) == 3 and sys.argv[1] in ("seed", "snapshot"):
+        {"seed": seed, "snapshot": snapshot}[sys.argv[1]](sys.argv[2].rstrip("/"))
+    else:
         fail(__doc__)
-    {"seed": seed, "snapshot": snapshot}[sys.argv[1]](sys.argv[2].rstrip("/"))

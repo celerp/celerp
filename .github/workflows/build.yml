@@ -770,13 +770,34 @@ jobs:
       # Boot the installed app the way most Windows users run it: from a standard
       # (non-admin) account. A SAFER/runas restricted token would crash Electron; a
       # real standard account gives a clean medium token where both Electron and
-      # Postgres run.
+      # Postgres run. With the app open, the installer runs again, as a user does
+      # with the app still running: it must close the app, install and boot again.
       - name: Boot smoke (Windows, require db:ok)
-        timeout-minutes: 15
+        timeout-minutes: 20
         if: runner.os == 'Windows'
         shell: pwsh
         working-directory: electron
-        run: ./scripts/win-boot-smoke.ps1 -Account standard
+        run: ./scripts/win-boot-smoke.ps1 -Account standard -OverRunning
+
+      # The latest release, installed and opened by an account whose name, and so its
+      # profile, data and install folders, has spaces and non-ASCII letters. It keeps
+      # records; this build then installs over it and must serve the same records.
+      - name: Boot smoke (Windows, upgrade from the latest release, non-ASCII account)
+        timeout-minutes: 25
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: electron
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $previous = Join-Path $env:RUNNER_TEMP "previous"
+          $tag = gh release view --repo $env:GITHUB_REPOSITORY --json tagName --jq .tagName
+          if ($LASTEXITCODE -ne 0 -or -not $tag) { Write-Host "::error::no latest release to upgrade from"; exit 1 }
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern Celerp-Setup.exe --dir $previous
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not download Celerp-Setup.exe from $tag"; exit 1 }
+          Write-Host "upgrading from $tag"
+          ./scripts/win-boot-smoke.ps1 -Account standard -UserName "Célerp Tëst ü" -Previous (Join-Path $previous "Celerp-Setup.exe")
 
       # The installer reads the installed version from the uninstall entry. Over an
       # existing install: none -> installs; the same version run silently ->
@@ -784,6 +805,11 @@ jobs:
       # installed exe, a file in the install folder and the uninstall entry are
       # compared byte for byte); installed older -> updates; the in-app updater
       # (--updated) -> is never stopped or prompted.
+      # Before any of that: a disk without room for the app must stop the installer
+      # with a non-zero exit and register nothing; an installer stopped part way
+      # registers nothing, and the next run installs the complete app over what it
+      # left (the stopped run's temporary files are reported). The first full install
+      # is timed into the job summary, reported and never compared against a limit.
       - name: Installer version check (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -816,11 +842,49 @@ jobs:
             } | ConvertTo-Json -Compress
           }
 
-          # none: a fresh install.
+          # A full disk: a 300 MB volume cannot hold the app.
+          $letter = [char[]](70..90) | Where-Object { -not (Test-Path "${_}:\") } | Select-Object -Last 1
+          $vhd = Join-Path $env:RUNNER_TEMP "lowdisk.vhdx"
+          $dp = Join-Path $env:RUNNER_TEMP "lowdisk.txt"
+          Set-Content -Encoding Ascii $dp "create vdisk file=`"$vhd`" maximum=300 type=expandable`r`nselect vdisk file=`"$vhd`"`r`nattach vdisk`r`ncreate partition primary`r`nformat fs=ntfs quick label=lowdisk`r`nassign letter=$letter"
+          diskpart /s $dp | Out-Null
+          if (-not (Test-Path "${letter}:\")) { Fail "could not attach the low-disk volume" }
+          $p = Start-Process -FilePath $setup -ArgumentList "/S /currentuser /D=${letter}:\Celerp" -PassThru
+          if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; Fail "installer on a full disk was still running after 600 s" }
+          if ($p.ExitCode -eq 0) { Fail "installer on a full disk exited 0" }
+          if (Entry) { Fail "installer on a full disk registered an install" }
+          Write-Host "full disk: stopped with exit $($p.ExitCode), nothing registered"
+          Set-Content -Encoding Ascii $dp "select vdisk file=`"$vhd`"`r`ndetach vdisk"
+          diskpart /s $dp | Out-Null
+
+          # Stopped part way: the installer is ended once it has copied part of the app.
+          $target = Join-Path $env:LOCALAPPDATA "Programs\celerp"
+          $tempBefore = @(Get-ChildItem $env:TEMP -Directory -Filter "ns*.tmp" -EA SilentlyContinue | ForEach-Object Name)
+          $p = Start-Process -FilePath $setup -ArgumentList "/S /currentuser" -PassThru
+          $copied = 0
+          while (-not $p.HasExited) {
+            $copied = @(Get-ChildItem $target -Recurse -File -EA SilentlyContinue).Count
+            if ($copied -ge 1000) { Stop-Process -Id $p.Id -Force; $p.WaitForExit(); break }
+            Start-Sleep -Milliseconds 200
+          }
+          if ($copied -lt 1000) { Fail "the installer finished (exit $($p.ExitCode)) before it could be stopped part way" }
+          if (Entry) { Fail "an installer stopped part way registered an install" }
+          $stale = @(Get-ChildItem $env:TEMP -Directory -Filter "ns*.tmp" -EA SilentlyContinue | Where-Object { $tempBefore -notcontains $_.Name })
+          $staleMB = [math]::Round((($stale | ForEach-Object { Get-ChildItem $_.FullName -Recurse -File -EA SilentlyContinue } | Measure-Object Length -Sum).Sum) / 1MB)
+          Write-Host "stopped part way: $copied files copied, nothing registered; it left $($stale.Count) temporary folders ($staleMB MB)"
+
+          # none: a full install, over what the stopped run left.
+          $watch = [Diagnostics.Stopwatch]::StartNew()
           $code = Install @("/S", "/currentuser")
+          $watch.Stop()
           if ($code -ne 0) { Fail "fresh install exited $code" }
           if (-not (Entry)) { Fail "no Celerp uninstall entry after install" }
           $built = Installed
+          python electron/scripts/check_win_bundle.py installed electron/dist/win-unpacked (InstallDir)
+          if ($LASTEXITCODE -ne 0) { Fail "the install over a stopped run differs from the build" }
+          $line = "- Windows runner account, per-user silent install: {0:N1} s" -f $watch.Elapsed.TotalSeconds
+          Write-Host "timing: $line"
+          Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY $line
           Write-Host "none: installed $built"
 
           # same: the same version run silently reinstalls.
@@ -861,6 +925,16 @@ jobs:
         shell: pwsh
         working-directory: electron
         run: ./scripts/win-boot-smoke.ps1 -Account admin
+
+      # Installed for all users by an administrator, into a Program Files folder with
+      # spaces whose deepest file is as long as a path may be without long-path
+      # support, then run by a standard account that did not install it.
+      - name: Boot smoke (Windows, per-machine install, second standard account)
+        timeout-minutes: 20
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: electron
+        run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName celerpci2 -Install machine
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"
