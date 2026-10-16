@@ -445,7 +445,10 @@ async def _open(session, company_id, asset_id: str) -> tuple[dict, list[dict]]:
     if row is None or row.entity_type != "fa_asset":
         raise HTTPException(status_code=404, detail="No such asset.")
     if row.state.get("status") != "active":
-        raise conflict("Only an asset in use can be corrected.")
+        raise conflict(f"{row.state['number']} is not in use, so it cannot be corrected.")
+    from celerp_fixed_assets import sales
+
+    await sales.refuse_waiting(session, company_id, asset_id, row.state)
     return row.state, await asset_movements(session, company_id, asset_id)
 
 

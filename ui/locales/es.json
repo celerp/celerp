@@ -5662,5 +5662,10 @@
   "docs.void_under_supplier_credit": "Esta nota de crédito de proveedor sigue aplicada a las facturas {bills} y reembolsada {refunds}. Desaplíquela de cada factura y anule cada reembolso primero; después, anúlela.",
   "docs.void_under_supplier_credit_note": "Este documento no se puede anular: las notas de crédito de proveedor {numbers} están emitidas sobre él. Anule primero esas notas de crédito de proveedor y vuelva a intentarlo.",
   "docs.revert_under_supplier_credit_note": "Este documento no se puede devolver a borrador: las notas de crédito de proveedor {numbers} están emitidas sobre él. Anule primero esas notas de crédito de proveedor y vuelva a intentarlo.",
-  "docs.contact_credit_fixed": "Este documento tiene una nota de crédito emitida o aplicada. Anule las aplicaciones del crédito y anule la nota vinculada o devuélvala a borrador antes de cambiar el contacto."
+  "docs.contact_credit_fixed": "Este documento tiene una nota de crédito emitida o aplicada. Anule las aplicaciones del crédito y anule la nota vinculada o devuélvala a borrador antes de cambiar el contacto.",
+  "documents.err_asset_line_doc_type": "La línea {line} indica un activo fijo. Solo una factura puede vender un activo, y solo una nota de crédito puede abonar su venta.",
+  "documents.err_asset_line_twice": "La línea {line} indica un activo que ya indica otra línea. Cada activo va en una sola línea.",
+  "documents.err_asset_line_quantity": "La línea {line} vende un activo fijo, así que su cantidad es 1.",
+  "documents.err_asset_line_source": "La línea {line} abona un activo que no está en la misma línea de la factura. Abone la línea de la factura que lo vendió.",
+  "documents.err_asset_lines_unhandled": "Este documento vende o abona un activo fijo. Active Activos fijos para terminarlo."
 }

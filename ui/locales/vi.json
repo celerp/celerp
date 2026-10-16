@@ -5662,5 +5662,10 @@
   "docs.void_under_supplier_credit": "Phiếu ghi có nhà cung cấp này vẫn đang áp dụng cho các hóa đơn {bills} và đã hoàn tiền {refunds}. Hãy gỡ khỏi từng hóa đơn và hủy từng khoản hoàn tiền trước, rồi hủy phiếu.",
   "docs.void_under_supplier_credit_note": "Không thể hủy chứng từ này: các phiếu ghi có nhà cung cấp {numbers} đã được phát hành cho nó. Hãy hủy các phiếu đó trước, rồi thử lại.",
   "docs.revert_under_supplier_credit_note": "Không thể đưa chứng từ này về bản nháp: các phiếu ghi có nhà cung cấp {numbers} đã được phát hành cho nó. Hãy hủy các phiếu đó trước, rồi thử lại.",
-  "docs.contact_credit_fixed": "Chứng từ này có giấy báo có đã phát hành hoặc được áp dụng. Hãy hủy các lần áp dụng tín dụng và hủy giấy báo có liên kết hoặc đưa về bản nháp trước khi đổi liên hệ."
+  "docs.contact_credit_fixed": "Chứng từ này có giấy báo có đã phát hành hoặc được áp dụng. Hãy hủy các lần áp dụng tín dụng và hủy giấy báo có liên kết hoặc đưa về bản nháp trước khi đổi liên hệ.",
+  "documents.err_asset_line_doc_type": "Dòng {line} ghi một tài sản cố định. Chỉ hóa đơn mới bán được tài sản, và chỉ giấy báo có mới ghi giảm việc bán.",
+  "documents.err_asset_line_twice": "Dòng {line} ghi một tài sản mà dòng khác đã ghi. Mỗi tài sản chỉ nằm trên một dòng.",
+  "documents.err_asset_line_quantity": "Dòng {line} bán một tài sản cố định, nên số lượng là 1.",
+  "documents.err_asset_line_source": "Dòng {line} ghi giảm một tài sản không nằm trên cùng dòng của hóa đơn. Hãy ghi giảm dòng hóa đơn đã bán tài sản đó.",
+  "documents.err_asset_lines_unhandled": "Chứng từ này bán hoặc ghi giảm một tài sản cố định. Bật Tài sản cố định để hoàn tất."
 }

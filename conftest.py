@@ -389,6 +389,14 @@ _SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
         },
     },
     {
+        "slot": "doc_asset_lines",
+        "contrib": {
+            "handler": "celerp_fixed_assets.sales:on_asset_lines",
+            "_module": "celerp-fixed-assets",
+            "_first_party": True,
+        },
+    },
+    {
         "slot": "projection_handler",
         "contrib": {
             "prefix": "shop.sync.",

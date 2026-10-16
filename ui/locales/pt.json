@@ -5662,5 +5662,10 @@
   "docs.void_under_supplier_credit": "Esta nota de crédito de fornecedor ainda está aplicada às faturas {bills} e reembolsada {refunds}. Retire-a de cada fatura e anule cada reembolso primeiro e depois anule-a.",
   "docs.void_under_supplier_credit_note": "Este documento não pode ser anulado: as notas de crédito de fornecedor {numbers} foram emitidas sobre ele. Anule primeiro essas notas de crédito de fornecedor e tente novamente.",
   "docs.revert_under_supplier_credit_note": "Este documento não pode voltar a rascunho: as notas de crédito de fornecedor {numbers} foram emitidas sobre ele. Anule primeiro essas notas de crédito de fornecedor e tente novamente.",
-  "docs.contact_credit_fixed": "Este documento tem uma nota de crédito emitida ou aplicada. Anule as aplicações do crédito e anule a nota vinculada ou devolva-a a rascunho antes de alterar o contato."
+  "docs.contact_credit_fixed": "Este documento tem uma nota de crédito emitida ou aplicada. Anule as aplicações do crédito e anule a nota vinculada ou devolva-a a rascunho antes de alterar o contato.",
+  "documents.err_asset_line_doc_type": "A linha {line} indica um ativo imobilizado. Só uma fatura pode vender um ativo, e só uma nota de crédito pode creditar a sua venda.",
+  "documents.err_asset_line_twice": "A linha {line} indica um ativo que outra linha já indica. Cada ativo fica numa só linha.",
+  "documents.err_asset_line_quantity": "A linha {line} vende um ativo imobilizado, por isso a quantidade é 1.",
+  "documents.err_asset_line_source": "A linha {line} credita um ativo que não está na mesma linha da fatura. Credite a linha da fatura que o vendeu.",
+  "documents.err_asset_lines_unhandled": "Este documento vende ou credita um ativo imobilizado. Ative Ativos imobilizados para o concluir."
 }

@@ -5662,5 +5662,10 @@
   "docs.void_under_supplier_credit": "Cet avoir fournisseur est encore appliqué aux factures {bills} et remboursé {refunds}. Retirez-le de chaque facture et annulez chaque remboursement d'abord, puis annulez-le.",
   "docs.void_under_supplier_credit_note": "Ce document ne peut pas être annulé : les avoirs fournisseur {numbers} sont émis sur lui. Annulez d'abord ces avoirs fournisseur, puis réessayez.",
   "docs.revert_under_supplier_credit_note": "Ce document ne peut pas repasser en brouillon : les avoirs fournisseur {numbers} sont émis sur lui. Annulez d'abord ces avoirs fournisseur, puis réessayez.",
-  "docs.contact_credit_fixed": "Ce document possède un avoir émis ou imputé. Annulez les imputations, puis annulez l’avoir lié ou remettez-le en brouillon avant de modifier le contact."
+  "docs.contact_credit_fixed": "Ce document possède un avoir émis ou imputé. Annulez les imputations, puis annulez l’avoir lié ou remettez-le en brouillon avant de modifier le contact.",
+  "documents.err_asset_line_doc_type": "La ligne {line} désigne une immobilisation. Seule une facture peut vendre une immobilisation, et seul un avoir peut créditer sa vente.",
+  "documents.err_asset_line_twice": "La ligne {line} désigne une immobilisation déjà désignée par une autre ligne. Chaque immobilisation figure sur une seule ligne.",
+  "documents.err_asset_line_quantity": "La ligne {line} vend une immobilisation, sa quantité est donc 1.",
+  "documents.err_asset_line_source": "La ligne {line} crédite une immobilisation absente de la même ligne de la facture. Créditez la ligne de facture qui l'a vendue.",
+  "documents.err_asset_lines_unhandled": "Ce document vend ou crédite une immobilisation. Activez Immobilisations pour le terminer."
 }

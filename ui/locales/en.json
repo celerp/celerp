@@ -5662,5 +5662,10 @@
   "docs.void_under_supplier_credit": "This supplier credit note is still applied to bills {bills} and refunded {refunds}. Unapply it from each bill and void each refund on it first, then void it.",
   "docs.void_under_supplier_credit_note": "This document cannot be voided: supplier credit notes {numbers} are issued against it. Void those supplier credit notes first, then try again.",
   "docs.revert_under_supplier_credit_note": "This document cannot be reverted to draft: supplier credit notes {numbers} are issued against it. Void those supplier credit notes first, then try again.",
-  "docs.contact_credit_fixed": "This document has an issued or applied credit note. Unapply its credits and void or revert the linked note before changing the contact."
+  "docs.contact_credit_fixed": "This document has an issued or applied credit note. Unapply its credits and void or revert the linked note before changing the contact.",
+  "documents.err_asset_line_doc_type": "Line {line} names a fixed asset. Only an invoice can sell an asset, or a credit note credit its sale.",
+  "documents.err_asset_line_twice": "Line {line} names an asset another line already names. Each asset goes on one line.",
+  "documents.err_asset_line_quantity": "Line {line} sells a fixed asset, so its quantity is 1.",
+  "documents.err_asset_line_source": "Line {line} credits an asset that is not on the same line of the invoice. Credit the invoice line that sold it.",
+  "documents.err_asset_lines_unhandled": "This document sells or credits a fixed asset. Turn on Fixed Assets to finish it."
 }

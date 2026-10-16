@@ -5662,5 +5662,10 @@
   "docs.void_under_supplier_credit": "この仕入先クレジットノートはまだ請求書 {bills} に適用され、{refunds} が返金されています。先に各請求書から適用を外し、各返金を無効にしてから、無効にしてください。",
   "docs.void_under_supplier_credit_note": "この書類は無効にできません。仕入先クレジットノート {numbers} がこの書類に対して発行されています。先にそれらを無効にしてから、もう一度お試しください。",
   "docs.revert_under_supplier_credit_note": "この書類は下書きに戻せません。仕入先クレジットノート {numbers} がこの書類に対して発行されています。先にそれらを無効にしてから、もう一度お試しください。",
-  "docs.contact_credit_fixed": "この伝票には発行済みまたは適用済みのクレジットノートがあります。取引先を変更する前に、クレジットの適用を取り消し、関連するノートを無効にするか下書きに戻してください。"
+  "docs.contact_credit_fixed": "この伝票には発行済みまたは適用済みのクレジットノートがあります。取引先を変更する前に、クレジットの適用を取り消し、関連するノートを無効にするか下書きに戻してください。",
+  "documents.err_asset_line_doc_type": "{line} 行目は固定資産を指定しています。資産を売却できるのは請求書のみで、その売却を減額できるのはクレジットノートのみです。",
+  "documents.err_asset_line_twice": "{line} 行目の資産は別の行で既に指定されています。資産は1行に1つだけ指定してください。",
+  "documents.err_asset_line_quantity": "{line} 行目は固定資産を売却するため、数量は 1 です。",
+  "documents.err_asset_line_source": "{line} 行目は、請求書の対応する行にない資産を減額しています。その資産を売却した請求書の行を減額してください。",
+  "documents.err_asset_lines_unhandled": "この書類は固定資産を売却または減額します。完了するには固定資産を有効にしてください。"
 }

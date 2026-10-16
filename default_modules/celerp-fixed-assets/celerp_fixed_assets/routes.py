@@ -19,19 +19,23 @@ from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import (
     assert_role_permission, get_current_company_settings, require_permission, role_has_permission)
-from celerp_fixed_assets import corrections, disposal, operations, runs, setup, sources
+from celerp_fixed_assets import corrections, disposal, operations, runs, sales, setup, sources
 from celerp_fixed_assets.events import register_events
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
 
+# The journals a sale invoice or its credit notes post: a linked document posts them even
+# while the module is off.
+SALE_OPERATIONS = ("sale", "sale_adjust", "sale_return", "sale_reverse")
 # Journal operation types this module posts, and the permission each needs.
 OPERATION_TYPES = {name: ("manage_accounting",)
                    for name in ("registration", "acquisition", "expense", "maintenance", "undo", "run", "correction",
-                                "disposal")}
+                                "disposal")} | dict.fromkeys(SALE_OPERATIONS, sales.SALE_KEYS)
 
 _MONEY_FIELDS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "nbv")
 _VIEW = [require_permission("view_fixed_assets")]
 _ACCOUNTING = [require_permission("manage_accounting")]
+_SELL = [require_permission("edit_documents"), require_permission("manage_fixed_assets")]
 
 
 def _shows_money(settings: dict, role: str) -> bool:
@@ -298,6 +302,27 @@ async def dispose_assets(body: dict = Body(...), company_id=Depends(get_current_
     return await _write(session, disposal.dispose, company_id, user.id, body)
 
 
+@router.post("/assets/{asset_id}/sell", dependencies=_SELL)
+async def sell_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                     user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, sales.sell, company_id, user.id, asset_id, body)
+
+
+@router.get("/assets/{asset_id}/sale", dependencies=_VIEW)
+async def get_sale(asset_id: str, company_id=Depends(get_current_company_id),
+                   session: AsyncSession = Depends(get_session)) -> dict:
+    return await sales.view(session, company_id, asset_id)
+
+
+@router.post("/assets/{asset_id}/sale/{action}", dependencies=_SELL)
+async def change_sale(asset_id: str, action: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    call = {"credit": sales.credit, "reissue": sales.reissue, "cancel": sales.cancel}.get(action)
+    if call is None:
+        raise HTTPException(status_code=404, detail="No such sale action.")
+    return await _write(session, call, company_id, user.id, asset_id, body)
+
+
 @router.post("/assets/{asset_id}/undo-disposal", dependencies=_ACCOUNTING)
 async def undo_disposal(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
@@ -363,5 +388,6 @@ def setup_api_routes(app) -> None:
     from celerp.services.module_journals import register_operation_types
 
     register_events()
-    register_operation_types("celerp-fixed-assets", OPERATION_TYPES, source_prefix="fa:")
+    register_operation_types("celerp-fixed-assets", OPERATION_TYPES, source_prefix="fa:",
+                             document_corrections=SALE_OPERATIONS)
     app.include_router(router)

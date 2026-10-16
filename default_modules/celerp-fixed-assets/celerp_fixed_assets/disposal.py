@@ -8,7 +8,9 @@ depreciation and impairment of what leaves the books taken off, any revaluation 
 moved to retained earnings, and the balance to the loss (or gain) on disposal. A partial
 disposal takes a percentage of a single asset, or a quantity of a record holding
 several, and the rest depreciates on. Undo reverses the latest disposal while nothing has
-happened to the asset since and its date is open.
+happened to the asset since and its date is open. A sale (celerp_fixed_assets.sales)
+disposes of the asset by the same plan, with its proceeds, and is undone through its
+invoice instead.
 """
 from __future__ import annotations
 
@@ -71,6 +73,15 @@ def _role(books: runs.Books, role: str, label: str) -> str:
     return account
 
 
+def accounts(books: runs.Books) -> dict:
+    """The posting accounts a disposal or sale may need, each read only when a line uses it."""
+    return {"gain": lambda: _role(books, "disposal_gain", "gain on disposal"),
+            "loss": lambda: _role(books, "disposal_loss", "loss on disposal"),
+            "surplus": lambda: _role(books, "revaluation_surplus", "revaluation surplus"),
+            "retained": lambda: _role(books, "retained_earnings", "retained earnings"),
+            "clearing": lambda: _role(books, "asset_disposal_clearing", "asset sale clearing")}
+
+
 def _split(amount: Decimal, share: Decimal, currency: str) -> Decimal:
     """The part of ``amount`` that leaves with ``share``."""
     from celerp.services.money import allocate_pro_rata
@@ -97,10 +108,12 @@ def _check_date(books: runs.Books, asset: dict, live: list[dict], day: str) -> N
 
 
 def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: list[dict], day: str,
-                share: Decimal, quantity: Decimal, accounts: dict) -> dict:
-    """What disposing of ``share`` of one asset on ``day`` posts and moves."""
+                share: Decimal, quantity: Decimal, accounts: dict, *, proceeds: Decimal = Decimal(0),
+                clearing: str | None = None) -> dict:
+    """What disposing of ``share`` of one asset on ``day`` posts and moves. A sale brings
+    ``proceeds`` in from its ``clearing`` account, and they count toward the gain."""
     currency = books.settings.get("currency") or "USD"
-    if asset.get("status") == "disposed":
+    if asset.get("status") in ("disposed", "sold"):
         raise conflict(f"{asset['number']}: Disposed on {asset['disposal']['date']}.")
     if asset.get("status") != "active":
         raise conflict(f"{asset['number']} is not in use, so it cannot be disposed of.")
@@ -137,7 +150,7 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     gone_imp = _split(_dec(asset.get(_IMP)), share, currency)
     gone_surplus = _split(_dec(asset.get(_SURPLUS)), share, currency)
     carrying = gone_cost - gone_ad - gone_imp
-    gain = -carrying
+    gain = proceeds - carrying
     expense = asset.get("depreciation_account") or cls["depreciation_account"]
     accumulated = cls["accumulated_depreciation_account"]
     from celerp.services.module_journals import JournalLine
@@ -145,6 +158,8 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     lines = _lines(expense, accumulated, depreciation) if depreciation else []
     if gone_ad + gone_imp:
         lines.append(JournalLine(account=accumulated, debit=gone_ad + gone_imp))
+    if proceeds:
+        lines.append(JournalLine(account=clearing, debit=proceeds))
     lines.append(JournalLine(account=cls["asset_account"], credit=gone_cost))
     if gone_surplus:
         lines += _lines(accounts["surplus"](), accounts["retained"](), gone_surplus)
@@ -164,6 +179,7 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
 async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str] | None = None) -> dict:
     """Dispose of one asset (in whole or part), or of several in whole."""
     from celerp.services.company_lock import lock_projections
+    from celerp_fixed_assets import sales
 
     bulk = asset_ids is None
     if bulk:
@@ -185,20 +201,17 @@ async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str]
             raise setup.unprocessable("Say why the asset is disposed of.")
         rows = await lock_projections(session, company_id, asset_ids)
         books = await runs._books(session, company_id)
-        accounts = {"gain": lambda: _role(books, "disposal_gain", "gain on disposal"),
-                    "loss": lambda: _role(books, "disposal_loss", "loss on disposal"),
-                    "surplus": lambda: _role(books, "revaluation_surplus", "revaluation surplus"),
-                    "retained": lambda: _role(books, "retained_earnings", "retained earnings")}
         items = []
         for asset_id in asset_ids:
             row = rows.get(asset_id)
             if row is None or row.entity_type != "fa_asset":
                 raise HTTPException(status_code=404, detail="No such asset.")
+            await sales.refuse_waiting(session, company_id, asset_id, row.state)
             cls = await setup.get_class(session, company_id, row.state.get("class_id"))
             share, quantity = (Decimal(1), _dec(row.state.get("quantity"))) if bulk else _share(row.state, body)
             items.append(_plan_asset(books, asset_id, row.state, cls,
                                      await asset_movements(session, company_id, asset_id), day, share, quantity,
-                                     accounts))
+                                     accounts(books)))
         totals = {k: _cents(sum((_dec(i["shown"][k]) for i in items), Decimal(0)))
                   for k in ("depreciation", "carrying_amount", "gain_or_loss")}
         shown = {"date": day, "reason": reason, "note": note, **totals, "assets": [i["shown"] for i in items],
@@ -253,6 +266,11 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         if not disposals:
             raise setup.unprocessable(f"{asset['number']} has no disposal to undo.")
         latest = disposals[-1]
+        if latest.get("reason") == "sold":
+            from celerp_fixed_assets.sales import doc_number
+
+            invoice = doc_number(await _state(session, company_id, latest["invoice_id"]), latest["invoice_id"])
+            raise conflict(f"{asset['number']} was sold on invoice {invoice}. Void or credit that invoice instead.")
         if int(latest["id"].rsplit(":", 1)[1]) != int(asset.get("movement_count") or 0):
             raise conflict(f"{asset['number']} has changed since it was disposed of, so the disposal can no longer "
                            "be undone.")

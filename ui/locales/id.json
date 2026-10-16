@@ -5662,5 +5662,10 @@
   "docs.void_under_supplier_credit": "Nota kredit pemasok ini masih diterapkan ke tagihan {bills} dan dikembalikan {refunds}. Lepaskan dari setiap tagihan dan batalkan setiap pengembalian dana terlebih dahulu, lalu batalkan nota ini.",
   "docs.void_under_supplier_credit_note": "Dokumen ini tidak dapat dibatalkan: nota kredit pemasok {numbers} diterbitkan atasnya. Batalkan nota kredit pemasok tersebut terlebih dahulu, lalu coba lagi.",
   "docs.revert_under_supplier_credit_note": "Dokumen ini tidak dapat dikembalikan ke draf: nota kredit pemasok {numbers} diterbitkan atasnya. Batalkan nota kredit pemasok tersebut terlebih dahulu, lalu coba lagi.",
-  "docs.contact_credit_fixed": "Dokumen ini memiliki nota kredit yang telah diterbitkan atau diterapkan. Batalkan penerapan kredit, lalu batalkan nota terkait atau kembalikan ke draf sebelum mengubah kontak."
+  "docs.contact_credit_fixed": "Dokumen ini memiliki nota kredit yang telah diterbitkan atau diterapkan. Batalkan penerapan kredit, lalu batalkan nota terkait atau kembalikan ke draf sebelum mengubah kontak.",
+  "documents.err_asset_line_doc_type": "Baris {line} menyebut aset tetap. Hanya faktur yang dapat menjual aset, dan hanya nota kredit yang dapat mengkredit penjualannya.",
+  "documents.err_asset_line_twice": "Baris {line} menyebut aset yang sudah disebut baris lain. Setiap aset hanya pada satu baris.",
+  "documents.err_asset_line_quantity": "Baris {line} menjual aset tetap, jadi jumlahnya 1.",
+  "documents.err_asset_line_source": "Baris {line} mengkredit aset yang tidak ada di baris faktur yang sama. Kredit baris faktur yang menjualnya.",
+  "documents.err_asset_lines_unhandled": "Dokumen ini menjual atau mengkredit aset tetap. Aktifkan Aset Tetap untuk menyelesaikannya."
 }

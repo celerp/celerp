@@ -17,9 +17,10 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from celerp.models.ledger import LedgerEntry
 from fa_fixtures import FA
 from test_runs import _contributed, _lines, _lock, _managed_from, _movements, _notices, _owner_id, _run, _set_module
 
@@ -40,8 +41,17 @@ async def _sell(fa: FA, asset_id: str, on: str = "2026-05-20", price: str = "100
     return done["invoice_id"]
 
 
+async def _discard_refused(fa: FA, response):
+    """The app shares the test's session, so a refused request's work is rolled back here,
+    as closing the request's own session does in production."""
+    if response.is_error:
+        await fa.session.rollback()
+    return response
+
+
 async def _doc(fa: FA, doc_id: str, action: str, body: dict | None = None, headers=None):
-    return await fa.client.post(f"/docs/{doc_id}/{action}", headers=headers or fa.h, json=body or {})
+    return await _discard_refused(
+        fa, await fa.client.post(f"/docs/{doc_id}/{action}", headers=headers or fa.h, json=body or {}))
 
 
 async def _finalize(fa: FA, doc_id: str, headers=None) -> None:
@@ -67,7 +77,7 @@ async def _credit_note(fa: FA, invoice_id: str, amount: str, *, on: str, returne
     body = {"doc_type": "credit_note", "original_doc_id": invoice_id, "issue_date": on, "line_items": [item]}
     if tax_rate is None:
         body["total"] = float(amount)
-    return await fa.client.post("/docs", headers=fa.h, json=body)
+    return await _discard_refused(fa, await fa.client.post("/docs", headers=fa.h, json=body))
 
 
 async def _credit(fa: FA, invoice_id: str, amount: str, *, on: str = "2026-06-10", returned: bool = False,
@@ -84,15 +94,18 @@ async def _number(fa: FA, doc_id: str) -> str:
 
 
 async def _clearing(fa: FA, asset_id: str) -> tuple[D, D]:
-    """Clearing (debit less credit) on the documents' entries, and on the asset's own journals."""
+    """Clearing (debit less credit) on the documents' entries for the asset, and on the asset's
+    own journals."""
     short = asset_id.removeprefix("fa:asset:")
     docs = mine = D(0)
     for je in await fa.entities("journal_entry"):
         if je.get("status") != "posted":
             continue
+        ours = je["entity_id"].startswith(f"{MODULE_JE}asset:{short}:")
         net = sum((D(str(e.get("debit") or 0)) - D(str(e.get("credit") or 0))
-                   for e in je.get("entries") or [] if e.get("account") == CLEARING), D(0))
-        if je["entity_id"].startswith(f"{MODULE_JE}asset:{short}:"):
+                   for e in je.get("entries") or []
+                   if e.get("account") == CLEARING and (ours or e.get("asset_id") == asset_id)), D(0))
+        if ours:
             mine += net
         elif je["entity_id"].startswith("je:auto:"):
             docs += net
@@ -107,12 +120,17 @@ async def _assert_clearing(fa: FA, asset_id: str, outstanding: str) -> None:
 
 
 async def _sale_journals(fa: FA, asset_id: str) -> list[dict]:
-    """The asset's posted journals touching clearing, oldest first."""
+    """The asset's posted journals touching clearing, in the order they were made (one test runs
+    in one transaction, so their creation times are equal; the ledger's ids are not)."""
     short = asset_id.removeprefix("fa:asset:")
     found = [je for je in await fa.module_journals()
              if je["entity_id"].startswith(f"{MODULE_JE}asset:{short}:") and je.get("status") == "posted"
              and any(e["account"] == CLEARING for e in je["entries"])]
-    return sorted(found, key=lambda je: (je.get("created_at") or "", je["entity_id"]))
+    first = dict((await fa.session.execute(
+        select(LedgerEntry.entity_id, func.min(LedgerEntry.id))
+        .where(LedgerEntry.entity_id.in_([je["entity_id"] for je in found]))
+        .group_by(LedgerEntry.entity_id))).all())
+    return sorted(found, key=lambda je: first[je["entity_id"]])
 
 
 async def _doc_entry(fa: FA, doc_id: str) -> dict:
@@ -137,8 +155,15 @@ async def _sold_car(fa: FA, price: str = "10000") -> tuple[str, str]:
     return car, inv
 
 
-async def _patch_lines(fa: FA, doc_id: str, lines: list[dict], **body) -> None:
-    r = await fa.client.patch(f"/docs/{doc_id}", headers=fa.h, json={"line_items": lines, **body})
+async def _patch(fa: FA, doc_id: str, lines: list[dict], **fields):
+    """Edit a draft's lines (and any header fields) as the document page does."""
+    changed = {"line_items": {"new": lines}, **{k: {"new": v} for k, v in fields.items()}}
+    return await _discard_refused(fa, await fa.client.patch(f"/docs/{doc_id}", headers=fa.h,
+                                                            json={"fields_changed": changed}))
+
+
+async def _patch_lines(fa: FA, doc_id: str, lines: list[dict], **fields) -> None:
+    r = await _patch(fa, doc_id, lines, **fields)
     assert r.status_code == 200, r.text
 
 
@@ -241,12 +266,16 @@ async def test_s4_void_and_revert_reverse_disposal_pending(fa):
     await _assert_clearing(fa, car, "10000")
     await fa.fold_matches(car)
 
-    # The sale date locked: the invoice cannot be voided, so the sale stands as it was.
+    # The sale date locked: the void still reverses the disposal, on the first open day.
+    sold = (await _sale_journals(fa, car))[-1]["entity_id"]
     await _lock(fa, "2026-05-31")
-    refused = await _doc(fa, inv, "void")
-    assert refused.status_code in (409, 422), refused.text
-    assert (await fa.asset(car))["status"] == "sold"
-    await _assert_clearing(fa, car, "10000")
+    await fa.ok(await _doc(fa, inv, "void"))
+    got = await fa.asset(car)
+    assert got["status"] == "active" and got["sale"]["state"] == "pending"
+    await _assert_clearing(fa, car, "0")
+    voided = await fa.state(sold)
+    assert voided["status"] == "void" and voided["ts"][:10] == "2026-05-20" and voided["reversed_on"] > "2026-05-31"
+    await fa.fold_matches(car)
 
 
 async def test_s4_credit_note_adjusts_proceeds(fa):
@@ -311,7 +340,7 @@ async def test_s4_credit_exceeding_remaining_and_duplicate_refused(fa):
     first = await _credit(fa, inv, "2000")
     over = (await fa.ok(await _credit_note(fa, inv, "9000", on="2026-06-12")))["id"]
     refused = await _doc(fa, over, "finalize")
-    assert refused.status_code == 409 and f"Only 8,000" in refused.json()["detail"]
+    assert refused.status_code == 409 and "Only 8,000" in refused.json()["detail"]
     assert number in refused.json()["detail"]
     assert (await fa.state(over))["status"] == "draft"
     await _credit(fa, inv, "8000", on="2026-06-15", returned=True)
@@ -319,7 +348,7 @@ async def test_s4_credit_exceeding_remaining_and_duplicate_refused(fa):
     refused = await _doc(fa, second, "finalize")
     assert refused.status_code == 409 and number in refused.json()["detail"]
     blocked = await _doc(fa, inv, "void")
-    assert blocked.status_code == 409 and await _number(fa, first) in blocked.json()["detail"]
+    assert blocked.status_code == 409 and await _number(fa, first) in blocked.json()["detail"]["message"]
     assert (await fa.state(inv))["status"] != "void"
 
 
@@ -370,8 +399,8 @@ async def test_s4_mixed_invoice_goods_only_credit_leaves_clearing(fa):
     assert D((await _sale(fa, car))["credited"]) == 0
     stray = {"name": "Car", "quantity": 1, "unit_price": 100.0, "line_total": 100.0, "asset_id": car,
              "source_line_id": "no-such-line"}
-    refused = await fa.client.post("/docs", headers=fa.h, json={
-        "doc_type": "credit_note", "original_doc_id": inv, "line_items": [stray], "total": 100.0})
+    refused = await _discard_refused(fa, await fa.client.post("/docs", headers=fa.h, json={
+        "doc_type": "credit_note", "original_doc_id": inv, "line_items": [stray], "total": 100.0}))
     assert refused.status_code == 422 and "Car" in refused.json()["detail"]
 
 
@@ -547,7 +576,8 @@ async def test_s4_document_write_validation(fa):
     car_number = (await fa.asset(car))["number"]
 
     async def create(doc_type: str, lines: list[dict], **body):
-        return await fa.client.post("/docs", headers=fa.h, json={"doc_type": doc_type, "line_items": lines, **body})
+        return await _discard_refused(
+            fa, await fa.client.post("/docs", headers=fa.h, json={"doc_type": doc_type, "line_items": lines, **body}))
 
     def line(name: str, asset_id: str | None = None, **kw) -> dict:
         return {"name": name, "quantity": 1, "unit_price": 100.0, **({"asset_id": asset_id} if asset_id else {}), **kw}
@@ -562,19 +592,17 @@ async def test_s4_document_write_validation(fa):
     other = await create("invoice", [line("Car elsewhere", car)])
     assert other.status_code == 409 and f"{car_number} is on draft invoice" in other.json()["detail"]
     asset_line = await _asset_line(fa, inv)
-    two = await fa.client.patch(f"/docs/{inv}", headers=fa.h, json={"line_items": [{**asset_line, "quantity": 2}]})
+    two = await _patch(fa, inv, [{**asset_line, "quantity": 2}])
     assert two.status_code == 422 and asset_line["name"] in two.json()["detail"]
-    swapped = await fa.client.patch(f"/docs/{inv}", headers=fa.h, json={"line_items": [{**asset_line, "asset_id": van}]})
+    swapped = await _patch(fa, inv, [{**asset_line, "asset_id": van}])
     assert swapped.status_code in (409, 422)
-    await fa.client.patch(f"/docs/{inv}", headers=fa.h, json={"line_items": [
-        asset_line, {"name": "Delivery", "quantity": 1, "unit_price": 50.0}]})
+    await _patch_lines(fa, inv, [asset_line, {"name": "Delivery", "quantity": 1, "unit_price": 50.0}])
     await _finalize(fa, inv)
     goods = next(li for li in (await fa.state(inv))["line_items"] if not li.get("asset_id"))
-    credit = await fa.client.post("/docs", headers=fa.h, json={
-        "doc_type": "credit_note", "original_doc_id": inv, "total": 50.0,
-        "line_items": [line("Wrong credit", car, source_line_id=goods["line_id"], unit_price=50.0)]})
+    credit = await create("credit_note", [line("Wrong credit", car, source_line_id=goods["line_id"], unit_price=50.0)],
+                          original_doc_id=inv, total=50.0)
     assert credit.status_code == 422 and "Wrong credit" in credit.json()["detail"]
-    final = await fa.client.patch(f"/docs/{inv}", headers=fa.h, json={"line_items": [{**asset_line, "asset_id": van}]})
+    final = await _patch(fa, inv, [{**asset_line, "asset_id": van}])
     assert final.status_code == 409
     assert (await _asset_line(fa, inv))["asset_id"] == car
 
@@ -628,7 +656,7 @@ async def test_s4_finalize_races_correct_dispose_and_disable(committed_engine):
         attempt(lambda s: operate(s, corrections.correct, car, body={"changes": {"cost": "13000"},
                                                                      "posting_date": "2026-05-01", "op_key": "c"})),
         attempt(lambda s: operate(s, disposal.dispose, body={"date": "2026-05-25", "reason": "scrapped",
-                                                             "op_key": "d"})),
+                                                             "asset_ids": [car], "op_key": "d"})),
         attempt(disable),
     ), timeout=25)
     for outcome in outcomes:
@@ -656,8 +684,6 @@ async def test_s4_deleted_draft_and_double_sale_refused(fa):
     assert (await fa.client.delete(f"/docs/{inv}", headers=fa.h)).status_code == 200
     sale = await _sale(fa, car)
     assert sale["draft_deleted"] is True and set(sale["actions"]) >= {"reissue", "cancel"}
-    page = await fa.client.get(f"/fixed-assets/assets/{car}", headers=fa.h)
-    assert page.status_code == 200 and "Sale draft deleted" in page.text
     again = await fa.operate(f"/assets/{car}/sale/reissue", {}, key="again")
     assert (await fa.state(again["invoice_id"]))["status"] == "draft"
     assert (await fa.asset(car))["sale"]["invoice_id"] == again["invoice_id"]

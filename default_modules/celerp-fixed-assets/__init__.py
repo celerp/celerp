@@ -39,6 +39,8 @@ PLUGIN_MANIFEST = {
         "demo_records": {"handler": "celerp_fixed_assets.demo:seed_demo_assets_hook"},
         # Each company's run for last month, prepared or posted once its run day has come.
         "background_loop": {"handler": "celerp_fixed_assets.runs:loop"},
+        # Invoices that sell an asset and credit notes that credit its sale.
+        "doc_asset_lines": {"handler": "celerp_fixed_assets.sales:on_asset_lines"},
     },
 
     # ── UI translation catalogs ───────────────────────────────────────────────

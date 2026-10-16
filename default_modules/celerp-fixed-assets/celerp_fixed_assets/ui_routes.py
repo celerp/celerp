@@ -10,6 +10,7 @@ GET  /fixed-assets/assets/{id}          One asset: details, figures, what holds 
 GET  /fixed-assets/assets/{id}/correct  Correct an asset: depreciation settings, an error, or a source line
 GET  /fixed-assets/assets/{id}/dispose  Dispose of an asset, in whole or part
 GET  /fixed-assets/dispose?ids=         Dispose of the assets ticked on the register, each in whole
+GET  /fixed-assets/assets/{id}/sell     Sell an asset through a draft invoice
 GET  /fixed-assets/corrections          Every correction newest first, and those waiting to be applied
 GET  /fixed-assets/corrections/{id}     One correction: what it changed and posted; apply, withdraw or undo it
 GET  /fixed-assets/classes/{id}/apply   Apply a class's depreciation settings to the assets on older ones
@@ -339,6 +340,17 @@ def _dispose_body(form) -> dict:
     return {k: v for k, v in body.items() if v is not None}
 
 
+def _sell_body(form) -> dict:
+    return {"date": str(form.get("date") or ""), "price": _amount(form, "price"),
+            "contact_name": str(form.get("contact_name") or "").strip()}
+
+
+def _sale_credit_body(form) -> dict:
+    body = {"kind": str(form.get("kind") or ""), "date": str(form.get("date") or ""),
+            "amount": _amount(form, "amount")}
+    return {k: v for k, v in body.items() if v is not None}
+
+
 # action -> (API path for the form, body from the form, where the done result leads)
 _OPERATIONS = {
     "register": (lambda f: "/register", _register_body,
@@ -372,6 +384,13 @@ _OPERATIONS = {
                 lambda r, f: f"/fixed-assets/assets/{f.get('asset_id')}" if f.get("asset_id") else "/fixed-assets"),
     "undo-disposal": (lambda f: f"/assets/{_q(f, 'asset_id')}/undo-disposal", lambda f: {},
                       lambda r, f: f"/fixed-assets/assets/{f.get('asset_id')}"),
+    "sell": (lambda f: f"/assets/{_q(f, 'asset_id')}/sell", _sell_body, lambda r, f: _doc_href(r["invoice_id"])),
+    "sale-reissue": (lambda f: f"/assets/{_q(f, 'asset_id')}/sale/reissue", lambda f: {},
+                     lambda r, f: _doc_href(r["invoice_id"])),
+    "sale-cancel": (lambda f: f"/assets/{_q(f, 'asset_id')}/sale/cancel", lambda f: {},
+                    lambda r, f: f"/fixed-assets/assets/{f.get('asset_id')}"),
+    "sale-credit": (lambda f: f"/assets/{_q(f, 'asset_id')}/sale/credit", _sale_credit_body,
+                    lambda r, f: _doc_href(r["credit_note_id"])),
 }
 
 
@@ -401,11 +420,15 @@ def _source_document(source: str) -> str:
     return source.rsplit(":", 1)[0]
 
 
+def _doc_href(doc_id: str) -> str:
+    return f"/docs/{quote(doc_id, safe=':')}"
+
+
 def _source_href(source: str) -> str:
     document = _source_document(source)
     if document.startswith(MANUAL_PREFIX):
         return f"/accounting?{urlencode({'q': document})}"
-    return f"/docs/{quote(document, safe=':')}"
+    return _doc_href(document)
 
 
 def _class_names(classes: list[dict]) -> dict[str, str]:
@@ -459,10 +482,11 @@ def _disposal_fields(asset: dict | None) -> list[FT]:
 
 
 def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | str:
-    """The latest disposal still standing, what it posted, and the form that undoes it."""
+    """The latest disposal still standing, what it posted, and the form that undoes it. A sale
+    is shown by its own card and undone through its invoice."""
     undone = {m.get("reverses") for m in movements}
     live = [m for m in movements if m.get("operation") == "disposal" and m["id"] not in undone]
-    if not live:
+    if not live or live[-1].get("reason") == "sold":
         return ""
     latest = live[-1]
     asset_id = quote(asset["id"], safe=":")
@@ -479,6 +503,64 @@ def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | st
     return Div(H2(t("fixed_assets.disposal_title"), cls="section-title"),
                Table(Tbody(*[Tr(Th(label), Td(value)) for label, value in rows]), cls="data-table detail-table"),
                undo, cls="detail-card section-card", id=f"fa-disposal-{asset_id}")
+
+
+def _sale_card(asset: dict, sale: dict, currency: str) -> FT | str:
+    """Where the asset's sale stands: its invoice, what completing it posts or posted, its
+    credit notes, and what can be done next."""
+    if not sale.get("state"):
+        return ""
+    asset_id = asset["id"]
+    hidden = Input(type="hidden", name="asset_id", value=asset_id)
+    rows = [(t("fixed_assets.status"), t(f"fixed_assets.sale_state.{sale['state']}")),
+            (t("fixed_assets.sale_invoice"), A(sale["invoice_number"], href=_doc_href(sale["invoice_id"]))),
+            (t("fixed_assets.sale_date"), _text(sale.get("date"))),
+            (t("fixed_assets.buyer"), _text(sale.get("contact_name"))),
+            (t("fixed_assets.proceeds"), _money(sale.get("proceeds"), currency)),
+            (t("fixed_assets.credited"), _money(sale.get("credited"), currency)),
+            (t("fixed_assets.remaining"), _money(sale.get("remaining"), currency)),
+            (t("fixed_assets.sale_carrying_amount"), _money(sale.get("carrying_amount"), currency)),
+            (t("fixed_assets.gain_or_loss"), _money(sale.get("gain_or_loss"), currency))]
+    parts: list[FT] = [H2(t("fixed_assets.sale_title"), cls="section-title")]
+    if sale.get("draft_deleted"):
+        parts.append(Div(Strong(t("fixed_assets.sale_draft_deleted")), " ", t("fixed_assets.sale_draft_deleted_hint"),
+                         cls="flash flash--warning"))
+    elif sale["state"] == "pending":
+        parts.append(P(t("fixed_assets.sale_pending_hint", invoice=sale["invoice_number"]), cls="settings-hint"))
+    if sale.get("problem"):
+        parts.append(Div(sale["problem"], cls="flash flash--error"))
+    parts.append(Table(Tbody(*[Tr(Th(label), Td(value)) for label, value in rows]), cls="data-table detail-table"))
+    if (sale.get("journal") or {}).get("lines"):
+        parts += [H4(t("fixed_assets.sale_journal_" + ("pending" if sale["state"] == "pending" else "posted"))),
+                  _lines_table(sale["journal"]["lines"], currency)]
+    notes = sale.get("credit_notes") or []
+    if notes:
+        parts += [H4(t("fixed_assets.credit_notes")), Table(
+            Thead(Tr(Th(t("fixed_assets.number")), Th(t("fixed_assets.date")), Th(t("fixed_assets.credit_kind")),
+                     _money_th(t("fixed_assets.amount")))),
+            Tbody(*[Tr(Td(A(n["number"], href=_doc_href(n["id"]))), Td(_text(n.get("date"))),
+                       Td(t(f"fixed_assets.credit_kind.{n['kind']}")), _money_td(n.get("amount"), currency))
+                    for n in sorted(notes, key=lambda n: n.get("date") or "", reverse=True)]),
+            cls="data-table")]
+    actions = sale.get("actions") or []
+    if "reissue" in actions:
+        parts.append(_op_form("sale-reissue", hidden, P(t("fixed_assets.reissue_hint"), cls="settings-hint"),
+                              review_label=t("fixed_assets.reissue")))
+    if "cancel" in actions:
+        parts.append(_op_form("sale-cancel", hidden, P(t("fixed_assets.cancel_sale_hint"), cls="settings-hint"),
+                              review_label=t("fixed_assets.cancel_sale")))
+    if "credit" in actions:
+        parts.append(_op_form(
+            "sale-credit", hidden, H4(t("fixed_assets.credit_sale")),
+            P(t("fixed_assets.credit_sale_hint"), cls="settings-hint"),
+            _field(t("fixed_assets.credit_kind"),
+                   Select(*[Option(t(f"fixed_assets.credit_kind.{k}"), value=k) for k in ("adjust", "returned")],
+                          name="kind", cls="form-input")),
+            _field(t("fixed_assets.date"), _input("date", date.today().isoformat(), type_="date", required=True)),
+            _field(t("fixed_assets.amount"), _input("amount", type_="number", step="any", min="0"),
+                   t("fixed_assets.credit_amount_hint")),
+            review_label=t("fixed_assets.credit_sale")))
+    return Div(*parts, cls="detail-card section-card", id=f"fa-sale-{quote(asset_id, safe=':')}")
 
 
 def _filters(q: str, class_id: str, classes: list[dict]) -> FT:
@@ -1130,6 +1212,8 @@ def setup_ui_routes(app) -> None:
             movements = (await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}/movements"))["items"]
             classes = (await api.fixed_assets_get(token, "/classes", {"include_archived": "true"}))["items"]
             fixes = (await api.fixed_assets_get(token, "/corrections", {"asset_id": asset_id}))["items"]
+            sale = (await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}/sale")
+                    if asset.get("sale") else {})
         except APIError as e:
             return await _refused(request, e, "fixed_assets.title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (asset["number"], None)])
@@ -1162,10 +1246,12 @@ def setup_ui_routes(app) -> None:
         if asset.get("status") == "active" or fixes:
             extra.append(_corrections_card(asset, fixes))
         title = f"{asset['number']} {asset.get('name') or ''}".strip()
-        actions = (A(t("fixed_assets.dispose"), href=f"/fixed-assets/assets/{asset_id}/dispose",
-                     cls="btn btn--secondary"),) if asset.get("status") == "active" else ()
+        actions = (A(t("fixed_assets.sell"), href=f"/fixed-assets/assets/{asset_id}/sell", cls="btn btn--secondary"),
+                   A(t("fixed_assets.dispose"), href=f"/fixed-assets/assets/{asset_id}/dispose",
+                     cls="btn btn--secondary")) if asset.get("status") == "active" and sale.get("state") != "pending" else ()
         return await _page(request, crumbs, page_header(title, *actions),
                            _exception_card(asset, currency) if asset.get("exception") else "",
+                           _sale_card(asset, sale, currency),
                            _disposal_card(asset, movements, currency),
                            Div(_details_card(asset),
                                _figures_card(asset, _class_names(classes).get(asset.get("class_id")), currency),
@@ -1366,6 +1452,28 @@ def setup_ui_routes(app) -> None:
                         P(t("fixed_assets.dispose_hint"), cls="settings-hint"), *_disposal_fields(asset))
         return await _page(request, crumbs, page_header(t("fixed_assets.dispose_title", number=asset["number"])),
                            form, title_key="fixed_assets.dispose")
+
+    @app.get("/fixed-assets/assets/{asset_id}/sell")
+    async def sell_page(request: Request, asset_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            await _context(token)
+            asset = await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}")
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.sell")
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
+                              (asset["number"], f"/fixed-assets/assets/{asset_id}"), (t("fixed_assets.sell"), None)])
+        form = _op_form("sell", Input(type="hidden", name="asset_id", value=asset_id),
+                        P(t("fixed_assets.sell_hint"), cls="settings-hint"),
+                        _field(t("fixed_assets.sale_date"), _input("date", date.today().isoformat(), type_="date",
+                                                                   required=True)),
+                        _field(t("fixed_assets.sale_price"), _input("price", type_="number", step="any", min="0",
+                                                                    required=True), t("fixed_assets.sale_price_hint")),
+                        _field(t("fixed_assets.buyer"), _input("contact_name", required=True)))
+        return await _page(request, crumbs, page_header(t("fixed_assets.sell_title", number=asset["number"])),
+                           form, title_key="fixed_assets.sell")
 
     @app.post("/fixed-assets/dispose/selected")
     async def dispose_selected(request: Request):

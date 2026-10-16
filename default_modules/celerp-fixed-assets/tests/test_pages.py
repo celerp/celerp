@@ -375,3 +375,63 @@ async def test_dispose_of_several_from_the_register(owner_ui):
     assert href == "/fixed-assets"
     for asset_id in (car, van):
         assert (await owner_ui.api.get(f"{API}/assets/{asset_id}")).json()["status"] == "disposed"
+
+
+async def test_sell_from_the_asset_page_then_credit_the_sale(owner_ui):
+    car = await _managed_car(owner_ui)
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert f'href="/fixed-assets/assets/{car}/sell"' in page.text
+
+    form = await owner_ui.get(f"/fixed-assets/assets/{car}/sell")
+    assert form.status_code == 200 and t("fixed_assets.sell_hint") in form.text
+    assert 'name="contact_name"' in form.text and "fixed_assets." not in form.text
+    review = await owner_ui.post("/fixed-assets/op/sell/review", data={
+        "asset_id": car, "date": "2026-10-05", "price": "9000", "contact_name": "Buyer Co",
+        "idempotency_key": str(uuid.uuid4())})
+    assert t("fixed_assets.gain_or_loss") in review.text and "1160" in review.text
+    href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",
+                                                       "contact_name": "Buyer Co"})
+    assert href.startswith("/docs/")
+    invoice_id = href.removeprefix("/docs/")
+    number = (await owner_ui.api.get(f"/docs/{invoice_id}")).json()["ref_id"]
+
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert t("fixed_assets.sale_state.pending") in page.text
+    assert t("fixed_assets.sale_pending_hint", invoice=number) in page.text
+    assert t("fixed_assets.cancel_sale") in page.text and t("fixed_assets.sale_journal_pending") in page.text
+    assert f'href="/fixed-assets/assets/{car}/sell"' not in page.text, "a pending sale offers no second sale"
+    assert f'href="/fixed-assets/assets/{car}/dispose"' not in page.text
+    assert "fixed_assets." not in page.text
+
+    finalized = await owner_ui.api.post(f"/docs/{invoice_id}/finalize")
+    assert finalized.status_code == 200, finalized.text
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert t("fixed_assets.sale_state.sold") in page.text and t("fixed_assets.credit_sale") in page.text
+    assert t("fixed_assets.undo_disposal") not in page.text, "a sale is undone through its invoice"
+    assert "fixed_assets." not in page.text
+
+    href = await _review_and_confirm(owner_ui, "sale-credit", {"asset_id": car, "kind": "adjust", "amount": "1000",
+                                                              "date": "2026-10-20"})
+    credit_note_id = href.removeprefix("/docs/")
+    assert (await owner_ui.api.post(f"/docs/{credit_note_id}/finalize")).status_code == 200
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert t("fixed_assets.credit_notes") in page.text and t("fixed_assets.credit_kind.adjust") in page.text
+    assert f'href="/docs/{credit_note_id}"' in page.text
+
+
+async def test_a_deleted_sale_draft_is_reissued_or_cancelled_from_the_asset_page(owner_ui):
+    car = await _managed_car(owner_ui)
+    href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",
+                                                       "contact_name": "Buyer Co"})
+    assert (await owner_ui.api.delete(href)).status_code == 200
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert t("fixed_assets.sale_draft_deleted") in page.text and t("fixed_assets.reissue") in page.text
+
+    again = await _review_and_confirm(owner_ui, "sale-reissue", {"asset_id": car})
+    assert again.startswith("/docs/") and again != href
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert t("fixed_assets.sale_draft_deleted") not in page.text and t("fixed_assets.reissue") not in page.text
+
+    assert await _review_and_confirm(owner_ui, "sale-cancel", {"asset_id": car}) == f"/fixed-assets/assets/{car}"
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert t("fixed_assets.cancel_sale") not in page.text and f'href="/fixed-assets/assets/{car}/sell"' in page.text

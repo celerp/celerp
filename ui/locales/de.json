@@ -5662,5 +5662,10 @@
   "docs.void_under_supplier_credit": "Diese Lieferantengutschrift ist noch auf die Rechnungen {bills} angewendet und erstattet {refunds}. Heben Sie sie zuerst bei jeder Rechnung auf und stornieren Sie jede Erstattung, dann stornieren Sie sie.",
   "docs.void_under_supplier_credit_note": "Dieses Dokument kann nicht storniert werden: Die Lieferantengutschriften {numbers} sind darauf ausgestellt. Stornieren Sie zuerst diese Lieferantengutschriften und versuchen Sie es dann erneut.",
   "docs.revert_under_supplier_credit_note": "Dieses Dokument kann nicht in den Entwurf zurückgesetzt werden: Die Lieferantengutschriften {numbers} sind darauf ausgestellt. Stornieren Sie zuerst diese Lieferantengutschriften und versuchen Sie es dann erneut.",
-  "docs.contact_credit_fixed": "Für dieses Dokument gibt es eine ausgestellte oder angewendete Gutschrift. Heben Sie die Verrechnungen auf und stornieren Sie die verknüpfte Gutschrift oder setzen Sie sie auf Entwurf zurück, bevor Sie den Kontakt ändern."
+  "docs.contact_credit_fixed": "Für dieses Dokument gibt es eine ausgestellte oder angewendete Gutschrift. Heben Sie die Verrechnungen auf und stornieren Sie die verknüpfte Gutschrift oder setzen Sie sie auf Entwurf zurück, bevor Sie den Kontakt ändern.",
+  "documents.err_asset_line_doc_type": "Zeile {line} nennt ein Anlagegut. Nur eine Rechnung kann ein Anlagegut verkaufen und nur eine Gutschrift seinen Verkauf gutschreiben.",
+  "documents.err_asset_line_twice": "Zeile {line} nennt ein Anlagegut, das bereits eine andere Zeile nennt. Jedes Anlagegut steht in genau einer Zeile.",
+  "documents.err_asset_line_quantity": "Zeile {line} verkauft ein Anlagegut, daher ist ihre Menge 1.",
+  "documents.err_asset_line_source": "Zeile {line} schreibt ein Anlagegut gut, das nicht in derselben Rechnungszeile steht. Schreiben Sie die Rechnungszeile gut, die es verkauft hat.",
+  "documents.err_asset_lines_unhandled": "Dieses Dokument verkauft ein Anlagegut oder schreibt es gut. Aktivieren Sie Anlagevermögen, um es abzuschließen."
 }

@@ -2425,6 +2425,7 @@ _CALLABLE_SLOTS = {
     "item_lineage_guard": ("handler", True),
     "demo_records": ("handler", True),
     "background_loop": ("handler", True),
+    "doc_asset_lines": ("handler", True),
 }
 # Callable slots core calls with keyword arguments only, and those arguments. The
 # handler takes exactly these: no other parameter, none positional-only, and no
@@ -2435,6 +2436,7 @@ _HANDLER_KEYWORDS = {
     "item_lineage_guard": ("session", "entry", "transition"),
     "demo_records": ("session", "company_id", "user_id"),
     "background_loop": (),
+    "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),
 }
 # Entry keys naming a permission. Gating surfaces index the permission registry,
 # so a value outside it must never reach them.
@@ -2579,6 +2581,7 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "item_lineage_guard": {},
     "demo_records": {},
     "background_loop": {},
+    "doc_asset_lines": {},
 }
 _TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",
                list: "a list", type(None): "None"}
