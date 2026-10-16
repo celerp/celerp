@@ -220,7 +220,9 @@ SCHEMAS: dict[str, Schema] = {
     "PurchaseInvoiceStartingBalance": _fields(refs=(1,), numbers=(2,)),
     "Customer": _fields(read=(1, 2, 3, 4, 13, 15, 19), refs=(14,), f12=_CUSTOM_FIELDS),
     "Supplier": _fields(read=(1, 2, 3, 7, 10, 12, 16), refs=(11,), f9=_CUSTOM_FIELDS),
-    "InventoryItem": _fields(read=(1, 10, 11, 13, 31, 32, 38), numbers=(2, 3)),
+    "InventoryItem": _fields(read=(1, 10, 11, 13, 31, 32), numbers=(2, 3)) | {
+        38: ignored("The valuation method. Manager's books cost every sale at the item's unit cost on its date; "
+                    "the method only shapes the unit costs Manager's cost correction suggests.")},
     "DefaultInventoryLocation": _fields(f1=ignored("The location's name. Every item is held at the one "
                                                    "default location, so no location is carried.")),
     "InventoryUnitCost": _fields(refs=(2,), numbers=(3,), days=(1,)),

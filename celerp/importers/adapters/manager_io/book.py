@@ -234,7 +234,6 @@ class Item:
     sales_price: Decimal | None
     purchase_price: Decimal | None
     inactive: bool
-    average_cost: bool = False                 # weighted average costing; otherwise first in, first out
 
 
 # A line's account under a control account: (its type, its key, a capital sub-account or None).
@@ -1041,14 +1040,8 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
         _custom_fields(book, name, key, m.messages(9), m.str(3))
     elif name == "InventoryItem":
         code, item_name = m.str(1), m.str(11)
-        method = m.int(38, 0)
-        if method not in VALUATION_METHODS:
-            raise Blocked("unsupported feature", "Uses the manual inventory valuation method, which Celerp cannot "
-                                                 "reproduce yet. Choose first in, first out or average cost for the "
-                                                 "item in Manager and upload the file again.")
         book.items[key] = Item(key, code, item_name or code or "", m.str(13),
-                               m.decimal(3) if m.bool(32) else None, m.decimal(2) if m.bool(31) else None, m.bool(10),
-                               VALUATION_METHODS[method])
+                               m.decimal(3) if m.bool(32) else None, m.decimal(2) if m.bool(31) else None, m.bool(10))
     elif name in DOC_TYPES:
         book.documents[key] = _document(name, key, m)
     elif name in ORDER_TYPES:
@@ -1085,11 +1078,6 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
         book.attachments[key] = AttachmentRef(key, m.str(2) or "", m.int(4, 0), _ref(m.guid(6)), m.bytes(12))
     elif name == "LockDate":
         _lock_date(book, key, m)
-
-
-# Manager's inventory valuation methods by stored value: first in, first out (the default,
-# stored as nothing) and weighted average cost. Manual costing is not reproduced.
-VALUATION_METHODS = {0: False, 1: True}
 
 
 def _custom_fields(book: Book, name: str, key: str, values: list[Message], phone: str | None) -> None:
@@ -1354,64 +1342,39 @@ def _unit_cost(book: Book, item: str, day: date) -> Decimal | None:
 
 
 def _cost_sales(book: Book) -> None:
-    """Work out each sales invoice's cost of sales as Manager books it, from what it owns.
+    """Work out each sales invoice's cost of sales as Manager books it.
 
-    Manager's books own an item from the bill that buys it, not from its goods receipt, and
-    an invoice relieves them on its own date, not when the goods leave. Each item line of a
-    sales invoice costs the item's unit cost on the invoice date when one is set. Otherwise
-    it costs what is owned then, by the item's valuation method: the oldest bills still
-    owned first (first in, first out), or the average of everything owned (average cost).
-    What is owned is the stock the business started with and every bill bought on or before
-    that day, less every earlier sale.
+    Manager costs each item line of a sales invoice at the item's unit cost on the invoice
+    date, and at nothing when no unit cost is set by then, whatever the item's valuation
+    method: the method only shapes the unit costs Manager's own cost correction suggests,
+    which change the books once the user applies them. Its books own an item from the bill
+    that buys it, not from its goods receipt, and an invoice relieves them on its own date,
+    not when the goods leave. What is owned is the stock the business started with and every
+    bill bought on or before that day, less every earlier sale.
     Documents Celerp cannot carry still count, since Manager's books hold them. An invoice
     selling more of an item than is owned is blocked, even with goods on hand or a unit cost
-    set: Manager clears negative inventory with later cost corrections that are not rebuilt.
-    Every later sale of that item is blocked too, as its cost depends on those corrections.
+    set: Manager clears negative inventory through an account Celerp does not rebuild.
+    Every later sale of that item is blocked too, as its cost depends on that clearing.
     An item that is not carried leaves its documents blocked already and is not costed."""
     code = book.base_code or ""
     trading = sorted((doc for doc in book.documents.values() if doc.source_type in ("PurchaseInvoice", "SalesInvoice")),
                      key=lambda d: (d.date, d.source_type != "PurchaseInvoice", d.key))
-    # item -> [quantity, value] per bill still owned, the stock the business started with first
-    owned: dict[str, list[list[Decimal]]] = {item: [[qty, value]] for item, (qty, value) in book.starting_stock().items()}
+    owned: dict[str, Decimal] = {item: qty for item, (qty, _) in book.starting_stock().items()}
     oversold: set[str] = set()
     for doc in trading:
         for line in (ln for ln in doc.lines if ln.item in book.items):
-            layers = owned.setdefault(line.item, [])
+            held = owned.get(line.item, Decimal(0))
             if doc.source_type == "PurchaseInvoice":
-                layers.append([line.quantity, line.base_net])
+                owned[line.item] = held + line.quantity
                 continue
-            qty = sum((q for q, _ in layers), Decimal(0))
-            if line.quantity > qty or line.item in oversold:
+            if line.quantity > held or line.item in oversold:
                 oversold.add(line.item)
                 if not book.is_blocked(doc.key):
                     book.block(doc.source_type, doc.key, "negative quantity owned", "Sells more of an item than "
                                "the business owned on the invoice date, or sells it after such an invoice. Manager "
                                "settles that through negative inventory clearing. Celerp does not carry that yet.")
-            unit = _unit_cost(book, line.item, doc.date)
-            if not book.items[line.item].average_cost:
-                relieved = _relieve(layers, line.quantity)
-                line.cost = round_money(line.quantity * unit if unit is not None else relieved, code)
-                continue
-            value = sum((v for _, v in layers), Decimal(0))
-            if unit is not None:
-                line.cost = round_money(line.quantity * unit, code)
-            elif qty > 0:
-                line.cost = round_money(value * min(line.quantity, qty) / qty, code)
-            layers[:] = [[qty - line.quantity, value - line.cost]]
-
-
-def _relieve(layers: list[list[Decimal]], quantity: Decimal) -> Decimal:
-    """Take the quantity from the oldest layers first; return the value taken. A sale beyond
-    what is owned takes what there is."""
-    taken = Decimal(0)
-    while quantity > 0 and layers:
-        layer = layers[0]
-        part = min(quantity, layer[0])
-        value = layer[1] * part / layer[0] if layer[0] else layer[1]
-        layer[0], layer[1], quantity, taken = layer[0] - part, layer[1] - value, quantity - part, taken + value
-        if layer[0] <= 0:
-            layers.pop(0)
-    return taken
+            owned[line.item] = held - line.quantity
+            line.cost = round_money(line.quantity * (_unit_cost(book, line.item, doc.date) or Decimal(0)), code)
 
 
 def _resolve_settlement(book: Book, s: Settlement) -> None:
