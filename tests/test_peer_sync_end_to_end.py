@@ -1,0 +1,252 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
+"""A client company's books reach its accountant's copy through the accountant's own
+import, document and file routes, stock-moving documents included, and the two
+companies' trial balance, receivables, payables and stock agree afterwards."""
+
+from __future__ import annotations
+
+import importlib.util
+import uuid
+from pathlib import Path
+
+import httpx
+import pytest
+from sqlalchemy import select
+
+from company_backup_support import confirm, download, owner, read, token
+from migration_support import auth, maker, real_client, real_engine  # noqa: F401
+from test_company_backup_lifecycle import _data_dir  # noqa: F401
+from test_company_copy_round_trip import _books
+
+pytestmark = pytest.mark.asyncio
+
+_SEED_PATH = Path(__file__).resolve().parent.parent / "scripts" / "seed_demo.py"
+_spec = importlib.util.spec_from_file_location("seed_demo_peer_sync", _SEED_PATH)
+seed_demo = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(seed_demo)
+
+FIRM = "https://firm.example"
+# The firm routes a client company writes through, by kind.
+_EXISTING_ROUTES = ("/crm/contacts/import/batch", "/items/import/batch", "/docs/import/batch",
+                    "/lists/import/batch")
+
+
+def _iid(item: dict) -> str:
+    return item.get("entity_id") or item["id"]
+
+
+def _company_of(tok: str) -> str:
+    from celerp.services.auth import decode_access_token
+    return str(decode_access_token(tok)["company_id"])
+
+
+async def _location(engine, company_id: str) -> str:
+    from celerp.models.company import Location
+    async with maker(engine)() as s:
+        return str(await s.scalar(select(Location.id).where(
+            Location.company_id == uuid.UUID(company_id)).order_by(Location.name).limit(1)))
+
+
+async def _stock(client, tok: str) -> dict:
+    r = await client.get("/items", params={"limit": 500}, headers=auth(tok))
+    assert r.status_code == 200, r.text
+    out: dict[str, float] = {}
+    for row in r.json()["items"]:
+        out[row["sku"]] = round(out.get(row["sku"], 0) + float(row.get("quantity") or 0), 4)
+    return out
+
+
+async def _paired(real_client, real_engine):
+    """The demo company, its accountant's copy of it, and a key the copy issued to it."""
+    registered = await real_client.post("/auth/register", json={
+        "company_name": "Demo Trading", "email": "demo-owner@example.test",
+        "name": "Demo Owner", "password": "demopw1234"})
+    assert registered.status_code == 200, registered.text
+    tok = registered.json()["access_token"]
+    await seed_demo.seed_items(real_client, tok)
+    contacts = await seed_demo.seed_contacts(real_client, tok)
+    await seed_demo.seed_docs(real_client, tok, contacts, "invoice", 4)
+    await seed_demo.seed_docs(real_client, tok, contacts, "purchase_order", 2)
+
+    # The accountant opens the company copy as a company of their own.
+    accountant = await owner(real_engine, "firm@example.test", "Firm Owner")
+    from company_backup_support import company
+    own = await company(real_engine, accountant, "Firm Practice", "firm-marker")
+    firm_tok = await token(real_engine, accountant, own)
+    preview = await read(real_client, firm_tok, await download(real_client, tok), mode="new_company")
+    assert preview.status_code == 200, preview.text
+    opened = await real_client.post("/company-backups/restore", json=confirm(preview, "new_company"),
+                                    headers=auth(firm_tok))
+    assert opened.status_code == 201, opened.text
+    firm_company = opened.json()["company_id"]
+    firm_tok = await token(real_engine, accountant, firm_company)
+    client_company = _company_of(tok)
+    # A copy opened from a link keeps the sending company's record identities.
+    from celerp.services.peer_identity import seed_restored_identities
+    async with maker(real_engine)() as s:
+        await seed_restored_identities(s, target_company=uuid.UUID(firm_company),
+                                       source_company=uuid.UUID(client_company), id_map={})
+        await s.commit()
+    granted = await real_client.post("/company-peers/grants", json={
+        "source_company_id": client_company, "label": "Demo Trading",
+        "scopes": ["contacts", "products", "documents", "inventory"]}, headers=auth(firm_tok))
+    assert granted.status_code == 201, granted.text
+    return tok, firm_tok, client_company, granted.json()["credential"], contacts
+
+
+def _route_to_app(monkeypatch, sent: list):
+    """The connector's HTTP client, reaching the accountant's installation in-process."""
+    from celerp.connectors import celerp as peer
+    from celerp.main import app
+
+    class FirmClient(httpx.AsyncClient):
+        def __init__(self, *, public_only: bool = False, timeout: float | None = None):
+            assert public_only
+            super().__init__(transport=httpx.ASGITransport(app=app), timeout=timeout or 30.0)
+
+        async def request(self, method, url, **kwargs):
+            parsed = httpx.URL(url)
+            assert f"{parsed.scheme}://{parsed.host}" == FIRM
+            sent.append((method, parsed.path))
+            return await super().request(method, url, **kwargs)
+
+    monkeypatch.setattr(peer, "RateLimitedClient", FirmClient)
+    monkeypatch.setattr("celerp.connectors.http.RateLimitedClient", FirmClient)
+
+
+async def _sync(company_id: str, credential: str) -> list:
+    """One outbound run in the connector's own order; returns each entity's result."""
+    from celerp.connectors.base import ConnectorContext, SyncDirection
+    from celerp.connectors.celerp import CelerpConnector
+    from celerp.connectors.sync_runner import sync_plan
+
+    connector = CelerpConnector()
+    ctx = ConnectorContext(company_id=company_id, store_handle=FIRM, access_token=credential)
+    results = []
+    for entity in sync_plan(connector, SyncDirection.OUTBOUND):
+        results.append(await getattr(connector, f"sync_{entity}")(ctx))
+    return results
+
+
+async def _client_activity(real_client, real_engine, tok: str, contacts: list) -> None:
+    """What the client company does after the copy was taken: a new customer, a new
+    stock invoice finalized, sent and paid, one fulfilled from stock, a purchase order
+    received into stock, and a draft."""
+    customer = await real_client.post("/crm/contacts", json={
+        "name": "Harbour Cafe", "contact_type": "customer", "email": "orders@harbour.example"},
+        headers=auth(tok))
+    assert customer.status_code in (200, 201), customer.text
+    items = (await real_client.get("/items", params={"limit": 500}, headers=auth(tok))).json()["items"]
+    stocked = sorted((i for i in items if float(i.get("quantity") or 0) >= 5), key=lambda i: i["sku"])
+    sold, fulfilled, bought = stocked[0], stocked[1], stocked[2]
+
+    async def new_doc(doc_type: str, contact_id: str, item: dict, qty: int, price: float,
+                      key: str = "") -> str:
+        r = await real_client.post("/docs", json={
+            "doc_type": doc_type, "contact_id": contact_id,
+            "line_items": [{"item_id": _iid(item), "name": item["name"], "quantity": qty,
+                            "unit_price": price, "line_total": qty * price}],
+            "total": qty * price, "idempotency_key": f"after-copy:{doc_type}:{item['sku']}{key}",
+        }, headers=auth(tok))
+        assert r.status_code in (200, 201), r.text
+        return r.json()["id"]
+
+    paid = await new_doc("invoice", customer.json()["id"], sold, 2, 40.0)
+    await seed_demo._advance(real_client, auth(tok), paid, ("finalize", "send", "pay"), "after-copy:paid")
+    shipped = await new_doc("invoice", customer.json()["id"], fulfilled, 3, 25.0)
+    await seed_demo._advance(real_client, auth(tok), shipped, ("finalize",), "after-copy:shipped")
+    r = await real_client.post(f"/docs/{shipped}/fulfill-lines", json={
+        "line_entity_ids": [_iid(fulfilled)], "idempotency_key": "after-copy:fulfil"},
+        headers=auth(tok))
+    assert r.status_code == 200, r.text
+    supplier = await real_client.post("/crm/contacts", json={
+        "name": "Northern Supply", "contact_type": "vendor"}, headers=auth(tok))
+    assert supplier.status_code in (200, 201), supplier.text
+    po = await new_doc("purchase_order", supplier.json()["id"], bought, 4, 10.0)
+    await seed_demo._advance(real_client, auth(tok), po, ("finalize",), "after-copy:po")
+    r = await real_client.post(f"/docs/{po}/receive", json={
+        "location_id": await _location(real_engine, _company_of(tok)),
+        "received_items": [{"item_id": _iid(bought), "quantity_received": 4, "po_line_index": 0}],
+        "idempotency_key": "after-copy:receive"}, headers=auth(tok))
+    assert r.status_code == 200, r.text
+    await new_doc("invoice", customer.json()["id"], sold, 1, 40.0, ":draft")
+
+
+async def test_peer_connector_uses_existing_apis(real_client, real_engine, monkeypatch):
+    """Every write reaches the accountant's copy through its existing routes, the copy's
+    books tie to the client's, and a second run changes nothing."""
+    tok, firm_tok, client_company, credential, contacts = await _paired(real_client, real_engine)
+    await _client_activity(real_client, real_engine, tok, contacts)
+    sent: list = []
+    _route_to_app(monkeypatch, sent)
+
+    results = await _sync(client_company, credential)
+
+    assert [(r.entity.value, r.errors, r.attention) for r in results if r.errors or r.attention] == []
+    assert sum(r.created + r.updated for r in results) >= 5
+    writes = {path for method, path in sent if method == "POST"}
+    assert writes and all(path in _EXISTING_ROUTES or path.endswith("/files") for path in writes), writes
+    assert not any(path.startswith("/company-peers/") for path in writes)
+    assert await _books(real_client, firm_tok) == await _books(real_client, tok)
+
+    again = await _sync(client_company, credential)
+    assert [(r.entity.value, r.created, r.updated, r.errors) for r in again
+            if r.created or r.updated or r.errors] == []
+    assert await _books(real_client, firm_tok) == await _books(real_client, tok)
+
+
+async def test_peer_pushes_stock_moving_documents(real_client, real_engine, monkeypatch):
+    """Issued stock invoices, a fulfilled invoice and a received purchase order move
+    stock in the accountant's copy the way they did in the client's company."""
+    tok, firm_tok, client_company, credential, contacts = await _paired(real_client, real_engine)
+    await _client_activity(real_client, real_engine, tok, contacts)
+    _route_to_app(monkeypatch, [])
+
+    results = await _sync(client_company, credential)
+
+    documents = next(r for r in results if r.entity.value == "documents")
+    assert documents.attention == [] and documents.errors == []
+    assert await _stock(real_client, firm_tok) == await _stock(real_client, tok)
+    assert await _books(real_client, firm_tok) == await _books(real_client, tok)
+
+
+async def test_old_peer_receivers_are_gone(real_client, real_engine):
+    """The separate receive routes no longer exist; only the key handshake and the
+    owner's grant routes stay under /company-peers."""
+    for path in ("contacts", "products", "documents", "attachments", "inventory"):
+        r = await real_client.post(f"/company-peers/{path}", json={})
+        assert r.status_code in (404, 405), (path, r.status_code)
+
+
+async def test_peer_key_refused_outside_its_routes(real_client, real_engine):
+    """A peer key opens only the import and file routes its scopes name; any other route
+    answers 403, and a scope the key lacks is refused on its route."""
+    tok, firm_tok, client_company, credential, _ = await _paired(real_client, real_engine)
+    headers = {"Authorization": f"Peer {credential}", "X-Celerp-Source-Company": client_company}
+    for method, path in (("GET", "/docs"), ("POST", "/docs"), ("GET", "/accounting/trial-balance"),
+                         ("POST", "/company-peers/grants"), ("GET", "/crm/contacts")):
+        r = await real_client.request(method, path, headers=headers, json={})
+        assert r.status_code == 403, (method, path, r.status_code, r.text)
+    narrow = await real_client.post("/company-peers/grants", json={
+        "source_company_id": client_company, "label": "Contacts only", "scopes": ["contacts"]},
+        headers=auth(firm_tok))
+    assert narrow.status_code == 201, narrow.text
+    r = await real_client.post("/docs/import/batch", json={"records": []}, headers={
+        "Authorization": f"Peer {narrow.json()['credential']}", "X-Celerp-Source-Company": client_company})
+    assert r.status_code == 401, r.text
+    wrong_source = {**headers, "X-Celerp-Source-Company": str(uuid.uuid4())}
+    r = await real_client.post("/crm/contacts/import/batch", json={"records": []}, headers=wrong_source)
+    assert r.status_code == 401, r.text
+
+
+async def test_source_revision_is_for_connected_companies_only(real_client, real_engine):
+    """A signed-in user's import naming a source revision is refused with the reason."""
+    registered = await real_client.post("/auth/register", json={
+        "company_name": "Solo Co", "email": "solo@example.test", "name": "Solo", "password": "solopw1234"})
+    tok = registered.json()["access_token"]
+    r = await real_client.post("/crm/contacts/import/batch", json={"records": [{
+        "entity_id": "contact:x", "event_type": "crm.contact.created", "data": {"name": "X"},
+        "source": "csv", "idempotency_key": "x", "source_revision": 2}]}, headers=auth(tok))
+    assert r.status_code == 422, r.text
+    assert "connected company" in r.text
