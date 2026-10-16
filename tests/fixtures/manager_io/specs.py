@@ -61,6 +61,10 @@ T = {name: uuid.UUID(guid) for name, guid in {
     "DeliveryNote": "a0f6a539-f6a4-4a38-a69a-546a608a1f6d",
     "GoodsReceipt": "866217a4-f841-47de-a4e6-87152405c88d",
     "InventoryTransfer": "7eaafddc-54c9-4235-98d2-e8a1ee438150",
+    "InventoryWriteOff": "d7ff6694-f1ef-419f-8ae2-55527a02e95f",
+    "ProductionOrder": "da996523-e77e-493c-b134-31c6c6ccae4a",
+    "InventoryAutomaticRevaluation": "ffbec913-dcc6-420b-b591-a27822f60648",
+    "ProfitAndLossStatementAccountInventoryWriteOffs": "eff068c3-5cc6-4746-b73b-850d30534cbb",
     "CustomInventoryLocation": "fae8151d-252e-45e3-b1f4-e048075b8983",
     "DefaultInventoryLocation": "d63413bc-622e-4e39-86bc-15e95eb4e81c",
     "InventoryUnitCost": "d5d7bad5-0abd-4501-af7f-cb6289cabc30",
@@ -675,7 +679,8 @@ def inventory_safety_objects(locations: int = 0, transfers: int = 0, negative: b
         _bill("BILLS", date(2026, 1, 5), {"WID": (D("5"), D("4"))}, {64: True, **({13: k("LOC2")} if locations else {})}),
         *(obj("CustomInventoryLocation", f"LOC{n}", {1: f"Store {n}", 3: f"LOC{n}"})
           for n in range(2, locations + 2)),
-        *(obj("InventoryTransfer", f"TRF{n}", {1: f"T-{n}", 2: date(2026, 1, 10), 6: [{1: k("WID"), 3: D("2")}]})
+        *(obj("InventoryTransfer", f"TRF{n}", {1: f"T-{n}", 2: date(2026, 1, 10), 4: k("LOC2"),
+                                                6: [{9: k("WID"), 6: D("2")}]})
           for n in range(1, transfers + 1)),
     ]
     if negative:
@@ -687,6 +692,81 @@ def inventory_safety_objects(locations: int = 0, transfers: int = 0, negative: b
 
 def build_inventory_safety(path: Path, **kinds) -> Path:
     return write_manager_file(path, inventory_safety_objects(**kinds))
+
+
+def write_off(label: str, day: date, lines: dict[str, D], header: dict | None = None) -> Obj:
+    return obj("InventoryWriteOff", label, {1: day, 12: label, **(header or {}),
+                                            3: [{1: k(item), 3: qty} for item, qty in lines.items()]})
+
+
+def production(label: str, day: date, finished: tuple[str, D], consumed: dict[str, D],
+               expenses: dict[str, D] | None = None, header: dict | None = None) -> Obj:
+    """A production order making `finished` (item, quantity) from the `consumed` items, adding
+    each of `expenses` ({account: amount}) to the cost of what it makes."""
+    fields = {1: day, 17: label, 4: k(finished[0]), 18: finished[1],
+              3: [{1: k(item), 3: qty} for item, qty in consumed.items()]}
+    if expenses:
+        fields |= {9: True, 10: [{1: k(account), 2: amount} for account, amount in expenses.items()]}
+    return obj("ProductionOrder", label, fields | (header or {}))
+
+
+def stock_records_objects() -> list[Obj]:
+    """Every inventory record a multi-location Manager business keeps. Hand-worked figures,
+    with widgets at a unit cost of 4.00 from 01-01:
+
+    BILLS brings in its own 10 widgets @ 4.00 on 01-03, into Store 2: 10 / 40.00.
+    WO1 writes off 2 widgets on 01-05 at Store 2, at 4.00: 8.00 to Inventory - write-offs,
+    8 / 32.00 left. TRF1 moves 3 widgets to the default location on 01-06: no figure moves.
+    PO1 makes 1 gadget from 3 widgets on 01-07, at 4.00 each (12.00), adding 6.00 of office
+    expenses to its cost: the gadget is worth 18.00, 6.00 more stock on the inventory account,
+    credited to office expenses. At the end: 5 widgets / 20.00, 1 gadget / 18.00, inventory
+    on hand 40.00 - 8.00 + 6.00 = 38.00. AR1 is an automatic revaluation with nothing in it."""
+    return [
+        *_stocked_masters(),
+        obj("InventoryItem", "GAD", {1: "GAD-1", 11: "Gadget", 13: "each", 32: True, 3: SALE_PRICES["GAD"], 31: True}),
+        obj("CustomInventoryLocation", "LOC2", {1: "Store 2", 3: "LOC2"}),
+        obj("ProfitAndLossStatementAccountInventoryWriteOffs", None, {1: "Inventory - write-offs"}),
+        obj("InventoryUnitCost", "UCW", {1: date(2026, 1, 1), 2: k("WID"), 3: D("4")}),
+        _bill("BILLS", date(2026, 1, 3), {"WID": (D("10"), D("4"))}, {64: True, 13: k("LOC2")}),
+        write_off("WO1", date(2026, 1, 5), {"WID": D("2")}, {10: k("LOC2"), 2: "Damaged in storage"}),
+        obj("InventoryTransfer", "TRF1", {1: "T-1", 2: date(2026, 1, 6), 3: k("LOC2"),
+                                          6: [{9: k("WID"), 6: D("3")}]}),
+        production("PO1", date(2026, 1, 7), ("GAD", D("1")), {"WID": D("3")}, {"OFF": D("6")}),
+        obj("InventoryAutomaticRevaluation", "AR1", {}),
+    ]
+
+
+def unpriced_write_off_objects() -> list[Obj]:
+    """A write-off with no unit cost set. BILLS brings in its own 5 widgets @ 4.00 on 01-03;
+    WO0 writes off 1 on 01-05, which Manager books at nothing: 4 widgets worth 20.00 are
+    left, and the inventory account stays at 20.00."""
+    return [
+        *_stocked_masters(),
+        _bill("BILLS", date(2026, 1, 3), {"WID": (D("5"), D("4"))}, {64: True}),
+        write_off("WO0", date(2026, 1, 5), {"WID": D("1")}),
+    ]
+
+
+def over_owned_write_off_objects() -> list[Obj]:
+    """WOQ writes off 3 widgets on 01-05 when the business owns the 2 BILLS brought in."""
+    return [
+        *_stocked_masters(),
+        obj("InventoryUnitCost", "UCW", {1: date(2026, 1, 1), 2: k("WID"), 3: D("4")}),
+        _bill("BILLS", date(2026, 1, 3), {"WID": (D("2"), D("4"))}, {64: True}),
+        write_off("WOQ", date(2026, 1, 5), {"WID": D("3")}),
+    ]
+
+
+def unflagged_production_expense_objects() -> list[Obj]:
+    """PON lists an expense item without the flag that adds it to the cost of what it makes."""
+    return [
+        *_stocked_masters(),
+        obj("InventoryItem", "GAD", {1: "GAD-1", 11: "Gadget", 13: "each", 32: True, 3: SALE_PRICES["GAD"], 31: True}),
+        obj("InventoryUnitCost", "UCW", {1: date(2026, 1, 1), 2: k("WID"), 3: D("4")}),
+        _bill("BILLS", date(2026, 1, 3), {"WID": (D("5"), D("4"))}, {64: True}),
+        production("PON", date(2026, 1, 7), ("GAD", D("1")), {"WID": D("3")}, header={
+            10: [{1: k("OFF"), 2: D("6")}]}),
+    ]
 
 
 DEPENDENCY_CUTOVER = date(2026, 1, 15)
