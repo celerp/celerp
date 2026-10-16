@@ -222,9 +222,14 @@ async def _class_id(d: Draft, value, fa: dict) -> None:
         raise setup.unprocessable("That class is archived. Choose a class in use.")
     d.without_estimates()
     d.new_cls = new
-    d.changes.update(class_id=new["id"], policy=setup.policy_of(new, fa))
+    # The classes the asset was in, each until the date it left, read when an earlier
+    # balance is mapped to the accounts it stood on then.
+    d.changes.update(class_id=new["id"], policy=setup.policy_of(new, fa),
+                     class_history=[*(d.asset.get("class_history") or []), {"until": d.posting, "class_id": d.cls["id"]}])
     number = d.asset["number"]
-    cost, depreciation = _dec(d.asset.get("cost")), _dec(d.asset.get(_AD))
+    # The accumulated depreciation account carries the accumulated impairment too.
+    cost = _dec(d.asset.get("cost"))
+    depreciation = _dec(d.asset.get(_AD)) + _dec(d.asset.get("accumulated_impairment"))
     if new["asset_account"] != d.cls["asset_account"] and cost:
         d.journal(_lines(new["asset_account"], d.cls["asset_account"], cost), f"{number} moved to {new['name']}")
     old_ad, new_ad = d.cls["accumulated_depreciation_account"], new["accumulated_depreciation_account"]
@@ -534,7 +539,8 @@ async def plan(session, company_id, asset_id: str, body: dict, fa: dict) -> tupl
                   for j in d.journals],
         movements=[{k: m[k] for k in ("operation", "effective_date", "posting_date", "amounts")} for m in d.moves],
         prior_years=d.prior_detail, treatment=treatment, immaterial_reason=immaterial,
-        changes={k: v for k, v in d.changes.items() if k != "sources"}, future=_future(d, start), **d.shown)
+        changes={k: v for k, v in d.changes.items() if k not in ("sources", "class_history")},
+        future=_future(d, start), **d.shown)
     context = {"draft": d, "changes": changes, "classification": classification, "default": default,
                "reason": reason, "treatment": treatment, "immaterial": immaterial, "shown": shown,
                "generation": d.generation,

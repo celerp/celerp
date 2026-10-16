@@ -19,7 +19,8 @@ from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import (
     assert_role_permission, get_current_company_settings, require_permission, role_has_permission)
-from celerp_fixed_assets import additions, corrections, disposal, operations, remeasure, runs, sales, setup, sources
+from celerp_fixed_assets import (
+    additions, corrections, disposal, opening, operations, recon, remeasure, runs, sales, setup, sources)
 from celerp_fixed_assets.events import register_events
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
@@ -70,9 +71,11 @@ async def _asset(session, company_id, asset_id: str) -> dict:
 
 
 @router.get("/setup", dependencies=_VIEW)
-async def get_setup(company_settings: dict = Depends(get_current_company_settings)) -> dict:
+async def get_setup(company_settings: dict = Depends(get_current_company_settings),
+                    company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     fa = setup.settings_of(company_settings)
-    return {"started": bool(fa.get("started")), "settings": setup.view(fa)}
+    first = await setup.first_period(session, company_id, fa) if fa.get("started") else None
+    return {"started": bool(fa.get("started")), "settings": setup.view(fa), "first_period": first}
 
 
 @router.post("/start", dependencies=_ACCOUNTING)
@@ -136,7 +139,13 @@ async def register(body: dict = Body(...), company_id=Depends(get_current_compan
 @router.post("/not-acquisition", dependencies=_ACCOUNTING)
 async def not_acquisition(body: dict = Body(...), company_id=Depends(get_current_company_id),
                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    return await _write(session, operations.not_acquisition, company_id, user.id, body)
+    return await _write(session, operations.disposition, company_id, user.id, body, "not_acquisition")
+
+
+@router.post("/keep-line", dependencies=_ACCOUNTING)
+async def keep_line(body: dict = Body(...), company_id=Depends(get_current_company_id),
+                    user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, operations.disposition, company_id, user.id, body, "keep")
 
 
 @router.post("/link-depreciation", dependencies=_ACCOUNTING)
@@ -149,6 +158,32 @@ async def link_depreciation(body: dict = Body(...), company_id=Depends(get_curre
 async def undo_source(body: dict = Body(...), company_id=Depends(get_current_company_id),
                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, operations.undo_source, company_id, user.id, body)
+
+
+# ── Opening balances and the reconciliation ──────────────────────────────────
+
+
+@router.get("/opening", dependencies=_ACCOUNTING)
+async def get_opening(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+    return await opening.view(session, company_id)
+
+
+@router.post("/opening/finish", dependencies=_ACCOUNTING)
+async def finish_opening(body: dict = Body(...), company_id=Depends(get_current_company_id),
+                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, opening.finish, company_id, user.id, body)
+
+
+@router.get("/reconciliation", dependencies=_ACCOUNTING)
+async def get_reconciliation(at: str | None = None, company_id=Depends(get_current_company_id),
+                             session: AsyncSession = Depends(get_session)) -> dict:
+    return await recon.report(session, company_id, at)
+
+
+@router.post("/reconciliation/acknowledge", dependencies=_ACCOUNTING)
+async def acknowledge(body: dict = Body(...), company_id=Depends(get_current_company_id),
+                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, recon.acknowledge, company_id, user.id, body)
 
 
 # ── Assets ───────────────────────────────────────────────────────────────────

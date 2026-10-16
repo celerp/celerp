@@ -36,6 +36,14 @@ async def _demo(ui) -> None:
     assert r.status_code == 200, r.text
 
 
+async def _start(ui) -> None:
+    """Start fixed assets and confirm the first managed period it suggests."""
+    await ui.post("/fixed-assets/start")
+    suggested = (await ui.api.get(f"{API}/setup")).json()["first_period"]["suggested"]
+    r = await ui.api.patch(f"{API}/settings", json={"first_managed_period": suggested})
+    assert r.status_code == 200, r.text
+
+
 async def test_start_panel_then_register_page(owner_ui):
     await _demo(owner_ui)
     page = await owner_ui.get("/fixed-assets")
@@ -53,7 +61,7 @@ async def test_start_panel_then_register_page(owner_ui):
 
 async def test_register_a_bill_line_from_the_intake_page(owner_ui):
     await _demo(owner_ui)
-    await owner_ui.post("/fixed-assets/start")
+    await _start(owner_ui)
     lines = (await owner_ui.api.get(f"{API}/intake")).json()["items"]
     line = next(ln for ln in lines if ln["kind"] == "acquisition" and str(ln["quantity"]) in ("1", "1.0"))
     vehicles = next(c for c in (await owner_ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == "Vehicles")
@@ -88,7 +96,7 @@ async def test_register_a_bill_line_from_the_intake_page(owner_ui):
 
 async def test_add_an_opening_asset_by_hand(owner_ui):
     await _demo(owner_ui)
-    await owner_ui.post("/fixed-assets/start")
+    await _start(owner_ui)
     classes = (await owner_ui.api.get(f"{API}/classes")).json()["items"]
     buildings = next(c for c in classes if c["name"] == "Buildings")
     cutover = (await owner_ui.api.get(f"{API}/setup")).json()["settings"]["cutover"]
@@ -108,7 +116,7 @@ async def test_add_an_opening_asset_by_hand(owner_ui):
 
 async def test_a_review_whose_figures_changed_is_refused_on_confirm(owner_ui):
     await _demo(owner_ui)
-    await owner_ui.post("/fixed-assets/start")
+    await _start(owner_ui)
     vehicles = next(c for c in (await owner_ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == "Vehicles")
     form = {"kind": "opening", "name": "Forklift", "class_id": vehicles["id"], "available_date": "2020-01-01",
             "cost": "9000", "idempotency_key": str(uuid.uuid4())}
@@ -140,6 +148,42 @@ async def test_settings_page_saves_and_edits_a_class(owner_ui):
     assert cell.status_code == 200 and "72" in cell.text
     classes = (await owner_ui.api.get(f"{API}/classes")).json()["items"]
     assert next(c for c in classes if c["id"] == vehicles["id"])["life_months"] == 72
+
+
+async def test_confirm_the_first_period_then_reconcile_and_finish_opening(owner_ui):
+    await _demo(owner_ui)
+    await owner_ui.post("/fixed-assets/start")
+    page = await owner_ui.get("/fixed-assets")
+    assert page.status_code == 200 and t("fixed_assets.first_period_title") in page.text
+    suggested = (await owner_ui.api.get(f"{API}/setup")).json()["first_period"]["suggested"]
+    confirmed = await owner_ui.post("/fixed-assets/first-period", data={"first_managed_period": suggested})
+    assert confirmed.headers.get("HX-Redirect") == "/fixed-assets", confirmed.headers
+    assert (await owner_ui.api.get(f"{API}/setup")).json()["settings"]["first_managed_period"] == suggested
+
+    # The demo's bills are not registered yet, so the register says so and links the reconciliation.
+    page = await owner_ui.get("/fixed-assets")
+    assert t("fixed_assets.first_period_title") not in page.text
+    assert t("fixed_assets.recon_banner") in page.text and 'href="/fixed-assets/reconciliation"' in page.text
+    recon = await owner_ui.get("/fixed-assets/reconciliation")
+    assert recon.status_code == 200 and t("fixed_assets.recon_rule.5") in recon.text
+    assert "fixed_assets." not in recon.text, "every label on the page reads as words"
+    report = (await owner_ui.api.get(f"{API}/reconciliation")).json()
+    diff = next(d for a in report["accounts"] for d in a["differences"] if d["rule"] == 5)
+    noted = await owner_ui.post("/fixed-assets/reconciliation/acknowledge", data={
+        "key": diff["key"], "amount": diff["amount"], "state": "noted", "reason": "Registered next week"})
+    assert noted.headers.get("HX-Redirect") == "/fixed-assets/reconciliation", noted.headers
+    report = (await owner_ui.api.get(f"{API}/reconciliation")).json()
+    assert next(d for a in report["accounts"] for d in a["differences"] if d["key"] == diff["key"])["state"] == "noted"
+
+    opening = await owner_ui.get("/fixed-assets/opening")
+    assert opening.status_code == 200 and t("fixed_assets.opening_finish") in opening.text
+    assert "fixed_assets." not in opening.text
+    kept = await owner_ui.post("/fixed-assets/opening/finish", data={"keep_open": "1"})
+    assert kept.headers.get("HX-Redirect") == "/fixed-assets/opening", kept.headers
+    assert t("fixed_assets.opening_state.kept_open") in (await owner_ui.get("/fixed-assets/opening")).text
+    reopened = await owner_ui.post("/fixed-assets/opening/finish", data={"reopen": "1"})
+    assert reopened.headers.get("HX-Redirect") == "/fixed-assets/opening"
+    assert t("fixed_assets.opening_finish") in (await owner_ui.get("/fixed-assets/opening")).text
 
 
 async def _managed_car(ui, on: str = "2026-08-10") -> str:
@@ -549,7 +593,7 @@ async def test_revalue_a_class_from_settings(owner_ui):
 
 async def test_record_an_impairment_review_that_found_a_loss(owner_ui):
     await _demo(owner_ui)
-    await owner_ui.post("/fixed-assets/start")
+    await _start(owner_ui)
     other = await _class(owner_ui, "Other intangibles")
     r = await owner_ui.api.patch(f"{API}/classes/{other['id']}", json={"method": "none", "life_months": None})
     assert r.status_code == 200, r.text

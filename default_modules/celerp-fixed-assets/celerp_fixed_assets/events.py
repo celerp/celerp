@@ -138,6 +138,12 @@ class ReviewRecorded(_Event):
     basis: str
 
 
+class ReconRecorded(_Event):
+    key: str
+    state: str
+    amount: str
+
+
 EVENTS: dict[str, type[BaseModel]] = {
     "fa.class.created": ClassCreated,
     "fa.class.updated": Changes,
@@ -166,6 +172,7 @@ EVENTS: dict[str, type[BaseModel]] = {
     "fa.correction.undone": CorrectionClosed,
     "fa.review.recorded": ReviewRecorded,
     "fa.review.status": AssetStatus,
+    "fa.recon.recorded": ReconRecorded,
 }
 
 

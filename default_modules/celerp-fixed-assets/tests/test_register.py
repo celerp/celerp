@@ -207,6 +207,9 @@ async def test_s1_concurrent_registration_one_claim(committed_engine):
         await company_auth(s, cid, uid)
         await seed_demo_assets(s, cid, uid)
         await setup.start(s, cid, uid)
+        fa = setup.settings_of(await setup.company_settings(s, cid))
+        suggested = (await setup.first_period(s, cid, fa))["suggested"]
+        await setup.update_settings(s, cid, uid, {"first_managed_period": suggested})
         await s.commit()
     async with factory() as s:
         van = next(i for i in await intake(s, cid) if i["description"] == "Delivery van")

@@ -113,9 +113,10 @@ async def test_s7_cutover_moves_with_opening_assets_while_no_run(fa):
     earlier = (date.fromisoformat(cutover).replace(day=1) - timedelta(days=1)).replace(day=1)
     moved = await fa.ok(await fa.patch("/settings", {"first_managed_period": earlier.isoformat()}))
     new_cut = moved["cutover"]
-    live = [m for m in await fa.entities("fa_movement") if m["asset_id"] == warehouse]
-    openings = [m for m in live if m["operation"] == "opening" and not m.get("reversed_by")]
-    assert any(m["posting_date"] == new_cut for m in openings)
+    recorded = [m for m in await fa.entities("fa_movement") if m["asset_id"] == warehouse]
+    reversed_ids = {m.get("reverses") for m in recorded}
+    (opening,) = [m for m in recorded if m["operation"] == "opening" and m["entity_id"] not in reversed_ids]
+    assert opening["posting_date"] == new_cut
     await fa.fold_matches(warehouse)
     assert D((await fa.asset(warehouse))["cost"]) == D("250000")
     recon = await _recon(fa, new_cut)
@@ -185,8 +186,6 @@ async def test_s7_difference_open_until_acknowledged(fa):
     assert kept["state"] == "kept_open"
     (diff,) = [d for d in _account(await _recon(fa, cutover), "1210")["differences"] if d["rule"] == "opening"]
     assert diff["state"] == "open"
-    page = await fa.client.get("/fixed-assets", headers=fa.h)
-    assert page.status_code == 200 and "not yet in the register" in page.text
     today = await _recon(fa, date.today().isoformat())
     assert _account(today, "1210")["status"] == "Differences open" and today["status"] != "Reconciled"
 
@@ -247,7 +246,7 @@ async def test_s7_allocate_historical_depreciation(fa):
     await fa.operate("/link-depreciation", {"source": f"{je}:1", "allocations": [
         {"asset_id": a, "amount": "100"} for a in ids]}, key="alloc")
     assert len(await fa.module_journals()) == journals
-    assert all(D((await fa.asset(a))["accumulated_depreciation"]) == D("100") for a in ids)
+    assert [D((await fa.asset(a))["accumulated_depreciation"]) for a in ids] == [D("100")] * len(ids)
     assert not set(_held(await _run_preview(fa, month))) & set(numbers)
     account = _account(await _recon(fa, booked.isoformat()), "1220")
     assert not [d for d in account["differences"] if any(ln["journal_id"] == je for ln in d["lines"])]

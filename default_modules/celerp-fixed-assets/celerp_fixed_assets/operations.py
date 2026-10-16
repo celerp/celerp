@@ -173,7 +173,8 @@ async def _claim(session, company_id, user_id, line: dict, *, allocation: str, o
     event = await _emit(session, company_id, user_id, claim, "fa_src", "fa.src.claimed", {
         "source": line["source"], "allocation": allocation, "generation": line["generation"], "op_key": op_key,
         "description": line["description"], "amount": line["amount"], "journal_id": line["journal_id"],
-        "line_index": line["line_index"], **extra}, key=f"{claim}:claim:{line['generation']}")
+        "line_index": line["line_index"], "account": line["account"], "kind": line["kind"], "date": line["date"],
+        **extra}, key=f"{claim}:claim:{line['generation']}")
     if getattr(event, "was_deduped", False):
         raise conflict(f"{line['description']} was already registered.")
 
@@ -188,17 +189,19 @@ def _op_key(body: dict) -> str:
     return key
 
 
-async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: tuple[str, ...], plan, apply):
+async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: tuple[str, ...], plan, apply,
+               managed: bool = True):
     """Preview or confirm one operation. ``plan(fa)`` returns ``(shown, context)``: what
     the preview shows, which the fingerprint covers, and what ``apply`` needs to do it.
     ``context["generation"]`` (a source line's claim generation) names a stale form, and
     ``context["basis"]``, when given, is what the plan was read from that the preview does
-    not show (the fingerprint covers it too)."""
+    not show (the fingerprint covers it too). Only a physical record, which carries no
+    money, is recorded before the first managed period is confirmed (``managed=False``)."""
     from celerp.services.permissions import locked_authority
 
     op_key = _op_key(body)
     await locked_authority(session, company_id, user_id, keys)
-    fa = await setup.require_started(session, company_id)
+    fa = await (setup.require_managed if managed else setup.require_started)(session, company_id)
     intent_hash = _hash({"type": op_type, **{k: v for k, v in body.items() if k not in _NOT_INTENT}})
     if not body.get("preview"):
         done = await _state(session, company_id, f"fa:op:{op_key}")
@@ -355,26 +358,41 @@ async def register(session, company_id, user_id, body: dict) -> dict:
                       plan=plan, apply=apply)
 
 
-async def not_acquisition(session, company_id, user_id, body: dict) -> dict:
-    """Mark a manual journal line as not an asset acquisition, with the reason."""
+# What a manual line is marked as when it is not registered: the reason it needs, and the
+# lines it applies to.
+_DISPOSITIONS = {
+    "not_acquisition": ("A reason is required to mark a line as not an acquisition.",
+                        "Only a manual journal line debiting an asset account can be marked as not an acquisition.",
+                        ("acquisition",)),
+    "keep": ("A reason is required to keep a depreciation journal as booked.",
+             "Only a manual journal line crediting accumulated depreciation can be kept as booked.",
+             ("depreciation",)),
+}
+
+
+async def disposition(session, company_id, user_id, body: dict, allocation: str) -> dict:
+    """Mark a manual journal line as not an acquisition, or keep a depreciation journal as
+    booked without allocating it to assets, with the reason. Posts nothing; the line leaves
+    intake and the reconciliation lists it as noted with the reason."""
+    no_reason, wrong_line, kinds = _DISPOSITIONS[allocation]
 
     async def plan(fa):
         reason = str(body.get("reason") or "").strip()
         if not reason:
-            raise setup.unprocessable("A reason is required to mark a line as not an acquisition.")
+            raise setup.unprocessable(no_reason)
         line = await _open_line(session, company_id, body.get("source"))
-        if not line["journal_id"].startswith("je:manual:"):
-            raise setup.unprocessable("Only a manual journal line can be marked as not an acquisition.")
+        if not line["journal_id"].startswith("je:manual:") or line["kind"] not in kinds:
+            raise setup.unprocessable(wrong_line)
         return ({"journals": [], "assets": [], "reason": reason},
                 {"line": line, "reason": reason, "generation": line["generation"]})
 
     async def apply(context, op_key):
         line = context["line"]
-        await _claim(session, company_id, user_id, line, allocation="not_acquisition", op_key=op_key,
+        await _claim(session, company_id, user_id, line, allocation=allocation, op_key=op_key,
                      reason=context["reason"])
         return {"assets": [], "journals": []}, _effects(claims=[line["source"]])
 
-    return await _run(session, company_id, user_id, body, op_type="not_acquisition", keys=("manage_accounting",),
+    return await _run(session, company_id, user_id, body, op_type=allocation, keys=("manage_accounting",),
                       plan=plan, apply=apply)
 
 
@@ -516,7 +534,8 @@ async def create_asset(session, company_id, user_id, body: dict) -> dict:
                 _effects(assets=[asset_id], movements=movements, journals=journals))
 
     return await _run(session, company_id, user_id, body, op_type=f"asset:{kind}",
-                      keys=("manage_fixed_assets",) if physical else ("manage_accounting",), plan=plan, apply=apply)
+                      keys=("manage_fixed_assets",) if physical else ("manage_accounting",), plan=plan, apply=apply,
+                      managed=not physical)
 
 
 async def add_financial_details(session, company_id, user_id, asset_id: str, body: dict) -> dict:

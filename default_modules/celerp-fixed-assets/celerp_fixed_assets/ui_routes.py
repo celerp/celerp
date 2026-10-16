@@ -20,6 +20,8 @@ GET  /fixed-assets/corrections          Every correction newest first, and those
 GET  /fixed-assets/corrections/{id}     One correction: what it changed and posted; apply, withdraw or undo it
 GET  /fixed-assets/classes/{id}/apply   Apply a class's depreciation settings to the assets on older ones
 GET  /fixed-assets/reports/prior-period-adjustments[.csv]  Earlier years restated by corrections
+GET  /fixed-assets/reconciliation?at=   The register against the ledger, account by account, with every difference
+GET  /fixed-assets/opening              Opening balances at the cutover: finish, keep open or reopen them
 GET  /fixed-assets/runs                 Depreciation runs: run a month, every month's run newest first
 GET  /fixed-assets/runs/{month}         One month's run: its journal and the assets held out of it
 GET  /settings/fixed-assets             Settings and asset classes
@@ -468,14 +470,17 @@ def _to_asset(r, f) -> str:
     return f"/fixed-assets/assets/{f.get('asset_id')}"
 
 
+def _disposition_body(f) -> dict:
+    return {"source": str(f.get("source") or ""), "reason": str(f.get("reason") or "")}
+
+
 # action -> (API path for the form, body from the form, where the done result leads)
 _OPERATIONS = {
     "register": (lambda f: "/register", _register_body,
                  lambda r, f: f"/fixed-assets/assets/{r['assets'][0]['id']}" if r.get("assets")
                  else "/fixed-assets/intake"),
-    "not-acquisition": (lambda f: "/not-acquisition",
-                        lambda f: {"source": str(f.get("source") or ""), "reason": str(f.get("reason") or "")},
-                        lambda r, f: "/fixed-assets/intake"),
+    "not-acquisition": (lambda f: "/not-acquisition", _disposition_body, lambda r, f: "/fixed-assets/intake"),
+    "keep-line": (lambda f: "/keep-line", _disposition_body, lambda r, f: "/fixed-assets/intake"),
     "link-depreciation": (lambda f: "/link-depreciation", _link_body, lambda r, f: "/fixed-assets/intake"),
     "add-asset": (lambda f: "/assets", _asset_body,
                   lambda r, f: f"/fixed-assets/assets/{r['assets'][0]['id']}"),
@@ -962,6 +967,105 @@ def _reviews_due_card(items: list[dict]) -> FT:
                cls="flash flash--warning", id="fa-reviews-due")
 
 
+def _first_period_card(first: dict) -> FT:
+    """The first managed period suggested, what it was read from, and the button that confirms it."""
+    evidence = first.get("evidence") or {}
+    booked = evidence.get("depreciation") or []
+    if booked:
+        why = t("fixed_assets.first_period_from_depreciation", account=booked[-1]["account"], date=booked[-1]["date"])
+    elif evidence.get("earliest_journal"):
+        why = t("fixed_assets.first_period_from_journal", date=evidence["earliest_journal"])
+    else:
+        why = t("fixed_assets.first_period_from_today")
+    return Div(H3(t("fixed_assets.first_period_title")), P(t("fixed_assets.first_period_hint")),
+               P(t("fixed_assets.first_period_suggested", period=first["suggested"]), " ", why),
+               Form(Input(type="hidden", name="first_managed_period", value=first["suggested"]),
+                    Button(t("fixed_assets.first_period_confirm"), type="submit", cls="btn btn--primary"), " ",
+                    A(t("fixed_assets.first_period_other"), href="/settings/fixed-assets#first_managed_period"),
+                    hx_post="/fixed-assets/first-period", hx_swap="none"),
+               cls="flash flash--warning", id="fa-first-period")
+
+
+def _recon_banner() -> FT:
+    return Div(P(t("fixed_assets.recon_banner"), " ",
+                 A(t("fixed_assets.recon_open"), href="/fixed-assets/reconciliation")),
+               cls="flash flash--warning", id="fa-recon-banner")
+
+
+def _recon_accounts_table(accounts: list[dict], currency: str) -> FT:
+    rows = [Tr(Td(f"{a['account']} {a['name']}"), _money_td(a["ledger"], currency),
+               _money_td(a["registered"], currency),
+               _money_td(str(Decimal(a["ledger"]) - Decimal(a["registered"])), currency),
+               Td(t(f"fixed_assets.recon_status.{_RECON_STATUS[a['status']]}"))) for a in accounts]
+    return Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.recon_ledger")),
+                          _money_th(t("fixed_assets.recon_registered")), _money_th(t("fixed_assets.difference")),
+                          Th(t("fixed_assets.status")))),
+                 Tbody(*rows), cls="data-table", id="fa-recon-accounts")
+
+
+_RECON_STATUS = {"Reconciled": "reconciled", "Differences acknowledged": "acknowledged",
+                 "Differences open": "open"}
+_RECON_ACTIONS = {"opening": "/fixed-assets/opening", "intake": "/fixed-assets/intake"}
+
+
+def _recon_cause(d: dict) -> str:
+    return t(f"fixed_assets.recon_rule.{d['rule']}")
+
+
+def _acknowledge_form(d: dict) -> FT:
+    """Note or accept a difference with its reason, or open it again, on the page."""
+    state = Select(*[Option(t(f"fixed_assets.recon_state.{s}"), value=s, selected=s == d["state"])
+                     for s in ("open", "noted", "accepted")], name="state", cls="form-input",
+                   aria_label=t("fixed_assets.status"))
+    return Form(Input(type="hidden", name="key", value=d["key"]), Input(type="hidden", name="amount", value=d["amount"]),
+                Div(state, Button(t("fixed_assets.save"), type="submit", cls="btn btn--sm btn--secondary"),
+                    cls="flex-row"),
+                _input("reason", d.get("reason"), placeholder=t("fixed_assets.reason"),
+                       aria_label=t("fixed_assets.reason")),
+                _input("effect", d.get("effect"), placeholder=t("fixed_assets.recon_effect"),
+                       aria_label=t("fixed_assets.recon_effect")),
+                hx_post="/fixed-assets/reconciliation/acknowledge", hx_swap="none", cls="flex-col")
+
+
+def _differences_table(accounts: list[dict], currency: str) -> FT:
+    found = sorted(((a, d) for a in accounts for d in a["differences"]), key=lambda x: x[1]["date"], reverse=True)
+    if not found:
+        return P(t("fixed_assets.recon_no_differences"), cls="form-hint")
+    rows = []
+    for a, d in found:
+        lines = "; ".join(_text(li.get("description")) for li in d["lines"]) or EMPTY
+        action = _RECON_ACTIONS.get(d.get("action") or "")
+        rows.append(Tr(Td(d["date"]), Td(a["account"]), Td(_recon_cause(d)), Td(lines),
+                       _money_td(d["amount"], currency),
+                       Td(A(t(f"fixed_assets.recon_action.{d['action']}"), href=action) if action else EMPTY),
+                       Td(_text(d.get("reason")) if d["rule"] == 4 else _acknowledge_form(d))))
+    return Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.account")), Th(t("fixed_assets.recon_cause")),
+                          Th(t("fixed_assets.recon_lines")), _money_th(t("fixed_assets.amount")),
+                          Th(t("fixed_assets.recon_next")), Th(t("fixed_assets.status")))),
+                 Tbody(*rows), cls="data-table", id="fa-recon-differences")
+
+
+def _opening_table(accounts: list[dict], currency: str) -> FT:
+    rows = [Tr(Td(f"{a['account']} {a['name']}"), _money_td(a["ledger"], currency), _money_td(a["registered"], currency),
+               _money_td(a["difference"], currency)) for a in accounts]
+    return Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.recon_ledger")),
+                          _money_th(t("fixed_assets.recon_registered")), _money_th(t("fixed_assets.difference")))),
+                 Tbody(*rows), cls="data-table", id="fa-opening-accounts")
+
+
+def _opening_actions(state: str | None) -> FT:
+    def button(label: str, **body):
+        return Button(label, type="button", cls="btn btn--secondary", hx_post="/fixed-assets/opening/finish",
+                      hx_vals=json.dumps(body), hx_swap="none")
+
+    if state:
+        return Div(P(t(f"fixed_assets.opening_state.{state}"), cls="settings-hint"),
+                   button(t("fixed_assets.opening_reopen"), reopen="1"), cls="form-actions")
+    return Div(Button(t("fixed_assets.opening_finish"), type="button", cls="btn btn--primary",
+                      hx_post="/fixed-assets/opening/finish", hx_vals="{}", hx_swap="none"),
+               button(t("fixed_assets.opening_keep_open"), keep_open="1"), cls="form-actions")
+
+
 def _last_month(today: date) -> str:
     return f"{today.year - 1}-12" if today.month == 1 else f"{today.year}-{today.month - 1:02d}"
 
@@ -1233,6 +1337,13 @@ def setup_ui_routes(app) -> None:
             due = (await api.fixed_assets_get(token, "/reviews"))["items"]
         except APIError as e:
             return await _refused(request, e, "fixed_assets.title")
+        notice = _first_period_card(setup["first_period"]) if setup.get("first_period") else ""
+        if not notice:
+            try:
+                report = await api.fixed_assets_get(token, "/reconciliation")
+                notice = _recon_banner() if report["status"] != "Reconciled" else ""
+            except APIError:
+                notice = ""  # The reconciliation is shown to those who manage accounting.
         actions = (A(t("fixed_assets.corrections_title"), href="/fixed-assets/corrections", cls="btn btn--secondary"),
                    A(t("fixed_assets.runs_title"), href="/fixed-assets/runs", cls="btn btn--secondary"),
                    A(t("fixed_assets.register_from_bills"), href="/fixed-assets/intake", cls="btn btn--secondary"),
@@ -1246,7 +1357,7 @@ def setup_ui_routes(app) -> None:
             body = Div(_register_toolbar(), _register_table(found["items"], _class_names(classes), currency),
                        pagination(page, found["total"], per_page, "/fixed-assets", urlencode(params)))
         return await _page(request, page_header(t("fixed_assets.title"), *actions),
-                           P(t("fixed_assets.register_hint"), cls="settings-hint"),
+                           P(t("fixed_assets.register_hint"), cls="settings-hint"), notice,
                            _attention_card(held) if held else "", _reviews_due_card(due) if due else "",
                            _filters(q, class_id, [c for c in classes if not c.get("archived")]), body,
                            title_key="fixed_assets.title")
@@ -1321,20 +1432,30 @@ def setup_ui_routes(app) -> None:
                       cls="detail-card section-card")
         hidden = Input(type="hidden", name="source", value=source)
         manual = line["source"].startswith(MANUAL_PREFIX)
+        def line_tabs(choices: list[str], current: str) -> FT:
+            return Div(*[A(t(f"fixed_assets.line_action.{c}"), cls="btn btn--sm " + (
+                "btn--primary" if c == current else "btn--secondary"),
+                href=f"/fixed-assets/intake/line?{urlencode({'source': source, 'action': c})}") for c in choices],
+                cls="flex-row")
+
         if line["kind"] != "acquisition":
-            active = [a for a in assets if a.get("status") == "active"]
-            shares = [_field(f"{a['number']} {a.get('name') or ''}",
-                             _input(f"share:{a['id']}", type_="number", step="0.01", min="0")) for a in active]
-            form = _op_form("link-depreciation", hidden, P(t("fixed_assets.link_hint"), cls="settings-hint"),
-                            *(shares or [P(t("fixed_assets.no_active_assets"), cls="form-hint")]))
-            return await _page(request, crumbs, page_header(t("fixed_assets.line_title")), summary, form,
+            choices = ["link-depreciation"] + (["keep-line"] if manual and line["kind"] == "depreciation" else [])
+            action = action if action in choices else choices[0]
+            if action == "keep-line":
+                form = _op_form("keep-line", hidden, P(t("fixed_assets.keep_line_hint"), cls="settings-hint"),
+                                _field(t("fixed_assets.reason"), _input("reason", required=True)))
+            else:
+                active = [a for a in assets if a.get("status") == "active"]
+                shares = [_field(f"{a['number']} {a.get('name') or ''}",
+                                 _input(f"share:{a['id']}", type_="number", step="0.01", min="0")) for a in active]
+                form = _op_form("link-depreciation", hidden, P(t("fixed_assets.link_hint"), cls="settings-hint"),
+                                *(shares or [P(t("fixed_assets.no_active_assets"), cls="form-hint")]))
+            return await _page(request, crumbs, page_header(t("fixed_assets.line_title")), summary,
+                               line_tabs(choices, action) if len(choices) > 1 else "", form,
                                title_key="fixed_assets.line_title")
         choices = ["register", "expense", "maintenance"] + (["not-acquisition"] if manual else [])
         action = action if action in choices else "register"
-        tabs = Div(*[A(t(f"fixed_assets.line_action.{c}"), cls="btn btn--sm " + (
-            "btn--primary" if c == action else "btn--secondary"),
-            href=f"/fixed-assets/intake/line?{urlencode({'source': source, 'action': c})}") for c in choices],
-            cls="flex-row")
+        tabs = line_tabs(choices, action)
         if action == "not-acquisition":
             form = _op_form("not-acquisition", hidden,
                             _field(t("fixed_assets.reason"), _input("reason", required=True),
@@ -1567,6 +1688,82 @@ def setup_ui_routes(app) -> None:
         return await _hx_write(token, "POST", f"/assets/{quote(asset_id, safe=':')}/readings",
                                {"period": str(form.get("period") or ""), "units": str(form.get("units") or "")},
                                f"/fixed-assets/assets/{asset_id}")
+
+    @app.post("/fixed-assets/first-period")
+    async def confirm_first_period(request: Request):
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        form = await request.form()
+        return await _hx_write(token, "PATCH", "/settings",
+                               {"first_managed_period": str(form.get("first_managed_period") or "")}, "/fixed-assets")
+
+    @app.get("/fixed-assets/reconciliation")
+    async def reconciliation_page(request: Request, at: str = ""):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            setup, currency = await _context(token)
+            if not setup["started"]:
+                return RedirectResponse("/fixed-assets", status_code=302)
+            report = await api.fixed_assets_get(token, "/reconciliation", {"at": at} if at else None)
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.recon_title")
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.recon_title"), None)])
+        when = Form(_field(t("fixed_assets.recon_at"), _input("at", report["at"], type_="date",
+                                                                min=report["cutover"])),
+                    Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary"),
+                    method="get", action="/fixed-assets/reconciliation", cls="flex-row")
+        errors = Div(H3(t("fixed_assets.recon_errors")), Ul(*[Li(e) for e in report["errors"]]),
+                     cls="flash flash--error", id="fa-recon-errors") if report["errors"] else ""
+        return await _page(request, crumbs, page_header(t("fixed_assets.recon_title"),
+                                                        A(t("fixed_assets.opening_title"), href="/fixed-assets/opening",
+                                                          cls="btn btn--secondary")),
+                           P(t("fixed_assets.recon_hint", cutover=report["cutover"]), cls="settings-hint"), when,
+                           P(Strong(t(f"fixed_assets.recon_status.{_RECON_STATUS[report['status']]}")), id="fa-recon-status"),
+                           errors, _recon_accounts_table(report["accounts"], currency),
+                           H2(t("fixed_assets.recon_differences"), cls="section-title"),
+                           _differences_table(report["accounts"], currency), title_key="fixed_assets.recon_title")
+
+    @app.post("/fixed-assets/reconciliation/acknowledge")
+    async def acknowledge_difference(request: Request):
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        form = await request.form()
+        return await _hx_write(token, "POST", "/reconciliation/acknowledge",
+                               {k: str(form.get(k) or "") for k in ("key", "amount", "state", "reason", "effect")},
+                               "/fixed-assets/reconciliation")
+
+    @app.get("/fixed-assets/opening")
+    async def opening_page(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            setup, currency = await _context(token)
+            if not setup["started"]:
+                return RedirectResponse("/fixed-assets", status_code=302)
+            shown = await api.fixed_assets_get(token, "/opening")
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.opening_title")
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.opening_title"), None)])
+        return await _page(request, crumbs, page_header(t("fixed_assets.opening_title"),
+                                                        A(t("fixed_assets.add_asset"), href="/fixed-assets/assets/new",
+                                                          cls="btn btn--secondary")),
+                           P(t("fixed_assets.opening_hint", cutover=shown["cutover"]), cls="settings-hint"),
+                           _opening_table(shown["accounts"], currency), _opening_actions(shown["state"]),
+                           title_key="fixed_assets.opening_title")
+
+    @app.post("/fixed-assets/opening/finish")
+    async def finish_opening(request: Request):
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        form = await request.form()
+        return await _hx_write(token, "POST", "/opening/finish",
+                               {k: True for k in ("keep_open", "reopen") if form.get(k)}, "/fixed-assets/opening")
 
     @app.get("/fixed-assets/runs")
     async def runs_page(request: Request):

@@ -32,7 +32,7 @@ from sqlalchemy import func, select
 
 from celerp.models.projections import Projection
 from celerp.services.money import round_money
-from celerp_fixed_assets import notices, operations, setup
+from celerp_fixed_assets import notices, operations, setup, sources
 from celerp_fixed_assets.calc.engine import (
     Acquire,
     Dispose,
@@ -286,8 +286,11 @@ class Charge:
         self.held_from: int | None = None
         self.action: str | None = None
 
-    async def hold(self, session, company_id, books: Books, through: int) -> None:
-        """The first month this asset cannot be charged, and what clears it."""
+    async def hold(self, session, company_id, books: Books, through: int, booked: dict[str, list[int]]) -> None:
+        """The first month this asset cannot be charged, and what clears it. ``booked`` holds,
+        per accumulated depreciation account, the months of depreciation journals entered
+        by hand and not yet allocated to assets or kept: the run would charge those months
+        twice, so every asset in service then on that account waits for them."""
         from celerp.services.journal_accounts import require_destinations
 
         unposted = [k for k, owed in self.owed.items() if owed or k >= self.start]
@@ -303,6 +306,9 @@ class Charge:
         found += [(k, "enter_reading") for k in sorted(self.missing) if open_from <= k <= through][:1]
         found += [(k, "skip") for k in sorted(parse_period(m) for m in self.asset.get("skips") or {})
                   if self.start <= k <= through and not books.locked(k)][:1]
+        in_service = _first(live(self.movements))
+        found += [(max(k, self.start), "disposition_journal") for k in sorted(booked.get(self.accumulated, []))
+                  if in_service is not None and in_service <= k <= through][:1]
         if found:
             self.held_from, self.action = min(found)
 
@@ -348,13 +354,17 @@ async def _charges(session, company_id, books: Books, through: int, start: int) 
     movements: dict[str, list[dict]] = {}
     for entity_id, state in await _entities(session, company_id, "fa_movement"):
         movements.setdefault(state.get("asset_id"), []).append({"id": entity_id, **state})
+    booked: dict[str, list[int]] = {}
+    for line in await sources.intake(session, company_id):
+        if line["kind"] == "depreciation":
+            booked.setdefault(line["account"], []).append(month_index(date.fromisoformat(line["date"])))
     out = []
     for asset_id, asset in sorted(await _entities(session, company_id, "fa_asset"), key=lambda r: r[1].get("number") or ""):
         cls = classes.get(asset.get("class_id"))
         if asset.get("status") != "active" or cls is None or asset["policy"]["method"] == "none":
             continue
         charge = Charge(asset_id, asset, cls, movements.get(asset_id, []), books, through, start)
-        await charge.hold(session, company_id, books, through)
+        await charge.hold(session, company_id, books, through, booked)
         out.append(charge)
     return out
 
@@ -586,7 +596,7 @@ async def _open_asset(session, company_id, user_id, asset_id: str, keys: tuple[s
     from celerp.services.permissions import locked_authority
 
     await locked_authority(session, company_id, user_id, keys)
-    await setup.require_started(session, company_id)
+    await setup.require_managed(session, company_id)
     row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
     if row is None or row.entity_type != "fa_asset":
         raise HTTPException(status_code=404, detail="No such asset.")
@@ -730,7 +740,9 @@ async def tick(session, company_id, today: date) -> str | None:
 
 
 async def _books_if_started(session, company_id) -> Books | None:
-    if not setup.settings_of(await setup.company_settings(session, company_id)).get("started"):
+    """The books once fixed assets is started and its first managed period confirmed."""
+    fa = setup.settings_of(await setup.company_settings(session, company_id))
+    if not fa.get("started") or not fa.get("first_managed_period"):
         return None
     return await _books(session, company_id)
 

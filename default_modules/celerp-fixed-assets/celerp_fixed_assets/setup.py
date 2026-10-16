@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from celerp.models.projections import Projection
 from celerp_fixed_assets.calc.rules import CONVENTIONS, METHODS
@@ -89,14 +89,41 @@ async def company_settings(session, company_id) -> dict:
                 or {})
 
 
-async def _first_managed_period(session, company_id) -> str:
-    """The first day of the month of the earliest posted journal, else of this month."""
-    ts = Projection.state["ts"].as_string()
-    earliest = (await session.execute(select(func.min(func.substr(ts, 1, 10))).where(
-        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
-        Projection.state["status"].as_string() == "posted"))).scalar_one_or_none()
-    day = date.fromisoformat(earliest) if earliest else date.today()
-    return day.replace(day=1).isoformat()
+async def first_period(session, company_id, fa: dict) -> dict | None:
+    """While the first managed period is unconfirmed: the period suggested and what it was
+    read from. The suggestion is the month after the latest depreciation already booked by
+    hand to an accumulated depreciation account, else the month of the earliest journal,
+    else this month. It is never applied until the user confirms it."""
+    if fa.get("first_managed_period"):
+        return None
+    from celerp.services.ledger_rows import journal_rows
+
+    accumulated = {c["accumulated_depreciation_account"] for c in await classes(session, company_id,
+                                                                                   include_archived=True)
+                   if c.get("accumulated_depreciation_account")}
+    rows = sorted(await journal_rows(session, company_id), key=lambda r: (r[2], r[0]))
+    booked = [{"account": e["account"], "date": day, "journal_id": je_id}
+              for je_id, je, day in rows if je_id.startswith("je:manual:") and day
+              for e in je.get("entries") or []
+              if e.get("account") in accumulated and Decimal(str(e.get("credit") or 0)) > 0]
+    earliest = next((day for _, _, day in rows if day), None)
+    if booked:
+        suggested = date.fromisoformat(booked[-1]["date"]) + timedelta(days=1)
+        if suggested.day != 1:
+            suggested = (suggested.replace(day=28) + timedelta(days=4)).replace(day=1)
+    else:
+        suggested = (date.fromisoformat(earliest) if earliest else date.today()).replace(day=1)
+    return {"suggested": suggested.isoformat(),
+            "evidence": {"depreciation": booked, "earliest_journal": earliest}}
+
+
+async def require_managed(session, company_id) -> dict:
+    """The settings, once fixed assets is started and its first managed period confirmed."""
+    fa = await require_started(session, company_id)
+    if not fa.get("first_managed_period"):
+        raise HTTPException(status_code=409, detail="Confirm the first managed period in the fixed asset "
+                                                    "settings first. Nothing is recorded before it is confirmed.")
+    return fa
 
 
 async def classes(session, company_id, *, include_archived: bool = False) -> list[dict]:
@@ -143,8 +170,7 @@ async def start(session, company_id, user_id) -> dict:
                 "construction": role == "assets_under_construction"}
         await _emit(session, company_id, user_id, f"fa:class:{uuid.uuid4()}", "fa.class.created", data,
                     key=f"fa:class:starter:{seq}")
-    fa.update(started=True, run_mode="prepare", convention="full_month", threshold=None,
-              first_managed_period=await _first_managed_period(session, company_id))
+    fa.update(started=True, run_mode="prepare", convention="full_month", threshold=None, first_managed_period=None)
     company.settings = {**(company.settings or {}), SETTINGS_KEY: fa}
     await session.flush()
     return view(fa)
@@ -209,6 +235,11 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
             raise unprocessable("The first managed period is a date.") from None
         if first.day != 1:
             raise unprocessable("The first managed period starts on the first day of a month.")
+        if fa.get("first_managed_period") and fa["first_managed_period"] != first.isoformat():
+            from celerp_fixed_assets import opening
+
+            await opening.move_cutover(session, company_id, user_id, fa, (first - timedelta(days=1)).isoformat())
+            fa["opening"] = None
         fa["first_managed_period"] = first.isoformat()
     company.settings = {**(company.settings or {}), SETTINGS_KEY: fa}
     await session.flush()

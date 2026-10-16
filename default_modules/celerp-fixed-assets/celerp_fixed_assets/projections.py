@@ -42,7 +42,7 @@ def _moved(state: dict, data: dict) -> dict:
 def apply_fixed_asset_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state or {})
     if event_type in ("fa.class.created", "fa.movement.recorded", "fa.maint.recorded", "fa.op.recorded", "fa.review.recorded",
-                      "fa.run.prepared", "fa.run.posted"):
+                      "fa.run.prepared", "fa.run.posted", "fa.recon.recorded"):
         return deepcopy(data)
     if event_type == "fa.correction.requested":
         return {**deepcopy(data), "state": "requested"}
