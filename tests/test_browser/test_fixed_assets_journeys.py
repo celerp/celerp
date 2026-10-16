@@ -785,3 +785,52 @@ def test_j19_reminder_due_is_told_once_postponed_with_a_reason_and_kept_in_histo
     page.goto("/fixed-assets/reminders")
     expect(page.locator("main")).not_to_contain_text("Oil change")
     expect(page.locator("main")).to_contain_text("Dealer")
+
+
+def test_j20_prior_year_cost_error_requested_by_an_operator_is_applied_by_a_manager(page: Page, fresh_company,
+                                                                                    api_server):
+    c = fresh_company
+    _started(c, first="2025-01-01")
+    car = _contributed(c, "Owner's car", on="2025-06-15")
+    number = _ok(c.get(f"{API}/assets/{car}"))["number"]
+    _run(c, "2025-12")
+    owner = page.context.cookies()
+
+    _as_member(page, c, api_server, "operator")
+    page.goto(f"/fixed-assets/assets/{car}")
+    page.get_by_role("link", name="Correct", exact=True).click()
+    page.get_by_role("link", name="Cost", exact=True).click()
+    page.wait_for_url("**field=cost**")
+    page.locator("input[name=cost]").fill("15000")
+    page.locator("input[name=reason]").fill("The invoice was 15,000")
+    with page.expect_navigation(url="**/fixed-assets/corrections/**"):
+        page.get_by_role("button", name="Request", exact=True).click()
+    main = page.locator("main")
+    expect(main).to_contain_text("Requested")
+    expect(page.locator("#fa-correction-need")).to_contain_text("Needs Manage accounting")
+    assert D(_ok(c.get(f"{API}/assets/{car}"))["cost"]) == D(12000)
+
+    page.context.clear_cookies()
+    page.context.add_cookies(owner)
+    page.goto("/fixed-assets")
+    page.click(".notif-bell-btn")
+    page.locator("#notif-panel .notif-item", has_text="Corrections waiting").first.locator("a").first.click()
+    page.wait_for_url("**/fixed-assets/corrections")
+    page.locator("#fa-corrections tbody tr", has_text=number).get_by_role("link").last.click()
+    page.wait_for_url("**/fixed-assets/corrections/**")
+    preview = page.locator("#fa-preview")
+    page.get_by_role("button", name="Review", exact=True).click()
+    expect(preview).to_contain_text("2025")
+    with page.expect_navigation():
+        preview.get_by_role("button", name="Confirm").click()
+    expect(main).to_contain_text("Applied")
+    assert D(_ok(c.get(f"{API}/assets/{car}"))["cost"]) == D(15000)
+
+    page.goto("/fixed-assets/corrections")
+    page.get_by_role("link", name="Prior-period adjustments").click()
+    page.wait_for_url("**/prior-period-adjustments**")
+    page.locator("input[name=year]").fill("2025")
+    with page.expect_navigation(url="**year=2025**"):
+        page.get_by_role("button", name="Show", exact=True).click()
+    expect(main).to_contain_text(number)
+    expect(main).to_contain_text("2025")

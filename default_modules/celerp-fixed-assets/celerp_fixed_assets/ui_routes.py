@@ -2957,6 +2957,8 @@ def setup_ui_routes(app) -> None:
         hidden = Input(type="hidden", name="correction_id", value=correction_id)
         if state == "requested":
             parts.append(Div(H2(t("fixed_assets.apply_correction"), cls="section-title"),
+                             P(Strong(t("fixed_assets.permission.manage_accounting")), cls="settings-hint",
+                               id="fa-correction-need"),
                              _op_form("apply-correction", hidden,
                                       P(t("fixed_assets.apply_correction_hint"), cls="settings-hint"),
                                       _field(t("fixed_assets.posting_date"), _input("posting_date", type_="date"),
