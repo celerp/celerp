@@ -921,6 +921,25 @@ async def test_send_form_prefills_the_last_firm(ui, real_engine, monkeypatch):
     assert 'id="copy-send-form"' in page and field(page, "firm_name") == ""
 
 
+async def test_send_form_says_what_celerp_keeps(ui, real_engine, monkeypatch):
+    """Before sending, the form states that Celerp holds only the encrypted file and
+    passes the link, which holds the key, by email without keeping it."""
+    from ui.routes.company_backup import SEND
+    from ui import api_client as api
+
+    _, _, tok = await _setup(real_engine)
+    ui.cookies.set("celerp_token", tok)
+
+    async def last(token):
+        return {}
+    monkeypatch.setattr(api, "company_backup_sender", last)
+    page = _page(await ui.get(SEND))
+    form = page.split('id="copy-send-form"', 1)[1].split("</form>", 1)[0]
+    assert ("Celerp encrypts this copy on your computer and keeps only the encrypted file, until the "
+            "link expires or you revoke it. The key that opens it is in the link, which Celerp passes "
+            "to the recipient by email in transit and does not keep.") in form
+
+
 async def test_copy_send_resumes_the_same_form_after_sign_in():
     from fasthtml.common import to_xml
     from ui.routes import account
