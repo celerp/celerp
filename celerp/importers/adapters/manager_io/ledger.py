@@ -176,7 +176,8 @@ def _settlement_postings(book: Book, s: Settlement) -> list[Posting]:
     return out + other
 
 
-def _postings(book: Book, keys: set[str]) -> list[Posting]:
+def record_postings(book: Book, keys: set[str]) -> list[Posting]:
+    """The postings of the given dated records, in date order."""
     out: list[Posting] = []
     for key in sorted(keys, key=lambda k: _record_date(book, k)):
         if key in book.documents:
@@ -344,7 +345,7 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
     _install_starting(book, cutover)
     records = {k for _, k in book.dated_records()}
     ledger = Ledger(book, cutover)
-    ledger.postings = _postings(book, records)
+    ledger.postings = record_postings(book, records)
     ledger.states = _states(book, records)
 
     documents = sorted((k for k in records if k in book.documents), key=lambda k: _record_date(book, k))

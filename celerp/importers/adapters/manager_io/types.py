@@ -93,6 +93,26 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("BalanceSheetIntangibleAssetsAtCostAccount", "31d369e3-32c7-4bd2-bb83-9c1c58010c1a", _M),
     ("BalanceSheetInvestmentsAccount", "352897d1-e7fe-462e-9965-458ed9e27b82", _M),
     ("BalanceSheetSpecialAccountsAccount", "ef49facb-203b-4b45-aebd-99af4645700b", _M),
+    ("DepreciationEntry", "75cdc055-6dec-4381-bc40-b670366e6abc", _M),
+    ("AmortizationEntry", "d33519a3-e8e0-4556-9833-b744a58dd2f7", _M),
+    ("Payslip", "1d103fa7-6fc1-4951-811e-972968b842cc", _M),
+    ("PayslipContributionItem", "73af4c68-c347-4088-8846-758f1e7bc5bb", _M),
+    ("PayslipDeductionItem", "0444eb18-6fc5-4d1f-be8b-c114da01832c", _M),
+    ("PayslipEarningsItem", "ab02f6ab-c91c-4fc2-b979-66a6682c200e", _M),
+    ("ExpenseClaim", "02572e0c-0167-4dbd-a392-08d8f67f3fe4", _M),
+    ("WithholdingTaxReceipt", "8f7510d9-a92d-4b4c-9421-fd745e198b3c", _M),
+    ("BillableTime", "6bfb652c-11cb-46fa-9e5a-c5950ccbae15", _M),
+    ("InvestmentMarketPrice", "32b97957-5cc5-48f0-b104-89ae340695d4", _M),
+    ("BalanceSheetBillableTimeAccount", "9f3c0a1a-dd0b-4b5c-ba50-3e4939a0e90c", _M),
+    ("BalanceSheetWithholdingTaxAccount", "8f75a810-abd0-4d89-a6a2-66c9003a60e2", _M),
+    ("ProfitAndLossStatementAccountBillableTimeMovement", "03d41bd1-8dd4-4ce3-9b82-5ce17a40171a", _M),
+    ("ProfitAndLossStatementAccountFixedAssetDepreciation", "fb6fdbfd-b39f-4674-8928-10c2bdd87e58", _M),
+    ("ProfitAndLossStatementAccountFixedAssetLossOnDisposal", "428ea9ba-4679-4568-b05b-7fcf62504893", _M),
+    ("ProfitAndLossStatementAccountIntangibleAssetsAmortization", "83d56444-fed8-4de8-8e58-e325a370ae44", _M),
+    ("ProfitAndLossStatementAccountIntangibleAssetsGainsLossOnDisposal", "43e14984-202e-4e9e-b843-d417dddcd3d2", _M),
+    ("ProfitAndLossStatementAccountLatePaymentFees", "841b2acb-8bb5-4742-864e-4226fa421f44", _M),
+    ("ProfitAndLossStatementCapitalGainsOnInvestments", "de8d014f-e862-4ab5-88cc-335d464315a6", _M),
+    ("LatePaymentFee", "4dada073-022f-464e-bdb3-ff38c83e577f", _M),
     # mapped_with_loss
     ("ControlAccountForCustomers", "7a57978e-583d-4997-86c7-c557de0e7fdd", _L),
     ("ControlAccountForSuppliers", "78e7aefb-9dff-4ae5-981e-4165b14fd963", _L),
@@ -112,26 +132,15 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     # unsupported_financial_blocker
     ("CustomInventoryLocation", "fae8151d-252e-45e3-b1f4-e048075b8983", _B),
     ("InventoryTransfer", "7eaafddc-54c9-4235-98d2-e8a1ee438150", _B),
-    ("AmortizationEntry", "d33519a3-e8e0-4556-9833-b744a58dd2f7", _B),
-    ("BillableTime", "6bfb652c-11cb-46fa-9e5a-c5950ccbae15", _B),
-    ("DepreciationEntry", "75cdc055-6dec-4381-bc40-b670366e6abc", _B),
-    ("ExpenseClaim", "02572e0c-0167-4dbd-a392-08d8f67f3fe4", _B),
     ("InventoryAutomaticRevaluation", "ffbec913-dcc6-420b-b591-a27822f60648", _B),
     ("InventoryWriteOff", "d7ff6694-f1ef-419f-8ae2-55527a02e95f", _B),
-    ("InvestmentMarketPrice", "32b97957-5cc5-48f0-b104-89ae340695d4", _B),
-    ("LatePaymentFee", "4dada073-022f-464e-bdb3-ff38c83e577f", _B),
-    ("Payslip", "1d103fa7-6fc1-4951-811e-972968b842cc", _B),
     ("ProductionOrder", "da996523-e77e-493c-b134-31c6c6ccae4a", _B),
-    ("WithholdingTaxReceipt", "8f7510d9-a92d-4b4c-9421-fd745e198b3c", _B),
     # unsupported_nonfinancial
     ("Division", "cc7fc110-e3e4-4b3b-823d-86c4a4cdabbc", _N),
     ("ExchangeRate", "14240c19-3d08-4fe6-94bb-6dd17c4bcda6", _L),
     ("Forecast", "821030a6-9820-4cba-8879-eda07853b9a6", _N),
     ("InventoryKit", "efc4f2cc-acf0-4815-a9a8-13bae00c6167", _N),
     ("NonInventoryItem", "7affe9ee-731f-4936-8acf-15cae7bcacee", _N),
-    ("PayslipContributionItem", "73af4c68-c347-4088-8846-758f1e7bc5bb", _N),
-    ("PayslipDeductionItem", "0444eb18-6fc5-4d1f-be8b-c114da01832c", _N),
-    ("PayslipEarningsItem", "ab02f6ab-c91c-4fc2-b979-66a6682c200e", _N),
     ("Project", "5170f738-cfba-42e3-bb8e-a7d5c5ab66f2", _N),
     ("RecurringInterAccountTransfer", "10ac4ab8-df74-4faf-b7fc-eb343556fb1b", _N),
     ("RecurringJournalEntry", "b4c1b390-351e-4579-b43b-412b920cddaf", _N),
@@ -151,7 +160,6 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("AmortizationCalculationWorksheet", "011cf167-ff32-49e7-b0f3-ac12a3fe43ed", _I),
     ("BalanceSheet", "7b4f463a-470d-44c4-9e75-fafc630b5851", _I),
     ("BalanceSheetBillableExpensesAccount", "059dbfb9-1c80-4043-887f-0fc441099fe0", _I),
-    ("BalanceSheetBillableTimeAccount", "9f3c0a1a-dd0b-4b5c-ba50-3e4939a0e90c", _I),
     ("BalanceSheetByGroup", "76a0fefe-49d9-4060-9bfb-0a8a9e04aa51", _I),
     ("BalanceSheetCashAtBankAccount", "6d4af96a-0959-4bb2-9160-fa825ec67c43", _I),
     ("BalanceSheetInterAccountTransfers", "b300e679-cf46-4c99-bef0-cfa5cb3e0271", _I),
@@ -159,7 +167,6 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("BalanceSheetNegativeInventoryClearing", "dd43296a-c233-4be8-93e4-fb3c2b8138f5", _I),
     ("BalanceSheetProductionInProgressAccount", "30a1b83c-68a8-4f2c-ae70-25b0acc2d12a", _I),
     ("BalanceSheetSuspenseAccount", "11211c9e-0988-4d16-8bf2-fa39487123aa", _I),
-    ("BalanceSheetWithholdingTaxAccount", "8f75a810-abd0-4d89-a6a2-66c9003a60e2", _I),
     ("BalanceSheetWithholdingTaxPayableAccount", "a4dffac2-35d1-47e1-a4bd-b6de15975fdb", _I),
     ("BalanceSheetWithholdingTaxReceivableAccount", "c66de1bf-6f63-4bc8-9452-0b019e41c47f", _I),
     ("BankAccountSummary", "77afd97c-51d7-484b-8192-b7eb006daadb", _I),
@@ -244,17 +251,10 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("ProfitAndLossStatementAccountBillableExpensesCost", "234d263d-cf0e-4e3e-85ca-ef899016e58a", _I),
     ("ProfitAndLossStatementAccountBillableExpensesInvoiced", "1ae41f36-c83a-428c-be23-a99714110807", _I),
     ("ProfitAndLossStatementAccountBillableTimeInvoiced", "8d86390b-b90f-4cf6-862b-9b4050449b91", _I),
-    ("ProfitAndLossStatementAccountBillableTimeMovement", "03d41bd1-8dd4-4ce3-9b82-5ce17a40171a", _I),
-    ("ProfitAndLossStatementAccountFixedAssetDepreciation", "fb6fdbfd-b39f-4674-8928-10c2bdd87e58", _I),
-    ("ProfitAndLossStatementAccountFixedAssetLossOnDisposal", "428ea9ba-4679-4568-b05b-7fcf62504893", _I),
-    ("ProfitAndLossStatementAccountIntangibleAssetsAmortization", "83d56444-fed8-4de8-8e58-e325a370ae44", _I),
-    ("ProfitAndLossStatementAccountIntangibleAssetsGainsLossOnDisposal", "43e14984-202e-4e9e-b843-d417dddcd3d2", _I),
     ("ProfitAndLossStatementAccountInventoryWriteOffs", "eff068c3-5cc6-4746-b73b-850d30534cbb", _I),
-    ("ProfitAndLossStatementAccountLatePaymentFees", "841b2acb-8bb5-4742-864e-4226fa421f44", _I),
     ("ProfitAndLossStatementAccountRoundingExpense", "2aa99eac-faca-4017-a157-edbbbcb160ac", _I),
     ("ProfitAndLossStatementActualVsBudget", "25c7aa0e-536c-42be-a75c-1b5ac71e955a", _I),
     ("ProfitAndLossStatementByGroup", "41ec3bd5-c95a-49e5-973b-ee26509a6a8c", _I),
-    ("ProfitAndLossStatementCapitalGainsOnInvestments", "de8d014f-e862-4ab5-88cc-335d464315a6", _I),
     ("ProfitAndLossStatementTotal", "00250863-18d4-42ca-9e1b-adef10965570", _I),
     ("PurchaseInvoiceFooter", "06205221-f856-402f-8df9-104942cf579a", _I),
     ("PurchaseOrderFooter", "38104c9e-7805-47de-935e-f6b660a470de", _I),
@@ -508,6 +508,9 @@ TARGETS: dict[str, str] = {
        if coverage == _M and name.startswith("BalanceSheet") and name.endswith("Account")},
     **{name: "journal" for name, _, _ in _ROWS if name.endswith("StartingBalance")},
     "InventoryItemStartingBalance": "inventory_adjustment",
+    **{name: "account" for name, _, coverage in _ROWS if coverage == _M and name.startswith("ProfitAndLossStatement")},
+    **{name: "journal" for name in ("DepreciationEntry", "AmortizationEntry", "Payslip", "ExpenseClaim",
+                                    "LatePaymentFee", "WithholdingTaxReceipt", "BillableTime")},
 }
 NOTES: dict[str, str] = {
     "ExchangeRate": ("Used to convert the records that store no rate of their own; Celerp keeps each record's "
@@ -538,11 +541,27 @@ NOTES: dict[str, str] = {
                  "Celerp has no payroll."),
     "ExpenseClaimsPayer": "Carried as an account under the expense claims account.",
     "FixedAsset": ("Carried as a cost account and an accumulated depreciation account under their control "
-                   "accounts. The description, depreciation rate and custom depreciation accounts are not carried."),
+                   "accounts. A disposal posts as a journal on its disposal date, clearing both accounts against "
+                   "the loss on disposal account. The description and depreciation rate are not carried."),
     "IntangibleAsset": ("Carried as a cost account and an accumulated amortization account under their control "
-                        "accounts. The description, amortization rate and custom amortization accounts are not "
-                        "carried."),
-    "Investment": "Carried as an account under its control account.",
+                        "accounts. A disposal posts as a journal on its disposal date, clearing both accounts "
+                        "against the gain or loss on disposal account. The description and amortization rate are "
+                        "not carried."),
+    "Investment": ("Carried as an account under its control account. Each market price posts a journal that "
+                   "brings the account to its market value, against investment gains and losses."),
+    "InvestmentMarketPrice": "Posted as the journal that brings the investment to its market value; not carried itself.",
+    "DepreciationEntry": "Posted as a journal from each asset's depreciation account to its accumulated depreciation.",
+    "AmortizationEntry": "Posted as a journal from each asset's amortization account to its accumulated amortization.",
+    "Payslip": ("Posted as a journal: earnings and employer contributions to their accounts, deductions and "
+                "contributions to the accounts they are owed on, and the net pay to the employee. Celerp has no "
+                "payroll."),
+    **{name: "Sets the accounts each payslip line posts to; the item itself is not carried."
+       for name in ("PayslipEarningsItem", "PayslipDeductionItem", "PayslipContributionItem")},
+    "ExpenseClaim": "Posted as a journal from each line's account to the payer's expense claims account.",
+    "LatePaymentFee": "Posted as a journal charging the customer, against the late payment fees account.",
+    "WithholdingTaxReceipt": "Posted as a journal from the customer's balance to the withholding tax account.",
+    "BillableTime": ("Posted as a journal to billable time when the work is done, reversed when it is invoiced or "
+                     "written off."),
     "ControlAccountForCustomers": ("Customers under it are carried on the receivable account, with their balances; "
                                    "the separate control account is not carried."),
     "ControlAccountForSuppliers": ("Suppliers under it are carried on the payable account, with their balances; "

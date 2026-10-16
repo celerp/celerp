@@ -80,6 +80,28 @@ HOLDER_BUILTINS: dict[str, tuple[str, str]] = {
     IA_ACCUM: ("asset", "Intangible assets - accumulated amortization"),
     INVESTMENTS: ("asset", "Investments"),
 }
+# Built-in accounts Manager adds once a record type that posts to them is used: (account type,
+# name used when the file has no object for it).
+BILLABLE_TIME = GUIDS["BalanceSheetBillableTimeAccount"]
+BILLABLE_TIME_MOVEMENT = GUIDS["ProfitAndLossStatementAccountBillableTimeMovement"]
+WITHHOLDING_TAX = GUIDS["BalanceSheetWithholdingTaxAccount"]
+LATE_FEES = GUIDS["ProfitAndLossStatementAccountLatePaymentFees"]
+INVESTMENT_GAINS = GUIDS["ProfitAndLossStatementCapitalGainsOnInvestments"]
+FA_DEPRECIATION = GUIDS["ProfitAndLossStatementAccountFixedAssetDepreciation"]
+FA_DISPOSAL = GUIDS["ProfitAndLossStatementAccountFixedAssetLossOnDisposal"]
+IA_AMORTIZATION = GUIDS["ProfitAndLossStatementAccountIntangibleAssetsAmortization"]
+IA_DISPOSAL = GUIDS["ProfitAndLossStatementAccountIntangibleAssetsGainsLossOnDisposal"]
+ACTIVITY_BUILTINS: dict[str, tuple[str, str]] = {
+    BILLABLE_TIME: ("asset", "Billable time"),
+    WITHHOLDING_TAX: ("asset", "Withholding tax"),
+    BILLABLE_TIME_MOVEMENT: ("revenue", "Billable time - movement"),
+    LATE_FEES: ("revenue", "Late payment fees"),
+    INVESTMENT_GAINS: ("revenue", "Investment gains (losses)"),
+    FA_DEPRECIATION: ("expense", "Fixed assets - depreciation"),
+    FA_DISPOSAL: ("expense", "Fixed assets - loss on disposal"),
+    IA_AMORTIZATION: ("expense", "Intangible assets - amortization"),
+    IA_DISPOSAL: ("expense", "Intangible assets - gain (loss) on disposal"),
+}
 # Custom control accounts, each reported in place of the built-in one of its kind.
 CONTROL_KINDS = {
     "ControlAccountForBankAccounts": CASH_AT_BANK, "ControlAccountForCapitalAccounts": CAPITAL,
@@ -99,6 +121,12 @@ CONTROL_NOTE = ("A custom control account for customers or suppliers is not carr
                 "balance on accounts receivable and every supplier balance on accounts payable.")
 # The key of the one journal starting balances post as.
 STARTING = "starting-balances"
+
+
+def source_key(key: str) -> str:
+    """The object a record or account comes from. A second journal of a record, and a second
+    account of a holder, is keyed by the object's key and a suffix after a colon."""
+    return key.split(":")[0]
 
 DOC_TYPES = {
     "SalesInvoice": "invoice", "CreditNote": "credit_note", "PurchaseInvoice": "bill", "DebitNote": "debit_note",
@@ -394,6 +422,22 @@ class Journal:
 
 
 @dataclass
+class Asset:
+    """A fixed or intangible asset's posting terms."""
+    expense: str                               # the account depreciation or amortization posts to
+    disposal_account: str                      # the account the gain or loss on disposal posts to
+    disposed: date | None = None               # the disposal date, for an asset marked disposed
+
+
+@dataclass
+class MarketPrice:
+    key: str
+    date: date
+    investment: str
+    price: Decimal
+
+
+@dataclass
 class Rate:
     """One row of Manager's exchange rate table: base units per foreign unit from a date."""
     key: str
@@ -450,6 +494,10 @@ class Book:
     merged_controls: dict[str, str] = field(default_factory=dict)  # control key -> type, for those not carried
     controls: set[str] = field(default_factory=set)              # accounts that only report those under them
     starting: dict[str, StartingBalance] = field(default_factory=dict)
+    assets: dict[str, Asset] = field(default_factory=dict)
+    prices: dict[str, MarketPrice] = field(default_factory=dict)
+    payslip_items: dict[str, tuple[str, tuple[str | None, ...]]] = field(default_factory=dict)  # (type, accounts)
+    activity: dict[str, Message] = field(default_factory=dict)  # records posted as journals once all are read
     starting_date: date | None = None                            # the day before the first dated record
     names: dict[str, str] = field(default_factory=dict)          # object key -> Manager type name
     verdicts: dict[str, Verdict] = field(default_factory=dict)
@@ -791,6 +839,135 @@ def _journal(key: str, m: Message) -> Journal:
     return Journal(key, _require_date(m, 1), m.str(2), m.str(3), _ref(m.guid(8)), lines)
 
 
+# Records Manager posts through its holders and built-in accounts, each carried as a journal of
+# its own. They name other records, so each is built once every object is read.
+ACTIVITY = frozenset({"DepreciationEntry", "AmortizationEntry", "Payslip", "ExpenseClaim", "LatePaymentFee",
+                      "WithholdingTaxReceipt", "BillableTime"})
+# The asset type each write-off record writes off.
+WRITE_OFFS = {"DepreciationEntry": "FixedAsset", "AmortizationEntry": "IntangibleAsset"}
+# Payslip items and the fields naming the accounts each posts to.
+PAYSLIP_ITEMS = {"PayslipEarningsItem": (3,), "PayslipDeductionItem": (3,), "PayslipContributionItem": (3, 4)}
+
+
+def _posting(account: str | None, amount: Decimal, contact: str | None = None,
+             description: str | None = None) -> JournalLine:
+    """A journal line from a debit positive amount."""
+    return JournalLine(account, contact, max(amount, Decimal(0)), max(-amount, Decimal(0)), description)
+
+
+def _named(book: Book, key: str | None, type_name: str, what: str) -> str:
+    """The account under a control account a record names, which must be of the given type."""
+    account = book.accounts.get(key) if key else None
+    _check(account is not None and account.source_type == type_name and not book.is_blocked(key), what)
+    return key
+
+
+def _customer(book: Book, key: str | None) -> str:
+    contact = book.contacts.get(key) if key else None
+    _check(contact is not None and contact.source_type == "Customer", "a customer")
+    return key
+
+
+def _payslip_item(book: Book, key: str | None, type_name: str) -> tuple[str, ...]:
+    item = book.payslip_items.get(str(key)) if key else None
+    _check(item is not None and item[0] == type_name and not book.is_blocked(str(key)), "a payslip item")
+    if None in item[1]:
+        raise Blocked("unknown reference", "A payslip item names no account to post to.")
+    return item[1]
+
+
+def _activity_journals(book: Book, name: str, key: str, m: Message) -> list[Journal]:
+    """The journals an activity record posts, in the base currency. Billable time posts a second
+    one, reversing it, when it is invoiced or written off."""
+    code = book.base_code or ""
+    if name in WRITE_OFFS:
+        asset_type = WRITE_OFFS[name]
+        lines = []
+        for raw in m.messages(3):
+            asset = _named(book, _ref(raw.guid(1)), asset_type, "an asset")
+            amount = _money(raw.decimal(2))
+            lines += [_posting(book.assets[asset].expense, amount),
+                      _posting(asset + WRITTEN_OFF[asset_type][0], -amount)]
+        return [Journal(key, _require_date(m, 1), m.str(4), m.str(2), None, lines)]
+    if name == "Payslip":
+        employee = _named(book, _ref(m.guid(2)), "Employee", "an employee")
+        lines, net = [], Decimal(0)
+        for raw in m.messages(3):
+            (account,) = _payslip_item(book, raw.guid(4), "PayslipEarningsItem")
+            units = raw.decimal(7) if raw.values(7) else Decimal(1)
+            amount = round_money(_money(raw.decimal(3)) * units, code)
+            lines.append(_posting(account, amount, description=raw.str(6)))
+            net += amount
+        for raw in m.messages(4):
+            (account,) = _payslip_item(book, raw.guid(3), "PayslipDeductionItem")
+            amount = _money(raw.decimal(2))
+            lines.append(_posting(account, -amount, description=raw.str(4)))
+            net -= amount
+        for raw in m.messages(5):
+            expense, liability = _payslip_item(book, raw.guid(3), "PayslipContributionItem")
+            amount = _money(raw.decimal(2))
+            lines += [_posting(expense, amount, description=raw.str(5)),
+                      _posting(liability, -amount, description=raw.str(5))]
+        lines.append(_posting(employee, -net))
+        return [Journal(key, _require_date(m, 1), m.str(12), m.str(11), None, lines)]
+    if name == "ExpenseClaim":
+        payer = _named(book, _ref(m.guid(9)), "ExpenseClaimsPayer", "an expense claims payer")
+        lines = [_posting(_ref(raw.guid(2)), round_money((raw.decimal(18) if raw.values(18) else Decimal(1))
+                                                         * _money(raw.decimal(19)), code), description=raw.str(17))
+                 for raw in m.messages(18)]
+        lines.append(_posting(payer, -sum((ln.debit - ln.credit for ln in lines), Decimal(0))))
+        return [Journal(key, _require_date(m, 1), m.str(5), m.str(3), None, lines)]
+    if name == "LatePaymentFee":
+        amount = _money(m.decimal(4))
+        lines = [_posting(AR, amount, _customer(book, _ref(m.guid(2)))), _posting(LATE_FEES, -amount)]
+        return [Journal(key, _require_date(m, 1), None, None, None, lines)]
+    if name == "WithholdingTaxReceipt":
+        amount, description = _money(m.decimal(3)), m.str(4)
+        lines = [_posting(WITHHOLDING_TAX, amount, description=description),
+                 _posting(AR, -amount, _customer(book, _ref(m.guid(1))))]
+        return [Journal(key, _require_date(m, 2), None, description, None, lines)]
+    # BillableTime: the hours at the hourly rate, held until invoiced (status 1) or written off (2).
+    amount = round_money(_money(m.decimal(8)) * (Decimal(m.int(6, 0)) + Decimal(m.int(7, 0)) / 60), code)
+    description, status = m.str(3), m.int(14, 0)
+
+    def held(sign: int) -> list[JournalLine]:
+        return [_posting(BILLABLE_TIME, sign * amount), _posting(BILLABLE_TIME_MOVEMENT, -sign * amount)]
+
+    out = [Journal(key, _require_date(m, 1), None, description, None, held(1))]
+    if status == 1:
+        invoice = book.documents.get(_ref(m.guid(13)) or "")
+        _check(invoice is not None and invoice.source_type == "SalesInvoice", "the invoice it is billed on")
+        out.append(Journal(f"{key}:reversal", invoice.date, None, description, None, held(-1)))
+    elif status == 2:
+        out.append(Journal(f"{key}:reversal", _require_date(m, 15), None, description, None, held(-1)))
+    elif status:
+        raise Blocked("unsupported feature", "A billable time status Celerp does not recognise.")
+    return out
+
+
+def _activity(book: Book) -> None:
+    """Build every activity record's journals, adding the built-in accounts they post to."""
+    for key, m in book.activity.items():
+        name = book.names[key]
+        try:
+            journals = _activity_journals(book, name, key, m)
+        except Blocked as blocked:
+            book.block(name, key, blocked.reason, blocked.note)
+            continue
+        for journal in journals:
+            journal.lines = [ln for ln in journal.lines if ln.debit or ln.credit]
+            for line in journal.lines:
+                _add_builtin(book, line.account)
+            book.journals[journal.key] = journal
+            book.names[journal.key] = name
+
+
+def _add_builtin(book: Book, key: str | None) -> None:
+    if key in ACTIVITY_BUILTINS and key not in book.accounts:
+        account_type, label = ACTIVITY_BUILTINS[key]
+        book.accounts[key] = Account(key, TYPE_NAMES[key], label, account_type=account_type)
+
+
 def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
     """Store one decoded object. Raises Blocked or DecodeError for this object alone."""
     if name == "BusinessDetails":
@@ -829,6 +1006,10 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
     elif key in BUILTINS or key in INVENTORY_BUILTINS:
         account_type, control, label = BUILTINS.get(key) or INVENTORY_BUILTINS[key]
         book.accounts[key] = Account(key, name, m.str(1) or label, None, None, account_type, control)
+    elif key in ACTIVITY_BUILTINS:
+        account_type, label = ACTIVITY_BUILTINS[key]
+        code = m.str(12) if name.startswith("BalanceSheet") else None
+        book.accounts[key] = Account(key, name, m.str(1) or label, code, None, account_type)
     elif key in HOLDER_BUILTINS:
         account_type, label = HOLDER_BUILTINS[key]
         code = m.str(2) if key == INVESTMENTS else m.str(12)
@@ -891,6 +1072,15 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
         book.transfers[key] = Transfer(key, _require_date(m, 1), m.str(6), m.str(5), source, dest, credit, debit)
     elif name == "JournalEntry":
         book.journals[key] = _journal(key, m)
+    elif name in ACTIVITY:
+        book.activity[key] = m
+    elif name in PAYSLIP_ITEMS:
+        book.payslip_items[key] = (name, tuple(_ref(m.guid(n)) for n in PAYSLIP_ITEMS[name]))
+    elif name == "InvestmentMarketPrice":
+        investment, price = _ref(m.guid(2)), m.decimal(6)
+        if investment is None or price is None:
+            raise Blocked("unknown reference", "The market price names no investment or price.")
+        book.prices[key] = MarketPrice(key, _require_date(m, 1), investment, price)
     elif name == "Attachment":
         book.attachments[key] = AttachmentRef(key, m.str(2) or "", m.int(4, 0), _ref(m.guid(6)), m.bytes(12))
     elif name == "LockDate":
@@ -932,15 +1122,23 @@ def _lock_date(book: Book, key: str, m: Message) -> None:
 
 # Accounts Manager keeps a balance for under a control account, per type: (field naming a
 # custom control account, the built-in one otherwise, code field, currency field, inactive
-# field, fields that dispose of it). Each becomes an account under its control account.
-HOLDERS: dict[str, tuple[int | None, str, int | None, int | None, int | None, tuple[int, ...]]] = {
-    "CapitalAccount": (10, CAPITAL, 11, None, 8, ()),
-    "SpecialAccount": (7, SPECIAL, 11, 5, 10, ()),
-    "Employee": (15, EMPLOYEES, 14, 7, 9, ()),
-    "ExpenseClaimsPayer": (None, EXPENSE_CLAIMS, None, None, 6, ()),
-    "FixedAsset": (14, FA_AT_COST, 10, None, None, (6,)),
-    "IntangibleAsset": (12, IA_AT_COST, 10, None, None, (6,)),
-    "Investment": (7, INVESTMENTS, 1, None, 3, ()),
+# field). Each becomes an account under its control account.
+HOLDERS: dict[str, tuple[int | None, str, int | None, int | None, int | None]] = {
+    "CapitalAccount": (10, CAPITAL, 11, None, 8),
+    "SpecialAccount": (7, SPECIAL, 11, 5, 10),
+    "Employee": (15, EMPLOYEES, 14, 7, 9),
+    "ExpenseClaimsPayer": (None, EXPENSE_CLAIMS, None, None, 6),
+    "FixedAsset": (14, FA_AT_COST, 10, None, None),
+    "IntangibleAsset": (12, IA_AT_COST, 10, None, None),
+    "Investment": (7, INVESTMENTS, 1, None, 3),
+}
+# A fixed or intangible asset's posting terms: (field marking a custom depreciation or
+# amortization account, the built-in one otherwise, field naming a custom disposal account,
+# the built-in one otherwise). The custom account itself is in the field after its flag. Field
+# 6 marks the asset disposed of and field 7 holds the disposal date.
+ASSET_TERMS = {
+    "FixedAsset": (20, FA_DEPRECIATION, 19, FA_DISPOSAL),
+    "IntangibleAsset": (18, IA_AMORTIZATION, 17, IA_DISPOSAL),
 }
 # A fixed or intangible asset's second account, for what has been written off it: (key
 # suffix, name suffix, field naming a custom control account, the built-in one otherwise).
@@ -951,10 +1149,12 @@ WRITTEN_OFF = {
 
 
 def _decode_holder(book: Book, name: str, key: str, m: Message) -> None:
-    parent_at, builtin, code_at, currency_at, inactive_at, disposal = HOLDERS[name]
-    if any(m.bool(n) for n in disposal):
-        raise Blocked("unsupported feature", "The asset is disposed of. Celerp does not rebuild the gain or loss "
-                                             "on disposal yet.")
+    parent_at, builtin, code_at, currency_at, inactive_at = HOLDERS[name]
+    if name in ASSET_TERMS:
+        flag_at, expense, disposal_at, disposal = ASSET_TERMS[name]
+        book.assets[key] = Asset((_ref(m.guid(flag_at + 1)) if m.bool(flag_at) else None) or expense,
+                                 _ref(m.guid(disposal_at)) or disposal,
+                                 _require_date(m, 7) if m.bool(6) else None)
     if name == "SpecialAccount" and m.values(6):
         raise Blocked("unsupported feature", "A special account with a tax code, which Celerp cannot reproduce yet.")
     label = m.str(2) if name == "Investment" else m.str(1)
@@ -994,6 +1194,9 @@ def _starting_balance(name: str, key: str, m: Message) -> StartingBalance:
         return StartingBalance(key, name, target, (-amount if m.int(2, 0) == 1 else amount,))
     if STARTING_TYPES[name] in WRITTEN_OFF:
         return StartingBalance(key, name, target, (_money(m.decimal(2)), -_money(m.decimal(3))))
+    if name == "InvestmentStartingBalance":                         # units and the price paid for each
+        units = _money(m.decimal(2))
+        return StartingBalance(key, name, target, (units * _money(m.decimal(3)),), units)
     if name != "InventoryItemStartingBalance":
         return StartingBalance(key, name, target, (_money(m.decimal(2)),))
     _unsupported(m, (4, 5, 6, 7), "a starting stock value other than an average cost")
@@ -1358,6 +1561,8 @@ def _resolve_starting(book: Book, sb: StartingBalance) -> None:
            "the account it is the starting balance of")
     if book.is_foreign(account.currency):
         raise Blocked("foreign currency starting balance", FOREIGN_START_NOTE)
+    if want == "Investment":
+        sb.amounts = (round_money(sb.amounts[0], book.base_code or ""),)
     keys = [sb.target, *(sb.target + WRITTEN_OFF[want][0] for _ in sb.amounts[1:])]
     sb.lines = [(key, amount, None) for key, amount in zip(keys, sb.amounts) if amount]
 
@@ -1374,7 +1579,7 @@ def _resolve(book: Book) -> None:
             try:
                 _parent_check(book, account)
             except Blocked as blocked:
-                book.block(account.source_type, account.key.split(":")[0], blocked.reason, blocked.note)
+                book.block(account.source_type, source_key(account.key), blocked.reason, blocked.note)
                 continue
         if account.account_type is None:
             account.account_type = _account_type(book, account)
@@ -1400,6 +1605,7 @@ def _resolve(book: Book) -> None:
         if rate.currency not in book.currencies:
             book.block("ExchangeRate", rate.key, "unknown reference", "Refers to a currency not in the file.")
 
+    _activity(book)
     steps: list[tuple[dict, Callable[[Book, object], None], Callable[[Book, object], None]]] = [
         (book.documents, _resolve_document, _rate_document), (book.settlements, _resolve_settlement, _rate_settlement),
         (book.journals, _resolve_journal, _rate_journal),
@@ -1409,8 +1615,8 @@ def _resolve(book: Book) -> None:
             try:
                 resolve(book, record)
                 rate(book, record)
-            except Blocked as blocked:
-                book.block(names[key], key, blocked.reason, blocked.note)
+            except Blocked as blocked:                          # a second journal of a record blocks the record
+                book.block(names[key], source_key(key), blocked.reason, blocked.note)
     for key, order in list(book.orders.items()):
         try:
             _resolve_order(book, order)
@@ -1447,6 +1653,9 @@ def _resolve(book: Book) -> None:
     for key, sb in book.starting.items():
         if not book.is_blocked(key) and sb.paid and book.is_blocked(sb.target):
             book.block(sb.source_type, key, "blocked document", "Its invoice or bill cannot be migrated.")
+    _late_fee_receipts(book)
+    _disposals(book)
+    _revaluations(book)
     # Starting balances stand the day before the first record that moves money or stock.
     dated = [day for day, _ in book.dated_records()] + [m.date for m in book.movements.values()]
     book.starting_date = min(dated) - timedelta(days=1) if dated else None
@@ -1468,6 +1677,115 @@ def _payers(book: Book) -> None:
         names = {book.contacts[c].name for c in named if c in book.contacts}
         if s.payer and s.payer not in names:
             book.losses[(key, f"{s.source_type} (payer name)")] = PAYER_NOTE
+
+
+LATE_FEE_NOTE = ("Pays an invoice more than its own total, toward the late payment fee Manager added to it. Celerp "
+                 "keeps the fee on the customer's balance, not on the invoice, so the receipt would overpay the "
+                 "invoice.")
+
+
+def _late_fee_receipts(book: Book) -> None:
+    """A late payment fee stays on the customer's balance, so its invoice keeps its own total.
+    A receipt or credit note taking what is paid on such an invoice past that total, in date
+    order after what was paid before the books began, blocks."""
+    charged = {_ref(m.guid(3)) for key, m in book.activity.items()
+               if book.names[key] == "LatePaymentFee" and not book.is_blocked(key)} & set(book.documents)
+    events = sorted([*((s.date, s.key, ln.document, ln.net) for s in book.settlements.values()
+                       for ln in s.party_lines if ln.document in charged),
+                     *((d.date, d.key, d.applies_to, d.total) for d in book.documents.values()
+                       if d.applies_to in charged)])
+    paid = book.starting_paid()
+    for _, key, invoice, amount in events:
+        paid[invoice] = paid.get(invoice, Decimal(0)) + amount
+        if paid[invoice] > book.documents[invoice].total and not book.is_blocked(key):
+            book.block(book.names[key], key, "late payment fee", LATE_FEE_NOTE)
+
+
+class _Balances:
+    """Base balances, debit positive, from the starting balances and every record not blocked."""
+
+    def __init__(self, book: Book):
+        from celerp.importers.adapters.manager_io.ledger import record_postings  # ledger builds on this module
+
+        self.postings = record_postings(book, {k for _, k in book.dated_records()
+                                               if not book.is_blocked(source_key(k))})
+        self.opening = [(account, amount) for sb in book.live_starting() for account, amount, _ in sb.lines]
+
+    def through(self, account: str, day: date) -> Decimal:
+        return (sum((amount for key, amount in self.opening if key == account), Decimal(0))
+                + sum((p.amount for p in self.postings if p.account == account and p.date <= day), Decimal(0)))
+
+
+def _install(book: Book, key: str, name: str, day: date, narration: str, lines: list[JournalLine]) -> None:
+    """A journal Celerp posts from the balances the records leave, in the base currency."""
+    journal = Journal(key, day, None, narration, None, [ln for ln in lines if ln.debit or ln.credit])
+    for line in journal.lines:
+        _add_builtin(book, line.account)
+    _rate_journal(book, journal)
+    book.journals[key], book.names[key] = journal, name
+
+
+DISPOSAL_NAMES = {"FixedAsset": "FixedAssetDisposal", "IntangibleAsset": "IntangibleAssetDisposal"}
+
+
+def _disposals(book: Book) -> None:
+    """An asset marked disposed of posts a journal on its disposal date, after that day's
+    records, clearing what it cost and what was written off it against its disposal account.
+    A record posting to the asset after that date blocks."""
+    disposed = {key: asset for key, asset in book.assets.items() if asset.disposed and not book.is_blocked(key)}
+    if not disposed:
+        return
+    balances = _Balances(book)
+    for key, asset in disposed.items():
+        name = book.names[key]
+        written_off = key + WRITTEN_OFF[name][0]
+        for record in sorted({p.record for p in balances.postings
+                              if p.account in (key, written_off) and p.date > asset.disposed}):
+            book.block(book.names[record], source_key(record), "disposed asset",
+                       "Posts to an asset after the date it was disposed of.")
+        if asset.disposal_account not in book.accounts and asset.disposal_account not in ACTIVITY_BUILTINS:
+            book.block(name, key, "unknown reference", "Refers to a disposal account that is not in the file.")
+            continue
+        cost, off = balances.through(key, asset.disposed), balances.through(written_off, asset.disposed)
+        _install(book, f"{key}:disposal", DISPOSAL_NAMES[name], asset.disposed,
+                 f"Disposal of {book.accounts[key].name}.",
+                 [_posting(key, -cost), _posting(written_off, -off), _posting(asset.disposal_account, cost + off)])
+
+
+NO_UNITS_NOTE = "The investment holds no units Celerp can read, so its market value is not known."
+
+
+def _revaluations(book: Book) -> None:
+    """Each market price brings its investment to the units held times the price, against
+    investment gains and losses, on the price's date and again on each later date a record
+    posts to the investment."""
+    prices: dict[str, list[MarketPrice]] = {}
+    for price in book.prices.values():
+        try:
+            prices.setdefault(_named(book, price.investment, "Investment", "an investment"), []).append(price)
+        except Blocked as blocked:
+            book.block("InvestmentMarketPrice", price.key, blocked.reason, blocked.note)
+    if not prices:
+        return
+    balances = _Balances(book)
+    for investment, dated in prices.items():
+        units = sum((sb.quantity for sb in book.live_starting() if sb.target == investment), Decimal(0))
+        if not units:
+            for price in dated:
+                book.block("InvestmentMarketPrice", price.key, "unsupported feature", NO_UNITS_NOTE)
+            continue
+        first = min(p.date for p in dated)
+        days = {p.date for p in dated} | {p.date for p in balances.postings
+                                          if p.account == investment and p.date >= first}
+        revalued = Decimal(0)
+        for day in sorted(days):
+            price = max((p for p in dated if p.date <= day), key=lambda p: (p.date, p.key)).price
+            change = round_money(units * price, book.base_code or "") - balances.through(investment, day) - revalued
+            if change:
+                revalued += change
+                _install(book, f"{investment}:revaluation:{day.isoformat()}", "InvestmentRevaluation", day,
+                         f"Revaluation of {book.accounts[investment].name} at market price.",
+                         [_posting(investment, change), _posting(INVESTMENT_GAINS, -change)])
 
 
 def _link(book: Book, movement: Movement) -> None:
@@ -1624,7 +1942,7 @@ def read_book(reader: ManagerReader) -> Book:
                                          "An object type Celerp does not recognise.")
             continue
         if key == ctype and name in fields.SCHEMAS and name not in SINGLETONS and key not in BUILTINS \
-                and key not in INVENTORY_BUILTINS and key not in HOLDER_BUILTINS:
+                and key not in INVENTORY_BUILTINS and key not in HOLDER_BUILTINS and key not in ACTIVITY_BUILTINS:
             book.verdicts[key] = Verdict(f"{name} form defaults", CoverageClass.IGNORED_NON_BUSINESS, None,
                                          FORM_DEFAULTS_NOTE)
             continue

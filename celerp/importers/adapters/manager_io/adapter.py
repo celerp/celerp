@@ -17,7 +17,7 @@ from celerp.importers.adapters.base import (
     SourceScan,
 )
 from celerp.importers.adapters.manager_io import attachments
-from celerp.importers.adapters.manager_io.book import MERGED_CONTROLS, STARTING_TYPES, Book, read_book
+from celerp.importers.adapters.manager_io.book import MERGED_CONTROLS, PAYSLIP_ITEMS, STARTING_TYPES, Book, read_book
 from celerp.importers.adapters.manager_io.ledger import Ledger, Posting, build_ledger
 from celerp.importers.adapters.manager_io.mappings import SOURCE_SYSTEM, build_bundle, carried
 from celerp.importers.adapters.manager_io.reconcile import expectations_from
@@ -37,8 +37,8 @@ MAPPED = (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS)
 # price the cost of sales on each invoice, starting balances post as one journal, a sub
 # account arrives as the account each line places on it, and the customer, supplier and
 # inventory control accounts fold into receivables, payables and inventory.
-NOT_CARRIED = frozenset({"DefaultInventoryLocation", "ExchangeRate", "InventoryUnitCost", "LockDate", "SubAccount",
-                         *STARTING_TYPES, *MERGED_CONTROLS})
+NOT_CARRIED = frozenset({"DefaultInventoryLocation", "ExchangeRate", "InventoryUnitCost", "InvestmentMarketPrice",
+                         "LockDate", "SubAccount", *STARTING_TYPES, *MERGED_CONTROLS, *PAYSLIP_ITEMS})
 
 
 def _single(artifacts: ArtifactSet) -> Artifact:

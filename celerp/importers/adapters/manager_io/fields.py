@@ -57,6 +57,10 @@ def _lines(schema: Schema) -> Field:
     return Field(nested=schema)
 
 
+_EARLIER_VERSION = ignored("Written by an earlier Manager version. Manager's upgrade copied what it held into the "
+                           "current fields, and current Manager no longer reads it.")
+
+
 # Line layouts. Link fields Celerp refuses when set are read, since setting one stops the scan.
 _SALES_LINE = _fields(read=(9, 10, 13, 14, 15, 17), refs=(1, 2, 21), numbers=(18, 19, 23, 24))
 _PURCHASE_LINE = _fields(read=(5, 6, 11, 17), refs=(1, 2, 21), numbers=(18, 19, 23, 24))
@@ -70,6 +74,7 @@ _MOVEMENT_LINE = _fields(refs=(1,), numbers=(3,),
 _ORDER_LINE = _fields(read=(2,), refs=(1, 7), numbers=(3, 4, 5, 6))
 _JOURNAL_LINE = _fields(read=(4, 5, 6, 8, 9, 10, 11, 12, 15, 17, 18, 20, 21, 22, 23, 24, 26, 30),
                         refs=(1, 2, 3, 29), numbers=(13, 14))
+_CLAIM_LINE = _fields(read=(17,), refs=(2,), numbers=(18, 19))
 
 _GROUP = _fields(read=(1,))                         # a chart heading: its name
 _BUILTIN = _fields(read=(1,),                       # a built-in account: the name it is shown as
@@ -87,16 +92,14 @@ _ASSET_DESCRIPTION = lost("description", "The asset's description is not carried
                                           "and code.")
 _ASSET_RATE = lost("depreciation rate", "The depreciation or amortization rate is not carried. Celerp carries the "
                                         "entries Manager booked, not a schedule.", DECIMAL)
-_ASSET_EXPENSE = lost("custom expense account", "The account the asset's depreciation or amortization is charged "
-                                                "to is not carried. The entries Manager booked keep their accounts.")
 
 
-def _asset(refs: tuple[int, ...], rate: int, expense: tuple[int, int], custom: tuple[int, int],
-           division: int) -> Schema:
-    """A fixed or intangible asset: name, disposed flag, code, controls and disposal account and
-    date are read; the rest is left behind."""
-    out = _fields(read=(1, 6, 10), refs=refs, days=(7,)) | {2: _ASSET_DESCRIPTION, rate: _ASSET_RATE}
-    return out | {division: _DIVISION} | {n: _ASSET_EXPENSE for n in expense} | {n: _ACCOUNT_CUSTOM for n in custom}
+def _asset(refs: tuple[int, ...], rate: int, expense: int, custom: tuple[int, int], division: int) -> Schema:
+    """A fixed or intangible asset: name, disposed flag, code, controls, disposal account and
+    date, and the custom expense account flag and account are read; the rest is left behind."""
+    out = _fields(read=(1, 6, 10, expense), refs=refs + (expense + 1,), days=(7,))
+    out |= {2: _ASSET_DESCRIPTION, rate: _ASSET_RATE}
+    return out | {division: _DIVISION} | {n: _ACCOUNT_CUSTOM for n in custom}
 
 
 def _control(inactive: int, cash_flow: tuple[int, ...]) -> Schema:
@@ -117,6 +120,19 @@ _PRINTED_FORM = ignored("How Manager prints the form: its theme, title, footers,
 
 def _printed(*numbers: int) -> dict[str, Field]:
     return {f"f{n}": _PRINTED_FORM for n in numbers}
+
+
+# Depreciation and amortization lines, and payslip earnings, deductions and contributions.
+_ASSET_LINE = _fields(refs=(1,), numbers=(2,), f3=_DIVISION)
+_EARNED = _fields(read=(6,), refs=(4,), numbers=(3, 7), f5=_DIVISION, f1=_EARLIER_VERSION, f2=_EARLIER_VERSION)
+_DEDUCTED = _fields(read=(4,), refs=(3,), numbers=(2,), f5=_DIVISION, f1=_EARLIER_VERSION)
+_CONTRIBUTED = _fields(read=(5,), refs=(3,), numbers=(2,), f4=_DIVISION, f1=_EARLIER_VERSION)
+_PAYSLIP_ITEM = _fields(read=(1, 7))                # an item's name and inactive flag
+_REPORTING_CATEGORY = ignored("The category the payslip item is totalled under in Manager's payslip reports. "
+                              "Celerp carries the accounts the item posts to.")
+_TIME = ("hours, rate and customer", "The hours, rate and customer of billable time are not carried. Celerp carries "
+                                     "the amount held in billable time until it is invoiced or written off.")
+_TIME_DETAIL, _TIME_RATE = lost(*_TIME), lost(*_TIME, DECIMAL)
 
 
 _PAID_BY = dict(
@@ -151,8 +167,16 @@ SCHEMAS: dict[str, Schema] = {
     "ProfitAndLossStatementAccountCurrencyGainsLosses": _BUILTIN,
     "ProfitAndLossStatementAccountInventoryPurchases": _BUILTIN,
     "ProfitAndLossStatementAccountInventorySales": _BUILTIN,
+    **{name: _BUILTIN for name in (
+        "ProfitAndLossStatementAccountBillableTimeMovement", "ProfitAndLossStatementAccountFixedAssetDepreciation",
+        "ProfitAndLossStatementAccountFixedAssetLossOnDisposal",
+        "ProfitAndLossStatementAccountIntangibleAssetsAmortization",
+        "ProfitAndLossStatementAccountIntangibleAssetsGainsLossOnDisposal",
+        "ProfitAndLossStatementAccountLatePaymentFees", "ProfitAndLossStatementCapitalGainsOnInvestments")},
+    # Balance sheet built-ins with a position and code, holder accounts' among them.
     **{name: _HOLDER_BUILTIN for name in (
-        "BalanceSheetCapitalAccountsAccount", "BalanceSheetEmployeeClearingAccount", "BalanceSheetExpenseClaimsAccount",
+        "BalanceSheetBillableTimeAccount", "BalanceSheetWithholdingTaxAccount", "BalanceSheetCapitalAccountsAccount",
+        "BalanceSheetEmployeeClearingAccount", "BalanceSheetExpenseClaimsAccount",
         "BalanceSheetFixedAssetsAtCostAccount", "BalanceSheetFixedAssetsAccumulatedDepreciationAccount",
         "BalanceSheetIntangibleAssetsAtCostAccount", "BalanceSheetIntangibleAssetsAccumulatedAmortizationAccount")},
     # Special accounts can sit under any heading, which sets their type.
@@ -171,8 +195,8 @@ SCHEMAS: dict[str, Schema] = {
                         f3=lost("email", "The employee's email is not carried. Celerp keeps the employee as an "
                                          "account.")),
     "ExpenseClaimsPayer": _fields(read=(1, 6), f7=_DIVISION),
-    "FixedAsset": _asset((14, 18, 19), 17, (20, 21), (9, 23), 22),
-    "IntangibleAsset": _asset((12, 16, 17), 15, (18, 19), (9, 21), 20),
+    "FixedAsset": _asset((14, 18, 19), 17, 20, (9, 23), 22),
+    "IntangibleAsset": _asset((12, 16, 17), 15, 18, (9, 21), 20),
     "Investment": _fields(read=(1, 2, 3), refs=(7,), f8=_ACCOUNT_CUSTOM, f9=_ACCOUNT_CUSTOM),
     **{name: _control(18, ()) for name in (
         "ControlAccountForBankAccounts", "ControlAccountForCapitalAccounts", "ControlAccountForFixedAssets",
@@ -191,9 +215,7 @@ SCHEMAS: dict[str, Schema] = {
     "IntangibleAssetStartingBalance": _fields(refs=(1,), numbers=(2, 3)),
     "InventoryItemStartingBalance": _fields(read=(2, 4, 5, 6, 7), refs=(1,), numbers=(8,),
                                             f3=_lines(_fields(refs=(1,), numbers=(2,)))),
-    "InvestmentStartingBalance": _fields(refs=(1,), numbers=(2,),
-                                         f3=lost("market price", "The investment's market price is not carried. "
-                                                                 "Celerp carries what it cost.", DECIMAL)),
+    "InvestmentStartingBalance": _fields(refs=(1,), numbers=(2, 3)),
     "SalesInvoiceStartingBalance": _fields(refs=(1,), numbers=(2,)),
     "PurchaseInvoiceStartingBalance": _fields(refs=(1,), numbers=(2,)),
     "Customer": _fields(read=(1, 2, 3, 4, 13, 15, 19), refs=(14,), f12=_CUSTOM_FIELDS),
@@ -226,6 +248,28 @@ SCHEMAS: dict[str, Schema] = {
                        f11=_lines(_PAYMENT_LINE), f37=_CLEARED, **_PAID_BY),
     "InterAccountTransfer": _fields(read=(5, 6), refs=(2, 3), numbers=(8, 9), days=(1,)),
     "JournalEntry": _fields(read=(2, 3), refs=(8,), days=(1,), f14=_lines(_JOURNAL_LINE)),
+    # Records Manager posts through holders and its own built-in accounts.
+    "DepreciationEntry": _fields(read=(2, 4), days=(1,), f3=_lines(_ASSET_LINE)),
+    "AmortizationEntry": _fields(read=(2, 4), days=(1,), f3=_lines(_ASSET_LINE)),
+    "Payslip": _fields(read=(11, 12), refs=(2,), days=(1,), f3=_lines(_EARNED), f4=_lines(_DEDUCTED),
+                       f5=_lines(_CONTRIBUTED), **_printed(9, 10, 14, 15, 16, 17, 19, 20)),
+    "PayslipEarningsItem": _PAYSLIP_ITEM | {3: REF, 5: _REPORTING_CATEGORY},
+    "PayslipDeductionItem": _PAYSLIP_ITEM | {3: REF, 5: _REPORTING_CATEGORY},
+    "PayslipContributionItem": _fields(read=(1, 8), refs=(3, 4), f6=_REPORTING_CATEGORY),
+    "ExpenseClaim": _fields(read=(3, 5), refs=(9,), days=(1,), f18=_lines(_CLAIM_LINE), f17=_LINE_DESCRIPTION,
+                            f16=ignored("Whether the amounts include tax. A line with a tax code stops the scan, "
+                                        "so every amount carried is tax-free."),
+                            f7=lost("payee", "Who the claimant paid is not carried. The journal keeps the claim's "
+                                             "description and reference."),
+                            **_printed(13, 14, 19, 21, 22)),
+    "LatePaymentFee": _fields(refs=(2,), days=(1,), numbers=(4,),
+                              f3=lost("invoice link", "The invoice a late fee is charged on is not carried: the fee "
+                                                      "stays on the customer's balance, not on the invoice it was "
+                                                      "charged on.", GUID)),
+    "WithholdingTaxReceipt": _fields(read=(4,), refs=(1,), days=(2,), numbers=(3,)),
+    "BillableTime": _fields(read=(3, 14), refs=(13,), days=(1, 15), f16=_DIVISION,
+                            **{f"f{n}": _TIME_DETAIL for n in (6, 7, 9)}, f8=_TIME_RATE),
+    "InvestmentMarketPrice": _fields(refs=(2,), numbers=(6,), days=(1,)),
     "Attachment": _fields(read=(2, 4, 12), refs=(6,),
                           f1=lost("attach time", "When the file was attached is not carried. The file is "
                                   "carried as it is, onto the record it belongs to.", DATE)),
@@ -269,11 +313,14 @@ _OBSOLETE: dict[str, tuple[int, ...]] = {
     "Payment": (8, 14, 21, 38),
     "InterAccountTransfer": (4, 10, 13, 14, 20, 21),
     "JournalEntry": (4, 5, 6, 12, 24),
+    "Payslip": (6, 7),
+    **{name: (2,) for name in ("PayslipEarningsItem", "PayslipDeductionItem", "PayslipContributionItem")},
+    "ExpenseClaim": (2, 4, 6, 11),
+    "LatePaymentFee": (5,),
+    "BillableTime": (2, 4, 10, 11),
     "Attachment": (3, 5, 7, 8, 9, 10, 11),
     "ExchangeRate": (3, 4, 5),
 }
-_EARLIER_VERSION = ignored("Written by an earlier Manager version. Manager's upgrade copied what it held into the "
-                           "current fields, and current Manager no longer reads it.")
 for _name, _numbers in _OBSOLETE.items():
     SCHEMAS[_name] = {n: _EARLIER_VERSION for n in _numbers} | SCHEMAS[_name]
 
