@@ -117,7 +117,9 @@ def masters(company: str = "Example Trading") -> list[Obj]:
         obj("TaxCode", "VAT", {1: "VAT 10%", 5: CUSTOM_RATE, 6: SINGLE_RATE, 4: D("10")}),
         obj("Customer", "CA", {1: "Acme Trading", 13: "C-001", 3: "accounts@acme.example.com", 2: "2 Example Road"}),
         obj("Supplier", "SA", {1: "Acme Trading", 10: "S-001", 2: "accounts@acme.example.com", 7: "2 Example Road"}),
-        obj("InventoryItem", "WID", {1: "WID-1", 11: "Widget", 13: "each", 32: True, 3: D("12.50"), 31: True, 2: D("4")}),
+        # Items are valued at average cost (38: 1): the hand-worked figures are averages.
+        obj("InventoryItem", "WID", {1: "WID-1", 11: "Widget", 13: "each", 32: True, 3: D("12.50"), 31: True, 2: D("4"),
+                                     38: 1}),
     ]
 
 
@@ -484,7 +486,8 @@ def inventory_oracle_objects() -> list[Obj]:
     On hand: WID 9 / 29.71, GAD 2 / 14.00, all at the default location."""
     return [
         *_stocked_masters(),
-        obj("InventoryItem", "GAD", {1: "GAD-1", 11: "Gadget", 13: "each", 32: True, 3: SALE_PRICES["GAD"], 31: True}),
+        obj("InventoryItem", "GAD", {1: "GAD-1", 11: "Gadget", 13: "each", 32: True, 3: SALE_PRICES["GAD"], 31: True,
+                                     38: 1}),
         _bill("BO1", date(2026, 2, 2), {"WID": (D("10"), D("3")), "GAD": (D("4"), D("7"))}),
         goods_receipt("GRO1", date(2026, 2, 3), "BO1", {"WID": D("10"), "GAD": D("3")}),
         goods_receipt("GRA", date(2026, 2, 4), "BO4", {"WID": D("2")}),

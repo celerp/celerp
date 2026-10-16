@@ -142,6 +142,7 @@ class Contact:
     email: str | None
     address: str | None
     inactive: bool
+    phone: str | None = None
 
 
 @dataclass
@@ -153,6 +154,7 @@ class Item:
     sales_price: Decimal | None
     purchase_price: Decimal | None
     inactive: bool
+    average_cost: bool = False                 # weighted average costing; otherwise first in, first out
 
 
 @dataclass
@@ -192,6 +194,7 @@ class Document:
     moves_stock: bool = False                  # an invoice that moves its own stock, with no physical record
     location: str | None = None                # where such an invoice moves its stock
     rate: Decimal | None = None                # base units per document unit; 1 for a base currency document
+    billing_address: str | None = None
 
     @property
     def doc_type(self) -> str:
@@ -253,6 +256,8 @@ class Settlement:
     other_lines: list[Line]                    # everything else, money on account included: kept as a journal
     include_tax: bool = True
     rate: Decimal | None = None                # base units per settlement unit; 1 in the base currency
+    payer: str | None = None                   # the name typed in the paid by or payee box
+    form_contacts: tuple[str, ...] = ()        # the customer and supplier the form shows
 
     @property
     def kind(self) -> str:
@@ -494,7 +499,7 @@ def _document(source_type: str, key: str, m: Message) -> Document:
         issue = _require_date(m, 1)
         return Document(key, source_type, issue, _due(m, issue, 54, 22, 6), m.str(2), _ref(m.guid(3)), None,
                         m.bool(8), m.str(12), lines, moves_stock=m.bool(69), location=_ref(m.guid(30)),
-                        rate=_rate(m, 64, 65))
+                        rate=_rate(m, 64, 65), billing_address=m.str(4))
     if source_type == "PurchaseInvoice":
         _unsupported(m, (24, 65, 68), "withholding tax, freight or landed costs")
         raw = m.messages(23)
@@ -510,7 +515,8 @@ def _document(source_type: str, key: str, m: Message) -> Document:
         lines = [_doc_line(x, _SALES_LINE_LINKS) for x in raw]
         _line_discounts(m, raw, lines, 15, 16)
         return Document(key, source_type, _require_date(m, 1), None, m.str(2), _ref(m.guid(3)), None,
-                        m.bool(6), m.str(9), lines, _ref(m.guid(8)), rate=_rate(m, 30, 31))
+                        m.bool(6), m.str(9), lines, _ref(m.guid(8)), rate=_rate(m, 30, 31),
+                        billing_address=m.str(4))
     raw = m.messages(16)                                            # DebitNote
     lines = [_doc_line(x, _PURCHASE_LINE_LINKS) for x in raw]
     _line_discounts(m, raw, lines, 10, 11)
@@ -578,7 +584,8 @@ def _settlement(source_type: str, key: str, m: Message) -> Settlement:
     if len(contacts) > 1:
         raise Blocked("several contacts", "One settlement for several customers or suppliers.")
     return Settlement(key, source_type, _require_date(m, 1), m.str(2), str(bank), None, m.str(10),
-                      party, other, not m.bool(exclusive), rate)
+                      party, other, not m.bool(exclusive), rate, m.str(6),
+                      tuple(str(c) for c in (m.guid(4), m.guid(5)) if c is not None))
 
 
 def _journal(key: str, m: Message) -> Journal:
@@ -652,15 +659,23 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
     elif name == "Customer":
         _unsupported(m, (19,), "a custom control account")
         book.contacts[key] = Contact(key, name, m.str(1) or "", m.str(13), _ref(m.guid(14)), m.str(3), m.str(2),
-                                     m.bool(15))
+                                     m.bool(15), m.str(4))
+        _custom_fields(book, name, key, m.messages(12), m.str(4))
     elif name == "Supplier":
         _unsupported(m, (16,), "a custom control account")
         book.contacts[key] = Contact(key, name, m.str(1) or "", m.str(10), _ref(m.guid(11)), m.str(2), m.str(7),
-                                     m.bool(12))
+                                     m.bool(12), m.str(3))
+        _custom_fields(book, name, key, m.messages(9), m.str(3))
     elif name == "InventoryItem":
         code, item_name = m.str(1), m.str(11)
+        method = m.int(38, 0)
+        if method not in VALUATION_METHODS:
+            raise Blocked("unsupported feature", "Uses the manual inventory valuation method, which Celerp cannot "
+                                                 "reproduce yet. Choose first in, first out or average cost for the "
+                                                 "item in Manager and upload the file again.")
         book.items[key] = Item(key, code, item_name or code or "", m.str(13),
-                               m.decimal(3) if m.bool(32) else None, m.decimal(2) if m.bool(31) else None, m.bool(10))
+                               m.decimal(3) if m.bool(32) else None, m.decimal(2) if m.bool(31) else None, m.bool(10),
+                               VALUATION_METHODS[method])
     elif name in DOC_TYPES:
         book.documents[key] = _document(name, key, m)
     elif name in MOVEMENT_OF:
@@ -686,6 +701,19 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
         book.attachments[key] = AttachmentRef(key, m.str(2) or "", m.int(4, 0), _ref(m.guid(6)), m.bytes(12))
     elif name == "LockDate":
         _lock_date(book, key, m)
+
+
+# Manager's inventory valuation methods by stored value: first in, first out (the default,
+# stored as nothing) and weighted average cost. Manual costing is not reproduced.
+VALUATION_METHODS = {0: False, 1: True}
+
+
+def _custom_fields(book: Book, name: str, key: str, values: list[Message], phone: str | None) -> None:
+    """Custom field values have no Celerp equivalent. Manager's upgrade also copies a contact's
+    old telephone into one; that value is carried as the phone, so only the others are lost."""
+    if any(v.str(2) and v.str(2) != phone for v in values):
+        book.losses[(key, f"{name} (custom fields)")] = ("Custom field values are not carried. Celerp has no "
+                                                        "custom fields for customers and suppliers.")
 
 
 LOCK_OFF_NOTE = "Locking is switched off in Manager, so no lock date is installed."
@@ -785,32 +813,58 @@ def _cost_sales(book: Book) -> None:
 
     Manager's books own an item from the bill that buys it, not from its goods receipt, and
     an invoice relieves them on its own date, not when the goods leave. Each item line of a
-    sales invoice costs the item's unit cost on the invoice date when one is set, and
-    otherwise the average of what is owned then: every bill bought on or before that day,
-    less every earlier sale. Documents Celerp cannot carry still count, since Manager's
-    books hold them. An invoice selling more of an item than is owned is blocked, even with
-    goods on hand or a unit cost set: Manager clears negative inventory with later cost
-    corrections that are not rebuilt."""
+    sales invoice costs the item's unit cost on the invoice date when one is set. Otherwise
+    it costs what is owned then, by the item's valuation method: the oldest bills still
+    owned first (first in, first out), or the average of everything owned (average cost).
+    What is owned is every bill bought on or before that day, less every earlier sale.
+    Documents Celerp cannot carry still count, since Manager's books hold them. An invoice
+    selling more of an item than is owned is blocked, even with goods on hand or a unit cost
+    set: Manager clears negative inventory with later cost corrections that are not rebuilt.
+    Every later sale of that item is blocked too, as its cost depends on those corrections.
+    An item that is not carried leaves its documents blocked already and is not costed."""
     code = book.base_code or ""
     trading = sorted((doc for doc in book.documents.values() if doc.source_type in ("PurchaseInvoice", "SalesInvoice")),
                      key=lambda d: (d.date, d.source_type != "PurchaseInvoice", d.key))
-    owned: dict[str, tuple[Decimal, Decimal]] = {}
+    owned: dict[str, list[list[Decimal]]] = {}                 # item -> [quantity, value] per bill still owned
+    oversold: set[str] = set()
     for doc in trading:
-        for line in (ln for ln in doc.lines if ln.item):
-            qty, value = owned.get(line.item, (Decimal(0), Decimal(0)))
+        for line in (ln for ln in doc.lines if ln.item in book.items):
+            layers = owned.setdefault(line.item, [])
             if doc.source_type == "PurchaseInvoice":
-                owned[line.item] = (qty + line.quantity, value + line.base_net)
+                layers.append([line.quantity, line.base_net])
                 continue
-            if line.quantity > qty and not book.is_blocked(doc.key):
-                book.block(doc.source_type, doc.key, "negative quantity owned", "Sells more of an item than the "
-                           "business owned on the invoice date, which Manager settles through negative inventory "
-                           "clearing. Celerp does not carry that yet.")
+            qty = sum((q for q, _ in layers), Decimal(0))
+            if line.quantity > qty or line.item in oversold:
+                oversold.add(line.item)
+                if not book.is_blocked(doc.key):
+                    book.block(doc.source_type, doc.key, "negative quantity owned", "Sells more of an item than "
+                               "the business owned on the invoice date, or sells it after such an invoice. Manager "
+                               "settles that through negative inventory clearing. Celerp does not carry that yet.")
             unit = _unit_cost(book, line.item, doc.date)
+            if not book.items[line.item].average_cost:
+                relieved = _relieve(layers, line.quantity)
+                line.cost = round_money(line.quantity * unit if unit is not None else relieved, code)
+                continue
+            value = sum((v for _, v in layers), Decimal(0))
             if unit is not None:
                 line.cost = round_money(line.quantity * unit, code)
             elif qty > 0:
-                line.cost = round_money(value * line.quantity / qty, code)
-            owned[line.item] = (qty - line.quantity, value - line.cost)
+                line.cost = round_money(value * min(line.quantity, qty) / qty, code)
+            layers[:] = [[qty - line.quantity, value - line.cost]]
+
+
+def _relieve(layers: list[list[Decimal]], quantity: Decimal) -> Decimal:
+    """Take the quantity from the oldest layers first; return the value taken. A sale beyond
+    what is owned takes what there is."""
+    taken = Decimal(0)
+    while quantity > 0 and layers:
+        layer = layers[0]
+        part = min(quantity, layer[0])
+        value = layer[1] * part / layer[0] if layer[0] else layer[1]
+        layer[0], layer[1], quantity, taken = layer[0] - part, layer[1] - value, quantity - part, taken + value
+        if layer[0] <= 0:
+            layers.pop(0)
+    return taken
 
 
 def _resolve_settlement(book: Book, s: Settlement) -> None:
@@ -970,6 +1024,7 @@ def _resolve(book: Book) -> None:
             book.block(movement.source_type, key, blocked.reason, blocked.note)
     _value_stock(book)
     # A settlement that pays a blocked document, or a note on a blocked invoice, cannot stand alone.
+    _payers(book)
     for key, s in book.settlements.items():
         if not book.is_blocked(key) and any(ln.document and book.is_blocked(ln.document) for ln in s.party_lines):
             book.block(s.source_type, key, "blocked document", "Settles a document that cannot be migrated.")
@@ -978,7 +1033,22 @@ def _resolve(book: Book) -> None:
             book.block(doc.source_type, key, "blocked document", "Settles a document that cannot be migrated.")
     if not book.base_code or len(book.base_code) != 3:
         key = book.base_key or GUIDS["BaseCurrency"]
-        book.block("BaseCurrency", key, "missing", "The business has no base currency code.")
+        book.block("BaseCurrency", key, "missing", "The business has no base currency code. Set it in Manager under "
+                                                   "Settings, Base Currency, then upload the file again.")
+
+
+PAYER_NOTE = ("The name typed for a payer who is neither a customer nor a supplier is not carried. Celerp records "
+              "the payment against its accounts, without a payer name.")
+
+
+def _payers(book: Book) -> None:
+    """A payer name is lost only when it is not the name of a customer or supplier the
+    settlement names: Manager's upgrade fills it in with that contact's name."""
+    for key, s in book.settlements.items():
+        named = {*s.form_contacts, *(ln.contact for ln in (*s.party_lines, *s.other_lines) if ln.contact)}
+        names = {book.contacts[c].name for c in named if c in book.contacts}
+        if s.payer and s.payer not in names:
+            book.losses[(key, f"{s.source_type} (payer name)")] = PAYER_NOTE
 
 
 def _link(book: Book, movement: Movement) -> None:
@@ -1114,6 +1184,13 @@ def _master_verdicts(book: Book) -> None:
                         klass=CoverageClass.MAPPED_WITH_LOSS, note=" ".join(n for _, _, n in losses))
 
 
+# Types held once per business, keyed by the type itself. Any other carried type keyed by
+# itself is the defaults Manager fills a new record of that type with.
+SINGLETONS = frozenset({"BusinessDetails", "BaseCurrency", "LockDate", "Assets", "Liabilities", "Equity",
+                        "DefaultInventoryLocation"})
+FORM_DEFAULTS_NOTE = "The values Manager fills a new form with. They are not a record and are not carried."
+
+
 def read_book(reader: ManagerReader) -> Book:
     """Decode and classify every object in an open Manager file."""
     book = Book(schema_version=reader.schema_version)
@@ -1124,6 +1201,11 @@ def read_book(reader: ManagerReader) -> Book:
         if name is None:
             book.verdicts[key] = Verdict(f"Unknown type {ctype}", CoverageClass.UNCLASSIFIED, None,
                                          "An object type Celerp does not recognise.")
+            continue
+        if key == ctype and name in fields.SCHEMAS and name not in SINGLETONS and key not in BUILTINS \
+                and key not in INVENTORY_BUILTINS:
+            book.verdicts[key] = Verdict(f"{name} form defaults", CoverageClass.IGNORED_NON_BUSINESS, None,
+                                         FORM_DEFAULTS_NOTE)
             continue
         book.names[key] = name
         book.accept(name, key)

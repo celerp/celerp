@@ -88,7 +88,7 @@ def _tax_codes(book: Book) -> list[CIFTaxCode]:
 def _contacts(book: Book) -> list[CIFContact]:
     return [CIFContact(**_src(c.source_type, c.key, c.code), name=c.name,
                        roles=["customer" if c.source_type == "Customer" else "supplier"], email=c.email,
-                       address=c.address, currency=book.currency_code(c.currency))
+                       address=c.address, phone=c.phone, currency=book.currency_code(c.currency))
             for c in book.contacts.values()]
 
 
@@ -133,6 +133,8 @@ def _document(book: Book, ledger: Ledger, doc: Document, movements: dict[str, li
     metadata: dict = {"amounts_include_tax": doc.include_tax}
     if doc.applies_to:
         metadata["applies_to"] = doc.applies_to
+    if doc.billing_address:
+        metadata["billing_address"] = doc.billing_address
     if movements.get(doc.key):
         metadata["receipts" if doc.source_type == "PurchaseInvoice" else "deliveries"] = movements[doc.key]
     if any(ln.cost for ln in doc.lines):

@@ -5,7 +5,7 @@ created there.
 
 Manager's upgrade keeps each record's old fields beside the current ones, adds fields
 current Manager writes (a billing address, custom field values, a bank clearance status,
-an inventory valuation method, a statement position), stores the form defaults of a few
+an inventory valuation method, a statement position and heading), stores the form defaults of a few
 record types as objects keyed by their type, and leaves objects of types Manager itself
 no longer reads. None of these changes the books, so none may stop the scan."""
 
@@ -53,10 +53,9 @@ UPGRADE = {
     "CN1": {4: BILL_TO, 5: [_old_line("Service credit", 1, "10")], 21: True},
     "CA": {4: "0522-556721", 12: [{1: TELEPHONE_FIELD, 2: "0522-556721"}]},
     "SA": {3: "(503) 555-9931", 9: [{1: TELEPHONE_FIELD, 2: "(503) 555-9931"}, {1: REGION_FIELD, 2: "North"}]},
-    "WID": {38: 1},
-    "R1": {6: "Acme Trading", 14: 1, 21: _old_settlement(date(2026, 1, 20), "130"), 36: True},
-    "P1": {6: "Acme Trading", 14: 1, 21: _old_settlement(date(2026, 2, 10), "50"), 37: True},
-    "TRADING": {2: 3, 5: 3},
+    "R1": {6: "Acme Trading", 14: True, 21: _old_settlement(date(2026, 1, 20), "130"), 36: 1},
+    "P1": {6: "Acme Trading", 14: True, 21: _old_settlement(date(2026, 2, 10), "50"), 37: 1},
+    "TRADING": {2: "40", 5: 3},
 }
 
 
@@ -67,7 +66,7 @@ def _upgraded(changes: dict[str, dict] = UPGRADE, extra: tuple = ()) -> list:
         out.append(dataclasses.replace(o, fields={**o.fields, **changes[label]}) if label else o)
     # A built-in account placed under a heading of the user's chart.
     builtin = specs.T["ProfitAndLossStatementAccountCurrencyGainsLosses"]
-    out = [dataclasses.replace(o, fields={**o.fields, 3: specs.k("TRADING")}) if o.key == builtin else o
+    out = [dataclasses.replace(o, fields={**o.fields, 3: specs.k("TRADING"), 10: 2}) if o.key == builtin else o
            for o in out]
     return [
         *out,
@@ -148,23 +147,39 @@ def test_upgraded_file_discloses_only_what_is_left_behind(tmp_path):
         assert rows[label].coverage_class == CoverageClass.IGNORED_NON_BUSINESS, label
 
 
-def test_pending_bank_clearance_is_disclosed(tmp_path):
-    """RED before the change: the clearance field stops the scan."""
-    changes = {**UPGRADE, "R1": {**UPGRADE["R1"], 14: 2}}
+def test_bank_clearance_date_is_disclosed(tmp_path):
+    """RED before the change: the clearance date stops the scan as an unknown field."""
+    changes = {**UPGRADE, "R1": {**UPGRADE["R1"], 9: date(2026, 1, 24)}}
     rows = _rows(_source(tmp_path, _upgraded(changes)))
-    assert rows["Receipt (bank clearance)"].count == 1
-    assert rows["Receipt (bank clearance)"].coverage_class == CoverageClass.MAPPED_WITH_LOSS
+    assert rows["Receipt (bank clearance date)"].count == 1
+    assert rows["Receipt (bank clearance date)"].coverage_class == CoverageClass.MAPPED_WITH_LOSS
 
 
-@pytest.mark.parametrize("method", [0, 2])
-def test_other_inventory_valuation_method_stops_the_item(tmp_path, method):
+def test_manual_inventory_valuation_stops_the_item(tmp_path):
     """RED before the change: the field stops the scan as unknown rather than naming the
     valuation method Celerp cannot reproduce."""
-    changes = {**UPGRADE, "WID": {38: method}}
+    changes = {**UPGRADE, "WID": {38: 2}}
     rows = _rows(_source(tmp_path, _upgraded(changes)))
     blocked = rows["InventoryItem (unsupported feature)"]
     assert blocked.coverage_class == CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER
     assert "valuation" in blocked.note
+
+
+@pytest.mark.parametrize(("method", "cost"), [({}, D("70")), ({38: 0}, D("70")), ({38: 1}, D("75"))])
+def test_cost_of_sales_follows_the_item_valuation_method(tmp_path, method, cost):
+    """10 bought at 4, then 10 at 6, then 15 sold. First in, first out (Manager's default,
+    stored as nothing) costs 10 x 4 + 5 x 6 = 70; average cost costs 15 x 5 = 75.
+    RED before the change: every item is costed at the average, and field 38 stops the scan."""
+    def valued(o):
+        return {**{n: v for n, v in o.fields.items() if n != 38}, **method}
+    objects = [dataclasses.replace(o, fields=valued(o)) if o.key == specs.k("WID") else o
+               for o in specs._stocked_masters()]
+    objects += [specs._bill("BF1", date(2026, 1, 5), {"WID": (D("10"), D("4"))}),
+                specs._bill("BF2", date(2026, 1, 6), {"WID": (D("10"), D("6"))}),
+                specs._sale("SF1", date(2026, 1, 10), {"WID": D("15")})]
+    bundle = adapter().build_manifest([_source(tmp_path, objects, "fifo.manager")], FULL).bundle
+    sale = next(d for d in bundle.documents if d.source_external_id == str(specs.k("SF1")))
+    assert sale.line_items[0].cost_basis == cost
 
 
 def test_unknown_type_still_stops_the_scan(tmp_path):
@@ -173,3 +188,21 @@ def test_unknown_type_still_stops_the_scan(tmp_path):
     stray = uuid.UUID("0e1d2c3b-4a59-4687-9a1b-2c3d4e5f6a7b")
     rows = _rows(_source(tmp_path, _upgraded(extra=(specs.Obj(stray, stray, {2: 1}),))))
     assert rows[f"Unknown type {stray}"].coverage_class == CoverageClass.UNCLASSIFIED
+
+
+@pytest.mark.parametrize("method", [{}, {38: 1}])
+def test_sales_after_an_item_is_oversold_are_refused(tmp_path, method):
+    """10 bought, 15 sold, 10 more bought, 5 sold. Manager clears the 5 oversold with later
+    cost corrections, so the second sale's cost is not what Celerp can work out either.
+    RED before the change: only the first sale is refused, and the second is costed from a
+    position Manager does not book."""
+    def valued(o):
+        return {**{n: v for n, v in o.fields.items() if n != 38}, **method}
+    objects = [dataclasses.replace(o, fields=valued(o)) if o.key == specs.k("WID") else o
+               for o in specs._stocked_masters()]
+    objects += [specs._bill("BO1", date(2026, 1, 5), {"WID": (D("10"), D("4"))}),
+                specs._sale("SO1", date(2026, 1, 6), {"WID": D("15")}),
+                specs._bill("BO2", date(2026, 1, 7), {"WID": (D("10"), D("4"))}),
+                specs._sale("SO2", date(2026, 1, 8), {"WID": D("5")})]
+    rows = _rows(_source(tmp_path, objects, "oversold.manager"))
+    assert rows["SalesInvoice (negative quantity owned)"].count == 2

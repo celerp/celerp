@@ -4,10 +4,12 @@
 
 A Manager business file stores each object in one table row whose
 `ContentType` is the GUID of the object's type. The rows below list every
-current (non-obsolete) type by name and GUID, with the coverage class that
-decides how a scan treats it. A GUID not listed here is unclassified: its
-financial meaning is unknown, so it blocks Full history. Line types never
-have rows of their own and are not listed.
+current type by name and GUID, with the coverage class that decides how a
+scan treats it, then every type an earlier Manager version stored that the
+current one no longer reads: Manager's upgrade converts their content into
+current types and leaves the old objects in the file. A GUID not listed
+here is unclassified: its financial meaning is unknown, so it blocks Full
+history. Line types never have rows of their own and are not listed.
 
 The GUIDs are interoperability facts about the file layout, derived from
 observing the format; no vendor source is reproduced here.
@@ -310,9 +312,145 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("WithholdingTax", "96f2f394-8ac1-4e93-a926-5761ce8f0732", _I),
 )
 
-CONTENT_TYPES: dict[str, CoverageClass] = {guid: coverage for _, guid, coverage in _ROWS}
-TYPE_NAMES: dict[str, str] = {guid: name for name, guid, _ in _ROWS}
-GUIDS: dict[str, str] = {name: guid for name, guid, _ in _ROWS}
+# Left behind by Manager's upgrade, named by the version that last stored them.
+_OBSOLETE: tuple[tuple[str, str, CoverageClass], ...] = (
+    ("Obsolete.ObsoleteSingleton", "6a718cb8-cba7-4482-a755-18d9073fe2e3", _I),
+    ("Obsolete01.Contact01", "ee6fbe3b-630e-43d6-9601-3935d3dd6da7", _I),
+    ("Obsolete01.GeneralLedgerAccount01", "ea82d3a4-ab0c-4733-a56f-a49688a56275", _I),
+    ("Obsolete01.JournalEntry01", "65339404-ed1d-4168-a65f-ce15a0adac30", _I),
+    ("Obsolete01.Payment01", "1abdb7e9-d7d4-4247-bf76-b6516d9b8fd3", _I),
+    ("Obsolete01.PurchaseInvoice01", "acf26524-c96a-45fc-a2da-456f38ecab42", _I),
+    ("Obsolete01.Receipt01", "3f768b6a-37f7-469a-9fd0-e7ce39d693e3", _I),
+    ("Obsolete01.SalesInvoice01", "96def4fb-d88d-4a40-b2a9-f6b90b7df378", _I),
+    ("Obsolete02.Associate02", "633f63e8-d52a-4bad-b752-9e81f78ad480", _I),
+    ("Obsolete02.InPocketIncome02", "2d6b61ac-9f35-4243-952e-8189af08cc0d", _I),
+    ("Obsolete02.JournalEntry02", "897f5b38-d057-408a-a380-14fc5f5db048", _I),
+    ("Obsolete02.OutOfPocketExpense02", "aec22480-da4a-4cba-8dad-a25c8ad2e683", _I),
+    ("Obsolete02.Payment02", "19115fb2-b4fb-45d8-9a42-730eb6fca288", _I),
+    ("Obsolete02.PurchaseInvoice02", "3d93d7d9-f99b-44cc-a0ef-01f06607e872", _I),
+    ("Obsolete02.Receipt02", "0da2a4c5-645d-4595-a211-65d018eb8e64", _I),
+    ("Obsolete02.SalesInvoice02", "644a4013-689a-4709-a8d1-aa57c969222e", _I),
+    ("Obsolete02.SalesQuote02", "96645ed5-4ed7-490d-a5f0-6ef1c87f91dc", _I),
+    ("Obsolete04.InPocketIncome04", "452bdb74-8541-4bc8-80bc-ecc5c591b5d9", _I),
+    ("Obsolete04.OutOfPocketExpense04", "44f9f8bd-2938-40b8-93e9-52d5055ef96b", _I),
+    ("Obsolete05.InPocketIncomePayee05", "12b8e712-a7a7-4510-9022-d1f565652625", _I),
+    ("Obsolete06.GeneralSettings06", "e1cf015a-89af-412f-80a2-c9b98d969cd1", _I),
+    ("Obsolete07.CashPayment07", "8c4108a6-e7c9-4f58-bc61-ef19acfe384e", _I),
+    ("Obsolete07.CashReceipt07", "21840c59-e26f-4caa-8b91-81a885b08a30", _I),
+    ("Obsolete07.TaxCode07", "f6913cf9-9d2f-4f08-9edd-b29d2a363fe3", _I),
+    ("Obsolete08.Plugin08", "7ee80b9a-f0a6-45eb-8f36-70dda3070312", _I),
+    ("Obsolete09.SalesInvoiceTemplate09", "0b96900e-552d-4d14-a070-9086e44f188d", _I),
+    ("Obsolete10.SampleChartOfAccounts10", "d50d33a6-f7a7-4002-9250-6a26efae9988", _I),
+    ("Obsolete11.GeneralSettings11", "2518d618-03dd-474b-ac66-5192f9df2b66", _I),
+    ("Obsolete13.CapitalControlAccount13", "910bd356-43fc-456f-915e-4ac3615c0ead", _I),
+    ("Obsolete13.RetainedEarningsConversionBalance13", "01c00313-4790-451e-ae05-1ad6fc6fa476", _I),
+    ("Obsolete13.TaxPayableConversionBalance13", "89b898c8-d5f1-4cff-9a56-93120a92c89e", _I),
+    ("Obsolete14.TransactionExchangeRate14", "8d36efb6-e17e-499c-974a-712db5968324", _I),
+    ("Obsolete16.UnclearedPayment16", "5cabad9a-a31a-4713-9d82-d568d45f471f", _I),
+    ("Obsolete16.UnclearedReceipt16", "0db83cbb-95cc-47a2-9016-71ddbe3da223", _I),
+    ("Obsolete18.ClassifiedBalanceSheetAssetGroup18", "44364250-7db1-4fc7-bca5-da641e5cb125", _I),
+    ("Obsolete18.ClassifiedBalanceSheetLiabilityGroup18", "ade4affa-d566-4e69-97a7-8a986422f950", _I),
+    ("Obsolete18.ControlAccount18", "c1666d5c-0363-408d-9ecd-66b75db8e538", _I),
+    ("Obsolete18.GeneralLedgerAccount18", "c5e1f94a-c15a-400f-9428-e4ccbd2aaf47", _I),
+    ("Obsolete18.MultiStepIncomeStatementGroup18", "877159c9-e587-430c-bbfd-ea3db132fb66", _I),
+    ("Obsolete18.MultiStepIncomeStatementTotal18", "9a8a03cc-14a4-46ed-8875-dc0e0fc9f3b2", _I),
+    ("Obsolete21.CountryAustraliaGstCalculationWorksheet21", "1f89eb6a-de29-4697-ae53-b5eda52560f7", _I),
+    ("Obsolete21.CountryNetherlandsVatReturn21", "748804f8-d6a0-492e-a264-4e4646b5d839", _I),
+    ("Obsolete21.CountryUnitedKingdomVatReturn21", "b0be5c01-8c5c-47c2-a763-c729f0645cd3", _I),
+    ("Obsolete22.BankAccount22", "c862a781-56eb-4e92-ac9a-563667d0752c", _I),
+    ("Obsolete22.CashAccount22", "6ef63462-17e4-40f0-8428-dee773825dec", _I),
+    ("Obsolete23.ControlAccountForCashAccounts23", "0ad8c1f6-d2dc-4d8f-83f2-583c162fb352", _I),
+    ("Obsolete24.PurchaseInvoiceItem24", "4872d932-30bc-4f46-a27d-96a93a224789", _I),
+    ("Obsolete24.SalesInvoiceItem24", "02693518-0c86-464a-9c3d-333053885034", _I),
+    ("Obsolete25.PurchaseInvoiceItem25", "a5c544dd-579f-42e5-9039-1e1f3cc60376", _I),
+    ("Obsolete25.SalesInvoiceItem25", "3e2e733d-f34d-4b8d-b4ee-3f2e012a92e8", _I),
+    ("Obsolete26.PurchaseOrderTemplate26", "2f777546-9a69-44ec-90bf-56c38563b100", _I),
+    ("Obsolete26.SalesInvoiceTemplate26", "55c81ff0-2892-41fb-bff8-3fef6debba85", _I),
+    ("Obsolete26.SalesQuoteTemplate26", "2903bbf5-6c43-4fbf-9eef-9b239b784f87", _I),
+    ("Obsolete29.CountryUnitedKingdomVatFlatRateTaxCode29", "b79737d6-d925-4813-96b2-72bd3ba69a05", _I),
+    ("Obsolete30.DateNumberFormat30", "beee8855-c7e8-4568-8c10-9146972c2ce3", _I),
+    ("Obsolete32.CustomTheme32", "517a0621-ae92-4104-b9fe-c90563da34e1", _I),
+    ("Obsolete32.PdfTemplate32", "81a959a7-67f7-4139-b2f0-890e1f1bd2de", _I),
+    ("Obsolete32.ViewTemplate32", "fca69b5a-f453-4a7f-a9dc-a51c16f4e402", _I),
+    ("Obsolete32.WindowFacedEnvelope32", "955304b5-effc-491b-818c-959499448a4d", _I),
+    ("Obsolete33.Payment33", "cb120a14-83cf-46e9-b05f-6725342310ad", _I),
+    ("Obsolete33.Receipt33", "8a995f93-a7a7-4297-a3b6-35a339a5ae0d", _I),
+    ("Obsolete34.PurchaseInvoiceOverpaymentFix34", "a0ef856b-8e18-43a3-91af-9b085abe5574", _I),
+    ("Obsolete34.SalesInvoiceOverpaymentFix34", "a94200fd-d1f6-4a09-ab71-707f362d4a15", _I),
+    ("Obsolete35.ExchangeRates35", "0a3d2c60-4bed-418f-b0ee-c8a479e62174", _I),
+    ("Obsolete36.DeliveryNotesDefaultNotes36", "28b482b6-c22e-4333-a9e8-ad727d057f4b", _I),
+    ("Obsolete36.SalesInvoiceDefaultNotes36", "8e9ee26c-e685-4aaf-8a11-da5068e09a25", _I),
+    ("Obsolete36.SalesQuoteDefaultNotes36", "66fb2adf-55a5-4d02-a3f6-3b4440ee010c", _I),
+    ("Obsolete37.PurchaseOrderAmountsTaxInclusiveDefault37", "7ad7d874-9084-4c7e-a4ee-bd80936d8999", _I),
+    ("Obsolete37.SalesInvoiceAmountsTaxInclusiveDefault37", "061a37e0-5d8b-4d76-b149-c3df6401611a", _I),
+    ("Obsolete37.SalesInvoiceDefaultDueDate37", "d2400a96-6537-4b04-a349-4d4513e836b6", _I),
+    ("Obsolete37.SalesQuoteDefaultHeading37", "888da62a-d33c-42f6-b15e-39c151306135", _I),
+    ("Obsolete39.ActivationKey39", "9c3968b2-d79a-4134-837a-b906a4ee0c60", _I),
+    ("Obsolete40.OutOfPocketExpensePayor40", "69e98f0a-fa50-4185-b06d-e32edfb06771", _I),
+    ("Obsolete41.BankReconciliationStatement41", "6f964580-74e7-47f8-ba95-d104545fb371", _I),
+    ("Obsolete42.BankPayment42", "091e11d8-29dd-4207-8cd5-ee5b169b4560", _I),
+    ("Obsolete42.BankReceipt42", "ee6594b8-b0f9-4f02-9cbf-94418d6270e0", _I),
+    ("Obsolete43.CashPayment43", "a2adda4e-4767-4cb2-a452-8f5507070e69", _I),
+    ("Obsolete43.CashReceipt43", "ce976453-4e11-4457-875c-361e44edb7d2", _I),
+    ("Obsolete44.CashTransaction44", "60996786-a5dd-49fc-8899-c124dcb982fd", _I),
+    ("Obsolete45.CustomField45", "6d9fd5d0-3ed9-4741-88fb-4d83f937705f", _I),
+    ("Obsolete46.CustomTaxReport46", "15f9edf9-53bd-4432-8dbf-dcaf425e57c4", _I),
+    ("Obsolete47.InBuiltTaxCode47", "d7ea8299-1479-43ac-a237-a3a513a3986b", _I),
+    ("Obsolete50.FixedAssetDepreciation50", "2e8089f0-eda0-41c1-b3d2-2593d1c6eac2", _I),
+    ("Obsolete51.IntangibleAssetAmortization51", "476672a0-db0c-405a-ae04-09497f23dc9c", _I),
+    ("Obsolete52.BillableExpense", "5859f372-7469-4cff-b7b1-3155fdf1ca2e", _I),
+    ("Obsolete55.CustomReport", "ef59dc06-d91a-4319-8d51-de215f15c8e4", _I),
+    ("Obsolete56.Business", "3dd0b8c5-72a0-4257-8857-557bed47a59d", _I),
+    ("Obsolete57.Email", "3b1da65d-85f0-4264-b128-b79c21348fee", _I),
+    ("Obsolete58.DateFormat", "9514eb71-8e8b-4d91-b58b-76a5ce7e21d4", _I),
+    ("Obsolete58.FirstDayOfWeek", "81e2618b-2d7a-40ae-989a-a70981566692", _I),
+    ("Obsolete58.Language", "b05acce7-06ba-414c-a88c-b2cf9881569e", _I),
+    ("Obsolete58.NumberFormat", "7bf18ff5-d0a5-4413-8268-dbc463316c57", _I),
+    ("Obsolete59.TaxSummary2", "c26047fb-f59a-42ee-9a5a-26a471c094a6", _I),
+    ("Obsolete60.UserPermissions", "a4ad8967-717f-4ad7-9909-d24afba2f7e4", _I),
+    ("Obsolete61.Equity", "97f97d83-3cc9-42e9-9c21-5ecff81fb0cb", _I),
+    ("Obsolete62.ProfitAndLossStatementBuiltInAccount", "8d92f526-af35-4552-af6e-4b403b0cc52f", _I),
+    ("Obsolete63.BalanceSheetBuiltInAccount", "cbc9e14d-660e-4ed9-935a-fe1005b2a430", _I),
+    ("Obsolete65.CustomReport", "8653b8ac-a43d-485f-a2e3-edbc76add6a5", _I),
+    ("Obsolete66.ReceiptOrPayment", "699401fe-23fd-4b52-9699-b88b36fa6b26", _I),
+    ("Obsolete67.BankRule", "79694e0a-65f6-47b2-a655-2007c11c3122", _I),
+    ("Obsolete68.Figure", "9f669c59-5b9e-476b-93b0-116d8b8dcf9e", _I),
+    ("Obsolete70.Email", "238ed44a-1d0f-490b-b17f-abce6ed9f25a", _I),
+    ("Obsolete71.EmailTemplate", "5841ea5a-fc02-4f67-83f3-9b23c5b28241", _I),
+    ("Obsolete72.Obsolete", "2ed8987e-6e9b-496d-bacb-ee9d62a3a7ba", _I),
+    ("Obsolete72.StartDate", "76ed5255-f1a8-463a-8132-2b58c68300c1", _I),
+    ("Obsolete73.Extensions", "002b86a3-554e-4a86-9395-6c6575d1d055", _I),
+    ("Obsolete74.ReportTransformation", "91c2bcbb-1f8c-4aa1-82fd-0ab38c97fb14", _I),
+    ("Obsolete75.License", "874bce81-e976-4323-bfcd-b2412868c34a", _I),
+    ("Obsolete77.BuiltInTheme", "6b7eef68-b106-4c68-81de-51efdb54c0dd", _I),
+    ("Obsolete78.BalanceSheetCashOnHandAccount", "a084e4be-981b-4b7e-8331-56b0eb3a6729", _I),
+    ("Obsolete78.CashAccount", "25064eec-02ab-46f3-b71f-f8e78ad4ca45", _I),
+    ("Obsolete78.CashAccountSummary", "7da84a1e-e6dc-4618-8cb6-e6e39e68de8a", _I),
+    ("Obsolete78.ControlAccountForCashAccounts", "a3543f94-6c02-4050-95ff-ff2802a59ed4", _I),
+    ("Obsolete79.AutomaticTransactions", "6f5ac0d9-ec74-4d5e-a9d8-74162f2ce040", _I),
+    ("Obsolete80.InventoryRevaluation", "7248ce93-de18-41e8-b566-3fb4bd7623a8", _I),
+    ("Obsolete80.InventoryRevaluationWorksheet", "c4f5eb3c-45ea-424d-aa25-ee25dad0cf80", _I),
+    ("Obsolete81.BusinessLogo", "096d0af9-df72-425d-aae8-d59c0497f119", _N),
+    ("Obsolete82.DynamicRollingRecalculations", "dc7cee2e-2db4-4c63-9c49-5447d9f242a4", _I),
+    ("Obsolete83.CurrencyRevaluation", "4e960f93-2fd5-4846-a357-9dc9e6385406", _I),
+    ("Obsolete83.ForeignCurrencyRevaluationWorksheet", "4e639a4a-53d4-4796-b924-aa446a94d15f", _I),
+    ("Obsolete83.ProfitAndLossStatementAccountRealizedCurrencyGainsLosses", "23bce57f-902d-4729-9f3f-ad657d853a4b", _I),
+    ("Obsolete83.ProfitAndLossStatementAccountUnrealizedCurrencyGainsLosses", "7c7906cc-1311-46be-a20b-5cdbbe7dce8a", _I),
+    ("Obsolete84.BalanceSheetInvestmentsMarketValueIncrement", "ebdcff44-67e4-4ad3-9489-b27253347674", _I),
+    ("Obsolete84.InvestmentRevaluation", "a7dcf4fb-8d5c-4a71-a9b1-812ffdd753e9", _I),
+    ("Obsolete84.InvestmentRevaluationWorksheet", "c92218ab-45d8-4d76-b6b1-084398107b8e", _I),
+    ("Obsolete84.ProfitAndLossStatementUnrealizedInvestmentGainsLosses", "11955564-c54a-4ca4-9bac-ac7a518654b2", _I),
+    ("Obsolete84.UnrealizedInvestmentGainsSummary", "24bc5086-8ac4-42e0-9af6-d97242f75209", _I),
+    ("Obsolete85.EinvoiceMe", "12e0885e-65c0-4a5c-85d6-98b4b3865518", _I),
+    ("Obsolete86.FreightInItem", "3458c24f-2a5f-4dcf-9de7-7340b1463d9c", _I),
+    ("Obsolete87.InventoryRevaluation", "13cefbaa-8f29-4c41-b53d-d0daf1837b54", _I),
+    ("Obsolete88.User", "8112e1a9-fe00-47c4-9d7a-2d034f8a1f34", _I),
+    ("Obsolete90.BankFeedProvider", "72658ef1-cf0d-4d68-bcbb-219304a8180e", _I),
+)
+
+CONTENT_TYPES: dict[str, CoverageClass] = {guid: coverage for _, guid, coverage in _ROWS + _OBSOLETE}
+TYPE_NAMES: dict[str, str] = {guid: name for name, guid, _ in _ROWS + _OBSOLETE}
+GUIDS: dict[str, str] = {name: guid for name, guid, _ in _ROWS + _OBSOLETE}
 
 # Celerp entity each carried type becomes, and what a loss-mapped type loses.
 TARGETS: dict[str, str] = {
@@ -366,4 +504,7 @@ NOTES: dict[str, str] = {
     "DefaultInventoryLocation": "Stock held here is carried at the company's default location; the location name is not carried.",
     "InventoryUnitCost": "Sets the cost of each sale and delivery; the unit cost itself is not carried.",
     "LockDate": "Installed as the company lock date when the migration finishes.",
-}
+    "Obsolete81.BusinessLogo": ("The business logo an earlier Manager version stored. Celerp has no company logo, so "
+                                "it is not carried."),
+} | {name: ("Stored by an earlier Manager version. Manager's upgrade moved what it held into current records, "
+            "and current Manager no longer reads it.") for name, _, coverage in _OBSOLETE if coverage == _I}

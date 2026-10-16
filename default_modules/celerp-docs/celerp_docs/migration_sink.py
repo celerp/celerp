@@ -272,6 +272,7 @@ def _doc_record(
         "status": statuses[record.status],
         "contact_id": contact_id,
         "contact_name": names.get(contact_id) if contact_id else None,
+        "contact_billing_address": record.metadata.get("billing_address"),
         "ref_id": record.ref,
         "doc_number": record.ref,
         "issue_date": record.issue_date.isoformat() if record.issue_date else None,
