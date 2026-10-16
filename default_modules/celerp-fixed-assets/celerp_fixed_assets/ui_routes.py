@@ -74,6 +74,12 @@ def _money_th(label: str):
     return Th(label, cls="cell--number")
 
 
+def _detail_table(rows: list[tuple[str, object]]) -> FT:
+    """A label and value table; a value given as its own cell (money) keeps that cell."""
+    return Table(Tbody(*[Tr(Th(label), value if getattr(value, "tag", None) == "td" else Td(value))
+                         for label, value in rows]), cls="data-table detail-table")
+
+
 def _postable(chart: list[dict]) -> list[dict]:
     """Accounts a journal line can post to: active, with no accounts under them."""
     parents = {a.get("parent_code") for a in chart}
@@ -142,9 +148,8 @@ def _preview(action: str, result: dict, currency: str) -> FT:
     if result.get("classification"):
         parts += _correction_preview(result, currency)
     if "gain_or_loss" in result:
-        parts.append(Table(Tbody(*[Tr(Th(t(f"fixed_assets.{k}")), _money_td(result[k], currency))
-                                   for k in ("depreciation", "carrying_amount", "gain_or_loss")]),
-                           cls="data-table detail-table"))
+        parts.append(_detail_table([(t(f"fixed_assets.{k}"), _money_td(result[k], currency))
+                                    for k in ("depreciation", "carrying_amount", "gain_or_loss")]))
     journals = result.get("journals") or []
     parts += [_lines_table(je.get("lines") or [], currency) for je in journals]
     for month in result.get("months") or []:
@@ -493,7 +498,7 @@ def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | st
     rows = [(t("fixed_assets.disposal_date"), _text(latest.get("effective_date"))),
             (t("fixed_assets.reason"), t(f"fixed_assets.disposal_reason.{latest.get('reason')}")),
             (t("fixed_assets.note"), _text(latest.get("note"))),
-            (t("fixed_assets.gain_or_loss"), _money(latest.get("gain_or_loss"), currency)),
+            (t("fixed_assets.gain_or_loss"), _money_td(latest.get("gain_or_loss"), currency)),
             (t("fixed_assets.journal"), A(t("fixed_assets.journal"),
                                           href=f"/accounting?{urlencode({'q': latest['journal_id']})}")
              if latest.get("journal_id") else empty_mark())]
@@ -501,8 +506,7 @@ def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | st
                     P(t("fixed_assets.undo_disposal_hint"), cls="settings-hint"),
                     review_label=t("fixed_assets.undo_disposal"))
     return Div(H2(t("fixed_assets.disposal_title"), cls="section-title"),
-               Table(Tbody(*[Tr(Th(label), Td(value)) for label, value in rows]), cls="data-table detail-table"),
-               undo, cls="detail-card section-card", id=f"fa-disposal-{asset_id}")
+               _detail_table(rows), undo, cls="detail-card section-card", id=f"fa-disposal-{asset_id}")
 
 
 def _sale_card(asset: dict, sale: dict, currency: str) -> FT | str:
@@ -513,14 +517,17 @@ def _sale_card(asset: dict, sale: dict, currency: str) -> FT | str:
     asset_id = asset["id"]
     hidden = Input(type="hidden", name="asset_id", value=asset_id)
     rows = [(t("fixed_assets.status"), t(f"fixed_assets.sale_state.{sale['state']}")),
-            (t("fixed_assets.sale_invoice"), A(sale["invoice_number"], href=_doc_href(sale["invoice_id"]))),
+            (t("fixed_assets.sale_invoice"), sale["invoice_number"] if sale.get("draft_deleted")
+             else A(sale["invoice_number"], href=_doc_href(sale["invoice_id"]))),
             (t("fixed_assets.sale_date"), _text(sale.get("date"))),
             (t("fixed_assets.buyer"), _text(sale.get("contact_name"))),
-            (t("fixed_assets.proceeds"), _money(sale.get("proceeds"), currency)),
-            (t("fixed_assets.credited"), _money(sale.get("credited"), currency)),
-            (t("fixed_assets.remaining"), _money(sale.get("remaining"), currency)),
-            (t("fixed_assets.sale_carrying_amount"), _money(sale.get("carrying_amount"), currency)),
-            (t("fixed_assets.gain_or_loss"), _money(sale.get("gain_or_loss"), currency))]
+            (t("fixed_assets.proceeds"), _money_td(sale.get("proceeds"), currency))]
+    if sale["state"] != "pending":
+        # Only a completed sale can be credited.
+        rows += [(t("fixed_assets.credited"), _money_td(sale.get("credited"), currency)),
+                 (t("fixed_assets.remaining"), _money_td(sale.get("remaining"), currency))]
+    rows += [(t("fixed_assets.sale_carrying_amount"), _money_td(sale.get("carrying_amount"), currency)),
+             (t("fixed_assets.gain_or_loss"), _money_td(sale.get("gain_or_loss"), currency))]
     parts: list[FT] = [H2(t("fixed_assets.sale_title"), cls="section-title")]
     if sale.get("draft_deleted"):
         parts.append(Div(Strong(t("fixed_assets.sale_draft_deleted")), " ", t("fixed_assets.sale_draft_deleted_hint"),
@@ -529,7 +536,7 @@ def _sale_card(asset: dict, sale: dict, currency: str) -> FT | str:
         parts.append(P(t("fixed_assets.sale_pending_hint", invoice=sale["invoice_number"]), cls="settings-hint"))
     if sale.get("problem"):
         parts.append(Div(sale["problem"], cls="flash flash--error"))
-    parts.append(Table(Tbody(*[Tr(Th(label), Td(value)) for label, value in rows]), cls="data-table detail-table"))
+    parts.append(_detail_table(rows))
     if (sale.get("journal") or {}).get("lines"):
         parts += [H4(t("fixed_assets.sale_journal_" + ("pending" if sale["state"] == "pending" else "posted"))),
                   _lines_table(sale["journal"]["lines"], currency)]
@@ -670,8 +677,7 @@ def _asset_cell(asset: dict, field: str) -> FT:
 def _details_card(asset: dict) -> FT:
     return Div(
         H2(t("fixed_assets.details"), cls="section-title"),
-        Table(Tbody(*[Tr(Th(t(f"fixed_assets.{f}")), _asset_cell(asset, f)) for f in DESCRIPTIVE_FIELDS]),
-              cls="data-table detail-table"),
+        _detail_table([(t(f"fixed_assets.{f}"), _asset_cell(asset, f)) for f in DESCRIPTIVE_FIELDS]),
         cls="detail-card section-card", id="fa-details",
     )
 
@@ -685,9 +691,7 @@ def _figures_card(asset: dict, class_name: str, currency: str) -> FT:
              ("accumulated_impairment", "fixed_assets.accumulated_impairment"), ("nbv", "fixed_assets.nbv")]
     return Div(
         H2(t("fixed_assets.figures"), cls="section-title"),
-        Table(Tbody(*[Tr(Th(label), Td(value)) for label, value in rows],
-                    *[Tr(Th(t(key)), _money_td(asset.get(field), currency)) for field, key in money]),
-              cls="data-table detail-table"),
+        _detail_table(rows + [(t(key), _money_td(asset.get(field), currency)) for field, key in money]),
         cls="detail-card section-card",
     )
 
@@ -1376,14 +1380,13 @@ def setup_ui_routes(app) -> None:
                                empty_state_cta(t("fixed_assets.run_missing"), t("fixed_assets.runs_title"),
                                                "/fixed-assets/runs"),
                                title_key="fixed_assets.runs_title")
-        summary = Table(Tbody(
-            Tr(Th(t("fixed_assets.status")), Td(t(f"fixed_assets.run_status.{record['status']}"))),
-            Tr(Th(t("label.total")), _money_td(record.get("total"), currency)),
+        summary = _detail_table([
+            (t("fixed_assets.status"), t(f"fixed_assets.run_status.{record['status']}")),
+            (t("label.total"), _money_td(record.get("total"), currency)),
             # The journal's source label in accounting reads the same: "Depreciation <month>".
-            Tr(Th(t("fixed_assets.journal")),
-               Td(*[A(f"{t('fixed_assets.movement.run')} {month}", href=f"/accounting?{urlencode({'q': j})}")
-                    for j in record.get("journal_ids") or []] or [empty_mark()]))),
-            cls="data-table detail-table")
+            (t("fixed_assets.journal"),
+             Td(*[A(f"{t('fixed_assets.movement.run')} {month}", href=f"/accounting?{urlencode({'q': j})}")
+                  for j in record.get("journal_ids") or []] or [empty_mark()]))])
         parts: list[FT] = [Div(summary, cls="detail-card section-card")]
         if record.get("exceptions"):
             parts.append(Div(H2(t("fixed_assets.held_title"), cls="section-title"),
@@ -1577,8 +1580,7 @@ def setup_ui_routes(app) -> None:
                  Span(*[A(f"{t('fixed_assets.journal')} {n}", href=f"/accounting?{urlencode({'q': j})}",
                           cls="link-list-item") for n, j in enumerate(record.get("journals") or [], 1)]
                       or [empty_mark()]))]
-        parts: list[FT] = [Div(Table(Tbody(*[Tr(Th(label), Td(value)) for label, value in rows]),
-                                     cls="data-table detail-table"), cls="detail-card section-card")]
+        parts: list[FT] = [Div(_detail_table(rows), cls="detail-card section-card")]
         if record.get("prior_detail"):
             parts.append(Div(H2(t("fixed_assets.prior_years_title"), cls="section-title"),
                              _restated_table(record["prior_detail"], currency), cls="detail-card section-card"))

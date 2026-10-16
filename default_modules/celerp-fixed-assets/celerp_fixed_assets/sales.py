@@ -41,9 +41,10 @@ _REVERSES = ("void", "revert")
 
 
 def doc_number(state: dict | None, doc_id: str) -> str:
-    """What a document is called: its number, else its draft reference."""
+    """What a document is called: its number, else its draft reference (a deleted draft's id
+    carries that reference)."""
     state = state or {}
-    return str(state.get("doc_number") or state.get("ref_id") or doc_id)
+    return str(state.get("doc_number") or state.get("ref_id") or doc_id.removeprefix("doc:"))
 
 
 def _money(value: Decimal) -> str:
