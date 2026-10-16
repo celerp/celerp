@@ -57,11 +57,15 @@ from ui.components.table import (EMPTY, breadcrumbs, bulk_toolbar, display_cell,
 from ui.config import get_token as _token
 from ui.i18n import refusal_text, t
 
+from celerp_fixed_assets.operations import DESCRIPTIVE_FIELDS, RESPONSIBLE
+
 log = logging.getLogger(__name__)
+
+# The asset fields edited in place on its page.
+_EDITABLE = (*DESCRIPTIVE_FIELDS, RESPONSIBLE)
 
 PER_PAGE = 50
 MANUAL_PREFIX = "je:manual:"
-DESCRIPTIVE_FIELDS = ("name", "description", "serial", "make", "model", "notes")
 
 
 # ── Shared pieces ────────────────────────────────────────────────────────────
@@ -935,15 +939,22 @@ def _movements_table(items: list[dict], currency: str) -> FT:
                  Tbody(*rows), cls="data-table")
 
 
-def _asset_cell(asset: dict, field: str) -> FT:
-    return display_cell(asset["id"], field, asset.get(field), "text",
-                        edit_url=f"/fixed-assets/assets/{quote(asset['id'], safe=':')}/field/{field}/edit")
+async def _members(token: str) -> dict[str, str]:
+    """The company's active members by id, each shown by name (else email)."""
+    return {u["id"]: u.get("name") or u["email"] for u in (await api.get_users(token))["items"] if u.get("is_active")}
 
 
-def _details_card(asset: dict) -> FT:
+def _asset_cell(asset: dict, field: str, members: dict[str, str]) -> FT:
+    url = f"/fixed-assets/assets/{quote(asset['id'], safe=':')}/field/{field}/edit"
+    if field == RESPONSIBLE:
+        return display_cell(asset["id"], field, asset.get(field), "select", label_map=members, edit_url=url)
+    return display_cell(asset["id"], field, asset.get(field), "text", edit_url=url)
+
+
+def _details_card(asset: dict, members: dict[str, str]) -> FT:
     return Div(
         H2(t("fixed_assets.details"), cls="section-title"),
-        _detail_table([(t(f"fixed_assets.{f}"), _asset_cell(asset, f)) for f in DESCRIPTIVE_FIELDS]),
+        _detail_table([(t(f"fixed_assets.{f}"), _asset_cell(asset, f, members)) for f in _EDITABLE]),
         cls="detail-card section-card", id="fa-details",
     )
 
@@ -1607,6 +1618,7 @@ def setup_ui_routes(app) -> None:
                    A(t("fixed_assets.year_end_title"), href="/fixed-assets/year-end", cls="btn btn--secondary"),
                    A(t("fixed_assets.corrections_title"), href="/fixed-assets/corrections", cls="btn btn--secondary"),
                    A(t("fixed_assets.runs_title"), href="/fixed-assets/runs", cls="btn btn--secondary"),
+                   A(t("fixed_assets.checks_title"), href="/fixed-assets/checks", cls="btn btn--secondary"),
                    A(t("fixed_assets.register_from_bills"), href="/fixed-assets/intake", cls="btn btn--secondary"),
                    A(t("fixed_assets.add_asset"), href="/fixed-assets/assets/new", cls="btn btn--primary"))
         if not found["items"] and not params:
@@ -1817,6 +1829,8 @@ def setup_ui_routes(app) -> None:
                      if asset.get("parent_id") else None)
             locations = ({loc["id"]: loc["name"] for loc in (await api.get_locations(token))["items"]}
                          if asset.get("placements") else {})
+            members = await _members(token)
+            physical = await physical_cards(request, token, asset)
         except APIError as e:
             return await _refused(request, e, "fixed_assets.title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (asset["number"], None)])
@@ -1878,10 +1892,10 @@ def setup_ui_routes(app) -> None:
                            _exception_card(asset, currency) if asset.get("exception") else "",
                            _sale_card(asset, sale, currency),
                            _disposal_card(asset, movements, currency),
-                           Div(_details_card(asset),
+                           Div(_details_card(asset, members),
                                _figures_card(asset, _class_names(classes).get(asset.get("class_id")), currency),
                                cls="detail-grid"),
-                           "" if asset.get("transferred_from") else _sources_card(asset, currency), *extra,
+                           "" if asset.get("transferred_from") else _sources_card(asset, currency), *physical, *extra,
                            Div(H2(t("fixed_assets.movements"), cls="section-title"),
                                _movements_table(movements, currency), cls="detail-card section-card"),
                            Div(H2(t("fixed_assets.undo"), cls="section-title"), undo,
@@ -1890,25 +1904,28 @@ def setup_ui_routes(app) -> None:
 
     async def _asset_field_cell(token: str, asset_id: str, field: str) -> FT:
         asset = await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}")
-        return _asset_cell(asset, field)
+        return _asset_cell(asset, field, await _members(token) if field == RESPONSIBLE else {})
 
     @app.get("/fixed-assets/assets/{asset_id}/field/{field}/edit")
     async def asset_field_edit(request: Request, asset_id: str, field: str):
         token = _token(request)
-        if not token or field not in DESCRIPTIVE_FIELDS:
+        if not token or field not in _EDITABLE:
             return P(t("fixed_assets.error"), cls="cell-error")
         try:
             asset = await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}")
+            members = await _members(token) if field == RESPONSIBLE else None
         except APIError as e:
             return P(_error_text(e), cls="cell-error")
         url = f"/fixed-assets/assets/{quote(asset_id, safe=':')}/field/{field}"
-        return editable_cell(asset_id, field, asset.get(field), "text", patch_url=url, restore_url=f"{url}/display",
-                             aria_label=t(f"fixed_assets.{field}"))
+        choice = ({"cell_type": "select", "options": list(members), "label_map": members, "searchable": True}
+                  if members is not None else {"cell_type": "text"})
+        return editable_cell(asset_id, field, asset.get(field), patch_url=url, restore_url=f"{url}/display",
+                             aria_label=t(f"fixed_assets.{field}"), **choice)
 
     @app.get("/fixed-assets/assets/{asset_id}/field/{field}/display")
     async def asset_field_display(request: Request, asset_id: str, field: str):
         token = _token(request)
-        if not token or field not in DESCRIPTIVE_FIELDS:
+        if not token or field not in _EDITABLE:
             return P(t("fixed_assets.error"), cls="cell-error")
         try:
             return await _asset_field_cell(token, asset_id, field)
@@ -1918,7 +1935,7 @@ def setup_ui_routes(app) -> None:
     @app.patch("/fixed-assets/assets/{asset_id}/field/{field}")
     async def asset_field_patch(request: Request, asset_id: str, field: str):
         token = _token(request)
-        if not token or field not in DESCRIPTIVE_FIELDS:
+        if not token or field not in _EDITABLE:
             return P(t("fixed_assets.error"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", "")).strip() or None
@@ -1927,9 +1944,10 @@ def setup_ui_routes(app) -> None:
             asset = await api.fixed_assets_get(token, path)
             asset = await api.fixed_assets_send(token, "PATCH", path, {
                 "changes": {field: value}, "previous": {field: asset.get(field)}})
+            members = await _members(token) if field == RESPONSIBLE else {}
         except APIError as e:
             return Td(P(_error_text(e), cls="cell-error"))
-        return _asset_cell(asset, field)
+        return _asset_cell(asset, field, members)
 
     @app.post("/fixed-assets/assets/{asset_id}/skip")
     async def skip_month(request: Request, asset_id: str):
@@ -3023,7 +3041,9 @@ def setup_ui_routes(app) -> None:
             return Td(P(_error_text(e), cls="cell-error"))
         return _class_cell(cls, field, [])
 
+    from celerp_fixed_assets.ui_physical import physical_cards, setup_physical_routes
     from celerp_fixed_assets.ui_reports import setup_report_routes
 
+    setup_physical_routes(app)
     setup_report_routes(app)
     log.info("celerp-fixed-assets: UI routes registered")

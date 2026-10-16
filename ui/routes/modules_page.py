@@ -44,6 +44,7 @@ from ui.routes.account import (
     GATE_UNREACHABLE, _DISMISS_GATE_MODAL, account_gate, gate_modal_response,
 )
 from celerp.modules.outcome import NOT_REPORTED
+from celerp.services.app_paths import is_app_local_path
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
@@ -1180,8 +1181,15 @@ def setup_routes(app):
         labels = {m.get("name"): m.get("label") or m.get("name") for m in modules}
         also = [labels.get(n, n) for n in result.get("also_enabled") or []]
         notice = t("modules.also_enabled", lang, names=", ".join(also)) if also else None
-        return _toast(_local_panel(modules, lang=lang, owner=await api.installation_owner(token)),
-                      notice, error=False)
+        response = _toast(_local_panel(modules, lang=lang, owner=await api.installation_owner(token)),
+                          notice, error=False)
+        # Turned on from another page (a module's own "Turn on"): go back there, or to this
+        # page when the module needs a restart before it can be used. A next leaving the app
+        # is ignored.
+        back = str((await request.form()).get("next") or "")
+        if is_app_local_path(back):
+            response.headers["HX-Redirect"] = "/modules" if result.get("restart_required") else back
+        return response
 
     @app.post("/modules/{module_name}/disable")
     async def module_disable(request: Request, module_name: str):

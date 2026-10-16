@@ -14,5 +14,8 @@
   "labels.selected": "Sélectionné : {ids}{more}",
   "labels.template_deleted": "Modèle supprimé.",
   "labels.template_not_found": "Modèle introuvable.",
-  "labels.width_example": "par ex. 50"
+  "labels.width_example": "par ex. 50",
+  "labels.no_source_template": "Aucun modèle d'étiquette ne convient encore à {name}.",
+  "labels.create_source_template": "Créer le modèle {name}",
+  "labels.ask_for_source_template": "Demandez à un administrateur de créer un modèle {name}."
 }

@@ -1057,9 +1057,10 @@ async def _fetch_unit_map(api_base: str, token: str) -> dict[str, dict]:
 
 
 def _printable_label_sheet(
-    items: list[dict], template: dict | None, unit_map: dict[str, dict] | None = None
+    items: list[dict], template: dict | None, unit_map: dict[str, dict] | None = None, back_url: str = "/inventory"
 ) -> object:
-    """Return a minimal printable HTML page that auto-triggers window.print()."""
+    """Return a minimal printable HTML page that auto-triggers window.print(); Back returns to
+    ``back_url``, an in-app path."""
     from html import escape as html_escape
 
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
@@ -1208,7 +1209,7 @@ body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
 <body>
 <div class="no-print">
   <button onclick="window.print()" style="padding:8px 16px;cursor:pointer;font-size:14px;">🖨 Print</button>
-  <button onclick="window.location.href='/inventory'" style="padding:8px 16px;cursor:pointer;font-size:14px;margin-left:8px;">← Back</button>
+  <a href="{html_escape(back_url)}" style="padding:8px 16px;cursor:pointer;font-size:14px;margin-left:8px;">Back</a>
 </div>
 <div class="label-sheet">{"".join(label_rows)}</div>
 <script>window.onload = function() {{ window.print(); }};</script>
@@ -1738,6 +1739,86 @@ def setup_ui_routes(app) -> None:
             template = templates[0] if templates else None
         unit_map = await _fetch_unit_map(_api_base(request), token)
         return _printable_label_sheet(items_data, template, unit_map)
+
+    # ── Other records (the label_source slot) ────────────────────────────────
+
+    def _source_args(params) -> tuple[str, list[str], str]:
+        from celerp.services.app_paths import is_app_local_path
+
+        back = str(params.get("back") or "")
+        return (str(params.get("source") or ""), [i for i in str(params.get("ids") or "").split(",") if i.strip()],
+                back if is_app_local_path(back) else "/")
+
+    async def _source_sheet(token: str, source: str, ids: list[str], template: dict, back: str):
+        import ui.api_client as api
+
+        return _printable_label_sheet(await api.label_source_rows(token, source, ids), template, None, back_url=back)
+
+    async def _source_page(request: Request, back: str, *content):
+        from fasthtml.common import A
+
+        return await base_shell(*content, A(t("label.back"), href=back, cls="btn btn--secondary"),
+                                title="Labels - Celerp", nav_active="labels", request=request)
+
+    async def _source_error(request: Request, back: str, e):
+        from fasthtml.common import P
+
+        if e.status == 401:
+            return RedirectResponse("/login", status_code=302)
+        return await _source_page(request, back, P(e.detail, cls="flash flash--error"))
+
+    @app.get("/labels/print-source")
+    async def labels_print_source(request: Request):
+        """Labels for records another module registers: printed on the company's first
+        template that fits them, else an offer to create the module's own template."""
+        import ui.api_client as api
+        from fasthtml.common import Button, Div, Form, H1, Input, P
+        from celerp.services.permissions import role_has_permission
+        from ui.config import get_role
+
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        source, ids, back = _source_args(request.query_params)
+        try:
+            info = await api.label_source(token, source)
+            if info["templates"]:
+                chosen = request.query_params.get("template_id")
+                template = next((tpl for tpl in info["templates"] if tpl["id"] == chosen), info["templates"][0])
+                return await _source_sheet(token, source, ids, template, back)
+            settings = (await api.get_company(token)).get("settings") or {}
+        except api.APIError as e:
+            return await _source_error(request, back, e)
+        name = t(info["label_key"])
+        if role_has_permission(settings, get_role(request), "manage_labels"):
+            offer = Form(Input(type="hidden", name="source", value=source),
+                         Input(type="hidden", name="ids", value=",".join(ids)),
+                         Input(type="hidden", name="back", value=back),
+                         Button(t("labels.create_source_template", name=name), type="submit", cls="btn btn--primary"),
+                         method="post", action="/labels/print-source/template")
+        else:
+            offer = P(t("labels.ask_for_source_template", name=name))
+        return await _source_page(request, back, H1(name, cls="page-title"),
+                                  Div(P(t("labels.no_source_template", name=name)), offer, cls="section-card"))
+
+    @app.post("/labels/print-source/template")
+    async def labels_print_source_template(request: Request):
+        """Create the module's own template for its records, then print on it."""
+        import ui.api_client as api
+
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        source, ids, back = _source_args(await request.form())
+        try:
+            info = await api.label_source(token, source)
+            preset = info["preset"]
+            fields = [{**f, "label": t(f["label"]) if f.get("label") else ""} for f in preset.get("fields") or []]
+            template = await api.create_label_template(token, {**preset, "name": t(info["label_key"]),
+                                                               "fields": fields})
+            return await _source_sheet(token, source, ids, template, back)
+        except api.APIError as e:
+            return await _source_error(request, back, e)
 
     log.info("celerp-labels: UI routes registered")
 

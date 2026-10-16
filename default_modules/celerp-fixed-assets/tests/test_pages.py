@@ -389,13 +389,14 @@ async def test_dispose_from_the_asset_page_and_undo_it(owner_ui):
                                                            "reason": "scrapped"})
     assert href == f"/fixed-assets/assets/{car}"
     page = await owner_ui.get(href)
-    assert t("fixed_assets.disposal_title") in page.text and t("fixed_assets.status.disposed") in page.text
+    disposal_card = f'<h2 class="section-title">{t("fixed_assets.disposal_title")}</h2>'
+    assert disposal_card in page.text and t("fixed_assets.status.disposed") in page.text
     assert t("fixed_assets.movement.disposal") in page.text and t("fixed_assets.undo_disposal") in page.text
     assert f'href="/fixed-assets/assets/{car}/dispose"' not in page.text, "a disposed asset offers no second disposal"
 
     await _review_and_confirm(owner_ui, "undo-disposal", {"asset_id": car})
     page = await owner_ui.get(href)
-    assert t("fixed_assets.disposal_title") not in page.text and t("fixed_assets.status.active") in page.text
+    assert disposal_card not in page.text and t("fixed_assets.status.active") in page.text
 
 
 async def test_dispose_of_several_from_the_register(owner_ui):

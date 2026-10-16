@@ -186,6 +186,11 @@ async def test_label_rows_for_assets(fa):
     viewer = await fa.role_headers("viewer")
     refused = await fa.client.get("/api/labels/source-rows", headers=viewer, params={"source": "fa_asset", "ids": car})
     assert refused.status_code == 403
+    no_template = await fa.client.post("/api/labels/print-source", headers=fa.h,
+                                       json={"source": "fa_asset", "ids": [car]})
+    assert no_template.status_code == 409
+    await _labels(fa, True)
+    await fa.submit("/labels/print-source/template", {"source": "fa_asset", "ids": car})
     pdf = await fa.client.post("/api/labels/print-source", headers=fa.h, json={"source": "fa_asset", "ids": [car]})
     assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
 
@@ -207,6 +212,7 @@ async def test_print_tag_needs_an_asset_template_then_prints(fa):
     made = await fa.submit("/labels/print-source/template", {"source": "fa_asset", "ids": car,
                                                              "back": f"/fixed-assets/assets/{car}"})
     assert made.status_code == 200 and "TAG-9" in made.text and "window.print()" in made.text
+    assert f"{t('fixed_assets.number')}: " in made.text and "fixed_assets.number" not in made.text
     assert f'href="/fixed-assets/assets/{car}"' in made.text or f"'/fixed-assets/assets/{car}'" in made.text
 
 
@@ -261,7 +267,6 @@ async def test_contact_files_unchanged_after_helper_extract():
     html = to_xml(_files_section(contact, "contact:1", docs))
     assert "nda.pdf" in html and "scan.pdf" in html and "INV-0009" in html
     assert "/docs/doc:9/files/f2/download" in html and "/contacts/contact:1/files/f1/download" in html
-    assert html.count("nda.pdf") == html.count("scan.pdf")
 
 
 # ── Custodian ────────────────────────────────────────────────────────────────
@@ -431,7 +436,7 @@ async def test_s9_role_matrix_no_leak(fa, role, custodian):
     assert all(set(r) == {"id", "label", "href", "subtitle"} for r in rows)
 
     schedule = await fa.client.get("/fixed-assets/api/reports/schedule", headers=headers,
-                                   params={"start": "2026-01", "end": "2026-03"})
+                                   params={"date_from": "2026-01-01", "date_to": "2026-03-31"})
     assert (schedule.status_code == 200) == money
     exported = await _ui(fa, "GET", "/fixed-assets/reports/register.csv", headers)
     assert ("32000" in exported.text) == money

@@ -14,5 +14,8 @@
   "labels.selected": "Selected: {ids}{more}",
   "labels.template_deleted": "Template deleted.",
   "labels.template_not_found": "Template not found.",
-  "labels.width_example": "e.g. 50"
+  "labels.width_example": "e.g. 50",
+  "labels.no_source_template": "No label template fits {name} yet.",
+  "labels.create_source_template": "Create {name} template",
+  "labels.ask_for_source_template": "Ask an admin to create a {name} template."
 }

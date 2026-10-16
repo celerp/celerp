@@ -713,6 +713,11 @@
   "file_tag.shipping": "መላኪያ",
   "file_tag.spec_sheets": "የዝርዝር ሉሆች",
   "file_tag.view_360": "360° ሚዲያ",
+  "file_tag.warranties": "ዋስትናዎች",
+  "file_tag.manuals": "መመሪያዎች",
+  "file_tag.insurance": "ኢንሹራንስ",
+  "file_tag.maintenance": "ጥገና",
+  "file_tag.disposal": "ማስወገድ",
   "filter.all_time": "ሁሉም ጊዜ",
   "filter.last_12m": "ያለፉት 12 ወራት",
   "filter.last_3m": "ያለፉት 3 ወራት",
@@ -5674,5 +5679,15 @@
   "documents.err_asset_lines_unhandled": "ይህ ሰነድ ቋሚ ንብረትን ይሸጣል ወይም ይቀንሳል። ለመጨረስ ቋሚ ንብረቶችን ያብሩ።",
   "event.fa.taxbook.recorded": "የንብረት የግብር መዝገብ ተቀይሯል",
   "event.fa.taxyear.recorded": "የግብር ዓመት ተዘግቷል ወይም እንደገና ተከፍቷል",
-  "event.fa.yearend.recorded": "የዓመት መጨረሻ ንጥል ምልክት ተደርጎበታል"
+  "event.fa.yearend.recorded": "የዓመት መጨረሻ ንጥል ምልክት ተደርጎበታል",
+  "event.fa.asset.file_attached": "ፋይል ወደ ቋሚ ንብረት ታክሏል",
+  "event.fa.asset.file_tagged": "የቋሚ ንብረት ፋይል መለያ ተሰጠው",
+  "event.fa.asset.file_described": "የቋሚ ንብረት ፋይል ተገለጸ",
+  "event.fa.asset.file_deleted": "ፋይል ከቋሚ ንብረት ተወግዷል",
+  "event.fa.asset.confirmed": "ጠባቂው ቋሚ ንብረቱን እንደያዘ አረጋግጧል",
+  "event.fa.asset.problem": "በቋሚ ንብረት ላይ ችግር ተዘግቧል",
+  "event.fa.check.recorded": "ቋሚ ንብረት ተፈትሿል",
+  "event.fa.check.removed": "የቋሚ ንብረት ፍተሻ ተወግዷል",
+  "modules.turn_on": "አብራ",
+  "nav.my_assets": "የእኔ ንብረቶች"
 }

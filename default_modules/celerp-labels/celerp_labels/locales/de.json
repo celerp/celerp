@@ -14,5 +14,8 @@
   "labels.selected": "Ausgewählt: {ids}{more}",
   "labels.template_deleted": "Vorlage gelöscht.",
   "labels.template_not_found": "Vorlage nicht gefunden.",
-  "labels.width_example": "z. B. 50"
+  "labels.width_example": "z. B. 50",
+  "labels.no_source_template": "Noch keine Etikettenvorlage passt zu {name}.",
+  "labels.create_source_template": "Vorlage {name} anlegen",
+  "labels.ask_for_source_template": "Bitten Sie einen Administrator, eine Vorlage {name} anzulegen."
 }

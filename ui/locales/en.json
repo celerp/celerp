@@ -831,6 +831,11 @@
   "file_tag.shipping": "Shipping",
   "file_tag.spec_sheets": "Spec Sheets",
   "file_tag.view_360": "360° Media",
+  "file_tag.warranties": "Warranties",
+  "file_tag.manuals": "Manuals",
+  "file_tag.insurance": "Insurance",
+  "file_tag.maintenance": "Maintenance",
+  "file_tag.disposal": "Disposal",
   "filter.all_time": "All time",
   "filter.last_12m": "Last 12 months",
   "filter.last_3m": "Last 3 months",
@@ -5674,5 +5679,15 @@
   "documents.err_asset_lines_unhandled": "This document sells or credits a fixed asset. Turn on Fixed Assets to finish it.",
   "event.fa.taxbook.recorded": "Tax book of an asset changed",
   "event.fa.taxyear.recorded": "Tax year closed or reopened",
-  "event.fa.yearend.recorded": "Year-end item marked"
+  "event.fa.yearend.recorded": "Year-end item marked",
+  "event.fa.asset.file_attached": "File added to a fixed asset",
+  "event.fa.asset.file_tagged": "Fixed asset file tagged",
+  "event.fa.asset.file_described": "Fixed asset file described",
+  "event.fa.asset.file_deleted": "File removed from a fixed asset",
+  "event.fa.asset.confirmed": "Custodian confirmed holding a fixed asset",
+  "event.fa.asset.problem": "Problem reported on a fixed asset",
+  "event.fa.check.recorded": "Fixed asset checked",
+  "event.fa.check.removed": "Fixed asset check removed",
+  "modules.turn_on": "Turn on",
+  "nav.my_assets": "My assets"
 }

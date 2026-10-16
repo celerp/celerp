@@ -14,5 +14,8 @@
   "labels.selected": "Terpilih: {ids}{more}",
   "labels.template_deleted": "Templat dihapus.",
   "labels.template_not_found": "Templat tidak ditemukan.",
-  "labels.width_example": "misalnya 50"
+  "labels.width_example": "misalnya 50",
+  "labels.no_source_template": "Belum ada templat label yang cocok untuk {name}.",
+  "labels.create_source_template": "Buat templat {name}",
+  "labels.ask_for_source_template": "Minta admin membuat templat {name}."
 }

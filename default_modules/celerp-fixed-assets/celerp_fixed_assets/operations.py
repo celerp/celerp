@@ -27,13 +27,15 @@ from celerp.models.projections import Projection
 from celerp.services.money import books_currency
 from celerp_fixed_assets import setup, sources
 from celerp_fixed_assets.projections import BUCKETS
-from celerp_fixed_assets.store import _emit, _entities, _state
+from celerp_fixed_assets.store import _emit, _entities, _state, recorded
 from fastapi import HTTPException
 from sqlalchemy import select
 
 MODULE = "celerp-fixed-assets"
 REGISTER_MODES = ("separate", "quantity", "expense", "maintenance")
-DESCRIPTIVE_FIELDS = ("name", "description", "serial", "make", "model", "notes")
+DESCRIPTIVE_FIELDS = ("name", "tag", "description", "serial", "make", "model", "notes")
+# The member who hears about problems a custodian reports on the asset.
+RESPONSIBLE = "responsible_user_id"
 _OP_KEY = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _NOT_INTENT = ("preview", "fingerprint", "op_key")
 
@@ -84,8 +86,7 @@ def movements_query(company_id, asset_id: str):
 
 async def asset_movements(session, company_id, asset_id: str) -> list[dict]:
     """An asset's movements in the order they were recorded."""
-    rows = (await session.execute(movements_query(company_id, asset_id))).all()
-    return sorted(({"id": eid, **s} for eid, s in rows), key=lambda m: int(m["id"].rsplit(":", 1)[1]))
+    return recorded((await session.execute(movements_query(company_id, asset_id))).all())
 
 
 async def _next_numbers(session, company_id, count: int) -> list[str]:
@@ -558,6 +559,27 @@ async def add_financial_details(session, company_id, user_id, asset_id: str, bod
 # ── Descriptive edits ────────────────────────────────────────────────────────
 
 
+def by_tag(assets: list[tuple[str, dict]], tag: str) -> tuple[str, dict] | None:
+    """The asset carrying ``tag``, matched without case, else the asset numbered ``tag``: a
+    tag is what is scanned, and an asset without one is scanned by its number."""
+    needle = tag.strip().casefold()
+    live = [(eid, s) for eid, s in assets if s.get("status") != "undone"]
+    return (next(((eid, s) for eid, s in live if (s.get("tag") or "").casefold() == needle), None)
+            or next(((eid, s) for eid, s in live if (s.get("number") or "").casefold() == needle), None))
+
+
+async def _tag_free(session, company_id, asset_id: str, tag: str) -> None:
+    """Refuse a tag another of the company's assets carries, or that is another asset's number.
+    The caller holds the company lock (lock_projections), so two assets never claim one tag."""
+    held = by_tag(await _entities(session, company_id, "fa_asset"), tag)
+    if held is None or held[0] == asset_id:
+        return
+    number = held[1].get("number")
+    if (held[1].get("tag") or "").casefold() == tag.strip().casefold():
+        raise setup.unprocessable(f"Tag {held[1]['tag']} is already on {number}.")
+    raise setup.unprocessable(f"{number} is another asset's number, so it cannot be a tag here.")
+
+
 async def update_asset(session, company_id, user_id, asset_id: str, body: dict) -> dict:
     """Change an asset's descriptive fields, or the account its depreciation is charged to
     (which takes the right to post journals), refused when ``previous`` no longer holds."""
@@ -577,7 +599,7 @@ async def update_asset(session, company_id, user_id, asset_id: str, body: dict) 
         raise setup.unprocessable(
             "This cost comes from its source lines. Use Replace source to change it." if row.state.get("sources")
             else "Use Correct to change the cost.")
-    unknown = set(changes) - {*DESCRIPTIVE_FIELDS, "depreciation_account"}
+    unknown = set(changes) - {*DESCRIPTIVE_FIELDS, RESPONSIBLE, "depreciation_account"}
     if unknown:
         raise setup.unprocessable(f"{sorted(unknown)[0]} cannot be edited here.")
     if any(row.state.get(k) != v for k, v in previous.items()):
@@ -585,6 +607,13 @@ async def update_asset(session, company_id, user_id, asset_id: str, body: dict) 
     changes = {k: (str(v).strip() or None) if v is not None else None for k, v in changes.items()}
     if "name" in changes and not changes["name"]:
         raise setup.unprocessable("An asset needs a name.")
+    if changes.get("tag"):
+        await _tag_free(session, company_id, asset_id, changes["tag"])
+    if changes.get(RESPONSIBLE):
+        from celerp_fixed_assets.moves import member_name
+
+        if not await member_name(session, company_id, changes[RESPONSIBLE]):
+            raise setup.unprocessable("The responsible person is not a member of this company. Choose a member.")
     if account and changes["depreciation_account"]:
         await require_destinations(session, company_id, {changes["depreciation_account"]})
     changes = {k: v for k, v in changes.items() if row.state.get(k) != v}

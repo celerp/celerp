@@ -18,7 +18,7 @@ from datetime import date
 
 from celerp_fixed_assets import projections, runs, setup, sources
 from celerp_fixed_assets.operations import _dec, _move, conflict
-from celerp_fixed_assets.store import _entities
+from celerp_fixed_assets.store import _entities, movements_by_asset
 
 OPENING_STATES = ("finished", "kept_open")
 
@@ -36,9 +36,7 @@ async def move_cutover(session, company_id, user_id, fa: dict, new_cut: str) -> 
             raise conflict(f"{line['description']} ({line['date']}) is registered, and the new cutover {new_cut} "
                            "would put it in the opening balances. Undo it first, or choose a later period.")
     assets = dict(await _entities(session, company_id, "fa_asset"))
-    movements: dict[str, list[dict]] = {}
-    for movement_id, mv in await _entities(session, company_id, "fa_movement"):
-        movements.setdefault(mv["asset_id"], []).append({"id": movement_id, **mv})
+    movements = await movements_by_asset(session, company_id)
     redate = []
     for asset_id, moved in sorted(movements.items()):
         number = assets.get(asset_id, {}).get("number") or asset_id

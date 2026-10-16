@@ -73,6 +73,14 @@ fixed_asset_rules  {"kind", "key", "handler": "module.path:Name"}: a country rul
                    class or function returning the rule object, whose interface that
                    module documents (celerp_fixed_assets.calc.rules). A rule applies to
                    a company only while it uses the contributing module
+label_source       {"entity_type", "handler", "permission", "label_key", "keys", "preset"}:
+                   records other than items that celerp-labels can print a label for.
+                   handler names `async def handler(*, session, company_id, ids) -> list[dict]`,
+                   called with exactly those keyword arguments, returning one row per id it
+                   found (the row's "id" plus a value for every name in "keys"); permission
+                   gates who may print them; preset is the label template offered for
+                   creation when the company has none whose fields the rows can fill (its
+                   fields' labels are i18n keys, translated when the template is created)
 search_provider    Contributes rows to the global search bar. Exactly one descriptor
                    dict per module: {"handler", "result_key", "permission"}. handler
                    names an in-module "module.path:function" resolved and validated
@@ -85,16 +93,21 @@ search_provider    Contributes rows to the global search bar. Exactly one descri
 Every slot entry is checked before any of its module's code runs
 (celerp.modules.loader): an entry is a dict; every key its slot reads has the
 type it is read as (nav "key" text, "group" text or None, "order" a number;
-send_to_targets "doc_type" and catalog_channel "id" non-empty text, catalog_channel
+send_to_targets "doc_type", catalog_channel "id" and label_source "entity_type"
+non-empty text, label_source "keys" a list of text and "preset" a dict, catalog_channel
 "can_create" true or false; category_schema "category" non-empty text and
 "fields" a list of field definitions; bulk_action "action_type" "htmx" or
 "navigate"; "label" and "label_key" text); a "permission" (or catalog_channel
 "write_permission"), when present, is a key from the permission registry; a
-"requires_connector", when set, is a connector id; nav "href" / "settings_href"
-and bulk_action "form_action" (required) are app-local paths; and every callable
-an entry names is the module's own code, async exactly where core awaits it,
+"requires_connector", when set, is a connector id; nav "href" / "settings_href" /
+"probe_href" and bulk_action "form_action" (required) are app-local paths; and every
+callable an entry names is the module's own code, async exactly where core awaits it,
 and takes exactly the keyword arguments core passes where the slot names them
-(inventory_in_production, item_lineage_guard, demo_records, doc_asset_lines).
+(inventory_in_production, item_lineage_guard, demo_records, doc_asset_lines,
+label_source). A nav entry with a "probe_href" is shown only when that page,
+loaded with the sidebar, answers with the link: for an entry whose audience
+depends on the records themselves (the assets in a member's care), not on a
+permission.
 
 Whether a company uses a module is one rule, celerp.modules.registry.uses_module.
 item_action, pricing_action, doc_detail_actions, doc_detail_badges, bulk_action,
@@ -125,7 +138,7 @@ SLOT_NAMES = frozenset({
     "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
     "projection_handler", "on_company_created", "on_modules_ready", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
-    "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules",
+    "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
 })
 
 # Slots only Celerp's own (first-party) modules may fill; admission refuses any
@@ -165,7 +178,7 @@ def resolve_handler(dotted: str) -> Callable:
 # Slots whose handler core calls directly: a contribution without a
 # "module.path:function" handler would fail every such call, so it is refused here.
 _HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard", "demo_records",
-                            "doc_asset_lines"})
+                            "doc_asset_lines", "label_source"})
 
 
 def check(slot: str, contribution: dict) -> None:

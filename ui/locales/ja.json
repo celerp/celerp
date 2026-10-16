@@ -660,6 +660,11 @@
   "file_tag.shipping": "配送",
   "file_tag.spec_sheets": "仕様書",
   "file_tag.view_360": "360°メディア",
+  "file_tag.warranties": "保証書",
+  "file_tag.manuals": "取扱説明書",
+  "file_tag.insurance": "保険",
+  "file_tag.maintenance": "保守",
+  "file_tag.disposal": "除却",
   "filter.all_time": "全期間",
   "filter.last_12m": "過去12ヶ月",
   "filter.last_3m": "過去3ヶ月",
@@ -5674,5 +5679,15 @@
   "documents.err_asset_lines_unhandled": "この書類は固定資産を売却または減額します。完了するには固定資産を有効にしてください。",
   "event.fa.taxbook.recorded": "資産の税務台帳を変更",
   "event.fa.taxyear.recorded": "課税年度を締めまたは再開",
-  "event.fa.yearend.recorded": "年度末項目をマーク"
+  "event.fa.yearend.recorded": "年度末項目をマーク",
+  "event.fa.asset.file_attached": "固定資産にファイルを追加",
+  "event.fa.asset.file_tagged": "固定資産のファイルにタグ付け",
+  "event.fa.asset.file_described": "固定資産のファイルに説明を追加",
+  "event.fa.asset.file_deleted": "固定資産からファイルを削除",
+  "event.fa.asset.confirmed": "保管者が固定資産の保有を確認",
+  "event.fa.asset.problem": "固定資産の問題を報告",
+  "event.fa.check.recorded": "固定資産を実査",
+  "event.fa.check.removed": "固定資産の実査を削除",
+  "modules.turn_on": "オンにする",
+  "nav.my_assets": "自分の資産"
 }

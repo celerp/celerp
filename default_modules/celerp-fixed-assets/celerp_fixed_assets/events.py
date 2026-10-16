@@ -5,7 +5,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from celerp.events.schemas import register_event_type
+from celerp.events.schemas import (
+    EntityFileAttached, EntityFileDeleted, EntityFileDescriptionUpdated, EntityFileTagged, register_event_type)
 
 
 class _Event(BaseModel):
@@ -163,6 +164,24 @@ class YearEndRecorded(_Event):
     marks: dict
 
 
+class Confirmed(_Event):
+    confirmed: dict
+
+
+class ProblemReported(_Event):
+    problem: dict
+
+
+class CheckRecorded(_Event):
+    asset_id: str
+    user_id: str
+    date: str
+
+
+class CheckRemoved(_Event):
+    user_id: str
+
+
 EVENTS: dict[str, type[BaseModel]] = {
     "fa.class.created": ClassCreated,
     "fa.class.updated": Changes,
@@ -195,6 +214,14 @@ EVENTS: dict[str, type[BaseModel]] = {
     "fa.taxbook.recorded": TaxBookRecorded,
     "fa.taxyear.recorded": TaxYearRecorded,
     "fa.yearend.recorded": YearEndRecorded,
+    "fa.asset.file_attached": EntityFileAttached,
+    "fa.asset.file_tagged": EntityFileTagged,
+    "fa.asset.file_described": EntityFileDescriptionUpdated,
+    "fa.asset.file_deleted": EntityFileDeleted,
+    "fa.asset.confirmed": Confirmed,
+    "fa.asset.problem": ProblemReported,
+    "fa.check.recorded": CheckRecorded,
+    "fa.check.removed": CheckRemoved,
 }
 
 

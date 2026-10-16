@@ -28,7 +28,7 @@ from celerp_fixed_assets import setup
 from celerp_fixed_assets.calc import rules
 from celerp_fixed_assets.calc.tax import PoolInputs, TaxAssetInputs
 from celerp_fixed_assets.projections import REMEASUREMENTS, _dec, live
-from celerp_fixed_assets.store import _emit, _entities, _state
+from celerp_fixed_assets.store import _emit, _entities, _state, movements_by_asset
 
 _ZERO = Decimal(0)
 FIGURES = ("opening", "additions", "disposals", "allowance", "closing")
@@ -103,9 +103,7 @@ async def _assets(session, company_id, regime) -> list[_Asset]:
     classes = {c["id"]: c for c in await setup.classes(session, company_id, include_archived=True)}
     books = {s["asset_id"]: s for _, s in await _entities(session, company_id, "fa_taxbook")
              if s.get("regime") == regime.key}
-    movements: dict[str, list[dict]] = {}
-    for entity_id, state in await _entities(session, company_id, "fa_movement"):
-        movements.setdefault(state.get("asset_id"), []).append({"id": entity_id, **state})
+    movements = await movements_by_asset(session, company_id)
     categories = {c.key for c in regime.categories}
     out = []
     for asset_id, asset in sorted(await _entities(session, company_id, "fa_asset"),

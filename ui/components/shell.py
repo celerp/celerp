@@ -2543,6 +2543,10 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         label = t(label_key, lang) if label_key else item.get("label", "")
         href = item.get("href", "#")
         is_active = key == active or (not key and href.strip("/") == active)
+        if item.get("probe_href"):
+            # Shown only when its probe answers with the link (slots.py, nav probe_href).
+            return Div(hx_get=f"{item['probe_href']}?active={int(is_active)}", hx_trigger="load",
+                       hx_swap="outerHTML")
         return A(label, href=href, cls=f"nav-link {'nav-link--active' if is_active else ''}")
 
     sections: list[FT] = [_link(item) for item in top_level]

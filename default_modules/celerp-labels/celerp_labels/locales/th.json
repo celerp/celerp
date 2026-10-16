@@ -14,5 +14,8 @@
   "labels.selected": "เลือกแล้ว: {ids}{more}",
   "labels.template_deleted": "ลบเทมเพลตแล้ว",
   "labels.template_not_found": "ไม่พบเทมเพลต",
-  "labels.width_example": "เช่น 50"
+  "labels.width_example": "เช่น 50",
+  "labels.no_source_template": "ยังไม่มีแม่แบบป้ายที่ใช้กับ {name} ได้",
+  "labels.create_source_template": "สร้างแม่แบบ {name}",
+  "labels.ask_for_source_template": "ขอให้ผู้ดูแลระบบสร้างแม่แบบ {name}"
 }

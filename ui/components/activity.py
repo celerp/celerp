@@ -43,6 +43,8 @@ _EVENT_TYPES: tuple[str, ...] = (
     "fa.correction.requested", "fa.correction.applied", "fa.correction.withdrawn", "fa.correction.undone",
     "fa.review.recorded", "fa.review.status", "fa.recon.recorded",
     "fa.taxbook.recorded", "fa.taxyear.recorded", "fa.yearend.recorded",
+    "fa.asset.file_attached", "fa.asset.file_tagged", "fa.asset.file_described", "fa.asset.file_deleted",
+    "fa.asset.confirmed", "fa.asset.problem", "fa.check.recorded", "fa.check.removed",
     "doc.created", "doc.updated", "doc.finalized", "doc.paid", "doc.voided",
     "doc.sent", "doc.marked_sent", "doc.converted", "doc.converted_to_bill",
     "doc.payment.received", "doc.payment.refunded", "doc.payment.refund_reversed", "doc.payment.stripe_released",

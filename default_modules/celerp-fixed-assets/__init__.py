@@ -21,16 +21,56 @@ PLUGIN_MANIFEST = {
 
     # ── Extension slots ───────────────────────────────────────────────────────
     "slots": {
-        "nav": {
-            "group": "Finance",
-            "key": "fixed_assets",
-            "icon": "🏢",
-            "label": "Fixed assets",
-            "label_key": "nav.fixed_assets",
-            "href": "/fixed-assets",
-            "order": 53,
+        "nav": [
+            {
+                "group": "Finance",
+                "key": "fixed_assets",
+                "icon": "🏢",
+                "label": "Fixed assets",
+                "label_key": "nav.fixed_assets",
+                "href": "/fixed-assets",
+                "order": 53,
+                "permission": "view_fixed_assets",
+                "settings_href": "/settings/fixed-assets",
+            },
+            # Shown to whoever holds an asset as its custodian, whatever their role.
+            {
+                "group": None,
+                "key": "my_assets",
+                "icon": "🔑",
+                "label": "My assets",
+                "label_key": "nav.my_assets",
+                "href": "/fixed-assets/mine",
+                "probe_href": "/fixed-assets/mine/nav",
+                "order": 95,
+            },
+        ],
+        "label_source": {
+            "entity_type": "fa_asset",
+            "handler": "celerp_fixed_assets.labels_source:asset_tag_rows",
             "permission": "view_fixed_assets",
-            "settings_href": "/settings/fixed-assets",
+            "label_key": "fixed_assets.asset_tags",
+            "keys": ["number", "tag", "name", "class", "location", "in_service", "barcode"],
+            "preset": {
+                "name": "Asset tag",
+                "format": "50x25mm",
+                "orientation": "portrait",
+                "fields": [
+                    {"key": "barcode", "label": "", "type": "barcode", "x": 2, "y": 2, "barcode_height": 8},
+                    {"key": "barcode", "label": "", "type": "barcode_text", "x": 2, "y": 10.5},
+                    {"key": "number", "label": "fixed_assets.number", "type": "text", "x": 2, "y": 14,
+                     "fontSize": 7, "bold": True},
+                    {"key": "name", "label": "fixed_assets.name", "type": "text", "x": 2, "y": 17.5, "fontSize": 6},
+                    {"key": "location", "label": "fixed_assets.location", "type": "text", "x": 2, "y": 20.5,
+                     "fontSize": 6},
+                ],
+                "copies": 1,
+            },
+        },
+        "search_provider": {
+            "handler": "celerp_fixed_assets.search:global_search",
+            "result_key": "items",
+            "permission": "view_fixed_assets",
         },
         "projection_handler": [
             {"prefix": "fa.", "handler": "celerp_fixed_assets.projections:apply_fixed_asset_event"},

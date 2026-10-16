@@ -70,6 +70,31 @@ def apply_fixed_asset_event(state: dict, event_type: str, data: dict) -> dict:
     if event_type == "fa.skip.withdrawn":
         current.setdefault("skips", {}).pop(data["month"], None)
         return current
+    if event_type == "fa.asset.file_attached":
+        current.setdefault("files", []).append({
+            "id": data["file_id"], "filename": data["filename"], "mime": data.get("mime"), "size": data.get("size"),
+            "url": data.get("url", ""), "description": data.get("description") or "",
+            "document_tag": data.get("document_tag") or "", "uploaded_at": data.get("uploaded_at") or ""})
+        return current
+    if event_type in ("fa.asset.file_tagged", "fa.asset.file_described"):
+        field = "document_tag" if event_type == "fa.asset.file_tagged" else "description"
+        for f in current.get("files") or []:
+            if f.get("id") == data["file_id"]:
+                f[field] = data.get(field) or ""
+        return current
+    if event_type == "fa.asset.file_deleted":
+        current["files"] = [f for f in current.get("files") or [] if f.get("id") != data["file_id"]]
+        return current
+    if event_type == "fa.asset.confirmed":
+        current["confirmed"] = deepcopy(data["confirmed"])
+        return current
+    if event_type == "fa.asset.problem":
+        current.setdefault("problems", []).append(deepcopy(data["problem"]))
+        return current
+    if event_type == "fa.check.recorded":
+        return deepcopy(data)
+    if event_type == "fa.check.removed":
+        return {**current, "removed": True, "removed_by": data["user_id"]}
     if event_type == "fa.asset.exception":
         current["exception"] = deepcopy(data["exception"])
         return current

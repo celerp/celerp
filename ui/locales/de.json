@@ -660,6 +660,11 @@
   "file_tag.shipping": "Versand",
   "file_tag.spec_sheets": "Datenblätter",
   "file_tag.view_360": "360°-Medien",
+  "file_tag.warranties": "Garantien",
+  "file_tag.manuals": "Handbücher",
+  "file_tag.insurance": "Versicherung",
+  "file_tag.maintenance": "Wartung",
+  "file_tag.disposal": "Abgang",
   "filter.all_time": "Gesamter Zeitraum",
   "filter.last_12m": "Letzte 12 Monate",
   "filter.last_3m": "Letzte 3 Monate",
@@ -5674,5 +5679,15 @@
   "documents.err_asset_lines_unhandled": "Dieses Dokument verkauft ein Anlagegut oder schreibt es gut. Aktivieren Sie Anlagevermögen, um es abzuschließen.",
   "event.fa.taxbook.recorded": "Steuerbuch einer Anlage geändert",
   "event.fa.taxyear.recorded": "Steuerjahr abgeschlossen oder wieder geöffnet",
-  "event.fa.yearend.recorded": "Jahresabschlusspunkt markiert"
+  "event.fa.yearend.recorded": "Jahresabschlusspunkt markiert",
+  "event.fa.asset.file_attached": "Datei zu einer Anlage hinzugefügt",
+  "event.fa.asset.file_tagged": "Datei einer Anlage verschlagwortet",
+  "event.fa.asset.file_described": "Datei einer Anlage beschrieben",
+  "event.fa.asset.file_deleted": "Datei von einer Anlage entfernt",
+  "event.fa.asset.confirmed": "Verwahrer hat den Besitz einer Anlage bestätigt",
+  "event.fa.asset.problem": "Problem mit einer Anlage gemeldet",
+  "event.fa.check.recorded": "Anlage geprüft",
+  "event.fa.check.removed": "Prüfung einer Anlage entfernt",
+  "modules.turn_on": "Einschalten",
+  "nav.my_assets": "Meine Anlagen"
 }

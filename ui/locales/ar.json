@@ -660,6 +660,11 @@
   "file_tag.shipping": "شحن",
   "file_tag.spec_sheets": "أوراق المواصفات",
   "file_tag.view_360": "وسائط 360°",
+  "file_tag.warranties": "الضمانات",
+  "file_tag.manuals": "الأدلة",
+  "file_tag.insurance": "التأمين",
+  "file_tag.maintenance": "الصيانة",
+  "file_tag.disposal": "الاستبعاد",
   "filter.all_time": "كل الوقت",
   "filter.last_12m": "آخر 12 شهراً",
   "filter.last_3m": "آخر 3 أشهر",
@@ -5674,5 +5679,15 @@
   "documents.err_asset_lines_unhandled": "هذا المستند يبيع أصلًا ثابتًا أو يخصم منه. فعّل الأصول الثابتة لإكماله.",
   "event.fa.taxbook.recorded": "تغيير الدفتر الضريبي لأصل",
   "event.fa.taxyear.recorded": "إقفال سنة ضريبية أو إعادة فتحها",
-  "event.fa.yearend.recorded": "وضع علامة على بند نهاية السنة"
+  "event.fa.yearend.recorded": "وضع علامة على بند نهاية السنة",
+  "event.fa.asset.file_attached": "تمت إضافة ملف إلى أصل ثابت",
+  "event.fa.asset.file_tagged": "تم وسم ملف أصل ثابت",
+  "event.fa.asset.file_described": "تم وصف ملف أصل ثابت",
+  "event.fa.asset.file_deleted": "تمت إزالة ملف من أصل ثابت",
+  "event.fa.asset.confirmed": "أكد الحائز أنه يحتفظ بالأصل الثابت",
+  "event.fa.asset.problem": "تم الإبلاغ عن مشكلة في أصل ثابت",
+  "event.fa.check.recorded": "تم فحص أصل ثابت",
+  "event.fa.check.removed": "تمت إزالة فحص أصل ثابت",
+  "modules.turn_on": "تشغيل",
+  "nav.my_assets": "أصولي"
 }

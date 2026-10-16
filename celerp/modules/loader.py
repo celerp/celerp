@@ -2427,6 +2427,7 @@ _CALLABLE_SLOTS = {
     "background_loop": ("handler", True),
     "doc_asset_lines": ("handler", True),
     "fixed_asset_rules": ("handler", False),
+    "label_source": ("handler", True),
 }
 # Callable slots core calls with keyword arguments only, and those arguments. The
 # handler takes exactly these: no other parameter, none positional-only, and no
@@ -2438,13 +2439,14 @@ _HANDLER_KEYWORDS = {
     "demo_records": ("session", "company_id", "user_id"),
     "background_loop": (),
     "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),
+    "label_source": ("session", "company_id", "ids"),
 }
 # Entry keys naming a permission. Gating surfaces index the permission registry,
 # so a value outside it must never reach them.
 _PERMISSION_ENTRY_KEYS = ("permission", "write_permission")
 # Entry keys naming where a click goes, and whether the entry must carry the key.
 _DESTINATION_KEYS = {
-    "nav": {"href": False, "settings_href": False},
+    "nav": {"href": False, "settings_href": False, "probe_href": False},
     "bulk_action": {"form_action": True},
 }
 
@@ -2542,6 +2544,16 @@ def _keyword_validator(slot: str):
     return validate
 
 
+def _validate_label_source(pkg_path: Path, contribution) -> None:
+    """Raise :class:`ModuleLoadError` unless every label_source entry names its
+    row keys as non-empty texts and its handler takes the slot's keywords."""
+    for item in contribution if isinstance(contribution, list) else [contribution]:
+        if not item["keys"] or any(not isinstance(k, str) or not k for k in item["keys"]):
+            raise ModuleLoadError(
+                f"Slot 'label_source' keys must list the row's field names as text, not {item['keys']!r}.")
+    _keyword_validator("label_source")(pkg_path, contribution)
+
+
 # Per-slot checks beyond the entry keys every slot declares (_SLOT_ENTRY_KEYS),
 # each called as validate(pkg_path, contribution) at admission.
 _SLOT_VALIDATORS = {
@@ -2550,6 +2562,7 @@ _SLOT_VALIDATORS = {
     "category_schema": _validate_category_schema,
     "projection_handler": _validate_projection_prefixes,
     **{slot: _keyword_validator(slot) for slot in _HANDLER_KEYWORDS},
+    "label_source": _validate_label_source,
 }
 
 _BULK_ACTION_TYPES = frozenset({"htmx", "navigate"})
@@ -2584,9 +2597,11 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "background_loop": {},
     "doc_asset_lines": {},
     "fixed_asset_rules": {"kind": (_TEXT, True), "key": (_TEXT, True)},
+    "label_source": {"entity_type": (_TEXT, True), "label_key": (_TEXT, True), "keys": ((list,), True),
+                     "preset": ((dict,), True)},
 }
 _TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",
-               list: "a list", type(None): "None"}
+               list: "a list", dict: "a dict", type(None): "None"}
 
 
 def _is_type(value, types: tuple[type, ...]) -> bool:

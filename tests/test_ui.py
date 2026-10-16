@@ -15925,52 +15925,47 @@ class TestFilesSectionRenders:
         for inp in date_inputs:
             assert 'type="date"' not in inp, f"Date filter must use type=text, not type=date: {inp}"
 
-    def test_collect_contact_files_own_files_have_no_linked_ref(self):
-        """Contact-own files must have linked_ref='' (shown as '--' in UI)."""
-        from ui.routes.contacts import _collect_contact_files
-        contact = {"files": [{"id": "f1", "filename": "a.pdf"}]}
-        result = _collect_contact_files(contact, [])
+    def test_linked_files_own_files_have_no_linked_ref(self):
+        """Own files must have linked_ref='' (shown as '--' in UI)."""
+        from ui.components.files import linked_files
+        result = linked_files([{"id": "f1", "filename": "a.pdf"}], [])
         assert len(result) == 1
         assert result[0]["linked_ref"] == ""
         assert result[0]["linked_url"] == ""
 
-    def test_collect_contact_files_doc_files_get_linked_ref(self):
+    def test_linked_files_doc_files_get_linked_ref(self):
         """Files from related docs must carry linked_ref and linked_url."""
-        from ui.routes.contacts import _collect_contact_files
-        contact = {"files": []}
+        from ui.components.files import linked_files
         docs = [{"id": "d1", "entity_id": "d1", "ref_id": "INV-0042", "doc_number": "INV-0042",
                  "files": [{"id": "f2", "filename": "invoice.pdf"}]}]
-        result = _collect_contact_files(contact, docs)
+        result = linked_files([], docs)
         assert len(result) == 1
         assert result[0]["linked_ref"] == "INV-0042"
         assert result[0]["linked_url"] == "/docs/d1"
 
-    def test_collect_contact_files_deduplicates_by_id(self):
-        """Same file id must not appear twice even if present in both contact and doc."""
-        from ui.routes.contacts import _collect_contact_files
-        contact = {"files": [{"id": "shared", "filename": "dup.pdf"}]}
+    def test_linked_files_deduplicates_by_id(self):
+        """Same file id must not appear twice even if present in both own and doc files."""
+        from ui.components.files import linked_files
         docs = [{"id": "d1", "entity_id": "d1", "ref_id": "INV-001",
                  "files": [{"id": "shared", "filename": "dup.pdf"}]}]
-        result = _collect_contact_files(contact, docs)
+        result = linked_files([{"id": "shared", "filename": "dup.pdf"}], docs)
         assert len(result) == 1
 
-    def test_collect_contact_files_merges_both_sources(self):
-        """When contact has own files AND doc files, both appear in result."""
-        from ui.routes.contacts import _collect_contact_files
-        contact = {"files": [{"id": "cf1", "filename": "cert.pdf"}]}
+    def test_linked_files_merges_both_sources(self):
+        """When there are own files AND doc files, both appear in result."""
+        from ui.components.files import linked_files
         docs = [{"id": "d1", "entity_id": "d1", "ref_id": "PO-007",
                  "files": [{"id": "df1", "filename": "po.pdf"}]}]
-        result = _collect_contact_files(contact, docs)
+        result = linked_files([{"id": "cf1", "filename": "cert.pdf"}], docs)
         assert len(result) == 2
         ids = {r["id"] for r in result}
         assert ids == {"cf1", "df1"}
 
-    def test_collect_contact_files_empty_doc_has_no_files(self):
+    def test_linked_files_empty_doc_has_no_files(self):
         """Docs with no files list must not cause errors."""
-        from ui.routes.contacts import _collect_contact_files
-        contact = {"files": []}
+        from ui.components.files import linked_files
         docs = [{"id": "d1", "entity_id": "d1", "ref_id": "INV-001"}]  # no 'files' key
-        result = _collect_contact_files(contact, docs)
+        result = linked_files([], docs)
         assert result == []
 
     def test_enrich_doc_files_attaches_ref_and_url(self):

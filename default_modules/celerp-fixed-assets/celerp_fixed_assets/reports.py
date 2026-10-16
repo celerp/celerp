@@ -20,7 +20,7 @@ from celerp_fixed_assets import projections, recon, runs, setup, taxbooks
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.operations import _cents, _dec
 from celerp_fixed_assets.sales import _credited, doc_number
-from celerp_fixed_assets.store import _entities, _state
+from celerp_fixed_assets.store import _entities, _state, movements_by_asset
 
 _ZERO = Decimal(0)
 # The cost column each operation moves within the period; any other operation is an addition.
@@ -61,9 +61,7 @@ async def _range(session, company_id, date_from, date_to) -> tuple[dict, date, d
 
 async def _register(session, company_id) -> tuple[list[tuple[str, dict]], dict[str, list[dict]], dict]:
     assets = sorted(await _entities(session, company_id, "fa_asset"), key=lambda r: r[1].get("number") or "")
-    movements: dict[str, list[dict]] = {}
-    for entity_id, state in await _entities(session, company_id, "fa_movement"):
-        movements.setdefault(state.get("asset_id"), []).append({"id": entity_id, **state})
+    movements = await movements_by_asset(session, company_id)
     classes = {c["id"]: c for c in await setup.classes(session, company_id, include_archived=True)}
     return assets, movements, classes
 

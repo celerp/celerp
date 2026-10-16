@@ -660,6 +660,11 @@
   "file_tag.shipping": "การจัดส่ง",
   "file_tag.spec_sheets": "แผ่นข้อมูล",
   "file_tag.view_360": "สื่อ 360°",
+  "file_tag.warranties": "การรับประกัน",
+  "file_tag.manuals": "คู่มือ",
+  "file_tag.insurance": "ประกันภัย",
+  "file_tag.maintenance": "การบำรุงรักษา",
+  "file_tag.disposal": "การจำหน่าย",
   "filter.all_time": "ทั้งหมด",
   "filter.last_12m": "12 เดือนที่ผ่านมา",
   "filter.last_3m": "3 เดือนที่ผ่านมา",
@@ -5674,5 +5679,15 @@
   "documents.err_asset_lines_unhandled": "เอกสารนี้ขายหรือลดหนี้สินทรัพย์ถาวร เปิดใช้งานสินทรัพย์ถาวรเพื่อดำเนินการให้เสร็จ",
   "event.fa.taxbook.recorded": "เปลี่ยนสมุดภาษีของสินทรัพย์",
   "event.fa.taxyear.recorded": "ปิดหรือเปิดปีภาษีอีกครั้ง",
-  "event.fa.yearend.recorded": "ทำเครื่องหมายรายการสิ้นปี"
+  "event.fa.yearend.recorded": "ทำเครื่องหมายรายการสิ้นปี",
+  "event.fa.asset.file_attached": "เพิ่มไฟล์ในสินทรัพย์ถาวร",
+  "event.fa.asset.file_tagged": "ติดแท็กไฟล์ของสินทรัพย์ถาวร",
+  "event.fa.asset.file_described": "เพิ่มคำอธิบายไฟล์ของสินทรัพย์ถาวร",
+  "event.fa.asset.file_deleted": "ลบไฟล์ออกจากสินทรัพย์ถาวร",
+  "event.fa.asset.confirmed": "ผู้ดูแลยืนยันว่ายังถือสินทรัพย์ถาวร",
+  "event.fa.asset.problem": "แจ้งปัญหาของสินทรัพย์ถาวร",
+  "event.fa.check.recorded": "ตรวจนับสินทรัพย์ถาวร",
+  "event.fa.check.removed": "ลบการตรวจนับสินทรัพย์ถาวร",
+  "modules.turn_on": "เปิดใช้",
+  "nav.my_assets": "สินทรัพย์ของฉัน"
 }

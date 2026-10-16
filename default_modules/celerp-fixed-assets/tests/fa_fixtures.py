@@ -45,11 +45,13 @@ class FA:
 
         token = self.h["Authorization"].removeprefix("Bearer ")
 
-        def bridged(tok, timeout=10.0):
+        def bridged(tok=None, *, timeout=10.0, follow_redirects=True, bulk=False, headers=None):
+            auth = {"Authorization": f"Bearer {tok}"} if tok else {}
             return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
-                               headers={"Authorization": f"Bearer {tok}"}, follow_redirects=True)
+                               headers={**auth, **(headers or {})}, follow_redirects=follow_redirects)
 
-        with patch("ui.api_client._client", bridged):
+        # Every UI client into the API (interactive and file transfers) is built here.
+        with patch("ui.api_client._local_client", bridged):
             async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
                                    cookies={"celerp_token": token}) as ui:
                 return await ui.request(method, path, **kwargs)

@@ -660,6 +660,11 @@
   "file_tag.shipping": "Envio",
   "file_tag.spec_sheets": "Fichas técnicas",
   "file_tag.view_360": "Mídia 360°",
+  "file_tag.warranties": "Garantias",
+  "file_tag.manuals": "Manuais",
+  "file_tag.insurance": "Seguros",
+  "file_tag.maintenance": "Manutenção",
+  "file_tag.disposal": "Baixa",
   "filter.all_time": "Todo o período",
   "filter.last_12m": "Últimos 12 meses",
   "filter.last_3m": "Últimos 3 meses",
@@ -5674,5 +5679,15 @@
   "documents.err_asset_lines_unhandled": "Este documento vende ou credita um ativo imobilizado. Ative Ativos imobilizados para o concluir.",
   "event.fa.taxbook.recorded": "Livro fiscal de um ativo alterado",
   "event.fa.taxyear.recorded": "Ano fiscal encerrado ou reaberto",
-  "event.fa.yearend.recorded": "Item de fim de ano marcado"
+  "event.fa.yearend.recorded": "Item de fim de ano marcado",
+  "event.fa.asset.file_attached": "Arquivo adicionado a um ativo imobilizado",
+  "event.fa.asset.file_tagged": "Arquivo de ativo imobilizado marcado",
+  "event.fa.asset.file_described": "Arquivo de ativo imobilizado descrito",
+  "event.fa.asset.file_deleted": "Arquivo removido de um ativo imobilizado",
+  "event.fa.asset.confirmed": "O responsável confirmou que está com o ativo imobilizado",
+  "event.fa.asset.problem": "Problema relatado em um ativo imobilizado",
+  "event.fa.check.recorded": "Ativo imobilizado verificado",
+  "event.fa.check.removed": "Verificação de ativo imobilizado removida",
+  "modules.turn_on": "Ativar",
+  "nav.my_assets": "Os meus ativos"
 }

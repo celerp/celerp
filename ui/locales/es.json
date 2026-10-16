@@ -660,6 +660,11 @@
   "file_tag.shipping": "Envío",
   "file_tag.spec_sheets": "Fichas técnicas",
   "file_tag.view_360": "Medios 360°",
+  "file_tag.warranties": "Garantías",
+  "file_tag.manuals": "Manuales",
+  "file_tag.insurance": "Seguros",
+  "file_tag.maintenance": "Mantenimiento",
+  "file_tag.disposal": "Baja",
   "filter.all_time": "Todo el tiempo",
   "filter.last_12m": "Últimos 12 meses",
   "filter.last_3m": "Últimos 3 meses",
@@ -5674,5 +5679,15 @@
   "documents.err_asset_lines_unhandled": "Este documento vende o abona un activo fijo. Active Activos fijos para terminarlo.",
   "event.fa.taxbook.recorded": "Libro fiscal de un activo cambiado",
   "event.fa.taxyear.recorded": "Año fiscal cerrado o reabierto",
-  "event.fa.yearend.recorded": "Elemento de cierre de año marcado"
+  "event.fa.yearend.recorded": "Elemento de cierre de año marcado",
+  "event.fa.asset.file_attached": "Archivo añadido a un activo fijo",
+  "event.fa.asset.file_tagged": "Archivo de activo fijo etiquetado",
+  "event.fa.asset.file_described": "Archivo de activo fijo descrito",
+  "event.fa.asset.file_deleted": "Archivo eliminado de un activo fijo",
+  "event.fa.asset.confirmed": "El custodio confirmó que tiene el activo fijo",
+  "event.fa.asset.problem": "Problema informado en un activo fijo",
+  "event.fa.check.recorded": "Activo fijo verificado",
+  "event.fa.check.removed": "Verificación de activo fijo eliminada",
+  "modules.turn_on": "Activar",
+  "nav.my_assets": "Mis activos"
 }

@@ -660,6 +660,11 @@
   "file_tag.shipping": "Vận chuyển",
   "file_tag.spec_sheets": "Tờ thông số kỹ thuật",
   "file_tag.view_360": "Phương tiện 360°",
+  "file_tag.warranties": "Bảo hành",
+  "file_tag.manuals": "Sách hướng dẫn",
+  "file_tag.insurance": "Bảo hiểm",
+  "file_tag.maintenance": "Bảo trì",
+  "file_tag.disposal": "Thanh lý",
   "filter.all_time": "Tất cả thời gian",
   "filter.last_12m": "12 tháng qua",
   "filter.last_3m": "3 tháng qua",
@@ -5674,5 +5679,15 @@
   "documents.err_asset_lines_unhandled": "Chứng từ này bán hoặc ghi giảm một tài sản cố định. Bật Tài sản cố định để hoàn tất.",
   "event.fa.taxbook.recorded": "Đã thay đổi sổ thuế của tài sản",
   "event.fa.taxyear.recorded": "Đã khóa hoặc mở lại năm tính thuế",
-  "event.fa.yearend.recorded": "Đã đánh dấu mục cuối năm"
+  "event.fa.yearend.recorded": "Đã đánh dấu mục cuối năm",
+  "event.fa.asset.file_attached": "Đã thêm tệp vào tài sản cố định",
+  "event.fa.asset.file_tagged": "Đã gắn nhãn tệp của tài sản cố định",
+  "event.fa.asset.file_described": "Đã mô tả tệp của tài sản cố định",
+  "event.fa.asset.file_deleted": "Đã xóa tệp khỏi tài sản cố định",
+  "event.fa.asset.confirmed": "Người giữ đã xác nhận đang giữ tài sản cố định",
+  "event.fa.asset.problem": "Đã báo sự cố của tài sản cố định",
+  "event.fa.check.recorded": "Đã kiểm kê tài sản cố định",
+  "event.fa.check.removed": "Đã xóa lần kiểm kê tài sản cố định",
+  "modules.turn_on": "Bật",
+  "nav.my_assets": "Tài sản của tôi"
 }

@@ -45,7 +45,7 @@ from celerp_fixed_assets.calc.engine import (
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.operations import MODULE, _cents, _dec, _move, conflict
 from celerp_fixed_assets.projections import REMEASUREMENTS, live
-from celerp_fixed_assets.store import _emit, _entities, _state
+from celerp_fixed_assets.store import _emit, _entities, _state, movements_by_asset
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
@@ -365,9 +365,7 @@ class Charge:
 
 async def _charges(session, company_id, books: Books, through: int, start: int) -> list[Charge]:
     classes = {c["id"]: c for c in await setup.classes(session, company_id, include_archived=True)}
-    movements: dict[str, list[dict]] = {}
-    for entity_id, state in await _entities(session, company_id, "fa_movement"):
-        movements.setdefault(state.get("asset_id"), []).append({"id": entity_id, **state})
+    movements = await movements_by_asset(session, company_id)
     booked: dict[str, list[int]] = {}
     for line in await sources.intake(session, company_id):
         if line["kind"] == "depreciation":

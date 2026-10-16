@@ -660,6 +660,11 @@
   "file_tag.shipping": "Spedizione",
   "file_tag.spec_sheets": "Schede tecniche",
   "file_tag.view_360": "Media 360°",
+  "file_tag.warranties": "Garanzie",
+  "file_tag.manuals": "Manuali",
+  "file_tag.insurance": "Assicurazione",
+  "file_tag.maintenance": "Manutenzione",
+  "file_tag.disposal": "Dismissione",
   "filter.all_time": "Tutto il periodo",
   "filter.last_12m": "Ultimi 12 mesi",
   "filter.last_3m": "Ultimi 3 mesi",
@@ -5674,5 +5679,15 @@
   "documents.err_asset_lines_unhandled": "Questo documento vende o storna un cespite. Attiva Cespiti per completarlo.",
   "event.fa.taxbook.recorded": "Registro fiscale di un cespite modificato",
   "event.fa.taxyear.recorded": "Anno fiscale chiuso o riaperto",
-  "event.fa.yearend.recorded": "Voce di fine anno contrassegnata"
+  "event.fa.yearend.recorded": "Voce di fine anno contrassegnata",
+  "event.fa.asset.file_attached": "File aggiunto a un cespite",
+  "event.fa.asset.file_tagged": "File del cespite etichettato",
+  "event.fa.asset.file_described": "File del cespite descritto",
+  "event.fa.asset.file_deleted": "File rimosso da un cespite",
+  "event.fa.asset.confirmed": "Il custode ha confermato di avere il cespite",
+  "event.fa.asset.problem": "Problema segnalato su un cespite",
+  "event.fa.check.recorded": "Cespite verificato",
+  "event.fa.check.removed": "Verifica del cespite rimossa",
+  "modules.turn_on": "Attiva",
+  "nav.my_assets": "I miei cespiti"
 }

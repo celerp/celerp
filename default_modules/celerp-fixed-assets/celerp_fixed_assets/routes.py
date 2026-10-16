@@ -23,6 +23,7 @@ from celerp_fixed_assets import (
     additions, classtable, corrections, disposal, fixaccount, moves, opening, operations, recon, reclassify, remeasure, reports,
     runs, sales, setup, sources, taxbooks, transfer, yearend)
 from celerp_fixed_assets.events import register_events
+from celerp_fixed_assets.search import matching
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
 
@@ -50,7 +51,8 @@ def _shows_money(settings: dict, role: str) -> bool:
 
 def asset_out(asset_id: str, state: dict, *, money: bool = True) -> dict:
     """An asset as the API shows it: its figures, and its net book value."""
-    out = {"id": asset_id, **{k: v for k, v in state.items() if k not in ("op_key", "movement_count", "version")}}
+    out = {"id": asset_id, "files": [],
+           **{k: v for k, v in state.items() if k not in ("op_key", "movement_count", "version")}}
     if state.get("status") == "physical":
         out.update(dict.fromkeys(_MONEY_FIELDS))
     else:
@@ -203,11 +205,7 @@ async def list_assets(class_id: str | None = None, q: str | None = None, limit: 
         raise setup.unprocessable("Choose a page of 1 to 500 assets.")
     rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "fa_asset"))).all()
-    needle = (q or "").strip().lower()
-    found = [(eid, s) for eid, s in rows if s.get("status") != "undone"
-             and (not class_id or s.get("class_id") == class_id)
-             and (not needle or any(needle in str(s.get(k) or "").lower() for k in ("number", "name", "serial")))]
-    found.sort(key=lambda r: r[1].get("number") or "", reverse=True)
+    found = [(eid, s) for eid, s in matching(rows, q) if not class_id or s.get("class_id") == class_id]
     money = _shows_money(company_settings, role)
     return {"items": [asset_out(eid, s, money=money) for eid, s in found[offset:offset + limit]],
             "total": len(found), "limit": limit, "offset": offset}
@@ -653,10 +651,17 @@ async def statutory_report(report_key: str, year: int, company_id=Depends(get_cu
 
 
 def setup_api_routes(app) -> None:
-    """Called by the module loader: the event types, the journal operation types, the routes."""
+    """Called by the module loader: the event types, the journal operation types, the files
+    an asset holds, the routes."""
+    from celerp.services.attachments import register_file_attached_event
     from celerp.services.module_journals import register_operation_types
+
+    from celerp_fixed_assets import checks, custody, files
 
     register_events()
     register_operation_types("celerp-fixed-assets", OPERATION_TYPES, source_prefix="fa:",
                              document_corrections=SALE_OPERATIONS)
+    register_file_attached_event(files.ENTITY_TYPE, files.ATTACHED)
     app.include_router(router)
+    for module in (files, custody, checks):
+        app.include_router(module.router)

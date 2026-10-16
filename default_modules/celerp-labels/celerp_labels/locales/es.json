@@ -14,5 +14,8 @@
   "labels.selected": "Seleccionado: {ids}{more}",
   "labels.template_deleted": "Plantilla eliminada.",
   "labels.template_not_found": "Plantilla no encontrada.",
-  "labels.width_example": "p. ej., 50"
+  "labels.width_example": "p. ej., 50",
+  "labels.no_source_template": "Todavía ninguna plantilla de etiqueta sirve para {name}.",
+  "labels.create_source_template": "Crear plantilla de {name}",
+  "labels.ask_for_source_template": "Pida a un administrador que cree una plantilla de {name}."
 }

@@ -660,6 +660,11 @@
   "file_tag.shipping": "Pengiriman",
   "file_tag.spec_sheets": "Lembar Spesifikasi",
   "file_tag.view_360": "Media 360°",
+  "file_tag.warranties": "Garansi",
+  "file_tag.manuals": "Manual",
+  "file_tag.insurance": "Asuransi",
+  "file_tag.maintenance": "Pemeliharaan",
+  "file_tag.disposal": "Pelepasan",
   "filter.all_time": "Sepanjang waktu",
   "filter.last_12m": "12 bulan terakhir",
   "filter.last_3m": "3 bulan terakhir",
@@ -5674,5 +5679,15 @@
   "documents.err_asset_lines_unhandled": "Dokumen ini menjual atau mengkredit aset tetap. Aktifkan Aset Tetap untuk menyelesaikannya.",
   "event.fa.taxbook.recorded": "Buku pajak aset diubah",
   "event.fa.taxyear.recorded": "Tahun pajak ditutup atau dibuka kembali",
-  "event.fa.yearend.recorded": "Item akhir tahun ditandai"
+  "event.fa.yearend.recorded": "Item akhir tahun ditandai",
+  "event.fa.asset.file_attached": "File ditambahkan ke aset tetap",
+  "event.fa.asset.file_tagged": "File aset tetap diberi tag",
+  "event.fa.asset.file_described": "File aset tetap diberi keterangan",
+  "event.fa.asset.file_deleted": "File dihapus dari aset tetap",
+  "event.fa.asset.confirmed": "Pemegang mengonfirmasi masih memegang aset tetap",
+  "event.fa.asset.problem": "Masalah dilaporkan pada aset tetap",
+  "event.fa.check.recorded": "Aset tetap diperiksa",
+  "event.fa.check.removed": "Pemeriksaan aset tetap dihapus",
+  "modules.turn_on": "Aktifkan",
+  "nav.my_assets": "Aset saya"
 }

@@ -29,3 +29,17 @@ async def _state(session, company_id, entity_id: str) -> dict | None:
 async def _entities(session, company_id, entity_type: str) -> list[tuple[str, dict]]:
     return list((await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == entity_type))).all())
+
+
+def recorded(rows) -> list[dict]:
+    """Movements (``fa:mv:<asset>:<n>``) in the order they were recorded, whatever order
+    the database returned them in."""
+    return sorted(({"id": eid, **s} for eid, s in rows), key=lambda m: int(m["id"].rsplit(":", 1)[1]))
+
+
+async def movements_by_asset(session, company_id) -> dict[str, list[dict]]:
+    """Every asset's movements, each asset's in the order they were recorded."""
+    grouped: dict[str, list] = {}
+    for entity_id, state in await _entities(session, company_id, "fa_movement"):
+        grouped.setdefault(state.get("asset_id"), []).append((entity_id, state))
+    return {asset_id: recorded(rows) for asset_id, rows in grouped.items()}

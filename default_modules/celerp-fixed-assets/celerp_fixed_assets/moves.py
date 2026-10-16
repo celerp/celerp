@@ -34,29 +34,33 @@ async def _location(session, company_id, value) -> dict | None:
     return {"id": str(loc.id), "name": loc.name}
 
 
-async def _custodian(session, company_id, value) -> dict | None:
-    """Who holds the asset: a member of the company, or a person named here who is not a user."""
+async def member_name(session, company_id, user_id) -> str | None:
+    """The name of an active member of the company, or None when ``user_id`` is not one."""
     from sqlalchemy import select
 
     from celerp.models.accounting import UserCompany
     from celerp.models.company import User
 
+    try:
+        uid = uuid.UUID(str(user_id))
+    except ValueError:
+        return None
+    return (await session.execute(select(User.name).join(UserCompany, UserCompany.user_id == User.id).where(
+        User.id == uid, UserCompany.company_id == company_id, UserCompany.is_active.is_(True)))).scalar()
+
+
+async def _custodian(session, company_id, value) -> dict | None:
+    """Who holds the asset: a member of the company, or a person named here who is not a user."""
     if value in (None, ""):
         return None
     if not isinstance(value, dict):
         raise setup.unprocessable("Choose the custodian.")
     if value.get("user_id"):
-        try:
-            uid = uuid.UUID(str(value["user_id"]))
-        except ValueError:
-            uid = None
-        name = uid and (await session.execute(select(User.name).join(
-            UserCompany, UserCompany.user_id == User.id).where(
-            User.id == uid, UserCompany.company_id == company_id, UserCompany.is_active.is_(True)))).scalar()
+        name = await member_name(session, company_id, value["user_id"])
         if not name:
             raise setup.unprocessable("The custodian is not a member of this company. Choose a member, or name a "
                                       "person who is not a user.")
-        return {"user_id": str(uid), "name": name}
+        return {"user_id": str(uuid.UUID(str(value["user_id"]))), "name": name}
     name = str(value.get("name") or "").strip()
     if not name:
         raise setup.unprocessable("Name the custodian.")

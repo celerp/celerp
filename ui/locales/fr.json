@@ -660,6 +660,11 @@
   "file_tag.shipping": "Expédition",
   "file_tag.spec_sheets": "Fiches techniques",
   "file_tag.view_360": "Médias 360°",
+  "file_tag.warranties": "Garanties",
+  "file_tag.manuals": "Manuels",
+  "file_tag.insurance": "Assurance",
+  "file_tag.maintenance": "Entretien",
+  "file_tag.disposal": "Cession",
   "filter.all_time": "Toute la période",
   "filter.last_12m": "12 derniers mois",
   "filter.last_3m": "3 derniers mois",
@@ -5674,5 +5679,15 @@
   "documents.err_asset_lines_unhandled": "Ce document vend ou crédite une immobilisation. Activez Immobilisations pour le terminer.",
   "event.fa.taxbook.recorded": "Registre fiscal d'une immobilisation modifié",
   "event.fa.taxyear.recorded": "Exercice fiscal clôturé ou rouvert",
-  "event.fa.yearend.recorded": "Élément de fin d'exercice marqué"
+  "event.fa.yearend.recorded": "Élément de fin d'exercice marqué",
+  "event.fa.asset.file_attached": "Fichier ajouté à une immobilisation",
+  "event.fa.asset.file_tagged": "Fichier d'immobilisation étiqueté",
+  "event.fa.asset.file_described": "Fichier d'immobilisation décrit",
+  "event.fa.asset.file_deleted": "Fichier retiré d'une immobilisation",
+  "event.fa.asset.confirmed": "Le détenteur a confirmé détenir l'immobilisation",
+  "event.fa.asset.problem": "Problème signalé sur une immobilisation",
+  "event.fa.check.recorded": "Immobilisation contrôlée",
+  "event.fa.check.removed": "Contrôle d'immobilisation supprimé",
+  "modules.turn_on": "Activer",
+  "nav.my_assets": "Mes actifs"
 }
