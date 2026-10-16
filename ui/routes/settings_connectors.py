@@ -1109,13 +1109,6 @@ def _grant_form(lang: str) -> FT:
                   t(f"accountant_access.{scope}", lang))
             for scope in SCOPE_ORDER
         ), cls="flex-col gap-sm"),
-        Label(t("accountant_access.lifetime", lang)),
-        Select(
-            Option("14", value="14"),
-            Option("30", value="30", selected=True),
-            Option("90", value="90"),
-            name="lifetime_days",
-            cls="form-input"),
         Button(t("accountant_access.issue", lang), type="submit",
                cls="btn btn--primary"),
         hx_post="/settings/accountant-access/grants",
@@ -1126,12 +1119,10 @@ def _grant_form(lang: str) -> FT:
 
 
 def _grant_status(g: dict, lang: str, now: datetime) -> FT:
-    """How long a key still works, so the owner can extend it before synchronization stops."""
+    """How long a key still works, so the owner can renew it before synchronization stops."""
     from celerp.services.peer_access import RENEW_WITHIN
     if g.get("revoked"):
         return Span(t("accountant_access.revoked", lang), cls="badge badge--neutral")
-    if g.get("replaced"):
-        return Span(t("accountant_access.renewed_by_client", lang), cls="badge badge--neutral")
     try:
         expires = datetime.fromisoformat(str(g.get("expires_at")))
     except ValueError:
@@ -1148,12 +1139,12 @@ def _grant_status(g: dict, lang: str, now: datetime) -> FT:
 
 
 def _grant_actions(g: dict, lang: str) -> FT:
-    if g.get("revoked") or g.get("replaced"):
+    if g.get("revoked"):
         return Span("--")
     path = f"/settings/accountant-access/grants/{g['id']}"
     swap = {"hx_target": "#accountant-access-grants", "hx_swap": "outerHTML"}
     return Div(
-        Button(t("accountant_access.extend", lang), type="button", hx_post=f"{path}/extend",
+        Button(t("accountant_access.renew", lang), type="button", hx_post=f"{path}/renew",
                cls="btn btn--secondary btn--sm", **swap),
         Button(t("accountant_access.revoke", lang), type="button", hx_post=f"{path}/revoke",
                hx_confirm=t("accountant_access.revoke_confirm", lang),
@@ -1163,7 +1154,7 @@ def _grant_actions(g: dict, lang: str) -> FT:
 
 
 def _grants_table(grants: list[dict], lang: str, now: datetime | None = None, **attrs) -> FT:
-    """The receiving company's keys, newest first; Extend and Revoke swap this table in place."""
+    """The receiving company's keys, newest first; Renew key and Revoke swap this table in place."""
     from ui.components.table import format_value
     when = now or datetime.now(timezone.utc)
     if not grants:
@@ -1293,10 +1284,8 @@ def setup_routes(app):
             source, source_name = parse_pairing_code(form.get("pairing_code"))
             source_id = str(source)
             label = str(form.get("label") or "").strip() or source_name
-            lifetime = int(form.get("lifetime_days") or "30")
             scopes = sorted(set(str(scope) for scope in form.getlist("scopes")))
-            if not (1 <= len(label) <= 128 and 1 <= lifetime <= 90
-                    and scopes and set(scopes) <= SCOPES):
+            if not (1 <= len(label) <= 128 and scopes and set(scopes) <= SCOPES):
                 raise ValueError("Invalid grant selection")
         except (ValueError, TypeError):
             return Span(t("accountant_access.invalid", lang),
@@ -1304,7 +1293,7 @@ def setup_routes(app):
         try:
             issued = await api.issue_accountant_peer_grant(token, {
                 "source_company_id": source_id, "label": label,
-                "scopes": scopes, "lifetime_days": lifetime,
+                "scopes": scopes,
             })
         except api.APIError as exc:
             return Span(str(exc), cls="flash flash--warning")
@@ -1332,10 +1321,10 @@ def setup_routes(app):
             to_xml(Div(content, *refreshed)),
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
-    @app.post("/settings/accountant-access/grants/{grant_id}/extend")
-    async def accountant_access_extend(request: Request, grant_id: str):
+    @app.post("/settings/accountant-access/grants/{grant_id}/renew")
+    async def accountant_access_renew(request: Request, grant_id: str):
         from ui import api_client as api
-        return await _grant_action(request, grant_id, api.extend_accountant_peer_grant)
+        return await _grant_action(request, grant_id, api.renew_accountant_peer_grant)
 
     @app.post("/settings/accountant-access/grants/{grant_id}/revoke")
     async def accountant_access_revoke(request: Request, grant_id: str):

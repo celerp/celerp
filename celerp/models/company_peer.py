@@ -22,10 +22,6 @@ class CompanyPeerGrant(Base):
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     expires_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
-    # Days a key lasts when issued, rotated or extended.
-    lifetime_days: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=30)
-    # The key that replaced this one; set when the sending company rotated it.
-    replaced_by_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), nullable=True)
 
     __table_args__ = (
         sa.CheckConstraint("length(token_hash) = 64", name="ck_company_peer_grant_hash_length"),

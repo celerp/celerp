@@ -25,13 +25,12 @@ ENTITY_SCOPE = {
 SCOPE_ORDER = tuple(dict.fromkeys(ENTITY_SCOPE.values()))
 SCOPES = frozenset(SCOPE_ORDER)
 MAX_ACTIVE = 5
-MAX_DAYS = 90
-# A key this close to expiry is renewed by the sender and warned about to the owner.
-RENEW_WITHIN = timedelta(days=7)
-# How long a rotated key keeps working, so a renewal reply lost on its way back
-# never stops synchronization: the sender retries with the old key.
-ROTATION_GRACE = timedelta(days=1)
-EXPIRY_NOTICE = "notice.peer_keys_expiring"
+# How long a key works, from issue and from each renewal.
+KEY_LIFETIME = timedelta(days=365)
+# Both companies are warned this long before a key expires.
+RENEW_WITHIN = timedelta(days=14)
+EXPIRY_NOTICE = "notice.peer_key_expiring"
+INVALID = "Invalid integration credentials"
 PAIRING_PREFIX = "cpair1"
 MAX_LABEL = 128
 
@@ -72,75 +71,65 @@ def _canonical(value: str) -> uuid.UUID:
     try:
         uid = uuid.UUID(value)
     except (TypeError, ValueError, AttributeError):
-        raise HTTPException(401, "Invalid integration credentials") from None
+        raise HTTPException(401, INVALID) from None
     if str(uid) != value:
-        raise HTTPException(401, "Invalid integration credentials")
+        raise HTTPException(401, INVALID)
     return uid
 
 
 def _parse(token: object) -> tuple[uuid.UUID, uuid.UUID, str]:
     if not isinstance(token, str) or len(token) > 160:
-        raise HTTPException(401, "Invalid integration credentials")
+        raise HTTPException(401, INVALID)
     bits = token.split(".")
     if len(bits) != 4 or bits[0] != "cp1":
-        raise HTTPException(401, "Invalid integration credentials")
+        raise HTTPException(401, INVALID)
     company_id, grant_id = _canonical(bits[1]), _canonical(bits[2])
     encoded = bits[3]
     if len(encoded) != 43 or not all(c.isalnum() and c.isascii() or c in "_-" for c in encoded):
-        raise HTTPException(401, "Invalid integration credentials")
+        raise HTTPException(401, INVALID)
     try:
         raw = base64.urlsafe_b64decode(encoded + "=")
     except (ValueError, base64.binascii.Error):
-        raise HTTPException(401, "Invalid integration credentials") from None
+        raise HTTPException(401, INVALID) from None
     if len(raw) != 32 or base64.urlsafe_b64encode(raw).decode().rstrip("=") != encoded:
-        raise HTTPException(401, "Invalid integration credentials")
+        raise HTTPException(401, INVALID)
     return company_id, grant_id, token
 
 
 async def issue(session: AsyncSession, *, company_id: uuid.UUID, source_company_id: uuid.UUID,
-                label: str, scopes: frozenset[str], lifetime_days: int = 30,
+                label: str, scopes: frozenset[str],
                 now: datetime | None = None) -> tuple[CompanyPeerGrant, str]:
     if (not isinstance(label, str) or not 1 <= len(label.strip()) <= 128 or
-            not scopes or not scopes <= SCOPES or
-            not isinstance(lifetime_days, int) or isinstance(lifetime_days, bool) or
-            not 1 <= lifetime_days <= MAX_DAYS):
+            not scopes or not scopes <= SCOPES):
         raise HTTPException(422, "Invalid integration grant")
     when = now or datetime.now(timezone.utc)
     company = await locked_company(session, company_id)
     if company is None or not company.is_active or company.is_migration_staged:
         raise HTTPException(404, "Company unavailable")
     await _within_limit(session, company_id, when)
-    return await _new_grant(session, company_id=company_id, source_company_id=source_company_id,
-                            label=label.strip(), scopes=scopes, lifetime_days=lifetime_days, when=when)
-
-
-async def _within_limit(session: AsyncSession, company_id: uuid.UUID, when: datetime) -> None:
-    """Refuse a further live key once MAX_ACTIVE are live; a key being rotated out is not counted."""
-    count = await session.scalar(select(func.count()).select_from(CompanyPeerGrant).where(
-        CompanyPeerGrant.company_id == company_id,
-        CompanyPeerGrant.expires_at > when,
-        CompanyPeerGrant.revoked_at.is_(None),
-        CompanyPeerGrant.replaced_by_id.is_(None),
-    ))
-    if count >= MAX_ACTIVE:
-        raise HTTPException(409, "Too many active integrations")
-
-
-async def _new_grant(session: AsyncSession, *, company_id: uuid.UUID, source_company_id: uuid.UUID,
-                     label: str, scopes, lifetime_days: int,
-                     when: datetime) -> tuple[CompanyPeerGrant, str]:
     grant_id = uuid.uuid4()
     raw = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
     credential = f"cp1.{company_id}.{grant_id}.{raw}"
     grant = CompanyPeerGrant(
         id=grant_id, company_id=company_id, source_company_id=source_company_id,
-        label=label, scopes=sorted(scopes), lifetime_days=lifetime_days,
+        label=label.strip(), scopes=sorted(scopes),
         token_hash=hashlib.sha256(credential.encode()).hexdigest(),
-        created_at=when, expires_at=when + timedelta(days=lifetime_days),
+        created_at=when, expires_at=when + KEY_LIFETIME,
     )
     session.add(grant)
     await session.flush()
     return grant, credential
+
+
+async def _within_limit(session: AsyncSession, company_id: uuid.UUID, when: datetime) -> None:
+    """Refuse a further live key once MAX_ACTIVE are live."""
+    count = await session.scalar(select(func.count()).select_from(CompanyPeerGrant).where(
+        CompanyPeerGrant.company_id == company_id,
+        CompanyPeerGrant.expires_at > when,
+        CompanyPeerGrant.revoked_at.is_(None),
+    ))
+    if count >= MAX_ACTIVE:
+        raise HTTPException(409, "Too many active integrations")
 
 
 async def authenticate(session: AsyncSession, credential: object, *,
@@ -151,98 +140,83 @@ async def authenticate(session: AsyncSession, credential: object, *,
         raise HTTPException(403, "Integration operation unavailable")
     row = await held(session, credential, source_company_id=source_company_id, now=now)
     if scope not in row.scopes:
-        raise HTTPException(401, "Invalid integration credentials")
+        raise HTTPException(401, INVALID)
     return row
 
 
 async def held(session: AsyncSession, credential: object, *,
                 source_company_id: uuid.UUID, now: datetime | None) -> CompanyPeerGrant:
-    """The live grant this credential belongs to, with its company locked."""
+    """The live grant this credential belongs to, with its company locked. A key that only
+    expired is refused with the receiving company's name, so its holder knows whom to ask
+    for a renewal; every other refusal says nothing."""
     company_id, grant_id, exact = _parse(credential)
     digest = hashlib.sha256(exact.encode()).hexdigest()
     candidate = await session.scalar(select(CompanyPeerGrant.id).where(
         CompanyPeerGrant.id == grant_id, CompanyPeerGrant.token_hash == digest,
         CompanyPeerGrant.company_id == company_id))
     if candidate is None:
-        raise HTTPException(401, "Invalid integration credentials")
+        raise HTTPException(401, INVALID)
     company = await locked_company(session, company_id)
     if company is None or not company.is_active or company.is_migration_staged:
-        raise HTTPException(401, "Invalid integration credentials")
+        raise HTTPException(401, INVALID)
     row = await session.get(CompanyPeerGrant, grant_id, populate_existing=True)
-    when = now or datetime.now(timezone.utc)
     if (row is None or row.company_id != company_id or row.source_company_id != source_company_id
-            or row.revoked_at is not None or _instant(row.expires_at) <= _instant(when)
-            or not hmac.compare_digest(row.token_hash, digest)):
-        raise HTTPException(401, "Invalid integration credentials")
+            or row.revoked_at is not None or not hmac.compare_digest(row.token_hash, digest)):
+        raise HTTPException(401, INVALID)
+    if _instant(row.expires_at) <= _instant(now or datetime.now(timezone.utc)):
+        raise HTTPException(401, {"code": "key_expired", "company_name": company.name})
     return row
 
 
-async def rotate(session: AsyncSession, credential: object, *, source_company_id: uuid.UUID,
-                 now: datetime | None = None) -> tuple[CompanyPeerGrant, str]:
-    """The sending company exchanges its live key for a new one with the same records and
-    lifetime. The old key keeps working for ROTATION_GRACE; a retry with it (a lost reply)
-    revokes the key issued before and issues another, so only the newest key survives."""
-    when = now or datetime.now(timezone.utc)
-    row = await held(session, credential, source_company_id=source_company_id, now=when)
-    if row.replaced_by_id is not None:
-        earlier = await session.get(CompanyPeerGrant, row.replaced_by_id)
-        if earlier is not None and earlier.revoked_at is None:
-            earlier.revoked_at = when
-    grant, key = await _new_grant(
-        session, company_id=row.company_id, source_company_id=row.source_company_id,
-        label=row.label, scopes=row.scopes, lifetime_days=row.lifetime_days, when=when)
-    row.replaced_by_id = grant.id
-    row.expires_at = min(_instant(row.expires_at), when + ROTATION_GRACE)
-    await session.flush()
-    return grant, key
-
-
-async def extend(session: AsyncSession, company_id: uuid.UUID, grant_id: uuid.UUID,
-                 *, now: datetime | None = None) -> CompanyPeerGrant:
-    """The owner renews a key in one click: the same key works for another lifetime,
-    also after it expired, so the sender changes nothing."""
+async def renew(session: AsyncSession, company_id: uuid.UUID, grant_id: uuid.UUID,
+                *, now: datetime | None = None) -> CompanyPeerGrant:
+    """The owner renews a key in one click: the same key works for a year from now, also
+    after it expired, so the sending company changes nothing. Repeating it on the same day
+    changes nothing further."""
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(404, "Company unavailable")
     row = await session.get(CompanyPeerGrant, grant_id)
     if row is None or row.company_id != company_id:
         raise HTTPException(404, "Integration unavailable")
-    if row.revoked_at is not None or row.replaced_by_id is not None:
-        raise HTTPException(409, "This key was revoked or replaced. Issue a new key instead.")
+    if row.revoked_at is not None:
+        raise HTTPException(409, "This key was revoked. Issue a new key instead.")
     when = now or datetime.now(timezone.utc)
     if _instant(row.expires_at) <= _instant(when):
         await _within_limit(session, company_id, when)
-    row.expires_at = when + timedelta(days=row.lifetime_days)
+    row.expires_at = when + KEY_LIFETIME
     await session.flush()
     return row
 
 
 async def notify_expiring(session: AsyncSession, company_id: uuid.UUID,
                           *, now: datetime | None = None) -> None:
-    """Keep one unmissable notice standing while any live key expires within RENEW_WITHIN,
-    naming each key and its date; remove it once none does. Caller commits."""
+    """Keep one unmissable notice standing per key that expires within RENEW_WITHIN or has
+    expired and was not revoked, naming its company and date; remove each once renewed or
+    revoked. Caller commits."""
     from celerp.notifications import service as notification_service
     from ui.i18n import t
 
     when = now or datetime.now(timezone.utc)
     rows = (await session.execute(select(CompanyPeerGrant).where(
-        CompanyPeerGrant.company_id == company_id,
-        CompanyPeerGrant.revoked_at.is_(None),
-        CompanyPeerGrant.replaced_by_id.is_(None),
-        CompanyPeerGrant.expires_at > when,
-        CompanyPeerGrant.expires_at <= when + RENEW_WITHIN,
-    ).order_by(CompanyPeerGrant.expires_at))).scalars().all()
-    title = t(f"{EXPIRY_NOTICE}.title", "en")
-    if not rows:
-        await notification_service.clear_standing(session, company_id, "integrations", title)
-        return
-    keys = ", ".join(f"{row.label} ({_instant(row.expires_at).date().isoformat()})" for row in rows)
-    await notification_service.notify_standing(
-        session, company_id, "integrations", title,
-        t(f"{EXPIRY_NOTICE}.body", "en", keys=keys),
-        action_url="/settings/accountant-access",
-        i18n={"title": f"{EXPIRY_NOTICE}.title", "body": f"{EXPIRY_NOTICE}.body",
-              "params": {"keys": keys}})
+        CompanyPeerGrant.company_id == company_id).order_by(
+        CompanyPeerGrant.expires_at))).scalars().all()
+    due = [row for row in rows
+           if row.revoked_at is None and _instant(row.expires_at) <= when + RENEW_WITHIN]
+    standing = set()
+    for row in due:
+        params = {"company": row.label, "date": _instant(row.expires_at).date().isoformat()}
+        body = f"{EXPIRY_NOTICE}.{'expired' if _instant(row.expires_at) <= when else 'body'}"
+        title = t(f"{EXPIRY_NOTICE}.title", "en", **params)
+        standing.add(title)
+        await notification_service.notify_standing(
+            session, company_id, "integrations", title, t(body, "en", **params),
+            action_url="/settings/accountant-access",
+            i18n={"title": f"{EXPIRY_NOTICE}.title", "body": body, "params": params})
+    for row in rows:
+        title = t(f"{EXPIRY_NOTICE}.title", "en", company=row.label)
+        if title not in standing:
+            await notification_service.clear_standing(session, company_id, "integrations", title)
 
 
 async def expiry_warning_loop(interval_seconds: int = 3600) -> None:

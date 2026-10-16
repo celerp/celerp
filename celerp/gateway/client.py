@@ -56,7 +56,6 @@ _PUBLIC_API_PREFIXES = (
     "/share",
     "/pay",
     "/company-peers/verify",
-    "/company-peers/renew",
     "/company-peers/contacts",
     "/company-peers/products",
     "/company-peers/documents",

@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
+from celerp.models.company import Company
 from celerp.models.company_peer import CompanyPeerGrant
 from celerp.routers.migrations import user_owner
 from celerp.services.auth import AuthContext
@@ -27,7 +28,6 @@ class GrantRequest(BaseModel):
     source_company_id: uuid.UUID
     label: str = Field(min_length=1, max_length=128)
     scopes: set[Scope] = Field(min_length=1, max_length=len(peer_access.SCOPES))
-    lifetime_days: int = Field(default=30, ge=1, le=90)
 
 
 def _public(row: CompanyPeerGrant) -> dict:
@@ -35,15 +35,14 @@ def _public(row: CompanyPeerGrant) -> dict:
         "id": str(row.id), "source_company_id": str(row.source_company_id),
         "label": row.label, "scopes": list(row.scopes),
         "created_at": row.created_at.isoformat(), "expires_at": row.expires_at.isoformat(),
-        "lifetime_days": row.lifetime_days,
-        "revoked": row.revoked_at is not None, "replaced": row.replaced_by_id is not None,
+        "revoked": row.revoked_at is not None,
     }
 
 
 def _peer_key(authorization: str) -> str:
     scheme, _, credential = authorization.partition(" ")
     if scheme != "Peer" or not credential:
-        raise HTTPException(401, "Invalid integration credentials")
+        raise HTTPException(401, peer_access.INVALID)
     return credential
 
 
@@ -52,7 +51,7 @@ async def create_peer_grant(body: GrantRequest, ctx: AuthContext = Depends(user_
                             session: AsyncSession = Depends(get_session)):
     row, secret = await peer_access.issue(
         session, company_id=ctx.company_id, source_company_id=body.source_company_id,
-        scopes=frozenset(body.scopes), label=body.label, lifetime_days=body.lifetime_days)
+        scopes=frozenset(body.scopes), label=body.label)
     await session.commit()
     return {**_public(row), "credential": secret}
 
@@ -75,10 +74,10 @@ async def revoke_peer_grant(grant_id: uuid.UUID, ctx: AuthContext = Depends(user
     return {"revoked": True}
 
 
-@router.post("/grants/{grant_id}/extend")
-async def extend_peer_grant(grant_id: uuid.UUID, ctx: AuthContext = Depends(user_owner),
-                            session: AsyncSession = Depends(get_session)):
-    row = await peer_access.extend(session, ctx.company_id, grant_id)
+@router.post("/grants/{grant_id}/renew")
+async def renew_peer_grant(grant_id: uuid.UUID, ctx: AuthContext = Depends(user_owner),
+                           session: AsyncSession = Depends(get_session)):
+    row = await peer_access.renew(session, ctx.company_id, grant_id)
     await peer_access.notify_expiring(session, ctx.company_id)
     await session.commit()
     return _public(row)
@@ -90,23 +89,10 @@ async def verify_peer_grant(source_company_id: uuid.UUID,
                             session: AsyncSession = Depends(get_session)):
     grant = await peer_access.held(
         session, _peer_key(authorization), source_company_id=source_company_id, now=None)
-    return {"company_id": str(grant.company_id), "scopes": list(grant.scopes),
+    company = await session.get(Company, grant.company_id)
+    return {"company_id": str(grant.company_id), "company_name": company.name,
+            "scopes": list(grant.scopes),
             "expires_at": grant.expires_at.isoformat()}
-
-
-class RenewRequest(BaseModel):
-    source_company_id: uuid.UUID
-
-
-@router.post("/renew")
-async def renew_peer_grant(body: RenewRequest, authorization: str = Header(default=""),
-                           session: AsyncSession = Depends(get_session)):
-    """The sending company exchanges its key for a new one before it expires."""
-    row, secret = await peer_access.rotate(
-        session, _peer_key(authorization), source_company_id=body.source_company_id)
-    await peer_access.notify_expiring(session, row.company_id)
-    await session.commit()
-    return {"credential": secret, "expires_at": row.expires_at.isoformat()}
 
 
 class ContactData(BaseModel):

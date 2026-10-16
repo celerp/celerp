@@ -230,8 +230,8 @@ class CelerpConnector(ConnectorBase):
         raise NotImplementedError("Inbound peer synchronization is not supported")
 
     async def before_outbound(self, ctx: ConnectorContext, now=None) -> None:
-        from celerp.connectors.celerp_key import keep_key_current
-        await keep_key_current(ctx, now=now)
+        from celerp.connectors.celerp_key import check_key
+        await check_key(ctx, now=now)
 
     async def _send_outbound(self, ctx: ConnectorContext, kind: str, reader) -> SyncResult:
         """Shared incremental delivery; entity-specific data never bypasses validation."""

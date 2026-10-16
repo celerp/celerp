@@ -143,7 +143,7 @@ class ConnectorBase(ABC):
         return False
 
     async def before_outbound(self, ctx: ConnectorContext, now: datetime | None = None) -> None:
-        """Called once before a run sends anything; may refresh ctx's credentials."""
+        """Called once before a run sends anything, e.g. to warn about expiring credentials."""
         return None
 
     @abstractmethod
