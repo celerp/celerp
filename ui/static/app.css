@@ -124,6 +124,16 @@ a:hover { text-decoration: underline; }
 /* ─── Auth card wide variant ──────────────────────────────────────────── */
 .auth-card--wide { max-width: 520px; }
 
+/* ─── Wizard steps ────────────────────────────────────────────────────── */
+.wizard-steps { display: flex; gap: 0; margin-bottom: 28px; overflow: hidden; }
+.wizard-step { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.wizard-step:not(:last-child)::after { content: ""; flex: 1; height: 1px; background: var(--c-border); margin: 0 6px; min-width: 8px; }
+.step-num { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text2); flex-shrink: 0; }
+.step-num--active { background: var(--c-accent); border-color: var(--c-accent); color: #fff; }
+.step-num--done { background: var(--c-green); border-color: var(--c-green); color: #fff; }
+.step-label { font-size: 11px; color: var(--c-text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.step-label--active { color: var(--c-text); font-weight: 600; }
+
 /* ─── Form extras ─────────────────────────────────────────────────────── */
 .form-textarea { resize: vertical; min-height: 72px; line-height: 1.5; font-family: inherit; }
 .form-group--inline { flex-direction: row; align-items: center; gap: 8px; }

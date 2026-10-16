@@ -824,6 +824,14 @@ async def test_check_again_reruns_the_verification(ui, router, fake_api):
     assert "Resume" not in t("migration.err_verification_stale", "en")
 
 
+def test_wizard_step_bar_is_styled():
+    from pathlib import Path
+    css = (Path(__file__).parents[1] / "ui" / "static" / "app.css").read_text()
+    for cls in ("wizard-steps", "wizard-step", "step-num", "step-num--active", "step-num--done",
+                "step-label", "step-label--active"):
+        assert re.search(rf"\.{re.escape(cls)}\s*[{{:]", css), cls
+
+
 _AP_KEY = "5f1c2a90-3b7e-4d21-9a0c-6e8f1d2b3c4a"
 _SUPPLIER_KEY = "0b9d8c7e-6f5a-4e3d-8c2b-1a0f9e8d7c6b"
 _ITEM_KEY = "7c6b5a4f-3e2d-4c1b-9a0f-8e7d6c5b4a39"
