@@ -38,7 +38,7 @@ describe("windowsStartFailure", () => {
   });
 
   test("no message carries an em dash", () => {
-    expect(windowsStartFailure({ exitCode: 3221225781 })).not.toMatch(/—/);
-    expect(windowsStartFailure({ exitCode: 1, output: "administrative permissions" })).not.toMatch(/—/);
+    expect(windowsStartFailure({ exitCode: 3221225781 })).not.toMatch(/\u2014/);
+    expect(windowsStartFailure({ exitCode: 1, output: "administrative permissions" })).not.toMatch(/\u2014/);
   });
 });
