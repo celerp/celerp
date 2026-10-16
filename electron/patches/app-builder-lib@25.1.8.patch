@@ -1,8 +1,37 @@
 diff --git a/templates/nsis/multiUser.nsh b/templates/nsis/multiUser.nsh
-index 3de631bf0ce5095d03062ba98a68c5249904911e..056ec058124617c39743a3341e4bc8c250f764c3 100644
+index 3de631b..e680c52 100644
 --- a/templates/nsis/multiUser.nsh
 +++ b/templates/nsis/multiUser.nsh
-@@ -28,15 +28,20 @@ Var installMode
+@@ -11,6 +11,28 @@
+ # current Install Mode ("all" or "CurrentUser")
+ Var installMode
+ 
++# /D=<folder> overrides the install folder. As NSIS itself reads it, it is the last
++# argument and is never quoted, so everything after it, spaces included, is the folder.
++!macro installDirFromCommandLine
++  Push $0
++  Push $1
++  Push $2
++  StrLen $2 $CMDLINE
++  StrCpy $1 0
++  ${DoWhile} $1 < $2
++    StrCpy $0 $CMDLINE 4 $1
++    ${If} $0 S== " /D="
++      IntOp $1 $1 + 4
++      StrCpy $INSTDIR $CMDLINE "" $1
++      ${ExitDo}
++    ${endif}
++    IntOp $1 $1 + 1
++  ${Loop}
++  Pop $2
++  Pop $1
++  Pop $0
++!macroend
++
+ !ifndef INSTALL_MODE_PER_ALL_USERS
+   !ifndef ONE_CLICK
+     Var hasPerUserInstallation
+@@ -28,23 +50,24 @@ Var installMode
        StrCpy $INSTDIR $perUserInstallationFolder
      ${else}
        StrCpy $0 "$LocalAppData\Programs"
@@ -28,6 +57,28 @@ index 3de631bf0ce5095d03062ba98a68c5249904911e..056ec058124617c39743a3341e4bc8c2
        StrCpy $INSTDIR "$0\${APP_FILENAME}"
      ${endif}
  
+-    # allow /D switch to override installation path https://github.com/electron-userland/electron-builder/issues/1551
+-    ${StdUtils.GetParameter} $R0 "D" ""
+-    ${If} $R0 != ""
+-      StrCpy $INSTDIR $R0
+-    ${endif}
++    !insertmacro installDirFromCommandLine
+ 
+   !macroend
+ !endif
+@@ -83,11 +106,7 @@ Var installMode
+       StrCpy $INSTDIR "$0\${APP_FILENAME}"
+     ${endif}
+ 
+-    # allow /D switch to override installation path https://github.com/electron-userland/electron-builder/issues/1551
+-    ${StdUtils.GetParameter} $R0 "D" ""
+-    ${If} $R0 != ""
+-      StrCpy $INSTDIR $R0
+-    ${endif}
++    !insertmacro installDirFromCommandLine
+ 
+   !macroend
+ !endif
 diff --git a/templates/nsis/include/extractAppPackage.nsh b/templates/nsis/include/extractAppPackage.nsh
 index f5470bf..71e20b2 100644
 --- a/templates/nsis/include/extractAppPackage.nsh
