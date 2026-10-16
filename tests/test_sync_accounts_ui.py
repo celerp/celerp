@@ -133,11 +133,21 @@ async def test_held_records_each_offer_their_fix(monkeypatch):
     assert "6999" not in html  # archived accounts are not offered
 
 
+async def test_a_fixed_record_waits_for_the_next_sync_without_its_fix(monkeypatch):
+    fixed = [{**HOLDS[0], "fix": {**HOLDS[0]["fix"], "fixed": True}}]
+    _app(monkeypatch, holds=fixed, added=[], review=[])
+    html = to_xml(await routes.sync_accounts_body("test-token", "en"))
+    row = html[html.index("Courier run"):].split("</tr>")[0]
+    assert "Fixed. It posts on the next sync." in row
+    assert "<button" not in row and "Use another account" not in row
+
+
 async def test_added_accounts_offer_remove_only_when_unused(monkeypatch):
     _app(monkeypatch)
     html = to_xml(await routes.sync_accounts_body("test-token", "en"))
-    unused = html[html.index("6160 Audit adjustments"):].split("</tr>")[0]
-    used = html[html.index("6150 Courier"):].split("</tr>")[0]
+    added = html[html.index("Accounts added by sync"):]
+    unused = added[added.index("6160 Audit adjustments"):].split("</tr>")[0]
+    used = added[added.index("6150 Courier"):].split("</tr>")[0]
     assert ">Remove<" in unused and ">Archive<" not in unused
     assert "cannot be undone" in unused and "added again by the next record" in unused
     assert ">Remove<" not in used and ">Archive<" in used

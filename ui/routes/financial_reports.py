@@ -102,6 +102,16 @@ def ledger_path(account_code: str) -> str:
     return f"/reports/ledger/{account_code}"
 
 
+def elsewhere_note(elsewhere: list[dict]) -> FT | str:
+    """What each connected company calls this account, where its code or name differs."""
+    if not elsewhere:
+        return ""
+    return Div(*[P(t("financial.ledger_elsewhere", company=e["company"], code=e["code"], name=e["name"])
+                   if e.get("company") else
+                   t("financial.ledger_elsewhere_unnamed", code=e["code"], name=e["name"]),
+                   cls="settings-hint") for e in elsewhere])
+
+
 def _report_path(key: str) -> str:
     return REPORTS[key][0]
 
@@ -1143,6 +1153,7 @@ def setup_routes(app):
                 A(f"← {t(back_key)}", href=href(back_path, back_qs), cls="btn btn--ghost btn--sm"),
                 cls="flex-row flex-between",
             ),
+            elsewhere_note(data.get("elsewhere") or []),
             _ledger_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
         )
         name = data.get("account_name", account_code)

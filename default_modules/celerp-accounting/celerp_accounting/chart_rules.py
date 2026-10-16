@@ -394,3 +394,31 @@ async def change_account(
     if cash_flow_category is not ...:
         acc.cash_flow_category = cash_flow_category
     return acc
+
+
+async def removal_problem(session: AsyncSession, company_id: uuid.UUID, code: str) -> str | None:
+    """Why the account cannot be removed, or None: only an account with no postings,
+    no accounts under it, no posting role and no bank account can be."""
+    if await _account(session, company_id, code) is None:
+        return "This account is no longer in the chart."
+    if await has_journal_history(session, company_id, code):
+        return "It has entries, so it can be archived, not removed."
+    if await session.scalar(select(Account.code).where(
+            Account.company_id == company_id, Account.parent_code == code).limit(1)):
+        return "Accounts sit under it, so it can be archived, not removed."
+    if roles := _roles_targeting(await current_settings(session, company_id), code):
+        return f"It is the posting account for {', '.join(roles)}, so it can be archived, not removed."
+    if await session.scalar(select(BankAccount.id).where(
+            BankAccount.company_id == company_id, BankAccount.chart_account_code == code).limit(1)):
+        return "A bank account uses it, so it can be archived, not removed."
+    return None
+
+
+async def remove_account(session: AsyncSession, company_id: uuid.UUID, code: str) -> None:
+    """Delete an unused account from the chart; any other is refused with the reason."""
+    await lock_chart(session, company_id)
+    acc = await _account(session, company_id, code, lock=True)
+    problem = await removal_problem(session, company_id, code)
+    if problem:
+        raise HTTPException(status_code=409, detail=problem)
+    await session.delete(acc)

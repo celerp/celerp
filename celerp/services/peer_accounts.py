@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -516,13 +516,53 @@ async def added(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
              "at": r.created_at.isoformat()} for r in rows if r.kind == peer_attention.ADDED]
 
 
+async def added_item(session: AsyncSession, company_id: uuid.UUID, item_id) -> CompanyPeerAttention:
+    try:
+        key = uuid.UUID(str(item_id))
+    except ValueError:
+        raise HTTPException(404, "This notice is closed.") from None
+    item = await session.get(CompanyPeerAttention, key)
+    if item is None or item.company_id != company_id or item.kind != peer_attention.ADDED:
+        raise HTTPException(404, "This notice is closed.")
+    return item
+
+
+async def close_added(session: AsyncSession, item: CompanyPeerAttention, *, removed: bool) -> None:
+    """Close an added account's notice; ``removed`` also drops its link, so the next
+    record that needs the account adds it again."""
+    if removed:
+        await session.execute(delete(CompanyPeerAccount).where(
+            CompanyPeerAccount.company_id == item.company_id,
+            CompanyPeerAccount.source_company_id == item.source_company_id,
+            CompanyPeerAccount.code == (item.fix or {}).get("code")))
+    await session.delete(item)
+
+
+async def elsewhere(session: AsyncSession, company_id: uuid.UUID, code: str, name: str) -> list[dict]:
+    """How each connected company names the account linked to ``code``, where its code
+    or name differs from this company's (names never travel after linking)."""
+    rows = (await session.scalars(select(CompanyPeerAccount).where(
+        CompanyPeerAccount.company_id == company_id, CompanyPeerAccount.code == code,
+    ).order_by(CompanyPeerAccount.created_at))).all()
+    out = []
+    for row in rows:
+        if row.other_code != code or not _same_name(row.other_name, name):
+            out.append({"company": await _grant_label(session, company_id, row.source_company_id),
+                        "code": row.other_code, "name": row.other_name})
+    return out
+
+
 # ---- the firm's review ----------------------------------------------------------------
 
-async def _client_label(session: AsyncSession, company_id: uuid.UUID, source: uuid.UUID) -> str:
-    grant = await session.scalar(select(CompanyPeerGrant).where(
+async def _grant_label(session: AsyncSession, company_id: uuid.UUID, source: uuid.UUID) -> str | None:
+    """The name the company gave the connected company on its newest key, if it holds one."""
+    return await session.scalar(select(CompanyPeerGrant.label).where(
         CompanyPeerGrant.company_id == company_id, CompanyPeerGrant.source_company_id == source,
     ).order_by(CompanyPeerGrant.created_at.desc()).limit(1))
-    return grant.label if grant is not None else str(source)
+
+
+async def _client_label(session: AsyncSession, company_id: uuid.UUID, source: uuid.UUID) -> str:
+    return await _grant_label(session, company_id, source) or str(source)
 
 
 async def _previous(session: AsyncSession, company_id: uuid.UUID) -> dict[tuple[str, str], str]:
@@ -577,7 +617,8 @@ async def review(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
                 other["code"] if same is not None and use_problem(other, same, other["code"], books) is None else None)
             rows.append({"id": other["id"], "code": other["code"], "name": other["name"],
                          "account_type": other["account_type"], "why": why,
-                         "suggested": suggested, "previous": usable})
+                         "suggested": suggested, "previous": usable,
+                         "add_code": next_free(other["code"], set(local)) if same else other["code"]})
         if rows:
             out.append({"source_company_id": str(source),
                         "client": await _client_label(session, company_id, source), "accounts": rows})

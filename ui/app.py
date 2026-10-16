@@ -56,6 +56,7 @@ from ui.routes import (
     auth, setup, search, settings, settings_import,
     settings_general, settings_cloud, settings_connectors, settings_payments, notifications, events, stars,
     modules_page, account, commercial, system_update, migrations, company_backup, doctor, firm_view,
+    sync_accounts,
 )
 from fasthtml.common import *
 from starlette.responses import HTMLResponse
@@ -580,7 +581,7 @@ if _MODULE_DIR and _ENABLED_MODULES:
 for mod in (auth, setup, search, settings, settings_import,
             settings_general, settings_cloud, settings_connectors, settings_payments,
             notifications, events, stars, modules_page, account, commercial, system_update, doctor,
-            firm_view):
+            firm_view, sync_accounts):
     mod.setup_routes(app)
 migrations.migrations_routes(app)
 company_backup.company_backup_routes(app)

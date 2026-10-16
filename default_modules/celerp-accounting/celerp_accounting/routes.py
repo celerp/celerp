@@ -37,6 +37,8 @@ from celerp_accounting.chart_rules import (
     checked_code_length,
     parent_problem,
     posting_targets,
+    removal_problem,
+    remove_account,
     trimmed_text,
 )
 from celerp_accounting.import_service import AccImportRecord
@@ -2004,6 +2006,9 @@ async def account_ledger(
     return {
         "account_code": account_code,
         "account_name": account.name if account else account_code,
+        # A8: how each connected company names this account, where that differs.
+        "elsewhere": await peer_accounts.elsewhere(session, company_id, account_code, account.name)
+        if account else [],
         "account_type": account_type,
         # The sign convention is decided here, once; consumers (UI, CSV) must
         # use this flag rather than re-deriving it from account_type.
@@ -4726,9 +4731,39 @@ async def peer_holds(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Records a connected company sent that wait for one of their accounts to be fixed,
-    and the accounts sync added here, newest first."""
-    return {"items": await peer_accounts.holds(session, company_id),
-            "added": await peer_accounts.added(session, company_id)}
+    and the accounts sync added here, newest first; each added account says whether it
+    can still be removed, or why it can only be archived."""
+    added = await peer_accounts.added(session, company_id)
+    for item in added:
+        item["why"] = await removal_problem(session, company_id, item["code"])
+        item["removable"] = item["why"] is None
+    return {"items": await peer_accounts.holds(session, company_id), "added": added}
+
+
+class PeerAddedAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(pattern="^(keep|archive|remove)$")
+
+
+@router.post("/peer/added/{item_id}")
+async def settle_peer_added(
+    item_id: str,
+    body: PeerAddedAction,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Keep an account sync added, archive it, or remove it while it is unused; each
+    closes its notice. Remove also drops the link, so a later record adds it again."""
+    item = await peer_accounts.added_item(session, company_id, item_id)
+    code = (item.fix or {}).get("code")
+    if body.action == "archive":
+        await change_account(session, company_id, code, is_active=False)
+    elif body.action == "remove":
+        await remove_account(session, company_id, code)
+    await peer_accounts.close_added(session, item, removed=body.action == "remove")
+    await session.commit()
+    return {"ok": True}
 
 
 @router.post("/peer/holds/{item_id}/fix")
@@ -4740,7 +4775,8 @@ async def fix_peer_hold(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Use another account for a held record's account, add it under a free code, or
-    unarchive the account it posts to; the record posts on the next sync."""
+    unarchive the account it posts to; the record posts on the next sync, and until then
+    it shows as fixed (a sync that holds it again replaces its fix)."""
     item = await peer_accounts.held_item(session, company_id, item_id)
     if body.action == "unarchive":
         if (item.fix or {}).get("kind") != "archived" or not item.fix.get("local"):
@@ -4749,6 +4785,7 @@ async def fix_peer_hold(
     else:
         await peer_accounts.fix_hold(session, company_id, item, action=body.action,
                                      account=body.account, code=body.code)
+    item.fix = {**item.fix, "fixed": True}
     await session.commit()
     return {"ok": True}
 

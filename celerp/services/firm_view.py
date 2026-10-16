@@ -20,6 +20,7 @@ from celerp.models.migration import MigrationRun, MigrationStatus
 from celerp.services import company_handoff_sender as sender
 from celerp.services import peer_attention
 from celerp.services.peer_access import RENEW_WITHIN
+from celerp.services.peer_accounts import ACCOUNTS_PAGE
 
 SYNC_STATES = {"on": "On", "off": "Off", "failing": "Failing", "expiring": "Key expiring"}
 INVALID_SYNC = "Choose a sync status: On, Off, Failing or Key expiring."
@@ -44,7 +45,9 @@ def _attention_item(a) -> dict:
     which the firm may post again from a new journal prefilled with it."""
     again = (f"/accounting/journal/new?from={a.source_entity_id}"
              if a.kind == peer_attention.REVERSAL else None)
-    return _item(a.kind, a.label, a.reason, None, _instant(a.created_at), again)
+    fixed_there = a.kind == peer_attention.ADDED or a.fix
+    return _item(a.kind, a.label, a.reason, ACCOUNTS_PAGE if fixed_there else None,
+                 _instant(a.created_at), again)
 
 
 def _keys(grants: list[CompanyPeerGrant], refused: bool, now: datetime) -> tuple[str, list[dict]]:

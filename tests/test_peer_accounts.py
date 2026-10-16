@@ -357,6 +357,8 @@ async def test_an_account_archived_on_the_receiver_holds_the_record(real_client,
 
     await _fix(real_client, tok, holds["Insurance accrual"], action="unarchive")
     await _fix(real_client, tok, holds["Supplies accrual"], action="use", account="6600")
+    fixed = {h["label"]: h["fix"].get("fixed") for h in await _holds(real_client, tok)}
+    assert fixed["Insurance accrual"] is True and fixed["Supplies accrual"] is True  # shown as fixed until it posts
     await _two_way(client_company, credential)
     books = await _journals(real_engine, client_company)
     assert ("6700", 11.0, 0.0) in _lines(_from(books, insured)[0])
@@ -568,7 +570,7 @@ async def test_an_added_account_is_kept_archived_or_removed(real_client, real_en
     [row] = [row for row in r.json()["items"] if row["company_id"] == firm_company]
     assert {i["href"] for i in row["attention"] if i["kind"] == "added"} == {"/accounting/sync-accounts"}
 
-    await _patch(real_client, firm_tok, "6150", parent_code=None)
+    await _patch(real_client, firm_tok, "6150", parent_code="")
     r = await _settle(real_client, firm_tok, added["6150"], "archive")
     assert r.status_code == 200, r.text
     assert (await _chart(real_client, firm_tok))["6150"]["is_active"] is False

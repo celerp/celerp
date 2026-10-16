@@ -3485,6 +3485,34 @@ async def reverse_from_accountant(token: str, je_id: str) -> dict:
         return _raise(await c.post(f"/accounting/journal-entries/{quote(je_id, safe='')}/reverse")).json()
 
 
+async def peer_holds(token: str) -> dict:
+    """GET records held for an account and the accounts sync added, newest first."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/peer/holds")).json()
+
+
+async def fix_peer_hold(token: str, item_id: str, body: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/peer/holds/{quote(item_id, safe='')}/fix", json=body)).json()
+
+
+async def settle_added_account(token: str, item_id: str, action: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/peer/added/{quote(item_id, safe='')}",
+                                   json={"action": action})).json()
+
+
+async def peer_review(token: str) -> dict:
+    """GET each client whose accounts wait for this company's review."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/peer/review")).json()
+
+
+async def answer_peer_review(token: str, body: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/peer/review", json=body)).json()
+
+
 async def get_posting_accounts(token: str) -> dict:
     """GET each posting role's account and status, and the accounts older stock can sit on."""
     async with _api_client(token) as c:

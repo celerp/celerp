@@ -1164,6 +1164,17 @@ def _from_accountant(items: list[dict] | None, lang: str, error: str | None = No
     )
 
 
+def _sync_accounts_card(lang: str) -> FT:
+    """Where records held for an account, and accounts sync added, are settled."""
+    from ui.routes.sync_accounts import PAGE
+    return Div(
+        H3(t("sync_accounts.title", lang)),
+        P(t("sync_accounts.card_hint", lang), cls="settings-hint"),
+        A(t("sync_accounts.open", lang), href=PAGE, cls="btn btn--secondary btn--sm"),
+        cls="settings-card",
+    )
+
+
 async def _from_accountant_section(token: str, lang: str, error: str | None = None) -> FT:
     from ui.api_client import APIError, journals_from_accountant
     try:
@@ -1832,6 +1843,7 @@ def setup_routes(app):
             _connector_detail_body(c, runs, config, lang, deposit=deposit,
                                    attention=await _attention(company_id, platform)),
             await _from_accountant_section(token, lang) if platform == "celerp" else "",
+            _sync_accounts_card(lang) if platform == "celerp" else "",
             title=f"{name} - Celerp",
             nav_active="settings",
             request=request,
