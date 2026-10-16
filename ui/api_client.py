@@ -800,6 +800,11 @@ async def my_companies(token: str) -> dict:
         return _raise(await c.get("/auth/my-companies")).json()
 
 
+async def firm_view(token: str, params: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/auth/firm-view", params=params or None)).json()
+
+
 async def switch_company(token: str, company_id: str) -> tuple[str, str]:
     async with _api_client(token) as c:
         r = _raise(await c.post(f"/auth/switch-company/{company_id}"))

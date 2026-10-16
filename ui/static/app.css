@@ -173,6 +173,12 @@ a:hover { text-decoration: underline; }
    the table past the card. Figures and dates never wrap. */
 .migration-wizard .data-table { margin-bottom: 16px; width: 100%; }
 .migration-wizard .data-table td:not(.cell--number, .cell--money, .cell--date) { white-space: normal; overflow-wrap: break-word; }
+/* Client companies: reasons wrap in their cell; the filters keep their own width. */
+#firm-view .data-table { width: 100%; }
+#firm-view .data-table td.firm-view-attention { white-space: normal; overflow-wrap: break-word; }
+#firm-view .firm-view-actions { flex-wrap: wrap; }
+.firm-view-filters { margin-bottom: 12px; }
+.firm-view-filters select { width: auto; }
 
 /* ─── Sidebar ─────────────────────────────────────────────────────────── */
 .sidebar {

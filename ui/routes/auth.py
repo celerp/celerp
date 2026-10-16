@@ -443,7 +443,8 @@ def setup_routes(app):
 
     # The pages a switch may land on; anything else opens the dashboard, so switching is
     # never a general-purpose redirect.
-    SWITCH_DESTINATIONS = ("/settings/company-handoff", "/accounting/journal/new", "/settings/users/new")
+    SWITCH_DESTINATIONS = ("/settings/company-handoff", "/accounting/journal/new", "/settings/users/new",
+                           "/settings/accountant-access")
 
     @app.get("/switch-company/{company_id}")
     async def do_switch_company_get(request: Request, company_id: str):

@@ -1830,7 +1830,8 @@ def setup_routes(app):
         ]
         widget = Select(
             *options,
-            onchange="location='/switch-company/'+this.value",
+            Option(t("firm_view.all_companies", get_lang(request)), value=""),
+            onchange="location=this.value?'/switch-company/'+this.value:'/companies'",
             cls="company-switcher-select",
         )
         return Response(to_xml(widget), media_type="text/html")
@@ -3101,6 +3102,12 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
             href="/setup/new-company",
             cls="btn btn--xs btn--secondary",
             style="margin-top:8px;display:inline-block;",
+        ),
+        A(
+            t("firm_view.title", lang),
+            href="/companies",
+            cls="btn btn--xs btn--secondary",
+            style="margin-top:8px;margin-left:8px;display:inline-block;",
         ),
         # Company details (name + regional settings) + addresses live on Finance > Company Details now.
         H3(t("settings.preferences", lang), cls="settings-section-title"),
