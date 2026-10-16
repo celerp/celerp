@@ -48,7 +48,7 @@ from celerp.services.migration_core_sink import (
     run_targets,
     sink_result,
 )
-from celerp.services.money import round_money, to_stored_float
+from celerp.services.money import round_money, split_to_base, to_stored_float
 from celerp_docs import import_service
 from celerp_docs.import_service import DOC_CREATED
 from celerp_docs.routes import (
@@ -235,11 +235,12 @@ def _doc_record(
     statuses = _STATUS.get(record.doc_type)
     if statuses is None:
         return f"{label}: {record.doc_type.value} documents cannot be imported as Celerp documents."
-    if record.currency and record.currency.upper() != base:
-        return f"{label} is in {record.currency}; only {base} documents can be imported."
     problem = _posting_problem(record, contacts, accounts)
     if problem is not None:
         return f"{label}: {problem}"
+    currency = _currency(record, base)
+    if currency != base and record.exchange_rate is None:
+        return f"{label} is in {currency} and carries no exchange rate."
     contact_id = contacts.get(record.contact_external_id) if record.contact_external_id else None
     lines = []
     for line in record.line_items:
@@ -253,7 +254,7 @@ def _doc_record(
             if line.tax_code_external_id not in taxes:
                 return f"{label}: tax code {line.tax_code_external_id} was not imported."
             code, rate = taxes[line.tax_code_external_id]
-            line_taxes = [{"code": code, "rate": rate, "amount": _money(line.tax_amount or Decimal(0), base)}]
+            line_taxes = [{"code": code, "rate": rate, "amount": _money(line.tax_amount or Decimal(0), currency)}]
         lines.append({k: v for k, v in {
             **identities.get(item_id, {}),
             "item_id": item_id,
@@ -263,7 +264,7 @@ def _doc_record(
             "unit_price": to_stored_float(line.unit_price),
             "discount_pct": to_stored_float(line.discount_percent) if line.discount_percent else None,
             "taxes": line_taxes,
-            "line_total": _money(line.total_price, base),
+            "line_total": _money(line.total_price, currency),
         }.items() if v is not None})
     tax = record.tax_total or Decimal(0)
     data = {
@@ -275,11 +276,12 @@ def _doc_record(
         "doc_number": record.ref,
         "issue_date": record.issue_date.isoformat() if record.issue_date else None,
         "due_date": record.payment_due_date.isoformat() if record.payment_due_date else None,
-        "currency": base,
+        "currency": currency,
+        "conversion_rate": to_stored_float(record.exchange_rate) if currency != base else None,
         "line_items": lines,
-        "subtotal": _money(record.total - tax, base),
-        "tax": _money(tax, base),
-        "total": _money(record.total, base),
+        "subtotal": _money(record.total - tax, currency),
+        "tax": _money(tax, currency),
+        "total": _money(record.total, currency),
     }
     return DocImportRecord(
         entity_id=f"doc:{deterministic_id(context, record.source_type, record.source_external_id)}",
@@ -288,6 +290,15 @@ def _doc_record(
         source="migration",
         idempotency_key=context.idempotency_key(record, "created"),
     )
+
+
+def _currency(record: CIFDocument | CIFSettlement, base: str) -> str:
+    return (record.currency or base).upper()
+
+
+def _rate(record: CIFDocument | CIFSettlement, base: str) -> float | None:
+    """The rate a foreign record converts at, passed on so Celerp books the same base amounts."""
+    return to_stored_float(record.exchange_rate) if _currency(record, base) != base else None
 
 
 def _posts(record: CIFDocument) -> bool:
@@ -318,12 +329,17 @@ def _postings(record: CIFDocument, line) -> list[tuple[str | None, Decimal | Non
 
 
 def _entries(record: CIFDocument, base: str, accounts: dict[str, str]) -> list[dict]:
-    """The document's own line postings, debit positive by its type."""
+    """The document's own line postings in the base currency, debit positive by its type.
+    A foreign document's net and tax convert from its running total at its own rate, so
+    the lines add up to its converted total; cost of sales is already in the base currency."""
     sign = _LINE_SIGN[record.doc_type]
+    converted = iter(split_to_base([x for line in record.line_items
+                                    for x in (line.total_price, line.tax_amount or Decimal(0))],
+                                   record.exchange_rate or 1, base))
     entries = []
     for line in record.line_items:
-        for account, amount in _postings(record, line):
-            value = _money(sign * (amount or Decimal(0)), base)
+        for index, (account, amount) in enumerate(_postings(record, line)):
+            value = to_stored_float(sign * (next(converted) if index < 2 else round_money(amount, base)))
             if value:
                 entries.append({"account": accounts[account], "debit": max(value, 0.0), "credit": max(-value, 0.0)})
     return entries
@@ -357,7 +373,7 @@ async def _post_document(
                     raise ValueError(f"invoice {applies_to} was not imported.")
                 await apply_credit_note(
                     context.session, context.company_id, outcome.entity_id, imported[applies_to],
-                    _money(record.total, base), payment_date=_date(record), actor_id=context.user_id,
+                    _money(record.total, _currency(record, base)), payment_date=_date(record), actor_id=context.user_id,
                     source="migration", idempotency_key=context.idempotency_key(record, "applied"),
                 )
     except Exception as exc:
@@ -377,8 +393,8 @@ async def _import_debit_note(
 ) -> RecordOutcome:
     """Post a debit note as a journal fallback on its bill and apply it as a payment."""
     label = f"Debit note {record.ref or record.source_external_id}"
-    if record.currency and record.currency.upper() != base:
-        return RecordOutcome("", "rejected", f"{label} is in {record.currency}; only {base} documents can be imported.")
+    if _currency(record, base) != base and record.exchange_rate is None:
+        return RecordOutcome("", "rejected", f"{label} is in {record.currency} and carries no exchange rate.")
     bill_id = imported.get(record.metadata.get("applies_to") or "")
     if bill_id is None:
         return RecordOutcome("", "rejected", f"{label}: the bill it notes was not imported.")
@@ -398,8 +414,8 @@ async def _import_debit_note(
             )
             entry, _amount = await apply_doc_payment(
                 context.session, context.company_id, bill_id,
-                {"amount": _money(record.total, base), "payment_date": _date(record),
-                 "bank_account": payable, "method": "debit_note"},
+                {"amount": _money(record.total, _currency(record, base)), "payment_date": _date(record),
+                 "bank_account": payable, "method": "debit_note", "conversion_rate": _rate(record, base)},
                 source="migration", actor_id=context.user_id,
                 idempotency_key=context.idempotency_key(record, "applied"), commit=False,
                 moves_cash=False,
@@ -491,7 +507,7 @@ async def _import_settlements(context: SinkContext, records: Sequence[CIFSourceR
         if reason is not None:
             outcomes.append(RecordOutcome("", "rejected", reason))
             continue
-        outcomes.append(await _settle(context, record, docs, banks[record.bank_account_external_id]))
+        outcomes.append(await _settle(context, record, docs, banks[record.bank_account_external_id], base))
     return outcomes
 
 
@@ -500,8 +516,8 @@ async def _settlement_problem(
 ) -> str | None:
     """Why a settlement cannot be imported as payments on its documents, or None."""
     label = f"{record.settlement_type.value.capitalize()} {record.source_ref or record.source_external_id}"
-    if record.currency and record.currency.upper() != base:
-        return f"{label} is in {record.currency}; only {base} settlements can be imported."
+    if _currency(record, base) != base and record.exchange_rate is None:
+        return f"{label} is in {record.currency} and carries no exchange rate."
     if record.bank_account_external_id not in banks:
         return f"{label}: bank account {record.bank_account_external_id} was not imported."
     allocated = sum((a.amount for a in record.allocations), Decimal(0))
@@ -519,7 +535,7 @@ async def _settlement_problem(
 
 
 async def _settle(
-    context: SinkContext, record: CIFSettlement, docs: dict[str, str], bank_code: str
+    context: SinkContext, record: CIFSettlement, docs: dict[str, str], bank_code: str, base: str
 ) -> RecordOutcome:
     """Record every allocation as a payment on its document, all or none."""
     settlement_id = str(deterministic_id(context, record.source_type, record.source_external_id))
@@ -535,6 +551,7 @@ async def _settle(
                         "payment_date": record.settlement_date.isoformat(),
                         "bank_account": bank_code,
                         "method": "migration",
+                        "conversion_rate": _rate(record, base),
                     },
                     source="migration",
                     actor_id=context.user_id,

@@ -22,7 +22,7 @@ from celerp.importers.adapters.manager_io.protobuf import DecodeError, Message, 
 from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader
 from celerp.importers.adapters.manager_io.types import CONTENT_TYPES, GUIDS, NOTES, TARGETS, TYPE_NAMES
 from celerp.importers.schema import CIFCoverageEntry, CoverageClass
-from celerp.services.money import currency_dp, round_money
+from celerp.services.money import checked_exchange_rate, currency_dp, round_money, split_to_base
 
 MAX_NOTE = 300
 
@@ -48,7 +48,7 @@ BUILTINS: dict[str, tuple[str, str | None, str]] = {
     TAX: ("liability", "tax", "Tax payable"),
     INVENTORY: ("asset", "inventory", "Inventory on hand"),
     RETAINED: ("equity", "retained_earnings", "Retained earnings"),
-    FX_GAIN: ("expense", None, "Foreign exchange gains and losses"),
+    FX_GAIN: ("expense", "exchange_difference", "Foreign exchange gains and losses"),
 }
 # Built-in accounts a business has once it sells inventory items: sales income, and the
 # cost of the items sold.
@@ -172,6 +172,8 @@ class Line:
     contact: str | None = None                 # party line of a settlement
     document: str | None = None                # settled document of a party line
     cost: Decimal = Decimal(0)                 # cost of sales of an inventory item sold, base currency
+    base_net: Decimal = Decimal(0)             # net and tax in the base currency, at the record's rate
+    base_tax: Decimal = Decimal(0)
 
 
 @dataclass
@@ -189,6 +191,7 @@ class Document:
     applies_to: str | None = None              # the invoice a note settles
     moves_stock: bool = False                  # an invoice that moves its own stock, with no physical record
     location: str | None = None                # where such an invoice moves its stock
+    rate: Decimal | None = None                # base units per document unit; 1 for a base currency document
 
     @property
     def doc_type(self) -> str:
@@ -197,6 +200,10 @@ class Document:
     @property
     def total(self) -> Decimal:
         return sum((ln.net + ln.tax for ln in self.lines), Decimal(0))
+
+    @property
+    def base_total(self) -> Decimal:
+        return sum((ln.base_net + ln.base_tax for ln in self.lines), Decimal(0))
 
     @property
     def tax_total(self) -> Decimal:
@@ -245,6 +252,7 @@ class Settlement:
     party_lines: list[Line]                    # receivable or payable lines that settle a document
     other_lines: list[Line]                    # everything else, money on account included: kept as a journal
     include_tax: bool = True
+    rate: Decimal | None = None                # base units per settlement unit; 1 in the base currency
 
     @property
     def kind(self) -> str:
@@ -263,7 +271,10 @@ class Transfer:
     description: str | None
     from_bank: str
     to_bank: str
-    amount: Decimal
+    amount: Decimal                            # leaves the source account, in its currency
+    to_amount: Decimal                         # arrives in the destination account, in its currency
+    base: Decimal = Decimal(0)                 # what moves in the base currency
+    rate: Decimal | None = None                # the rate table's rate, for a transfer within one foreign currency
 
 
 @dataclass
@@ -273,6 +284,8 @@ class JournalLine:
     debit: Decimal
     credit: Decimal
     description: str | None
+    base_debit: Decimal = Decimal(0)           # debit and credit in the base currency, at the journal's rate
+    base_credit: Decimal = Decimal(0)
 
 
 @dataclass
@@ -283,6 +296,16 @@ class Journal:
     narration: str | None
     currency: str | None
     lines: list[JournalLine]
+    rate: Decimal | None = None                # base units per journal unit; 1 in the base currency
+
+
+@dataclass
+class Rate:
+    """One row of Manager's exchange rate table: base units per foreign unit from a date."""
+    key: str
+    effective: date
+    currency: str                              # currency object key
+    rate: Decimal
 
 
 @dataclass
@@ -314,6 +337,7 @@ class Book:
     base_name: str | None = None
     precision: int = 2
     currencies: dict[str, Currency] = field(default_factory=dict)
+    rates: list[Rate] = field(default_factory=list)
     groups: dict[str, Group] = field(default_factory=dict)
     accounts: dict[str, Account] = field(default_factory=dict)
     tax_codes: dict[str, TaxCode] = field(default_factory=dict)
@@ -449,6 +473,18 @@ def _due(msg: Message, issue: date, kind: int, days: int, on: int) -> date | Non
     return issue + timedelta(days=count) if count else None
 
 
+def _rate(m: Message, number: int, inverse: int) -> Decimal | None:
+    """The record's own exchange rate as base units per foreign unit, or None when it stores
+    none. Manager can store the rate inverted; 1/x restores the direction."""
+    value = m.decimal(number)
+    if value is None or value == 0:
+        return None
+    try:
+        return checked_exchange_rate(Decimal(1) / value if m.bool(inverse) else value)
+    except ValueError as exc:
+        raise Blocked("invalid exchange rate", f"The record's exchange rate {exc}.") from exc
+
+
 def _document(source_type: str, key: str, m: Message) -> Document:
     if source_type == "SalesInvoice":
         _unsupported(m, (29, 28, 35), "invoice rounding, withholding tax or an early payment discount")
@@ -457,7 +493,8 @@ def _document(source_type: str, key: str, m: Message) -> Document:
         _line_discounts(m, raw, lines, 31, 32)
         issue = _require_date(m, 1)
         return Document(key, source_type, issue, _due(m, issue, 54, 22, 6), m.str(2), _ref(m.guid(3)), None,
-                        m.bool(8), m.str(12), lines, moves_stock=m.bool(69), location=_ref(m.guid(30)))
+                        m.bool(8), m.str(12), lines, moves_stock=m.bool(69), location=_ref(m.guid(30)),
+                        rate=_rate(m, 64, 65))
     if source_type == "PurchaseInvoice":
         _unsupported(m, (24, 65, 68), "withholding tax, freight or landed costs")
         raw = m.messages(23)
@@ -465,19 +502,20 @@ def _document(source_type: str, key: str, m: Message) -> Document:
         _line_discounts(m, raw, lines, 14, 15)
         issue = _require_date(m, 1)
         return Document(key, source_type, issue, _due(m, issue, 31, 19, 5), m.str(2), _ref(m.guid(3)), None,
-                        m.bool(7), m.str(9), lines, moves_stock=m.bool(64), location=_ref(m.guid(13)))
+                        m.bool(7), m.str(9), lines, moves_stock=m.bool(64), location=_ref(m.guid(13)),
+                        rate=_rate(m, 61, 62))
     if source_type == "CreditNote":
         _unsupported(m, (13,), "withholding tax")
         raw = m.messages(22)
         lines = [_doc_line(x, _SALES_LINE_LINKS) for x in raw]
         _line_discounts(m, raw, lines, 15, 16)
         return Document(key, source_type, _require_date(m, 1), None, m.str(2), _ref(m.guid(3)), None,
-                        m.bool(6), m.str(9), lines, _ref(m.guid(8)))
+                        m.bool(6), m.str(9), lines, _ref(m.guid(8)), rate=_rate(m, 30, 31))
     raw = m.messages(16)                                            # DebitNote
     lines = [_doc_line(x, _PURCHASE_LINE_LINKS) for x in raw]
     _line_discounts(m, raw, lines, 10, 11)
     return Document(key, source_type, _require_date(m, 1), None, m.str(2), _ref(m.guid(3)), None,
-                    m.bool(5), m.str(7), lines, _ref(m.guid(6)))
+                    m.bool(5), m.str(7), lines, _ref(m.guid(6)), rate=_rate(m, 22, 23))
 
 
 def _movement(source_type: str, key: str, m: Message) -> Movement:
@@ -500,12 +538,12 @@ def _movement(source_type: str, key: str, m: Message) -> Movement:
 def _settlement(source_type: str, key: str, m: Message) -> Settlement:
     receipt = source_type == "Receipt"
     if receipt:
-        bank, qty_col, price_col, exclusive = m.guid(7), 32, 33, 31
+        bank, qty_col, price_col, exclusive, rate = m.guid(7), 32, 33, 31, _rate(m, 45, 46)
         _unsupported(m, (34, 35, 38, 39), "a discount or a fixed total")
         links, party_account, contact_field, doc_field = _RECEIPT_LINE_LINKS, AR, 3, 4
         other_party = (AP, 7, 8)
     else:
-        bank, qty_col, price_col, exclusive = m.guid(7), 33, 34, 32
+        bank, qty_col, price_col, exclusive, rate = m.guid(7), 33, 34, 32, _rate(m, 46, 47)
         _unsupported(m, (35, 36, 39, 40), "a discount or a fixed total")
         links, party_account, contact_field, doc_field = _PAYMENT_LINE_LINKS, AP, 7, 8
         other_party = (AR, 3, 4)
@@ -540,7 +578,7 @@ def _settlement(source_type: str, key: str, m: Message) -> Settlement:
     if len(contacts) > 1:
         raise Blocked("several contacts", "One settlement for several customers or suppliers.")
     return Settlement(key, source_type, _require_date(m, 1), m.str(2), str(bank), None, m.str(10),
-                      party, other, not m.bool(exclusive))
+                      party, other, not m.bool(exclusive), rate)
 
 
 def _journal(key: str, m: Message) -> Journal:
@@ -580,6 +618,15 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
             raise Blocked("unsupported feature", "The currency has no three-letter code.")
         book.currencies[key] = Currency(key, code, m.str(1), m.int(4, None) if m.values(4) else currency_dp(code),
                                         m.bool(6))
+    elif name == "ExchangeRate":
+        effective, currency, value = m.date(1), _ref(m.guid(2)), m.decimal(6)
+        if effective is None or currency is None:
+            raise Blocked("unknown reference", "The exchange rate names no date or currency.")
+        try:
+            rate = checked_exchange_rate(value)
+        except ValueError as exc:
+            raise Blocked("invalid exchange rate", f"The exchange rate {exc}.") from exc
+        book.rates.append(Rate(key, effective, currency, rate))
     elif name in ("Assets", "Liabilities", "Equity"):
         book.groups[key] = Group(key, name, None)
     elif name == "BalanceSheetGroup":
@@ -630,9 +677,9 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
         credit, debit = _money(m.decimal(8)), _money(m.decimal(9))
         if source is None or dest is None:
             raise Blocked("unknown reference", "The transfer names no source or destination account.")
-        if credit != debit or credit <= 0:
-            raise Blocked("unequal amounts", "The two sides of the transfer differ.")
-        book.transfers[key] = Transfer(key, _require_date(m, 1), m.str(6), m.str(5), source, dest, credit)
+        if credit <= 0 or debit <= 0:
+            raise Blocked("unsupported feature", "A zero or negative transfer amount.")
+        book.transfers[key] = Transfer(key, _require_date(m, 1), m.str(6), m.str(5), source, dest, credit, debit)
     elif name == "JournalEntry":
         book.journals[key] = _journal(key, m)
     elif name == "Attachment":
@@ -752,7 +799,7 @@ def _cost_sales(book: Book) -> None:
         for line in (ln for ln in doc.lines if ln.item):
             qty, value = owned.get(line.item, (Decimal(0), Decimal(0)))
             if doc.source_type == "PurchaseInvoice":
-                owned[line.item] = (qty + line.quantity, value + line.net)
+                owned[line.item] = (qty + line.quantity, value + line.base_net)
                 continue
             if line.quantity > qty and not book.is_blocked(doc.key):
                 book.block(doc.source_type, doc.key, "negative quantity owned", "Sells more of an item than the "
@@ -798,27 +845,83 @@ def _resolve_journal(book: Book, j: Journal) -> None:
             _check(line.contact in book.contacts, "a customer or supplier")
 
 
-def _foreign_check(book: Book, key: str) -> None:
-    """Block a financial record that touches a foreign currency: its exchange gains and losses
-    cannot be reproduced in Celerp yet, so none of it is imported."""
-    currencies: list[str | None] = []
-    if key in book.documents:
-        currencies.append(book.documents[key].currency)
-    elif key in book.settlements:
-        s = book.settlements[key]
-        currencies += [s.currency, *(book.contacts[ln.contact].currency for ln in s.other_lines
-                                     if ln.contact in book.contacts)]
-    elif key in book.transfers:
-        t = book.transfers[key]
-        currencies += [book.accounts[t.from_bank].currency, book.accounts[t.to_bank].currency]
-    else:
-        j = book.journals[key]
-        currencies += [j.currency, *(book.accounts[ln.account].currency for ln in j.lines),
-                       *(book.contacts[ln.contact].currency for ln in j.lines if ln.contact in book.contacts)]
-    if any(book.is_foreign(c) for c in currencies):
-        raise Blocked("foreign currency",
-                      "Celerp migrates base currency records only; exchange gains and losses on foreign "
-                      "currency records cannot be reproduced yet.")
+def _table_rate(book: Book, currency: str, day: date) -> Decimal | None:
+    """The rate table's latest rate for the currency on or before the day."""
+    rates = [r for r in book.rates if r.currency == currency and r.effective <= day and not book.is_blocked(r.key)]
+    return max(rates, key=lambda r: (r.effective, r.key)).rate if rates else None
+
+
+def _record_rate(book: Book, currency: str | None, own: Decimal | None, day: date) -> Decimal:
+    """Base units per record unit: 1 in the base currency, else the record's own rate, else the
+    rate table's latest rate on or before the record's date."""
+    if not book.is_foreign(currency):
+        return Decimal(1)
+    rate = own or _table_rate(book, currency, day)
+    if rate is None:
+        raise Blocked("no exchange rate", "A foreign currency record with no exchange rate of its own and none "
+                                          "in the exchange rate table on or before its date.")
+    return rate
+
+
+def _same_currency(book: Book, record: str | None, holders: list[str | None]) -> None:
+    """Every foreign currency account or contact a record touches is in the record's currency:
+    one record converts at one rate."""
+    code = book.currency_code(record)
+    if any(book.is_foreign(c) and book.currency_code(c) != code for c in holders):
+        raise Blocked("currency mismatch", "Touches an account, customer or supplier in a currency other than "
+                                           "the record's own.")
+
+
+def _to_base(book: Book, lines: list[Line], rate: Decimal) -> None:
+    """Each line's net and tax in the base currency, split from the converted running total so
+    the lines add up to the converted record total."""
+    parts = split_to_base([x for ln in lines for x in (ln.net, ln.tax)], rate, book.base_code or "")
+    for index, line in enumerate(lines):
+        line.base_net, line.base_tax = parts[2 * index], parts[2 * index + 1]
+
+
+def _rate_document(book: Book, doc: Document) -> None:
+    doc.rate = _record_rate(book, doc.currency, doc.rate, doc.date)
+    _to_base(book, doc.lines, doc.rate)            # before the check: a blocked bill still counts as owned stock
+    _same_currency(book, doc.currency, [book.accounts[ln.account].currency for ln in doc.lines
+                                        if ln.account in book.accounts])
+
+
+def _rate_settlement(book: Book, s: Settlement) -> None:
+    holders = [*(book.accounts[ln.account].currency for ln in s.other_lines),
+               *(book.contacts[ln.contact].currency for ln in s.other_lines if ln.contact in book.contacts)]
+    _same_currency(book, s.currency, holders)
+    s.rate = _record_rate(book, s.currency, s.rate, s.date)
+    _to_base(book, [*s.party_lines, *s.other_lines], s.rate)
+
+
+def _rate_journal(book: Book, j: Journal) -> None:
+    holders = [*(book.accounts[ln.account].currency for ln in j.lines),
+               *(book.contacts[ln.contact].currency for ln in j.lines if ln.contact in book.contacts)]
+    _same_currency(book, j.currency, holders)
+    j.rate = _record_rate(book, j.currency, None, j.date)
+    code = book.base_code or ""
+    for line, debit, credit in zip(j.lines, split_to_base([ln.debit for ln in j.lines], j.rate, code),
+                                   split_to_base([ln.credit for ln in j.lines], j.rate, code)):
+        line.base_debit, line.base_credit = debit, credit
+
+
+def _rate_transfer(book: Book, t: Transfer) -> None:
+    """What a transfer moves in the base currency. A base currency side states it exactly; a
+    transfer within one foreign currency converts at the rate table's rate on its date. Two
+    different foreign currencies would need a rate between them, which Manager does not keep."""
+    source, dest = book.accounts[t.from_bank].currency, book.accounts[t.to_bank].currency
+    if not book.is_foreign(source) or not book.is_foreign(dest):
+        if not book.is_foreign(source) and not book.is_foreign(dest) and t.amount != t.to_amount:
+            raise Blocked("unequal amounts", "The two sides of the transfer differ.")
+        t.base = t.to_amount if not book.is_foreign(dest) else t.amount
+        return
+    if book.currency_code(source) != book.currency_code(dest):
+        raise Blocked("currency mismatch", "A transfer between two different foreign currencies.")
+    if t.amount != t.to_amount:
+        raise Blocked("unequal amounts", "The two sides of the transfer differ.")
+    t.rate = _record_rate(book, source, None, t.date)
+    t.base = round_money(t.amount * t.rate, book.base_code or "")
 
 
 def _resolve(book: Book) -> None:
@@ -837,22 +940,26 @@ def _resolve(book: Book) -> None:
     for tax in book.tax_codes.values():
         if tax.account not in book.accounts:
             book.block("TaxCode", tax.key, "unknown reference", "Refers to an account not in the file.")
+    for rate in book.rates:
+        if rate.currency not in book.currencies:
+            book.block("ExchangeRate", rate.key, "unknown reference", "Refers to a currency not in the file.")
 
-    steps: list[tuple[dict, Callable[[Book, object], None]]] = [
-        (book.documents, _resolve_document), (book.settlements, _resolve_settlement), (book.journals, _resolve_journal),
+    steps: list[tuple[dict, Callable[[Book, object], None], Callable[[Book, object], None]]] = [
+        (book.documents, _resolve_document, _rate_document), (book.settlements, _resolve_settlement, _rate_settlement),
+        (book.journals, _resolve_journal, _rate_journal),
     ]
-    for records, resolve in steps:
+    for records, resolve, rate in steps:
         for key, record in list(records.items()):
             try:
                 resolve(book, record)
-                _foreign_check(book, key)
+                rate(book, record)
             except Blocked as blocked:
                 book.block(names[key], key, blocked.reason, blocked.note)
     for key, t in book.transfers.items():
         try:
             for bank in (t.from_bank, t.to_bank):
                 _check(bank in book.accounts and book.accounts[bank].control == "bank", "a bank or cash account")
-            _foreign_check(book, key)
+            _rate_transfer(book, t)
         except Blocked as blocked:
             book.block("InterAccountTransfer", key, blocked.reason, blocked.note)
     _cost_sales(book)
@@ -938,7 +1045,7 @@ def _value_stock(book: Book) -> None:
                 on_hand, worth = now_held.get(line.item, (Decimal(0), Decimal(0)))
                 if on_hand + line.quantity < 0:
                     raise Blocked("negative stock", "Moves more stock out than is on hand at the time.")
-                booked = source.net if line.quantity > 0 else -source.cost
+                booked = source.base_net if line.quantity > 0 else -source.cost
                 share = round_money(booked * (qty + abs(line.quantity)) / source.quantity, code)
                 line.value = share - (value if line.quantity > 0 else -value)
                 now_taken[(doc.key, line.line)] = (qty + abs(line.quantity), value + abs(line.value))

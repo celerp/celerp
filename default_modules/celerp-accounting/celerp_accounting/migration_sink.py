@@ -40,10 +40,10 @@ from celerp.services.migration_core_sink import (
     run_targets,
     sink_result,
 )
-from celerp.services.money import round_money, to_stored_float
+from celerp.services.money import checked_exchange_rate, require_doc_rate, round_money, to_stored_float
 from celerp_accounting import import_service
 from celerp_accounting.import_service import JOURNAL_CREATED, AccImportRecord
-from celerp_accounting.models import Account
+from celerp_accounting.models import Account, BankAccount
 from celerp_accounting.routes import (
     _base_currency,
     _build_balances,
@@ -132,6 +132,7 @@ class AccountingMigrationSink:
         open_ar = Decimal(0)
         open_ap = Decimal(0)
         if any(e.measure in _DOCUMENT_RESIDUALS for e in wanted):
+            base = (await _base_currency(context.session, context.company_id)).upper()
             doc_ids = await run_targets(context, "doc")
             found: set[str] = set()
             for start in range(0, len(doc_ids), 500):
@@ -148,6 +149,7 @@ class AccountingMigrationSink:
                     balance = outstanding_balance(state)
                     if balance is None:
                         raise ValueError("An imported document has no measurable outstanding balance")
+                    balance = round_money(balance * require_doc_rate(state, base), base)
                     doc_type = state.get("doc_type")
                     if doc_type == "invoice":
                         open_ar += balance
@@ -263,6 +265,11 @@ async def _write_account(
     role = _control_role(account)
     if role is not None:
         await record_source_control(session, company_id, role, code)
+    if account.control == AccountControl.EXCHANGE_DIFFERENCE:
+        # Celerp books the exchange difference itself when the import applies a foreign
+        # payment or note: both sides post to the source's account (resolve_importing).
+        for fx_role in (AccountRole.FX_GAIN, AccountRole.FX_LOSS):
+            await record_source_control(session, company_id, fx_role, code)
     return code
 
 
@@ -307,7 +314,10 @@ async def _import_journals(context: SinkContext, records: Sequence[CIFSourceReco
             account_ids += [r.from_account_external_id, r.to_account_external_id]
     codes = await mapped_targets(context, ACCOUNT, account_ids)
     contacts = await mapped_targets(context, CONTACT, contact_ids)
-    prepared = [_journal_record(context, r, base, codes, contacts) for r in records]
+    banks = dict((await context.session.execute(
+        select(BankAccount.chart_account_code, BankAccount.currency).where(BankAccount.company_id == context.company_id)
+    )).all())
+    prepared = [_journal_record(context, r, base, codes, contacts, banks) for r in records]
 
     async def write(ready: list[AccImportRecord]):
         return await import_service.import_journal_records(
@@ -323,6 +333,7 @@ def _journal_record(
     base: str,
     codes: dict[str, str],
     contacts: dict[str, str],
+    banks: dict[str, str],
 ) -> AccImportRecord | str:
     """The journal import record for one source journal or transfer, or why there is none."""
     if isinstance(record, CIFJournalEntry):
@@ -337,6 +348,13 @@ def _journal_record(
                 "debit": to_stored_float(round_money(line.debit, base)),
                 "credit": to_stored_float(round_money(line.credit, base)),
             }
+            if line.fx_currency:
+                entry |= {
+                    "fx_debit": to_stored_float(line.fx_debit) if line.fx_debit else None,
+                    "fx_credit": to_stored_float(line.fx_credit) if line.fx_credit else None,
+                    "fx_currency": line.fx_currency.upper(),
+                    "fx_rate": to_stored_float(line.fx_rate),
+                }
             if line.contact_external_id:
                 if line.contact_external_id not in contacts:
                     return f"Journal {record.source_external_id}: contact {line.contact_external_id} was not imported."
@@ -344,23 +362,28 @@ def _journal_record(
             entries.append(entry)
         data = {"memo": record.narration or "", "ts": record.entry_date.isoformat(), "entries": entries}
     elif isinstance(record, CIFBankTransfer):
-        if record.to_amount is not None and record.to_amount != record.amount:
-            return (
-                f"Transfer {record.source_external_id} changes currency; "
-                "transfers between currencies cannot be imported."
-            )
         for ext in (record.from_account_external_id, record.to_account_external_id):
             if ext not in codes:
                 return f"Transfer {record.source_external_id}: account {ext} was not imported."
-        amount = to_stored_float(round_money(record.amount, base))
+        moved = _transfer_base(record, base, banks.get(codes[record.from_account_external_id], base).upper(),
+                               banks.get(codes[record.to_account_external_id], base).upper())
+        if isinstance(moved, str):
+            return moved
+        amount, legs = to_stored_float(moved), []
+        for ext, native, side in ((record.to_account_external_id, record.to_amount or record.amount, "debit"),
+                                  (record.from_account_external_id, record.amount, "credit")):
+            currency = banks.get(codes[ext], base).upper()
+            leg = {"account": codes[ext], "debit": amount if side == "debit" else 0.0,
+                   "credit": amount if side == "credit" else 0.0}
+            if currency != base:
+                leg |= {f"fx_{side}": to_stored_float(round_money(native, currency)), "fx_currency": currency,
+                        "fx_rate": to_stored_float(checked_exchange_rate(moved / native))}
+            legs.append(leg)
         data = {
             "memo": f"Transfer {record.source_ref or record.source_external_id}",
             "ts": record.transfer_date.isoformat(),
             "je_type": "transfer",
-            "entries": [
-                {"account": codes[record.to_account_external_id], "debit": amount, "credit": 0.0},
-                {"account": codes[record.from_account_external_id], "debit": 0.0, "credit": amount},
-            ],
+            "entries": legs,
         }
     else:
         return f"Record type {type(record).__name__} is not a journal."
@@ -371,6 +394,29 @@ def _journal_record(
         source="migration",
         idempotency_key=context.idempotency_key(record, "created"),
     )
+
+
+def _transfer_base(record: CIFBankTransfer, base: str, source: str, dest: str) -> Decimal | str:
+    """What a transfer moves in the base currency, or why it cannot be imported. A base
+    currency side states it exactly; a transfer within one foreign currency converts at
+    its own rate; between two foreign currencies there is no rate to convert at."""
+    received = record.to_amount if record.to_amount is not None else record.amount
+    label = f"Transfer {record.source_external_id}"
+    if source == base and dest == base:
+        if received != record.amount:
+            return f"{label}: the two sides of a transfer in {base} must be equal."
+        return round_money(record.amount, base)
+    if dest == base:
+        return round_money(received, base)
+    if source == base:
+        return round_money(record.amount, base)
+    if source != dest:
+        return f"{label} is between {source} and {dest}; transfers between two foreign currencies cannot be imported."
+    if received != record.amount:
+        return f"{label}: the two sides of a transfer in {source} must be equal."
+    if record.exchange_rate is None:
+        return f"{label} is in {source} and carries no exchange rate."
+    return round_money(record.amount * record.exchange_rate, base)
 
 
 SINK = AccountingMigrationSink()

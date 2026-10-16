@@ -72,8 +72,6 @@ _BUILTIN = _fields(read=(1,))                       # a built-in account: the na
 _MOVEMENT = _fields(read=(1,), refs=(11,), days=(3,), f15=_lines(_MOVEMENT_LINE),
                     f4=ignored("The supplier or customer on the note. The bill or invoice it moves goods "
                                "for names the same contact, and that is what is carried."))
-_RATE = ignored("The exchange rate of a record in a foreign currency. Such a record is refused at the scan, "
-                "so no rate is ever carried.")
 _PAID_BY = dict(
     f3=ignored("Whether a customer, a supplier or someone else paid, as the form shows it. Each line names "
                "the contact and document it settles, and that is what is carried."),
@@ -109,25 +107,26 @@ SCHEMAS: dict[str, Schema] = {
                                                    "default location, so no location is carried.")),
     "InventoryUnitCost": _fields(refs=(2,), numbers=(3,), days=(1,)),
     "SalesInvoice": _fields(read=(2, 8, 12, 22, 28, 29, 31, 32, 35, 54, 69), refs=(3, 30), days=(1, 6),
-                            f49=_lines(_SALES_LINE), f64=_RATE),
+                            f49=_lines(_SALES_LINE), f64=NUMBER, f65=READ),
     "PurchaseInvoice": _fields(read=(2, 7, 9, 14, 15, 19, 24, 31, 64, 65, 68), refs=(3, 13), days=(1, 5),
-                               f23=_lines(_PURCHASE_LINE), f61=_RATE,
-                               f62=ignored("Whether the exchange rate is entered inverted. It goes with the "
-                                           "rate, which is never carried.")),
-    "CreditNote": _fields(read=(2, 6, 9, 13, 15, 16), refs=(3, 8), days=(1,), f22=_lines(_SALES_LINE)),
-    "DebitNote": _fields(read=(2, 5, 7, 10, 11), refs=(3, 6), days=(1,), f16=_lines(_PURCHASE_LINE)),
+                               f23=_lines(_PURCHASE_LINE), f61=NUMBER, f62=READ),
+    "CreditNote": _fields(read=(2, 6, 9, 13, 15, 16, 31), refs=(3, 8), days=(1,), numbers=(30,),
+                          f22=_lines(_SALES_LINE)),
+    "DebitNote": _fields(read=(2, 5, 7, 10, 11, 23), refs=(3, 6), days=(1,), numbers=(22,),
+                         f16=_lines(_PURCHASE_LINE)),
     "GoodsReceipt": _MOVEMENT | {17: REF},
     "DeliveryNote": _MOVEMENT | {19: REF},
     "Receipt": _fields(read=(2, 10, 31, 32, 33, 34, 35, 38, 39), refs=(7,), days=(1,), f11=_lines(_RECEIPT_LINE),
-                       f45=_RATE, **_PAID_BY),
-    "Payment": _fields(read=(2, 10, 32, 33, 34, 35, 36, 39, 40), refs=(7,), days=(1,), f11=_lines(_PAYMENT_LINE),
-                       **_PAID_BY),
+                       f45=NUMBER, f46=READ, **_PAID_BY),
+    "Payment": _fields(read=(2, 10, 32, 33, 34, 35, 36, 39, 40, 47), refs=(7,), days=(1,), numbers=(46,),
+                       f11=_lines(_PAYMENT_LINE), **_PAID_BY),
     "InterAccountTransfer": _fields(read=(5, 6), refs=(2, 3), numbers=(8, 9), days=(1,)),
     "JournalEntry": _fields(read=(2, 3), refs=(8,), days=(1,), f14=_lines(_JOURNAL_LINE)),
     "Attachment": _fields(read=(2, 4, 12), refs=(6,),
                           f1=lost("attach time", "When the file was attached is not carried. The file is "
                                   "carried as it is, onto the record it belongs to.", DATE)),
     "LockDate": _fields(read=(2,), days=(1,)),
+    "ExchangeRate": _fields(refs=(2,), numbers=(6,), days=(1,)),
 }
 
 

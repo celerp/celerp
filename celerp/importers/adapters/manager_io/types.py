@@ -110,7 +110,7 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     # unsupported_nonfinancial
     ("Division", "cc7fc110-e3e4-4b3b-823d-86c4a4cdabbc", _N),
     ("Employee", "dadb7f95-a5dd-45c0-945d-6ad4ee28776e", _N),
-    ("ExchangeRate", "14240c19-3d08-4fe6-94bb-6dd17c4bcda6", _N),
+    ("ExchangeRate", "14240c19-3d08-4fe6-94bb-6dd17c4bcda6", _L),
     ("ExpenseClaimsPayer", "563d7f9e-d64c-49ec-a938-e5531e72f4d8", _N),
     ("Forecast", "821030a6-9820-4cba-8879-eda07853b9a6", _N),
     ("InventoryKit", "efc4f2cc-acf0-4815-a9a8-13bae00c6167", _N),
@@ -355,7 +355,8 @@ TARGETS: dict[str, str] = {
     "Equity": "account",
 }
 NOTES: dict[str, str] = {
-    "ExchangeRate": "Not moved. Celerp migrates base currency records only, so no migrated record uses these rates.",
+    "ExchangeRate": ("Used to convert the records that store no rate of their own; Celerp keeps each record's "
+                     "own rate, so the table itself is not moved."),
     "DebitNote": "Posted as a journal on the bill it notes and applied to that bill; Celerp has no debit note document.",
     "BalanceSheetGroup": "Sets the account type of the accounts in the group; the group itself is not carried.",
     "ProfitAndLossStatementGroup": "Sets the account type of the accounts in the group; the group itself is not carried.",

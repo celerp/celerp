@@ -683,17 +683,17 @@ def test_an_inactive_item_still_holding_stock_is_imported_available_and_reported
     assert "Archive it in Celerp" in note and "default purchase price" in note
 
 
-def test_exchange_rates_are_reported_as_not_moved_and_stay_out_of_the_manifest(tmp_path):
-    # Celerp has no store of dated exchange rates, and every migrated record is in the base
-    # currency, so a rate table is disclosed at scan time and never handed to a sink.
+def test_exchange_rates_convert_records_and_stay_out_of_the_manifest(tmp_path):
+    # Celerp has no store of dated exchange rates: the table converts the records that store
+    # no rate of their own, each keeps its rate, and the table itself is never handed to a sink.
     objects = [*specs.basic_objects(), specs.obj("ForeignCurrency", "EUR", {1: "Euro", 2: "EUR", 4: 2}),
                specs.obj("ExchangeRate", "RATE1", {1: date(2026, 1, 1), 2: specs.k("EUR"), 6: Decimal("1.2")})]
     art = artifact(write_manager_file(tmp_path / "rates.manager", objects, specs.basic_blobs()))
     manager = adapter()
 
     count, klass, note = _coverage(manager.inspect([art]))["ExchangeRate"]
-    assert (count, klass) == (1, CoverageClass.UNSUPPORTED_NONFINANCIAL)
-    assert "base currency" in note
+    assert (count, klass) == (1, CoverageClass.MAPPED_WITH_LOSS)
+    assert "no rate of their own" in note
 
     manifest = manager.build_manifest([art], FULL)
     assert "exchange_rates" not in type(manifest.bundle).model_fields

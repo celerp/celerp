@@ -59,7 +59,7 @@ def _stock_from_source(book: Book) -> dict[str, tuple[Decimal, Decimal]]:
         for item, quantity, index in lines:
             on_hand, worth = held.get(item, (ZERO, ZERO))
             source = doc.lines[index]
-            booked = source.net if quantity > 0 else -source.cost
+            booked = source.base_net if quantity > 0 else -source.cost
             before = taken[(doc.key, index)]
             value = (round_money(booked * (before + abs(quantity)) / source.quantity, code)
                      - round_money(booked * before / source.quantity, code))
@@ -93,7 +93,7 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
         if account.control in CONTROL_MEASURES:
             add(CONTROL_MEASURES[account.control], key, base, balance, label, credit)
         if account.control == "bank":
-            add(M.BANK_CASH, key, book.currency_code(account.currency), balance, label, credit)
+            add(M.BANK_CASH, key, base, balance, label, credit)
     # The portion of a control balance not represented by currently open documents
     # is a legitimate source opening/journal amount. Verify that residual as well as
     # the control itself: together they prove open-document totals reconcile without
@@ -102,7 +102,7 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
     open_ap = ZERO
     for key in ledger.documents:
         doc = book.documents[key]
-        outstanding = ledger.states[key].amount_outstanding
+        outstanding = round_money(ledger.states[key].amount_outstanding * (doc.rate or 1), base)
         if doc.doc_type == "invoice":
             open_ar += outstanding
         elif doc.doc_type == "credit_note":

@@ -35,7 +35,7 @@ MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 MAPPED = (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS)
 # Records carried only through others: the default location holds all stock, and unit
 # costs price the cost of sales on each invoice.
-NOT_CARRIED = frozenset({"DefaultInventoryLocation", "InventoryUnitCost", "LockDate"})
+NOT_CARRIED = frozenset({"DefaultInventoryLocation", "ExchangeRate", "InventoryUnitCost", "LockDate"})
 
 
 def _single(artifacts: ArtifactSet) -> Artifact:
@@ -142,6 +142,8 @@ class ManagerIOAdapter:
                              for key, reason in sorted(screened.rejected.items())],
             },
         }
+        if any(book.is_foreign(c) for c in book.currencies):
+            summary["fx"] = {"realized": str(ledger.realized), "unrealized": ledger.unrealized}
         return CIFImportManifest(
             source=book.company_name or artifact.original_name,
             source_system=self.key,
