@@ -10,7 +10,7 @@ const os = require("os");
 const path = require("path");
 const afterPack = require("../after-pack").default;
 
-const RUNTIME = ["vcruntime140.dll", "msvcp140.dll"];
+const RUNTIME = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
 
 function windowsPackage() {
   const appOutDir = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-winpack-"));
@@ -56,7 +56,7 @@ describe("afterPack on Windows", () => {
   });
 
   test("stops the build when a runtime DLL is missing", async () => {
-    process.env.CELERP_VC_RUNTIME_DIR = runtimeDir(["vcruntime140.dll"]);
+    process.env.CELERP_VC_RUNTIME_DIR = runtimeDir(["vcruntime140.dll", "vcruntime140_1.dll"]);
     await expect(run(windowsPackage().appOutDir)).rejects.toThrow(/msvcp140\.dll/);
   });
 
