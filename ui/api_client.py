@@ -4059,6 +4059,49 @@ async def migration_revoke_export_request(token: str, request_id: str) -> dict:
     return _raise(r).json()
 
 
+async def migration_forget_template(token: str, source: str) -> None:
+    """DELETE /migrations/templates/{source}: forget the posting accounts saved from this source."""
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            r = await c.delete(f"/migrations/templates/{source}")
+    _raise(r)
+
+
+async def migration_several(token: str) -> dict:
+    """The files of this person's Move several companies uploads, newest first, each with its step."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.get("/migrations/several")
+    return _raise(r).json()
+
+
+async def migration_several_upload(token: str, files: list[tuple[str, BinaryIO]], source: str | None,
+                                   prepared_by: str) -> dict:
+    """Upload several files, each one company to move; returns the whole list."""
+    fields = [("source", source), ("prepared_by", prepared_by)]
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True) as c:
+            r = await c.post("/migrations/several", files=[
+                *((name, (None, value)) for name, value in fields if value),
+                *(("files", (name, content, "application/octet-stream")) for name, content in files)])
+    return _raise(r).json()
+
+
+async def migration_several_open(token: str, file_id: str) -> dict:
+    """Continue one file: ``{"scan_token", "prepared_by"}``, or ``{"run_id"}`` once started."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.post(f"/migrations/several/{file_id}/open")
+    return _raise(r).json()
+
+
+async def migration_several_remove(token: str, file_id: str) -> None:
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.delete(f"/migrations/several/{file_id}")
+    _raise(r)
+
+
 async def migration_move_requests(token: str) -> list[dict]:
     """The clients sent to Celerp's team to move, newest first, with each status and note."""
     async with _local_error_mapping():

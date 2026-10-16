@@ -24,6 +24,7 @@ in request bodies to the API, never in a URL.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -986,6 +987,161 @@ async def _withdraw_move(request: Request, mode: WizardMode):
     return await _moves_panel(request, mode, notice=t("migration.move_request_withdrawn"))
 
 
+# ---------------------------------------------------------------------------
+# Move several companies: several one-file sources in one upload, each continued
+# through the steps above on its own
+# ---------------------------------------------------------------------------
+
+_SEVERAL_BADGE = {"ready": "badge--open", "gone": "badge--neutral", "unreadable": "badge--danger"}
+_FILE_ID = re.compile(r"[A-Za-z0-9-]{1,64}")
+
+
+def _several_table(mode: WizardMode, rows: list[dict]) -> FT:
+    """Each file uploaded, newest first, with its step and what to do next."""
+    if not rows:
+        return P(t("migration.several_empty"), cls="form-hint")
+    rows = sorted(rows, key=lambda r: str(r.get("uploaded_at") or ""), reverse=True)
+
+    def step(row: dict) -> FT:
+        if row["state"] == "started":
+            status = row.get("run_status") or ""
+            return _badge(t(f"migration.status.{status}"), "badge--active")
+        return _badge(t(f"migration.several_state.{row['state']}"), _SEVERAL_BADGE.get(row["state"], "badge--neutral"))
+
+    def next_action(row: dict) -> FT:
+        if row["state"] == "ready":
+            return Form(Button(t("migration.several_continue"), type="submit", cls="btn btn--primary btn--sm"),
+                        method="post", action=f"{mode.base}/several/{row['id']}/open")
+        if row["state"] == "started":
+            return A(t("migration.several_open_run"), href=f"/migrations/{row['run_id']}", cls="auth-link")
+        return Span(row.get("error") or t("migration.several_gone"))
+
+    def remove(row: dict) -> FT:
+        return Button(t("migration.several_remove"), type="button",
+                      hx_post=f"{mode.base}/several/{row['id']}/remove",
+                      hx_confirm=t("migration.several_remove_confirm", file=row["file_name"]),
+                      hx_target="#several-list", hx_swap="outerHTML", cls="btn btn--danger btn--sm")
+
+    return Div(
+        wizard_table(
+            Thead(Tr(Th(t("migration.several_file")), Th(t("migration.several_uploaded")), Th(t("th.status")),
+                     Th(t("migration.export_request_client")), Th(t("migration.several_next")), Th(t("th.actions")))),
+            Tbody(*(Tr(Td(row["file_name"]),
+                       Td(format_value(row["uploaded_at"], "date") if row.get("uploaded_at") else EMPTY,
+                          cls="cell--date"),
+                       Td(step(row)), Td(row.get("company_name") or EMPTY),
+                       Td(next_action(row)), Td(remove(row)))
+                    for row in rows)),
+        ),
+        P(t("migration.several_remove_reason"), cls="form-hint"),
+    )
+
+
+async def _several_panel(request: Request, mode: WizardMode, *, error: str | None = None,
+                         notice: str | None = None, rows: list[dict] | None = None) -> FT:
+    """The list of files, swapped in place by an upload or a remove."""
+    list_error = None
+    if rows is None:
+        try:
+            rows = (await api.migration_several(get_token(request)))["items"]
+        except APIError as e:
+            rows, list_error = [], str(e.detail)
+    return Div(
+        P(notice, cls="flash flash--success") if notice else "",
+        flash(error) if error else "",
+        flash(list_error) if list_error else _several_table(mode, rows),
+        id="several-list",
+    )
+
+
+async def _several(request: Request, mode: WizardMode, *, error: str | None = None, status_code: int = 200):
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    sources, sources_error = await _sources()
+    # An export set is several files of one company, so it moves on its own.
+    single = [s for s in sources if len(s.get("artifacts", [])) == 1 and not s.get("checklist")]
+    extensions = sorted({ext for s in single for a in s["artifacts"] for ext in a.get("extensions", [])})
+    radios = [Label(Input(type="radio", name="source", value=key, checked=not key), Span(label),
+                    cls="migration-source")
+              for key, label in [("", t("migration.detect_source"))] + [(s["key"], s["display_name"]) for s in single]]
+    upload = Form(
+        Fieldset(Legend(t("migration.source_label"), cls="form-label"), *radios, cls="form-group"),
+        Div(Label(t("migration.files_label"), For="files", cls="form-label"),
+            Input(type="file", id="files", name="files", multiple=True,
+                  accept=",".join(extensions) if extensions else None, cls="form-input"),
+            P(t("migration.several_files_hint"), cls="form-hint"), cls="form-group"),
+        Div(Label(t("migration.prepared_by"), For="prepared_by", cls="form-label"),
+            Input(type="text", id="prepared_by", name="prepared_by", cls="form-input"),
+            P(t("migration.prepared_by_hint"), cls="form-hint"), cls="form-group"),
+        P(t("migration.several_retention"), cls="form-hint"),
+        Button(t("migration.several_upload"), type="submit", cls="btn btn--primary btn--full"),
+        hx_post=f"{mode.base}/several", hx_encoding="multipart/form-data", hx_target="#several-list",
+        hx_swap="outerHTML", hx_on__after_request="if (event.detail.successful) this.files.value=''",
+        method="post", action=f"{mode.base}/several", enctype="multipart/form-data", cls="auth-form",
+    )
+    page = wizard_page(
+        request,
+        auth_header(t("migration.several_title"), t("migration.several_hint")),
+        flash(sources_error) if sources_error else "",
+        upload,
+        H3(t("migration.several_list_title")),
+        await _several_panel(request, mode, error=error),
+        back_link(mode.back),
+        status_code=status_code, title="migration.several_title",
+    )
+    return page
+
+
+async def _upload_several(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    form = await request.form()
+    uploads = [f for f in form.getlist("files") if getattr(f, "filename", "")]
+    try:
+        body = await api.migration_several_upload(
+            get_token(request), [(f.filename, f.file) for f in uploads],
+            str(form.get("source", "")).strip() or None, str(form.get("prepared_by", "")).strip())
+    except APIError as e:
+        detail = e.detail.get("prepared_by") if isinstance(e.detail, dict) else e.detail
+        return HTMLResponse(to_xml(await _several_panel(request, mode, error=str(detail))))
+    return HTMLResponse(to_xml(await _several_panel(
+        request, mode, rows=body["items"], notice=t("migration.several_added", count=len(uploads)))))
+
+
+def _file_id(request: Request) -> str | None:
+    file_id = request.path_params["file_id"]
+    return file_id if _FILE_ID.fullmatch(file_id) else None
+
+
+async def _open_several(request: Request, mode: WizardMode):
+    """Continue one file in the one-company wizard, at the step after its upload."""
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    if (file_id := _file_id(request)) is None:
+        return await _several(request, mode, error=t("migration.several_gone"), status_code=404)
+    try:
+        body = await api.migration_several_open(get_token(request), file_id)
+    except APIError as e:
+        return await _several(request, mode, error=str(e.detail), status_code=e.status if e.status >= 400 else 502)
+    if "run_id" in body:
+        return RedirectResponse(f"/migrations/{body['run_id']}", status_code=303)
+    resp = RedirectResponse(f"{mode.base}/coverage", status_code=303)
+    _set_scan_cookies(resp, body["scan_token"], body.get("prepared_by") or "", mode, request)
+    return resp
+
+
+async def _remove_several(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    if (file_id := _file_id(request)) is None:
+        return HTMLResponse(to_xml(await _several_panel(request, mode, error=t("migration.several_gone"))))
+    try:
+        await api.migration_several_remove(get_token(request), file_id)
+    except APIError as e:
+        return HTMLResponse(to_xml(await _several_panel(request, mode, error=str(e.detail))))
+    return HTMLResponse(to_xml(await _several_panel(request, mode, notice=t("migration.several_removed"))))
+
+
 async def _sample(request: Request, mode: WizardMode):
     if (denied := await gate(request, mode)) is not None:
         return denied
@@ -1552,6 +1708,10 @@ def migrations_routes(app) -> None:
     async def migration_xero_attachments_stop(request: Request, run_id: str):
         return await _xero_attachments(request, run_id, "stop")
 
+    @app.post("/migrations/templates/{source}/forget")
+    async def migration_forget_answers(request: Request, source: str):
+        return await _forget_answers(request, source)
+
     @app.get("/migrations/{run_id}/discard")
     async def migration_discard_confirm(request: Request, run_id: str):
         run, failure = await _load_run(request, run_id)
@@ -1585,7 +1745,10 @@ def _register_wizard(app, mode: WizardMode) -> None:
                   ("post", "/requests/{request_id}/add", _add_request_files),
                   ("post", "/requests/{request_id}/revoke", _revoke_request),
                   ("get", "/move-requests", _moves), ("post", "/move-requests", _send_move),
-                  ("post", "/move-requests/{request_id}/withdraw", _withdraw_move))
+                  ("post", "/move-requests/{request_id}/withdraw", _withdraw_move),
+                  ("get", "/several", _several), ("post", "/several", _upload_several),
+                  ("post", "/several/{file_id}/open", _open_several),
+                  ("post", "/several/{file_id}/remove", _remove_several))
     for method, suffix, handler in steps:
         getattr(app, method)(f"{mode.base}{suffix}")(bind(handler, mode, "migrate"))
 
@@ -1653,9 +1816,17 @@ def _figure(row: dict, column: str) -> str:
 _ROLE_FIELD = "role."
 
 
+def _picked(row: dict, chosen: dict[str, str]) -> str:
+    """What a role's picker shows chosen: the user's own choice, else the answer from the
+    previous client (an added account as the account to add), else the single control."""
+    previous = row.get("previous")
+    return (chosen.get(row["role"]) or (previous and (NEW_ACCOUNT if previous["add"] else previous["code"]))
+            or row["preselect"] or "")
+
+
 def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
     """The posting accounts finishing needs: each already set one shown, each other one
-    picked from the chart or added as proposed."""
+    picked from the chart or added as proposed, an answer from the previous client marked."""
     rows = [row for row in roles if row["required"] or row["current"]]
     if not rows:
         return ""
@@ -1666,10 +1837,10 @@ def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
             Thead(Tr(Th(t("posting.col_role")), Th(t("posting.col_account")))),
             Tbody(*[
                 Tr(Td(role_label(row["role"], row["label"])),
-                   Td((account_label(row["current_account"]) or row["current"]) if row["current"] else account_picker(
-                       f"{_ROLE_FIELD}{row['role']}", row["candidates"],
-                       value=chosen.get(row["role"]) or row["preselect"] or "",
-                       proposal=row["proposal"], aria_label=role_label(row["role"], row["label"]))))
+                   Td((account_label(row["current_account"]) or row["current"]) if row["current"] else (
+                       account_picker(f"{_ROLE_FIELD}{row['role']}", row["candidates"], value=_picked(row, chosen),
+                                      proposal=row["proposal"], aria_label=role_label(row["role"], row["label"])),
+                       P(t("sync_accounts.from_previous"), cls="form-hint") if row.get("previous") else "")))
                 for row in rows
             ]),
             cls="data-table posting-choices",
@@ -1777,6 +1948,7 @@ async def _complete_page(request: Request, run: dict):
                     for row in totals]),
         ) if totals else "",
         _xero_attachments_slot(run),
+        await _saved_answers(run),
         pack,
         open_company,
         option(t("migration.correcting_entry"), f"{open_href}?next=/accounting/journal/new")
@@ -1792,6 +1964,42 @@ async def _complete_page(request: Request, run: dict):
 
 
 _XERO_LIVE = ("signing_in", "fetching", "waiting")
+
+
+async def _source_name(source: str) -> str:
+    sources, _ = await _sources()
+    return next((s["display_name"] for s in sources if s["key"] == source), source)
+
+
+async def _saved_answers(run: dict) -> FT | str:
+    """Tells the user the posting accounts they chose were kept for their next client from
+    this source, with the way to forget them."""
+    if not run.get("saved_answers"):
+        return ""
+    return _saved_answers_panel(run["source_system"], await _source_name(run["source_system"]))
+
+
+def _saved_answers_panel(source: str, name: str, *, forgotten: bool = False, error: str | None = None) -> FT:
+    """Forgetting has no undo: it changes no records, only drops the suggestions, and the
+    next client finished from this source saves its answers again."""
+    if forgotten:
+        return Div(flash(t("migration.answers_forgotten"), "success"), id="saved-answers")
+    return Div(
+        flash(error) if error else "",
+        Div(t("migration.answers_saved", source=name), cls="flash flash--success"),
+        P(Button(t("migration.forget_answers"), type="button", hx_post=f"/migrations/templates/{source}/forget",
+                 hx_target="#saved-answers", hx_swap="outerHTML", cls="btn btn--secondary btn--sm"), cls="mt-sm mb-md"),
+        id="saved-answers", cls="mt-md",
+    )
+
+
+async def _forget_answers(request: Request, source: str) -> FT:
+    name = await _source_name(source)
+    try:
+        await api.migration_forget_template(get_token(request), source)
+    except APIError as e:
+        return _saved_answers_panel(source, name, error=str(e.detail))
+    return _saved_answers_panel(source, name, forgotten=True)
 
 
 def _xero_attachments_slot(run: dict) -> FT | str:

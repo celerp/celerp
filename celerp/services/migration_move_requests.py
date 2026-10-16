@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Ask Celerp's team to move a client: the export set open on the upload page goes to the
 cloud, the team reads it, runs the migration and sends the company copy back through
-the normal company-copy send, and the firm sees each request's status here.
+the normal send of a company copy, and the firm sees each request's status here.
 
 Unlike a client's export request, these files are sent readable: the team has to read
 them to do the move. The cloud stores them encrypted at rest and deletes them when the

@@ -113,6 +113,7 @@ async def test_firm_template_repeat_setup(real_client, real_engine, runner):
         "receivable": {"code": "1020", "add": False}, "payable": {"code": "2020", "add": False},
         "inventory_purchased": {"code": "1010", "add": False}, "tax_output": {"code": "2010", "add": False},
         "retained_earnings": {"code": "3010", "add": False},
+        "fx_gain": {"code": "6010", "add": False}, "fx_loss": {"code": "6010", "add": False},
         "tax_input": {"code": "1150", "add": True}, "cogs": {"code": "5100", "add": True},
     }
     assert roles["tax_input"]["proposal"] == {"code": "1150", "name": "Input tax", "account_type": "asset"}
@@ -176,6 +177,8 @@ async def test_firm_template_forget(real_client, real_engine, runner):
         assert r.status_code == 204, r.text
     r = await real_client.get(f"/migrations/{first}", headers=auth(token))
     assert r.json()["saved_answers"] is False
+    r = await real_client.delete("/migrations/templates/not-a-source", headers=auth(token))
+    assert r.status_code == 404 and r.json() == {"detail": t("migration.err_unknown_source", "en")}
     run_id = await _migrate(real_client, token, "orders", runner)
     assert _from_previous(await _roles(real_client, token, run_id)) == {}
 
@@ -197,6 +200,10 @@ async def test_firm_template_not_saved_from_the_sample(real_client, real_engine,
 
 
 # ── Pages ────────────────────────────────────────────────────────────────────
+
+async def _sources():
+    return [{"key": "manager_io", "display_name": "Manager.io"}]
+
 
 def _request(path: str) -> Request:
     return Request({"type": "http", "method": "GET", "path": path, "query_string": b"", "headers": []})
@@ -228,7 +235,8 @@ async def test_firm_template_verify_page_marks_previous_answers(real_client, rea
     monkeypatch.setattr(pages.api, "migration_posting_accounts", posting_accounts)
     page = to_xml(await pages._verify_page(_request(f"/migrations/{run_id}/verify"), run_id))
     marked = t("sync_accounts.from_previous", "en")
-    assert page.count(marked) == len([r for r in roles if r.get("previous")])
+    # The finish step lists the roles the company needs; each with an earlier answer is marked.
+    assert page.count(marked) == len([r for r in roles if r.get("previous") and r["required"]]) > 0
     sales = page[page.index('name="role.sales_revenue"'):]
     sales = sales[:sales.index("</select>")]
     assert '<option value="4010" selected>' in sales and '<option value="4000">' in sales
@@ -246,6 +254,7 @@ async def test_firm_template_complete_page_says_answers_are_saved(monkeypatch):
         return {"rows": []}
 
     monkeypatch.setattr(pages.api, "migration_reconciliation", reconciliation)
+    monkeypatch.setattr(pages.api, "migration_sources", _sources)
     run = {"id": str(uuid.uuid4()), "company_id": str(uuid.uuid4()), "company_name": "Orders Client",
            "source_system": "manager_io", "saved_answers": True, "is_sample": False}
     page = to_xml(await pages._complete_page(_request(f"/migrations/{run['id']}/complete"), run))
@@ -263,6 +272,7 @@ async def test_firm_template_forget_route_swaps_in_the_result(monkeypatch):
     from ui.api_client import APIError
 
     calls = []
+    monkeypatch.setattr(pages.api, "migration_sources", _sources)
 
     async def forget(_token, source):
         calls.append(source)

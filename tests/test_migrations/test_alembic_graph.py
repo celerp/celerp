@@ -48,7 +48,8 @@ RELEASE_HEAD = "o2d3e4f5a6b7"
 RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1", "t7i8j9k0l1m2",
                  "u8j9k0l1m2n3", "c7f1a2b3d4e5", "d8e9f0a1b2c3", "e9f0a1b2c3d4", "v0m1n2o3p4q5",
                  "w1n2o3p4q5r6", "x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9",
-                 "a5t6u7v8w9x0", "b6u7v8w9x0y1", "c7v8w9x0y1z2"]
+                 "a5t6u7v8w9x0", "b6u7v8w9x0y1", "c7v8w9x0y1z2", "d8w9x0y1z2a3",
+                 "e9x0y1z2a3b4"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.
@@ -285,6 +286,10 @@ def test_a_database_from_before_the_revisions_were_reordered_reaches_the_same_sc
 # company backup never carries them.
 OUTLIVES_ITS_COMPANY = {"payment_closures", "payment_recoveries", "unmatched_payments", "unmatched_refunds"}
 
+# Tables this release adds that belong to a person on this installation, never to a
+# company, so no company backup carries them.
+BELONGS_TO_A_PERSON = {"migration_templates", "migration_batch_files"}
+
 
 def test_every_table_and_column_this_release_adds_is_placed_for_company_backups():
     from celerp.migrations._auto_stamp import extract_signatures
@@ -297,7 +302,7 @@ def test_every_table_and_column_this_release_adds_is_placed_for_company_backups(
              for sig in extract_signatures(Path(rev.path)) if sig.kind in ("create_table", "add_column")}
     tables = Base.metadata.tables
 
-    assert added >= OUTLIVES_ITS_COMPANY
+    assert added >= OUTLIVES_ITS_COMPANY | BELONGS_TO_A_PERSON
     for table in sorted(added):
         if "company_id" in tables[table].c:
             assert (table in cb.PORTABLE_TABLES) != (table in cb.EXCLUDED_TABLES), table
@@ -306,4 +311,5 @@ def test_every_table_and_column_this_release_adds_is_placed_for_company_backups(
             # off a table that stays with the installation (a notice's read receipts).
             parents = {fk.column.table.name for fk in tables[table].foreign_keys}
             assert table not in cb.PORTABLE_TABLES, table
-            assert table in OUTLIVES_ITS_COMPANY or parents & set(cb.EXCLUDED_TABLES), table
+            assert (table in OUTLIVES_ITS_COMPANY or parents & set(cb.EXCLUDED_TABLES)
+                    or table in BELONGS_TO_A_PERSON and parents == {"users"}), table

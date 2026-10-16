@@ -89,7 +89,7 @@ async def test_migration_scan_streams_and_bounds_upload(client, session, migrati
         assert _scan_dirs(migration_env) == baseline, "a rejected upload left files behind"
         assert adapter.inspect_calls == inspected, "a rejected upload reached the source parser"
 
-    await rejected([], 422, "Choose a file to upload.")
+    await rejected([], 422, t("migration.choose_file"))
     await rejected(multipart(("empty.fake", b"")), 422, t("migration.err_upload_empty", "en"))
     await rejected(multipart(*[(f"f{i}.fake", data) for i in range(store.MAX_ARTIFACTS + 1)]), 413,
                    f"Upload at most {store.MAX_ARTIFACTS} files at a time.")

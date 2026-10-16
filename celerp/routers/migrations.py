@@ -36,16 +36,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.importers.adapters.registry import list_adapters
+from celerp.importers.adapters.registry import get_adapter, list_adapters
 from celerp.models.company import Company, User
 from celerp.models.migration import MigrationRun
 from celerp.modules import requirements
 from celerp.routers.auth import companyless_login, hold_direct_slot, limiter
 from celerp.services import bootstrap
 from celerp.services import company_handoff_sender as sender
+from celerp.services import migration_batches as batches
 from celerp.services import migration_export_requests as export_requests_service
 from celerp.services import migration_move_requests as move_requests_service
 from celerp.services import migration_scan_store as store
+from celerp.services import migration_templates
 from celerp.services import migration_xero_attachments as xero_attachments
 from celerp.services import migrations
 from celerp.services import posting_readiness
@@ -362,6 +364,15 @@ async def scan(request: Request, ctx: AuthContext = Depends(user_owner)) -> dict
     return _scan_result(await store.create_scan(_upload_parts(request), owner=("user", ctx.user.id)))
 
 
+def _user_scan_owner(scan_token: str, ctx: AuthContext) -> store.ScanOwner:
+    """The caller's own scan: its one-company upload, or one file of its Move several
+    companies upload. Anyone else's reads as expired."""
+    owner = store.scan_owner(scan_token)
+    if owner not in (("user", ctx.user.id), (store.SEVERAL, ctx.user.id)):
+        raise store.ScanStoreError(410, store.EXPIRED)
+    return owner
+
+
 @router.post("/scan/read")
 async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(user_owner),
                     session: AsyncSession = Depends(get_session)) -> dict:
@@ -370,12 +381,13 @@ async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(user_owner)
     run_id = await migrations.started_run_id(session, store.scan_claim(payload.scan_token), ctx.user.id)
     if run_id is not None:
         return {"run_id": str(run_id)}
-    return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=("user", ctx.user.id)))}
+    owner = _user_scan_owner(payload.scan_token, ctx)
+    return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=owner))}
 
 
 @router.post("/scan/decisions")
 async def scan_decisions(payload: DecisionsIn, ctx: AuthContext = Depends(user_owner)) -> dict:
-    return await _save_decisions(("user", ctx.user.id), payload)
+    return await _save_decisions(_user_scan_owner(payload.scan_token, ctx), payload)
 
 
 @router.post("/start-from-scan", status_code=201)
@@ -386,7 +398,7 @@ async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: Aut
     async with _start_errors(session):
         run = await migrations.lock_scan_claim(session, store.scan_claim(payload.scan_token))
         if run is None:
-            scan = store.load_scan(payload.scan_token, owner=("user", ctx.user.id))
+            scan = store.load_scan(payload.scan_token, owner=_user_scan_owner(payload.scan_token, ctx))
             plan = await _prepare(scan)
             errors: dict[str, str] = {}
             company_name = _company_name(payload.company_name, errors)
@@ -549,6 +561,44 @@ async def withdraw_move_request(request_id: uuid.UUID, ctx: AuthContext = Depend
     return await sender.as_http(move_requests_service.withdraw(request_id))
 
 
+# ── Move several companies ───────────────────────────────────────────────────
+
+@router.get("/several")
+async def several(ctx: AuthContext = Depends(user_owner), session: AsyncSession = Depends(get_session)) -> dict:
+    return {"items": await batches.items(session, ctx.user.id)}
+
+
+@router.post("/several", status_code=201)
+async def upload_several(request: Request, ctx: AuthContext = Depends(user_owner),
+                         session: AsyncSession = Depends(get_session)) -> dict:
+    """Keep each file of the upload as its own company to move, then list them all."""
+    await batches.add(session, ctx.user.id, _upload_parts(request))
+    return {"items": await batches.items(session, ctx.user.id)}
+
+
+@router.post("/several/{file_id}/open")
+async def open_several(file_id: uuid.UUID, ctx: AuthContext = Depends(user_owner),
+                       session: AsyncSession = Depends(get_session)) -> dict:
+    return await batches.open_file(session, ctx.user.id, file_id)
+
+
+@router.delete("/several/{file_id}", status_code=204)
+async def remove_several(file_id: uuid.UUID, ctx: AuthContext = Depends(user_owner),
+                         session: AsyncSession = Depends(get_session)) -> Response:
+    await batches.remove(session, ctx.user.id, file_id)
+    return Response(status_code=204)
+
+
+@router.delete("/templates/{source_system}", status_code=204)
+async def forget_template(source_system: str, ctx: AuthContext = Depends(get_auth_context),
+                          session: AsyncSession = Depends(get_session)) -> Response:
+    """Forget the posting accounts this person's migrations from ``source_system`` saved."""
+    if get_adapter(source_system) is None:
+        raise HTTPException(status_code=404, detail=t("migration.err_unknown_source"))
+    await migration_templates.forget(session, ctx.user.id, source_system)
+    return Response(status_code=204)
+
+
 @router.get("/staged")
 async def get_staged_run(ctx: AuthContext = Depends(get_auth_context),
                          session: AsyncSession = Depends(get_session)) -> dict:
@@ -623,7 +673,8 @@ async def get_posting_accounts(run_id: uuid.UUID, ctx: AuthContext = Depends(get
                                session: AsyncSession = Depends(get_session)) -> dict:
     """The posting accounts finishing this migration will set, and the choices for each."""
     run = await _owned_run(session, run_id, ctx)
-    return {"roles": await posting_readiness.readiness(session, run.company_id) or []}
+    previous = await migration_templates.answers(session, run.created_by_user_id, run.source_system)
+    return {"roles": await posting_readiness.readiness(session, run.company_id, previous) or []}
 
 
 @router.post("/{run_id}/finalize")

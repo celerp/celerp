@@ -84,6 +84,7 @@ from celerp.modules import requirements
 from celerp.modules.registry import set_enabled
 from celerp.services import attachments
 from celerp.services import migration_scan_store as store
+from celerp.services import migration_templates
 from celerp.services import posting_readiness
 from celerp.services.auth import first_usable_company_link, normalize_role
 from celerp.services.company_files import delete_company_data
@@ -1039,7 +1040,8 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
     without its lock or the accounts its workflows post to. Migrated stock recording no
     inventory account is placed in the same commit (lot_origin.place_company_stock).
     Measured differences finish only with ``reviewed_by``, whose name and the time are kept
-    in the verification report and the pack."""
+    in the verification report and the pack. The accounts chosen are saved for the
+    creator's next client from the same source (``migration_templates.remember``)."""
     await _lock_run(session, run)
     if run.status != _S.READY_TO_FINALIZE:
         raise _illegal("finalize", run)
@@ -1058,7 +1060,7 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
             raise MigrationError(409, t("migration.err_review_differences"))
         company = await session.get(Company, run.company_id)
         try:
-            await posting_readiness.apply_choices(session, run.company_id, posting_accounts)
+            chosen = await posting_readiness.apply_choices(session, run.company_id, posting_accounts)
         except posting_readiness.ReadinessError as exc:
             await session.rollback()
             raise MigrationError(409, exc.detail) from None
@@ -1071,6 +1073,7 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
             report["reviewed_differences"] = {"by": reviewed_by.name or reviewed_by.email,
                                               "at": datetime.now(timezone.utc).isoformat()}
         await place_company_stock(session, run.company_id)
+        await migration_templates.remember(session, run, chosen)
         run.reconciliation = report
         run.status = _S.COMPLETED.value
         run.current_phase = _P.READY_TO_FINALIZE.value
@@ -1303,6 +1306,7 @@ async def run_view(session: AsyncSession, run: MigrationRun) -> dict:
         "prepared_by": run.prepared_by,
         "is_bootstrap_run": bool(run.source_summary.get("bootstrap")),
         "is_sample": bool(run.source_summary.get("sample")),
+        "saved_answers": bool(await migration_templates.answers(session, run.created_by_user_id, run.source_system)),
     }
 
 
