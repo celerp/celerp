@@ -468,3 +468,46 @@ def test_packaged_upgrade_smoke_runs_in_the_tag_release_and_on_demand_only():
     steps = [s.get("name") for s in upgrade["steps"]]
     assert "Previous, candidate, downgrade, reopen (Linux, data)" in steps
     assert "Previous, candidate, downgrade, in-app update run (Windows, install)" in steps
+
+
+def test_windows_build_ships_the_visual_cpp_runtime_and_checks_every_dll_import():
+    """The Windows build stages the Visual C++ runtime for afterPack before packaging,
+    then fails when a bundled binary imports a DLL the package does not ship."""
+    steps = _workflow("build.yml")["jobs"]["build"]["steps"]
+    names = [s.get("name") for s in steps]
+    by_name = dict(zip(names, steps))
+    stage = by_name["Stage the Visual C++ runtime (Windows)"]
+    assert stage["if"] == "runner.os == 'Windows'"
+    assert '"${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe" -latest -property installationPath' in stage["run"]
+    assert "\\x64\\Microsoft.VC143.CRT" in stage["run"]
+    assert 'foreach ($dll in "vcruntime140.dll", "msvcp140.dll")' in stage["run"]
+    assert '"CELERP_VC_RUNTIME_DIR=$dest" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV' in stage["run"]
+    for build in ("Build (Windows / Linux - release tag)", "Build (Windows / Linux - dev build)"):
+        assert names.index(stage["name"]) < names.index(build)
+
+    closure = by_name["Check the Windows DLL closure"]
+    assert closure["if"] == "runner.os == 'Windows'"
+    assert "node electron/scripts/check-win-dll-closure.js" in closure["run"]
+    assert '"$RES/app.asar.unpacked/node_modules/@embedded-postgres/windows-x64/native/bin"' in closure["run"]
+    assert '"$RES/pg-win/bin"' in closure["run"]
+    assert names.index("Build (Windows / Linux - dev build)") < names.index(closure["name"])
+
+
+def test_windows_boot_smoke_runs_as_an_administrator_with_uac_off():
+    """A second Windows boot smoke launches the installed app as the runner's own
+    administrator account with UAC off and requires db:ok, after the standard-user
+    smoke and the installer check that leaves the app installed."""
+    steps = _workflow("build.yml")["jobs"]["build"]["steps"]
+    names = [s.get("name") for s in steps]
+    by_name = dict(zip(names, steps))
+    admin = by_name["Boot smoke (Windows administrator, UAC off)"]
+    assert admin["if"] == "runner.os == 'Windows'" and admin["timeout-minutes"] == 15
+    assert (names.index("Boot smoke (Windows, require db:ok)")
+            < names.index("Installer version check (Windows)")
+            < names.index(admin["name"]))
+    run = admin["run"]
+    assert "if ($lua -ne 0)" in run and "net session" in run
+    assert "-Credential" not in run
+    assert "Start-Process -FilePath $exe" in run
+    assert "/health/ready" in run and '"db"\\s*:\\s*"ok"' in run
+    assert "exit 1" in run.split("if (-not $ok) {", 1)[1]

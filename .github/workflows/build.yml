@@ -487,6 +487,28 @@ jobs:
             security delete-keychain "$CSC_KEYCHAIN" || true
           fi
 
+      # The bundled PostgreSQL binaries link the Visual C++ runtime, which a clean
+      # Windows PC does not have. Stage the two DLLs from the runner's Visual Studio
+      # install; afterPack copies them next to the binaries and stops the build
+      # without them.
+      - name: Stage the Visual C++ runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          if (-not $vs) { Write-Host "::error::vswhere found no Visual Studio install"; exit 1 }
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC" -Directory |
+            Where-Object { $_.Name -match '^\d+(\.\d+)+$' -and (Test-Path "$($_.FullName)\x64\Microsoft.VC143.CRT") } |
+            Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (-not $crt) { Write-Host "::error::no x64 Microsoft.VC143.CRT folder under $vs\VC\Redist\MSVC"; exit 1 }
+          $src = "$($crt.FullName)\x64\Microsoft.VC143.CRT"
+          $dest = Join-Path $env:RUNNER_TEMP "vc-runtime"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          foreach ($dll in "vcruntime140.dll", "msvcp140.dll") { Copy-Item (Join-Path $src $dll) $dest }
+          Write-Host "staged the Visual C++ runtime from $src"
+          "CELERP_VC_RUNTIME_DIR=$dest" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
       - name: Build (Windows / Linux - release tag)
         if: matrix.os != 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
         working-directory: electron
@@ -607,6 +629,17 @@ jobs:
           esac
           echo "OK: third-party licenses and PostgreSQL tools present in packaged artifact"
 
+      # Every DLL a bundled Windows binary imports must ship beside it or be part
+      # of Windows itself; anything else fails on a clean PC with 0xC0000135.
+      - name: Check the Windows DLL closure
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          RES="electron/dist/win-unpacked/resources"
+          node electron/scripts/check-win-dll-closure.js \
+            "$RES/app.asar.unpacked/node_modules/@embedded-postgres/windows-x64/native/bin" \
+            "$RES/pg-win/bin"
+
       # The packaged default modules must be exactly the ones the lock names, with
       # the same content. The packaged Python runs the packaged loader's check.
       - name: Check bundled modules in the packaged artifact
@@ -706,11 +739,9 @@ jobs:
           fi
           echo "force-quit OK on $RUNNER_OS: the API and the database stopped"
 
-      # Windows runs elevated on the GitHub runner and bundled Postgres refuses to
-      # run under an administrator token. The app self-de-elevates at startup
-      # (relaunches at a restricted token), so we launch it normally and just pass
-      # the port via machine env — the relaunched, restricted process inherits the
-      # machine environment (it would not inherit our process env).
+      # Boot the installed app the way most Windows users run it: from a standard
+      # (non-admin) account. "Boot smoke (Windows administrator, UAC off)" below
+      # covers the runner's own administrator account.
       - name: Boot smoke (Windows, require db:ok)
         timeout-minutes: 15
         if: runner.os == 'Windows'
@@ -718,9 +749,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           Set-Location electron
-          # The GitHub runner is full-admin with UAC off, where the bundled Postgres
-          # refuses to start (it rejects an administrator token). Real users run
-          # non-admin, so reproduce that: install and launch the app as a freshly-created
+          # The GitHub runner is full-admin with UAC off. Most users run non-admin,
+          # so reproduce that: install and launch the app as a freshly-created
           # standard user. A SAFER/runas restricted token would crash Electron; a real
           # standard account gives a clean medium token where both Electron and
           # Postgres run. We grant that user access to the runner's window station and
@@ -932,6 +962,52 @@ jobs:
           if ($code -ne 0 -or (Installed) -ne $built) { Fail "newer installer over 0.0.1: exit $code, entry $(Installed) (want exit 0, $built)" }
           Write-Host "installed older: updated 0.0.1 to $built"
           Write-Host "installer version check OK on Windows"
+
+      # The runner's own account is an administrator with UAC off, so Explorer is
+      # elevated too and the app's relaunch through it stays elevated. The app must
+      # then boot in place with Postgres started at a restricted token, not relaunch
+      # again. Launches the copy the installer check above left installed.
+      - name: Boot smoke (Windows administrator, UAC off)
+        timeout-minutes: 15
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $lua = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System").EnableLUA
+          if ($lua -ne 0) { Write-Host "::error::UAC is on (EnableLUA=$lua); this step needs an administrator with UAC off"; exit 1 }
+          net session *> $null
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::the runner account is not elevated"; exit 1 }
+          $entry = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
+            Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like "Celerp*" } | Select-Object -First 1
+          if ($entry) { $uninstall = (Get-ItemProperty $entry.PSPath).UninstallString }
+          if (-not $uninstall -or $uninstall -notmatch '^"([^"]+)"') { Write-Host "::error::no installed Celerp for the runner account"; exit 1 }
+          $exe = Join-Path (Split-Path $Matches[1]) "Celerp.exe"
+          $udd = Join-Path $env:APPDATA "Celerp"
+          Remove-Item $udd -Recurse -Force -EA SilentlyContinue
+
+          Write-Host "smoke: launching installed $exe as the runner's administrator account (data dir $udd)"
+          Start-Process -FilePath $exe
+
+          $deadline = (Get-Date).AddSeconds(240)
+          $ok = $false; $port = $null; $tick = 0
+          $portFile = Join-Path $udd "celerp-data\api-port"
+          while ((Get-Date) -lt $deadline) {
+            if (-not $port -and (Test-Path $portFile)) { $port = (Get-Content $portFile -Raw).Trim(); Write-Host "smoke: app published API port $port" }
+            if ($port) {
+              try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { $ok = $true; break } } catch { }
+            }
+            if (($tick % 10) -eq 0) { Write-Host "smoke: t+$($tick*2)s Celerp procs=$(@(Get-Process Celerp -EA SilentlyContinue).Count) portFound=$([bool]$port)" }
+            $tick++; Start-Sleep -Seconds 2
+          }
+          taskkill /IM Celerp.exe /F /T 2>$null | Out-Null
+          if (-not $ok) {
+            Write-Host "::error::boot smoke FAILED on Windows as an administrator with UAC off - db:ok not reached (port=$port)"
+            Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
+              Where-Object { -not $_.PSIsContainer -and $_.Name -match '(?i)\.log$|logfile|PG_VERSION|postmaster|\.pid$|deelevate' } |
+              ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
+            exit 1
+          }
+          Write-Host "boot smoke OK on Windows as an administrator with UAC off (port $port)"
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"
