@@ -402,7 +402,7 @@ def _case_readable_when_off_not_first_party(base, marker, monkeypatch):
                              ), "Only Celerp's own modules stay readable"
 
 
-_PROJECT ={"proj.py": "def apply(state, event_type, data):\n    return state\n"}
+_PROJECT = {"proj.py": "def apply(state, event_type, data):\n    return state\n"}
 
 
 def _projecting_module(base, marker, *prefixes, folder: str | None = None):

@@ -141,7 +141,7 @@ async def _live_asset(session, company_id, asset_id: str) -> dict:
 
 async def _new_reminder(session, company_id, user_id, asset_id: str, body: dict) -> str:
     kind = body.get("kind")
-    if kind not in KINDS:
+    if not isinstance(kind, str) or kind not in KINDS:
         raise setup.unprocessable("Choose maintenance, warranty or insurance.")
     state = {"asset_id": asset_id, "kind": kind, "status": "open"}
     for field in (KINDS[kind], "due", "every_months", "lead_days", "responsible_user_id",
@@ -221,6 +221,8 @@ async def postpone(session, company_id, user_id, reminder_id: str, body: dict) -
 
 
 async def edit(session, company_id, user_id, reminder_id: str, changes: dict) -> dict:
+    if not isinstance(changes, dict):
+        raise setup.unprocessable("Send the reminder's changes as named fields.")
     reminder = await _locked(session, company_id, reminder_id, REMINDER)
     if reminder["status"] == "removed":
         raise setup.unprocessable("This reminder was removed. Undo the removal first.")
@@ -287,6 +289,8 @@ async def add_entry(session, company_id, user_id, asset_id: str, body: dict) -> 
 
 
 async def edit_entry(session, company_id, user_id, maint_id: str, changes: dict) -> dict:
+    if not isinstance(changes, dict):
+        raise setup.unprocessable("Send the maintenance entry's changes as named fields.")
     entry = await _locked(session, company_id, maint_id, MAINT)
     from_bill = bool(entry.get("source"))
     if from_bill and {"date", "amount"} & set(changes):
@@ -476,7 +480,7 @@ async def reminder_postpone(reminder_id: str, body: dict = Body(...), company_id
 @router.patch("/reminders/{reminder_id}", dependencies=_MANAGE)
 async def reminder_edit(reminder_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    return await edit(session, company_id, user.id, reminder_id, dict(body.get("changes") or {}))
+    return await edit(session, company_id, user.id, reminder_id, body.get("changes") or {})
 
 
 @router.post("/reminders/{reminder_id}/remove", dependencies=_MANAGE)
@@ -511,7 +515,7 @@ async def get_entry(maint_id: str, company_id=Depends(get_current_company_id), r
 @router.patch("/maintenance/{maint_id}", dependencies=_MANAGE)
 async def entry_edit(maint_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    return await edit_entry(session, company_id, user.id, maint_id, dict(body.get("changes") or {}))
+    return await edit_entry(session, company_id, user.id, maint_id, body.get("changes") or {})
 
 
 @router.post("/maintenance/{maint_id}/remove", dependencies=_MANAGE)

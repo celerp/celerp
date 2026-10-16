@@ -197,7 +197,10 @@ async def attach_valuer_report(class_id: str, file: UploadFile, company_id=Depen
 async def remove_valuer_report(class_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                                user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Take a valuer's report attached by mistake off every asset it was kept on."""
-    copies = [(str(c.get("asset_id") or ""), str(c.get("file_id") or "")) for c in body.get("files") or []]
+    files = body.get("files") or []
+    if not isinstance(files, list) or not all(isinstance(c, dict) for c in files):
+        raise setup.unprocessable("Name each of the report's files by its asset and file.")
+    copies = [(str(c.get("asset_id") or ""), str(c.get("file_id") or "")) for c in files]
     if not copies:
         raise setup.unprocessable("Name the report's files to remove.")
     held = dict(await _locked_assets(session, company_id, sorted({a for a, _ in copies})))

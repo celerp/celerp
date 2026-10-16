@@ -123,9 +123,9 @@ async def fix_account(session, company_id, user_id, class_id: str, body: dict) -
     from celerp.services.module_journals import JournalLine
 
     field, account, mode = body.get("field"), str(body.get("account") or "").strip(), body.get("mode")
-    if field not in FIELDS:
+    if not isinstance(field, str) or field not in FIELDS:
         raise setup.unprocessable("Choose the asset, accumulated depreciation or depreciation expense account.")
-    if mode not in MODES:
+    if not isinstance(mode, str) or mode not in MODES:
         raise setup.unprocessable("Choose Move existing balances or Future postings only.")
     if mode == "future" and field in BALANCE_SHEET:
         raise setup.unprocessable(f"The {FIELDS[field]} account is a balance sheet account, so what the assets "
