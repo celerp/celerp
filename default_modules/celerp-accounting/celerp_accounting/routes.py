@@ -45,6 +45,7 @@ from celerp_accounting.models import Account, BankAccount, BankStatementLine, Re
 from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, refusal
 from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
+from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
 from celerp.services.lot_origin import rerun_after_placing
 from celerp.services.attachments import (
     company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
@@ -965,64 +966,6 @@ async def _require_contact_filter(
         )
 
 
-# The id of the reversal row _je_rows adds for an entry voided out of a locked period.
-_REVERSAL_SUFFIX = ":reversal"
-
-
-async def _je_rows(
-    session: AsyncSession, company_id: uuid.UUID, *, include_void: bool = False
-) -> list[tuple[str, dict, str]]:
-    """All journal entry projections as (entity_id, state, date) tuples.
-
-    date is the entry's effective ISO date (YYYY-MM-DD, "" when the entry has none).
-    Posted entries only by default; include_void=True adds voided entries for views
-    that must show the full record (the journal). Deliberately not date-filtered:
-    the general ledger buckets one scan into opening (before date_from) and period
-    ranges, so callers apply their own date filtering.
-    """
-    rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "journal_entry",
-            )
-        )
-    ).scalars().all()
-    out: list[tuple[str, dict, str]] = []
-    for row in rows:
-        state = row.state
-        status = state.get("status")
-        ts_raw = state.get("ts") or state.get("created_at") or ""
-        day = str(ts_raw)[:10] if ts_raw else ""
-        if status == "void" and state.get("reversed_on"):
-            # Voided out of a locked period: the entry stays posted in its own period and
-            # its reversal posts on reversed_on (posting_dates.void_reversal).
-            out.append((row.entity_id, {**state, "status": "posted"}, day))
-            out.append((f"{row.entity_id}{_REVERSAL_SUFFIX}", _reversal_state(row.entity_id, state), state["reversed_on"]))
-            continue
-        if status != "posted" and not (include_void and status == "void"):
-            continue
-        out.append((row.entity_id, state, day))
-    return out
-
-
-_SWAPPED = {"debit": "credit", "credit": "debit", "fx_debit": "fx_credit", "fx_credit": "fx_debit"}
-
-
-def _reversal_state(entity_id: str, state: dict) -> dict:
-    """The reversal of a journal entry on its reversed_on date: every line through the
-    same account and roles with debit and credit swapped."""
-    memo = state.get("memo") or ""
-    return {
-        **state,
-        "status": "posted",
-        "ts": state["reversed_on"],
-        "memo": f"Reversal of {memo}" if memo else "Reversal",
-        "reverses": entity_id,
-        "entries": [{_SWAPPED.get(k, k): v for k, v in line.items()} for line in state.get("entries") or []],
-    }
-
-
 async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
     """Company base currency for report amounts."""
     from celerp.models.company import Company
@@ -1113,7 +1056,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
 
     if not je_ids:
         return {}
-    reverses = {je_id: je_id.removesuffix(_REVERSAL_SUFFIX) for je_id in je_ids}
+    reverses = {je_id: je_id.removesuffix(REVERSAL_SUFFIX) for je_id in je_ids}
     ledger_events = []
     for chunk in _id_chunks(sorted(set(reverses.values()))):
         ledger_events.extend((
@@ -1251,7 +1194,7 @@ def _line_amounts(entry: dict) -> tuple[Decimal, Decimal] | None:
 
 
 def _build_balances(posted: list[tuple[str, dict, str]], date_from: str | None, date_to: str | None) -> dict[str, Decimal]:
-    """Aggregate net balance per account_code from posted journal entries (_je_rows output).
+    """Aggregate net balance per account_code from posted journal entries (journal_rows output).
 
     Returns {account_code: net_balance} where net_balance = total_debit - total_credit.
     Asset/Expense accounts are debit-normal (positive = debit balance).
@@ -1286,7 +1229,7 @@ async def _journal_payload(
     here for the same reason: both books, and both of their exports, narrow alike.
     """
     _require_date_range(date_from, date_to)
-    rows = await _je_rows(session, company_id, include_void=True)
+    rows = await journal_rows(session, company_id, include_void=True)
     # Dateless JEs count as pre-period, exactly like the trial balance,
     # general ledger, and per-account ledger: excluded once a start date is
     # set, included otherwise, so period totals cross-foot between reports.
@@ -1949,7 +1892,7 @@ async def account_ledger(
         )
     ).scalar_one_or_none()
 
-    posted = await _je_rows(session, company_id)
+    posted = await journal_rows(session, company_id)
 
     # Lines are matched by the literal account code, exactly like the trial
     # balance, journal, and general ledger bucket them, so the drilldown always
@@ -2056,7 +1999,7 @@ async def trial_balance(
     entries: [{account, debit?, credit?}] in its state.
     """
     _require_date_range(date_from, date_to)
-    posted = await _je_rows(session, company_id)
+    posted = await journal_rows(session, company_id)
     accounts = (
         await session.execute(
             select(Account).where(Account.company_id == company_id).order_by(Account.code)
@@ -2129,7 +2072,7 @@ async def general_ledger(
     """
     _require_date_range(date_from, date_to)
     await _require_contact_filter(session, company_id, contact_id)
-    posted = await _je_rows(session, company_id)
+    posted = await journal_rows(session, company_id)
     # The party filter resolves every entry before the scan; unfiltered runs
     # never pay for the doc lookup.
     party_refs = (
@@ -2249,7 +2192,7 @@ async def profit_and_loss(
     Expense accounts (6xxx) = debit-normal -> positive net debit = expense.
     """
     _require_date_range(date_from, date_to)
-    posted = await _je_rows(session, company_id)
+    posted = await journal_rows(session, company_id)
     accounts = (
         await session.execute(
             select(Account).where(Account.company_id == company_id).order_by(Account.code)
@@ -2304,7 +2247,7 @@ async def balance_sheet(
     booked here."""
     _require_iso_date(as_of, t("acct.field_as_of_date"))
 
-    posted = await _je_rows(session, company_id)
+    posted = await journal_rows(session, company_id)
     accounts = (
         await session.execute(
             select(Account).where(Account.company_id == company_id).order_by(Account.code)
@@ -2421,7 +2364,7 @@ async def opening_tie_out(
     goods_accounts = {code for h in held for code in h.goods_by_account}
     ledger_goods = {code: Decimal(0) for code in goods_accounts}
     payable = receivable = Decimal(0)
-    for _je_id, state, ts in await _je_rows(session, company_id):
+    for _je_id, state, ts in await journal_rows(session, company_id):
         if ts and ts > as_of:
             continue
         for entry in state.get("entries", []):
@@ -2512,7 +2455,7 @@ async def statement_of_account(
 
     base = await _base_currency(session, company_id)
     settings = await current_settings(session, company_id)
-    posted = await _je_rows(session, company_id)
+    posted = await journal_rows(session, company_id)
     refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
 
     # (date, je_id, seq, line) so same-day entries keep the order they were
@@ -2636,7 +2579,7 @@ async def _bank_dicts(
     behind it is reported as `opening_unbacked` rather than folded back into the
     figure, which would put the bank screen back out of step with the books.
     """
-    rows = await _je_rows(session, company_id)
+    rows = await journal_rows(session, company_id)
     posted_ids = {je_id for je_id, _state, _ts in rows}
     out = []
     for b in banks:
@@ -3053,7 +2996,7 @@ async def _je_entries_for_account(
 ) -> list[dict]:
     """Posted JE lines for one account as {je_id, ts, memo, amount, debit, credit}."""
     result = []
-    for je_id, state, _ in await _je_rows(session, company_id):
+    for je_id, state, _ in await journal_rows(session, company_id):
         for entry in state.get("entries", []):
             if entry.get("account") == account_code:
                 amounts = _line_amounts(entry)
@@ -4334,7 +4277,7 @@ async def cash_flow(
     cash_codes = cash_accounts(accounts, banks, await current_settings(session, company_id))
 
     base = await _base_currency(session, company_id)
-    posted = await _je_rows(session, company_id)
+    posted = await journal_rows(session, company_id)
 
     opening_cash = Decimal(0)
     by_category: dict[str, dict[str, Decimal]] = {c: {} for c in ("operating", "investing", "financing")}
@@ -4689,7 +4632,7 @@ async def close_fiscal_year(
             value=year_end)) from None
     company = await locked_company(session, company_id)
     # Build account balances through the year-end date
-    posted = await _je_rows(session, company_id)
+    posted = await journal_rows(session, company_id)
     balances = _build_balances(posted, None, year_end)
 
     # Get chart of accounts to determine account types
