@@ -54,6 +54,7 @@ _NEXT_RES = (
     re.compile(r"^doc-send$"),
     re.compile(r"^copy-send$"),
     re.compile(r"^export-send$"),
+    re.compile(r"^move-send$"),
 )
 
 # Every gate delivers its panel inside the shared modal dialog, floating over
@@ -66,7 +67,14 @@ _GATE_BENEFIT_KEYS = {
     "doc-send": "account.gate_doc_send_benefit",
     "copy-send": "account.gate_copy_send_benefit",
     "export-send": "account.gate_export_send_benefit",
+    "move-send": "account.gate_move_send_benefit",
 }
+
+# Continuations whose form kept every typed value and the same operation: submitting it
+# again reuses what was staged, so the copy is never re-exported, the client gets one
+# email with one link, and Celerp's team gets one move request.
+_RESUBMIT_FORMS = {"copy-send": "copy-send-form", "export-send": "export-request-form",
+                   "move-send": "move-request-form"}
 
 
 def _next_from(value: str | None) -> str | None:
@@ -438,17 +446,9 @@ def _resume_parts(next_action: str) -> list:
         return [_resume_guard_script(next_action,
                                      "sessionStorage.setItem('celerp_open_send','1');"
                                      "location.reload();")]
-    if next_action == "copy-send":
-        # The send page kept every typed value and the same operation; submit
-        # it again so the staged copy is reused, never re-exported.
+    if next_action in _RESUBMIT_FORMS:
         return [_resume_guard_script(next_action,
-                                     "var f=document.getElementById('copy-send-form');"
-                                     "if(f){f.requestSubmit();}")]
-    if next_action == "export-send":
-        # The export request form kept every typed value and the same operation;
-        # submit it again so the client gets one email with one link.
-        return [_resume_guard_script(next_action,
-                                     "var f=document.getElementById('export-request-form');"
+                                     f"var f=document.getElementById('{_RESUBMIT_FORMS[next_action]}');"
                                      "if(f){f.requestSubmit();}")]
     if next_action.startswith("buy:"):
         _, slug, kind = next_action.split(":")

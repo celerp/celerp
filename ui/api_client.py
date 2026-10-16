@@ -4059,6 +4059,30 @@ async def migration_revoke_export_request(token: str, request_id: str) -> dict:
     return _raise(r).json()
 
 
+async def migration_move_requests(token: str) -> list[dict]:
+    """The clients sent to Celerp's team to move, newest first, with each status and note."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.get("/migrations/move-requests")
+    return _raise(r).json()["items"]
+
+
+async def migration_send_move_request(token: str, values: dict) -> dict:
+    """Send the open export set (``values["draft_token"]``) to Celerp's team; a retry of the
+    same operation_id continues the same request."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True) as c:
+            r = await c.post("/migrations/move-requests", json=values)
+    return _raise(r).json()
+
+
+async def migration_withdraw_move_request(token: str, request_id: str) -> dict:
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.post(f"/migrations/move-requests/{request_id}/withdraw")
+    return _raise(r).json()
+
+
 async def company_backup_sender(token: str) -> dict:
     """The firm name and reply address of the last company copy sent here."""
     async with _local_error_mapping():

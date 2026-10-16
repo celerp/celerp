@@ -44,6 +44,7 @@ from celerp.routers.auth import companyless_login, hold_direct_slot, limiter
 from celerp.services import bootstrap
 from celerp.services import company_handoff_sender as sender
 from celerp.services import migration_export_requests as export_requests_service
+from celerp.services import migration_move_requests as move_requests_service
 from celerp.services import migration_scan_store as store
 from celerp.services import migrations
 from celerp.services import posting_readiness
@@ -519,6 +520,32 @@ async def add_export_files(request_id: uuid.UUID, payload: AddExportFilesIn,
 @router.post("/export-requests/{request_id}/revoke")
 async def revoke_export_request(request_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)) -> dict:
     return await sender.as_http(export_requests_service.revoke(request_id))
+
+
+# ── Move requests: Celerp's team moves a client ──────────────────────────────
+
+class MoveRequestIn(BaseModel):
+    operation_id: uuid.UUID
+    firm_name: str
+    client_name: str
+    reply_to: str
+    draft_token: str = ""
+
+
+@router.get("/move-requests")
+async def move_requests(ctx: AuthContext = Depends(user_owner)) -> dict:
+    return {"items": await sender.as_http(move_requests_service.list_requests())}
+
+
+@router.post("/move-requests", status_code=201)
+async def send_move_request(payload: MoveRequestIn, ctx: AuthContext = Depends(user_owner)) -> dict:
+    """Send the open export set to Celerp's team, who move the client and send back a company copy."""
+    return await sender.as_http(move_requests_service.send(**payload.model_dump(), owner=("user", ctx.user.id)))
+
+
+@router.post("/move-requests/{request_id}/withdraw")
+async def withdraw_move_request(request_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)) -> dict:
+    return await sender.as_http(move_requests_service.withdraw(request_id))
 
 
 @router.get("/staged")

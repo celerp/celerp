@@ -35,14 +35,16 @@ _TEXT_MAX = 160
 _EMAIL_MAX = 320
 
 
-def _text(value: str, what: str) -> str:
+def required_text(value: str, what: str) -> str:
+    """``value`` trimmed, refused as "Enter the <what>." when blank, too long or holding control characters."""
     value = (value or "").strip()
     if not value or len(value) > _TEXT_MAX or any(ord(ch) < 0x20 for ch in value):
         raise HTTPException(status_code=422, detail=f"Enter the {what}.")
     return value
 
 
-def _email(value: str, what: str) -> str:
+def required_email(value: str, what: str) -> str:
+    """``value`` trimmed, refused as "Enter a valid <what>." unless it reads as one email address."""
     value = (value or "").strip()
     local, sep, host = value.partition("@")
     if (not sep or not local or "@" in host or "." not in host or len(value) > _EMAIL_MAX
@@ -65,9 +67,9 @@ async def send_request(*, operation_id: uuid.UUID, firm_name: str, client_name: 
     if checklist is None:
         name = adapter.display_name if adapter is not None else source
         raise HTTPException(status_code=422, detail=f"{name} has no list of files to export.")
-    payload = {"operation_id": str(operation_id), "firm_name": _text(firm_name, "firm name"),
-               "client_name": _text(client_name, "client name"),
-               "recipient": _email(recipient, "client email"), "reply_to": _email(reply_to, "reply-to email"),
+    payload = {"operation_id": str(operation_id), "firm_name": required_text(firm_name, "firm name"),
+               "client_name": required_text(client_name, "client name"),
+               "recipient": required_email(recipient, "client email"), "reply_to": required_email(reply_to, "reply-to email"),
                "source": adapter.key,
                "items": [{"label": i["label"], "menu": i["menu"], "range": "" if i["range"] == "--" else i["range"]}
                          for i in checklist().view()["items"] if i["status"] != "not_needed"]}

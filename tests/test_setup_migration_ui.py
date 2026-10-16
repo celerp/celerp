@@ -850,6 +850,7 @@ async def test_a_firm_emails_a_client_the_checklist_and_adds_what_arrives(ui, ro
     page = _page(await ui.get("/setup/new-company/migrate"))
     section = re.search(r'<div[^>]*id="export-requests"[^>]*>', page).group(0)
     assert _attr(section, "hx-get") == REQUESTS and _attr(section, "hx-trigger") == "load"
+    assert _attr(section, "hx-swap") == "outerHTML"  # the panel replaces the placeholder, never nests in it
     assert 'id="export-requests"' not in _page(await ui.get("/setup/migrate"))   # no firm before setup
 
     r = await ui.get(REQUESTS)
@@ -946,6 +947,7 @@ async def test_a_firm_asks_celerp_to_move_a_client_from_the_open_export_set(ui, 
     page = _page(await ui.get("/setup/new-company/migrate"))
     section = re.search(r'<div[^>]*id="move-requests"[^>]*>', page).group(0)
     assert _attr(section, "hx-get") == MOVES and _attr(section, "hx-trigger") == "load"
+    assert _attr(section, "hx-swap") == "outerHTML"  # the panel replaces the placeholder, never nests in it
     assert 'id="move-requests"' not in _page(await ui.get("/setup/migrate"))      # no firm before setup
 
     panel = _page(await ui.get(MOVES))

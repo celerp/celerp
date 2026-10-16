@@ -47,15 +47,18 @@ def _upload_url(value: object, copy_id: uuid.UUID) -> str:
 
 
 async def cloud_json(method: str, path: str, *, payload: dict | None = None, params: dict | None = None,
-                     expected: int = 200, unconfirmed: str, account_needed: str,
-                     refused_means_account: bool = False) -> dict:
+                     content: bytes | None = None, total_s: float = 35, expected: int = 200,
+                     unconfirmed: str, account_needed: str, refused_means_account: bool = False) -> dict:
     """One call to the cloud as this installation's account, answered with its JSON object.
+    ``content`` sends a file's bytes as the body instead of ``payload``, with ``total_s``
+    long enough for its size.
     No account, or a refusal the caller knows means an unverified one, raises
     HandoffAccountNeeded with ``account_needed``; a refusal the cloud explains keeps its
     words and status; anything else is ``unconfirmed``."""
+    body = {"content": content} if content is not None else {}
     try:
         response = await cloud_entitlement.authenticated_request(
-            method, path, json=payload, params=params, total_s=35)
+            method, path, json=payload, params=params, total_s=total_s, **body)
     except (httpx.HTTPError, TimeoutError) as exc:
         raise HandoffSendError(unconfirmed) from exc
     if response is None or response.status_code == 401:

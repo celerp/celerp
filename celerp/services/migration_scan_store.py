@@ -260,7 +260,7 @@ def decisions_from_json(data: dict | None) -> MigrationDecisions | None:
     )
 
 
-def _session_from_json(token: str, directory: Path, data: dict) -> ScanSession:
+def _artifacts_from_json(directory: Path, data: dict) -> ArtifactSet:
     artifacts = []
     for a in data["artifacts"]:
         if not isinstance(a.get("stored_name"), str) or not _STORED_RE.fullmatch(a["stored_name"]):
@@ -269,12 +269,16 @@ def _session_from_json(token: str, directory: Path, data: dict) -> ScanSession:
         if not path.is_file():
             raise ValueError("stored artifact is missing")
         artifacts.append(Artifact(path, str(a["original_name"]), int(a["size_bytes"]), str(a["sha256"])))
+    return artifacts
+
+
+def _session_from_json(token: str, directory: Path, data: dict) -> ScanSession:
     kind, ident = data["owner"]
     return ScanSession(
         token=token,
         owner=(kind, uuid.UUID(ident) if ident else None),
         adapter_key=data["adapter_key"],
-        artifacts=artifacts,
+        artifacts=_artifacts_from_json(directory, data),
         scan=_scan_from_json(data["scan"]),
         decisions=decisions_from_json(data.get("decisions")),
         expires_at=datetime.fromtimestamp(float(data["expires_at"]), timezone.utc),
@@ -524,6 +528,20 @@ def _read(token: str, directory: Path, owner: ScanOwner) -> ScanSession:
 
 def load_scan(token: str, *, owner: ScanOwner) -> ScanSession:
     return _read(token, _directory(token), owner)
+
+
+def draft_files(token: str, *, owner: ScanOwner) -> tuple[str, ArtifactSet]:
+    """The source and files of the owner's open draft, to be sent on as they are; a draft
+    that is not theirs, has expired, or cannot be read reads as expired."""
+    directory = _directory(token)
+    try:
+        data = json.loads((directory / "scan.json").read_text())
+        if (not data.get("draft") or data["owner"] != _owner_json(owner)
+                or float(data["expires_at"]) <= _now()):
+            raise ScanStoreError(410, EXPIRED)
+        return str(data["adapter_key"]), _artifacts_from_json(directory, data)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ScanStoreError(410, EXPIRED) from exc
 
 
 def scan_owner(token: str) -> ScanOwner:

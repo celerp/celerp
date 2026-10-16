@@ -94,8 +94,8 @@ async def persisted_api_key() -> str:
 
 async def authenticated_request(method: str, path: str, *, total_s: float = RELAY_ENTITLEMENT_TIMEOUT,
                                 json: dict | None = None, params: dict | None = None,
-                                api_key: str | None = None):
-    """Make one bounded authenticated Connect request."""
+                                content: bytes | None = None, api_key: str | None = None):
+    """Make one bounded authenticated Connect request; ``content`` sends raw bytes instead of JSON."""
     from celerp.config import ensure_instance_id, settings
     from celerp.gateway.state import (
         fetch_relay_auth, is_foreign_relay_identity,
@@ -112,9 +112,13 @@ async def authenticated_request(method: str, path: str, *, total_s: float = RELA
         if (pending_verifier
                 and is_foreign_relay_identity(authenticated_iid, local_iid)):
             return None
+        headers = {"Authorization": f"Bearer {jwt}"}
+        raw = {}
+        if content is not None:
+            headers["Content-Type"] = "application/octet-stream"
+            raw = {"content": content}
         return await client.request(
-            method, f"{base}{path}", json=json, params=params,
-            headers={"Authorization": f"Bearer {jwt}"})
+            method, f"{base}{path}", json=json, params=params, **raw, headers=headers)
 
     return await with_relay_client(total_s, _op)
 

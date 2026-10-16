@@ -468,7 +468,9 @@ async def _source_page(request: Request, mode: WizardMode, *, selected: str = ""
         upload,
         # A client can send their export files by link instead; loaded after the page,
         # since it asks the cloud for the requests sent.
-        Div(id="export-requests", hx_get=f"{mode.base}/requests", hx_trigger="load") if mode is COMPANY else "",
+        Div(id="export-requests", hx_get=f"{mode.base}/requests", hx_trigger="load", hx_swap="outerHTML") if mode is COMPANY else "",
+        # Or the firm hands the whole set to Celerp's team to move.
+        Div(id="move-requests", hx_get=f"{mode.base}/move-requests", hx_trigger="load", hx_swap="outerHTML") if mode is COMPANY else "",
         sample,
         _source_request_form(),
         back_link(back or mode.back),
@@ -696,6 +698,22 @@ def _request_actions(mode: WizardMode, row: dict) -> FT:
     return Div(*actions, cls="flex-row flex-wrap gap-sm") if actions else Span(EMPTY)
 
 
+def _client_cell(row: dict, names: dict[str, str]) -> FT:
+    """The client, with the system its files come from on the line below."""
+    return Td(Div(row.get("client_name") or EMPTY),
+              Div(names.get(row.get("source"), row.get("source") or EMPTY), cls="form-hint"))
+
+
+def _files_cell(row: dict) -> FT:
+    """A request's files: the first name, and the rest one click away so a full set keeps
+    the table inside the card."""
+    names = [str(f.get("name")) for f in row.get("files") or []]
+    if len(names) < 2:
+        return Td(names[0] if names else EMPTY)
+    return Td(Details(Summary(t("migration.request_files_more", first=names[0], n=len(names) - 1)),
+                      *(Div(n) for n in names)))
+
+
 def _requests_table(mode: WizardMode, rows: list[dict], names: dict[str, str]) -> FT:
     """The requests sent, newest first, each with the files that arrived."""
     if not rows:
@@ -704,14 +722,14 @@ def _requests_table(mode: WizardMode, rows: list[dict], names: dict[str, str]) -
     return Div(
         H4(t("migration.export_requests_waiting")),
         wizard_table(
-            Thead(Tr(Th(t("migration.export_request_client")), Th(t("migration.source_label")),
+            Thead(Tr(Th(t("migration.export_request_client")),
                      Th(t("migration.export_request_sent")), Th(t("th.status")),
                      Th(t("migration.export_request_files")), Th(t("th.actions")))),
-            Tbody(*(Tr(Td(r.get("client_name") or EMPTY), Td(names.get(r.get("source"), r.get("source") or EMPTY)),
+            Tbody(*(Tr(_client_cell(r, names),
                        Td(format_value(r["created_at"], "date") if r.get("created_at") else EMPTY, cls="cell--date"),
                        Td(_badge(t(f"migration.export_request_status_{_request_state(r)}"),
                                  _REQUEST_BADGE.get(_request_state(r), "badge--neutral"))),
-                       Td(", ".join(str(f.get("name")) for f in r.get("files") or []) or EMPTY),
+                       _files_cell(r),
                        Td(_request_actions(mode, r)))
                     for r in rows)),
         ),
@@ -828,6 +846,144 @@ async def _revoke_request(request: Request, mode: WizardMode):
     except APIError as e:
         return await _requests_panel(request, mode, error=str(e.detail))
     return await _requests_panel(request, mode, notice=t("migration.export_request_revoked"))
+
+
+# ---------------------------------------------------------------------------
+# Move requests: Celerp's team moves a client from the export set
+# ---------------------------------------------------------------------------
+# The owner sends the export set open on the upload page to Celerp's team, who move the
+# books and email back a company copy. The files are sent readable, so the panel says
+# who reads them and when they are deleted before anything is sent.
+
+MOVE_REQUEST_FIELDS = ("operation_id", "firm_name", "client_name", "reply_to")
+_MOVE_BADGE = {"uploading": "badge--pending", "received": "badge--open", "in_progress": "badge--active",
+               "returned": "badge--active", "declined": "badge--danger", "withdrawn": "badge--neutral",
+               "expired": "badge--neutral"}
+_MOVE_OPEN = ("uploading", "received", "in_progress")
+
+
+def _moves_table(mode: WizardMode, rows: list[dict], names: dict[str, str]) -> FT:
+    """The move requests sent, newest first, each with its status and the team's note."""
+    if not rows:
+        return P(t("migration.move_requests_empty"), cls="form-hint")
+    rows = sorted(rows, key=lambda r: str(r.get("created_at") or ""), reverse=True)
+
+    def withdraw(row: dict) -> FT:
+        if row.get("status") not in _MOVE_OPEN:
+            return Span(EMPTY)
+        return Button(t("migration.move_request_withdraw"), type="button",
+                      hx_post=f"{mode.base}/move-requests/{row['id']}/withdraw",
+                      hx_confirm=t("migration.move_request_withdraw_confirm"),
+                      hx_target="#move-requests", hx_swap="outerHTML", cls="btn btn--danger btn--sm")
+
+    def status(row: dict) -> FT:
+        state = row.get("status") or "uploading"
+        return _badge(t(f"migration.move_request_status_{state}") if state in _MOVE_BADGE else state,
+                      _MOVE_BADGE.get(state, "badge--neutral"))
+
+    return Div(
+        H4(t("migration.move_requests_sent")),
+        wizard_table(
+            Thead(Tr(Th(t("migration.export_request_client")),
+                     Th(t("migration.export_request_sent")), Th(t("th.status")),
+                     Th(t("migration.move_request_note")), Th(t("migration.export_request_files")),
+                     Th(t("th.actions")))),
+            Tbody(*(Tr(_client_cell(r, names),
+                       Td(format_value(r.get("submitted_at") or r["created_at"], "date")
+                          if r.get("submitted_at") or r.get("created_at") else EMPTY, cls="cell--date"),
+                       Td(status(r)), Td(r.get("note") or EMPTY),
+                       _files_cell(r),
+                       Td(withdraw(r)))
+                    for r in rows)),
+        ),
+        P(t("migration.move_request_withdraw_reason"), cls="form-hint"),
+    )
+
+
+async def _moves_panel(request: Request, mode: WizardMode, *, values: dict | None = None,
+                       error: str | None = None, notice: str | None = None, account: bool = False):
+    """The ask-Celerp section of the upload page, swapped in place by every action on it."""
+    token = get_token(request)
+    sources, _ = await _sources()
+    if values is None:
+        try:
+            last = await api.company_backup_sender(token)
+        except APIError:
+            last = {}
+        values = {"firm_name": last.get("firm_name") or "", "reply_to": last.get("reply_to") or ""}
+    operation = values.get("operation_id") or str(uuid.uuid4())
+    try:
+        rows, list_error = await api.migration_move_requests(token), None
+    except APIError as e:
+        rows, list_error = [], str(e.detail)
+    if account:
+        try:
+            google = bool((await api.account_methods(token)).get("google"))
+        except APIError:
+            google = False
+        message = account_panel(get_lang(request), google=google, next_action="move-send")
+    else:
+        message = flash(error) if error else ""
+
+    def field(name: str, label: str, kind: str = "text", maxlength: str = "160") -> FT:
+        return Div(Label(t(label), For=f"move-{name}", cls="form-label"),
+                   Input(type=kind, id=f"move-{name}", name=name, value=values.get(name, ""),
+                         required=True, maxlength=maxlength, cls="form-input"), cls="form-group")
+
+    form = Form(
+        Input(type="hidden", name="operation_id", value=operation),
+        field("client_name", "migration.export_request_client"),
+        field("firm_name", "company_backup.firm_label"),
+        field("reply_to", "company_backup.reply_label", "email", "320"),
+        P(t("migration.move_request_files_read"), cls="form-hint"),
+        Button(t("migration.move_request_send"), type="submit", cls="btn btn--secondary btn--full"),
+        id="move-request-form", hx_post=f"{mode.base}/move-requests", hx_target="#move-requests",
+        hx_swap="outerHTML", method="post", action=f"{mode.base}/move-requests", cls="auth-form",
+    )
+    return HTMLResponse(to_xml(Div(
+        H3(t("migration.move_requests_title")),
+        P(t("migration.move_requests_hint"), cls="form-hint"),
+        P(notice, cls="flash flash--success") if notice else "",
+        message,
+        form,
+        flash(list_error) if list_error else _moves_table(mode, rows, {s["key"]: s["display_name"] for s in sources}),
+        id="move-requests", cls="export-requests",
+    )))
+
+
+async def _moves(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    return await _moves_panel(request, mode)
+
+
+async def _send_move(request: Request, mode: WizardMode):
+    """Send the export set open on this page; the API refuses an unfinished one with the
+    files still needed, so the button is always there to press."""
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    form = await request.form()
+    values = {k: str(form.get(k, "")).strip() for k in MOVE_REQUEST_FIELDS}
+    try:
+        await api.migration_send_move_request(
+            get_token(request), {**values, "draft_token": request.cookies.get(DRAFT_COOKIE) or ""})
+    except APIError as e:
+        # A retry keeps the same operation, so it continues the same request.
+        return await _moves_panel(request, mode, values=values, error=str(e.detail), account=e.status == 428)
+    return await _moves_panel(request, mode, values={k: values[k] for k in ("firm_name", "reply_to")},
+                              notice=t("migration.move_request_sent_to", email=values["reply_to"]))
+
+
+async def _withdraw_move(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    if (request_id := _request_id(request)) is None:
+        return await _moves_panel(request, mode, error=t("migration.move_request_not_found"))
+    try:
+        await api.migration_withdraw_move_request(get_token(request), request_id)
+    except APIError as e:
+        return await _moves_panel(request, mode, error=str(e.detail))
+    return await _moves_panel(request, mode, notice=t("migration.move_request_withdrawn"))
 
 
 async def _sample(request: Request, mode: WizardMode):
@@ -1414,7 +1570,9 @@ def _register_wizard(app, mode: WizardMode) -> None:
     if mode is COMPANY:
         steps += (("get", "/requests", _requests), ("post", "/requests", _send_request),
                   ("post", "/requests/{request_id}/add", _add_request_files),
-                  ("post", "/requests/{request_id}/revoke", _revoke_request))
+                  ("post", "/requests/{request_id}/revoke", _revoke_request),
+                  ("get", "/move-requests", _moves), ("post", "/move-requests", _send_move),
+                  ("post", "/move-requests/{request_id}/withdraw", _withdraw_move))
     for method, suffix, handler in steps:
         getattr(app, method)(f"{mode.base}{suffix}")(bind(handler, mode, "migrate"))
 
