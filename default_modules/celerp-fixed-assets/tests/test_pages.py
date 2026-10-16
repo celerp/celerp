@@ -418,6 +418,13 @@ async def test_sell_from_the_asset_page_then_credit_the_sale(owner_ui):
     assert t("fixed_assets.credit_notes") in page.text and t("fixed_assets.credit_kind.adjust") in page.text
     assert f'href="/docs/{credit_note_id}"' in page.text
 
+    # The invoice and its credit note lead back to the sale on the asset's page.
+    sale_href = f'href="/fixed-assets/assets/{car}#fa-sale-{car}"'
+    for doc_id in (invoice_id, credit_note_id):
+        doc_page = await owner_ui.get(f"/docs/{doc_id}")
+        assert doc_page.status_code == 200 and sale_href in doc_page.text
+        assert t("fixed_assets.correct_sale") in doc_page.text
+
 
 async def test_a_deleted_sale_draft_is_reissued_or_cancelled_from_the_asset_page(owner_ui):
     car = await _managed_car(owner_ui)
