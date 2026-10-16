@@ -740,153 +740,15 @@ jobs:
           echo "force-quit OK on $RUNNER_OS: the API and the database stopped"
 
       # Boot the installed app the way most Windows users run it: from a standard
-      # (non-admin) account. "Boot smoke (Windows administrator, UAC off)" below
-      # covers the runner's own administrator account.
+      # (non-admin) account. A SAFER/runas restricted token would crash Electron; a
+      # real standard account gives a clean medium token where both Electron and
+      # Postgres run.
       - name: Boot smoke (Windows, require db:ok)
         timeout-minutes: 15
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Set-Location electron
-          # The GitHub runner is full-admin with UAC off. Most users run non-admin,
-          # so reproduce that: install and launch the app as a freshly-created
-          # standard user. A SAFER/runas restricted token would crash Electron; a real
-          # standard account gives a clean medium token where both Electron and
-          # Postgres run. We grant that user access to the runner's window station and
-          # desktop so Electron's main process can initialise, then wait for a real
-          # db:ok from the app's own boot -> migrations -> API path.
-          $u  = "celerpci"
-          $pw = "Ci-" + [guid]::NewGuid().ToString("N").Substring(0,16) + "!Aa9"
-
-          # seclogon backs Start-Process -Credential and is Stopped/Manual on the runner.
-          Set-Service seclogon -StartupType Manual
-          Start-Service seclogon
-
-          $sec  = ConvertTo-SecureString $pw -AsPlainText -Force
-          New-LocalUser -Name $u -Password $sec -AccountNeverExpires -PasswordNeverExpires | Out-Null
-          Add-LocalGroupMember -Group "Users" -Member $u -ErrorAction SilentlyContinue
-          $cred = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\$u", $sec)
-
-          # Grant the standard user access to this process's window station + desktop
-          # (Electron's main process needs a desktop even before any window). The
-          # -Credential child inherits the caller's window station/desktop, so granting
-          # on the handles we hold is what lets the launched app attach to them.
-          Add-Type @'
-          using System;
-          using System.Runtime.InteropServices;
-          using System.Security.AccessControl;
-          using System.Security.Principal;
-          public class WinStaAccess {
-            [DllImport("user32.dll", SetLastError=true)] static extern IntPtr GetProcessWindowStation();
-            [DllImport("user32.dll", SetLastError=true)] static extern IntPtr GetThreadDesktop(uint threadId);
-            [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
-            [DllImport("user32.dll", SetLastError=true)] static extern bool GetUserObjectSecurity(IntPtr h, ref int si, byte[] sd, int len, ref int needed);
-            [DllImport("user32.dll", SetLastError=true)] static extern bool SetUserObjectSecurity(IntPtr h, ref int si, byte[] sd);
-            const int DACL = 4;
-            static byte[] Get(IntPtr h) {
-              int si = DACL; int need = 0; GetUserObjectSecurity(h, ref si, null, 0, ref need);
-              byte[] b = new byte[need];
-              if (!GetUserObjectSecurity(h, ref si, b, need, ref need)) throw new Exception("Get failed " + Marshal.GetLastWin32Error());
-              return b;
-            }
-            static void Set(IntPtr h, byte[] b) { int si = DACL; if (!SetUserObjectSecurity(h, ref si, b)) throw new Exception("Set failed " + Marshal.GetLastWin32Error()); }
-            static void Add(IntPtr h, SecurityIdentifier sid, int mask, bool inheritOnlyGenericAll) {
-              var sd = new RawSecurityDescriptor(Get(h), 0);
-              var dacl = sd.DiscretionaryAcl == null ? new RawAcl(2, 1) : sd.DiscretionaryAcl;
-              int i = dacl.Count;
-              if (inheritOnlyGenericAll)
-                dacl.InsertAce(i++, new CommonAce(AceFlags.ObjectInherit|AceFlags.ContainerInherit|AceFlags.InheritOnly, AceQualifier.AccessAllowed, unchecked((int)0x10000000), sid, false, null));
-              dacl.InsertAce(i++, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, mask, sid, false, null));
-              sd.DiscretionaryAcl = dacl;
-              byte[] outb = new byte[sd.BinaryLength]; sd.GetBinaryForm(outb, 0); Set(h, outb);
-            }
-            public static void Grant(string account) {
-              var sid = (SecurityIdentifier)(new NTAccount(account)).Translate(typeof(SecurityIdentifier));
-              Add(GetProcessWindowStation(), sid, 0x37F, true);            // WINSTA_ALL_ACCESS + inherit-only GENERIC_ALL
-              Add(GetThreadDesktop(GetCurrentThreadId()), sid, 0x1FF, false); // DESKTOP_ALL
-            }
-          }
-          '@
-          [WinStaAccess]::Grant("$env:COMPUTERNAME\$u")
-
-          # Install the release installer as that standard user and launch the
-          # installed app exactly as a user would: default data directory, no
-          # --user-data-dir. Start-Process -Credential hands the child the CALLER's
-          # environment (the admin's %APPDATA%, which the standard user cannot
-          # write), so a warm-up logon first materialises the user's profile and
-          # the cmd wrappers point the profile variables at it, as a real logon does.
-          $pub = "C:\Users\Public"
-          $setup = Join-Path $pub "Celerp-Setup.exe"
-          Copy-Item "dist/Celerp-Setup.exe" $setup -Force
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "exit 0" -Credential $cred -LoadUserProfile -Wait -WorkingDirectory $pub
-          $sid = (New-Object System.Security.Principal.NTAccount("$env:COMPUTERNAME\$u")).Translate([System.Security.Principal.SecurityIdentifier]).Value
-          $profileDir = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid }).LocalPath
-          if (-not $profileDir) { Write-Host "::error::boot smoke FAILED on Windows - no profile created for $u"; exit 1 }
-          $envSet = "set USERPROFILE=$profileDir`r`nset APPDATA=$profileDir\AppData\Roaming`r`nset LOCALAPPDATA=$profileDir\AppData\Local`r`nset TEMP=$profileDir\AppData\Local\Temp`r`nset TMP=$profileDir\AppData\Local\Temp`r`nif not exist `"%APPDATA%`" mkdir `"%APPDATA%`"`r`nif not exist `"%TEMP%`" mkdir `"%TEMP%`""
-
-          $install = Join-Path $pub "celerp-install.cmd"
-          $installOut = Join-Path $pub "celerp-install.out"
-          Set-Content -Encoding Ascii $install "@echo off`r`n$envSet`r`n`"$setup`" /S /currentuser > `"$installOut`" 2>&1`r`necho installer exit %ERRORLEVEL% >> `"$installOut`""
-          Write-Host "smoke: installing $setup as standard user $u (profile $profileDir)"
-          $inst = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$install`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub -PassThru
-          if (-not $inst.WaitForExit(300000)) { Write-Host "::error::boot smoke FAILED on Windows - installer did not finish in 300s"; exit 1 }
-          if (Test-Path $installOut) { Get-Content $installOut }
-          $exe = Get-ChildItem -Path "$profileDir\AppData\Local\Programs" -Recurse -Filter "Celerp.exe" -EA SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-          if (-not $exe) { Write-Host "::error::boot smoke FAILED on Windows - Celerp.exe not installed under $profileDir"; exit 1 }
-          $udd = "$profileDir\AppData\Roaming"
-
-          # Launch through a cmd wrapper that captures Electron's stdout/stderr.
-          $boot = Join-Path $pub "celerp-boot.out"
-          $run  = Join-Path $pub "celerp-run.cmd"
-          Remove-Item $boot -EA SilentlyContinue
-          # Every module in the lock is enabled; a bundled module that is missing or
-          # fails to load stops startup, so readiness also proves they all load.
-          $enabled = ((Get-Content "..\default_modules\first_party.lock.json" -Raw | ConvertFrom-Json).PSObject.Properties.Name | Sort-Object) -join ","
-          Write-Host "smoke: enabling $enabled"
-          Set-Content -Encoding Ascii $run "@echo off`r`n$envSet`r`nset ELECTRON_ENABLE_LOGGING=1`r`nset ENABLED_MODULES=$enabled`r`n`"$exe`" > `"$boot`" 2>&1"
-
-          Write-Host "smoke: launching installed $exe as standard user $u (default data dir $udd, output $boot)"
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub
-
-          $deadline = (Get-Date).AddSeconds(240)
-          $ok = $false; $port = $null; $tick = 0
-          while ((Get-Date) -lt $deadline) {
-            if (-not $port) {
-              $pf = Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
-              if ($pf) { $port = (Get-Content $pf.FullName -Raw).Trim(); Write-Host "smoke: app published API port $port ($($pf.FullName))" }
-            }
-            if ($port) {
-              try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { $ok = $true; break } } catch { }
-            }
-            if (($tick % 10) -eq 0) { Write-Host "smoke: t+$($tick*2)s Celerp procs=$(@(Get-Process Celerp -EA SilentlyContinue).Count) portFound=$([bool]$port)" }
-            $tick++; Start-Sleep -Seconds 2
-          }
-          $installDir = Split-Path $exe
-          $ours = { @(Get-Process postgres, python -EA SilentlyContinue | Where-Object { $_.Path -like "$installDir\*" }) }
-          $before = (& $ours).Count
-          taskkill /IM Celerp.exe /F 2>$null | Out-Null
-          if (-not $ok) {
-            Write-Host "::error::boot smoke FAILED on Windows - db:ok not reached (port=$port)"
-            Write-Host "===== Electron stdout/stderr ($boot) ====="
-            if (Test-Path $boot) { Get-Content $boot -Tail 200 } else { Write-Host "(no captured output)" }
-            Write-Host "===== boot-relevant files (logs / postgres state) ====="
-            Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
-              Where-Object { -not $_.PSIsContainer -and $_.Name -match '(?i)\.log$|logfile|PG_VERSION|postmaster|\.pid$|migrat' } |
-              ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
-            exit 1
-          }
-          Write-Host "boot smoke OK on Windows (port $port)"
-
-          # The force-quit above must leave no API or database running (the app's job object ends them).
-          if ($before -eq 0) { Write-Host "::error::force-quit check could not see the app's API and database processes"; exit 1 }
-          for ($i = 0; $i -lt 15; $i++) {
-            $left = @(& $ours) + @(Get-NetTCPConnection -LocalPort $port -State Listen -EA SilentlyContinue)
-            if ($left.Count -eq 0) { break }
-            Start-Sleep -Seconds 2
-          }
-          if ($left.Count -ne 0) { Write-Host "::error::force-quit on Windows left the API or the database running"; $left | Format-Table | Out-String | Write-Host; exit 1 }
-          Write-Host "force-quit OK on Windows: the API and the database stopped ($before processes before)"
+        working-directory: electron
+        run: ./scripts/win-boot-smoke.ps1 -Account standard
 
       # The installer reads the installed version from the uninstall entry. Over an
       # existing install: none -> installs; the same version run silently ->
@@ -963,61 +825,14 @@ jobs:
           Write-Host "installed older: updated 0.0.1 to $built"
           Write-Host "installer version check OK on Windows"
 
-      # The runner's own account is an administrator with UAC off: there is no
-      # standard token to relaunch into, so the app must boot in place with
-      # Postgres started at a restricted token. The installed app's own token check
-      # must read this account as "admin" and the restricted launcher's child as
-      # "standard". The Server service is stopped first: the app reads its own
-      # token, never a service. Launches the copy the installer check above left
-      # installed.
+      # An administrator on a PC with UAC off has no standard token to relaunch into,
+      # so the app must boot in place with its servers started at a restricted token.
       - name: Boot smoke (Windows administrator, UAC off)
         timeout-minutes: 15
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $lua = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System").EnableLUA
-          if ($lua -ne 0) { Write-Host "::error::UAC is on (EnableLUA=$lua); this step needs an administrator with UAC off"; exit 1 }
-          $entry = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
-            Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like "Celerp*" } | Select-Object -First 1
-          if ($entry) { $uninstall = (Get-ItemProperty $entry.PSPath).UninstallString }
-          if (-not $uninstall -or $uninstall -notmatch '^"([^"]+)"') { Write-Host "::error::no installed Celerp for the runner account"; exit 1 }
-          $exe = Join-Path (Split-Path $Matches[1]) "Celerp.exe"
-          $resources = Join-Path (Split-Path $Matches[1]) "resources"
-          $py = Join-Path $resources "python-x64\python\python.exe"
-          $launcher = Join-Path $resources "app\celerp\win_restricted_launch.py"
-          $state = (& $py -I $launcher --token-state).Trim()
-          if ($state -ne "admin") { Write-Host "::error::token state '$state' (want admin for an administrator with UAC off)"; exit 1 }
-          $child = (& $py -I $launcher $py -I $launcher --token-state).Trim()
-          if ($child -ne "standard") { Write-Host "::error::restricted launcher child token state '$child' (want standard)"; exit 1 }
-          Write-Host "token states OK: app admin, restricted child standard"
-          Stop-Service LanmanServer -Force
-          $udd = Join-Path $env:APPDATA "Celerp"
-          Remove-Item $udd -Recurse -Force -EA SilentlyContinue
-
-          Write-Host "smoke: launching installed $exe as the runner's administrator account (data dir $udd)"
-          Start-Process -FilePath $exe
-
-          $deadline = (Get-Date).AddSeconds(240)
-          $ok = $false; $port = $null; $tick = 0
-          $portFile = Join-Path $udd "celerp-data\api-port"
-          while ((Get-Date) -lt $deadline) {
-            if (-not $port -and (Test-Path $portFile)) { $port = (Get-Content $portFile -Raw).Trim(); Write-Host "smoke: app published API port $port" }
-            if ($port) {
-              try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { $ok = $true; break } } catch { }
-            }
-            if (($tick % 10) -eq 0) { Write-Host "smoke: t+$($tick*2)s Celerp procs=$(@(Get-Process Celerp -EA SilentlyContinue).Count) portFound=$([bool]$port)" }
-            $tick++; Start-Sleep -Seconds 2
-          }
-          taskkill /IM Celerp.exe /F /T 2>$null | Out-Null
-          if (-not $ok) {
-            Write-Host "::error::boot smoke FAILED on Windows as an administrator with UAC off - db:ok not reached (port=$port)"
-            Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
-              Where-Object { -not $_.PSIsContainer -and $_.Name -match '(?i)\.log$|logfile|PG_VERSION|postmaster|\.pid$|deelevate' } |
-              ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
-            exit 1
-          }
-          Write-Host "boot smoke OK on Windows as an administrator with UAC off (port $port)"
+        working-directory: electron
+        run: ./scripts/win-boot-smoke.ps1 -Account admin
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"

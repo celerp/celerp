@@ -432,11 +432,12 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
     assert 'PG_PIDFILE="$PG_DATA/postmaster.pid"' in unix["run"] and 'find "$HOME"' not in unix["run"].split("boot smoke OK")[1]
     # Linux and macOS: a force-quit app (SIGKILL) must leave no API or database running.
     assert 'kill -9 "$ELECTRON"' in unix["run"] and "left the API or the database running" in unix["run"]
-    assert ('Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json'
-            in win["run"])
-    assert "set ENABLED_MODULES=$enabled" in win["run"]
+    assert win["run"] == "./scripts/win-boot-smoke.ps1 -Account standard" and win["working-directory"] == "electron"
+    smoke = _win_boot_smoke()
+    assert 'Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json' in smoke
+    assert "set ENABLED_MODULES=$enabled" in smoke
     # Windows: the job object ends the API and the database when the app is force-quit.
-    assert "taskkill /IM Celerp.exe /F" in win["run"] and "left the API or the database running" in win["run"]
+    assert "taskkill /IM Celerp.exe /F" in smoke and "force-quit left the API or the database running" in smoke
 
 
 def test_packaged_upgrade_smoke_runs_in_the_tag_release_and_on_demand_only():
@@ -493,27 +494,32 @@ def test_windows_build_ships_the_visual_cpp_runtime_and_checks_every_dll_import(
     assert names.index("Build (Windows / Linux - dev build)") < names.index(closure["name"])
 
 
+def _win_boot_smoke():
+    return (Path(__file__).parent.parent / "electron" / "scripts" / "win-boot-smoke.ps1").read_text()
+
+
 def test_windows_boot_smoke_runs_as_an_administrator_with_uac_off():
-    """A second Windows boot smoke launches the installed app as the runner's own
-    administrator account with UAC off and requires db:ok, after the standard-user
-    smoke and the installer check that leaves the app installed."""
+    """A second Windows boot smoke installs and launches the app as the built-in
+    Administrator, whose full token has no standard token linked to it (what UAC off
+    gives an administrator), and requires db:ok. The runner's own account has UAC on,
+    so it cannot stand in."""
     steps = _workflow("build.yml")["jobs"]["build"]["steps"]
     names = [s.get("name") for s in steps]
     by_name = dict(zip(names, steps))
     admin = by_name["Boot smoke (Windows administrator, UAC off)"]
     assert admin["if"] == "runner.os == 'Windows'" and admin["timeout-minutes"] == 15
-    assert (names.index("Boot smoke (Windows, require db:ok)")
-            < names.index("Installer version check (Windows)")
-            < names.index(admin["name"]))
-    run = admin["run"]
-    assert "if ($lua -ne 0)" in run
-    # Both sides of the restricted launcher, read from the installed app's own token
-    # check: this account is "admin", the launcher's child "standard".
-    assert '--token-state).Trim()' in run and '$state -ne "admin"' in run and '$child -ne "standard"' in run
+    assert admin["run"] == "./scripts/win-boot-smoke.ps1 -Account admin" and admin["working-directory"] == "electron"
+    assert names.index("Boot smoke (Windows, require db:ok)") < names.index(admin["name"])
+    smoke = _win_boot_smoke()
+    assert "EnableLUA" not in smoke
+    admin_setup = smoke.split('if ($Account -eq "standard") {', 1)[1].split("$cred = ", 1)[0].split("} else {", 1)[1]
+    assert '$_.SID.Value -like "S-1-5-21-*-500"' in admin_setup and "Enable-LocalUser" in admin_setup
+    assert "-Name FilterAdministratorToken -Value 0" in admin_setup
     # The app must not depend on the Server service to read its token.
-    assert "net session" not in run
-    assert run.index("Stop-Service LanmanServer -Force") < run.index("Start-Process -FilePath $exe")
-    assert "-Credential" not in run
-    assert "Start-Process -FilePath $exe" in run
-    assert "/health/ready" in run and '"db"\\s*:\\s*"ok"' in run
-    assert "exit 1" in run.split("if (-not $ok) {", 1)[1]
+    assert "Stop-Service LanmanServer -Force" in admin_setup and "net session" not in smoke
+    # Both sides of the restricted launcher, read from the installed app's own token
+    # check run as that account: "admin", and the launcher's child "standard".
+    assert 'if ($state -ne $Account)' in smoke and '$child -ne "standard"' in smoke
+    assert smoke.index("--token-state") < smoke.index('Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred')
+    assert "/health/ready" in smoke and '"db"\\s*:\\s*"ok"' in smoke
+    assert 'Fail "db:ok not reached' in smoke.split("if (-not $ok) {", 1)[1]
