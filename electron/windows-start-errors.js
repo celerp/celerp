@@ -6,6 +6,7 @@
 "use strict";
 
 const fs = require("fs");
+const path = require("path");
 
 // STATUS_DLL_NOT_FOUND (0xC0000135): Windows could not find a DLL the program
 // needs. Node reports it unsigned; a signed 32-bit reader sees it negative.
@@ -33,13 +34,17 @@ function windowsStartFailure({ exitCode, output = "" }) {
 
 /**
  * The message for a database that would not start for a reason not recognised
- * above, which may be one an older version left half set up. The folder is named
- * and left exactly as it was; `reason` is the original error.
+ * above. The folder is named and left exactly as it was; `reason` is the original
+ * error. Postgres writes postmaster.opts every time it starts, so a folder without
+ * it never finished setting up and can be moved aside for a fresh one; a folder
+ * with it holds data that has been used, and moving it would hide that data.
  */
 function clusterStartFailure(dataDir, reason) {
+  const hasStarted = fs.existsSync(path.join(dataDir, "postmaster.opts"));
   return `Celerp's database in ${dataDir} could not start. Nothing in it was changed or removed. ` +
-    "If Celerp has never finished starting on this PC, move that folder somewhere else (keep it) " +
-    "and start Celerp again to set up a new database. Otherwise restore the folder from a backup." +
+    (hasStarted
+      ? "Restart your PC and start Celerp again. If it still does not start, keep that folder as it is and report the problem at https://github.com/celerp/celerp/issues with the details below."
+      : "It never finished setting up, so move that folder somewhere else (keep it) and start Celerp again to set up a new database.") +
     (reason ? ` Details: ${reason}` : "");
 }
 

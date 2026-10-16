@@ -393,8 +393,8 @@ async function startPostgres(dbPort) {
     // start() rejects without a reason when postgres exits before it is ready.
     const known = windowsStartFailure({ exitCode: pgInstance.process?.exitCode, output: pgOutput.text() });
     if (known) throw new Error(known);
-    // Anything else on Windows may be a database an older version left half set up;
-    // say where it is and that it was left alone, never remove it.
+    // Anything else on Windows: say where the database is and that it was left
+    // alone, never remove it (the message tells an unfinished one from a used one).
     if (process.platform === "win32") throw new Error(clusterStartFailure(PG_DATA_DIR, e?.message || pgOutput.text()));
     throw e;
   }
