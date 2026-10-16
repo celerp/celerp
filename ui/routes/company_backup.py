@@ -54,7 +54,7 @@ import ui.api_client as api
 import ui.handoff_opening as opening
 from ui.api_client import APIError
 from ui.components.shell import flash
-from ui.components.table import format_value
+from ui.components.table import fmt_money, format_value
 from ui.config import cookie_domain, get_company_id, get_token, session_cookie_secure, set_session_cookies
 from ui.i18n import get_lang, t
 from ui.routes.account import account_panel
@@ -816,6 +816,24 @@ async def _restore(request: Request, mode: WizardMode):
     return _signed_in(request, mode, done)
 
 
+async def _key_balances(token: str, currency: str | None) -> FT | str:
+    """The opened company's own trial balance, receivables and payables, as its reports
+    compute them. A report the company cannot show (its module is off) is left out."""
+    rows = []
+    for label, read, figure in (
+        ("migration.check.trial_balance", api.get_trial_balance, lambda body: body["total_debit"]),
+        ("company_backup.owed_to_you", api.get_ar_aging, lambda body: sum(body["buckets"].values())),
+        ("company_backup.you_owe", api.get_ap_aging, lambda body: sum(body["buckets"].values())),
+    ):
+        try:
+            rows.append(Tr(Td(t(label)), Td(fmt_money(figure(await read(token)), currency), cls="cell--number")))
+        except APIError:
+            continue
+    if not rows:
+        return ""
+    return wizard_table(Thead(Tr(Th(t("label.balance")), Th(t("label.amount"), cls="cell--number"))), Tbody(*rows))
+
+
 async def _done(request: Request, mode: WizardMode):
     """The company the restore opened, now the session's company, saying what the restore
     did as the API reported it."""
@@ -853,9 +871,11 @@ async def _done(request: Request, mode: WizardMode):
     else:
         restored = (company.get("settings") or {}).get("restored_backup") or {}
         created = outcome == _CREATED
+        firm = (restored.get("provenance") or {}).get("prepared_by")
         page = wizard_page(
             request,
-            auth_header(t("company_backup.restored_title"), name),
+            auth_header(t("migration.success_title") if firm else t("company_backup.restored_title"), name),
+            P(t("company_backup.prepared_for_you", firm=firm), cls="flash flash--success") if firm else "",
             P(t("company_backup.restored_notice", date=format_value(restored["created_at"], "date")),
               cls="flash flash--success") if restored.get("created_at") else "",
             P(t("company_backup.team_given_access", count=done["team"]), cls="flash flash--success")
@@ -864,6 +884,8 @@ async def _done(request: Request, mode: WizardMode):
             P(t("company_backup.roles_reset_done"), " ",
               A(t("company_backup.review_roles"), href=USERS_AND_ROLES, cls="auth-link"), cls="form-hint")
             if created and done["policy"] == "destination" else "",
+            await _key_balances(token, company.get("currency")),
+            P(t("company_backup.free_locally"), cls="form-hint"),
             open_company,
             title=_TITLE,
         )
