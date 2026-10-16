@@ -10,11 +10,11 @@ sees the assets in their care without money, and only the photos and manuals on 
 from __future__ import annotations
 
 import uuid
-from datetime import date
 
 import pytest
 from sqlalchemy import select
 
+from celerp.services.business_time import business_date_of
 from fa_fixtures import FA
 from test_disposal import _dispose
 from test_runs import _contributed, _managed_from
@@ -314,7 +314,7 @@ async def test_custodian_confirms_and_reports_a_problem(fa):
                                                   "previous": {"responsible_user_id": asset.get("responsible_user_id")}}))
 
     confirmed = await fa.ok(await fa.client.post(f"/fixed-assets/api/mine/{car}/confirm", headers=custodian))
-    assert confirmed["confirmed"]["user_id"] == str(uid) and confirmed["confirmed"]["date"] == date.today().isoformat()
+    assert confirmed["confirmed"]["user_id"] == str(uid) and confirmed["confirmed"]["date"] == business_date_of(None, None)
 
     r = await fa.client.post(f"/fixed-assets/api/mine/{car}/problems", headers=custodian,
                              data={"text": "Brake light out"}, files={"photo": ("light.png", PNG, "image/png")})
@@ -348,7 +348,7 @@ async def test_s9_check_key_without_edit_keys(fa):
 
     check = await fa.ok(await fa.client.post("/fixed-assets/api/checks", headers=auditor, json={"tag": "tag-5"}))
     assert check["asset_id"] == car and check["user_id"] == str(auditor_id)
-    assert check["date"] == date.today().isoformat()
+    assert check["date"] == business_date_of(None, None)
     edit = await fa.patch(f"/assets/{car}", {"changes": {"name": "X"}, "previous": {"name": "Owner's car"}},
                           headers=auditor)
     assert edit.status_code == 403
@@ -384,7 +384,7 @@ async def test_checks_disposed_removal_and_not_seen_report(fa):
     listed = await fa.ok(await fa.client.get("/fixed-assets/api/checks", headers=fa.h))
     assert [c["asset_id"] for c in listed["items"]] == [van, car]  # newest first
 
-    today = date.today().isoformat()
+    today = business_date_of(None, None)
     report = await fa.ok(await fa.client.get("/fixed-assets/api/checks/not-seen", headers=fa.h,
                                              params={"since": today}))
     assert [r["id"] for r in report["items"]] == []

@@ -800,11 +800,11 @@ async def session(_db_engine) -> AsyncSession:
         await conn.close()
 
 
-@pytest.fixture
-def no_module_demo_records(monkeypatch):
-    """Companies registered in the test start with the core sample stock only, without
-    the sample records modules add (Fixed assets seeds asset bills). For tests that read
-    a new company's whole journal, payables or statements."""
+@pytest.fixture(autouse=True)
+def core_sample_records_only(monkeypatch, _ensure_slot_registration):
+    """Companies registered in a test start with the core sample stock only, without the
+    sample records modules add on top (Fixed assets seeds asset bills). A module whose tests
+    need its own sample records overrides this fixture in its test folder."""
     from celerp.modules import slots
 
     monkeypatch.setitem(slots._slots, "demo_records", [])

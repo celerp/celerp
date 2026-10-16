@@ -31,6 +31,11 @@ def _module_catalogs():
 
 
 @pytest.fixture
+def core_sample_records_only():
+    """These tests run on a demo company carrying the asset bills this module seeds."""
+
+
+@pytest.fixture
 def zz(monkeypatch):
     yield from admit_zz(monkeypatch)
 

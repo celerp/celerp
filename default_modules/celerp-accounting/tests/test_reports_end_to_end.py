@@ -33,8 +33,6 @@ from httpx import ASGITransport, AsyncClient
 
 from ui.routes.financial_reports import REPORTS, ledger_path, subject_token
 
-pytestmark = pytest.mark.usefixtures("no_module_demo_records")
-
 GOLDEN_DIR = Path(__file__).parent / "report_goldens"
 
 # The period every report is asked for, so no report falls back to a default that

@@ -12,8 +12,6 @@ import pytest
 from celerp.services.je_keys import je_idempotency_key
 from stock_books import SAMPLE_STOCK_ENTRY
 
-pytestmark = pytest.mark.usefixtures("no_module_demo_records")
-
 
 async def _register(client) -> str:
     r = await client.post("/auth/register", json={
