@@ -1901,7 +1901,11 @@ def register_api_routes(app, loaded: list[dict]) -> None:
     (:func:`_stray_table_problem`). This is the last step before the API process
     creates tables, so no such table is ever created. A first-party module's
     tables are part of Celerp's own schema (importer.reserved_tables) and keep
-    their names."""
+    their names. Journal operation types are open for registration from here until
+    modules are ready."""
+    from celerp.services.module_journals import open_operation_types
+
+    open_operation_types()
     _register_module_routes(app, loaded, "api")
     for manifest in list(_loaded):
         if manifest.get("first_party") or not is_running(manifest["name"]):

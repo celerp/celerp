@@ -23,7 +23,9 @@ PKG = Path(__file__).resolve().parent.parent
 @pytest.fixture(autouse=True)
 def _running(monkeypatch):
     """The module as a running installation holds it: listed from its module folder, loaded
-    as Celerp's own, and its routes recorded as its own, so the module guards apply to them."""
+    as Celerp's own, and its routes recorded as its own, so the module guards apply to them.
+    The route record holds only this module, so no route another test left recorded can
+    claim one of its paths first."""
     from celerp.main import app
     from celerp.modules import loader
     from ui.app import app as ui_app
@@ -32,7 +34,7 @@ def _running(monkeypatch):
     manifest = {**loader.read_manifest(PKG), "first_party": True}
     routes = [r for a in (app, ui_app) for r in a.router.routes
               if getattr(r, "path", "").startswith("/fixed-assets")]
-    monkeypatch.setitem(loader._module_routes, manifest["name"], routes)
+    monkeypatch.setattr(loader, "_module_routes", {manifest["name"]: routes})
     monkeypatch.setattr(loader, "_loaded", [*loader._loaded, manifest])
 
 

@@ -145,6 +145,11 @@ _DOCS = "default_modules/celerp-docs/celerp_docs/routes.py"
 _INV = "default_modules/celerp-inventory/celerp_inventory/services.py"
 _MFG = "default_modules/celerp-manufacturing/celerp_manufacturing/movements.py"
 _AJE = "celerp/services/auto_je.py"
+_FA_DISPOSAL = "default_modules/celerp-fixed-assets/celerp_fixed_assets/disposal.py"
+_FA_OPS = "default_modules/celerp-fixed-assets/celerp_fixed_assets/operations.py"
+_FA_ENGINE = "default_modules/celerp-fixed-assets/celerp_fixed_assets/calc/engine.py"
+_FA_SETUP = "default_modules/celerp-fixed-assets/celerp_fixed_assets/setup.py"
+_FA_SALES = "default_modules/celerp-fixed-assets/celerp_fixed_assets/sales.py"
 
 # Every function that spreads an amount over parts through the allocator.
 _SPREADERS = {
@@ -156,6 +161,10 @@ _SPREADERS = {
     (_AJE, "create_for_supplier_return"): "what a return takes off a bill in another currency",
     (_AJE, "_shares"): "a cost of sales over its lots and accounts, and a cost claim over its lots",
     (_AJE, "_revenue_shares"): "a credit note's revenue over the accounts its invoice sold on, discounts included",
+    (_AJE, "_line_allocations"): "a sale's net and revenue over its lines",
+    (_FA_DISPOSAL, "_split"): "an asset's balances over the part disposed of and the rest",
+    (_FA_OPS, "register"): "a bill line's cost over the separate assets it registers",
+    (_FA_OPS, "plan"): "register's split of that cost, worked out before anything is written",
     (_MFG, "_close"): "a production run's cost over its outputs",
     (_MFG, "reconcile"): "a production run's variance over its outputs",
     (_DOCS, "_received_goods_cost"): "a line's cost over its receipts",
@@ -174,6 +183,10 @@ _RESIDUALS = {
     (_AJE, "_base_debits"): "the conversion's rounding unit on the largest goods line",
     ("default_modules/celerp-accounting/celerp_accounting/routes.py", "_expand_item_lines"): "report display",
     ("default_modules/celerp-accounting/celerp_accounting/routes.py", "_split_cash_movement"): "cash flow report",
+    (_FA_ENGINE, "_merged"): "an asset's residual value, not a rounding unit",
+    (_FA_ENGINE, "_restated"): "an asset's residual value, not a rounding unit",
+    (_FA_SETUP, "check_policy"): "a class's residual percent, not a rounding unit",
+    (_FA_SALES, "_unsell"): "what is left on sale clearing after an undone sale, written off whole",
 }
 
 

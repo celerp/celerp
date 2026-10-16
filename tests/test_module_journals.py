@@ -63,10 +63,13 @@ def _probe(path: Path = _PROBE_FILE) -> dict:
 
 @pytest.fixture
 def registry():
-    """The operation-type registry, restored after the test."""
+    """The operation-type registry, open for the test's own types and restored after it."""
+    from dataclasses import replace
+
     from celerp.services import module_journals as mj
 
     saved = mj.snapshot_registry()
+    mj.restore_registry(replace(saved, frozen=False))
     yield mj
     mj.restore_registry(saved)
 
@@ -233,6 +236,19 @@ async def test_s6_company_and_user_authority(session, auth, registry):
     registry.freeze_operation_types()
     with pytest.raises(ValueError, match="after modules"):
         probe["register"]({"s6_late": ("manage_accounting",)}, source_prefix="fa:")
+
+
+def test_s6_registration_opens_again_when_modules_start_again(registry):
+    """A process that starts its modules again (an app built twice) registers again; what
+    the first start registered stays."""
+    from fastapi import FastAPI
+
+    probe = _probe()
+    probe["register"]({"s6_first": ("manage_accounting",)}, source_prefix="fa:")
+    registry.freeze_operation_types()
+    loader.register_api_routes(FastAPI(), [])
+    probe["register"]({"s6_again": ("manage_accounting",)}, source_prefix="fa:")
+    assert {(MODULE, "s6_first"), (MODULE, "s6_again")} <= set(registry.snapshot_registry().types)
 
 
 # ── Accounts ───────────────────────────────────────────────────────────────────

@@ -105,7 +105,7 @@ async def test_money_cannot_move_through_an_account_that_cannot_hold_it(client, 
 
 @pytest.mark.parametrize("door", sorted(DOORS))
 async def test_money_moves_through_a_clearing_asset_account(client, session, auth, door):
-    clearing = await _account(client, auth, "1160", "Undeposited funds", parent="1100")
+    clearing = await _account(client, auth, "1170", "Undeposited funds", parent="1100")
     path, body = await DOORS[door](client, session, auth, clearing)
 
     r = await client.post(path, headers=auth["headers"], json=body)

@@ -86,6 +86,14 @@ _DYNAMIC_KEY_SITES = {
         "older_stock.undo.no_move", "posting.older_stock.never_inventory", "posting.older_stock.no_item",
         "posting.older_stock.not_in_chart",
     ],
+    # celerp/services/module_journals.py: _refuse(status, key, message) wraps refusal(key, ...)
+    "celerp/services/module_journals.py": [
+        "module_journal.accounting_off", "module_journal.caller", "module_journal.key",
+        "module_journal.key_reused", "module_journal.module_off",
+        "module_journal.moves_more_than_recognized", "module_journal.not_found",
+        "module_journal.source", "module_journal.unbalanced", "module_journal.unknown_operation",
+        "posting.destination.not_in_chart",
+    ],
     # celerp/services/document_lines.py: key, text = _PROTECTED_MESSAGES[why]
     "celerp/services/document_lines.py": ["line.protected_held", "line.protected_received"],
     # celerp/services/cogs_backfill.py: _outcome(key) for key in ("posted_one",

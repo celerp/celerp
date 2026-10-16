@@ -137,6 +137,12 @@ def register_operation_types(module: str, types: dict[str, tuple[str, ...]], *,
     _registry.types.update(staged)
 
 
+def open_operation_types() -> None:
+    """Open registration: called as modules start, each time the process starts them. A
+    type registered by an earlier start stays, and registering it again must agree."""
+    _registry.frozen = False
+
+
 def freeze_operation_types() -> None:
     """Close registration: called once every module has started."""
     _registry.frozen = True
