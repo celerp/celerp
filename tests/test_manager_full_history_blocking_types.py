@@ -20,7 +20,7 @@ import pytest
 from celerp.importers.adapters.base import MigrationDecisions, ScanError
 from celerp.importers.schema import CIFMode, CoverageClass, ReconciliationMeasure as M
 from fixtures.manager_io import specs
-from fixtures.manager_io.support import CHECKPOINTS, STARTING, adapter, artifact, ref
+from fixtures.manager_io.support import CHECKPOINTS, HISTORY, STARTING, adapter, artifact, ref
 from migration_support import real_client, real_engine  # noqa: F401 - fixtures
 from test_migration_inventory_provenance import _doc, _migrated
 
@@ -173,26 +173,16 @@ def test_holder_on_a_line_of_another_control_account_stops_the_record(tmp_path):
     assert rows["JournalEntry (unknown reference)"].count == 1
 
 
-# Records Manager posts through holders and its own built-in accounts: the figures worked
-# out in specs.history_objects(), debit positive.
-HISTORY = _figures({
-    "OPB": "1010", "EQUIP": "1000", "LOAN": "-400", "CAP": "-900", "CAP:DRAW": "50", "CAP2": "-100",
-    "SPEC": "-190", "EMP": "-900", "ECP": "-10", "VAN": "0", "VAN:depreciation": "0", "PAT": "300",
-    "PAT:amortization": "-40", "FUND": "275", "@BalanceSheetInventoryOnHandAccount": "60",
-    "@BalanceSheetAccountsReceivableAccount": "60", "@BalanceSheetAccountsPayableAccount": "0", "S1": "-160",
-    "OFF": "70", "WAGES": "1050", "PAYE": "-150", "AMEXP": "10", "@BalanceSheetRetainedEarningsAccount": "-1140",
-    "@ProfitAndLossStatementAccountFixedAssetDepreciation": "50",
-    "@ProfitAndLossStatementAccountFixedAssetLossOnDisposal": "50",
-    "@ProfitAndLossStatementAccountLatePaymentFees": "-5", "@BalanceSheetWithholdingTaxAccount": "5",
-    "@BalanceSheetBillableTimeAccount": "60", "@ProfitAndLossStatementAccountBillableTimeMovement": "-60",
-    "@ProfitAndLossStatementCapitalGainsOnInvestments": "5",
-})
+# Records Manager posts through holders and its own built-in accounts, debit positive.
+HISTORY_BALANCES = _figures(CHECKPOINTS["history"]["full_history"]["trial_balance"])
 ACTIVITY = ("DepreciationEntry", "AmortizationEntry", "Payslip", "ExpenseClaim", "LatePaymentFee",
             "WithholdingTaxReceipt", "BillableTime", "InvestmentMarketPrice", "PayslipEarningsItem",
             "PayslipDeductionItem", "PayslipContributionItem")
 
 
 def _history(tmp_path, objects: list | None = None, name: str = "history.manager"):
+    if objects is None:
+        return artifact(HISTORY)
     return artifact(specs.build_history(tmp_path / name, objects))
 
 
@@ -215,14 +205,16 @@ def test_activity_records_post_what_manager_reports(tmp_path):
     """Each record posts the lines Manager's own reports show, through the holder accounts and
     the built-in accounts Manager adds once the record type is used. RED before the change:
     the scan stops on every one of them."""
-    assert _trial_balance(_history(tmp_path)) == HISTORY
+    trial = _trial_balance(_history(tmp_path))
+    assert {key: amount for key, amount in trial.items() if amount} == \
+        {key: amount for key, amount in HISTORY_BALANCES.items() if amount}
 
 
 def test_activity_built_in_accounts_arrive_only_when_used(tmp_path):
     """The depreciation, disposal, late fee, withholding tax, billable time and investment
     gains accounts are added with Manager's names and types once a record uses them, and not
     otherwise. RED before the change: the scan stops, and none is added."""
-    bundle = adapter().build_manifest([_history(tmp_path)], FULL).bundle
+    bundle = adapter().build_manifest([_history(tmp_path, specs.history_objects())], FULL).bundle
     accounts = {a.source_external_id: (a.name, a.account_type.value) for a in bundle.accounts}
     assert {label: accounts[_key(label)] for label in (
         "@BalanceSheetBillableTimeAccount", "@BalanceSheetWithholdingTaxAccount",
@@ -243,6 +235,14 @@ def test_activity_built_in_accounts_arrive_only_when_used(tmp_path):
     assert ref("@ProfitAndLossStatementAccountFixedAssetDepreciation") not in started
 
 
+def test_activity_built_in_accounts_keep_the_names_the_user_gave_them(tmp_path):
+    """A built-in account Manager stores because the user renamed it arrives under that name.
+    RED before the change: the scan stops."""
+    accounts = {a.source_external_id: a.name for a in adapter().build_manifest([_history(tmp_path)], FULL).bundle.accounts}
+    renamed = {str(o.key): o.fields[1] for o in specs.renamed_builtin_objects()}
+    assert {key: accounts[key] for key in renamed} == renamed
+
+
 def test_activity_records_arrive_as_journals_on_their_own_dates(tmp_path):
     """Every record is a journal of its own type, dated as Manager dates it: billable time
     reverses when it is invoiced or written off, and a disposal posts on its disposal date.
@@ -251,7 +251,8 @@ def test_activity_records_arrive_as_journals_on_their_own_dates(tmp_path):
     dates: dict[str, list[date]] = {}
     for journal in bundle.journals:
         dates.setdefault(journal.source_type, []).append(journal.entry_date)
-    assert {t: sorted(d) for t, d in dates.items() if t not in ("JournalEntry", "StartingBalances")} == {
+    carried_before = ("JournalEntry", "StartingBalances", "Receipt", "Payment")   # the starting balance business
+    assert {t: sorted(d) for t, d in dates.items() if t not in carried_before} == {
         "DepreciationEntry": [date(2026, 2, 1)], "AmortizationEntry": [date(2026, 2, 2)],
         "Payslip": [date(2026, 2, 5)], "ExpenseClaim": [date(2026, 2, 6)], "LatePaymentFee": [date(2026, 2, 8)],
         "WithholdingTaxReceipt": [date(2026, 2, 9)],
@@ -337,14 +338,13 @@ def test_payslip_with_an_unknown_item_stops_the_payslip(tmp_path):
 async def test_activity_records_migrate_end_to_end(real_engine, real_client, monkeypatch, tmp_path):
     """The migrated books hold Manager's trial balance after every activity record. RED
     before the change: the scan stops."""
-    path = specs.build_history(tmp_path / "history.manager")
-    books = await _migrated(real_engine, monkeypatch, tmp_path, {"mode": "full_history"}, source=path)
+    books = await _migrated(real_engine, monkeypatch, tmp_path, {"mode": "full_history"}, source=HISTORY)
     code = {m: t for (_, m), t in books.maps.items()}
     trial = (await real_client.get("/accounting/trial-balance", headers=books.headers)).json()
     assert trial["balanced"] is True
     net = {line["code"]: D(str(line["net"])) for line in trial["lines"]}
-    assert {key: net[code[key]] for key, amount in HISTORY.items() if amount} == \
-        {key: amount for key, amount in HISTORY.items() if amount}
+    expected = {key: amount for key, amount in HISTORY_BALANCES.items() if amount}
+    assert {key: net[code[key]] for key in expected} == expected
 
 
 def test_foreign_currency_starting_balance_stops_the_scan(tmp_path):

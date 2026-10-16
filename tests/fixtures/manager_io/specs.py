@@ -986,5 +986,24 @@ def history_objects() -> list[Obj]:
     ]
 
 
+def renamed_builtin_objects() -> list[Obj]:
+    """The activity built-in accounts as Manager stores them once a user renames them: the
+    names are the user's own and every other figure stays as history_objects() works out."""
+    return [
+        obj("BalanceSheetBillableTimeAccount", None, {1: "Unbilled time"}),
+        obj("BalanceSheetWithholdingTaxAccount", None, {1: "Tax withheld by customers"}),
+        obj("ProfitAndLossStatementAccountBillableTimeMovement", None, {1: "Unbilled time movement"}),
+        obj("ProfitAndLossStatementAccountFixedAssetDepreciation", None, {1: "Depreciation"}),
+        obj("ProfitAndLossStatementAccountFixedAssetLossOnDisposal", None, {1: "Loss on asset sales"}),
+        obj("ProfitAndLossStatementAccountIntangibleAssetsAmortization", None, {1: "Amortization"}),
+        obj("ProfitAndLossStatementAccountIntangibleAssetsGainsLossOnDisposal", None,
+            {1: "Gain or loss on intangible asset sales"}),
+        obj("ProfitAndLossStatementAccountLatePaymentFees", None, {1: "Late fees charged"}),
+        obj("ProfitAndLossStatementCapitalGainsOnInvestments", None, {1: "Investment results"}),
+    ]
+
+
 def build_history(path: Path, objects: list[Obj] | None = None) -> Path:
-    return write_manager_file(path, history_objects() if objects is None else objects)
+    """Without objects, the committed history file: history_objects() with the built-in
+    accounts renamed."""
+    return write_manager_file(path, [*history_objects(), *renamed_builtin_objects()] if objects is None else objects)

@@ -540,7 +540,44 @@
       "inventory_value": {"WID": "60.00"}
     }
   },
+  "history": {
+    "_comment": "specs.history_objects, worked by hand in its docstring: the starting balance business, then the records Manager posts through its holders and built-in accounts. Labels follow the starting section.",
+    "full_history": {
+      "trial_balance": {
+        "OPB": "1010", "EQUIP": "1000", "LOAN": "-400", "CAP": "-900", "CAP:DRAW": "50", "CAP2": "-100",
+        "SPEC": "-190", "EMP": "-900", "ECP": "-10", "VAN": "0", "VAN:depreciation": "0", "PAT": "300",
+        "PAT:amortization": "-40", "FUND": "275", "@BalanceSheetInventoryOnHandAccount": "60",
+        "@BalanceSheetAccountsReceivableAccount": "60", "@BalanceSheetAccountsPayableAccount": "0", "S1": "-160",
+        "OFF": "70", "WAGES": "1050", "PAYE": "-150", "AMEXP": "10", "@BalanceSheetRetainedEarningsAccount": "-1140",
+        "@ProfitAndLossStatementAccountFixedAssetDepreciation": "50",
+        "@ProfitAndLossStatementAccountFixedAssetLossOnDisposal": "50",
+        "@ProfitAndLossStatementAccountLatePaymentFees": "-5", "@BalanceSheetWithholdingTaxAccount": "5",
+        "@BalanceSheetBillableTimeAccount": "60", "@ProfitAndLossStatementAccountBillableTimeMovement": "-60",
+        "@ProfitAndLossStatementCapitalGainsOnInvestments": "5"
+      }
+    }
+  },
   "type_checkpoints": {
+    "DepreciationEntry": ["history.full_history.trial_balance"],
+    "AmortizationEntry": ["history.full_history.trial_balance"],
+    "Payslip": ["history.full_history.trial_balance"],
+    "PayslipEarningsItem": ["history.full_history.trial_balance"],
+    "PayslipDeductionItem": ["history.full_history.trial_balance"],
+    "PayslipContributionItem": ["history.full_history.trial_balance"],
+    "ExpenseClaim": ["history.full_history.trial_balance"],
+    "LatePaymentFee": ["history.full_history.trial_balance"],
+    "WithholdingTaxReceipt": ["history.full_history.trial_balance"],
+    "BillableTime": ["history.full_history.trial_balance"],
+    "InvestmentMarketPrice": ["history.full_history.trial_balance"],
+    "BalanceSheetBillableTimeAccount": ["history.full_history.trial_balance"],
+    "BalanceSheetWithholdingTaxAccount": ["history.full_history.trial_balance"],
+    "ProfitAndLossStatementAccountBillableTimeMovement": ["history.full_history.trial_balance"],
+    "ProfitAndLossStatementAccountFixedAssetDepreciation": ["history.full_history.trial_balance"],
+    "ProfitAndLossStatementAccountFixedAssetLossOnDisposal": ["history.full_history.trial_balance"],
+    "ProfitAndLossStatementAccountIntangibleAssetsAmortization": ["history.full_history.trial_balance"],
+    "ProfitAndLossStatementAccountIntangibleAssetsGainsLossOnDisposal": ["history.full_history.trial_balance"],
+    "ProfitAndLossStatementAccountLatePaymentFees": ["history.full_history.trial_balance"],
+    "ProfitAndLossStatementCapitalGainsOnInvestments": ["history.full_history.trial_balance"],
     "BalanceSheetAccountStartingBalance": ["starting.full_history.starting_journal"],
     "BankOrCashAccountStartingBalance": ["starting.full_history.starting_journal"],
     "CapitalAccountStartingBalance": ["starting.full_history.starting_journal"],
