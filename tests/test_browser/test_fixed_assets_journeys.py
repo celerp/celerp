@@ -410,3 +410,28 @@ def test_j8_over_credit_is_refused_then_the_asset_is_returned_from_correct_sale(
     expect(page.locator(f"[id='fa-sale-{car}']")).to_contain_text("Returned")
     assert next(a for a in _ok(c.get(f"{API}/assets"))["items"] if a["id"] == car)["status"] == "active"
     _reconciled(page)
+
+
+def test_j9_stale_move_form_asks_for_a_new_review_and_the_move_succeeds(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    office, store = (_ok(c.post("/companies/me/locations", json={"name": n, "type": "warehouse"}))["id"]
+                     for n in ("Head office", "North store"))
+    car = _contributed(c, "Owner's car")
+
+    page.goto(f"/fixed-assets/assets/{car}/move")
+    page.locator("input[name=date]").fill("2026-02-01")
+    page.locator("select[name=location_id]").select_option(label="North store")
+    page.get_by_role("button", name="Review", exact=True).click()
+    expect(page.locator("#fa-preview")).to_contain_text("North store")
+    # Someone else moves the car while this review is open.
+    _operate(c, f"/assets/{car}/move", {"date": "2026-01-20", "location_id": office})
+
+    page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
+    expect(page.locator("#fa-preview .flash--error")).to_contain_text("changed since preview")
+    page.locator("#fa-preview").get_by_role("button", name="Review again").click()
+    with page.expect_navigation(url=f"**/fixed-assets/assets/{car}"):
+        page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
+    asset = next(a for a in _ok(c.get(f"{API}/assets"))["items"] if a["id"] == car)
+    assert asset["location_id"] == store
+    expect(page.locator("main")).to_contain_text("North store")
