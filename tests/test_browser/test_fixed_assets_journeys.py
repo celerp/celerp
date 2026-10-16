@@ -5,10 +5,12 @@ error and reaches its outcome from the page that shows the error, using only the
 that page offers."""
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
+import threading
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from decimal import Decimal as D
 
@@ -707,3 +709,79 @@ def test_j18_cutover_difference_kept_open_carries_the_banner_until_acknowledged(
 
     page.goto("/fixed-assets")
     expect(page.locator("#fa-recon-banner")).to_have_count(0)
+
+
+def _daily_check(context, today: date) -> None:
+    """The module's daily check for the session's company, run on its own engine and loop."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from celerp.services.auth import decode_access_token
+    from celerp_fixed_assets import runs
+
+    token = next(k["value"] for k in context.cookies() if k["name"] == "celerp_token")
+    company_id = decode_access_token(token)["company_id"]
+
+    async def check():
+        engine = create_async_engine(os.environ["DATABASE_URL"], poolclass=NullPool)
+        try:
+            async with async_sessionmaker(engine, expire_on_commit=False)() as s:
+                await runs.tick(s, company_id, today)
+                await s.commit()
+        finally:
+            await engine.dispose()
+
+    errors: list[BaseException] = []
+
+    def target():
+        try:
+            asyncio.run(check())
+        except BaseException as exc:  # surfaced to the test below
+            errors.append(exc)
+    worker = threading.Thread(target=target)
+    worker.start()
+    worker.join(60)
+    assert not worker.is_alive() and not errors, errors
+
+
+def test_j19_reminder_due_is_told_once_postponed_with_a_reason_and_kept_in_history(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    number = _ok(c.get(f"{API}/assets/{car}"))["number"]
+    today = date.today()
+    due, later = (today + timedelta(days=10)).isoformat(), (today + timedelta(days=40)).isoformat()
+    _ok(c.post(f"{API}/assets/{car}/reminders", json={"kind": "maintenance", "work": "Oil change", "due": due}))
+    _ok(c.post(f"{API}/assets/{car}/reminders", json={"kind": "warranty", "provider": "Dealer", "due": due}))
+    _daily_check(page.context, today)
+    _daily_check(page.context, today)
+    told = [n for n in _ok(c.get("/notifications"))["items"] if n["title"] == "Asset reminders"]
+    assert len(told) == 1, told
+
+    page.goto("/fixed-assets")
+    page.click(".notif-bell-btn")
+    item = page.locator("#notif-panel .notif-item", has_text="Asset reminders").first
+    body = item.locator(".notif-item__body")
+    expect(body).to_contain_text("Oil change")
+    expect(body).to_contain_text("Dealer")
+    item.locator("a").first.click()
+    page.wait_for_url("**/fixed-assets/reminders")
+    page.locator("main tr", has_text="Oil change").get_by_role("link", name=number).click()
+    page.wait_for_url(f"**/fixed-assets/assets/{car}")
+
+    row = page.locator("#fa-reminders tbody tr", has_text="Oil change")
+    row.locator("summary", has_text="Postpone").click()
+    row.locator("input[name=to]").fill(later)
+    row.locator("input[name=reason]").fill("Garage booked out")
+    with page.expect_navigation():
+        row.get_by_role("button", name="Postpone").click()
+    row = page.locator("#fa-reminders tbody tr", has_text="Oil change")
+    expect(row).to_contain_text(later)
+    row.locator("summary", has_text="History").click()
+    history = row.locator(".fa-history li", has_text="Postponed")
+    expect(history).to_contain_text("Garage booked out")
+    expect(history).to_contain_text(later)
+
+    page.goto("/fixed-assets/reminders")
+    expect(page.locator("main")).not_to_contain_text("Oil change")
+    expect(page.locator("main")).to_contain_text("Dealer")
