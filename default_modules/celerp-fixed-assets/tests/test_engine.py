@@ -204,3 +204,41 @@ def test_partial_disposal_daily_charges_the_disposed_share_to_the_day():
     july = next(p for p in out.periods if p.period == "2026-07")
     assert july.amount == (D(100) + D(100) * D(10) / D(31)).quantize(D("0.01"))
     assert out.periods[-1].amount == D(100)
+
+
+def _by_period(out) -> dict[str, Decimal]:
+    return {p.period: p.amount for p in out.periods}
+
+
+def test_s2_revaluation_merges_layers_then_improvement_new_layer():
+    """12,000 over 60 months from January 2026, improved by 1,200 in July keeping the end
+    date (54 months), revalued to 12,000 at the end of December: from January 2027 one
+    layer of 12,000 over the 48 months left (250 a month). An improvement of 960 in July
+    2027 keeping the end date is a new layer over 42 months."""
+    from celerp_fixed_assets.calc import Revalue
+
+    policy = Policy("straight_line", 60, D(0), "full_month")
+    out = schedule([Acquire(date(2026, 1, 1), D(12000)), Improve(date(2026, 7, 1), D(1200)),
+                    Revalue(date(2026, 12, 31), D(12000)), Improve(date(2027, 7, 1), D(960))],
+                   policy, through="2030-12", currency="USD")
+    by = _by_period(out)
+    assert [by[f"2026-{m:02d}"] for m in range(1, 7)] == [D(200)] * 6
+    assert sum((by[f"2026-{m:02d}"] for m in range(1, 13)), D(0)) == D("2533.33")
+    assert [by[f"2027-{m:02d}"] for m in range(1, 7)] == [D(250)] * 6
+    assert by["2027-07"] == D("272.86")
+    assert sum(by.values(), D(0)) == D("2533.33") + D(12000) + D(960)
+    assert [ly.life for ly in out.layers] == [D(48), D(42)]
+
+
+def test_impairment_spreads_over_layers_by_carrying_amount():
+    """The same asset's carrying amount at the end of 2026 (9,600 and 1,066.67) impaired to
+    8,000: each layer keeps three quarters and depreciates it over its 48 months left."""
+    from celerp_fixed_assets.calc import Impair
+
+    policy = Policy("straight_line", 60, D(0), "full_month")
+    out = schedule([Acquire(date(2026, 1, 1), D(12000)), Improve(date(2026, 7, 1), D(1200)),
+                    Impair(date(2026, 12, 31), D(8000))], policy, through="2030-12", currency="USD")
+    by = _by_period(out)
+    assert by["2027-01"] == D("166.67")
+    assert sum(by.values(), D(0)) == D("2533.33") + D(8000)
+    assert len(out.layers) == 2
