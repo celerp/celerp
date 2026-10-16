@@ -680,6 +680,119 @@ async def test_preview_offers_prepare_for_disabled_module(routed_ui, real_engine
     assert re.search(r'name="consent"[^>]*value="acme-widgets"', page)
     assert 'value="celerp-labels"' not in page
 
+
+_NEEDS_TWO = [
+    {"name": "acme-widgets", "label": "Acme Widgets", "status": "enable_required", "first_party": True},
+    {"name": "celerp-labels", "label": "Labels", "status": "enable_required", "first_party": True}]
+
+
+def _needing(router, modules=_NEEDS_TWO, **extra):
+    """The staged copy as the real API previews it, needing ``modules`` (and ``extra``)."""
+    async def hook(request):
+        real = await router._real.handle_async_request(request)
+        body = json.loads(await real.aread())
+        if real.status_code == 200:
+            body.update(modules_ready=not modules, modules=modules, **extra)
+        return httpx.Response(real.status_code, json=body)
+    return hook
+
+
+async def test_module_step_offers_enable_and_open_with_the_name(routed_ui, real_engine, real_client):
+    """The step that turns modules on also opens the copy: it carries the name to open it
+    under and the preview it confirms, and the restart page says the company opens next."""
+    ui, router = routed_ui
+    _, _, tok = await _setup(real_engine)
+    data = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    base = "/settings/restore-backup"
+    router.overrides[("POST", "/company-backups/read")] = _needing(router)
+    page = _page(await _upload_and_preview(ui, base, data))
+    assert "Enable and open" in page
+    assert "Acme Widgets" in page and "Labels" in page
+    assert re.search(r'name="company_name"[^>]*value="Alpha Trading"', page)
+    fingerprint = _hidden(page)["plan_fingerprint"]
+    assert fingerprint
+
+    router.overrides[("POST", "/company-backups/prepare")] = _json(202, {"restart": True, "restarting": True})
+    r = await ui.post(f"{base}/prepare", data={"plan_fingerprint": fingerprint, "company_name": "Alpha Copy",
+                                               "open": "1"})
+    assert r.status_code == 303 and r.headers["location"] == f"{base}/restarting?open=1"
+    sent = json.loads(router.requests[-1].content)
+    assert sent["open"] == {"plan_fingerprint": fingerprint, "company_name": "Alpha Copy"}
+    page = _page(await ui.get(f"{base}/restarting?open=1"))
+    assert "The company opens when it is ready." in page
+
+
+async def test_declining_the_modules_writes_nothing_and_names_them(routed_ui, real_engine, real_client, tmp_path):
+    """Declining deletes the upload, opens nothing, and says which modules the copy needs."""
+    ui, router = routed_ui
+    _, _, tok = await _setup(real_engine)
+    before = await _company_ids(real_engine)
+    data = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    base = "/settings/restore-backup"
+    router.overrides[("POST", "/company-backups/read")] = _needing(router)
+    page = _page(await _upload_and_preview(ui, base, data))
+    assert f'action="{base}/decline"' in page and "Don't enable them" in page
+    router.overrides[("GET", "/company-backups/staged")] = _needing(router)
+    r = await ui.post(f"{base}/decline")
+    assert r.status_code == 200, r.text
+    assert ("Nothing was opened. This company copy needs these modules: Acme Widgets, Labels.") in _page(r)
+    assert _stages(tmp_path) == []
+    assert any(c.startswith(f"{UPLOAD_COOKIE}=") and "Max-Age=0" in c for c in r.headers.get_list("set-cookie"))
+    assert await _company_ids(real_engine) == before
+
+
+async def test_staged_copy_marked_open_now_opens_it(routed_ui, real_engine, real_client):
+    """Back from the restart, a copy the owner chose Enable and open for is opened under the
+    name they chose, without asking again."""
+    ui, router = routed_ui
+    _, _, tok = await _setup(real_engine)
+    data = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    base = "/settings/restore-backup"
+    await _upload_and_preview(ui, base, data)
+    router.overrides[("GET", "/company-backups/staged")] = _needing(
+        router, modules=[], open_now={"company_name": "Alpha Copy"})
+    r = await ui.get(f"{base}/staged")
+    assert r.status_code == 303 and r.headers["location"] == f"{base}/done", r.text
+    async with real_engine.connect() as conn:
+        names = (await conn.execute(text("SELECT name FROM companies"))).scalars().all()
+    assert "Alpha Copy" in names
+
+
+async def test_staged_copy_held_after_restart_says_why(routed_ui, real_engine, real_client):
+    """A copy whose preview changed while Celerp restarted is shown again with the reason,
+    never opened on the owner's behalf."""
+    ui, router = routed_ui
+    _, _, tok = await _setup(real_engine)
+    before = await _company_ids(real_engine)
+    data = await download(real_client, tok)
+    ui.cookies.set("celerp_token", tok)
+    base = "/settings/restore-backup"
+    await _upload_and_preview(ui, base, data)
+    router.overrides[("GET", "/company-backups/staged")] = _needing(router, modules=[], open_held=True)
+    r = await ui.get(f"{base}/staged")
+    assert r.status_code == 200
+    assert t("company_backup.open_held") in _page(r)
+    assert f'action="{base}/restore"' in _page(r)
+    assert await _company_ids(real_engine) == before
+
+
+async def test_first_run_module_step_keeps_turn_on_modules(routed_ui, real_engine, real_client, code_config):
+    """On a fresh installation the account is created with the opening, and a password is
+    never kept across a restart, so the step turns modules on and shows the copy again."""
+    ui, router = routed_ui
+    _, _, tok = await _setup(real_engine)
+    data = await download(real_client, tok)
+    async with real_engine.begin() as conn:
+        await conn.execute(text("TRUNCATE users, companies RESTART IDENTITY CASCADE"))
+    base = "/setup/restore-backup"
+    router.overrides[("POST", "/company-backups/bootstrap/read")] = _needing(router)
+    page = _page(await _upload_and_preview(ui, base, data, setup_code=code_config))
+    assert "Turn on modules" in page and "Enable and open" not in page
+    assert f'action="{base}/decline"' in page
+
 OPENING = "celerp_handoff_opening"
 
 
