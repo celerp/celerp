@@ -1241,11 +1241,28 @@ def _recon_accounts_table(accounts: list[dict], currency: str) -> FT:
 
 _RECON_STATUS = {"Reconciled": "reconciled", "Differences acknowledged": "acknowledged",
                  "Differences open": "open"}
-_RECON_ACTIONS = {"opening": "/fixed-assets/opening", "intake": "/fixed-assets/intake"}
+_RECON_ACTIONS = {"opening": lambda a, d: "/fixed-assets/opening", "intake": lambda a, d: "/fixed-assets/intake",
+                  "ledger": lambda a, d: f"/accounting/ledger/{a['account']}",
+                  "replace_source": lambda a, d: (f"/fixed-assets/assets/{d['asset_id']}/correct?field=replace_source"
+                                                  if d.get("asset_id") else None)}
 
 
 def _recon_cause(d: dict) -> str:
     return t(f"fixed_assets.recon_rule.{d['rule']}")
+
+
+def _recon_next(a: dict, d: dict) -> FT | str:
+    """The page that clears the difference, the permission it needs, and when it takes effect."""
+    route = _RECON_ACTIONS.get(d.get("action") or "")
+    href = route(a, d) if route else None
+    if not href:
+        return EMPTY
+    when = (t("fixed_assets.recon_fix_from", day=d["fix_from"]) if d.get("fix_from")
+            else t("fixed_assets.recon_fix_now"))
+    needs = t(f"fixed_assets.permission.{d['permission']}")
+    return Div(A(t(f"fixed_assets.recon_action.{d['action']}"), href=href),
+               Span(f"{needs}. {when}", cls="form-hint"),
+               cls="flex-col")
 
 
 def _acknowledge_form(d: dict) -> FT:
@@ -1270,10 +1287,8 @@ def _differences_table(accounts: list[dict], currency: str) -> FT:
     rows = []
     for a, d in found:
         lines = "; ".join(_text(li.get("description")) for li in d["lines"]) or EMPTY
-        action = _RECON_ACTIONS.get(d.get("action") or "")
         rows.append(Tr(Td(d["date"]), Td(a["account"]), Td(_recon_cause(d)), Td(lines),
-                       _money_td(d["amount"], currency),
-                       Td(A(t(f"fixed_assets.recon_action.{d['action']}"), href=action) if action else EMPTY),
+                       _money_td(d["amount"], currency), Td(_recon_next(a, d)),
                        Td(_text(d.get("reason")) if d["rule"] == 4 else _acknowledge_form(d))))
     return Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.account")), Th(t("fixed_assets.recon_cause")),
                           Th(t("fixed_assets.recon_lines")), _money_th(t("fixed_assets.amount")),

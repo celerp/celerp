@@ -487,3 +487,27 @@ def test_j11_split_short_of_the_balance_names_the_remainder_and_completes(page: 
     assert D(assets["Office fit-out"]["cost"]) == D(3000) and assets["Office fit-out"]["status"] == "active"
     assert (D(assets["Office fittings"]["cost"]), D(assets["Meeting room screens"]["cost"])) == (D(12000), D(5000))
     _reconciled(page)
+
+
+def test_j12_unexplained_journal_names_its_fix_and_is_registered(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    cls = next(k for k in _classes(c).values() if k["asset_account"] == "1210")
+    _journal(c, "2026-02-10", "Generator paid in cash", [{"account": "1210", "debit": 900},
+                                                         {"account": "3100", "credit": 900}])
+
+    page.goto("/fixed-assets/reconciliation")
+    expect(page.locator("main")).to_contain_text("Differences open")
+    row = page.locator("#fa-recon-differences tr", has_text="Generator paid in cash")
+    expect(row).to_contain_text("Not yet registered")
+    expect(row).to_contain_text("Needs Manage accounting. Fixed in the current period")
+    row.get_by_role("link", name="Register it").click()
+    page.wait_for_url("**/fixed-assets/intake")
+    page.locator("tr", has_text="Generator paid in cash").get_by_role("link").last.click()
+    page.wait_for_url("**/fixed-assets/intake/line**")
+    page.locator("input[name=name]").fill("Standby generator")
+    page.locator("select[name=class_id]").select_option(label=cls["name"])
+    _review_and_confirm(page)
+    (generator,) = [a for a in _ok(c.get(f"{API}/assets"))["items"] if a["name"] == "Standby generator"]
+    assert D(generator["cost"]) == D(900)
+    _reconciled(page)

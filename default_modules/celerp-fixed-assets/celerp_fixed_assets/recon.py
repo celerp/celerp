@@ -24,13 +24,18 @@ The registered balance is checked against the assets themselves: their movements
 date, each asset's balance on the accounts of the class it was in at that date. A
 mismatch is a defect in this module and is reported as an error, never hidden.
 
+Each difference names what clears it: the opening balances, registering the line, replacing
+the voided source on its asset, or correcting the journal; every one of them, and
+acknowledging, needs manage_accounting. A difference dated in a locked period is fixed
+from the first open date.
+
 A difference is acknowledged as noted, or accepted with the reason and its accounting
 effect. An acknowledgement holds for the amount it was given at; when the amount changes
 the difference is open again.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from celerp_fixed_assets import fixaccount, runs, setup, sources
@@ -44,6 +49,8 @@ REGISTERED_RULES = (1, 2)
 NOTED_ALLOCATIONS = ("not_acquisition", "keep")
 STATUSES = ("Reconciled", "Differences acknowledged", "Differences open")
 _MODULE_JOURNAL = f"je:mod:{MODULE}:"
+# Every fix the reconciliation offers, and acknowledging a difference, is accounting work.
+FIX_PERMISSION = "manage_accounting"
 _SIGN = {"acquisition": 1, "depreciation": -1, "reduction": -1}
 _CAUSES = {1: "Fixed asset journal", 2: "Registered", 3: "Source voided", 4: "Noted", 5: "Not yet registered",
            6: "Unclassified"}
@@ -221,6 +228,10 @@ async def report(session, company_id, at: str | None = None) -> dict:
     units = await classify(session, company_id, at)
     opening, standing = await _register(session, company_id, classes, surplus, cut, at)
     marks = await _acknowledged(session, company_id)
+    lock = (await setup.company_settings(session, company_id)).get("lock_date")
+    owners = {s["source"]: asset_id for asset_id, a in await _entities(session, company_id, "fa_asset")
+              for s in a.get("sources") or [] if isinstance(s, dict) and s.get("source")}
+    fixing = {"marks": marks, "owners": owners, "lock": date.fromisoformat(lock) if lock else None}
     names = await account_names(session, company_id, accounts)
     out, errors = [], []
     for account in accounts:
@@ -234,10 +245,10 @@ async def report(session, company_id, at: str | None = None) -> dict:
         differences = []
         if before != opening.get(account, Decimal(0)):
             differences.append(_difference(f"opening:{account}", "opening", "Opening balance not in the register",
-                                           before - opening.get(account, Decimal(0)), cut, [], marks))
+                                           before - opening.get(account, Decimal(0)), cut, [], fixing))
         for u in _unpaired([u for u in later if u["rule"] not in REGISTERED_RULES]):
             amount = -u["amount"] if u.get("synthetic") else u["amount"]
-            differences.append(_difference(u["key"], u["rule"], _CAUSES[u["rule"]], amount, u["date"], [u], marks))
+            differences.append(_difference(u["key"], u["rule"], _CAUSES[u["rule"]], amount, u["date"], [u], fixing))
         if account != clearing and registered != standing.get(account, Decimal(0)):
             errors.append(f"{account}: the register holds {_cents(standing.get(account, 0))} and its journals "
                           f"{_cents(registered)} at {at}.")
@@ -266,8 +277,8 @@ def _unpaired(units: list[dict]) -> list[dict]:
     return [u for u in units if not (counts[base(u)] > 1 and not totals[base(u)])]
 
 
-def _difference(key: str, rule, cause: str, amount: Decimal, day: str, units: list[dict], marks: dict) -> dict:
-    mark = marks.get(key) or {}
+def _difference(key: str, rule, cause: str, amount: Decimal, day: str, units: list[dict], fixing: dict) -> dict:
+    mark = fixing["marks"].get(key) or {}
     if units and units[0]["rule"] == 4:
         state, reason, effect = "noted", units[0].get("reason"), None
     elif mark.get("state") in ("noted", "accepted") and _dec(mark.get("amount")) == amount:
@@ -275,18 +286,24 @@ def _difference(key: str, rule, cause: str, amount: Decimal, day: str, units: li
     else:
         state, reason, effect = "open", None, None
     return {"key": key, "rule": rule, "cause": cause, "amount": _cents(amount), "date": day, "state": state,
-            "reason": reason, "effect": effect, "action": _action(rule, units),
+            "reason": reason, "effect": effect, "action": _action(rule), "permission": FIX_PERMISSION,
+            "asset_id": fixing["owners"].get(units[0].get("source")) if rule == 3 else None,
+            "fix_from": _fix_from(fixing["lock"], day),
             "lines": [{"journal_id": u["journal_id"], "source": u.get("source"), "description": u["description"],
                        "date": u["date"], "amount": _cents(u["amount"])} for u in units]}
 
 
-def _action(rule, units: list[dict]) -> str | None:
-    """What clears the difference, as a page or form the user opens."""
-    if rule == "opening":
-        return "opening"
-    if rule == 5:
-        return "intake"
-    return None
+def _action(rule) -> str | None:
+    """What clears the difference: the opening balances, registering the line, replacing the
+    voided source on its asset, or correcting the journal from its ledger. A noted line needs nothing."""
+    return {"opening": "opening", 3: "replace_source", 5: "intake", 6: "ledger"}.get(rule)
+
+
+def _fix_from(lock: date | None, day: str) -> str | None:
+    """The first open date when the difference falls in the locked period, else None."""
+    if lock is None or date.fromisoformat(day) > lock:
+        return None
+    return (lock + timedelta(days=1)).isoformat()
 
 
 def _status(ledger: Decimal, registered: Decimal, differences: list[dict]) -> str:

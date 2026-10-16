@@ -340,3 +340,22 @@ async def test_invariant_reconciliation_identity(fa):
     report = await _check_identity(fa, date.today().isoformat())
     voided = [d for d in _account(report, "1210")["differences"] if d["rule"] == 3]
     assert voided and D(car and voided[0]["amount"]) == D("-32000")
+    assert voided[0]["action"] == "replace_source" and voided[0]["asset_id"] == car["id"]
+
+
+async def test_s7_each_difference_names_its_fix_and_when(fa):
+    first = date.fromisoformat((await fa.line("Delivery van"))["date"])
+    booked = _month_end(first)
+    je = await fa.journal(booked.isoformat(), [{"account": "1210", "debit": 900}, {"account": "3100", "credit": 900}])
+
+    def manual(report: dict) -> dict:
+        (found,) = [d for d in _account(report, "1210")["differences"] if d["lines"][0]["journal_id"] == je]
+        return found
+
+    found = manual(await _recon(fa, date.today().isoformat()))
+    assert (found["rule"], found["action"], found["permission"]) == (5, "intake", "manage_accounting")
+    assert found["fix_from"] is None and found["asset_id"] is None
+    r = await fa.client.post("/accounting/period-lock", headers=fa.h, json={"lock_date": booked.isoformat()})
+    assert r.status_code == 200, r.text
+    locked = manual(await _recon(fa, date.today().isoformat()))
+    assert locked["fix_from"] == (booked + timedelta(days=1)).isoformat()
