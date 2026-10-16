@@ -53,6 +53,8 @@
       "migrate_cmd.js",
       "update-state.js",
       "compatibility.js",
+      "deelevation.js",
+      "windows-start-errors.js",
       "boot.js",
       "preload.js",
       "assets/**"

@@ -193,6 +193,8 @@ const { compatibilityArgs, mayOpenData } = require("./compatibility");
 const { openData, reopenData } = require("./boot");
 const { writeConfig: writeLockedConfig } = require("./config-writer");
 const { serveUpdateState } = require("./update-state");
+const { startupDeelevation } = require("./deelevation");
+const { windowsStartFailure } = require("./windows-start-errors");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -298,12 +300,29 @@ async function initialisePostgresWindows(password) {
         "--no-locale",
       ], { stdio: ["ignore", out, out], env: { ...process.env } });
       proc.on("error", (e) => { trace("initdb spawn error: " + e.message); reject(e); });
-      proc.on("exit", (code) => { trace("initdb exit code=" + code); (code === 0 ? resolve() : reject(new Error(`initdb exited with code ${code}`))); });
+      proc.on("exit", (code) => {
+        trace("initdb exit code=" + code);
+        if (code === 0) resolve();
+        else reject(new Error(windowsStartFailure({ exitCode: code }) ?? `initdb exited with code ${code}`));
+      });
     });
   } finally {
     try { fs.closeSync(out); } catch { /* ignore */ }
     try { fs.rmSync(pwfile, { force: true }); } catch { /* ignore */ }
   }
+}
+
+/**
+ * Command words put before the postgres binary. Linux and macOS run it under
+ * desktop_child.py so it stops with the app. Windows runs it directly (the app's
+ * job object ends it), or, when the app is still elevated after de-elevation,
+ * through win_restricted_launch.py, which drops the administrator rights Postgres
+ * refuses to run with.
+ */
+function postgresLauncher() {
+  if (process.platform !== "win32") return [pythonBin(), "-I", path.join(APP_DIR, "celerp", "desktop_child.py")];
+  if (deelevation === "boot-restricted") return [pythonBin(), "-I", path.join(APP_DIR, "celerp", "win_restricted_launch.py")];
+  return [];
 }
 
 async function startPostgres(dbPort) {
@@ -315,6 +334,7 @@ async function startPostgres(dbPort) {
   }
 
   const dbPassword = getBundledDbPassword();
+  const pgOutput = outputTail();
   pgInstance = new EmbeddedPostgres({
     databaseDir: PG_DATA_DIR,
     user: "celerp",
@@ -324,7 +344,8 @@ async function startPostgres(dbPort) {
     // Prevent locale-derived SQL_ASCII clusters on Linux/macOS first boot.
     // Windows uses initialisePostgresWindows(), which already passes UTF-8.
     initdbFlags: ["--encoding=UTF8"],
-    launcher: process.platform === "win32" ? [] : [pythonBin(), "-I", path.join(APP_DIR, "celerp", "desktop_child.py")],
+    launcher: postgresLauncher(),
+    onLog: (message) => { pgOutput.add(message); console.log(message); },
   });
 
   // Only run initdb on first boot — PG_VERSION is written by initdb and
@@ -341,7 +362,14 @@ async function startPostgres(dbPort) {
       ? initialisePostgresWindows(dbPassword)
       : pgInstance.initialise());
   }
-  await pgInstance.start();
+  try {
+    await pgInstance.start();
+  } catch (e) {
+    // start() rejects without a reason when postgres exits before it is ready.
+    const known = windowsStartFailure({ exitCode: pgInstance.process?.exitCode, output: pgOutput.text() });
+    if (known) throw new Error(known);
+    throw e;
+  }
 
   // Create database if it doesn't exist yet
   const client = pgInstance.getPgClient();
@@ -1152,14 +1180,13 @@ ipcMain.handle("uninstall-keep-data", () => _doUninstallKeepData());
 ipcMain.handle("uninstall-delete-data", () => _doUninstallDeleteData());
 
 // ── Windows: de-elevate before doing anything else ──────────────────────────
-// The bundled Postgres refuses to run under a Windows administrator token, so a
-// user who launches Celerp elevated (Run as administrator, or a machine with UAC
-// turned off) would crash on boot. If we hold an admin token, relaunch ourselves
-// at a restricted "normal user" token (SAFER /trustlevel) in the same desktop
-// session and exit; the relaunched copy boots normally. This must run BEFORE the
+// The bundled Postgres refuses to run under a Windows administrator token. An
+// elevated start (Run as administrator) relaunches through Explorer, which with
+// UAC on starts the copy with the user's standard token. With UAC off Explorer is
+// elevated too, so the relaunched copy boots in place and starts Postgres with the
+// administrator rights removed (deelevation.js). This must run BEFORE the
 // single-instance lock so the relaunched copy can acquire it.
 function isWindowsElevated() {
-  if (process.platform !== "win32") return false;
   try {
     // `net session` succeeds only with administrator rights; it throws otherwise.
     childProcess.execSync("net session", { stdio: "ignore", windowsHide: true });
@@ -1169,32 +1196,33 @@ function isWindowsElevated() {
   }
 }
 
-if (isWindowsElevated()) {
-  let relaunched = false;
+let deelevation = process.platform === "win32"
+  ? startupDeelevation({
+    elevated: isWindowsElevated(),
+    markerPath: path.join(app.getPath("userData"), "deelevate-attempt"),
+    now: Date.now(),
+  })
+  : "boot";
+
+if (deelevation === "relaunch") {
   try {
-    // Relaunch de-elevated by handing the exe back to Explorer (the shell). With
-    // UAC on - the normal Windows configuration - Explorer runs at the user's
-    // standard integrity, so the copy it starts inherits a non-admin token, which
-    // is what Postgres needs. This also sidesteps Electron's job object: Electron
-    // runs its own children in a job with KILL_ON_JOB_CLOSE, so a direct relaunch
-    // would die the moment this instance exits, but an Explorer-launched process is
-    // the shell's child, not ours, and survives.
+    // Relaunch by handing the exe back to Explorer (the shell). This also
+    // sidesteps Electron's job object: Electron runs its own children in a job
+    // with KILL_ON_JOB_CLOSE, so a direct relaunch would die the moment this
+    // instance exits, but an Explorer-launched process is the shell's child, not
+    // ours, and survives.
     const explorer = path.join(process.env.SystemRoot || "C:\\Windows", "explorer.exe");
     const child = childProcess.spawn(explorer, [process.execPath], {
       detached: true, stdio: "ignore", windowsHide: true,
     });
     child.on("error", (e) => console.error("[startup] de-elevation spawn error:", e));
     child.unref();
-    relaunched = true;
-    console.log("[startup] elevated launch detected; relaunched de-elevated (Postgres cannot run as admin)");
-  } catch (e) {
-    // Fall through and boot (Postgres will then report the admin error, no worse
-    // than before).
-    console.error("[startup] de-elevation relaunch failed; continuing:", e);
-  }
-  if (relaunched) {
+    console.log("[startup] elevated launch detected; relaunched through Explorer (Postgres cannot run as admin)");
     app.quit();
     return;  // stop the elevated instance (CommonJS module: top-level return is valid)
+  } catch (e) {
+    console.error("[startup] de-elevation relaunch failed; booting with Postgres restricted:", e);
+    deelevation = "boot-restricted";
   }
 }
 
