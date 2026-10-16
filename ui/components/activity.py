@@ -45,6 +45,7 @@ _EVENT_TYPES: tuple[str, ...] = (
     "fa.taxbook.recorded", "fa.taxyear.recorded", "fa.yearend.recorded",
     "fa.asset.file_attached", "fa.asset.file_tagged", "fa.asset.file_described", "fa.asset.file_deleted",
     "fa.asset.confirmed", "fa.asset.problem", "fa.check.recorded", "fa.check.removed",
+    "fa.maint.updated", "fa.reminder.created", "fa.reminder.changed",
     "doc.created", "doc.updated", "doc.finalized", "doc.paid", "doc.voided",
     "doc.sent", "doc.marked_sent", "doc.converted", "doc.converted_to_bill",
     "doc.payment.received", "doc.payment.refunded", "doc.payment.refund_reversed", "doc.payment.stripe_released",
@@ -267,6 +268,8 @@ _SYSTEM_EVENT_TYPES = frozenset({
     "fa.run.reversed",
     "fa.import.recorded",
     "fa.import.row",
+    # A reminder's notice being sent; the notice itself is what the member sees.
+    "fa.reminder.told",
 })
 
 # metadata_.reason values that mark an event as a mechanical side-effect of a

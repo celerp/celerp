@@ -73,8 +73,10 @@ class SourceReleased(_Event):
 
 class MaintenanceRecorded(_Event):
     asset_id: str
-    source: str
-    amount: str
+    date: str
+    status: str
+    source: str | None = None
+    amount: str | None = None
 
 
 class OperationRecorded(_Event):
@@ -198,6 +200,23 @@ class ImportRow(_Event):
     errors: list
 
 
+class ReminderCreated(_Event):
+    asset_id: str
+    kind: str
+    due: str
+    status: str
+    history: list
+
+
+class ReminderChanged(_Event):
+    changes: dict
+    history: dict
+
+
+class ReminderTold(_Event):
+    stage: str
+
+
 EVENTS: dict[str, type[BaseModel]] = {
     "fa.class.created": ClassCreated,
     "fa.class.updated": Changes,
@@ -240,6 +259,10 @@ EVENTS: dict[str, type[BaseModel]] = {
     "fa.check.removed": CheckRemoved,
     "fa.import.recorded": ImportRecorded,
     "fa.import.row": ImportRow,
+    "fa.maint.updated": Changes,
+    "fa.reminder.created": ReminderCreated,
+    "fa.reminder.changed": ReminderChanged,
+    "fa.reminder.told": ReminderTold,
 }
 
 

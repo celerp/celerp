@@ -231,7 +231,7 @@ async def test_valuer_report_attached_to_every_asset_in_the_class_and_removed(fa
         assert [(f["filename"], f["document_tag"]) for f in (await fa.asset(asset_id))["files"]] == [
             ("valuation.pdf", "valuations")]
     await fa.ok(await fa.post(f"/classes/{cls['id']}/valuer-report/remove", {"files": report["files"]}))
-    assert all((await fa.asset(a))["files"] == [] for a in ids)
+    assert [(await fa.asset(a))["files"] for a in ids] == [[] for _ in ids]
     land = (await fa.classes())["Land"]
     empty = await fa.client.post(f"/fixed-assets/api/classes/{land['id']}/valuer-report", headers=fa.h,
                                  files={"file": ("valuation.pdf", PDF, "application/pdf")})

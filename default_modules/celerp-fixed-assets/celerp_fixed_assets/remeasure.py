@@ -241,7 +241,8 @@ async def _asset_and_class(session, company_id, asset_id: str):
     return row.state, await setup.get_class(session, company_id, row.state.get("class_id"))
 
 
-async def _class_assets(session, company_id, class_id: str) -> list[tuple[str, dict]]:
+async def class_assets(session, company_id, class_id: str) -> list[tuple[str, dict]]:
+    """The assets in use in a class, by number."""
     return sorted(((eid, s) for eid, s in await _entities(session, company_id, "fa_asset")
                    if s.get("class_id") == class_id and s.get("status") == "active"),
                   key=lambda r: r[1].get("number") or "")
@@ -262,7 +263,7 @@ async def remeasure(session, company_id, user_id, asset_id: str, body: dict, ope
         asset, cls = await _asset_and_class(session, company_id, asset_id)
         if operation == "revaluation":
             if setup.measurement(cls) != "revaluation":
-                count = len(await _class_assets(session, company_id, cls["id"]))
+                count = len(await class_assets(session, company_id, cls["id"]))
                 raise setup.unprocessable(f"This class uses the cost model. Change class to revaluation revalues all "
                                           f"{count} assets in it on one date.")
             _needs_market(cls)
@@ -297,7 +298,7 @@ async def revalue_class(session, company_id, user_id, class_id: str, body: dict)
         rows = body.get("rows")
         if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) for r in rows):
             raise setup.unprocessable("Enter a fair value for each asset in the class.")
-        members = dict(await _class_assets(session, company_id, cls["id"]))
+        members = dict(await class_assets(session, company_id, cls["id"]))
         ids = [str(r.get("asset_id") or "") for r in rows]
         if len(set(ids)) != len(ids):
             raise setup.unprocessable("Each asset is revalued once.")
@@ -351,7 +352,7 @@ async def revalue_class(session, company_id, user_id, class_id: str, body: dict)
 async def revalued_numbers(session, company_id, class_id: str) -> list[str]:
     """The assets in use in a class that carry a revaluation."""
     out = []
-    for asset_id, asset in await _class_assets(session, company_id, class_id):
+    for asset_id, asset in await class_assets(session, company_id, class_id):
         if any(m.get("operation") == "revaluation"
                for m in projections.live(await asset_movements(session, company_id, asset_id))):
             out.append(asset["number"])

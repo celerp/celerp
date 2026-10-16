@@ -722,9 +722,10 @@ async def tick(session, company_id, today: date) -> str | None:
         if fa.get("run_mode") == "post" and not fa.get("auto_post_paused"):
             await _set(session, company_id, auto_post_paused=True)
         return "off"
-    from celerp_fixed_assets import remeasure
+    from celerp_fixed_assets import remeasure, upkeep
 
     await remeasure.tell_reviews(session, company_id, today)
+    await upkeep.tell_reminders(session, company_id, today)
     if fa.get("run_mode", "prepare") == "manual" or today.day < int(fa.get("run_day") or 1):
         return None
     month = month_index(today) - 1

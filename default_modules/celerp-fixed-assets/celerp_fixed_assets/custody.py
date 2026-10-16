@@ -122,7 +122,7 @@ async def report_problem(asset_id: str, text: str = Form(""), photo: UploadFile 
     if not text:
         raise setup.unprocessable("Describe the problem.")
 
-    async def record(state: dict) -> None:
+    async def record(state: dict, _meta: dict | None = None) -> None:
         if not held_by(state, user.id):
             raise HTTPException(status_code=404, detail="No such asset in your care.")
         problem = {"id": str(uuid.uuid4()), "text": text, "user_id": str(user.id),

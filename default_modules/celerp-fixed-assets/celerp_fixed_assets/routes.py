@@ -693,12 +693,12 @@ def setup_api_routes(app) -> None:
     from celerp.services.attachments import register_file_attached_event
     from celerp.services.module_journals import register_operation_types
 
-    from celerp_fixed_assets import checks, custody, files
+    from celerp_fixed_assets import checks, custody, files, upkeep
 
     register_events()
     register_operation_types("celerp-fixed-assets", OPERATION_TYPES, source_prefix="fa:",
                              document_corrections=SALE_OPERATIONS)
     register_file_attached_event(files.ENTITY_TYPE, files.ATTACHED)
     app.include_router(router)
-    for module in (files, custody, checks):
+    for module in (files, custody, checks, upkeep):
         app.include_router(module.router)

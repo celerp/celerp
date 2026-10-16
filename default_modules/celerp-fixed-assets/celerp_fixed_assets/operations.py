@@ -310,7 +310,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
             if maint:
                 await _emit(session, company_id, user_id, maint[0], "fa_maint", "fa.maint.recorded", {
                     "asset_id": context["asset"][0], "source": line["source"], "amount": line["amount"],
-                    "date": line["date"], "journal_id": je_id, "status": "active", "op_key": op_key})
+                    "bill_ref": line.get("document_ref"), "work": line["description"], "date": line["date"], "journal_id": je_id, "status": "active", "op_key": op_key})
             return ({"assets": [], "journals": [je_id]},
                     _effects(claims=[line["source"]], journals=[je_id], maint=maint))
         assets, journals, movements = [], [], []

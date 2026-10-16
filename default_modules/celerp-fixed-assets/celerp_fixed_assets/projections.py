@@ -51,7 +51,8 @@ def apply_fixed_asset_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state or {})
     if event_type in ("fa.class.created", "fa.movement.recorded", "fa.maint.recorded", "fa.op.recorded", "fa.review.recorded",
                       "fa.run.prepared", "fa.run.posted", "fa.recon.recorded", "fa.taxbook.recorded",
-                      "fa.taxyear.recorded", "fa.yearend.recorded", "fa.import.recorded", "fa.import.row"):
+                      "fa.taxyear.recorded", "fa.yearend.recorded", "fa.import.recorded", "fa.import.row",
+                      "fa.reminder.created"):
         return deepcopy(data)
     if event_type == "fa.correction.requested":
         return {**deepcopy(data), "state": "requested"}
@@ -105,7 +106,17 @@ def apply_fixed_asset_event(state: dict, event_type: str, data: dict) -> dict:
             new.update({k: new.get(k) or "0" for k in BUCKETS})
         new.update(movement_count=0, version=1)
         return new
-    if event_type in ("fa.class.updated", "fa.asset.updated"):
+    if event_type == "fa.reminder.changed":
+        current.update(deepcopy(data["changes"]))
+        for row in current.get("history") or []:
+            if row.get("id") == data.get("undid"):
+                row["undone"] = True
+        current["history"] = [deepcopy(data["history"]), *(current.get("history") or [])]
+        return current
+    if event_type == "fa.reminder.told":
+        current.setdefault("told", []).append(data["stage"])
+        return current
+    if event_type in ("fa.class.updated", "fa.asset.updated", "fa.maint.updated"):
         current.update(deepcopy(data["changes"]))
         current["version"] = int(current.get("version") or 0) + 1
         return current

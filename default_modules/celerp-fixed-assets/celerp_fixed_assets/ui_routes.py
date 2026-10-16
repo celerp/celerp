@@ -57,6 +57,8 @@ from ui.components.table import (EMPTY, breadcrumbs, bulk_toolbar, display_cell,
                                  fmt_money, pagination, searchable_select, _SEARCHABLE_THRESHOLD)
 from ui.config import get_token as _token
 from ui.i18n import refusal_text, t
+from ui.routes.csv_import import read_tabular_source
+from celerp.importers import tabular
 
 from celerp_fixed_assets.operations import DESCRIPTIVE_FIELDS, RESPONSIBLE
 
@@ -1618,6 +1620,62 @@ def _year_end_books(books: list[dict]) -> FT:
                  Tbody(*rows), cls="data-table", id="fa-ye-books")
 
 
+def _fair_value(value: str) -> str | None:
+    """A fair value as written in a file, with spaces and thousands commas allowed; None if
+    it is not an amount of zero or more."""
+    try:
+        amount = Decimal("".join(str(value).replace(",", "").split()))
+    except ArithmeticError:
+        return None
+    return str(amount) if amount.is_finite() and amount >= 0 else None
+
+
+async def _fair_value_lines(form) -> tuple[list[tuple[str, str, str]], str | None]:
+    """(asset number, fair value, basis) for each line of the uploaded file, by column order
+    under its header row, or the reason the file cannot be read."""
+    file_obj = form.get("csv_file")
+    if not hasattr(file_obj, "read"):
+        return [], t("import.err_select_file")
+    filename = getattr(file_obj, "filename", None) or "upload.csv"
+    try:
+        content = await tabular.read_upload_bytes(file_obj)
+    except tabular.TabularError as exc:
+        return [], t("import.err_read_file", file=filename, detail=str(exc))
+    rows, _, err = read_tabular_source(content, filename, header_row=0)
+    if err:
+        return [], str(err)
+    lines = []
+    for row in rows:
+        cells = [str(v if v is not None else "").strip() for v in row.values()] + ["", "", ""]
+        if cells[0]:
+            lines.append((cells[0], cells[1], cells[2]))
+    return lines, None
+
+
+def _revalue_files_card(class_id: str, report: dict | None) -> FT:
+    """The valuer's report to keep on the class's assets, and a file to fill the fair values from."""
+    base = f"/fixed-assets/classes/{quote(class_id, safe=':')}/revalue"
+    kept = ""
+    if report:
+        kept = Div(P(t("fixed_assets.valuer_report_attached", name=report["filename"], count=len(report["files"]))),
+                   Form(Input(type="hidden", name="files", value=json.dumps(report["files"])),
+                        Button(t("fixed_assets.valuer_report_remove"), type="submit", cls="btn btn--sm btn--secondary"),
+                        hx_post=f"{base}/report/remove", hx_swap="none", cls="inline-form"),
+                   cls="flash flash--success")
+    report_form = Form(_field(t("fixed_assets.valuer_report"),
+                              Input(type="file", name="file", cls="form-input", aria_label=t("fixed_assets.valuer_report")),
+                              t("fixed_assets.valuer_report_hint")),
+                       Button(t("fixed_assets.valuer_report_upload"), type="submit", cls="btn btn--secondary"),
+                       method="post", action=f"{base}/report", enctype="multipart/form-data")
+    values_form = Form(_field(t("fixed_assets.fair_values_file"),
+                              Input(type="file", name="csv_file", accept=".csv,.xlsx", cls="form-input",
+                                    aria_label=t("fixed_assets.fair_values_file")),
+                              t("fixed_assets.fair_values_file_hint")),
+                       Button(t("fixed_assets.fair_values_upload"), type="submit", cls="btn btn--secondary"),
+                       method="post", action=f"{base}/fair-values", enctype="multipart/form-data")
+    return Div(kept, report_form, Hr(), values_form, cls="settings-card", id="fa-revalue-files")
+
+
 def setup_ui_routes(app) -> None:
     """Register the fixed assets pages into the FastHTML app."""
 
@@ -1639,6 +1697,7 @@ def setup_ui_routes(app) -> None:
                                                                    "offset": (page - 1) * per_page})
             held = (await api.fixed_assets_get(token, "/attention"))["items"]
             due = (await api.fixed_assets_get(token, "/reviews"))["items"]
+            upkeep_due = (await api.fixed_assets_get(token, "/reminders"))["items"]
         except APIError as e:
             return await _refused(request, e, "fixed_assets.title")
         notice = _first_period_card(setup["first_period"]) if setup.get("first_period") else ""
@@ -1667,6 +1726,7 @@ def setup_ui_routes(app) -> None:
         return await _page(request, page_header(t("fixed_assets.title"), *actions),
                            P(t("fixed_assets.register_hint"), cls="settings-hint"), notice,
                            _attention_card(held) if held else "", _reviews_due_card(due) if due else "",
+                           due_soon_card(upkeep_due) if upkeep_due else "",
                            _filters(q, class_id, [c for c in classes if not c.get("archived")]), body,
                            title_key="fixed_assets.title")
 
@@ -1866,6 +1926,7 @@ def setup_ui_routes(app) -> None:
                          if asset.get("placements") else {})
             members = await _members(token)
             physical = await physical_cards(request, token, asset)
+            upkeep = await upkeep_card(token, asset, members, currency)
         except APIError as e:
             return await _refused(request, e, "fixed_assets.title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (asset["number"], None)])
@@ -1930,7 +1991,7 @@ def setup_ui_routes(app) -> None:
                            Div(_details_card(asset, members),
                                _figures_card(asset, _class_names(classes).get(asset.get("class_id")), currency),
                                cls="detail-grid"),
-                           "" if asset.get("transferred_from") else _sources_card(asset, currency), *physical, *extra,
+                           "" if asset.get("transferred_from") else _sources_card(asset, currency), *physical, upkeep, *extra,
                            Div(H2(t("fixed_assets.movements"), cls="section-title"),
                                _movements_table(movements, currency), cls="detail-card section-card"),
                            Div(H2(t("fixed_assets.undo"), cls="section-title"), undo,
@@ -2607,17 +2668,20 @@ def setup_ui_routes(app) -> None:
         return await _page(request, crumbs, title, tabs, form, *([undo] if undo else []),
                            title_key="fixed_assets.action.fix_account")
 
-    @app.get("/fixed-assets/classes/{class_id}/revalue")
-    async def revalue_class_page(request: Request, class_id: str):
-        """Every asset in use in a class, each with its fair value and basis, revalued on one date."""
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
+    async def _class_assets_in_use(token: str, class_id: str) -> list[dict]:
+        return sorted((a for a in (await api.fixed_assets_get(token, "/assets", {"class_id": class_id, "limit": 500}))[
+            "items"] if a.get("status") == "active"), key=lambda a: a["number"])
+
+    async def _revalue_class_view(request: Request, token: str, class_id: str, *, filled: dict | None = None,
+                                  notices: tuple = (), report: dict | None = None):
+        """Every asset in use in a class, each with its fair value and basis, revalued on one date.
+        ``filled`` holds the fair values read from a file, ``report`` the valuer's report just kept
+        on the assets, which becomes the shared basis."""
+        filled = filled or {}
         try:
             _, currency = await _context(token)
             classes = (await api.fixed_assets_get(token, "/classes", {"include_archived": "true"}))["items"]
-            assets = [a for a in (await api.fixed_assets_get(token, "/assets", {"class_id": class_id, "limit": 500}))[
-                "items"] if a.get("status") == "active"]
+            assets = await _class_assets_in_use(token, class_id)
         except APIError as e:
             return await _refused(request, e, "fixed_assets.revalue_class")
         cls = next((c for c in classes if c["id"] == class_id), None)
@@ -2631,10 +2695,11 @@ def setup_ui_routes(app) -> None:
                                title_key="fixed_assets.revalue_class")
         rows = [Tr(Td(A(a["number"], href=f"/fixed-assets/assets/{a['id']}")), Td(_text(a.get("name"))),
                    _money_td(a.get("nbv"), currency),
-                   Td(_input(f"fair_value:{a['id']}", type_="number", step="0.01", min="0",
-                             aria_label=t("fixed_assets.fair_value"))),
-                   Td(_input(f"basis:{a['id']}", aria_label=t("fixed_assets.basis"))))
-                for a in sorted(assets, key=lambda a: a["number"])]
+                   Td(_input(f"fair_value:{a['id']}", filled.get(a["id"], {}).get("fair_value"), type_="number",
+                             step="0.01", min="0", aria_label=t("fixed_assets.fair_value"))),
+                   Td(_input(f"basis:{a['id']}", filled.get(a["id"], {}).get("basis"),
+                             aria_label=t("fixed_assets.basis"))))
+                for a in assets]
         table = Table(Thead(Tr(Th(t("fixed_assets.number")), Th(t("fixed_assets.name")),
                                _money_th(t("fixed_assets.carrying_amount_now")), _money_th(t("fixed_assets.fair_value")),
                                Th(t("fixed_assets.basis")))), Tbody(*rows), cls="data-table")
@@ -2645,10 +2710,80 @@ def setup_ui_routes(app) -> None:
                         _field(t("fixed_assets.measurement_date"),
                                _input("date", date.today().isoformat(), type_="date", required=True),
                                t("fixed_assets.measurement_date_hint")),
-                        _field(t("fixed_assets.basis"), _input("basis"), t("fixed_assets.shared_basis_hint")),
+                        _field(t("fixed_assets.basis"),
+                               _input("basis", t("fixed_assets.valuer_report_basis", name=report["filename"])
+                                      if report else ""), t("fixed_assets.shared_basis_hint")),
                         Div(table, cls="table-scroll-wrap"))
         title = t(f"fixed_assets.revalue_class_title.{policy}", name=cls["name"])
-        return await _page(request, crumbs, page_header(title), form, title_key="fixed_assets.revalue_class")
+        return await _page(request, crumbs, page_header(title), *notices, _revalue_files_card(class_id, report),
+                           form, title_key="fixed_assets.revalue_class")
+
+    @app.get("/fixed-assets/classes/{class_id}/revalue")
+    async def revalue_class_page(request: Request, class_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        return await _revalue_class_view(request, token, class_id)
+
+    @app.post("/fixed-assets/classes/{class_id}/revalue/fair-values")
+    async def revalue_class_fair_values(request: Request, class_id: str):
+        """Fill the class table from a file: asset number, fair value, and optionally the basis."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            assets = await _class_assets_in_use(token, class_id)
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.revalue_class")
+        lines, error = await _fair_value_lines(await request.form())
+        if error:
+            return await _revalue_class_view(request, token, class_id, notices=(Div(error, cls="flash flash--error"),))
+        by_number = {a["number"]: a["id"] for a in assets}
+        filled, skipped = {}, []
+        for number, value, basis in lines:
+            amount = _fair_value(value)
+            if number not in by_number:
+                skipped.append(t("fixed_assets.fair_values_unknown", number=number))
+            elif amount is None:
+                skipped.append(t("fixed_assets.fair_values_bad", number=number, value=value))
+            else:
+                filled[by_number[number]] = {"fair_value": amount, "basis": basis}
+        notices = [Div(t("fixed_assets.fair_values_filled", count=len(filled)), cls="flash flash--success")]
+        if skipped:
+            notices.append(Div(P(t("fixed_assets.fair_values_skipped")), Ul(*[Li(s) for s in skipped]),
+                               cls="flash flash--warning"))
+        return await _revalue_class_view(request, token, class_id, filled=filled, notices=tuple(notices))
+
+    @app.post("/fixed-assets/classes/{class_id}/revalue/report")
+    async def revalue_class_report(request: Request, class_id: str):
+        """Keep the valuer's report on every asset in use in the class, and name it as the basis."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        file = (await request.form()).get("file")
+        if not hasattr(file, "read") or not file.filename:
+            return await _revalue_class_view(request, token, class_id, notices=(
+                Div(t("fixed_assets.valuer_report_choose"), cls="flash flash--error"),))
+        payload = {"file": (file.filename, await file.read(), file.content_type or "application/octet-stream")}
+        try:
+            report = await api.fixed_assets_form(token, "POST", f"/classes/{quote(class_id, safe=':')}/valuer-report",
+                                                 {}, files=payload)
+        except APIError as e:
+            return await _revalue_class_view(request, token, class_id,
+                                             notices=(Div(_error_text(e), cls="flash flash--error"),))
+        return await _revalue_class_view(request, token, class_id, report=report)
+
+    @app.post("/fixed-assets/classes/{class_id}/revalue/report/remove")
+    async def revalue_class_report_remove(request: Request, class_id: str):
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        try:
+            copies = json.loads(str((await request.form()).get("files") or "[]"))
+        except ValueError:
+            copies = []
+        return await _hx_write(token, "POST", f"/classes/{quote(class_id, safe=':')}/valuer-report/remove",
+                               {"files": copies}, f"/fixed-assets/classes/{class_id}/revalue")
 
     @app.post("/fixed-assets/dispose/selected")
     async def dispose_selected(request: Request):
@@ -3081,7 +3216,9 @@ def setup_ui_routes(app) -> None:
     from celerp_fixed_assets.ui_physical import physical_cards, setup_physical_routes
     from celerp_fixed_assets.ui_imports import setup_import_routes
     from celerp_fixed_assets.ui_reports import setup_report_routes
+    from celerp_fixed_assets.ui_upkeep import due_soon_card, setup_upkeep_routes, upkeep_card
 
+    setup_upkeep_routes(app)
     setup_physical_routes(app)
     setup_report_routes(app)
     setup_import_routes(app)

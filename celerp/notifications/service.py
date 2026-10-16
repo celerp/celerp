@@ -233,12 +233,13 @@ async def notify_once(
     title: str,
     body: str,
     *,
+    user_id: uuid.UUID | None = None,
     action_url: str | None = None,
     i18n: dict | None = None,
 ) -> bool:
-    """A high-priority notice told to the company once: never again with the same title and
-    body, read or not. ``action_url`` and ``i18n`` as for ``create``. Caller commits. Returns
-    whether it was created."""
+    """A high-priority notice told once to the company, or to the member ``user_id``: never
+    again to the same addressee with the same title and body, read or not. ``action_url``
+    and ``i18n`` as for ``create``. Caller commits. Returns whether it was created."""
     already = (await session.execute(
         select(Notification.id)
         .where(
@@ -246,12 +247,14 @@ async def notify_once(
             Notification.category == category,
             Notification.title == title,
             Notification.body == body,
+            Notification.user_id == user_id if user_id is not None else Notification.user_id.is_(None),
         )
         .limit(1)
     )).first()
     if already:
         return False
-    await create(session, company_id, category, title, body, action_url=action_url, priority="high", i18n=i18n)
+    await create(session, company_id, category, title, body, user_id=user_id, action_url=action_url,
+                 priority="high", i18n=i18n)
     return True
 
 

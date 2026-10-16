@@ -329,4 +329,5 @@ async def test_custodian_without_manage_cannot_add_reminders(fa):
     car = await _contributed(fa)
     r = await _ui(fa, "POST", f"/fixed-assets/assets/{car}/reminders", headers,
                   data={"kind": "warranty", "detail": "Dealer", "due": _on(5)})
-    assert "HX-Redirect" not in r.headers
+    assert "HX-Redirect" not in r.headers and "error" in r.headers.get("HX-Trigger", "")
+    assert (await _upkeep(fa, car))["reminders"] == []
