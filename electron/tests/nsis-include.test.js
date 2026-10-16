@@ -42,9 +42,13 @@ test("the in-app updater is never prompted", function test_nsis_include_skips_up
 // Windows-allocated string with a fixed `&w${NSIS_MAX_STRLEN}` struct field copies
 // 16 KB from a buffer sized for the actual text, which crashes setup whenever that
 // buffer sits near the end of a heap page (patches/app-builder-lib@25.1.8.patch).
-function nsisTemplates() {
+function templatesDir() {
   const builder = path.dirname(require.resolve("electron-builder/package.json"));
   const lib = path.dirname(require.resolve("app-builder-lib/package.json", { paths: [builder] }));
+  return path.join(lib, "templates", "nsis");
+}
+
+function nsisTemplates() {
   const files = [];
   (function walk(dir) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -52,7 +56,7 @@ function nsisTemplates() {
       if (entry.isDirectory()) walk(full);
       else if (entry.name.endsWith(".nsh") || entry.name.endsWith(".nsi")) files.push(full);
     }
-  })(path.join(lib, "templates", "nsis"));
+  })(templatesDir());
   return files;
 }
 
@@ -63,4 +67,28 @@ test("no installer script reads a Windows-allocated string with a fixed 16 KB co
     const unsafe = /System::Call\s+['"]\*\$\w+\(&[wt]\$\{NSIS_MAX_STRLEN\}/;
     const offenders = files.filter((f) => unsafe.test(fs.readFileSync(f, "utf8")));
     expect(offenders).toEqual([]);
+  });
+
+// While setup copies, unpacks and installs the app files, an interactive
+// install names the stage on the line above the progress bar, so a long copy
+// does not look stalled (patches/app-builder-lib@25.1.8.patch). Each stage is
+// announced just before the step it names; nothing else about the steps changes.
+test("an interactive install names each stage before it starts",
+  function test_nsis_install_stages() {
+    const read = (rel) => fs.readFileSync(path.join(templatesDir(), rel), "utf8");
+    const extract = read("include/extractAppPackage.nsh");
+    const section = read("installSection.nsh");
+    const stage = extract.split("!macro installStage TEXT")[1].split("!macroend")[0];
+    expect(stage.trim().split(/\s*\n\s*/)).toEqual([
+      "${IfNot} ${Silent}", "SetDetailsPrint textonly", 'DetailPrint "${TEXT}"', "SetDetailsPrint none", "${endif}",
+    ]);
+    const before = (text, label, step) => {
+      const at = text.indexOf(`!insertmacro installStage "${label}"`);
+      expect(at).toBeGreaterThan(-1);
+      expect(text.slice(at).split("\n")[1].trim().startsWith(step)).toBe(true);
+    };
+    before(extract, "Preparing application files...", "!insertmacro compute_files_for_current_arch");
+    before(extract, "Extracting application files...", 'Nsis7z::Extract "${FILE}"');
+    before(extract, "Installing application files...", "CopyFiles /SILENT");
+    before(section, "Finishing installation...", "!insertmacro registryAddInstallInfo");
   });

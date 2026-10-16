@@ -28,3 +28,58 @@ index 3de631bf0ce5095d03062ba98a68c5249904911e..056ec058124617c39743a3341e4bc8c2
        StrCpy $INSTDIR "$0\${APP_FILENAME}"
      ${endif}
  
+diff --git a/templates/nsis/include/extractAppPackage.nsh b/templates/nsis/include/extractAppPackage.nsh
+index f5470bf..df1f132 100644
+--- a/templates/nsis/include/extractAppPackage.nsh
++++ b/templates/nsis/include/extractAppPackage.nsh
+@@ -1,3 +1,14 @@
++# Shows which stage the install is in, on the line above the progress bar.
++# installSection.nsh turns detail output off for interactive installs, so it is
++# turned on for this one line of text and off again. Silent installs show nothing.
++!macro installStage TEXT
++  ${IfNot} ${Silent}
++    SetDetailsPrint textonly
++    DetailPrint "${TEXT}"
++    SetDetailsPrint none
++  ${endif}
++!macroend
++
+ !macro extractEmbeddedAppPackage
+   !ifdef COMPRESS
+     SetCompress off
+@@ -6,6 +17,7 @@
+   Var /GLOBAL packageArch
+   
+   !insertmacro identify_package
++  !insertmacro installStage "Preparing application files..."
+   !insertmacro compute_files_for_current_arch
+ 
+   !ifdef COMPRESS
+@@ -94,6 +106,7 @@
+   CreateDirectory "$PLUGINSDIR\7z-out"
+   ClearErrors
+   SetOutPath "$PLUGINSDIR\7z-out"
++  !insertmacro installStage "Extracting application files..."
+   Nsis7z::Extract "${FILE}"
+   Pop $R0
+   SetOutPath $R0
+@@ -105,6 +118,7 @@
+     IntOp $R1 $R1 + 1
+ 
+     # Attempt to copy files in atomic way
++    !insertmacro installStage "Installing application files..."
+     CopyFiles /SILENT "$PLUGINSDIR\7z-out\*" $OUTDIR
+     IfErrors 0 DoneExtract7za
+ 
+diff --git a/templates/nsis/installSection.nsh b/templates/nsis/installSection.nsh
+index 053772f..223a5c6 100644
+--- a/templates/nsis/installSection.nsh
++++ b/templates/nsis/installSection.nsh
+@@ -64,6 +64,7 @@ SetOutPath $INSTDIR
+ !endif
+ 
+ !insertmacro installApplicationFiles
++!insertmacro installStage "Finishing installation..."
+ !insertmacro registryAddInstallInfo
+ !insertmacro addStartMenuLink $keepShortcuts
+ !insertmacro addDesktopLink $keepShortcuts
