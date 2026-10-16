@@ -5807,5 +5807,12 @@
   "company_backup.saved_put_back_hint": "To put a saved copy back, type {company} next to it. The version it replaces is saved here in turn.",
   "company_backup.saved_delete_confirm": "Delete this saved copy? This cannot be undone.",
   "company_backup.saved_delete_reason": "Deleting a saved copy cannot be undone: the file itself is removed from this computer.",
-  "company_backup.saved_deleted": "Saved copy deleted."
+  "company_backup.saved_deleted": "Saved copy deleted.",
+  "company_backup.enable_and_open": "Enable and open",
+  "company_backup.enable_open_hint": "Celerp turns these modules on, restarts if needed, then opens this company copy.",
+  "company_backup.restarting_open": "Celerp is restarting to load the modules. The company opens when it is ready.",
+  "company_backup.decline_modules": "Don't enable them",
+  "company_backup.declined": "Nothing was opened. This company copy needs these modules: {labels}. Choose the file again when you want to enable them.",
+  "company_backup.declined_unnamed": "Nothing was opened. Choose the file again to see the modules this company copy needs.",
+  "company_backup.open_held": "The modules are on, but this company copy was not opened: what opening it does has changed since you chose Enable and open. Check it below, then open it."
 }

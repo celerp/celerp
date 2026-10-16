@@ -4041,7 +4041,7 @@
   "company_backup.err_too_large": "Diese Unternehmenskopie ist zu groß, um hier wiederhergestellt zu werden. Es wurde nichts wiederhergestellt. Wenn Sie Hilfe beim Umzug dieses Unternehmens brauchen, fragen Sie in GitHub Issues oder Discussions nach.",
   "company_backup.err_handoff_unchecked": "Celerp konnte die Cloud nicht erreichen, um diese Unternehmenskopie zu prüfen. Es wurde nichts wiederhergestellt. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.",
   "company_backup.err_handoff_mismatch": "Diese Datei passt nicht zu der Unternehmenskopie, die ihr Link nennt. Es wurde nichts wiederhergestellt. Öffnen Sie die Unternehmenskopie erneut über ihren Link.",
-  "company_backup.err_too_large_upload":"Diese Datei ist größer als 2 GB, die Höchstgröße für das Hochladen einer Unternehmenskopie. Es wurde nichts wiederhergestellt. Prüfen Sie, ob Sie die richtige Datei gewählt haben; wenn ja, fragen Sie in GitHub Issues oder Discussions nach.",
+  "company_backup.err_too_large_upload": "Diese Datei ist größer als 2 GB, die Höchstgröße für das Hochladen einer Unternehmenskopie. Es wurde nichts wiederhergestellt. Prüfen Sie, ob Sie die richtige Datei gewählt haben; wenn ja, fragen Sie in GitHub Issues oder Discussions nach.",
   "company_backup.err_too_large_to_back_up": "Dieses Unternehmen hat mehr Daten, als eine Unternehmenskopie aufnehmen kann. Es wurde keine Kopie erstellt. Verwenden Sie stattdessen die Systemwiederherstellung unter Globale Konfiguration, Sicherung.",
   "company_backup.err_row_too_large": "Ein Datensatz in diesem Unternehmen ist für eine Unternehmenskopie zu groß. Es wurde keine Kopie erstellt. Verwenden Sie stattdessen die Systemwiederherstellung unter Globale Konfiguration, Sicherung.",
   "company_backup.err_undeclared": "Das Modul {label} unterstützt noch keine Unternehmenskopien. Es wurde keine Kopie erstellt. Schalten Sie das Modul auf der Seite Module aus oder bitten Sie den Entwickler um eine aktualisierte Version.",
@@ -5807,5 +5807,12 @@
   "company_backup.saved_put_back_hint": "Um eine gespeicherte Kopie zurückzuholen, geben Sie daneben {company} ein. Die Version, die sie ersetzt, wird hier ebenfalls gespeichert.",
   "company_backup.saved_delete_confirm": "Diese gespeicherte Kopie löschen? Das kann nicht rückgängig gemacht werden.",
   "company_backup.saved_delete_reason": "Das Löschen einer gespeicherten Kopie kann nicht rückgängig gemacht werden: Die Datei selbst wird von diesem Computer entfernt.",
-  "company_backup.saved_deleted": "Gespeicherte Kopie gelöscht."
+  "company_backup.saved_deleted": "Gespeicherte Kopie gelöscht.",
+  "company_backup.enable_and_open": "Aktivieren und öffnen",
+  "company_backup.enable_open_hint": "Celerp schaltet diese Module ein, startet bei Bedarf neu und öffnet dann diese Unternehmenskopie.",
+  "company_backup.restarting_open": "Celerp startet neu, um die Module zu laden. Das Unternehmen wird geöffnet, sobald es bereit ist.",
+  "company_backup.decline_modules": "Nicht aktivieren",
+  "company_backup.declined": "Es wurde nichts geöffnet. Diese Unternehmenskopie benötigt diese Module: {labels}. Wählen Sie die Datei erneut, wenn Sie sie aktivieren möchten.",
+  "company_backup.declined_unnamed": "Es wurde nichts geöffnet. Wählen Sie die Datei erneut, um die Module zu sehen, die diese Unternehmenskopie benötigt.",
+  "company_backup.open_held": "Die Module sind eingeschaltet, aber diese Unternehmenskopie wurde nicht geöffnet: Was das Öffnen bewirkt, hat sich geändert, seit Sie Aktivieren und öffnen gewählt haben. Prüfen Sie es unten und öffnen Sie sie dann."
 }

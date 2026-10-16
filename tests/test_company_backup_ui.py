@@ -709,7 +709,7 @@ async def test_module_step_offers_enable_and_open_with_the_name(routed_ui, real_
     page = _page(await _upload_and_preview(ui, base, data))
     assert "Enable and open" in page
     assert "Acme Widgets" in page and "Labels" in page
-    assert re.search(r'name="company_name"[^>]*value="Alpha Trading"', page)
+    assert re.search(r'name="company_name"[^>]*value="Alpha Trading \(Restored\)"', page)
     fingerprint = _hidden(page)["plan_fingerprint"]
     assert fingerprint
 

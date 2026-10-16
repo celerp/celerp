@@ -4010,11 +4010,19 @@ async def company_backup_staged(token: str | None, upload_token: str, mode: str 
 
 
 async def company_backup_prepare(token: str | None, upload_token: str, consent: list[str],
-                                 setup_code: str | None = None) -> dict:
-    """Turn on the modules an uploaded backup needs. Returns whether Celerp is restarting to load them."""
+                                 setup_code: str | None = None, *, mode: str | None = None,
+                                 open_with: dict | None = None) -> dict:
+    """Turn on the modules an uploaded backup needs; with ``open_with`` (the preview's
+    plan_fingerprint and the company_name chosen) the backup opens once they run. Returns
+    whether Celerp is restarting to load them."""
+    body: dict = {"upload_token": upload_token, "consent": consent}
+    if token and mode:
+        body["mode"] = mode
+    if token and open_with is not None:
+        body["open"] = open_with
     async with _local_error_mapping():
         async with _local_client(token, headers=None if token else _setup_code_headers(setup_code)) as c:
-            r = await c.post(_backup_path(token, "prepare"), json={"upload_token": upload_token, "consent": consent})
+            r = await c.post(_backup_path(token, "prepare"), json=body)
     return _raise(r).json()
 
 

@@ -330,13 +330,36 @@ async def _module_section(mode: WizardMode, preview: dict) -> list:
                          " " + t("company_backup.module_consent", name=m.get("label") or m["name"]),
                          cls="form-check")
                    for m in modules if m.get("status") == _ENABLE and not m.get("first_party")]
+        # A first run creates its owner account with the opening, and a password is never
+        # kept across a restart: there the step turns the modules on and shows the copy again.
+        opens = not mode.bootstrap
         out.append(Form(
             *consent,
-            P(t("company_backup.prepare_hint"), cls="form-hint"),
+            *(_open_fields(preview) if opens else []),
+            P(t("company_backup.enable_open_hint" if opens else "company_backup.prepare_hint"), cls="form-hint"),
             code,
-            Button(t("company_backup.prepare_modules"), type="submit", cls="btn btn--primary btn--full"),
+            Button(t("company_backup.enable_and_open" if opens else "company_backup.prepare_modules"),
+                   type="submit", cls="btn btn--primary btn--full"),
             method="post", action=f"{mode.base}/prepare", cls="auth-form"))
+        out.append(Form(Button(t("company_backup.decline_modules"), type="submit", cls="btn btn--secondary btn--full"),
+                        method="post", action=f"{mode.base}/decline", cls="auth-alt-action"))
     return out
+
+
+def _open_fields(preview: dict, values: dict | None = None) -> list:
+    """What opening the copy confirms: the preview as shown and, for a new company, its name."""
+    name = (values or {}).get("company_name") or preview.get("destination_name") or preview.get("company_name") or ""
+    return [Input(type="hidden", name="plan_fingerprint", value=str(preview.get("plan_fingerprint") or "")),
+            Div(Label(t("company_backup.destination_name"), For="company_name", cls="form-label"),
+                Input(type="text", id="company_name", name="company_name", value=name, required=True,
+                      cls="form-input"),
+                cls="form-group") if (preview.get("action") or _CREATE) == _CREATE else ""]
+
+
+def _declines(preview: dict) -> bool:
+    """The module step offers to turn modules on, so declining it is the way out."""
+    statuses = {m.get("status") for m in preview.get("modules") or [] if m.get("status") != "ready"}
+    return not preview.get("modules_ready", True) and not statuses & {_MISSING, _INCOMPATIBLE}
 
 
 def _cancel(mode: WizardMode):
@@ -361,13 +384,8 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
         rows.append((t("migration.prepared_by"), preview["prepared_by"]))
     if preview.get("modules_ready", True):
         target = "reactivate" if action == _REACTIVATE else "restore"
-        name = values.get("company_name") or preview.get("destination_name") or preview.get("company_name") or ""
         step = [Form(
-            Input(type="hidden", name="plan_fingerprint", value=str(preview.get("plan_fingerprint") or "")),
-            Div(Label(t("company_backup.destination_name"), For="company_name", cls="form-label"),
-                Input(type="text", id="company_name", name="company_name", value=name, required=True,
-                      cls="form-input"),
-                cls="form-group") if action == _CREATE else "",
+            *_open_fields(preview, values),
             *(account_fields(values) if mode.bootstrap else []),
             *_start_company_fields(mode, values),
             setup_code_field() if await setup_code_required(mode) else "",
@@ -387,7 +405,7 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
         P(t("company_backup.nothing_written"), cls="form-hint"),
         *(_replace_section(mode, preview, replace) if replace else []),
         *step,
-        _cancel(mode),
+        "" if mode is not START_COMPANY and _declines(preview) else _cancel(mode),
         status_code=status_code,
         title=_TITLE,
     )
@@ -668,9 +686,29 @@ async def _staged(request: Request, mode: WizardMode):
         if e.status >= 500:
             return await _restarting_page(request, mode, _message(e), status_code=_status(e))
         return _upload_again(request, mode, _message(e))
-    page = _html(await _preview_page(request, mode, preview))
+    if preview.get("open_now") is not None and not mode.bootstrap:
+        return await _open_now(request, mode, upload_token, preview)
+    error = t("company_backup.open_held") if preview.get("open_held") else None
+    page = _html(await _preview_page(request, mode, preview, error=error))
     page.headers["X-Celerp-Staged"] = "1"
     return page
+
+
+async def _open_now(request: Request, mode: WizardMode, upload_token: str, preview: dict):
+    """Open the copy the owner chose Enable and open for, now that its modules run, as the
+    preview they confirmed showed it."""
+    fingerprint = str(preview.get("plan_fingerprint") or "")
+    form = {"plan_fingerprint": fingerprint, "company_name": preview["open_now"].get("company_name") or ""}
+    target = "reactivate" if preview.get("action") == _REACTIVATE else "restore"
+    try:
+        if target == "reactivate":
+            done = await api.company_backup_reactivate(get_token(request), upload_token, mode.key, fingerprint)
+        else:
+            done = await api.company_backup_restore(get_token(request), upload_token, mode.key, fingerprint,
+                                                    company_name=form["company_name"] or None)
+    except APIError as e:
+        return await _refused(request, mode, upload_token, e, target, form, {"company_name": form["company_name"]})
+    return _signed_in(request, mode, done)
 
 
 async def _restarting_page(request: Request, mode: WizardMode, message: str | None = None, status_code: int = 200):
@@ -704,7 +742,8 @@ async def _restarting_page(request: Request, mode: WizardMode, message: str | No
 async def _restarting(request: Request, mode: WizardMode):
     if (denied := await gate(request, mode)) is not None:
         return denied
-    return await _restarting_page(request, mode)
+    opens = request.query_params.get("open") == "1"
+    return await _restarting_page(request, mode, t("company_backup.restarting_open") if opens else None)
 
 
 async def _prepare(request: Request, mode: WizardMode):
@@ -716,16 +755,20 @@ async def _prepare(request: Request, mode: WizardMode):
     if not upload_token:
         return _upload_again(request, mode, t("company_backup.upload_expired"))
     form = await request.form()
+    opens = form.get("open") == "1" and not mode.bootstrap
+    open_with = {"plan_fingerprint": str(form.get("plan_fingerprint", "")),
+                 "company_name": str(form.get("company_name", "")).strip()} if opens else None
     try:
         done = await api.company_backup_prepare(api_token(request, mode), upload_token,
                                                 [str(v) for v in form.getlist("consent")],
-                                                setup_code=_setup_code(form))
+                                                setup_code=_setup_code(form), mode=_mode_key(mode),
+                                                open_with=open_with)
     except APIError as e:
-        return await _again(request, mode, upload_token, error=_message(e), status_code=_status(e))
+        return await _again(request, mode, upload_token, values=open_with, error=_message(e), status_code=_status(e))
     if done.get("restart") and not done.get("restarting"):
         return await _again(request, mode, upload_token, error=t("company_backup.restart_needed"))
-    return RedirectResponse(f"{mode.base}/restarting" if done.get("restart") else f"{mode.base}/staged",
-                            status_code=303)
+    restarting = f"{mode.base}/restarting" + ("?open=1" if opens else "")
+    return RedirectResponse(restarting if done.get("restart") else f"{mode.base}/staged", status_code=303)
 
 
 async def _import_module(request: Request, mode: WizardMode):
@@ -763,6 +806,29 @@ async def _discard(request: Request, mode: WizardMode):
     resp = RedirectResponse(mode.base, status_code=303)
     _clear_upload_cookie(resp, mode, request)
     return resp
+
+
+async def _decline(request: Request, mode: WizardMode):
+    """Decline the modules the staged copy needs: the upload is deleted, nothing is opened,
+    and the page names the modules the copy needs."""
+    if (denied := await gate(request, mode)) is not None:
+        return denied
+    upload_token = request.cookies.get(UPLOAD_COOKIE)
+    labels = ""
+    if upload_token:
+        token = api_token(request, mode)
+        try:
+            preview = await api.company_backup_staged(token, upload_token, _mode_key(mode))
+            labels = ", ".join(_module_name(m) for m in preview.get("modules") or [] if m.get("status") != "ready")
+        except APIError:
+            pass
+        try:
+            await api.company_backup_discard(token, upload_token)
+        except APIError:
+            # Left for the expiry sweep; nothing was opened either way.
+            pass
+    return _upload_again(request, mode, t("company_backup.declined", labels=labels) if labels
+                         else t("company_backup.declined_unnamed"))
 
 
 def _unconfirmed(e: APIError) -> bool:
@@ -1374,7 +1440,7 @@ def company_backup_routes(app) -> None:
     for mode in (SETTINGS, NEW_COMPANY, BOOTSTRAP):
         for method, suffix, handler in (("get", "/staged", _staged), ("post", "/prepare", _prepare),
                                         ("get", "/restarting", _restarting), ("post", "/import-module", _import_module),
-                                        ("post", "/discard", _discard)):
+                                        ("post", "/discard", _discard), ("post", "/decline", _decline)):
             getattr(app, method)(f"{mode.base}{suffix}")(bind(handler, mode, "company_backup"))
     for mode in (SETTINGS, NEW_COMPANY):
         app.post(f"{mode.base}/reactivate")(bind(_reactivate, mode, "company_backup"))

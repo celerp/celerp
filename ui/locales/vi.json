@@ -4041,7 +4041,7 @@
   "company_backup.err_too_large": "Bản sao công ty này quá lớn để khôi phục tại đây. Không có gì được khôi phục. Để được hỗ trợ chuyển công ty này, hãy hỏi trên GitHub Issues hoặc Discussions.",
   "company_backup.err_handoff_unchecked": "Celerp không thể kết nối với đám mây để kiểm tra bản sao công ty này. Không có gì được khôi phục. Hãy kiểm tra kết nối internet và thử lại.",
   "company_backup.err_handoff_mismatch": "Tệp này không khớp với bản sao công ty mà liên kết của nó chỉ đến. Không có gì được khôi phục. Hãy mở lại bản sao công ty từ liên kết của nó.",
-  "company_backup.err_too_large_upload":"Tệp này lớn hơn 2 GB, mức tối đa cho một bản sao công ty được tải lên. Không có gì được khôi phục. Hãy kiểm tra bạn đã chọn đúng tệp; nếu đúng, hãy hỏi trên GitHub Issues hoặc Discussions.",
+  "company_backup.err_too_large_upload": "Tệp này lớn hơn 2 GB, mức tối đa cho một bản sao công ty được tải lên. Không có gì được khôi phục. Hãy kiểm tra bạn đã chọn đúng tệp; nếu đúng, hãy hỏi trên GitHub Issues hoặc Discussions.",
   "company_backup.err_too_large_to_back_up": "Công ty này có nhiều dữ liệu hơn mức một bản sao công ty có thể chứa. Không có bản sao nào được tạo. Hãy dùng Khôi phục hệ thống trong Cấu hình chung, Sao lưu.",
   "company_backup.err_row_too_large": "Một bản ghi trong công ty này quá lớn đối với bản sao công ty. Không có bản sao nào được tạo. Hãy dùng Khôi phục hệ thống trong Cấu hình chung, Sao lưu.",
   "company_backup.err_undeclared": "Mô-đun {label} chưa hỗ trợ bản sao công ty. Không có bản sao nào được tạo. Hãy tắt mô-đun trên trang Mô-đun, hoặc yêu cầu nhà phát triển cung cấp phiên bản cập nhật.",
@@ -5807,5 +5807,12 @@
   "company_backup.saved_put_back_hint": "Để khôi phục một bản sao đã lưu, hãy nhập {company} bên cạnh nó. Phiên bản bị thay thế cũng được lưu tại đây.",
   "company_backup.saved_delete_confirm": "Xóa bản sao đã lưu này? Không thể hoàn tác.",
   "company_backup.saved_delete_reason": "Xóa bản sao đã lưu không thể hoàn tác: chính tệp sẽ bị xóa khỏi máy tính này.",
-  "company_backup.saved_deleted": "Đã xóa bản sao đã lưu."
+  "company_backup.saved_deleted": "Đã xóa bản sao đã lưu.",
+  "company_backup.enable_and_open": "Bật và mở",
+  "company_backup.enable_open_hint": "Celerp bật các mô-đun này, khởi động lại nếu cần, rồi mở bản sao công ty này.",
+  "company_backup.restarting_open": "Celerp đang khởi động lại để tải các mô-đun. Công ty sẽ mở khi sẵn sàng.",
+  "company_backup.decline_modules": "Không bật",
+  "company_backup.declined": "Không có gì được mở. Bản sao công ty này cần các mô-đun sau: {labels}. Chọn lại tệp khi bạn muốn bật chúng.",
+  "company_backup.declined_unnamed": "Không có gì được mở. Chọn lại tệp để xem các mô-đun mà bản sao công ty này cần.",
+  "company_backup.open_held": "Các mô-đun đã bật, nhưng bản sao công ty này chưa được mở: việc mở nó đã thay đổi kể từ khi bạn chọn Bật và mở. Hãy kiểm tra bên dưới, rồi mở."
 }

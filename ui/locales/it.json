@@ -4041,7 +4041,7 @@
   "company_backup.err_too_large": "Questa copia aziendale è troppo grande per essere ripristinata qui. Non è stato ripristinato nulla. Per un aiuto a trasferire questa azienda, chiedi su GitHub Issues o Discussions.",
   "company_backup.err_handoff_unchecked": "Celerp non è riuscito a raggiungere il cloud per verificare questa copia aziendale. Non è stato ripristinato nulla. Controlla la connessione a internet e riprova.",
   "company_backup.err_handoff_mismatch": "Questo file non corrisponde alla copia aziendale indicata dal suo link. Non è stato ripristinato nulla. Apri di nuovo la copia aziendale dal suo link.",
-  "company_backup.err_too_large_upload":"Questo file supera i 2 GB, il massimo per caricare una copia aziendale. Non è stato ripristinato nulla. Verifica di aver scelto il file giusto; se è così, chiedi su GitHub Issues o Discussions.",
+  "company_backup.err_too_large_upload": "Questo file supera i 2 GB, il massimo per caricare una copia aziendale. Non è stato ripristinato nulla. Verifica di aver scelto il file giusto; se è così, chiedi su GitHub Issues o Discussions.",
   "company_backup.err_too_large_to_back_up": "Questa azienda ha più dati di quanti una copia aziendale possa contenere. Non è stata creata alcuna copia. Usa invece Ripristino del sistema in Configurazione globale, Backup.",
   "company_backup.err_row_too_large": "Un record di questa azienda è troppo grande per una copia aziendale. Non è stata creata alcuna copia. Usa invece Ripristino del sistema in Configurazione globale, Backup.",
   "company_backup.err_undeclared": "Il modulo {label} non supporta ancora le copie aziendali. Non è stata creata alcuna copia. Disattiva il modulo nella pagina Moduli, oppure chiedi allo sviluppatore una versione aggiornata.",
@@ -5807,5 +5807,12 @@
   "company_backup.saved_put_back_hint": "Per ripristinare una copia salvata, digita {company} accanto. La versione che sostituisce viene a sua volta salvata qui.",
   "company_backup.saved_delete_confirm": "Eliminare questa copia salvata? L'operazione non si può annullare.",
   "company_backup.saved_delete_reason": "L'eliminazione di una copia salvata non si può annullare: il file stesso viene rimosso da questo computer.",
-  "company_backup.saved_deleted": "Copia salvata eliminata."
+  "company_backup.saved_deleted": "Copia salvata eliminata.",
+  "company_backup.enable_and_open": "Attiva e apri",
+  "company_backup.enable_open_hint": "Celerp attiva questi moduli, si riavvia se serve, poi apre questa copia dell'azienda.",
+  "company_backup.restarting_open": "Celerp si sta riavviando per caricare i moduli. L'azienda si apre quando è pronta.",
+  "company_backup.decline_modules": "Non attivarli",
+  "company_backup.declined": "Non è stato aperto nulla. Questa copia dell'azienda richiede questi moduli: {labels}. Scegli di nuovo il file quando vuoi attivarli.",
+  "company_backup.declined_unnamed": "Non è stato aperto nulla. Scegli di nuovo il file per vedere i moduli richiesti da questa copia dell'azienda.",
+  "company_backup.open_held": "I moduli sono attivi, ma questa copia dell'azienda non è stata aperta: ciò che fa aprirla è cambiato da quando hai scelto Attiva e apri. Controlla qui sotto, poi aprila."
 }

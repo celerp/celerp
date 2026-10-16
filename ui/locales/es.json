@@ -4041,7 +4041,7 @@
   "company_backup.err_too_large": "Esta copia de empresa es demasiado grande para restaurarla aquí. No se restauró nada. Si necesita ayuda para trasladar esta empresa, pregunte en GitHub Issues o Discussions.",
   "company_backup.err_handoff_unchecked": "Celerp no pudo conectar con la nube para comprobar esta copia de empresa. No se restauró nada. Compruebe su conexión a internet y vuelva a intentarlo.",
   "company_backup.err_handoff_mismatch": "Este archivo no coincide con la copia de empresa que indica su enlace. No se restauró nada. Vuelva a abrir la copia de empresa desde su enlace.",
-  "company_backup.err_too_large_upload":"Este archivo supera los 2 GB, el máximo para subir una copia de empresa. No se restauró nada. Compruebe que eligió el archivo correcto; si es así, pregunte en GitHub Issues o Discussions.",
+  "company_backup.err_too_large_upload": "Este archivo supera los 2 GB, el máximo para subir una copia de empresa. No se restauró nada. Compruebe que eligió el archivo correcto; si es así, pregunte en GitHub Issues o Discussions.",
   "company_backup.err_too_large_to_back_up": "Esta empresa tiene más datos de los que caben en una copia de empresa. No se creó ninguna copia. Use Recuperación del sistema en Configuración global, Copia de seguridad en su lugar.",
   "company_backup.err_row_too_large": "Un registro de esta empresa es demasiado grande para una copia de empresa. No se creó ninguna copia. Use Recuperación del sistema en Configuración global, Copia de seguridad en su lugar.",
   "company_backup.err_undeclared": "El módulo {label} todavía no admite copias de empresa. No se creó ninguna copia. Desactive el módulo en la página Módulos o pida una versión actualizada a su desarrollador.",
@@ -5807,5 +5807,12 @@
   "company_backup.saved_put_back_hint": "Para devolver una copia guardada, escriba {company} junto a ella. La versión que reemplaza también se guarda aquí.",
   "company_backup.saved_delete_confirm": "¿Eliminar esta copia guardada? No se puede deshacer.",
   "company_backup.saved_delete_reason": "Eliminar una copia guardada no se puede deshacer: el propio archivo se borra de este equipo.",
-  "company_backup.saved_deleted": "Copia guardada eliminada."
+  "company_backup.saved_deleted": "Copia guardada eliminada.",
+  "company_backup.enable_and_open": "Activar y abrir",
+  "company_backup.enable_open_hint": "Celerp activa estos módulos, se reinicia si hace falta y luego abre esta copia de la empresa.",
+  "company_backup.restarting_open": "Celerp se está reiniciando para cargar los módulos. La empresa se abre cuando esté lista.",
+  "company_backup.decline_modules": "No activarlos",
+  "company_backup.declined": "No se abrió nada. Esta copia de la empresa necesita estos módulos: {labels}. Vuelva a elegir el archivo cuando quiera activarlos.",
+  "company_backup.declined_unnamed": "No se abrió nada. Vuelva a elegir el archivo para ver los módulos que necesita esta copia de la empresa.",
+  "company_backup.open_held": "Los módulos están activados, pero esta copia de la empresa no se abrió: lo que hace abrirla ha cambiado desde que eligió Activar y abrir. Revíselo abajo y luego ábrala."
 }

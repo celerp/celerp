@@ -4041,7 +4041,7 @@
   "company_backup.err_too_large": "Cette copie d'entreprise est trop volumineuse pour être restaurée ici. Rien n'a été restauré. Pour obtenir de l'aide afin de déplacer cette entreprise, posez la question sur GitHub Issues ou Discussions.",
   "company_backup.err_handoff_unchecked": "Celerp n'a pas pu joindre le cloud pour vérifier cette copie d'entreprise. Rien n'a été restauré. Vérifiez votre connexion internet et réessayez.",
   "company_backup.err_handoff_mismatch": "Ce fichier ne correspond pas à la copie d'entreprise indiquée par son lien. Rien n'a été restauré. Ouvrez à nouveau la copie d'entreprise depuis son lien.",
-  "company_backup.err_too_large_upload":"Ce fichier dépasse 2 Go, la taille maximale d'une copie d'entreprise envoyée. Rien n'a été restauré. Vérifiez que vous avez choisi le bon fichier ; si c'est le cas, posez la question sur GitHub Issues ou Discussions.",
+  "company_backup.err_too_large_upload": "Ce fichier dépasse 2 Go, la taille maximale d'une copie d'entreprise envoyée. Rien n'a été restauré. Vérifiez que vous avez choisi le bon fichier ; si c'est le cas, posez la question sur GitHub Issues ou Discussions.",
   "company_backup.err_too_large_to_back_up": "Cette entreprise contient plus de données qu'une copie d'entreprise ne peut en contenir. Aucune copie n'a été faite. Utilisez plutôt Récupération du système dans Configuration globale, Sauvegarde.",
   "company_backup.err_row_too_large": "Un enregistrement de cette entreprise est trop volumineux pour une copie d'entreprise. Aucune copie n'a été faite. Utilisez plutôt Récupération du système dans Configuration globale, Sauvegarde.",
   "company_backup.err_undeclared": "Le module {label} ne prend pas encore en charge les copies d'entreprise. Aucune copie n'a été faite. Désactivez le module sur la page Modules, ou demandez une version à jour à son développeur.",
@@ -5807,5 +5807,12 @@
   "company_backup.saved_put_back_hint": "Pour remettre une copie enregistrée, saisissez {company} à côté. La version qu'elle remplace est enregistrée ici à son tour.",
   "company_backup.saved_delete_confirm": "Supprimer cette copie enregistrée ? Cette action est irréversible.",
   "company_backup.saved_delete_reason": "La suppression d'une copie enregistrée est irréversible : le fichier lui-même est retiré de cet ordinateur.",
-  "company_backup.saved_deleted": "Copie enregistrée supprimée."
+  "company_backup.saved_deleted": "Copie enregistrée supprimée.",
+  "company_backup.enable_and_open": "Activer et ouvrir",
+  "company_backup.enable_open_hint": "Celerp active ces modules, redémarre si nécessaire, puis ouvre cette copie de l'entreprise.",
+  "company_backup.restarting_open": "Celerp redémarre pour charger les modules. L'entreprise s'ouvre dès qu'elle est prête.",
+  "company_backup.decline_modules": "Ne pas les activer",
+  "company_backup.declined": "Rien n'a été ouvert. Cette copie de l'entreprise a besoin de ces modules : {labels}. Choisissez à nouveau le fichier lorsque vous voudrez les activer.",
+  "company_backup.declined_unnamed": "Rien n'a été ouvert. Choisissez à nouveau le fichier pour voir les modules dont cette copie de l'entreprise a besoin.",
+  "company_backup.open_held": "Les modules sont activés, mais cette copie de l'entreprise n'a pas été ouverte : ce que fait son ouverture a changé depuis que vous avez choisi Activer et ouvrir. Vérifiez ci-dessous, puis ouvrez-la."
 }

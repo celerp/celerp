@@ -215,7 +215,20 @@ async def _preview(session: AsyncSession, stage: Path, token: str, mode: str, us
             raise cb.BackupError(409, t(cb.NOT_A_MEMBER))
         replace = await cb.replace_offer(session, backup, plan, user_id)
     return {"upload_token": token, "file_name": files.stage_facts(stage).get("file_name", ""),
-            **backup.summary(), **plan.public(), "replace": replace}
+            **backup.summary(), **plan.public(), "replace": replace, **_open(stage, plan, mode)}
+
+
+def _open(stage: Path, plan: cb.RestorePlan, mode: str) -> dict:
+    """Once the modules run, the open the owner chose with Enable and open: to do now, as
+    the preview they confirmed showed it, or held when anything else changed since."""
+    if not plan.modules.ready:
+        return {}
+    intent = files.take_open(stage)
+    if intent is None:
+        return {}
+    if intent.get("mode") != mode or intent.get("confirmed") != plan.confirmed:
+        return {"open_held": True}
+    return {"open_now": {"company_name": intent.get("company_name") or ""}}
 
 
 async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str = _BOOTSTRAP,
@@ -260,15 +273,25 @@ async def _staged(session: AsyncSession, owner: str, token: str, ctx: AuthContex
         return _error(exc, stage)
 
 
-async def _prepare(owner: str, token: str, consent: list[str]) -> JSONResponse:
+async def _prepare(owner: str, token: str, consent: list[str], *, open_: OpenIn | None = None,
+                   session: AsyncSession | None = None, ctx: AuthContext | None = None,
+                   mode: str = "settings") -> JSONResponse:
     """Turn on the modules a staged backup needs, then restart Celerp to load them. Bundled
-    modules are turned on; one from outside Celerp only when the owner named it."""
+    modules are turned on; one from outside Celerp only when the owner named it. With
+    ``open_`` (Enable and open) the owner confirms the preview as shown, and the backup is
+    opened under the name they chose once the modules run."""
     stage = _uploaded(owner, token)
     try:
         backup = await asyncio.to_thread(cb.read_backup, stage)
     except cb.BackupError as exc:
         return _error(exc, stage)
     modules = cb.requirement_plan(backup)
+    confirmed = None
+    if open_ is not None and ctx is not None:
+        plan = await cb.plan_existing_restore(session, backup, mode, ctx.user.id, ctx.company_id)
+        if plan.fingerprint != open_.plan_fingerprint:
+            return _error(cb.StalePreview(plan))
+        confirmed = plan.confirmed
     try:
         restart = await asyncio.to_thread(requirements.prepare, modules, consent=frozenset(consent))
     except requirements.RequirementsBlocked as exc:
@@ -280,6 +303,9 @@ async def _prepare(owner: str, token: str, consent: list[str]) -> JSONResponse:
     except OSError:
         logger.exception("Could not turn on the modules a company backup needs")
         raise HTTPException(status_code=503, detail=t("company_backup.err_modules_not_saved")) from None
+    if confirmed is not None:
+        await asyncio.to_thread(files.remember_open, stage, {"mode": mode, "confirmed": confirmed,
+                                                             "company_name": open_.company_name or ""})
     if not restart:
         return JSONResponse(status_code=200, content={"restart": False, "restarting": False})
     return JSONResponse(status_code=202, content={"restart": True, "restarting": requirements.schedule_restart()})
@@ -315,8 +341,18 @@ class UploadIn(BaseModel):
     upload_token: str
 
 
+class OpenIn(BaseModel):
+    plan_fingerprint: str
+    company_name: str = Field(default="", max_length=200)
+
+
 class PrepareIn(UploadIn):
     consent: list[str] = []
+
+
+class OwnerPrepareIn(PrepareIn):
+    mode: RestoreMode = "settings"
+    open: OpenIn | None = None
 
 
 class RestoreIn(UploadIn):
@@ -343,8 +379,10 @@ async def staged_backup(upload_token: str, mode: RestoreMode = "settings", ctx: 
 
 
 @router.post("/prepare")
-async def prepare_modules(payload: PrepareIn, ctx: AuthContext = Depends(user_owner)):
-    return await _prepare(str(ctx.user.id), payload.upload_token, payload.consent)
+async def prepare_modules(payload: OwnerPrepareIn, ctx: AuthContext = Depends(user_owner),
+                          session: AsyncSession = Depends(get_session)):
+    return await _prepare(str(ctx.user.id), payload.upload_token, payload.consent, open_=payload.open,
+                          session=session, ctx=ctx, mode=payload.mode)
 
 
 @router.post("/import-module")

@@ -4041,7 +4041,7 @@
   "company_backup.err_too_large": "Esta cópia da empresa é grande demais para ser restaurada aqui. Nada foi restaurado. Para obter ajuda para mover esta empresa, pergunte no GitHub Issues ou Discussions.",
   "company_backup.err_handoff_unchecked": "O Celerp não conseguiu acessar a nuvem para verificar esta cópia da empresa. Nada foi restaurado. Verifique sua conexão com a internet e tente novamente.",
   "company_backup.err_handoff_mismatch": "Este arquivo não corresponde à cópia da empresa indicada pelo link. Nada foi restaurado. Abra novamente a cópia da empresa pelo link.",
-  "company_backup.err_too_large_upload":"Este arquivo tem mais de 2 GB, o máximo para enviar uma cópia da empresa. Nada foi restaurado. Verifique se escolheu o arquivo certo; se sim, pergunte no GitHub Issues ou Discussions.",
+  "company_backup.err_too_large_upload": "Este arquivo tem mais de 2 GB, o máximo para enviar uma cópia da empresa. Nada foi restaurado. Verifique se escolheu o arquivo certo; se sim, pergunte no GitHub Issues ou Discussions.",
   "company_backup.err_too_large_to_back_up": "Esta empresa tem mais dados do que uma cópia da empresa comporta. Nenhuma cópia foi feita. Use Recuperação do sistema em Configuração global, Backup.",
   "company_backup.err_row_too_large": "Um registro desta empresa é grande demais para uma cópia da empresa. Nenhuma cópia foi feita. Use Recuperação do sistema em Configuração global, Backup.",
   "company_backup.err_undeclared": "O módulo {label} ainda não oferece suporte a cópias da empresa. Nenhuma cópia foi feita. Desative o módulo na página Módulos ou peça ao desenvolvedor uma versão atualizada.",
@@ -5807,5 +5807,12 @@
   "company_backup.saved_put_back_hint": "Para devolver uma cópia salva, digite {company} ao lado dela. A versão que ela substitui também é salva aqui.",
   "company_backup.saved_delete_confirm": "Excluir esta cópia salva? Isso não pode ser desfeito.",
   "company_backup.saved_delete_reason": "Excluir uma cópia salva não pode ser desfeito: o próprio arquivo é removido deste computador.",
-  "company_backup.saved_deleted": "Cópia salva excluída."
+  "company_backup.saved_deleted": "Cópia salva excluída.",
+  "company_backup.enable_and_open": "Ativar e abrir",
+  "company_backup.enable_open_hint": "O Celerp ativa estes módulos, reinicia se necessário e depois abre esta cópia da empresa.",
+  "company_backup.restarting_open": "O Celerp está reiniciando para carregar os módulos. A empresa abre quando estiver pronta.",
+  "company_backup.decline_modules": "Não ativar",
+  "company_backup.declined": "Nada foi aberto. Esta cópia da empresa precisa destes módulos: {labels}. Escolha o arquivo novamente quando quiser ativá-los.",
+  "company_backup.declined_unnamed": "Nada foi aberto. Escolha o arquivo novamente para ver os módulos de que esta cópia da empresa precisa.",
+  "company_backup.open_held": "Os módulos estão ativados, mas esta cópia da empresa não foi aberta: o que abri-la faz mudou desde que você escolheu Ativar e abrir. Confira abaixo e depois abra-a."
 }

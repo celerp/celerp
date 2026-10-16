@@ -4041,7 +4041,7 @@
   "company_backup.err_too_large": "ይህ የኩባንያ ቅጂ እዚህ ለመመለስ በጣም ትልቅ ነው። ምንም አልተመለሰም። ይህን ኩባንያ ለማዛወር እገዛ ከፈለጉ በGitHub Issues ወይም Discussions ላይ ይጠይቁ።",
   "company_backup.err_handoff_unchecked": "Celerp ይህን የኩባንያ ቅጂ ለማረጋገጥ ከክላውድ ጋር መገናኘት አልቻለም። ምንም አልተመለሰም። የበይነመረብ ግንኙነትዎን ያረጋግጡና እንደገና ይሞክሩ።",
   "company_backup.err_handoff_mismatch": "ይህ ፋይል ሊንኩ ከሚጠቅሰው የኩባንያ ቅጂ ጋር አይዛመድም። ምንም አልተመለሰም። የኩባንያውን ቅጂ ከሊንኩ እንደገና ይክፈቱ።",
-  "company_backup.err_too_large_upload":"ይህ ፋይል ከ2 GB ይበልጣል፤ ይህም አንድ የኩባንያ ቅጂ ሊሰቀል የሚችልበት ከፍተኛ መጠን ነው። ምንም አልተመለሰም። ትክክለኛውን ፋይል መምረጥዎን ያረጋግጡ፤ ትክክል ከሆነ በGitHub Issues ወይም Discussions ላይ ይጠይቁ።",
+  "company_backup.err_too_large_upload": "ይህ ፋይል ከ2 GB ይበልጣል፤ ይህም አንድ የኩባንያ ቅጂ ሊሰቀል የሚችልበት ከፍተኛ መጠን ነው። ምንም አልተመለሰም። ትክክለኛውን ፋይል መምረጥዎን ያረጋግጡ፤ ትክክል ከሆነ በGitHub Issues ወይም Discussions ላይ ይጠይቁ።",
   "company_backup.err_too_large_to_back_up": "ይህ ኩባንያ የኩባንያ ቅጂ ሊይዘው ከሚችለው በላይ ውሂብ አለው። ምንም ቅጂ አልተሠራም። በምትኩ በአጠቃላይ ቅንብሮች፣ ምትኬ ውስጥ ያለውን የሥርዓት መልሶ ማግኛ ይጠቀሙ።",
   "company_backup.err_row_too_large": "በዚህ ኩባንያ ውስጥ ያለ አንድ መዝገብ ለኩባንያ ቅጂ በጣም ትልቅ ነው። ምንም ቅጂ አልተሠራም። በምትኩ በአጠቃላይ ቅንብሮች፣ ምትኬ ውስጥ ያለውን የሥርዓት መልሶ ማግኛ ይጠቀሙ።",
   "company_backup.err_undeclared": "የ{label} ሞጁል ገና የኩባንያ ቅጂዎችን አይደግፍም። ምንም ቅጂ አልተሠራም። ሞጁሉን በሞጁሎች ገጽ ላይ ያጥፉት፣ ወይም ገንቢውን የተዘመነ ስሪት ይጠይቁ።",
@@ -5807,5 +5807,12 @@
   "company_backup.saved_put_back_hint": "የተቀመጠ ቅጂ ለመመለስ ከጎኑ {company} ብለው ይተይቡ። የሚተካው ስሪትም እዚህ ይቀመጣል።",
   "company_backup.saved_delete_confirm": "ይህን የተቀመጠ ቅጂ ይሰርዙ? ይህ ሊቀለበስ አይችልም።",
   "company_backup.saved_delete_reason": "የተቀመጠ ቅጂ መሰረዝ ሊቀለበስ አይችልም፦ ፋይሉ ራሱ ከዚህ ኮምፒውተር ይወገዳል።",
-  "company_backup.saved_deleted": "የተቀመጠው ቅጂ ተሰርዟል።"
+  "company_backup.saved_deleted": "የተቀመጠው ቅጂ ተሰርዟል።",
+  "company_backup.enable_and_open": "አንቃ እና ክፈት",
+  "company_backup.enable_open_hint": "Celerp እነዚህን ሞጁሎች ያበራል፣ ካስፈለገ እንደገና ይጀምራል፣ ከዚያ ይህን የኩባንያ ቅጂ ይከፍታል።",
+  "company_backup.restarting_open": "Celerp ሞጁሎቹን ለመጫን እንደገና እየጀመረ ነው። ዝግጁ ሲሆን ኩባንያው ይከፈታል።",
+  "company_backup.decline_modules": "አታንቃቸው",
+  "company_backup.declined": "ምንም አልተከፈተም። ይህ የኩባንያ ቅጂ እነዚህን ሞጁሎች ይፈልጋል፦ {labels}። ማንቃት ሲፈልጉ ፋይሉን እንደገና ይምረጡ።",
+  "company_backup.declined_unnamed": "ምንም አልተከፈተም። ይህ የኩባንያ ቅጂ የሚፈልጋቸውን ሞጁሎች ለማየት ፋይሉን እንደገና ይምረጡ።",
+  "company_backup.open_held": "ሞጁሎቹ በርተዋል፣ ግን ይህ የኩባንያ ቅጂ አልተከፈተም፦ አንቃ እና ክፈት ከመረጡ በኋላ መክፈቱ የሚያደርገው ተቀይሯል። ከታች ያረጋግጡ፣ ከዚያ ይክፈቱት።"
 }

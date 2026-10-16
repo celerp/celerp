@@ -1326,7 +1326,8 @@ class RestorePlan:
     owner chooses another), the team members it gives access and whose role permissions
     they work under, with the source's role permissions carried, and the modules it needs.
     ``fingerprint`` identifies these facts, so a restore can tell whether the preview it
-    confirms still holds."""
+    confirms still holds; ``confirmed`` identifies all of them but the modules, so an
+    owner who turned the modules on to open the backup can be held to the rest."""
     action: str
     destination_id: str | None
     destination_name: str | None
@@ -1335,6 +1336,7 @@ class RestorePlan:
     role_permissions: str
     modules: requirements.RequirementPlan
     fingerprint: str
+    confirmed: str = ""
     role_grants: dict | None = None
     # The caller's company of the same lineage a new company could replace instead.
     replace_id: str | None = None
@@ -1360,10 +1362,12 @@ def _planned(backup: BackupFile, mode: str, action: str, destination: Company | 
              "policy": "source" if carry else "destination", "grants": grants if carry else None,
              "modules": modules.public(),
              "replace": [str(replace.id), replace.name] if replace is not None else None}
-    digest = hashlib.sha256(json.dumps(facts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    def digest(of: dict) -> str:
+        return hashlib.sha256(json.dumps(of, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return RestorePlan(action=action, destination_id=facts["destination_id"], destination_name=facts["name"],
                        team_to_add=team, team_blocked=blocked, role_permissions=facts["policy"], modules=modules,
-                       fingerprint=digest, role_grants=facts["grants"],
+                       fingerprint=digest(facts), confirmed=digest({**facts, "modules": None}),
+                       role_grants=facts["grants"],
                        replace_id=str(replace.id) if replace is not None else None)
 
 

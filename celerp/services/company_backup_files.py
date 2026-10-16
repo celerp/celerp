@@ -142,6 +142,21 @@ def staged_handoff(stage: Path) -> dict | None:
     return value
 
 
+def remember_open(stage: Path, intent: dict) -> None:
+    """Record that the owner chose to open this upload once its modules run."""
+    _write_meta(stage, {**stage_facts(stage), "open": intent})
+
+
+def take_open(stage: Path) -> dict | None:
+    """The open recorded for this upload, removed so it is acted on once."""
+    facts = stage_facts(stage)
+    intent = facts.pop("open", None)
+    if intent is None:
+        return None
+    _write_meta(stage, facts)
+    return intent if isinstance(intent, dict) else None
+
+
 def handoff_receipt(stage: Path) -> dict | None:
     """The handoff of an upload whose restore has finished: the receipt to report."""
     restored = stage_facts(stage).get("restored")
