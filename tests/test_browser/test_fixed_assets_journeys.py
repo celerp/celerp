@@ -5,9 +5,11 @@ error and reaches its outcome from the page that shows the error, using only the
 that page offers."""
 from __future__ import annotations
 
+import os
 import uuid
 from decimal import Decimal as D
 
+import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
@@ -268,3 +270,52 @@ def test_j5_bad_import_rows_are_fixed_in_the_grid_and_imported(page: Page, fresh
     expect(page.locator("input[name='v.2.class']")).to_have_count(0)
     # The import's reconciliation: the register now holds every row against the ledger.
     expect(page.locator("#fa-opening-accounts")).to_contain_text("310,100")
+
+
+def _as_member(page: Page, c, api_server: str, role: str) -> None:
+    """Sign the browser in as a new member with ``role``."""
+    import psycopg2
+    from urllib.parse import urlsplit
+
+    email = f"{role}-{uuid.uuid4().hex[:8]}@example.com"
+    _ok(c.post("/companies/me/users", json={"email": email, "name": role.title(), "role": role,
+                                            "password": "Member12345!"}))
+    parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
+    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username, password=parts.password,
+                            dbname=parts.path.lstrip("/"))
+    conn.autocommit = True
+    with conn.cursor() as cur:  # one live session per installation: let the member sign in
+        cur.execute("DELETE FROM session_registry;")
+    conn.close()
+    token = _ok(httpx.post(f"{api_server}/auth/login", json={"email": email, "password": "Member12345!"},
+                           timeout=10))["access_token"]
+    page.context.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
+
+
+def test_j6_labels_off_asks_an_admin_and_the_admin_turns_it_on_and_prints(page: Page, fresh_company, api_server):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    number = _ok(c.get(f"{API}/assets/{car}"))["number"]
+    # The company chooses its own modules: fixed assets and what it needs, not Labels.
+    _ok(c.post("/companies/me/modules/celerp-fixed-assets/enable"))
+    assert "celerp-labels" not in _ok(c.get("/companies/me"))["settings"]["enabled_modules"]
+    owner = page.context.cookies()
+
+    _as_member(page, c, api_server, "operator")
+    page.goto(f"/fixed-assets/assets/{car}")
+    tag = page.locator("#fa-tag")
+    expect(tag).to_contain_text("Ask an admin to turn on Labels")
+    expect(tag).to_contain_text(number)
+    expect(tag.get_by_role("button", name="Turn on")).to_have_count(0)
+
+    page.context.clear_cookies()
+    page.context.add_cookies(owner)
+    page.goto(f"/fixed-assets/assets/{car}")
+    expect(tag).to_contain_text("Turn on Labels to print asset tags")
+    with page.expect_navigation(url=f"**/fixed-assets/assets/{car}"):
+        tag.get_by_role("button", name="Turn on").click()
+    tag.get_by_role("link", name="Print tag").click()
+    page.wait_for_url("**/labels/print-source**")
+    page.get_by_role("button", name="Create Asset tags template").click()
+    expect(page.locator("body")).to_contain_text(number)
