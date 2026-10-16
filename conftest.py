@@ -250,10 +250,14 @@ from celerp_labels.ui_routes import setup_ui_routes as _setup_labels_ui
 _setup_labels(app)
 _setup_labels_ui(_ui_app)
 
-# Register the fixed assets module path.
+# Register fixed assets module routes onto the test app.
 _fa_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-fixed-assets")
 if _os.path.abspath(_fa_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_fa_src))
+from celerp_fixed_assets.routes import setup_api_routes as _setup_fa
+from celerp_fixed_assets.ui_routes import setup_ui_routes as _setup_fa_ui
+_setup_fa(app)
+_setup_fa_ui(_ui_app)
 
 # Register warehousing module path so its UI components can be imported in tests.
 _wh_src = _os.path.join(_os.path.dirname(__file__), "premium_modules", "celerp-warehousing")
@@ -366,6 +370,22 @@ _SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
         "contrib": {
             "handler": "celerp_manufacturing.routes:auto_create_work_orders_on_finalize",
             "_module": "celerp-manufacturing",
+        },
+    },
+    {
+        "slot": "projection_handler",
+        "contrib": {
+            "prefix": "fa.",
+            "handler": "celerp_fixed_assets.projections:apply_fixed_asset_event",
+            "_module": "celerp-fixed-assets",
+        },
+    },
+    {
+        "slot": "demo_records",
+        "contrib": {
+            "handler": "celerp_fixed_assets.demo:seed_demo_assets_hook",
+            "_module": "celerp-fixed-assets",
+            "_first_party": True,
         },
     },
     {

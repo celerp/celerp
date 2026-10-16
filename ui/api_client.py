@@ -4035,3 +4035,19 @@ async def company_backup_bootstrap_restore(upload_token: str, name: str, email: 
                 "company_name": company_name,
             })
     return _raise(r).json()
+
+
+# ── Fixed assets ─────────────────────────────────────────────────────────────
+_FIXED_ASSETS_API = "/fixed-assets/api"
+
+
+async def fixed_assets_get(token: str, path: str, params: dict | None = None) -> dict:
+    """Read from the fixed assets API; ``path`` is relative to it."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"{_FIXED_ASSETS_API}{path}", params=params)).json()
+
+
+async def fixed_assets_send(token: str, method: str, path: str, data: dict) -> dict:
+    """Write to the fixed assets API (POST or PATCH); ``path`` is relative to it."""
+    async with _api_client(token) as c:
+        return _raise(await c.request(method, f"{_FIXED_ASSETS_API}{path}", json=data)).json()

@@ -32,18 +32,19 @@ async def _journal(fa: FA, ts: str, entries: list[dict]) -> str:
     return r.json()["je_id"]
 
 
-async def _viewer_headers(fa: FA) -> dict:
+async def _role_headers(fa: FA, role: str) -> dict:
     from celerp.models.accounting import UserCompany
     from celerp.models.company import User
     from test_helpers import make_authed_token
 
     uid = uuid.uuid4()
-    fa.session.add(User(id=uid, email=f"viewer-{uid.hex[:8]}@test.co", name="Viewer", auth_hash="x", is_active=True))
+    fa.session.add(User(id=uid, email=f"{role}-{uid.hex[:8]}@test.co", name=role.title(), auth_hash="x",
+                        is_active=True))
     await fa.session.flush()
-    fa.session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=fa.auth["company_id"], role="viewer",
+    fa.session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=fa.auth["company_id"], role=role,
                                is_active=True))
     await fa.session.commit()
-    token = await make_authed_token(fa.session, str(uid), str(fa.auth["company_id"]), "viewer")
+    token = await make_authed_token(fa.session, str(uid), str(fa.auth["company_id"]), role)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -112,7 +113,7 @@ async def test_class_create_and_archive(fa):
 
 
 async def test_viewer_cannot_register_or_start(fa):
-    viewer = await _viewer_headers(fa)
+    viewer = await _role_headers(fa, "viewer")
     van = await fa.line("Delivery van")
     cls = (await fa.classes())["Vehicles"]
     r = await fa.post("/register", {"source": van["source"], "class_id": cls["id"], "mode": "separate",
@@ -331,7 +332,7 @@ async def test_bill_journals_and_module_journals_are_never_offered_as_manual_lin
 
 async def test_not_an_acquisition_requires_a_reason(fa):
     first = (await fa.ok(await fa.get("/setup")))["settings"]["first_managed_period"]
-    je_id = await _journal(fa, first, [{"account": "1210", "debit": 700}, {"account": "1110", "credit": 700}])
+    je_id = await _journal(fa, first, [{"account": "1210", "debit": 700}, {"account": "1111", "credit": 700}])
     source = f"{je_id}:0"
     r = await fa.post("/not-acquisition", {"source": source, "reason": "  ", "preview": True, "op_key": "na"})
     assert r.status_code == 422 and "reason" in r.json()["detail"].lower()
@@ -433,6 +434,23 @@ async def test_contributed_asset_posts_acquisition(fa):
     await _fold_matches(fa, done["assets"][0]["id"])
 
 
+async def test_adding_an_asset_by_hand_needs_the_right_permission(fa):
+    """A physical record posts nothing, so manage_fixed_assets is enough; an opening or
+    contributed asset carries cost, so it also needs manage_accounting."""
+    from celerp.services.permissions import missing_permission_text
+
+    operator, viewer = await _role_headers(fa, "operator"), await _role_headers(fa, "viewer")
+    cls = (await fa.classes())["Buildings"]
+    opening = {"kind": "opening", "class_id": cls["id"], "name": "Warehouse", "available_date": "2020-01-01",
+               "cost": "1000", "preview": True, "op_key": "perm-1"}
+    refused = await fa.post("/assets", opening, headers=operator)
+    assert refused.status_code == 403 and refused.json()["detail"] == missing_permission_text("manage_accounting")
+    physical = {"kind": "physical", "name": "Forklift", "preview": True, "op_key": "perm-2"}
+    assert (await fa.post("/assets", physical, headers=operator)).status_code == 200
+    blocked = await fa.post("/assets", physical, headers=viewer)
+    assert blocked.status_code == 403 and blocked.json()["detail"] == missing_permission_text("manage_fixed_assets")
+
+
 async def test_physical_record_then_financial_details(fa):
     done = await fa.operate("/assets", {"kind": "physical", "name": "Forklift"}, key="p")
     asset_id = done["assets"][0]["id"]
@@ -470,11 +488,11 @@ async def test_asset_list_filters_and_pagination(fa):
 
 async def test_invariant_registered_cost_equals_source_and_ledger(fa):
     """Source cost equals registered cost, and the class accounts hold what the register holds."""
-    for description, cls, mode in (("Delivery van", "Vehicles", "separate"),
-                                   ("Laptop", "Computer equipment", "separate"),
-                                   ("Office fit-out", "Assets under construction", "separate")):
+    for n, (description, cls, mode) in enumerate((("Delivery van", "Vehicles", "separate"),
+                                                  ("Laptop", "Computer equipment", "separate"),
+                                                  ("Office fit-out", "Assets under construction", "separate"))):
         line = await fa.line(description)
-        done = await fa.register(line["source"], key=f"r-{description}", class_name=cls, mode=mode)
+        done = await fa.register(line["source"], key=f"inv-{n}", class_name=cls, mode=mode)
         costs = [D((await fa.asset(a["id"]))["cost"]) for a in done["assets"]]
         assert sum(costs) == D(line["amount"])
     register = {"1210": D(0), "1240": D(0)}

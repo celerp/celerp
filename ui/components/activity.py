@@ -37,6 +37,8 @@ _EVENT_TYPES: tuple[str, ...] = (
     "item.inventory_account.recorded", "item.inventory_account.moved", "item.consignor_payable.recorded",
     "item.consignment.bought", "item.inventory_on_books.recorded",
     "mfg.order.wip_opened", "mfg.order.wip_unresolved",
+    "fa.class.created", "fa.class.updated", "fa.asset.created", "fa.asset.updated", "fa.asset.status",
+    "fa.asset.financials", "fa.asset.moved", "fa.movement.recorded", "fa.maint.recorded", "fa.maint.status",
     "doc.created", "doc.updated", "doc.finalized", "doc.paid", "doc.voided",
     "doc.sent", "doc.marked_sent", "doc.converted", "doc.converted_to_bill",
     "doc.payment.received", "doc.payment.refunded", "doc.payment.refund_reversed", "doc.payment.stripe_released",
@@ -249,6 +251,11 @@ _SYSTEM_EVENT_TYPES = frozenset({
     "sys.migration.applied",
     "sys.older_stock.placed",
     "sys.older_stock.corrected",
+    # Fixed assets bookkeeping: the movement each one belongs to is the feed entry.
+    "fa.op.recorded",
+    "fa.op.undone",
+    "fa.src.claimed",
+    "fa.src.released",
 })
 
 # metadata_.reason values that mark an event as a mechanical side-effect of a

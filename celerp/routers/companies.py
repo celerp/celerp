@@ -2660,14 +2660,17 @@ async def reseed_demo_items(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Replace the untouched demo items with the set for the company's current business type.
+    """Replace the untouched demo items with the set for the company's current business type,
+    and let modules add their own sample records (the demo_records slot).
 
     Real inventory and demo items the user edited or used are never removed.
     """
+    from celerp.modules.slots import fire_lifecycle
     from celerp.services.demo import replace_demo_items
 
     company = await locked_company(session, company_id)
     vertical = (company.settings or {}).get("vertical") if company else None
     counts = await replace_demo_items(session, company_id, user.id, vertical)
+    await fire_lifecycle("demo_records", session=session, company_id=company_id, user_id=user.id)
     await session.commit()
     return {"ok": True, "vertical": vertical, **counts}

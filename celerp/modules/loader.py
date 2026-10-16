@@ -2423,13 +2423,16 @@ _CALLABLE_SLOTS = {
     "projection_handler": ("handler", False),
     "inventory_in_production": ("handler", True),
     "item_lineage_guard": ("handler", True),
+    "demo_records": ("handler", True),
 }
 # Callable slots core calls with keyword arguments only, and those arguments. The
 # handler takes exactly these: no other parameter, none positional-only, and no
-# *args or **kwargs (lot_origin._in_production, events.engine._item_applied).
+# *args or **kwargs (lot_origin._in_production, events.engine._item_applied,
+# routers.companies.reseed_demo_items).
 _HANDLER_KEYWORDS = {
     "inventory_in_production": ("session", "company_id"),
     "item_lineage_guard": ("session", "entry", "transition"),
+    "demo_records": ("session", "company_id", "user_id"),
 }
 # Entry keys naming a permission. Gating surfaces index the permission registry,
 # so a value outside it must never reach them.
@@ -2572,6 +2575,7 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "on_doc_payment": {},
     "inventory_in_production": {},
     "item_lineage_guard": {},
+    "demo_records": {},
 }
 _TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",
                list: "a list", type(None): "None"}

@@ -14,7 +14,30 @@ PLUGIN_MANIFEST = {
     "description": "Fixed asset register, depreciation runs, disposals and revaluations.",
     "license": "MIT",
     "author": "Celerp",
-    "depends_on": ["celerp-accounting"],
+    "api_routes": "celerp_fixed_assets.routes",
+    "ui_routes": "celerp_fixed_assets.ui_routes",
+    # Assets are registered from bill lines, so the documents module is required too.
+    "depends_on": ["celerp-accounting", "celerp-docs"],
+
+    # ── Extension slots ───────────────────────────────────────────────────────
+    "slots": {
+        "nav": {
+            "group": "Finance",
+            "key": "fixed_assets",
+            "icon": "🏢",
+            "label": "Fixed assets",
+            "label_key": "nav.fixed_assets",
+            "href": "/fixed-assets",
+            "order": 53,
+            "permission": "view_fixed_assets",
+            "settings_href": "/settings/fixed-assets",
+        },
+        "projection_handler": [
+            {"prefix": "fa.", "handler": "celerp_fixed_assets.projections:apply_fixed_asset_event"},
+        ],
+        # A demo company's sample data includes a few asset bills to register.
+        "demo_records": {"handler": "celerp_fixed_assets.demo:seed_demo_assets_hook"},
+    },
 
     # ── UI translation catalogs ───────────────────────────────────────────────
     "locales": {

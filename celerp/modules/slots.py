@@ -48,6 +48,12 @@ item_lineage_guard {"handler": "module.path:function"} naming
                    with exactly those keyword arguments on every live item event, after
                    it is applied and before its effects are booked; raising refuses the
                    event
+demo_records       {"handler": "module.path:function"} naming
+                   `async def handler(*, session, company_id, user_id) -> None`, called
+                   with exactly those keyword arguments when a demo company's sample data
+                   is seeded again: the module adds its own sample records, once, and
+                   only while the company keeps no books of its own. Filled by Celerp's
+                   own modules only (FIRST_PARTY_SLOTS)
 search_provider    Contributes rows to the global search bar. Exactly one descriptor
                    dict per module: {"handler", "result_key", "permission"}. handler
                    names an in-module "module.path:function" resolved and validated
@@ -69,7 +75,7 @@ send_to_targets "doc_type" and catalog_channel "id" non-empty text, catalog_chan
 and bulk_action "form_action" (required) are app-local paths; and every callable
 an entry names is the module's own code, async exactly where core awaits it,
 and takes exactly the keyword arguments core passes where the slot names them
-(inventory_in_production, item_lineage_guard).
+(inventory_in_production, item_lineage_guard, demo_records).
 
 Whether a company uses a module is one rule, celerp.modules.registry.uses_module.
 item_action, pricing_action, doc_detail_actions, doc_detail_badges, bulk_action,
@@ -100,11 +106,12 @@ SLOT_NAMES = frozenset({
     "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
     "projection_handler", "on_company_created", "on_modules_ready", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
+    "demo_records",
 })
 
 # Slots only Celerp's own (first-party) modules may fill; admission refuses any
 # other module that fills one.
-FIRST_PARTY_SLOTS = frozenset({"inventory_in_production"})
+FIRST_PARTY_SLOTS = frozenset({"inventory_in_production", "demo_records"})
 
 # projection_handler prefixes core handles itself: system events (registered at
 # startup, celerp.main) and the core-folded connectors' declared prefixes.
@@ -135,9 +142,9 @@ def resolve_handler(dotted: str) -> Callable:
     return getattr(mod, func_name)
 
 
-# Slots whose handler core calls on every item write or upgrade: a contribution without a
+# Slots whose handler core calls directly: a contribution without a
 # "module.path:function" handler would fail every such call, so it is refused here.
-_HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard"})
+_HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard", "demo_records"})
 
 
 def check(slot: str, contribution: dict) -> None:
