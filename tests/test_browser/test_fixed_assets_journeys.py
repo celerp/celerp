@@ -319,3 +319,47 @@ def test_j6_labels_off_asks_an_admin_and_the_admin_turns_it_on_and_prints(page: 
     page.wait_for_url("**/labels/print-source**")
     page.get_by_role("button", name="Create Asset tags template").click()
     expect(page.locator("body")).to_contain_text(number)
+
+
+def _reading(page: Page, month: str, units: str) -> None:
+    readings = page.locator("#fa-readings")
+    readings.locator("input[name=period]").fill(month)
+    readings.locator("input[name=units]").fill(units)
+    with page.expect_navigation():
+        readings.get_by_role("button", name="Record reading").click()
+    expect(page.locator("#fa-readings tbody")).to_contain_text(month)
+
+
+def test_j7_missing_reading_holds_one_asset_and_the_next_run_catches_up(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _ok(c.post(f"{API}/classes", json={"name": "Metered machines", "kind": "tangible", "method": "units_of_use",
+                                      "params": {"total_units": "10000"}}))
+    _contributed(c, "Owner's car", cost="5040")
+    press = _contributed(c, "Press", cost="10000", cls="Metered machines")
+    for month, units in (("2026-01", "100"), ("2026-02", "120")):
+        _ok(c.post(f"{API}/assets/{press}/readings", json={"period": month, "units": units}))
+    _run(c, "2026-02")
+
+    page.goto("/fixed-assets/runs")
+    page.locator("input[name=month]").fill("2026-03")
+    page.get_by_role("button", name="Review", exact=True).click()
+    preview = page.locator("#fa-preview")
+    expect(preview).to_contain_text("84.00")
+    expect(preview).to_contain_text("Press")
+    with page.expect_navigation():
+        preview.get_by_role("button", name="Confirm").click()
+    assert D(_ok(c.get(f"{API}/assets/{press}"))["accumulated_depreciation"]) == D(220)
+
+    page.goto(f"/fixed-assets/assets/{press}")
+    card = page.locator("#fa-exception")
+    expect(card).to_contain_text("2026-03")
+    card.get_by_role("link", name="Enter reading").click()
+    expect(page.locator("#fa-readings")).to_be_in_viewport()
+    _reading(page, "2026-03", "90")
+    _reading(page, "2026-04", "50")
+    _run_from_page(page, "2026-04")
+    page.goto(f"/fixed-assets/assets/{press}")
+    expect(page.locator("#fa-exception")).to_have_count(0)
+    assert D(_ok(c.get(f"{API}/assets/{press}"))["accumulated_depreciation"]) == D(360)
+    _reconciled(page)

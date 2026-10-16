@@ -431,7 +431,7 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
             by_month.setdefault(target.get(k, month), []).append(k)
         for t, months in by_month.items():
             amount = c.held_amount(months)
-            held[t][c.asset_id] = {"asset_id": c.asset_id, "number": c.asset["number"],
+            held[t][c.asset_id] = {"asset_id": c.asset_id, "number": c.asset["number"], "name": c.asset.get("name"),
                                    "amount": None if amount is None else _cents(amount), "action": c.action,
                                    "reason": c.reason if c.action == "method_unavailable" else None}
         exceptions[c.asset_id] = (c.asset.get("exception"), c.exception(month, user_id))

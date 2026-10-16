@@ -360,9 +360,10 @@ def _lines_table(lines: list[dict], currency: str) -> FT:
 
 def _held_table(held: list[dict], currency: str) -> FT:
     """Assets held out of a run, what they would have posted, and what clears them."""
-    rows = [Tr(Td(A(h["number"], href=f"/fixed-assets/assets/{h['asset_id']}")), _money_td(h.get("amount"), currency),
+    rows = [Tr(Td(A(h["number"], href=f"/fixed-assets/assets/{h['asset_id']}")), Td(_text(h.get("name"))),
+               _money_td(h.get("amount"), currency),
                Td(t(f"fixed_assets.action.{h['action']}"))) for h in held]
-    return Table(Thead(Tr(Th(t("fixed_assets.held_asset")), _money_th(t("fixed_assets.held_amount")),
+    return Table(Thead(Tr(Th(t("fixed_assets.held_asset")), Th(t("fixed_assets.name")), _money_th(t("fixed_assets.held_amount")),
                           Th(t("fixed_assets.held_action")))), Tbody(*rows), cls="data-table")
 
 
