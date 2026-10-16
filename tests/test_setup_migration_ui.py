@@ -1004,7 +1004,7 @@ async def test_a_firm_asks_celerp_to_move_a_client_from_the_open_export_set(ui, 
     ui.cookies.set(DRAFT_COOKIE, "drafttoken0001secretvalue", path="/setup/new-company/migrate")
     sent = _page(await ui.post(MOVES, data=typed))
     assert fake_api.move_sends == [{**typed, "draft_token": "drafttoken0001secretvalue"}]
-    assert "Sent to the Celerp team. We will reply to firm@example.com." in sent
+    assert f"Sent to the Celerp team. We will reply to {typed['reply_to']}." in sent
     assert _attr(_inputs(sent, "operation_id")[0], "value") != operation        # the next send is new
 
     older = _move_request(client_name="Older Client", status="declined", note="The ledger does not balance.",
