@@ -11,13 +11,17 @@ from celerp.connectors.base import ConnectorContext, SyncDirection
 from celerp.connectors.registry import get
 from celerp.connectors.sync_runner import supported_outbound, sync_plan
 from celerp.connectors import celerp as peer
+from peer_marks_support import KEY, memory_marks  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("memory_marks")
 
 
-def test_celerp_is_outbound_only_and_registered():
+def test_celerp_sends_records_and_takes_journals_and_the_lock_date():
     connector = get("celerp")
-    assert supported_outbound(connector) == ["products_out", "contacts_out", "documents_out", "inventory_out", "attachments_out"]
-    assert sync_plan(connector, SyncDirection.OUTBOUND) == ["products_out", "contacts_out", "documents_out", "inventory_out", "attachments_out"]
-    assert sync_plan(connector, SyncDirection.INBOUND) == []
+    outbound = ["products_out", "contacts_out", "journals_out", "documents_out", "inventory_out", "attachments_out"]
+    assert supported_outbound(connector) == outbound
+    assert sync_plan(connector, SyncDirection.OUTBOUND) == outbound
+    assert sync_plan(connector, SyncDirection.INBOUND) == ["journals", "period_lock"]
 
 
 @pytest.mark.parametrize("url", [
@@ -59,7 +63,7 @@ async def test_versioned_contact_outbound_and_retry_reporting(monkeypatch):
     monkeypatch.setattr(peer, "RateLimitedClient", Client)
     connector = peer.CelerpConnector()
     result = await connector.sync_contacts_out(ConnectorContext(
-        company_id=company, store_handle="https://peer.example", access_token="cp1.secret"))
+        company_id=company, store_handle="https://peer.example", access_token=KEY))
     assert result.updated == 1
     assert len(result.errors) == 1
     assert result.attention == [{"id": "contact:b", "label": "B",
@@ -70,7 +74,7 @@ async def test_versioned_contact_outbound_and_retry_reporting(monkeypatch):
     assert record["data"]["contact_type"] == "vendor"
     assert record["data"]["email"] is None
     assert "private_note" not in record["data"]
-    assert sent[0]["headers"]["Authorization"] == "Peer cp1.secret"
+    assert sent[0]["headers"]["Authorization"] == f"Peer {KEY}"
     assert sent[0]["headers"]["X-Celerp-Source-Company"] == company
 
 
@@ -100,7 +104,7 @@ async def test_contact_sync_resumes_from_last_successful_run(monkeypatch):
     monkeypatch.setattr(peer, "_read_page", read_page)
     result = await peer.CelerpConnector().sync_contacts_out(ConnectorContext(
         company_id=str(uuid.uuid4()), store_handle="https://peer.example",
-        access_token="cp1.secret",
+        access_token=KEY,
     ))
     assert result.ok
     assert len(seen) == 1 and seen[0][1:] == ("", watermark)
@@ -134,7 +138,7 @@ async def test_product_sync_transmits_catalog_only_and_preserves_revision(monkey
     monkeypatch.setattr(peer, "RateLimitedClient", Client)
     result = await peer.CelerpConnector().sync_products_out(ConnectorContext(
         company_id=company, store_handle="https://firm.example",
-        access_token="cp1.secret",
+        access_token=KEY,
     ))
     assert result.created == 1 and result.ok
     assert len(sent) == 1
@@ -175,7 +179,7 @@ async def test_shared_peer_delivery_marks_failed_product_without_losing_source_r
     monkeypatch.setattr(peer, "_read_products", read_products)
     monkeypatch.setattr(peer, "RateLimitedClient", Client)
     result = await peer.CelerpConnector().sync_products_out(ConnectorContext(
-        company_id=company, store_handle="https://firm.example", access_token="cp1.token"))
+        company_id=company, store_handle="https://firm.example", access_token=KEY))
     assert not result.ok
     assert result.errors == ["Product delivery incomplete"]
     assert seen[0]["records"][0]["source_revision"] == 9
@@ -220,7 +224,7 @@ async def test_draft_document_outbound_filters_private_and_excluded_fields(monke
     monkeypatch.setattr(peer, "_read_documents", docs)
     monkeypatch.setattr(peer, "RateLimitedClient", Client)
     result = await peer.CelerpConnector().sync_documents_out(ConnectorContext(
-        company_id=company, store_handle="https://peer.example", access_token="cp1.secret"))
+        company_id=company, store_handle="https://peer.example", access_token=KEY))
     assert result.ok and result.created == 1 and result.skipped == 2
     assert [item["entity_id"] for item in seen] == ["doc:new", "doc:issued"]
     assert "internal_audit" not in seen[0]["data"]
@@ -263,7 +267,7 @@ async def test_receiving_company_refusal_is_the_attention_reason(monkeypatch):
     monkeypatch.setattr(peer, "_read_documents", page)
     monkeypatch.setattr(peer, "RateLimitedClient", Client)
     result = await peer.CelerpConnector().sync_documents_out(ConnectorContext(
-        company_id=cid, store_handle="https://firm.example", access_token="cp1.secret"))
+        company_id=cid, store_handle="https://firm.example", access_token=KEY))
     assert sent == ["doc:stock", "doc:service"]
     assert not result.ok and result.created == 1
     assert result.attention == [{"id": "doc:stock", "label": "INV-9", "reason": refusal}]
@@ -309,7 +313,7 @@ async def test_stock_audit_does_not_require_contact_or_product_name(monkeypatch)
     monkeypatch.setattr(peer, "_read_audits", audits)
     monkeypatch.setattr(peer, "RateLimitedClient", Client)
     result = await peer.CelerpConnector().sync_inventory_out(ConnectorContext(
-        company_id=source, store_handle="https://peer.example", access_token="cp1.key",
+        company_id=source, store_handle="https://peer.example", access_token=KEY,
     ))
     assert result.ok and result.created == 1 and not result.errors
     assert posted[0][0] == "https://peer.example/lists/import/batch"
@@ -352,11 +356,12 @@ async def test_accountant_downstream_stops_when_required_outbound_entity_failed(
     assert connector.outbound_dependencies["documents_out"] == frozenset(
         {"contacts_out", "products_out"})
     assert connector.outbound_dependencies["attachments_out"] == frozenset({"documents_out"})
+    assert connector.outbound_dependencies["journals_out"] == frozenset({"contacts_out"})
     results = await sync_runner.run_connector_sync(
         connector,
         ConnectorContext(company_id=str(uuid.uuid4()), access_token="cp1.fake",
                          store_handle="https://firm.example"),
         SyncDirection.OUTBOUND,
     )
-    assert seen == ["products_out", "contacts_out"]
-    assert len(results) == 2 and not results[0].ok
+    assert seen == ["products_out", "contacts_out", "journals_out"]
+    assert len(results) == 3 and not results[0].ok

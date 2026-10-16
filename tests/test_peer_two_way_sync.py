@@ -7,7 +7,7 @@ its reversals go up, and each side is told what the other did."""
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -84,6 +84,23 @@ async def _pair_journals(real_client, real_engine):
         headers=auth(firm_tok))
     assert granted.status_code == 201, granted.text
     return tok, firm_tok, client_company, granted.json()["credential"], contacts
+
+
+async def test_journal_routes_open_only_to_a_key_with_journals(real_client, real_engine, monkeypatch):
+    """The firm's journal feed, lock date and journal intake refuse a signed-in user,
+    even the firm's owner, and a key that was not given journals; a client holding such
+    a key still syncs everything else cleanly."""
+    _, firm_tok, client_company, contacts_key, _ = await _paired(real_client, real_engine)
+    _route_to_app(monkeypatch, [])
+    results = await _two_way(client_company, contacts_key)
+    assert all(r.ok for r in results.values()), {k: r.errors for k, r in results.items()}
+    calls = (("GET", "/accounting/peer/journals", None), ("GET", "/accounting/peer/lock", None),
+             ("POST", "/accounting/peer/journals", {"records": []}))
+    peer = {"Authorization": f"Peer {contacts_key}", "X-Celerp-Source-Company": client_company}
+    for headers in (auth(firm_tok), peer):
+        for method, path, body in calls:
+            r = await real_client.request(method, path, json=body, headers=headers)
+            assert r.status_code == 403, (method, path, r.text)
 
 
 def _from_firm(journals: dict) -> dict[str, dict]:
@@ -192,7 +209,9 @@ async def test_reverse_dates_follow_both_locks(real_client, real_engine, monkeyp
 
     await _post_journal(real_client, firm_tok, today, 30.0, "Dated today")
     await _two_way(client_company, credential)
-    row = next(i for i in await _received(real_client, tok) if i["memo"] == "Dated today")
+    received = await _received(real_client, tok)
+    assert received[0]["memo"] == "Dated today"  # newest first
+    row = received[0]
     await _lock(real_client, tok, today)
     before = await _journals(real_engine, client_company)
     r = await real_client.post(f"/accounting/journal-entries/{row['id']}/reverse", headers=auth(tok))
@@ -283,7 +302,8 @@ async def test_firm_cannot_void_what_the_client_sent(real_client, real_engine, m
                                   headers=auth(firm_tok))).json()["items"]
     synced = next(d for d in docs if d.get("ref_id") == invoice["ref_id"])
     doc_id = synced.get("entity_id") or synced["id"]
-    r = await real_client.patch(f"/docs/{doc_id}", json={"notes": "firm edit"}, headers=auth(firm_tok))
+    r = await real_client.patch(f"/docs/{doc_id}", json={"fields_changed": {"notes": {"new": "firm edit"}}},
+                                headers=auth(firm_tok))
     assert r.status_code == 422 and "journal entry" in r.json()["detail"].lower(), r.text
     r = await real_client.post(f"/docs/{doc_id}/void", json={}, headers=auth(firm_tok))
     assert r.status_code == 422 and "journal entry" in r.json()["detail"].lower(), r.text
@@ -307,8 +327,8 @@ async def test_lock_refusal_told_once_and_not_resent(real_client, real_engine, m
     assert ("POST", "/docs/import/batch") not in sent
     assert len([n for n in await _notices(real_engine, client_company) if invoice["ref_id"] in n[1]]) == 1
 
-    r = await real_client.patch(f"/docs/{invoice['id']}", json={"notes": "corrected"}, headers=auth(tok))
-    assert r.status_code == 200, r.text
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    await _lock(real_client, firm_tok, yesterday)
     sent.clear()
     await _two_way(client_company, credential)
     assert sent.count(("POST", "/docs/import/batch")) == 1

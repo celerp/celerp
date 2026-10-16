@@ -1824,6 +1824,7 @@ async def create_doc(
 
 @router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    await _refuse_synced(session, company_id, entity_id)
     result = await write_doc_patch(session, company_id, role, settings, user, entity_id, payload)
     await session.commit()
     return result
@@ -2646,8 +2647,19 @@ async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, u
 
 @router.post("/{entity_id}/void")
 async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    await _refuse_synced(session, company_id, entity_id)
     return await void_document(entity_id, payload, company_id, user, session,
                                commit=True, role=role, settings=settings)
+
+
+async def _refuse_synced(session: AsyncSession, company_id, entity_id: str) -> None:
+    """A document a connected company sent is that company's to change; this company
+    answers it with a journal entry of its own."""
+    from celerp.services.peer_journals import synced_source
+
+    sender = await synced_source(session, uuid.UUID(str(company_id)), "doc", entity_id)
+    if sender is not None:
+        raise HTTPException(status_code=422, detail=t("documents.err_peer_synced", company=sender))
 
 async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: dict, tag: str, trigger: str) -> None:
     """Once an invoice stops standing (void, back to draft), settle any cost it still

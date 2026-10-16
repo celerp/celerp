@@ -16,7 +16,7 @@ from celerp.models.company_peer import CompanyPeerIdentity
 from celerp.models.projections import Projection
 from celerp.services.company_lock import locked_company
 
-ENTITY_TYPES = frozenset({"contact", "item", "doc", "list"})
+ENTITY_TYPES = frozenset({"contact", "item", "doc", "list", "journal_entry"})
 BATCH = 500
 
 

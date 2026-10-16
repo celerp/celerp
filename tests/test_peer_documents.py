@@ -348,7 +348,10 @@ async def test_canonical_void_route_still_commits_standard_api_requests(monkeypa
     async def execute(entity_id, body, company_id, user, session, *, commit, role=None, settings=None):
         events.append((entity_id, commit))
         return {"event_id": 42}
+    async def own_document(session, company_id, entity_id):
+        return None
     monkeypatch.setattr(routes, "void_document", execute)
+    monkeypatch.setattr(routes, "_refuse_synced", own_document)
     result = await routes.void_doc(
         "doc:test", routes.DocVoidBody(reason="User voided"),
         company_id="company", user=SimpleNamespace(id=uuid.uuid4()),

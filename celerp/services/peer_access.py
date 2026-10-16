@@ -23,6 +23,9 @@ from celerp.services.company_lock import locked_company, lock_company
 ENTITY_SCOPE = {
     "contacts": "contacts", "products": "products", "documents": "documents",
     "attachments": "documents", "inventory": "inventory",
+    # The receiving company's own journals and lock date, fetched by the sending company,
+    # and the sending company's journals sent back.
+    "journals_in": "journals", "period_lock": "journals", "journals": "journals",
 }
 SCOPE_ORDER = tuple(dict.fromkeys(ENTITY_SCOPE.values()))
 SCOPES = frozenset(SCOPE_ORDER)
@@ -34,6 +37,9 @@ PEER_ROUTES = {
     ("POST", "/docs/import/batch"): "documents",
     ("POST", "/docs/{entity_id}/files"): "attachments",
     ("POST", "/lists/import/batch"): "inventory",
+    ("GET", "/accounting/peer/journals"): "journals_in",
+    ("GET", "/accounting/peer/lock"): "period_lock",
+    ("POST", "/accounting/peer/journals"): "journals",
 }
 ENTITY_ROUTE = {entity: path for (_, path), entity in PEER_ROUTES.items()}
 # The header naming the sending company on every request signed with its key.
@@ -184,6 +190,13 @@ def _parse(token: object) -> tuple[uuid.UUID, uuid.UUID, str]:
     return company_id, grant_id, token
 
 
+def key_ids(credential: object) -> tuple[uuid.UUID, uuid.UUID]:
+    """The company that issued a key and the key's grant, read from the key itself; the
+    key is not checked."""
+    company_id, grant_id, _ = _parse(credential)
+    return company_id, grant_id
+
+
 async def issue(session: AsyncSession, *, company_id: uuid.UUID, source_company_id: uuid.UUID,
                 label: str, scopes: frozenset[str],
                 now: datetime | None = None) -> tuple[CompanyPeerGrant, str]:
@@ -227,8 +240,8 @@ async def authenticate(session: AsyncSession, credential: object, *,
     if scope not in SCOPES:
         raise HTTPException(403, UNAVAILABLE)
     row = await held(session, credential, source_company_id=source_company_id, now=now)
-    if scope not in row.scopes:
-        raise HTTPException(401, INVALID)
+    if scope not in row.scopes:  # a live key, just not given this; its holder learns nothing new
+        raise HTTPException(403, UNAVAILABLE)
     return row
 
 

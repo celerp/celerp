@@ -97,6 +97,7 @@ EXCLUDED_TABLES = {
     "company_peer_grants": "company integration credentials",
     "company_peer_identities": "company integration identity mappings",
     "company_peer_attention": "records a connected company sent that were not applied",
+    "company_peer_deliveries": "records sent to or declined from a connected company",
     "marketplace_configs": "marketplace connection settings and credentials",
     "sync_runs": "connector sync history",
     "outbound_queue": "messages waiting to leave this installation",
@@ -113,7 +114,8 @@ EXCLUDED_TABLES = {
 # Settings that describe this installation or its people, not the business.
 DROPPED_SETTINGS = frozenset({
     "ai_memory", "reorder_alert_email", "column_prefs",
-    "pay_tip_shown", "reorder_last_scan_at", "restored_backup", "lineage_id",
+    "pay_tip_shown", "reorder_last_scan_at", "restored_backup", "lineage_id", "firm_lock",
+    "firm_lock_applied",
 }) | SET_BY_KEYS
 
 # The company a restored company descends from, carried in the manifest, never remapped.
@@ -1751,6 +1753,10 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     "source_company_name": m["company"]["name"],
                     "restored_at": datetime.now(timezone.utc).isoformat(),
                     **({"provenance": m["provenance"]} if m.get("provenance") else {}),
+                    # The firm a client's copy was opened from, named when its journals reach the client.
+                    **({"opened_from": opener.name} if retain_peer_identities and current_company_id
+                       and (opener := await session.get(Company, uuid.UUID(str(current_company_id))))
+                       else {}),
                     "team_policy_carried": plan.role_permissions == "source" or replacing is not None,
                 }
                 # The carried team keeps what its roles may do in the current company.

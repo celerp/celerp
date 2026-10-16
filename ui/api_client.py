@@ -7,6 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import BinaryIO
+from urllib.parse import quote
 
 import httpx
 
@@ -3466,6 +3467,22 @@ async def get_period_lock(token: str) -> dict:
 async def set_period_lock(token: str, lock_date: str | None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/accounting/period-lock", json={"lock_date": lock_date})).json()
+
+
+async def journal_prefill(token: str, je_id: str) -> dict:
+    """A new journal entry's fields copied from journal entry ``je_id``."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/accounting/journal-entries/{quote(je_id, safe='')}/prefill")).json()
+
+
+async def journals_from_accountant(token: str) -> list[dict]:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/journal-entries/from-accountant")).json()["items"]
+
+
+async def reverse_from_accountant(token: str, je_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/journal-entries/{quote(je_id, safe='')}/reverse")).json()
 
 
 async def get_posting_accounts(token: str) -> dict:

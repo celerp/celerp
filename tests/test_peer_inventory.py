@@ -13,6 +13,7 @@ from celerp.models.projections import Projection
 from celerp.services.peer_identity import _digest
 from celerp.services.peer_inventory import receive_stock_audit
 from test_payments_stripe import _register, _h, _company_id
+from peer_marks_support import KEY, memory_marks  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("docs_running")
 
@@ -106,7 +107,7 @@ async def test_peer_count_never_overwrites_missing_or_wrong_location(client, ses
 
 
 @pytest.mark.asyncio
-async def test_count_outbound_preserves_source_identity_and_retries(monkeypatch):
+async def test_count_outbound_preserves_source_identity_and_retries(monkeypatch, memory_marks):
     from celerp.connectors import celerp as connector
     from celerp.connectors import sync_runner
     from celerp.connectors.base import ConnectorContext
@@ -140,7 +141,7 @@ async def test_count_outbound_preserves_source_identity_and_retries(monkeypatch)
     monkeypatch.setattr(connector, "_read_audits", read_audits)
     monkeypatch.setattr(connector, "RateLimitedClient", Client)
     response = await connector.CelerpConnector().sync_inventory_out(ConnectorContext(
-        company_id=company_id, store_handle="https://firm.example", access_token="cp1.secret"))
+        company_id=company_id, store_handle="https://firm.example", access_token=KEY))
     assert response.ok and response.created == 1
     assert deliveries[0]["source_revision"] == 6
     assert deliveries[0]["data"] == source_state

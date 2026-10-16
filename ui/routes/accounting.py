@@ -213,10 +213,22 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        # ?from=<journal entry>: prefilled from it (Post again), posting nothing until submitted.
+        ts, memo, lines, error = _date.today().isoformat(), "", [], None
+        if source := request.query_params.get("from"):
+            try:
+                copied = await api.journal_prefill(token, source)
+                ts, memo = copied["ts"], copied["memo"]
+                lines = [{"account": l.get("account") or "", "contact": l.get("contact") or "",
+                          "debit": str(l["debit"]) if l.get("debit") else "",
+                          "credit": str(l["credit"]) if l.get("credit") else ""}
+                         for l in copied.get("entries") or []]
+            except APIError as e:
+                error = str(e.detail)
         return await _render_journal_form(
             request, token,
-            ts=_date.today().isoformat(), memo="", lines=[],
-            idem_token=str(uuid.uuid4()), error=None,
+            ts=ts, memo=memo, lines=lines,
+            idem_token=str(uuid.uuid4()), error=error,
             date_from=request.query_params.get("date_from", ""),
             date_to=request.query_params.get("date_to", ""),
         )

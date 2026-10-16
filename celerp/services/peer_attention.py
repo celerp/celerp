@@ -14,6 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.models.company_peer import CompanyPeerAttention
 
 REFUSED = "refused"
+# A journal of the receiving company's that the connected company declined to apply, and
+# one the connected company reversed.
+DECLINED = "declined"
+REVERSAL = "reversal"
 
 
 async def record(session: AsyncSession, *, company_id: uuid.UUID, source_company_id: uuid.UUID,

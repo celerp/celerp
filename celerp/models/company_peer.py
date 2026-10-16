@@ -70,3 +70,25 @@ class CompanyPeerAttention(Base):
                             name="uq_company_peer_attention_record"),
         sa.Index("ix_company_peer_attention_company", "company_id"),
     )
+
+
+class CompanyPeerDelivery(Base):
+    """The last revision of one record this company sent to a connected company with one
+    key, or one record that company sent here and this company declined, so neither is
+    sent or applied again until the record changes. ``refused`` holds the reason when it
+    was not accepted."""
+    __tablename__ = "company_peer_deliveries"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), sa.ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    grant_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), nullable=False)
+    entity: Mapped[str] = mapped_column(sa.String(32), nullable=False)
+    entity_id: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    revision: Mapped[int] = mapped_column(sa.BigInteger, nullable=False)
+    refused: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        sa.UniqueConstraint("company_id", "grant_id", "entity", "entity_id",
+                            name="uq_company_peer_delivery_record"),
+    )

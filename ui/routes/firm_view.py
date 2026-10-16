@@ -23,10 +23,13 @@ MOVE_PAGE = "/setup/new-company/migrate"
 
 def _switch(company_id: str, destination: str | None = None) -> str:
     """Open the company, landing on *destination* (one of the switch destinations)."""
-    return f"/switch-company/{company_id}" + (f"?next={destination}" if destination else "")
+    return f"/switch-company/{company_id}" + (f"?{urlencode({'next': destination}, safe='/')}" if destination else "")
 
 
 def _attention_link(row: dict, item: dict, lang: str) -> FT | str:
+    if item.get("post_again"):  # a client's reversal: post the journal again, prefilled
+        return A(t("firm_view.post_again", lang), href=_switch(row["company_id"], item["post_again"]),
+                 cls="btn btn--secondary btn--xs")
     href = item.get("href")
     if not href:
         return ""

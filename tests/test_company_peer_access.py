@@ -97,7 +97,7 @@ def test_unimplemented_peer_operations_cannot_be_pre_authorized():
     from pydantic import ValidationError
     from celerp.routers.company_peers import GrantRequest
 
-    assert SCOPES == frozenset({"contacts", "products", "documents", "inventory"})
+    assert SCOPES == frozenset({"contacts", "products", "documents", "inventory", "journals"})
     target = uuid.uuid4()
     common = {"source_company_id": target, "label": "Reviewed contact-only access"}
     assert GrantRequest(**common, scopes={"contacts"}).scopes == {"contacts"}
@@ -125,7 +125,7 @@ async def test_product_peer_scope_is_separate_from_contact_authority(db):
         with pytest.raises(HTTPException) as no_contacts:
             await authenticate(session, key, source_company_id=source,
                                scope="contacts", now=AT)
-        assert no_contacts.value.status_code == 401
+        assert no_contacts.value.status_code == 403
         with pytest.raises(HTTPException):
             await authenticate(session, key, source_company_id=uuid.uuid4(),
                                scope="products", now=AT)

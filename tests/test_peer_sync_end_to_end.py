@@ -239,7 +239,7 @@ async def test_peer_key_refused_outside_its_routes(real_client, real_engine):
     assert narrow.status_code == 201, narrow.text
     r = await real_client.post("/docs/import/batch", json={"records": []}, headers={
         "Authorization": f"Peer {narrow.json()['credential']}", "X-Celerp-Source-Company": client_company})
-    assert r.status_code == 401, r.text
+    assert r.status_code == 403, r.text
     wrong_source = {**headers, "X-Celerp-Source-Company": str(uuid.uuid4())}
     r = await real_client.post("/crm/contacts/import/batch", json={"records": []}, headers=wrong_source)
     assert r.status_code == 401, r.text

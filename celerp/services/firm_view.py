@@ -34,9 +34,17 @@ def _instant(value: datetime) -> datetime:
 
 
 def _item(kind: str, label: str, reason: str, href: str | None = None,
-          when: datetime | None = None) -> dict:
+          when: datetime | None = None, post_again: str | None = None) -> dict:
     return {"kind": kind, "label": label, "reason": reason, "href": href,
-            "at": when.isoformat() if when else None}
+            "at": when.isoformat() if when else None, "post_again": post_again}
+
+
+def _attention_item(a) -> dict:
+    """A record a connected company did not apply, or a journal of the firm's it reversed,
+    which the firm may post again from a new journal prefilled with it."""
+    again = (f"/accounting/journal/new?from={a.source_entity_id}"
+             if a.kind == peer_attention.REVERSAL else None)
+    return _item(a.kind, a.label, a.reason, None, _instant(a.created_at), again)
 
 
 def _keys(grants: list[CompanyPeerGrant], refused: bool, now: datetime) -> tuple[str, list[dict]]:
@@ -130,9 +138,11 @@ async def firm_view(session: AsyncSession, user_id: uuid.UUID, *, q: str | None 
             rows.append(row)
             continue
         own = [g for g in grants if g.company_id == company.id]
-        refused = [_item(a.kind, a.label, a.reason, None, _instant(a.created_at))
-                   for a in attention if a.company_id == company.id]
-        row["sync"], key_items = _keys(own, bool(refused), now)
+        refused = [_attention_item(a) for a in attention if a.company_id == company.id]
+        # Only a record this company refused makes its sync failing; a journal the
+        # connected company declined or reversed is its decision, listed for the firm.
+        failing = any(item["kind"] == peer_attention.REFUSED for item in refused)
+        row["sync"], key_items = _keys(own, failing, now)
         used = [_instant(g.last_used_at) for g in own if g.last_used_at is not None]
         row["last_sync"] = max(used).isoformat() if used else None
         copy_items, unavailable = copies[company.id]

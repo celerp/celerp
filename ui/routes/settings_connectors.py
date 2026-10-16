@@ -8,6 +8,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -419,8 +420,11 @@ _ENTITY_LABELS: dict[str, str] = {
     "orders": "dashboard.orders",
     "contacts": "dashboard.contacts",
     "inventory": "nav.inventory",
+    "journals": "connectors.entity_journals",
+    "period_lock": "connectors.entity_period_lock",
     "products_out": "connectors.entity_products_out",
     "contacts_out": "dashboard.contacts",
+    "journals_out": "connectors.entity_journals_out",
     "invoices_out": "connectors.entity_invoices_out",
     "documents_out": "connectors.entity_documents_out",
     "inventory_out": "connectors.entity_inventory_out",
@@ -1106,6 +1110,69 @@ def _pairing_card(company_id: str, name: str, lang: str) -> FT:
     )
 
 
+def _from_accountant_action(item: dict, lang: str) -> FT:
+    """Reverse an entry the accountant posted, or undo its reversal; each confirm names
+    the date it posts on, and an entry with no open date says so instead."""
+    common = {"hx_target": "#from-accountant", "hx_swap": "outerHTML"}
+    if item.get("status") == "void":
+        return Span(t("accountant_access.from_voided", lang))
+    reversal = item.get("reversal")
+    target, day = (reversal["id"], reversal.get("undo_on")) if reversal else (item["id"], item.get("reverse_on"))
+    if day is None:
+        return Span(t("accountant_access.from_no_open_date", lang))
+    url = f"/settings/connectors/celerp/from-accountant/{quote(target, safe='')}/reverse"
+    if reversal:
+        return Span(
+            Em(t("accountant_access.from_reversed_on", lang, date=reversal["ts"])), " ",
+            Button(t("btn.undo", lang), cls="btn btn--xs btn--outline", hx_post=url,
+                   hx_confirm=t("accountant_access.from_undo_confirm", lang, memo=item["memo"] or "--", date=day),
+                   **common))
+    return Button(t("accountant_access.from_reverse", lang), cls="btn btn--xs btn--outline", hx_post=url,
+                  hx_confirm=t("accountant_access.from_reverse_confirm", lang, memo=item["memo"] or "--", date=day),
+                  **common)
+
+
+def _from_accountant(items: list[dict] | None, lang: str, error: str | None = None) -> FT:
+    """The journal entries the accountant posted in these books, newest first; None when
+    they could not be read."""
+    from ui.components.shell import flash
+    from ui.components.table import EMPTY, fmt_money
+    notice = [flash(error)] if error else []
+    if items is None:
+        body = []
+    elif not items:
+        body = [P(t("accountant_access.from_empty", lang), cls="empty-state-msg")]
+    else:
+        body = [Table(
+            Thead(Tr(Th(t("th.date", lang)), Th(t("th.memo", lang)),
+                     Th(t("accountant_access.from_lines", lang)),
+                     Th(t("th.total", lang), cls="cell--number"), Th(t("th.actions", lang)))),
+            Tbody(*[Tr(
+                Td(item.get("ts") or EMPTY), Td(item.get("memo") or EMPTY),
+                Td(item.get("lines") or EMPTY, cls="cell--mono"),
+                Td(fmt_money(item.get("total")), cls="cell--number"),
+                Td(_from_accountant_action(item, lang)),
+                cls="data-row",
+            ) for item in items]),
+            cls="data-table",
+        )]
+    return Div(
+        H3(t("accountant_access.from_title", lang)),
+        P(t("accountant_access.from_hint", lang), cls="settings-hint"),
+        *notice, *body,
+        id="from-accountant", cls="settings-card",
+    )
+
+
+async def _from_accountant_section(token: str, lang: str, error: str | None = None) -> FT:
+    from ui.api_client import APIError, journals_from_accountant
+    try:
+        items = await journals_from_accountant(token)
+    except APIError as exc:
+        return _from_accountant(None, lang, error or refusal_text(exc.detail))
+    return _from_accountant(items, lang, error)
+
+
 def _grant_form(lang: str) -> FT:
     from celerp.config import settings
     from celerp.services.peer_access import SCOPE_ORDER
@@ -1706,6 +1773,25 @@ def setup_routes(app):
     async def connector_unmark_reconciled(request: Request, platform: str, record_id: str):
         return await _set_reconciled(request, platform, record_id, mark=False)
 
+    @app.post("/settings/connectors/celerp/from-accountant/{je_id}/reverse")
+    async def from_accountant_reverse(request: Request, je_id: str):
+        """HTMX: reverse an entry the accountant posted, or undo its reversal, then show
+        the section again with what happened."""
+        from ui.api_client import APIError, reverse_from_accountant
+        from ui.components.shell import toast_header
+
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        try:
+            result = await reverse_from_accountant(token, je_id)
+        except APIError as exc:
+            return await _from_accountant_section(token, lang, refusal_text(exc.detail))
+        section = await _from_accountant_section(token, lang)
+        return HTMLResponse(to_xml(section), headers=toast_header(
+            t("accountant_access.from_posted", lang, date=result.get("ts") or "--"), "success"))
+
     @app.get("/settings/connectors/{platform}")
     async def connector_detail_page(request: Request, platform: str):
         """Full-page connector detail (status + config + actions). Reached from the overview
@@ -1745,6 +1831,7 @@ def setup_routes(app):
             if platform == "celerp" else "",
             _connector_detail_body(c, runs, config, lang, deposit=deposit,
                                    attention=await _attention(company_id, platform)),
+            await _from_accountant_section(token, lang) if platform == "celerp" else "",
             title=f"{name} - Celerp",
             nav_active="settings",
             request=request,

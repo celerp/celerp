@@ -52,7 +52,8 @@ def peer_headers(ctx: ConnectorContext) -> dict:
 
 # The import record event each entity's record is written as at the receiving company.
 _EVENT = {"contacts": "crm.contact.created", "products": "item.created",
-          "documents": "doc.created", "inventory": "list.created"}
+          "documents": "doc.created", "inventory": "list.created",
+          "journals": "acc.journal_entry.created"}
 
 
 async def _read_projection_page(company_id: uuid.UUID, after: str, since, entity: str) -> list[tuple[str, int, dict]]:
@@ -257,8 +258,8 @@ async def _read_audits(company_id: uuid.UUID, after: str, since=None) -> list[tu
 
 
 def attention_label(state: dict, fallback: str) -> str:
-    """How the user knows a record: its document number, name, or stock location."""
-    for key in ("ref_id", "name", "location_name"):
+    """How the user knows a record: its document number, name, stock location, or memo."""
+    for key in ("ref_id", "name", "location_name", "memo"):
         value = state.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -291,6 +292,45 @@ async def _excluded_stock_document(company_id: uuid.UUID) -> tuple[str, str] | N
             after = rows[-1][0]
 
 
+_LINE_FIELDS = ("account", "debit", "credit", "contact", "fx_debit", "fx_credit",
+                "fx_currency", "fx_rate")
+
+
+async def _read_journals(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
+    """The company's own manual journal entries: never one its accountant posted here, and
+    never one a document posted, which the document carries. A reversal names what it
+    reverses: the accountant's own journal when that is where it came from."""
+    from celerp.db import get_session_ctx
+    async with get_session_ctx() as session:
+        query = select(Projection.entity_id, Projection.version, Projection.state).where(
+            Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+            Projection.entity_id > after,
+            Projection.state["je_type"].as_string() == "manual",
+            Projection.state["status"].as_string().in_(("posted", "void")),
+            Projection.state["peer_origin"].as_string().is_(None))
+        if since is not None:
+            query = query.where(Projection.updated_at >= since)
+        rows = (await session.execute(query.order_by(Projection.entity_id).limit(_PAGE))).all()
+        reversed_ids = {str(s["reverses"]) for _, _, s in rows if (s or {}).get("reverses")}
+        origins = {str(eid): (s or {}).get("peer_origin") for eid, s in (await session.execute(
+            select(Projection.entity_id, Projection.state).where(
+                Projection.company_id == company_id,
+                Projection.entity_id.in_(reversed_ids)))).all()} if reversed_ids else {}
+    out = []
+    for entity_id, version, state in rows:
+        state = dict(state or {})
+        data = {"memo": state.get("memo") or "", "ts": str(state.get("ts") or "")[:10],
+                "status": state.get("status"),
+                "entries": [{k: line[k] for k in _LINE_FIELDS if line.get(k) is not None}
+                            for line in state.get("entries") or []]}
+        if state.get("reverses"):
+            origin = origins.get(str(state["reverses"]))
+            data["reverses"] = ({"origin": origin["journal"]} if isinstance(origin, dict)
+                                else {"journal": str(state["reverses"])})
+        out.append((str(entity_id), int(version), data))
+    return out
+
+
 class _Refused(ValueError):
     """The receiving company refused a record and said why."""
 
@@ -305,12 +345,15 @@ def _refusal(errors: list) -> str:
 class CelerpConnector(ConnectorBase):
     name = "celerp"
     display_name = "Celerp Accountant"
-    direction = SyncDirection.OUTBOUND
+    direction = SyncDirection.BOTH
     category = ConnectorCategory.ACCOUNTING
-    supported_entities = []
+    # Fetched from the accountant before anything is sent: its journals, then its lock
+    # date, so a journal it posted before locking is not declined by its own lock.
+    supported_entities = [SyncEntity.JOURNALS, SyncEntity.PERIOD_LOCK]
     store_scoped_ids = False
     conflict_strategy = {SyncEntity.CONTACTS: "source"}
     outbound_dependencies = {
+        "journals_out": frozenset({"contacts_out"}),
         "documents_out": frozenset({"contacts_out", "products_out"}),
         "inventory_out": frozenset({"documents_out"}),
         "attachments_out": frozenset({"documents_out"}),
@@ -330,28 +373,45 @@ class CelerpConnector(ConnectorBase):
         """Shared incremental delivery; entity-specific data never bypasses validation."""
         from celerp.connectors.sync_runner import _last_success_watermark
 
-        if kind not in ("contacts", "products", "documents", "inventory"):
+        from celerp.services import peer_journals
+        from celerp.services.peer_access import key_ids
+
+        if kind not in ("contacts", "products", "documents", "inventory", "journals"):
             raise ValueError("Unsupported peer entity")
         entity = {"contacts": SyncEntity.CONTACTS, "products": SyncEntity.PRODUCTS,
-                  "documents": SyncEntity.DOCUMENTS,
-                  "inventory": SyncEntity.INVENTORY}[kind]
+                  "documents": SyncEntity.DOCUMENTS, "inventory": SyncEntity.INVENTORY,
+                  "journals": SyncEntity.JOURNALS}[kind]
         result = SyncResult(entity=entity, direction=SyncDirection.OUTBOUND,
                             errors=[], attention=[])
         target = _target_url(ctx, kind)
         if not isinstance(ctx.access_token, str) or not ctx.access_token.startswith("cp1."):
             raise ValueError("No scoped receiving credential is connected")
         company_id = uuid.UUID(ctx.company_id)
+        grant_id = key_ids(ctx.access_token)[1]
         since = await _last_success_watermark(ctx.company_id, self.name, kind + "_out")
         fields = _FIELDS if kind == "contacts" else _PRODUCT_FIELDS if kind == "products" else None
+        label = {"contacts": "Contact", "products": "Product", "documents": "Document",
+                 "inventory": "Stock count", "journals": "Journal entry"}[kind]
         after = ""
         async with RateLimitedClient(public_only=True) as client:
             while True:
                 page = await reader(company_id, after, since)
                 if not page:
                     break
+                marks, firm_lock = await peer_journals.sent_marks(
+                    company_id, grant_id, kind, [entity_id for entity_id, _, _ in page])
                 for entity_id, revision, state in page:
-                    label = {"contacts": "Contact", "products": "Product",
-                             "documents": "Document", "inventory": "Stock count"}[kind]
+                    sent = marks.get(entity_id)
+                    if sent is not None and sent[0] == revision:
+                        if sent[1] is None:
+                            result.skipped += 1  # the firm has this revision
+                            continue
+                        if peer_journals.refused_by_lock(sent[1], firm_lock):
+                            result.errors.append(label + " delivery incomplete")
+                            result.attention.append({
+                                "id": entity_id, "label": attention_label(state, entity_id),
+                                "reason": sent[1]})
+                            continue
                     reason = None
                     if type(revision) is not int or revision < 1:
                         reason = "Contact version unavailable" if kind == "contacts" else "Product state needs review"
@@ -360,7 +420,9 @@ class CelerpConnector(ConnectorBase):
                         continue
                     elif state.get("deleted") or state.get("merged_into"):
                         reason = "Deleted contact needs review" if kind == "contacts" else "Product state needs review"
-                    if kind == "inventory":
+                    if kind == "journals":
+                        data = state
+                    elif kind == "inventory":
                         data = state
                         if (not data.get("location_id") or not data.get("location_name")
                                 or not data.get("location_type") or not data.get("counts")):
@@ -395,6 +457,8 @@ class CelerpConnector(ConnectorBase):
                                 "idempotency_key": f"peer:{company_id}:{entity_id}:{revision}",
                                 "source_revision": revision,
                             }]})
+                        if response.status_code == 403 and kind == "journals":
+                            return result  # the firm's key does not open journals
                         if response.status_code != 200:
                             raise ValueError("Receiving installation refused update")
                         body = response.json()
@@ -403,8 +467,14 @@ class CelerpConnector(ConnectorBase):
                                        if body.get(s) == 1), None)
                         if refused or status is None:
                             raise _Refused(_refusal(refused))
+                        await peer_journals.note_delivery(company_id, grant_id, kind, entity_id,
+                                                          revision, None, "")
                         result.record(status)
                     except Exception as exc:
+                        if isinstance(exc, _Refused):
+                            await peer_journals.note_delivery(
+                                company_id, grant_id, kind, entity_id, revision, str(exc),
+                                f"{label} {attention_label(state, entity_id)}")
                         result.errors.append(label + " delivery incomplete")
                         result.attention.append({
                             "id": entity_id, "label": attention_label(state, entity_id),
@@ -416,6 +486,91 @@ class CelerpConnector(ConnectorBase):
                 if len(page) < _PAGE:
                     break
         return result
+
+    async def _fetch(self, client, ctx: ConnectorContext, entity: str, params: dict | None = None):
+        """The firm's answer to a fetch, or None when its key does not open journals."""
+        response = await client.get(_target_url(ctx, entity), headers=peer_headers(ctx),
+                                    params=params or {})
+        if response.status_code == 403:
+            return None
+        if response.status_code != 200:
+            raise ValueError("Receiving installation needs attention")
+        body = response.json()
+        if not isinstance(body, dict) or not isinstance(body.get("firm"), str):
+            raise ValueError("Receiving installation needs attention")
+        return body
+
+    async def sync_journals(self, ctx: ConnectorContext, since=None) -> SyncResult:
+        """Post the accountant's journal entries in these books, each once; decline one
+        these books cannot take and tell the accountant why."""
+        from celerp.services import peer_journals
+        from celerp.services.peer_access import key_ids
+
+        result = SyncResult(entity=SyncEntity.JOURNALS, direction=SyncDirection.INBOUND,
+                            errors=[], attention=[])
+        company_id = uuid.UUID(ctx.company_id)
+        firm_company, grant_id = key_ids(ctx.access_token)
+        after = ""
+        async with RateLimitedClient(public_only=True) as client:
+            while True:
+                body = await self._fetch(client, ctx, "journals_in", {"after": after})
+                if body is None:
+                    return result
+                items = body.get("items")
+                if not isinstance(items, list):
+                    raise ValueError("Receiving installation needs attention")
+                for item in items:
+                    label = attention_label(item if isinstance(item, dict) else {}, "Journal entry")
+                    try:
+                        fetched = await peer_journals.apply_firm_journal(
+                            company_id, grant_id, body["firm"], firm_company, item)
+                        if fetched.answer is not None:
+                            response = await client.post(
+                                _target_url(ctx, "journals"), headers=peer_headers(ctx), json={
+                                    "records": [{
+                                        "entity_id": item["id"], "event_type": _EVENT["journals"],
+                                        "data": fetched.answer, "source": "celerp",
+                                        "idempotency_key": f"peer:{company_id}:answer:{item['id']}:"
+                                                           f"{uuid.uuid5(uuid.NAMESPACE_URL, str(fetched.declined))}",
+                                        "source_revision": item["revision"]}]})
+                            answer = response.json() if response.status_code == 200 else {}
+                            if response.status_code != 200 or answer.get("errors"):
+                                raise _Refused(_refusal(answer.get("errors") or []))
+                            await peer_journals.answered(company_id, grant_id, item, fetched.declined)
+                        if fetched.declined is not None:
+                            result.skipped += 1
+                            result.attention.append({"id": str(item.get("id")), "label": label,
+                                                     "reason": fetched.declined})
+                        else:
+                            result.record(fetched.status)
+                    except Exception as exc:
+                        result.errors.append("Journal entry fetch incomplete")
+                        result.attention.append({
+                            "id": str(item.get("id")) if isinstance(item, dict) else "", "label": label,
+                            "reason": (str(exc) if isinstance(exc, (_Refused, ValueError))
+                                       else "Receiving installation needs attention")})
+                after = body.get("next")
+                if not isinstance(after, str) or not after:
+                    return result
+
+    async def sync_period_lock(self, ctx: ConnectorContext, since=None) -> SyncResult:
+        """Keep the accountant's lock date beside these books' own, moving theirs forward
+        to it once."""
+        from celerp.services import peer_journals
+        from celerp.services.peer_access import key_ids
+
+        result = SyncResult(entity=SyncEntity.PERIOD_LOCK, direction=SyncDirection.INBOUND,
+                            errors=[], attention=[])
+        async with RateLimitedClient(public_only=True) as client:
+            body = await self._fetch(client, ctx, "period_lock")
+        if body is not None:
+            await peer_journals.apply_firm_lock(uuid.UUID(ctx.company_id),
+                                                key_ids(ctx.access_token)[1], body)
+            result.record("updated")
+        return result
+
+    async def sync_journals_out(self, ctx: ConnectorContext) -> SyncResult:
+        return await self._send_outbound(ctx, "journals", _read_journals)
 
     async def sync_contacts_out(self, ctx: ConnectorContext) -> SyncResult:
         return await self._send_outbound(ctx, "contacts", _read_page)

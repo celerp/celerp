@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from urllib.parse import urlsplit
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -461,8 +462,11 @@ def setup_routes(app):
             new_access, new_refresh = await api_switch(token, company_id)
         except APIError as e:
             return RedirectResponse(f"/?error={e.detail}", status_code=302)
-        destination = request.query_params.get("next")
-        if destination not in SWITCH_DESTINATIONS:
+        destination = request.query_params.get("next") or ""
+        target = urlsplit(destination)
+        # A destination keeps its query (Post again names the journal to copy) but is
+        # always one of the listed pages on this site.
+        if target.scheme or target.netloc or target.path not in SWITCH_DESTINATIONS:
             destination = "/"
         resp = RedirectResponse(destination, status_code=302)
         set_session_cookies(resp, new_access, new_refresh, request)

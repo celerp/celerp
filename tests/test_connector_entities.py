@@ -14,6 +14,7 @@ import pytest
 
 from celerp.connectors import base, sync_runner
 from celerp.connectors.base import ConnectorContext
+from peer_marks_support import KEY, memory_marks  # noqa: F401
 
 _SEED_PATH = Path(__file__).resolve().parent.parent / "scripts" / "seed_demo.py"
 _spec = importlib.util.spec_from_file_location("seed_demo_entities", _SEED_PATH)
@@ -25,9 +26,9 @@ def test_entity_sets_are_defined_once():
     from ui.routes import settings_connectors
 
     assert base.OUTBOUND_ENTITIES == (
-        "products_out", "contacts_out", "invoices_out", "documents_out",
+        "products_out", "contacts_out", "journals_out", "invoices_out", "documents_out",
         "inventory_out", "attachments_out")
-    assert base.INBOUND_ENTITIES == ("products", "orders", "contacts", "inventory")
+    assert base.INBOUND_ENTITIES == ("products", "orders", "contacts", "inventory", "journals", "period_lock")
     for copy in ("_OUTBOUND_ENTITIES", "_INBOUND_ENTITIES", "_OUTBOUND_ENTITY_METHODS"):
         assert not hasattr(sync_runner, copy) and not hasattr(base, copy), copy
     assert settings_connectors._ENTITY_ORDER == [*base.INBOUND_ENTITIES, *base.OUTBOUND_ENTITIES]
@@ -43,7 +44,7 @@ def test_every_entity_has_a_label(lang):
 
 
 @pytest.mark.asyncio
-async def test_attention_names_documents_by_number(client, session, monkeypatch):
+async def test_attention_names_documents_by_number(client, session, monkeypatch, memory_marks):
     from celerp import db
     from celerp.connectors import celerp as peer
     from jose import jwt
@@ -80,7 +81,7 @@ async def test_attention_names_documents_by_number(client, session, monkeypatch)
     monkeypatch.setattr(sync_runner, "_last_success_watermark", no_prior_sync)
     monkeypatch.setattr(peer, "RateLimitedClient", Refusing)
     result = await peer.CelerpConnector().sync_documents_out(ConnectorContext(
-        company_id=company, store_handle="https://firm.example", access_token="cp1.secret"))
+        company_id=company, store_handle="https://firm.example", access_token=KEY))
     assert result.attention
     for entry in result.attention:
         assert entry["label"] == numbers[entry["id"]], entry

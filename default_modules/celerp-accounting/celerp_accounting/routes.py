@@ -46,10 +46,13 @@ from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, refusal
 from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
 from celerp.services.lot_origin import rerun_after_placing
+from celerp.services import peer_journals
 from celerp.services.attachments import (
     company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
 )
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services import peer_access
+from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user
+from celerp.services.peer_import import SourceRevision, peer_batch
 from celerp.services.company_lock import lock_chart, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
@@ -1795,6 +1798,14 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
             status_code=422,
             detail=t("acct.err_je_not_manual"),
         )
+    # A journal a connected company sent is that company's to void; this company answers
+    # it with a journal entry of its own. One the accountant posted here is reversed, so
+    # the accountant sees the reversal.
+    if (sender := await peer_journals.synced_source(session, company_id, "journal_entry",
+                                                    entity_id)) is not None:
+        raise HTTPException(status_code=422, detail=t("acct.err_je_from_peer", company=sender))
+    if state.get("peer_origin"):
+        raise HTTPException(status_code=422, detail=t("acct.err_je_peer_origin"))
     if state.get("status") == "void":
         return {"je_id": entity_id, "status": "void", "void_reason": state.get("void_reason")}
 
@@ -4603,7 +4614,88 @@ async def get_period_lock(
         "lock_date": settings.get("lock_date"),
         "lock_date_set_by": settings.get("lock_date_set_by"),
         "lock_date_set_at": settings.get("lock_date_set_at"),
+        # The accountant's own lock date, kept beside this company's (peer_journals).
+        "firm_lock": settings.get("firm_lock"),
     }
+
+
+class PeerJournalRecord(BaseModel):
+    entity_id: str = Field(min_length=1, max_length=512)
+    event_type: str = Field(max_length=64)
+    data: dict
+    source: str = Field(max_length=32)
+    idempotency_key: str = Field(max_length=1024)
+    source_revision: SourceRevision = None
+
+
+class PeerJournalBatch(BaseModel):
+    records: list[PeerJournalRecord] = Field(..., max_length=500)
+
+
+@router.get("/peer/journals")
+async def peer_journal_feed(
+    after: str = Query("", max_length=512),
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """This company's own journal entries, for the client its key belongs to; a
+    connected company's key only."""
+    return await peer_journals.journal_feed(session, auth, after)
+
+
+@router.post("/peer/journals")
+async def peer_journal_receive(
+    body: PeerJournalBatch,
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """A client's journal entries and its answers to this company's; a connected
+    company's key only."""
+    if auth.peer is None:
+        raise HTTPException(status_code=403, detail=peer_access.UNAVAILABLE)
+    return await peer_batch(auth, session, body.records)
+
+
+@router.get("/peer/lock")
+async def peer_lock(
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """This company's lock date, for the client its key belongs to."""
+    return await peer_journals.lock_feed(session, auth)
+
+
+@router.get("/journal-entries/from-accountant")
+async def journals_from_accountant(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The journal entries the accountant posted in these books, newest first."""
+    return {"items": await peer_journals.from_accountant(session, company_id)}
+
+
+@router.post("/journal-entries/{entity_id}/reverse")
+async def reverse_from_accountant(
+    entity_id: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Reverse a journal entry the accountant posted, or undo that reversal."""
+    return await peer_journals.reverse(session, company_id, user.id, entity_id)
+
+
+@router.get("/journal-entries/{entity_id}/prefill")
+async def prefill_journal(
+    entity_id: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """A new journal entry's fields copied from this one, dated on the first open day."""
+    return await peer_journals.prefill(session, company_id, entity_id)
 
 
 @router.post("/period-lock")

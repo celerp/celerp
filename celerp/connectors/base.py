@@ -38,6 +38,8 @@ class SyncEntity(str, Enum):
     INVOICES = "invoices"
     DOCUMENTS = "documents"
     ATTACHMENTS = "attachments"
+    JOURNALS = "journals"
+    PERIOD_LOCK = "period_lock"
 
 
 class ConnectorCategory(str, Enum):
@@ -55,9 +57,9 @@ class SyncFrequency(str, Enum):
 # *_out entities are pushed from Celerp to the platform, in dispatch order (documents
 # before the stock counts and files that refer to them). Each entity is run by the
 # connector method named sync_<entity>.
-INBOUND_ENTITIES = ("products", "orders", "contacts", "inventory")
+INBOUND_ENTITIES = ("products", "orders", "contacts", "inventory", "journals", "period_lock")
 OUTBOUND_ENTITIES = (
-    "products_out", "contacts_out", "invoices_out", "documents_out",
+    "products_out", "contacts_out", "journals_out", "invoices_out", "documents_out",
     "inventory_out", "attachments_out",
 )
 

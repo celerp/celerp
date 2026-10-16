@@ -101,8 +101,13 @@ async def _stock_count(session, **kw) -> str:
     return await receive_stock_audit(session, **kw)
 
 
+async def _journal(session, **kw) -> str:
+    from celerp.services.peer_journals import receive_journal
+    return await receive_journal(session, **kw)
+
+
 RECEIVERS = {"contacts": _contact, "products": _product, "documents": _document,
-             "inventory": _stock_count}
+             "inventory": _stock_count, "journals": _journal}
 
 
 async def peer_batch(ctx, session: AsyncSession, records) -> dict | None:
