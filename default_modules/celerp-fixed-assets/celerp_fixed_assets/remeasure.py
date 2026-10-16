@@ -28,13 +28,23 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
-from fastapi import HTTPException
-
+from celerp.services.money import books_currency
 from celerp_fixed_assets import disposal, notices, projections, runs, setup
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
-    _cents, _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements)
+    _cents,
+    _date,
+    _dec,
+    _effects,
+    _journal_view,
+    _lines,
+    _move,
+    _post,
+    _run,
+    asset_movements,
+)
 from celerp_fixed_assets.store import _emit, _entities, _state
+from fastapi import HTTPException
 
 _AD, _IMP, _SURPLUS = "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus"
 _ZERO = Decimal(0)
@@ -257,7 +267,7 @@ async def remeasure(session, company_id, user_id, asset_id: str, body: dict, ope
                                           f"{count} assets in it on one date.")
             _needs_market(cls)
         books = await runs._books(session, company_id)
-        currency = books.settings.get("currency") or "USD"
+        currency = books_currency(books.settings)
         value = _money(body.get(field), field.replace("_", " "), currency)
         item = _plan(books, asset_id, asset, cls, await asset_movements(session, company_id, asset_id), day,
                      operation, value, _basis(body))
@@ -300,7 +310,7 @@ async def revalue_class(session, company_id, user_id, class_id: str, body: dict)
                                       f"for {', '.join(missing)}.")
         locked = await lock_projections(session, company_id, ids)
         books = await runs._books(session, company_id)
-        currency = books.settings.get("currency") or "USD"
+        currency = books_currency(books.settings)
         items = []
         for row in rows:
             asset_id = row["asset_id"]
@@ -367,9 +377,8 @@ def _a_year_after(day: str) -> str:
 
 async def reviews(session, company_id, asset_id: str) -> list[dict]:
     """An asset's active reviews, the oldest first."""
-    from sqlalchemy import select
-
     from celerp.models.projections import ASSET_ID, Projection
+    from sqlalchemy import select
 
     rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "fa_review", ASSET_ID == asset_id))).all()
@@ -445,7 +454,7 @@ async def record_review(session, company_id, user_id, asset_id: str, body: dict)
     basis = _basis(body)
     if not basis:
         raise setup.unprocessable("Say what the review was based on.")
-    currency = settings.get("currency") or "USD"
+    currency = books_currency(settings)
     recoverable = (_money(body.get("recoverable_amount"), "recoverable amount", currency)
                    if outcome == "recoverable_amount" else None)
     review_id = f"fa:review:{asset_id.removeprefix('fa:asset:')}:{uuid.uuid4()}"

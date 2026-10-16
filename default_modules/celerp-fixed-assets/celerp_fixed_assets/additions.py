@@ -22,13 +22,27 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from fastapi import HTTPException
-
+from celerp.services.money import books_currency
 from celerp_fixed_assets import disposal, operations, projections, runs, setup, transfer
 from celerp_fixed_assets.operations import (
-    _cents, _claim, _create_asset, _date, _dec, _effects, _journal_view, _move, _next_numbers, _open_line, _post,
-    _reclass, _run, asset_movements, conflict)
+    _cents,
+    _claim,
+    _create_asset,
+    _date,
+    _dec,
+    _effects,
+    _journal_view,
+    _move,
+    _next_numbers,
+    _open_line,
+    _post,
+    _reclass,
+    _run,
+    asset_movements,
+    conflict,
+)
 from celerp_fixed_assets.store import _emit, _entities, _state
+from fastapi import HTTPException
 
 KINDS = ("improvement", "replacement")
 # What Undo latest offers on the asset page; registration and disposal have their own Undo.
@@ -92,7 +106,7 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
             raise conflict(f"{asset['number']} is not in use, so nothing can be added to it.")
         cls = await setup.get_class(session, company_id, asset.get("class_id"))
         books = await runs._books(session, company_id)
-        currency = books.settings.get("currency") or "USD"
+        currency = books_currency(books.settings)
         funding = await _funding(session, company_id, body, cls["asset_account"], currency)
         day = _date(funding["day"], "The date")
         movements = await asset_movements(session, company_id, asset_id)
@@ -222,7 +236,7 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
             raise conflict(f"{site['number']} is not in use, so it cannot be placed in service.")
         day = _date(body.get("date"), "The available-for-use date")
         books = await runs._books(session, company_id)
-        currency = books.settings.get("currency") or "USD"
+        currency = books_currency(books.settings)
         disposal.check_date(books, site, projections.live(await asset_movements(session, company_id, asset_id)), day,
                             what="available-for-use", verb="Place in service")
         rows = body.get("allocations")

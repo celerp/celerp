@@ -17,14 +17,27 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
-from fastapi import HTTPException
-
+from celerp.services.money import books_currency
 from celerp_fixed_assets import projections, runs, setup
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
-    MODULE, _cents, _date, _dec, _effects, _journal_view, _lines, _move, _post, _reversed_lines, _run,
-    asset_movements, conflict, reverse_move)
+    MODULE,
+    _cents,
+    _date,
+    _dec,
+    _effects,
+    _journal_view,
+    _lines,
+    _move,
+    _post,
+    _reversed_lines,
+    _run,
+    asset_movements,
+    conflict,
+    reverse_move,
+)
 from celerp_fixed_assets.store import _emit, _state
+from fastapi import HTTPException
 
 REASONS = ("scrapped", "lost", "donated", "other")
 _AD, _IMP, _SURPLUS = "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus"
@@ -136,7 +149,7 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
                 clearing: str | None = None) -> dict:
     """What disposing of ``share`` of one asset on ``day`` posts and moves. A sale brings
     ``proceeds`` in from its ``clearing`` account, and they count toward the gain."""
-    currency = books.settings.get("currency") or "USD"
+    currency = books_currency(books.settings)
     if asset.get("status") in ("disposed", "sold"):
         raise conflict(f"{asset['number']}: Disposed on {asset['disposal']['date']}.")
     if asset.get("status") != "active":

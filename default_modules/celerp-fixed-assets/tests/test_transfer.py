@@ -504,6 +504,9 @@ async def test_asset_page_offers_move_reclassify_and_transfer(fa):
     transfer = await fa.page(f"/fixed-assets/assets/{car}/transfer")
     assert transfer.status_code == 200 and "Beta Co" in transfer.text
     assert t("fixed_assets.transfer_taxable_hint") in transfer.text
+    # Both companies keep books in the default currency, so the price is in USD and no rate is asked.
+    assert t("fixed_assets.transfer_price_hint", currency="USD") in transfer.text
+    assert 'name="rate"' not in transfer.text
     register = await fa.page("/fixed-assets")
     assert t("fixed_assets.move") in register.text
     assert "fixed_assets." not in page.text + move.text + reclassify.text + transfer.text
@@ -529,6 +532,8 @@ async def test_transfer_reviewed_and_confirmed_from_its_page(fa):
     page = await b.page(f"/fixed-assets/assets/{theirs['entity_id']}")
     assert t("fixed_assets.transferred_from_title") in page.text and "Demo Co" in page.text
     assert t("fixed_assets.movement.contributed") in page.text
+    # Its origin is the transfer, not a hand entry.
+    assert t("fixed_assets.no_sources") not in page.text
     ours = await fa.page(f"/fixed-assets/assets/{car}")
     assert "Beta Co" in ours.text and t("fixed_assets.undo_disposal") not in ours.text
     assert t("fixed_assets.undo_latest_hint", change=t("fixed_assets.movement.transfer")) in ours.text
@@ -547,6 +552,8 @@ async def test_move_reviewed_from_the_register_selection(fa):
             "idempotency_key": str(uuid.uuid4())}
     review = await fa.submit("/fixed-assets/op/move/review", form)
     assert "Night shift lead" in review.text and t("fixed_assets.posts_nothing") in review.text
+    # A move carries no amounts, so the review shows no amount column.
+    assert t("fixed_assets.amount") not in review.text
     fingerprint = re.search(r'name="fingerprint" value="([^"]+)"', review.text).group(1)
     done = await fa.submit("/fixed-assets/op/move/confirm", {**form, "fingerprint": fingerprint})
     assert done.headers.get("HX-Redirect") == "/fixed-assets", done.text

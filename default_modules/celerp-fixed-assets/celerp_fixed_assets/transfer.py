@@ -18,15 +18,31 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
-from fastapi import HTTPException
-from sqlalchemy import select
-
+from celerp.services.money import books_currency
 from celerp_fixed_assets import disposal, projections, runs, setup, taxbooks
 from celerp_fixed_assets.calc.periods import month_index
 from celerp_fixed_assets.operations import (
-    MODULE, _amount, _cents, _create_asset, _date, _dec, _effects, _journal_view, _lines, _move, _next_numbers,
-    _post, _reversed_lines, _run, asset_movements, conflict, reverse_move)
+    MODULE,
+    _amount,
+    _cents,
+    _create_asset,
+    _date,
+    _dec,
+    _effects,
+    _journal_view,
+    _lines,
+    _move,
+    _next_numbers,
+    _post,
+    _reversed_lines,
+    _run,
+    asset_movements,
+    conflict,
+    reverse_move,
+)
 from celerp_fixed_assets.store import _emit, _state
+from fastapi import HTTPException
+from sqlalchemy import select
 
 # The rights a transfer needs in each company.
 KEYS = ("manage_accounting", "manage_fixed_assets")
@@ -61,7 +77,7 @@ async def targets(session, company_id, user_id) -> list[dict]:
         if not _uses(c.settings) or not all(role_has_permission(c.settings, role, k) for k in KEYS):
             continue
         accounts = await chart.list_accounts(session, c.id) if chart else []
-        out.append({"company_id": str(c.id), "name": c.name, "currency": c.settings.get("currency") or "USD",
+        out.append({"company_id": str(c.id), "name": c.name, "currency": books_currency(c.settings),
                     "classes": [{"id": k["id"], "name": k["name"]} for k in await setup.classes(session, c.id)],
                     "accounts": [{"code": a["code"], "name": a["name"]} for a in accounts
                                  if a["is_active"] and not a["has_children"] and a["account_type"] == "liability"]})
@@ -173,8 +189,8 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         await _related_account(session, company_id, our_name, receivable, AccountRole.RECEIVABLE)
         await _related_account(session, theirs, their_name, payable, AccountRole.PAYABLE)
         books = await runs._books(session, company_id)
-        ours_in = books.settings.get("currency") or "USD"
-        theirs_in = their_settings.get("currency") or "USD"
+        ours_in = books_currency(books.settings)
+        theirs_in = books_currency(their_settings)
         rate = _rate(body, ours_in, theirs_in, our_name, their_name)
         cls = await setup.get_class(session, company_id, asset.get("class_id"))
         their_cls = await setup.get_class(session, theirs, body.get("class_id"))

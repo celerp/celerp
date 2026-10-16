@@ -27,12 +27,10 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from fastapi import HTTPException
-from sqlalchemy import func, select
-
 from celerp.models.projections import Projection
-from celerp.services.money import round_money
+from celerp.services.money import books_currency, round_money
 from celerp_fixed_assets import notices, operations, setup, sources
+from celerp_fixed_assets.calc import rules
 from celerp_fixed_assets.calc.engine import (
     Acquire,
     Dispose,
@@ -45,10 +43,11 @@ from celerp_fixed_assets.calc.engine import (
     schedule,
 )
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
-from celerp_fixed_assets.calc import rules
 from celerp_fixed_assets.operations import MODULE, _cents, _dec, _move, conflict
 from celerp_fixed_assets.projections import REMEASUREMENTS, live
 from celerp_fixed_assets.store import _emit, _entities, _state
+from fastapi import HTTPException
+from sqlalchemy import func, select
 
 log = logging.getLogger(__name__)
 
@@ -239,7 +238,7 @@ def asset_schedule(asset: dict, movements: list[dict], settings: dict, through: 
 
 def full_schedule(asset: dict, movements: list[dict], settings: dict, through: int):
     """The asset's calc.engine Schedule through month ``through``."""
-    currency = settings.get("currency") or "USD"
+    currency = books_currency(settings)
     policy = base_policy(asset, movements)
     # The residual is a share of what the asset was acquired or brought in at.
     cost = sum((_dec((m.get("amounts") or {}).get("cost")) for m in live(movements)

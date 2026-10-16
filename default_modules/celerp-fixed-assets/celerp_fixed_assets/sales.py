@@ -22,15 +22,27 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from fastapi import HTTPException
-from sqlalchemy import select
-
 from celerp.models.projections import Projection
+from celerp.services.money import books_currency
 from celerp_fixed_assets import disposal, runs, setup
 from celerp_fixed_assets.operations import (
-    MODULE, _amount, _cents, _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements,
-    conflict)
+    MODULE,
+    _amount,
+    _cents,
+    _date,
+    _dec,
+    _effects,
+    _journal_view,
+    _lines,
+    _move,
+    _post,
+    _run,
+    asset_movements,
+    conflict,
+)
 from celerp_fixed_assets.store import _emit, _state
+from fastapi import HTTPException
+from sqlalchemy import select
 
 # The permissions a person needs to post or reverse a document that sells or credits an
 # asset, and to write one.
@@ -154,7 +166,7 @@ async def _draft_invoice(session, company_id, user_id, asset_id: str, asset: dic
                          header: dict, sale: dict) -> str:
     """A new draft invoice for the asset, which waits on it."""
     data = {"doc_type": "invoice", "issue_date": day, "currency": header.pop("currency", None)
-            or (await runs._books(session, company_id)).settings.get("currency") or "USD", **header,
+            or books_currency((await runs._books(session, company_id)).settings), **header,
             "line_items": [{**line, "line_id": uuid.uuid4().hex, "quantity": 1, "asset_id": asset_id}]}
 
     async def wait(doc_id):
@@ -300,7 +312,7 @@ async def credit(session, company_id, user_id, asset_id: str, body: dict) -> dic
                 **{k: source[k] for k in _TAX_FIELDS if source.get(k) is not None}}
         if context["kind"] == "returned":
             line["asset_returned"] = True
-        base = (await runs._books(session, company_id)).settings.get("currency") or "USD"
+        base = books_currency((await runs._books(session, company_id)).settings)
         data = {"doc_type": "credit_note", "original_doc_id": sale["invoice_id"], "issue_date": context["day"],
                 **{k: invoice[k] for k in ("contact_id", "contact_name") if invoice.get(k)},
                 **credit_note_currency(invoice, base, None, None), "line_items": [line]}
@@ -340,7 +352,7 @@ async def view(session, company_id, asset_id: str) -> dict:
         line = _carries(invoice, asset_id)
         proceeds = _dec(sale.get("price"))
         if line is not None:
-            proceeds = asset_line_proceeds(invoice, books.settings.get("currency") or "USD", asset_id)
+            proceeds = asset_line_proceeds(invoice, books_currency(books.settings), asset_id)
         out["draft_deleted"] = line is None and (invoice or {}).get("status") != "void"
         out["actions"] = ["cancel"] + (["reissue"] if line is None or invoice.get("status") == "void" else [])
         out.update(proceeds=_cents(proceeds), credited=_cents(0), remaining=_cents(proceeds))
@@ -459,7 +471,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
         await _set(session, company_id, user_id, asset_id, asset["status"],
                    disposal={**disposed, "gain_or_loss": _cents(gain - amount)}, sale={**sale, "credits": credits})
         return
-    foreign = str(doc.get("currency") or "").upper() not in ("", (books.settings.get("currency") or "USD").upper())
+    foreign = str(doc.get("currency") or "").upper() not in ("", books_currency(books.settings))
     if abs(amount - remaining) > (Decimal("0.01") if foreign else 0):
         raise conflict(f"A return credits what is left of the sale of {number}: {_money(remaining)}.")
     mv = await _state(session, company_id, sale["movement_id"])

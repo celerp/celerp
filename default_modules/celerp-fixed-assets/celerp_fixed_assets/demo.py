@@ -13,6 +13,8 @@ import uuid
 from datetime import date
 from types import SimpleNamespace
 
+from celerp.services.money import books_currency
+
 # key, supplier, line name, quantity, unit price, months back, day of month, account code
 _BILLS = (
     ("forklift", "Lift Equipment Co", "Forklift", 1, "24000", 18, 20, None),
@@ -43,7 +45,7 @@ async def seed_demo_assets(session, company_id, user_id) -> None:
     if await has_own_books(session, company_id):
         return
     company = await locked_company(session, company_id)
-    currency = (company.settings or {}).get("currency") or "USD"
+    currency = books_currency(company.settings or {})
     today = date.today()
     for key, supplier, name, quantity, price, months, day, account in _BILLS:
         line = {"line_id": str(uuid.uuid4()), "name": name, "quantity": quantity, "unit_price": float(price),

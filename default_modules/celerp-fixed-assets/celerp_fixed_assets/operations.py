@@ -23,13 +23,13 @@ import uuid
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from fastapi import HTTPException
-from sqlalchemy import select
-
 from celerp.models.projections import Projection
+from celerp.services.money import books_currency
 from celerp_fixed_assets import setup, sources
 from celerp_fixed_assets.projections import BUCKETS
 from celerp_fixed_assets.store import _emit, _entities, _state
+from fastapi import HTTPException
+from sqlalchemy import select
 
 MODULE = "celerp-fixed-assets"
 REGISTER_MODES = ("separate", "quantity", "expense", "maintenance")
@@ -278,7 +278,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
             from celerp.services.money import allocate_pro_rata
 
             count = int(quantity)
-            currency = (await setup.company_settings(session, company_id)).get("currency") or "USD"
+            currency = books_currency(await setup.company_settings(session, company_id))
             costs = allocate_pro_rata(amount, [Decimal(1)] * count, currency)
             each = [(cost, 1) for cost in costs]
         else:

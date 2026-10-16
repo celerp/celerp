@@ -15,11 +15,12 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
+from celerp.services.money import books_currency
 from celerp_fixed_assets import projections, recon, runs, setup, taxbooks
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.operations import _cents, _dec
-from celerp_fixed_assets.store import _entities, _state
 from celerp_fixed_assets.sales import _credited, doc_number
+from celerp_fixed_assets.store import _entities, _state
 
 _ZERO = Decimal(0)
 # The cost column each operation moves within the period; any other operation is an addition.
@@ -159,7 +160,7 @@ async def schedule(session, company_id, date_from, date_to) -> dict:
                                     **_shown(figures)})
     totals = {k: sum((g["figures"][k] for g in groups.values()), _ZERO) for k in FIGURES}
     rows = sorted(groups.values(), key=lambda g: g["name"] or "")
-    return {"date_from": start.isoformat(), "date_to": end.isoformat(), "currency": settings.get("currency"),
+    return {"date_from": start.isoformat(), "date_to": end.isoformat(), "currency": books_currency(settings),
             "classes": [{"id": g["id"], "name": g["name"], **_shown(g["figures"]), "assets": g["assets"]}
                         for g in rows],
             "totals": _shown(totals)}
@@ -274,14 +275,13 @@ async def book_tax(session, company_id, regime_key: str, year) -> dict:
               if book["deferred_tax"] or k != "deferred_tax"}
     return {**{k: book[k] for k in ("regime", "label", "basis", "year", "start", "end", "status", "read_only",
                                     "read_only_reason", "deferred_tax")},
-            "currency": settings.get("currency"), "rows": rows, "totals": totals}
+            "currency": books_currency(settings), "rows": rows, "totals": totals}
 
 
 async def statutory(session, company_id, report_key: str, year) -> dict:
     """A country form, drawn by its module from its regime's book for the tax year."""
-    from fastapi import HTTPException
-
     from celerp_fixed_assets.calc import rules
+    from fastapi import HTTPException
     from ui.i18n import t
 
     settings = await setup.company_settings(session, company_id)

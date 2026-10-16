@@ -15,10 +15,10 @@ from __future__ import annotations
 from decimal import Decimal
 from urllib.parse import quote_plus
 
-from sqlalchemy import select
-
 from celerp.models.projections import Projection
+from celerp.services.money import books_currency
 from celerp_fixed_assets import setup
+from sqlalchemy import select
 
 BILL_TYPES = ("bill",)
 
@@ -60,7 +60,7 @@ async def _bill_lines(session, company_id, company_settings: dict, asset_account
         Projection.state["doc_type"].as_string().in_(BILL_TYPES)))).all()
     journals = await _posted_journals(session, company_id, ids=[f"je:auto:{d}:bill" for d, _ in docs])
     fixed = role_map(company_settings).get("fixed_assets")
-    base = company_settings.get("currency") or "USD"
+    base = books_currency(company_settings)
     out = []
     for doc_id, doc in docs:
         je = journals.get(f"je:auto:{doc_id}:bill")

@@ -126,9 +126,11 @@ def _input(name: str, value="", type_: str = "text", **attrs) -> FT:
 async def _context(token: str) -> tuple[dict, str]:
     """The fixed assets setup and the company currency."""
     setup = await api.fixed_assets_get(token, "/setup")
+    from celerp.services.money import books_currency
+
     currency = ""
     try:
-        currency = (await api.get_company(token)).get("currency") or ""
+        currency = books_currency(await api.get_company(token))
     except APIError:
         pass
     return setup, currency
@@ -155,10 +157,13 @@ def _preview(action: str, result: dict, currency: str) -> FT:
     if "missing" in result:
         parts += _class_revaluation_preview(result, currency)
     elif assets:
+        # Operations that post nothing (a move) carry no amounts, so they get no amount column.
+        priced = any("cost" in a or "accumulated_depreciation" in a for a in assets)
         rows = [Tr(Td(a.get("number") or EMPTY), Td(_text(a.get("name"))),
-                   _money_td(a.get("cost", a.get("accumulated_depreciation")), currency)) for a in assets]
+                   *([_money_td(a.get("cost", a.get("accumulated_depreciation")), currency)] if priced else []))
+                for a in assets]
         parts.append(Table(Thead(Tr(Th(t("fixed_assets.number")), Th(t("fixed_assets.name")),
-                                    _money_th(t("fixed_assets.amount")))),
+                                    *([_money_th(t("fixed_assets.amount"))] if priced else []))),
                            Tbody(*rows), cls="data-table"))
     if result.get("classification"):
         parts += _correction_preview(result, currency)
@@ -1865,7 +1870,7 @@ def setup_ui_routes(app) -> None:
                            Div(_details_card(asset),
                                _figures_card(asset, _class_names(classes).get(asset.get("class_id")), currency),
                                cls="detail-grid"),
-                           _sources_card(asset, currency), *extra,
+                           "" if asset.get("transferred_from") else _sources_card(asset, currency), *extra,
                            Div(H2(t("fixed_assets.movements"), cls="section-title"),
                                _movements_table(movements, currency), cls="detail-card section-card"),
                            Div(H2(t("fixed_assets.undo"), cls="section-title"), undo,
