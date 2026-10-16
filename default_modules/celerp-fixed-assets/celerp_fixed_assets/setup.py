@@ -38,6 +38,19 @@ CLASS_FIELDS = ("name", "kind", "asset_account", "accumulated_depreciation_accou
                 "method", "life_months", "residual_percent", "convention", "params", "archived")
 
 
+# What an asset depreciates under, copied from its class when it is added: a later class
+# edit changes new assets only, until it is applied to existing ones as a correction.
+POLICY_FIELDS = ("method", "life_months", "residual_percent", "convention", "params")
+
+
+def policy_of(cls: dict, fa: dict) -> dict:
+    """The policy an asset of ``cls`` takes, its convention resolved from the settings."""
+    return {"method": cls["method"], "life_months": cls.get("life_months"),
+            "residual_percent": str(cls.get("residual_percent") or "0"),
+            "convention": cls.get("convention") or fa.get("convention") or "full_month",
+            "params": dict(cls.get("params") or {})}
+
+
 def unprocessable(message: str) -> HTTPException:
     return HTTPException(status_code=422, detail=message)
 

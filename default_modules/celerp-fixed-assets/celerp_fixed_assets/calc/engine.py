@@ -6,7 +6,9 @@ An asset is a set of layers: the acquisition (or opening balance) and each
 improvement. Each layer depreciates its own amount over its own life, consumed month
 by month under the timing convention. An estimate change merges the layers into one:
 the carrying amount less the new residual over the new remaining life, from the month
-of the change.
+of the change. An estimate change may also change the method, its parameters and the
+timing convention from then on; every layer depreciates under the method it was laid
+down with.
 
 Rounding is cumulative: a month's amount is the rounded cumulative charge less the
 rounded cumulative of the month before, so the total lands exactly on the depreciable
@@ -49,9 +51,15 @@ class Improve:
 
 @dataclass(frozen=True)
 class EstimateChange:
+    """From the month of ``on``: the carrying amount less ``residual`` over the life left
+    (months, or units for a method driven by readings), optionally under a new method,
+    parameters or convention."""
     on: date
-    life_months: int
+    life_months: Decimal | int
     residual: Decimal
+    method: str | None = None
+    params: dict | None = None
+    convention: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +112,8 @@ class Layer:
     life: Decimal
     start: int
     weights: list[Decimal]
+    method: object
+    params: dict
     fractions: list[Decimal] = field(default_factory=list)
 
     @property
@@ -132,12 +142,16 @@ class Schedule:
     layers: list[Layer]
 
 
-def _charges(layer: Layer, method, params: dict) -> list[Decimal]:
-    return method.amounts(MethodInputs(layer.basis, layer.residual, layer.life, layer.fractions, params))
+def _charges(layer: Layer) -> list[Decimal]:
+    return layer.method.amounts(MethodInputs(layer.basis, layer.residual, layer.life, layer.fractions, layer.params))
 
 
-def _carrying(layers: list[Layer], method, params: dict) -> Decimal:
-    return sum((ly.basis + ly.residual - sum(_charges(ly, method, params), _ZERO) for ly in layers), _ZERO)
+def _carrying(layers: list[Layer]) -> Decimal:
+    return sum((ly.basis + ly.residual - sum(_charges(ly), _ZERO) for ly in layers), _ZERO)
+
+
+def _life(method, policy_life, params: dict) -> Decimal:
+    return Decimal(str(params.get("total_units", 0))) if method.uses_readings else Decimal(policy_life)
 
 
 def _keep_end_life(layers: list[Layer], index: int, weights: list[Decimal]) -> Decimal:
@@ -165,7 +179,7 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
     method = METHODS[policy.method]
     convention = CONVENTIONS[policy.convention]
     params = dict(policy.params)
-    life = Decimal(str(params.get("total_units", 0))) if method.uses_readings else Decimal(policy.life_months)
+    life = _life(method, policy.life_months, params)
     readings = readings or {}
     last = parse_period(through)
     pending = sorted(movements, key=lambda m: (_first_month(m), m.on, isinstance(m, Dispose)))
@@ -184,31 +198,39 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
                 m = pending.pop(0)
                 if isinstance(m, Acquire):
                     layers.append(Layer(m.amount - policy.residual, policy.residual, life, index,
-                                        convention.start_weights(m.on, policy.fiscal_year_start)))
+                                        convention.start_weights(m.on, policy.fiscal_year_start), method, params))
                 elif isinstance(m, Opening):
                     layers.append(Layer(m.cost - m.accumulated - policy.residual, policy.residual,
-                                        Decimal(m.life_months), index, [_ONE]))
+                                        Decimal(m.life_months), index, [_ONE], method, params))
                 elif isinstance(m, Improve):
                     weights = convention.start_weights(m.on, policy.fiscal_year_start)
                     layer_life = (Decimal(m.life_months) if m.life_months is not None
                                   else _keep_end_life(layers, index, weights))
-                    layers.append(Layer(m.amount, _ZERO, layer_life, index, weights))
+                    layers.append(Layer(m.amount, _ZERO, layer_life, index, weights, method, params))
                 elif isinstance(m, EstimateChange):
-                    carrying = _carrying(layers, method, params)
+                    carrying = _carrying(layers)
                     retired.extend(layers)
-                    layers = [Layer(carrying - m.residual, m.residual, Decimal(m.life_months), index, [_ONE])]
+                    if m.method is not None:
+                        method = METHODS[m.method]
+                    if m.params is not None:
+                        params = dict(m.params)
+                    if m.convention is not None:
+                        convention = CONVENTIONS[m.convention]
+                    life = _life(method, policy.life_months, params)
+                    layers = [Layer(carrying - m.residual, m.residual, Decimal(str(m.life_months)), index, [_ONE],
+                                    method, params)]
                 else:
                     disposal = m.on
             exception = None
             reading = None
-            if method.uses_readings:
+            if any(ly.method.uses_readings for ly in layers):
                 reading = readings.get(period_label(index))
                 if reading is None:
                     exception = MissingReading(period_label(index))
             fy_start = fiscal_year_start_index(index, policy.fiscal_year_start)
             for layer in layers:
                 remaining = layer.life - layer.position
-                if method.uses_readings:
+                if layer.method.uses_readings:
                     fraction = min(reading or _ZERO, remaining)
                 else:
                     fraction = min(layer.normal_fraction(index), remaining)
@@ -222,7 +244,7 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
             index += 1
         by_month: dict[int, Decimal] = {}
         for layer in (*retired, *layers):
-            for offset, charge in enumerate(_charges(layer, method, params)):
+            for offset, charge in enumerate(_charges(layer)):
                 by_month[layer.start + offset] = by_month.get(layer.start + offset, _ZERO) + charge
         periods, cumulative, posted = [], _ZERO, round_money(0, currency)
         for index, exception in months:

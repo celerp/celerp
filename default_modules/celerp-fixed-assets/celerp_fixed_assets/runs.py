@@ -33,7 +33,7 @@ from sqlalchemy import func, select
 from celerp.models.projections import Projection
 from celerp.services.money import round_money
 from celerp_fixed_assets import notices, operations, setup
-from celerp_fixed_assets.calc.engine import Acquire, Opening, Policy, schedule
+from celerp_fixed_assets.calc.engine import Acquire, EstimateChange, Opening, Policy, schedule
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.calc.rules import METHODS
 from celerp_fixed_assets.operations import MODULE, _cents, _dec, _emit, _entities, _move, _state, conflict
@@ -121,25 +121,105 @@ async def _ledger_basis(session, company_id, books: Books) -> list:
 # ── One asset ────────────────────────────────────────────────────────────────
 
 
-def _engine_movements(cls: dict, movements: list[dict]) -> list:
-    """The engine's view of an asset's movements: what it was acquired at, or brought in
-    at on the cutover. Undone movements and their reversals cancel out."""
+# The operations that bring an asset in at the cutover, and the correction of those values.
+OPENING_OPERATIONS = ("opening", "opening_values")
+
+
+def live(movements: list[dict]) -> list[dict]:
+    """The movements that still count: undone ones and their reversals cancel out."""
     reversed_ids = {m.get("reverses") for m in movements if m.get("reverses")}
+    return [m for m in movements if m["id"] not in reversed_ids and not m.get("reverses")]
+
+
+def _first(movements: list[dict]) -> int | None:
+    """The month index the asset entered service (the month after the cutover for an opening asset)."""
+    starts = [month_index(date.fromisoformat(m["posting_date"])) + 1 for m in movements
+              if m.get("operation") == "opening"]
+    starts += [month_index(date.fromisoformat(m["effective_date"])) for m in movements
+               if m.get("operation") not in OPENING_OPERATIONS and _dec((m.get("amounts") or {}).get("cost"))]
+    return min(starts, default=None)
+
+
+def base_policy(asset: dict, movements: list[dict]) -> dict:
+    """The policy the asset started under: the one its first change in estimate replaced,
+    or its policy when it has none."""
+    estimates = sorted((m for m in live(movements) if m.get("operation") == "estimate"),
+                       key=lambda m: m["effective_date"])
+    return estimates[0]["previous"] if estimates else asset["policy"]
+
+
+def engine_movements(asset: dict, movements: list[dict], currency: str) -> list:
+    """The engine's view of an asset's movements: what it was acquired at (by effective
+    date) or brought in at on the cutover, and each change in estimate."""
+    movements = live(movements)
+    policy = base_policy(asset, movements)
     out = []
+    opening = [m for m in movements if m.get("operation") in OPENING_OPERATIONS]
+    first = next((m for m in opening if m.get("operation") == "opening"), None)
+    if first is not None:
+        totals = {k: sum((_dec((m.get("amounts") or {}).get(k)) for m in opening), Decimal(0))
+                  for k in ("cost", "accumulated_depreciation", "accumulated_impairment")}
+        # The life left at the cutover: the life less the months used through it.
+        cutover = date.fromisoformat(first["posting_date"])
+        used = month_index(cutover) - month_index(date.fromisoformat(first["effective_date"])) + 1
+        out.append(Opening(cutover, totals["cost"], totals["accumulated_depreciation"]
+                           + totals["accumulated_impairment"], max(int(policy.get("life_months") or 0) - used, 0)))
+    by_day: dict[str, Decimal] = {}
     for m in movements:
-        if m["id"] in reversed_ids or m.get("reverses"):
+        cost = _dec((m.get("amounts") or {}).get("cost"))
+        if m.get("operation") not in OPENING_OPERATIONS and cost:
+            by_day[m["effective_date"]] = by_day.get(m["effective_date"], Decimal(0)) + cost
+    out += [Acquire(date.fromisoformat(day), cost) for day, cost in sorted(by_day.items()) if cost]
+    start = _first(movements)
+    readings = asset.get("readings") or {}
+    for m in sorted((m for m in movements if m.get("operation") == "estimate"), key=lambda m: m["effective_date"]):
+        on, new = date.fromisoformat(m["effective_date"]), m["policy"]
+        method = METHODS[new["method"]]
+        if method.uses_readings:
+            used = sum((_dec(u) for p, u in readings.items() if parse_period(p) < month_index(on)), Decimal(0))
+            left = _dec(new["params"].get("total_units")) - used
+        else:
+            left = Decimal(int(new.get("life_months") or 0) - max(month_index(on) - (start or month_index(on)), 0))
+        cost = sum(by_day.get(d, Decimal(0)) for d in by_day if d <= m["effective_date"])
+        if first is not None:
+            cost += totals["cost"]
+        out.append(EstimateChange(on, max(left, Decimal(0)), round_money(cost * _dec(new["residual_percent"]) / 100,
+                                                                          currency),
+                                  method=new["method"], params=new.get("params") or {},
+                                  convention=new.get("convention")))
+    return out
+
+
+def asset_schedule(asset: dict, movements: list[dict], settings: dict, through: int) -> list:
+    """The asset's schedule through month ``through`` (calc.engine PeriodAmount rows)."""
+    currency = settings.get("currency") or "USD"
+    policy = base_policy(asset, movements)
+    cost = sum((_dec((m.get("amounts") or {}).get("cost")) for m in live(movements)), Decimal(0))
+    engine_policy = Policy(policy["method"], int(policy.get("life_months") or 0),
+                           round_money(cost * _dec(policy.get("residual_percent")) / 100, currency),
+                           policy.get("convention") or "full_month",
+                           int(str(settings.get("fiscal_year_start") or "01-01")[:2]), policy.get("params") or {})
+    readings = {p: _dec(u) for p, u in (asset.get("readings") or {}).items()}
+    return schedule(engine_movements(asset, movements, currency), engine_policy, through=period_label(through),
+                    currency=currency, readings=readings).periods
+
+
+def charged_by_month(movements: list[dict]) -> dict[int, Decimal]:
+    """Depreciation already on the asset, by the month it belongs to. Opening values are
+    not charges; a correction says which months it charged for."""
+    out: dict[int, Decimal] = {}
+    for m in live(movements):
+        if m.get("operation") in OPENING_OPERATIONS:
             continue
-        amounts = m.get("amounts") or {}
-        cost = _dec(amounts.get("cost"))
-        if m.get("kind") == "opening":
-            # The life left at the cutover: the class life less the months used through it.
-            cutover = date.fromisoformat(m["posting_date"])
-            used = month_index(cutover) - month_index(date.fromisoformat(m["effective_date"])) + 1
-            out.append(Opening(cutover, cost, _dec(amounts.get("accumulated_depreciation"))
-                               + _dec(amounts.get("accumulated_impairment")),
-                               max(int(cls.get("life_months") or 0) - used, 0)))
-        elif cost:
-            out.append(Acquire(date.fromisoformat(m["effective_date"]), cost))
+        periods = m.get("periods")
+        if periods:
+            for p, amount in periods.items():
+                out[parse_period(p)] = out.get(parse_period(p), Decimal(0)) + _dec(amount)
+            continue
+        amount = _dec((m.get("amounts") or {}).get("accumulated_depreciation"))
+        if amount:
+            k = month_index(date.fromisoformat(m["effective_date"]))
+            out[k] = out.get(k, Decimal(0)) + amount
     return out
 
 
@@ -151,18 +231,8 @@ class Charge:
         self.asset_id, self.asset, self.cls, self.movements = asset_id, asset, cls, movements
         self.expense = asset.get("depreciation_account") or cls["depreciation_account"]
         self.accumulated = cls["accumulated_depreciation_account"]
-        currency = books.settings.get("currency") or "USD"
-        method = METHODS[cls["method"]]
-        cost = sum((_dec((m.get("amounts") or {}).get("cost")) for m in movements), Decimal(0))
-        policy = Policy(cls["method"], int(cls.get("life_months") or 0),
-                        round_money(cost * _dec(cls.get("residual_percent")) / 100, currency),
-                        cls.get("convention") or books.fa.get("convention") or "full_month",
-                        int(str(books.settings.get("fiscal_year_start") or "01-01")[:2]), cls.get("params") or {})
-        readings = {p: _dec(u) for p, u in (asset.get("readings") or {}).items()} if method.uses_readings else None
-        periods = schedule(_engine_movements(cls, movements), policy, through=period_label(through),
-                           currency=currency, readings=readings).periods
-        charged = sum((_dec((m.get("amounts") or {}).get("accumulated_depreciation")) for m in movements
-                       if m.get("kind") != "opening"), Decimal(0))
+        periods = asset_schedule(asset, movements, books.settings, through)
+        charged = sum(charged_by_month(movements).values(), Decimal(0))
         # Owed per month: the schedule to date beyond what is on the asset already.
         self.owed: dict[int, Decimal] = {}
         self.missing: set[int] = set()
@@ -236,7 +306,7 @@ async def _charges(session, company_id, books: Books, through: int, start: int) 
     out = []
     for asset_id, asset in sorted(await _entities(session, company_id, "fa_asset"), key=lambda r: r[1].get("number") or ""):
         cls = classes.get(asset.get("class_id"))
-        if asset.get("status") != "active" or cls is None or cls.get("method") == "none":
+        if asset.get("status") != "active" or cls is None or asset["policy"]["method"] == "none":
             continue
         charge = Charge(asset_id, asset, cls, movements.get(asset_id, []), books, through, start)
         await charge.hold(session, company_id, books, through)

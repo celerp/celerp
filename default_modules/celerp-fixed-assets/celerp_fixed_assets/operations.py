@@ -272,7 +272,8 @@ async def register(session, company_id, user_id, body: dict) -> dict:
         numbers = await _next_numbers(session, company_id, len(each))
         journals = ([_reclass(line, cls["asset_account"], cost) for cost, _ in each]
                     if cls["asset_account"] != line["account"] else [])
-        context.update(cls=cls, name=name, available=available, each=each, numbers=numbers, journals=journals)
+        context.update(cls=cls, name=name, available=available, each=each, numbers=numbers, journals=journals,
+                       policy=setup.policy_of(cls, fa))
         return {"journals": [_journal_view(j) for j in journals],
                 "assets": [{"number": n, "name": name, "cost": _cents(c)} for n, (c, _) in zip(numbers, each)]}, context
 
@@ -303,7 +304,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
             asset_id = await _create_asset(
                 session, company_id, user_id, number=number, name=context["name"], class_id=context["cls"]["id"],
                 status="active", available_date=context["available"], op_key=op_key,
-                sources_=[{**source_ref, "amount": str(cost)}])
+                sources_=[{**source_ref, "amount": str(cost)}], policy=context["policy"])
             contributions = [{"journal_id": line["journal_id"], "line_index": line["line_index"], "amount": str(cost)}]
             if reclass:
                 je_id = await _post(session, company_id, user_id, key=f"asset:{asset_id.removeprefix('fa:asset:')}:reg:1",
@@ -399,7 +400,7 @@ async def _financials(session, company_id, fa: dict, body: dict) -> dict:
     cls = await setup.get_class(session, company_id, body.get("class_id"))
     available = _date(body.get("available_date"), "The available-for-use date")
     cost = _amount(body.get("cost"), "Cost", positive=True)
-    out = {"kind": kind, "cls": cls, "available": available, "cost": cost}
+    out = {"kind": kind, "cls": cls, "available": available, "cost": cost, "policy": setup.policy_of(cls, fa)}
     cut = setup.cutover(fa)
     if kind == "opening":
         if cut and available > cut:
@@ -480,7 +481,7 @@ async def create_asset(session, company_id, user_id, body: dict) -> dict:
         details = context["details"]
         asset_id = await _create_asset(session, company_id, user_id, number=number, name=name,
                                        class_id=details["cls"]["id"], status="active",
-                                       available_date=details["available"], op_key=op_key)
+                                       available_date=details["available"], op_key=op_key, policy=details["policy"])
         journals, movements = await _book_financials(session, company_id, user_id, asset_id, number, name, details,
                                                      op_key)
         return ({"assets": [{"id": asset_id, "number": number}], "journals": journals},
@@ -510,7 +511,7 @@ async def add_financial_details(session, company_id, user_id, asset_id: str, bod
         asset, details = context["asset"], context["details"]
         await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.financials", {
             "class_id": details["cls"]["id"], "status": "active", "available_date": details["available"],
-            "financials_op_key": op_key})
+            "policy": details["policy"], "financials_op_key": op_key})
         journals, movements = await _book_financials(session, company_id, user_id, asset_id, asset["number"],
                                                      asset["name"], details, op_key)
         return ({"assets": [{"id": asset_id, "number": asset["number"]}], "journals": journals},

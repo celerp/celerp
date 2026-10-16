@@ -333,7 +333,7 @@ async def test_s1_voided_source_dated_difference_then_replaced(fa):
     await _run(fa, "2026-03")
     await _void(fa, doc)
     held = await fa.ok(await fa.post("/runs", {"month": "2026-04", "preview": True, "op_key": "h"}))
-    assert any(e["action"] == "review_source" for e in held["exceptions"])
+    assert any(e["action"] == "review_source" for m in held["months"] for e in m["exceptions"])
     await _bill(fa, "Forklift", "6100", "2026-01-10")
     new = await fa.line("Forklift")
     await _correct(fa, asset, {"replace_source": {"old": line["source"], "new": new["source"]}},
@@ -341,21 +341,21 @@ async def test_s1_voided_source_dated_difference_then_replaced(fa):
     assert D((await fa.asset(asset))["cost"]) == D("6100")
     assert _sum_lines(await _correction_journals(fa, asset)) == {"6400": (D("5"), D(0)), "1220": (D(0), D("5"))}
     clear = await fa.ok(await fa.post("/runs", {"month": "2026-04", "preview": True, "op_key": "h2"}))
-    assert not any(e["action"] == "review_source" for e in clear["exceptions"])
+    assert not any(e["action"] == "review_source" for m in clear["months"] for e in m["exceptions"])
 
 
 async def test_link_and_release_additional_source(fa):
     await _managed_from(fa)
     van = await fa.line("Delivery van")
     asset = (await fa.register(van["source"], key="reg"))["assets"][0]["id"]
-    je = await fa.journal("2026-09-20", [{"account": "1210", "debit": 800}, {"account": "1010", "credit": 800}])
+    je = await fa.journal("2026-09-20", [{"account": "1210", "debit": 800}, {"account": "1110", "credit": 800}])
     extra = f"{je}:0"
     fields = await fa.ok(await fa.get(f"/assets/{asset}/correct-fields"))
     assert extra in [s["source"] for s in fields["sources"]]
     await _correct(fa, asset, {"link_source": {"source": extra}})
     assert D((await fa.asset(asset))["cost"]) == D("32800")
     assert (await fa.state(f"fa:src:{extra}"))["status"] == "claimed"
-    credit = await fa.journal("2026-09-21", [{"account": "1010", "debit": 300}, {"account": "1210", "credit": 300}])
+    credit = await fa.journal("2026-09-21", [{"account": "1110", "debit": 300}, {"account": "1210", "credit": 300}])
     await _correct(fa, asset, {"link_source": {"source": f"{credit}:1"}})
     assert D((await fa.asset(asset))["cost"]) == D("32500")
     await _correct(fa, asset, {"release_source": {"source": extra}})
