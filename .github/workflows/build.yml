@@ -229,6 +229,13 @@ jobs:
           fi
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install . -c constraints.txt
+          # The Windows app runs the PostgreSQL server bundled with Electron
+          # (@embedded-postgres/windows-x64) and the pg-win backup tools, so the
+          # celerp-postgres wheel that `pip install celerp` users get is left out.
+          # celerp's metadata still lists it; `pip check` would report it missing.
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            "$PY" -m pip uninstall -y celerp-postgres
+          fi
 
       # ── Bundled pg_dump/pg_restore/psql (macOS) ──────────────────────────────
       # Built from source for both arches in this one arm64 job (x86_64 slice

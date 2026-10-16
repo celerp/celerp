@@ -92,6 +92,9 @@
     "win": {
       "icon": "assets/icon.ico",
       "artifactName": "Celerp-Setup.exe",
+      "files": [
+        "!node_modules/@embedded-postgres/darwin-*{,/**/*}"
+      ],
       "target": [
         {
           "target": "nsis",
