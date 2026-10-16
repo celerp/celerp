@@ -52,20 +52,39 @@ describe("windowsStartFailure", () => {
 });
 
 describe("clusterStartFailure", () => {
-  const dataDir = "C:\\Users\\someone\\AppData\\Roaming\\Celerp\\data\\pg";
+  // A database folder as it is left on disk: one that never finished setting up, or
+  // one Postgres has run before (it writes postmaster.opts each time it starts).
+  function dataDir({ hasStarted }) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-pg-"));
+    fs.writeFileSync(path.join(dir, "PG_VERSION"), "17\n");
+    if (hasStarted) fs.writeFileSync(path.join(dir, "postmaster.opts"), "postgres -D pg\n");
+    return dir;
+  }
 
-  test("names the folder, says nothing was changed and how to recover", () => {
-    const message = clusterStartFailure(dataDir, "postgres exited before it was ready");
-    expect(message).toContain(dataDir);
+  test("a database that never finished setting up: names the folder and says to move it aside", () => {
+    const dir = dataDir({ hasStarted: false });
+    const message = clusterStartFailure(dir, "postgres exited before it was ready");
+    expect(message).toContain(dir);
     expect(message).toMatch(/nothing in it was changed or removed/i);
     expect(message).toMatch(/move that folder somewhere else/i);
-    expect(message).toMatch(/backup/i);
+    expect(message).toContain("postgres exited before it was ready");
+    expect(message).not.toMatch(/\u2014/);
+  });
+
+  test("a database that has run before is never called unfinished or sent to be moved aside", () => {
+    const dir = dataDir({ hasStarted: true });
+    const message = clusterStartFailure(dir, "postgres exited before it was ready");
+    expect(message).toContain(dir);
+    expect(message).toMatch(/nothing in it was changed or removed/i);
+    expect(message).not.toMatch(/move that folder|never finished|set up a new database|backup/i);
+    expect(message).toMatch(/restart/i);
     expect(message).toContain("postgres exited before it was ready");
     expect(message).not.toMatch(/\u2014/);
   });
 
   test("an error with no reason still gets the message", () => {
-    expect(clusterStartFailure(dataDir, "")).toContain(dataDir);
+    const dir = dataDir({ hasStarted: false });
+    expect(clusterStartFailure(dir, "")).toContain(dir);
   });
 });
 
