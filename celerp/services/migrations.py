@@ -918,25 +918,27 @@ def _row(expectation: ReconciliationExpectation, actual: Decimal | None) -> dict
     return row
 
 
+def _measured(row: dict) -> bool:
+    """A failed check with real figures on both sides, as opposed to one that could not be measured."""
+    try:
+        return (
+            row.get("celerp") is not None
+            and Decimal(str(row["difference"])).is_finite()
+            and Decimal(str(row["difference"])) != 0
+            and Decimal(str(row["source"])).is_finite()
+            and Decimal(str(row["celerp"])).is_finite()
+        )
+    except (ValueError, TypeError, KeyError, ArithmeticError):
+        return False
+
+
 def reviewable_differences(report: dict) -> bool:
     """Only measured mismatches may be accepted after explicit review.
 
     Missing measurements or corrupt rows cannot be waived by a checkbox.
     """
     failures = [row for row in report.get("rows", []) if row.get("result") == "fail"]
-    if not failures or len(failures) != report.get("blockers"):
-        return False
-    try:
-        return all(
-            row.get("celerp") is not None
-            and Decimal(str(row["difference"])).is_finite()
-            and Decimal(str(row["difference"])) != 0
-            and Decimal(str(row["source"])).is_finite()
-            and Decimal(str(row["celerp"])).is_finite()
-            for row in failures
-        )
-    except (ValueError, TypeError, KeyError, ArithmeticError):
-        return False
+    return bool(failures) and len(failures) == report.get("blockers") and all(map(_measured, failures))
 
 
 async def _verification(session: AsyncSession, run: MigrationRun) -> dict:
@@ -1010,7 +1012,9 @@ async def _reconcile_run(maker, run_id: uuid.UUID, state: dict, expected: list[t
         run.current_phase = (_P.READY_TO_FINALIZE if ready else _P.RECONCILIATION).value
         run.error_summary = {} if ready else {
             "phase": _P.RECONCILIATION.value, "batch_cursor": 0, "error_class": "Mismatch",
-            "message": f"{report['blockers']} verification check(s) cannot be measured reliably.",
+            "message_key": "migration.err_unmeasured",
+            "params": {"n": report["blockers"] - sum(1 for row in report.get("rows", [])
+                                                     if row.get("result") == "fail" and _measured(row))},
         }
         await _set_status(s, run, _S.READY_TO_FINALIZE if ready else _S.FAILED)
         await s.commit()
@@ -1028,12 +1032,14 @@ async def is_company_migration_staged(session: AsyncSession, company_id: uuid.UU
 
 
 async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: dict | None = None,
-                   *, reviewed_differences: bool = False) -> MigrationRun:
+                   *, reviewed_by: User | None = None) -> MigrationRun:
     """Re-check verification under the company lock, then set the posting accounts
     (``posting_readiness.apply_choices`` with ``posting_accounts``), install the source's
     lock date and activate the company in one commit, so the company never becomes normal
     without its lock or the accounts its workflows post to. Migrated stock recording no
-    inventory account is placed in the same commit (lot_origin.place_company_stock)."""
+    inventory account is placed in the same commit (lot_origin.place_company_stock).
+    Measured differences finish only with ``reviewed_by``, whose name and the time are kept
+    in the verification report and the pack."""
     await _lock_run(session, run)
     if run.status != _S.READY_TO_FINALIZE:
         raise _illegal("finalize", run)
@@ -1048,7 +1054,7 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
             run.reconciliation = report
             await session.commit()
             raise MigrationError(409, t("migration.err_verification_stale"))
-        if report["blockers"] and not reviewed_differences:
+        if report["blockers"] and reviewed_by is None:
             raise MigrationError(409, t("migration.err_review_differences"))
         company = await session.get(Company, run.company_id)
         try:
@@ -1062,7 +1068,8 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
         company.is_active = True
         company.is_migration_staged = False
         if report["blockers"]:
-            report["reviewed_differences"] = True
+            report["reviewed_differences"] = {"by": reviewed_by.name or reviewed_by.email,
+                                              "at": datetime.now(timezone.utc).isoformat()}
         await place_company_stock(session, run.company_id)
         run.reconciliation = report
         run.status = _S.COMPLETED.value
@@ -1261,10 +1268,13 @@ def _error_view(run: MigrationRun) -> dict | None:
     """What the owner is told about a failure: the message and the records it names, never
     the exception, cursor or module behind it."""
     summary = run.error_summary or {}
-    if not summary.get("message"):
+    # A keyed message is worded at read time, in the reader's language.
+    message = (t(summary["message_key"], **summary.get("params", {})) if summary.get("message_key")
+               else summary.get("message"))
+    if not message:
         return None
     phase = summary.get("phase")
-    return {"message": summary["message"], "missing": summary.get("missing"),
+    return {"message": message, "missing": summary.get("missing"),
             "phase": PHASE_LABELS.get(_P(phase)) if phase in _P._value2member_map_ else None}
 
 
@@ -1362,8 +1372,9 @@ def reconciliation_pack_csv(run: MigrationRun) -> str:
     ):
         writer.writerow([label, value])
     writer.writerow([])
-    if report.get("reviewed_differences"):
-        writer.writerow(["Differences reviewed", "Yes"])
+    if review := report.get("reviewed_differences"):
+        writer.writerow(["Differences reviewed by", csv_safe(review["by"])])
+        writer.writerow(["Reviewed at", review["at"]])
         writer.writerow([])
     # What was carried with loss or not moved, so the pack records it beside the checks.
     losses = [e for e in (run.coverage or {}).get("entries", []) if e["coverage_class"] in _PACK_LOSSES]

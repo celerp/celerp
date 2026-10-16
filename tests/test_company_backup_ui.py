@@ -802,6 +802,9 @@ async def test_switch_to_migrated_company_before_send(ui, real_engine):
     assert action.headers["location"] == "/settings/company-handoff"
     assert _claims(_cookie(action, "celerp_token"))["company_id"] == str(second)
     # Never make company switching a general-purpose redirect endpoint.
+    for target in ("/accounting/journal/new", "/settings/users/new"):
+        landed = await ui.get(f"/switch-company/{second}?next={target}")
+        assert landed.status_code == 302 and landed.headers["location"] == target
     other = await ui.get(f"/switch-company/{first}?next=https://bad.example")
     assert other.status_code == 302 and other.headers["location"] == "/"
     encoded = await ui.get(f"/switch-company/{first}?next=%2F%2Fevil.example")

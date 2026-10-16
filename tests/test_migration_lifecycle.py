@@ -637,7 +637,7 @@ async def test_reconciliation_provider_failure_blocks_finalize(real_engine, migr
 
 @pytest.mark.asyncio
 async def test_reviewed_differences_can_finish_but_unreviewed_cannot(real_engine, migration_env):
-    from celerp.models.company import Company
+    from celerp.models.company import Company, User
     from celerp.services import migrations
     from celerp.services.migrations import MigrationError
 
@@ -660,13 +660,19 @@ async def test_reviewed_differences_can_finish_but_unreviewed_cannot(real_engine
 
     async with maker(real_engine)() as s:
         choices = posting_choices_from(await readiness(s, company_id) or [])
-        await migrations.finalize(
-            s, await creator_run(s, run_id), choices, reviewed_differences=True,
-        )
+        run = await creator_run(s, run_id)
+        reviewer = await s.get(User, run.created_by_user_id)
+        await migrations.finalize(s, run, choices, reviewed_by=reviewer)
     finished = await load_run(real_engine, run_id)
     assert finished.status == "completed"
-    assert finished.reconciliation["reviewed_differences"] is True
-    assert "Differences reviewed,Yes" in migrations.reconciliation_pack_csv(finished)
+    review = finished.reconciliation["reviewed_differences"]
+    assert review["by"] == "Owner"
+    reviewed_at = datetime.fromisoformat(review["at"])
+    assert abs(datetime.now(timezone.utc) - reviewed_at) < timedelta(minutes=5)
+    pack = migrations.reconciliation_pack_csv(finished)
+    assert "Differences reviewed by,Owner" in pack
+    assert f"Reviewed at,{review['at']}" in pack
+    assert "Differences reviewed,Yes" not in pack
     async with maker(real_engine)() as s:
         company = await s.get(Company, company_id)
         assert company.is_active is True and company.is_migration_staged is False
@@ -688,6 +694,33 @@ async def test_unmeasured_difference_cannot_be_reviewed_away(real_engine, migrat
     assert run.status == "failed"
     assert run.reconciliation["blockers"] == 1
     assert not migrations.reviewable_differences(run.reconciliation)
+
+
+@pytest.mark.asyncio
+async def test_unmeasured_failure_counts_only_unmeasured_checks_in_the_readers_language(
+        real_engine, migration_env):
+    from celerp.services import migrations
+    from ui.i18n import _current_lang
+
+    run_id, _, _ = await staged_run(
+        real_engine,
+        spec=fake_spec(expected_locations=4, extra_expectations=[{
+            "measure": "bank_cash", "key": "1000", "expected": "12.50",
+        }]),
+        email="mixed-unmeasured@example.com",
+    )
+    await migrations.run_migration(run_id)
+    run = await load_run(real_engine, run_id)
+    assert run.status == "failed" and run.reconciliation["blockers"] == 2
+    async with maker(real_engine)() as s:
+        english = (await migrations.run_view(s, await s.get(type(run), run_id)))["error"]["message"]
+        token = _current_lang.set("de")
+        try:
+            german = (await migrations.run_view(s, await s.get(type(run), run_id)))["error"]["message"]
+        finally:
+            _current_lang.reset(token)
+    assert english == t("migration.err_unmeasured", "en", n=1)
+    assert german == t("migration.err_unmeasured", "de", n=1) != english
 
 
 @pytest.mark.asyncio

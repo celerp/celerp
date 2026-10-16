@@ -1179,8 +1179,12 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None,
         return wizard_page(request, _steps(6), auth_header(t("migration.verify_title")), flash(error) if error else "",
                      P(str(e.detail), cls="form-hint"), back_link(f"/migrations/{run_id}"))
     rows = recon.get("rows") or []
-    failures = [row for row in rows if row.get("result") == "fail"]
+    failures = any(row.get("result") == "fail" for row in rows)
     lock_date = run.get("lock_date")
+    source = run.get("source_system") or ""
+    if failures:
+        sources, _ = await _sources()
+        source = next((s["display_name"] for s in sources if s["key"] == source), source)
     return wizard_page(
         request,
         _steps(6),
@@ -1207,12 +1211,16 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None,
         Div(
             H3(t("migration.differences_title")),
             P(t("migration.differences_hint"), cls="form-hint"),
-            Ul(*[Li(f"{_check_label(row)}: {_figure(row, 'difference')}") for row in failures]),
+            P(t("migration.differences_fix_later")),
+            P(t("migration.differences_fix_source", source=source)),
+            Form(Button(t("migration.check_again"), type="submit", cls="btn btn--secondary"),
+                 method="post", action=f"/migrations/{run_id}/start"),
+            P(t("migration.finish_cannot_undo"), cls="form-hint mt-md"),
             cls="mt-md",
         ) if failures else "",
         Form(_posting_accounts(roles, chosen or {}),
              Label(
-                 Input(type="checkbox", name="reviewed_differences", value="true", required=True),
+                 Input(type="checkbox", name="reviewed_differences", value="true"),
                  t("migration.review_differences"),
                  cls="form-label mt-md",
              ) if failures else "",
@@ -1238,10 +1246,15 @@ async def _complete_page(request: Request, run: dict):
             A(t("migration.open_sample"), href=open_href, cls="btn btn--secondary btn--full mt-sm"),
         )
     try:
-        rows = (await api.migration_reconciliation(get_token(request), run_id)).get("rows") or []
+        recon = await api.migration_reconciliation(get_token(request), run_id)
     except APIError:
-        rows = []
-    totals = [row for row in rows if row.get("check") in _TOTAL_CHECKS]
+        recon = {}
+    totals = [row for row in recon.get("rows") or [] if row.get("check") in _TOTAL_CHECKS]
+
+    def option(label: str, href: str, hint: str = ""):
+        return Div(A(label, href=href, cls="btn btn--secondary btn--full"),
+                   P(hint, cls="form-hint") if hint else "", cls="mt-sm")
+
     return wizard_page(
         request,
         auth_header(t("migration.success_title"), run.get("company_name", "")),
@@ -1252,12 +1265,15 @@ async def _complete_page(request: Request, run: dict):
         ) if totals else "",
         pack,
         open_company,
-        A(t("company_backup.send_title"), href=f"{open_href}?next=/settings/company-handoff",
-          cls="btn btn--secondary btn--full mt-sm"),
-        A(t("company_backup.download"), href=f"/company-backup/download?from_run={run_id}",
-          cls="btn btn--secondary btn--full mt-sm"),
-        A(t("migration.move_another"), href=f"{COMPANY.base}?from_run={run_id}",
-          cls="btn btn--secondary btn--full mt-sm"),
+        option(t("migration.correcting_entry"), f"{open_href}?next=/accounting/journal/new")
+        if recon.get("reviewed_differences") else "",
+        option(t("company_backup.send_title"), f"{open_href}?next=/settings/company-handoff",
+               t("migration.send_copy_hint")),
+        option(t("migration.invite_client"), f"{open_href}?next=/settings/users/new",
+               t("migration.invite_client_hint")),
+        option(t("migration.move_another"), f"{COMPANY.base}?from_run={run_id}"),
+        P(A(t("company_backup.download"), href=f"/company-backup/download?from_run={run_id}",
+            cls="auth-link"), cls="mt-md"),
     )
 
 

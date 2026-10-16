@@ -558,7 +558,7 @@ async def finalize_run(run_id: uuid.UUID, body: FinalizeIn | None = None,
     try:
         await migrations.finalize(
             session, run, body.model_dump(exclude={"reviewed_differences"}) if body else None,
-            reviewed_differences=body.reviewed_differences if body else False,
+            reviewed_by=ctx.user if body and body.reviewed_differences else None,
         )
     except BaseException:
         await session.rollback()

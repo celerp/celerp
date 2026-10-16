@@ -751,6 +751,13 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert not _link(complete, "/dashboard")
     assert _link(complete, f"/setup/new-company/migrate?from_run={run_id}", "Move another company")
     assert _link(complete, f"/company-backup/download?from_run={run_id}", "Download company backup")
+    order = [complete.find(text) for text in ("Open company", "Send company copy", "Invite client",
+                                              "Move another company")]
+    assert -1 not in order and order == sorted(order)
+    assert _link(complete, f"/switch-company/{company_id}?next=/settings/users/new", "Invite client")
+    assert "they sign in to your Celerp and see only this company." in complete
+    assert "they get their own Celerp with this company in it." in complete
+    assert "Record a correcting journal entry" not in complete
 
     r = await ui.get(f"/migrations/{run_id}/pack")
     assert r.status_code == 200
@@ -759,6 +766,7 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
 
     for text in (coverage, verify, complete):
         assert "Manager" not in text
+    for text in (coverage, verify):
         assert re.search(r"\bclient", text, re.I) is None
 
     sample_id = fake_api.add_run("completed", company_name="Sample company", is_sample=True)
@@ -769,6 +777,51 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert _link(page, "/setup/new-company/migrate", "Move your first company")
     assert _link(page, f"/switch-company/{fake_api.runs[sample_id]['company_id']}", "Open")
     assert "Download company backup" not in page
+
+
+_FAILED_ROW = {"check": "ar_control", "key": "", "currency": "USD", "source": "3120.00",
+               "celerp": "3020.00", "difference": "-100.00", "rule": "exact", "result": "fail"}
+
+
+async def test_differences_are_shown_once_with_both_ways_forward(ui, router, fake_api):
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    fake_api.recon[run_id]["rows"][1] = dict(_FAILED_ROW)
+    fake_api.recon[run_id]["blockers"] = 1
+    r = await ui.get(f"/migrations/{run_id}/verify")
+    assert r.status_code == 200
+    page = _visible(r)
+    assert page.count("$-100.00") == 1
+    assert "Finish now and correct later with a journal entry." in page
+    assert "Or fix the file in Manager.io and upload it again." in page
+    assert ("Finishing cannot be undone: the company goes live and new records can be built on it. "
+            "Before finishing you can still go back or discard the migration.") in page
+    box = re.search(r'<input\b[^>]*name="reviewed_differences"[^>]*>', page)
+    assert box and "required" not in box.group(0)
+    assert re.search(rf'<form\b[^>]*action="/migrations/{run_id}/start"[^>]*>.*?Check again.*?</form>',
+                     page, re.S)
+
+    r = await ui.post(f"/migrations/{run_id}/finalize", data={"reviewed_differences": "true"})
+    assert r.status_code == 303
+    assert fake_api.finalized_with[-1]["reviewed_differences"] is True
+    fake_api.recon[run_id]["reviewed_differences"] = {"by": "Owner", "at": "2026-10-16T08:00:00+00:00"}
+    r = await ui.get(f"/migrations/{run_id}/complete")
+    complete = _visible(r)
+    company_id = fake_api.runs[run_id]["company_id"]
+    assert _link(complete, f"/switch-company/{company_id}?next=/accounting/journal/new",
+                 "Record a correcting journal entry")
+    assert complete.find("Open company") < complete.find("Record a correcting journal entry") \
+        < complete.find("Send company copy")
+
+
+async def test_check_again_reruns_the_verification(ui, router, fake_api):
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    r = await ui.post(f"/migrations/{run_id}/start")
+    assert r.status_code == 303 and r.headers["location"] == f"/migrations/{run_id}"
+    assert fake_api.runs[run_id]["status"] == "running"
+    assert "Check again" in t("migration.err_verification_stale", "en")
+    assert "Resume" not in t("migration.err_verification_stale", "en")
 
 
 _AP_KEY = "5f1c2a90-3b7e-4d21-9a0c-6e8f1d2b3c4a"

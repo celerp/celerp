@@ -441,6 +441,10 @@ def setup_routes(app):
 
     # ── Company switcher (HTMX partial) ─────────────────────────────────────
 
+    # The pages a switch may land on; anything else opens the dashboard, so switching is
+    # never a general-purpose redirect.
+    SWITCH_DESTINATIONS = ("/settings/company-handoff", "/accounting/journal/new", "/settings/users/new")
+
     @app.get("/switch-company/{company_id}")
     async def do_switch_company_get(request: Request, company_id: str):
         """GET handler so the topbar <select> onchange can use location= directly."""
@@ -456,7 +460,9 @@ def setup_routes(app):
             new_access, new_refresh = await api_switch(token, company_id)
         except APIError as e:
             return RedirectResponse(f"/?error={e.detail}", status_code=302)
-        destination = ("/settings/company-handoff" if request.query_params.get("next") == "/settings/company-handoff" else "/")
+        destination = request.query_params.get("next")
+        if destination not in SWITCH_DESTINATIONS:
+            destination = "/"
         resp = RedirectResponse(destination, status_code=302)
         set_session_cookies(resp, new_access, new_refresh, request)
         return resp
