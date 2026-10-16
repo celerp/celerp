@@ -47,7 +47,8 @@ _KEY = re.compile(r"[A-Za-z0-9:._-]+")
 class JournalLine:
     """One line. A line that ``moves_recognized`` takes back what was put on
     ``account`` before (the old side of a reclass): by the module's own journals, or,
-    with ``recognized_in``, by that posted journal (a bill line the module took over).
+    with ``recognized_in``, by that posted journal (a bill line the module took over) or,
+    as ``ledger_key(day)``, by the ledger to that day (a balance brought in at a cutover).
     Any other line is a new destination and must be an account the chart accepts for
     new postings."""
     account: str
@@ -196,26 +197,59 @@ def _amount(value) -> Decimal:
     return Decimal(str(value or 0))
 
 
-async def _recognized_balances(session, company_id, module: str,
-                               keys: set[tuple[str, str | None]]) -> dict[tuple[str, str | None], Decimal]:
+LEDGER_PREFIX = "ledger:"
+
+
+def ledger_key(day: str) -> str:
+    """The ``recognized_in`` of a line taking back what the ledger held on its account
+    on ``day``, whoever posted it there (an opening balance, a bill)."""
+    return f"{LEDGER_PREFIX}{day}"
+
+
+async def recognized_balances(session, company_id, module: str,
+                              keys: set[tuple[str, str | None]]) -> dict[tuple[str, str | None], Decimal]:
     """Debit minus credit recognized on each (account, recognizing journal) key: with no
     journal, what the module's posted journals put there themselves; with one, what that
-    posted journal holds there plus what the module's journals already moved from it."""
-    named = {je for _, je in keys if je}
-    rows = (await session.execute(
-        select(Projection.entity_id, Projection.state).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "journal_entry",
-            Projection.state["status"].as_string() == "posted",
-            Projection.entity_id.startswith(f"je:mod:{module}:") | Projection.entity_id.in_(named),
-        ))).all()
+    posted journal holds there plus what the module's journals already moved from it; with
+    ``ledger_key(day)``, what every other posted journal dated on or before ``day`` holds
+    there, less what the module's journals moved from the ledger to that day or from
+    those journals."""
+    named = {je for _, je in keys if je and not je.startswith(LEDGER_PREFIX)}
+    days = {je.removeprefix(LEDGER_PREFIX) for _, je in keys if je and je.startswith(LEDGER_PREFIX)}
+    query = select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+        Projection.state["status"].as_string() == "posted")
+    if not days:
+        query = query.where(Projection.entity_id.startswith(f"je:mod:{module}:") | Projection.entity_id.in_(named))
+    rows = (await session.execute(query)).all()
+    dated = {eid: str(state.get("ts") or "")[:10] for eid, state in rows}
     balances = dict.fromkeys(keys, Decimal(0))
+
+    def add(key, entry):
+        if key in balances:
+            balances[key] += _amount(entry.get("debit")) - _amount(entry.get("credit"))
+
+    def ledger_day(own: bool, entity_id: str, source: str | None) -> str:
+        """The date an entry stands in the ledger from, for the ledger keys ("" for none)."""
+        if not own:
+            return dated[entity_id]
+        if source and source.startswith(LEDGER_PREFIX):
+            return source.removeprefix(LEDGER_PREFIX)
+        return dated.get(source, "") if source else ""
+
     for entity_id, state in rows:
         own = entity_id.startswith(f"je:mod:{module}:")
         for entry in state.get("entries") or []:
-            key = (entry.get("account"), entry.get("recognized_in") if own else entity_id)
-            if key in balances:
-                balances[key] += _amount(entry.get("debit")) - _amount(entry.get("credit"))
+            account, source = entry.get("account"), entry.get("recognized_in")
+            if own:
+                add((account, source), entry)
+            elif entity_id in named:
+                add((account, entity_id), entry)
+            since = ledger_day(own, entity_id, source)
+            for day in days:
+                if since and since <= day and not (own and source == ledger_key(day)):
+                    add((account, ledger_key(day)), entry)
     return balances
 
 
@@ -231,7 +265,7 @@ async def _check_accounts(session, company_id, module: str, lines: list[JournalL
     codes = {ln.account for ln in moving}
     accounts = await lock_accounts(session, company_id, codes)
     keys = {(ln.account, ln.recognized_in) for ln in moving}
-    balances = await _recognized_balances(session, company_id, module, keys)
+    balances = await recognized_balances(session, company_id, module, keys)
     for code, je in sorted(keys, key=lambda k: (k[0], k[1] or "")):
         if code not in accounts:
             raise _refuse(422, "posting.destination.not_in_chart",

@@ -33,7 +33,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from celerp_fixed_assets import runs, setup, sources
+from celerp_fixed_assets import fixaccount, runs, setup, sources
 from celerp_fixed_assets.operations import MODULE, _cents, _dec, conflict
 from celerp_fixed_assets.projections import fold_movements
 from celerp_fixed_assets.store import _emit, _entities
@@ -63,7 +63,9 @@ async def _accounts(session, company_id) -> tuple[dict, dict, str | None, str | 
 
 
 def _class_accounts(classes: dict, surplus: str | None, clearing: str | None) -> set[str]:
+    """Every account a class posts its balances to, or did before Fix posting account."""
     out = {c[k] for c in classes.values() for k in ("asset_account", "accumulated_depreciation_account") if c.get(k)}
+    out |= {a for c in classes.values() for a in fixaccount.past_accounts(c)}
     return out | {a for a in (surplus, clearing) if a}
 
 
@@ -169,7 +171,7 @@ def _balances(cls: dict, figures: dict, surplus: str | None) -> dict[str, Decima
 async def _register(session, company_id, classes: dict, surplus: str | None, cut: str,
                     at: str) -> tuple[dict, dict]:
     """The opening register mapped to the accounts at the cutover, and every asset's
-    balances at ``at`` mapped to the accounts of its class then."""
+    balances at ``at`` mapped to the accounts its class posted to then."""
     assets = dict(await _entities(session, company_id, "fa_asset"))
     recorded = dict(await _entities(session, company_id, "fa_movement"))
 
@@ -192,7 +194,7 @@ async def _register(session, company_id, classes: dict, surplus: str | None, cut
             if cls is None or not chosen:
                 continue
             figures = {k: Decimal(v) for k, v in fold_movements(chosen).items() if k != "quantity"}
-            for account, amount in _balances(cls, figures, surplus).items():
+            for account, amount in _balances(fixaccount.accounts_at(cls, day), figures, surplus).items():
                 target[account] = target.get(account, Decimal(0)) + amount
     return opening, standing
 

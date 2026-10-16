@@ -182,6 +182,10 @@ def _preview(action: str, result: dict, currency: str) -> FT:
             (t("fixed_assets.date"), _text(result.get("date"))),
             (t("fixed_assets.location"), _text((result.get("location") or {}).get("name"))),
             (t("fixed_assets.custodian"), _text((result.get("custodian") or {}).get("name")))]))
+    if "old_account" in result:
+        parts.append(_detail_table([(t("fixed_assets.date"), _text(result["date"])),
+                                    (t("fixed_assets.old_account"), result["old_account"]),
+                                    (t("fixed_assets.new_account"), result["new_account"])]))
     if "to_class" in result:
         parts.append(_detail_table([(t("fixed_assets.date"), _text(result["date"])),
                                     (t("fixed_assets.from_class"), result["from_class"]),
@@ -589,6 +593,11 @@ _OPERATIONS = {
     "undo-move": (_asset_path("undo-move"), lambda f: {}, _to_asset),
     "reclassify": (_asset_path("reclassify"), _reclassify_body, _to_asset),
     "transfer": (_asset_path("transfer"), _transfer_body, _to_asset),
+    "fix-account": (lambda f: f"/classes/{_q(f, 'class_id')}/fix-account",
+                    lambda f: {k: str(f.get(k) or "") for k in ("field", "account", "mode")},
+                    lambda r, f: f"/fixed-assets/classes/{f.get('class_id')}/fix-account?field={f.get('field')}"),
+    "undo-fix-account": (lambda f: f"/classes/{_q(f, 'class_id')}/fix-account/undo", lambda f: {},
+                         lambda r, f: f"/fixed-assets/classes/{f.get('class_id')}/fix-account"),
 }
 
 
@@ -976,6 +985,8 @@ def _exception_card(asset: dict, currency: str) -> FT:
                P(t("fixed_assets.exception_months", months=months), " ",
                  t("fixed_assets.exception_amount"), ": ", _money(held.get("amount"), currency)),
                P(Strong(t(f"fixed_assets.action.{held['action']}")), " ", t(f"fixed_assets.action_hint.{held['action']}")),
+               *([A(t("fixed_assets.action.fix_account"), href=f"/fixed-assets/classes/{asset['class_id']}/fix-account",
+                    cls="btn btn--sm btn--primary")] if held["action"] == "fix_account" and asset.get("class_id") else []),
                cls="flash flash--warning", id="fa-exception")
 
 
@@ -2489,6 +2500,57 @@ def setup_ui_routes(app) -> None:
         return await _page(request, crumbs, page_header(t("fixed_assets.reviews_due_title")),
                            P(t("fixed_assets.reviews_due_hint"), cls="settings-hint"), body,
                            title_key="fixed_assets.reviews_due_title")
+
+    @app.get("/fixed-assets/classes/{class_id}/fix-account")
+    async def fix_account_page(request: Request, class_id: str, field: str = ""):
+        """Give a class a new account for one of its account fields, chosen in the URL."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            await _context(token)
+            classes = (await api.fixed_assets_get(token, "/classes", {"include_archived": "true"}))["items"]
+            chart = (await api.get_chart(token)).get("items") or []
+        except APIError as e:
+            return await _refused(request, e, "fixed_assets.action.fix_account")
+        cls = next((c for c in classes if c["id"] == class_id), None)
+        crumbs = breadcrumbs([(t("fixed_assets.settings_title"), "/settings/fixed-assets"),
+                              (cls["name"] if cls else EMPTY, None), (t("fixed_assets.action.fix_account"), None)])
+        if cls is None:
+            return await _page(request, crumbs, page_header(t("fixed_assets.action.fix_account")),
+                               empty_state_cta(t("fixed_assets.class_missing"), t("fixed_assets.settings_title"),
+                                               "/settings/fixed-assets"), title_key="fixed_assets.action.fix_account")
+        postable = {a["code"] for a in _postable(chart)}
+        fields = ("asset_account", "accumulated_depreciation_account", "depreciation_account")
+        if field not in fields:
+            # The first account the chart no longer accepts, as the run found it.
+            field = next((f for f in fields if cls.get(f) not in postable), fields[0])
+        tabs = Div(*[A(t(f"fixed_assets.fix_field.{f}"), href=f"/fixed-assets/classes/{class_id}/fix-account?"
+                       f"{urlencode({'field': f})}", cls="btn btn--sm " + ("btn--primary" if f == field else "btn--secondary"))
+                     for f in fields], cls="flex-row")
+        current = cls.get(field) or EMPTY
+        status = t("fixed_assets.fix_current_ok" if current in postable else "fixed_assets.fix_current_refused",
+                   account=current)
+        move = field != "depreciation_account"
+        modes = [Label(Input(type="radio", name="mode", value="move", checked=move),
+                       t("fixed_assets.fix_mode.move"), cls="settings-toggle"),
+                 Label(Input(type="radio", name="mode", value="future", checked=not move),
+                       t("fixed_assets.fix_mode.future"), cls="settings-toggle")]
+        form = _op_form("fix-account", Input(type="hidden", name="class_id", value=class_id),
+                        Input(type="hidden", name="field", value=field),
+                        P(t("fixed_assets.fix_account_hint"), cls="settings-hint"),
+                        P(status, cls="settings-hint" if current in postable else "flash flash--warning"),
+                        _field(t("fixed_assets.new_account"),
+                               _picker("account", [o for o in _account_options(chart) if o[0] != current],
+                                       label=t("fixed_assets.new_account"))),
+                        _field(t("fixed_assets.fix_mode_label"), Div(*modes),
+                               t("fixed_assets.fix_mode_hint")))
+        undo = _op_form("undo-fix-account", Input(type="hidden", name="class_id", value=class_id),
+                        P(t("fixed_assets.undo_fix_account_hint"), cls="settings-hint"),
+                        review_label=t("fixed_assets.undo_fix_account")) if cls.get("last_fix") else None
+        title = page_header(t("fixed_assets.fix_account_title", name=cls["name"]))
+        return await _page(request, crumbs, title, tabs, form, *([undo] if undo else []),
+                           title_key="fixed_assets.action.fix_account")
 
     @app.get("/fixed-assets/classes/{class_id}/revalue")
     async def revalue_class_page(request: Request, class_id: str):

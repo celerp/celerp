@@ -20,7 +20,7 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.permissions import (
     assert_role_permission, get_current_company_settings, require_permission, role_has_permission)
 from celerp_fixed_assets import (
-    additions, classtable, corrections, disposal, moves, opening, operations, recon, reclassify, remeasure, reports,
+    additions, classtable, corrections, disposal, fixaccount, moves, opening, operations, recon, reclassify, remeasure, reports,
     runs, sales, setup, sources, taxbooks, transfer, yearend)
 from celerp_fixed_assets.events import register_events
 
@@ -34,7 +34,7 @@ OPERATION_TYPES = {name: ("manage_accounting",)
                    for name in ("registration", "acquisition", "expense", "maintenance", "undo", "run", "correction",
                                 "disposal", "improvement", "replacement", "place_in_service", "revaluation",
                                 "impairment", "impairment_reversal", "reclassify", "transfer_out",
-                                "transfer_in")} | dict.fromkeys(SALE_OPERATIONS, sales.SALE_KEYS)
+                                "transfer_in", "fix_account")} | dict.fromkeys(SALE_OPERATIONS, sales.SALE_KEYS)
 
 _MONEY_FIELDS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "nbv")
 _VIEW = [require_permission("view_fixed_assets")]
@@ -547,6 +547,18 @@ async def transfer_asset(asset_id: str, body: dict = Body(...), company_id=Depen
 async def apply_to_assets(class_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, corrections.apply_to_assets, company_id, user.id, class_id, body)
+
+
+@router.post("/classes/{class_id}/fix-account", dependencies=_ACCOUNTING)
+async def fix_account(class_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, fixaccount.fix_account, company_id, user.id, class_id, body)
+
+
+@router.post("/classes/{class_id}/fix-account/undo", dependencies=_ACCOUNTING)
+async def undo_fix_account(class_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, fixaccount.undo_fix, company_id, user.id, class_id, body)
 
 
 @router.get("/reports/prior-period-adjustments", dependencies=_REPORTS)

@@ -425,6 +425,8 @@ async def link_depreciation(session, company_id, user_id, body: dict) -> dict:
 
 async def _financials(session, company_id, fa: dict, body: dict) -> dict:
     """The checked financial details of an opening or contributed asset."""
+    from celerp.services.journal_accounts import require_destinations
+
     kind = body.get("kind")
     cls = await setup.get_class(session, company_id, body.get("class_id"))
     available = _date(body.get("available_date"), "The available-for-use date")
@@ -444,6 +446,8 @@ async def _financials(session, company_id, fa: dict, body: dict) -> dict:
         credit = str(body.get("credit_account") or "")
         if not credit:
             raise setup.unprocessable("Choose the account the asset was contributed from.")
+        # The preview refuses what the confirm would: both lines are new postings.
+        await require_destinations(session, company_id, {cls["asset_account"], credit})
         out.update(credit=credit, posting=available)
     else:
         raise setup.unprocessable("Choose how the asset came in: opening, contributed or a physical record.")
@@ -636,6 +640,11 @@ async def _undo(session, company_id, user_id, target_key: str, body: dict) -> di
         later = [a for a, n in last.items() if (await _state(session, company_id, a) or {}).get("movement_count", 0) > n]
         if later:
             raise conflict("These assets have changed since. Use Correct instead.")
+        # What the operation left as it was (an asset's movements, a class's version) is still so.
+        for entity_id, fields in (effects.get("unchanged") or {}).items():
+            now = await _state(session, company_id, entity_id) or {}
+            if any(int(now.get(k) or 0) > v for k, v in fields.items()):
+                raise conflict("This has changed since, so it can no longer be undone.")
         lock = (await setup.company_settings(session, company_id)).get("lock_date")
         locked = sorted(s["posting_date"] for s in movements.values() if s and lock and s["posting_date"] <= lock)
         if locked:

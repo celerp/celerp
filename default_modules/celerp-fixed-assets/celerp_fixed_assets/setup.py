@@ -477,6 +477,9 @@ async def class_changes(session, company_id, company_settings: dict | None, clas
         await _check_measurement(session, company_id, class_id, changes["measurement_policy"])
     if "active_market" in changes:
         changes["active_market"] = _active_market(changes["active_market"])
+    from celerp_fixed_assets import fixaccount
+
+    await fixaccount.refuse_stranding(session, company_id, class_id, current, changes)
     checked = {"construction": False, **current, **changes}
     await check_class(session, company_id, checked, company_settings, current)
     for name in ("params", "tax_categories"):
