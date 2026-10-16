@@ -8,6 +8,7 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlsplit
 
 import httpx
@@ -70,12 +71,22 @@ async def verify_company_handoff(copy_id: str | None, proof_hash: str | None,
         raise HandoffDownloadError("Company handoff verification was not confirmed")
 
 
-async def download_company_handoff(link: str, destination: Path) -> None:
+Progress = Callable[..., None]
+
+
+def _silent(stage: str, received: int = 0, total: int | None = None) -> None:
+    return None
+
+
+async def download_company_handoff(link: str, destination: Path, progress: Progress | None = None) -> None:
     """Authenticate a ciphertext download before publishing the staged restore input.
 
     The existing company-backup preview and restore routes remain responsible for
     validating and importing the decrypted company. This function changes no books.
+    `progress(stage, received, total)` hears "requesting", then "downloading" with the
+    bytes received so far and the size when the storage names it, then "decrypting".
     """
+    progress = progress or _silent
     parsed = parse_handoff_link(link)
     root = destination.parent
     encrypted = None
@@ -84,6 +95,7 @@ async def download_company_handoff(link: str, destination: Path) -> None:
             async with httpx.AsyncClient(follow_redirects=False,
                                          timeout=httpx.Timeout(120, connect=10)) as client:
                 grant_id = str(uuid.uuid4())
+                progress("requesting")
                 for attempt in range(2):
                     try:
                         response = await client.post(
@@ -109,20 +121,25 @@ async def download_company_handoff(link: str, destination: Path) -> None:
                         if incoming.status_code != 200:
                             raise HandoffDownloadError("The company copy could not be downloaded")
                         length = incoming.headers.get("content-length")
+                        size = None
                         if length:
                             try:
-                                if int(length) > MAX_CIPHERTEXT:
-                                    raise HandoffDownloadError("The company copy is too large")
+                                size = int(length)
                             except ValueError:
                                 raise HandoffDownloadError("The company copy has an invalid size") from None
+                            if size > MAX_CIPHERTEXT:
+                                raise HandoffDownloadError("The company copy is too large")
                         total = 0
+                        progress("downloading", 0, size)
                         async for chunk in incoming.aiter_bytes(chunk_size=1024 * 1024):
                             total += len(chunk)
                             if total > MAX_CIPHERTEXT:
                                 raise HandoffDownloadError("The company copy is too large")
                             target.write(chunk)
+                            progress("downloading", total, size)
                     target.flush()
                     os.fsync(target.fileno())
+            progress("decrypting")
             await asyncio.to_thread(decrypt_file, encrypted, destination, parsed.secret)
     except (httpx.HTTPError, TimeoutError) as exc:
         raise HandoffDownloadError("The company copy could not be downloaded") from exc

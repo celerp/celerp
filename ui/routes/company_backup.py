@@ -46,9 +46,10 @@ from celerp.services.company_handoff_transfer import HandoffDownloadError, downl
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 import ui.api_client as api
+import ui.company_copy_opening as opening
 from ui.api_client import APIError
 from ui.components.shell import flash
 from ui.components.table import format_value
@@ -89,6 +90,7 @@ USERS_AND_ROLES = "/settings/general?tab=users"
 
 UPLOAD_COOKIE = "celerp_company_backup_upload"
 UPLOAD_TTL_SECONDS = 24 * 3600
+OPENING_COOKIE = "celerp_company_copy_opening"
 OUTCOME_COOKIE = "celerp_company_backup_outcome"
 OUTCOME_TTL_SECONDS = 300
 _CREATED, _OPENED, _TEAM_ADDED, _REACTIVATED = "created", "opened_existing", "opened_existing_team_added", "reactivated"
@@ -416,36 +418,155 @@ async def _read(request: Request, mode: WizardMode):
     if has_file == bool(link):
         return await _upload_page(request, mode, t("company_backup.choose_file_or_link"), email=email)
 
+    token, setup_code = api_token(request, mode), _setup_code(form)
+
     async def stage(filename, content, handoff=None):
         if mode is START_COMPANY:
             return await api.company_backup_start_read(email, password, filename, content,
                                                        **({"handoff": handoff} if handoff else {}))
-        return await api.company_backup_read(api_token(request, mode), filename, content,
-                                             setup_code=_setup_code(form), mode=_mode_key(mode),
-                                             **({"handoff": handoff} if handoff else {}))
+        return await api.company_backup_read(token, filename, content, setup_code=setup_code,
+                                             mode=_mode_key(mode), **({"handoff": handoff} if handoff else {}))
 
     if link:
         try:
-            # Nothing is imported until the existing preview and restore steps succeed.
             validated = parse_handoff_link(link)
-            with tempfile.TemporaryDirectory(prefix="celerp-handoff-") as folder:
-                backup = Path(folder) / "incoming.celerp-company"
-                await download_company_handoff(link, backup)
-                with backup.open("rb") as content:
-                    summary = await stage(backup.name, content,
-                                          handoff=(str(validated.copy_id), validated.proof_hash))
-        except (HandoffDownloadError, ValueError, InvalidTag):
+        except ValueError:
             return await _upload_page(request, mode, t("company_backup.handoff_unavailable"), email=email)
-        except APIError as e:
-            return await _upload_page(request, mode, _file_error("", e), status_code=_status(e), email=email)
-    else:
-        try:
-            summary = await stage(upload.filename, upload.file)
-        except APIError as e:
-            return await _upload_page(request, mode, _file_error(upload.filename, e),
-                                      status_code=_status(e), email=email)
+        unavailable = t("company_backup.handoff_unavailable")
+
+        async def work(job: opening.Opening) -> dict:
+            # Nothing is imported until the existing preview and restore steps succeed.
+            try:
+                with tempfile.TemporaryDirectory(prefix="celerp-handoff-") as folder:
+                    backup = Path(folder) / "incoming.celerp-company"
+                    await download_company_handoff(link, backup, job.report)
+                    job.report("checking")
+                    with backup.open("rb") as content:
+                        summary = await stage(backup.name, content,
+                                              handoff=(str(validated.copy_id), validated.proof_hash))
+            except (HandoffDownloadError, ValueError, InvalidTag):
+                raise opening.OpeningFailed(unavailable) from None
+            except APIError as e:
+                raise opening.OpeningFailed(_file_error("", e)) from None
+            return {"summary": summary, "email": email}
+
+        resp = RedirectResponse(f"{mode.base}/opening", status_code=303)
+        resp.set_cookie(OPENING_COOKIE, opening.start(mode.key, work, unavailable), max_age=opening.KEEP_SECONDS,
+                        path=mode.base, httponly=True, samesite="strict", secure=session_cookie_secure(request),
+                        domain=cookie_domain(request))
+        return resp
+    try:
+        summary = await stage(upload.filename, upload.file)
+    except APIError as e:
+        return await _upload_page(request, mode, _file_error(upload.filename, e),
+                                  status_code=_status(e), email=email)
     return _with_cookie(await _preview_page(request, mode, _preview_of(summary), values={"email": email}), mode,
                         request, summary["upload_token"])
+
+
+def _clear_opening_cookie(resp, mode: WizardMode, request: Request) -> None:
+    resp.delete_cookie(OPENING_COOKIE, path=mode.base, domain=cookie_domain(request))
+
+
+_STAGES = {"requesting": "company_backup.opening_requesting", "downloading": "company_backup.opening_downloading",
+           "decrypting": "company_backup.opening_decrypting", "checking": "company_backup.opening_checking"}
+
+
+def _stage_text(job: opening.Opening) -> str:
+    if job.stage == "downloading" and job.percent is None:
+        return t("company_backup.opening_downloading_unsized")
+    return t(_STAGES.get(job.stage, _STAGES["requesting"]), percent=job.percent)
+
+
+def _opening_status(job: opening.Opening) -> dict:
+    return {"state": job.state, "stage": job.stage, "percent": job.percent, "text": _stage_text(job),
+            "message": job.message}
+
+
+async def _opening_page(request: Request, mode: WizardMode):
+    """What the background download is doing and how far it has got. The page asks every
+    second and moves on to the preview, or to the reason it could not open, by itself."""
+    if (denied := await _gate(request, mode)) is not None:
+        return denied
+    job = opening.find(request.cookies.get(OPENING_COOKIE), mode.key)
+    if job is None:
+        return _upload_again(request, mode, t("company_backup.upload_expired"))
+    if job.state != opening.RUNNING:
+        return RedirectResponse(f"{mode.base}/opened", status_code=303)
+    status, opened = f"{mode.base}/opening/status", f"{mode.base}/opened"
+    return wizard_page(
+        request,
+        auth_header(t(_TITLE), t("company_backup.opening_subtitle")),
+        P(_stage_text(job), id="opening-stage", aria_live="polite"),
+        Div(Div(style=f"width:{job.percent or 0}%", cls="import-progress-fill", id="opening-bar"),
+            cls="import-progress"),
+        P(t("company_backup.opening_nothing_imported"), cls="form-hint"),
+        Noscript(A(t("company_backup.check_again"), href=f"{mode.base}/opening", cls="btn btn--secondary btn--full")),
+        Form(Button(t("btn.cancel"), type="submit", cls="btn btn--secondary btn--full"),
+             method="post", action=f"{mode.base}/opening/cancel"),
+        Script(f"""
+        (function () {{
+          var stage = document.getElementById('opening-stage'), bar = document.getElementById('opening-bar');
+          setTimeout(function poll() {{
+            fetch({status!r}, {{cache: 'no-store'}}).then(function (r) {{
+              if (r.status === 404) {{ window.location = {opened!r}; return null; }}
+              return r.ok ? r.json() : null;
+            }}).then(function (s) {{
+              if (!s) {{ setTimeout(poll, 2000); return; }}
+              if (s.state !== 'running') {{ window.location = {opened!r}; return; }}
+              stage.textContent = s.text;
+              bar.style.width = (s.percent || 0) + '%';
+              setTimeout(poll, 1000);
+            }}).catch(function () {{ setTimeout(poll, 2000); }});
+          }}, 1000);
+        }})();
+        """),
+        status_code=200,
+        title=_TITLE,
+    )
+
+
+async def _opening_state(request: Request, mode: WizardMode):
+    if (denied := await _gate(request, mode)) is not None:
+        return denied
+    job = opening.find(request.cookies.get(OPENING_COOKIE), mode.key)
+    if job is None:
+        return JSONResponse({"state": "gone"}, status_code=404)
+    return JSONResponse(_opening_status(job))
+
+
+async def _opening_cancel(request: Request, mode: WizardMode):
+    """Stop the download; nothing was imported, so choosing the file or link again is all
+    there is to undo."""
+    if (denied := await _gate(request, mode)) is not None:
+        return denied
+    opening.forget(request.cookies.get(OPENING_COOKIE), mode.key)
+    resp = RedirectResponse(mode.base, status_code=303)
+    _clear_opening_cookie(resp, mode, request)
+    return resp
+
+
+async def _opened(request: Request, mode: WizardMode):
+    """The finished opening: the copy's preview, or why it could not be opened with the
+    way to try again."""
+    if (denied := await _gate(request, mode)) is not None:
+        return denied
+    key = request.cookies.get(OPENING_COOKIE)
+    job = opening.find(key, mode.key)
+    if job is None:
+        return _upload_again(request, mode, t("company_backup.upload_expired"))
+    if job.state == opening.RUNNING:
+        return RedirectResponse(f"{mode.base}/opening", status_code=303)
+    opening.forget(key, mode.key)
+    if job.state == opening.FAILED:
+        resp = _html(await _upload_page(request, mode, job.message))
+    else:
+        result = job.summary
+        resp = _with_cookie(await _preview_page(request, mode, _preview_of(result["summary"]),
+                                                values={"email": result["email"]}),
+                            mode, request, result["summary"]["upload_token"])
+    _clear_opening_cookie(resp, mode, request)
+    return resp
 
 
 async def _again(request: Request, mode: WizardMode, upload_token: str, *, values: dict | None = None,
@@ -889,6 +1010,8 @@ def company_backup_routes(app) -> None:
     app.post(HANDOFFS + "/{copy_id}/revoke")(_revoke_handoff)
     for mode in (SETTINGS, NEW_COMPANY, BOOTSTRAP, START_COMPANY):
         for method, suffix, handler in (("get", "", _start), ("post", "/read", _read),
+                                        ("get", "/opening", _opening_page), ("get", "/opening/status", _opening_state),
+                                        ("post", "/opening/cancel", _opening_cancel), ("get", "/opened", _opened),
                                         ("post", "/restore", _restore), ("get", "/done", _done)):
             getattr(app, method)(f"{mode.base}{suffix}")(bind(handler, mode, "company_backup"))
     for mode in (SETTINGS, NEW_COMPANY, BOOTSTRAP):

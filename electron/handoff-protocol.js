@@ -22,6 +22,22 @@ function handoffRestorePath(pathname) {
   return "/settings/restore-backup";
 }
 
+// The page script that puts a company copy link into the restore form and opens it.
+// Opening only downloads the copy and shows what it contains; nothing is restored until
+// the owner confirms the preview. A form still asking for sign-in details keeps the link
+// and points at the missing field instead.
+function handoffOpenScript(origin, link) {
+  return "(function () {"
+    + "if (location.origin !== " + JSON.stringify(origin) + ") return false;"
+    + "const field = document.querySelector('[name=handoff_link]');"
+    + "if (!field) return false;"
+    + "field.value = " + JSON.stringify(link) + ";"
+    + "field.dispatchEvent(new Event('input', { bubbles: true }));"
+    + "if (field.form.checkValidity()) { field.form.requestSubmit(); } else { field.form.reportValidity(); }"
+    + "return true;"
+    + "})()";
+}
+
 function handoffFromArgs(args) {
   if (!Array.isArray(args)) return null;
   for (const arg of args) {
@@ -31,4 +47,4 @@ function handoffFromArgs(args) {
   return null;
 }
 
-module.exports = { parseHandoffUrl, handoffFromArgs, handoffRestorePath };
+module.exports = { parseHandoffUrl, handoffFromArgs, handoffRestorePath, handoffOpenScript };

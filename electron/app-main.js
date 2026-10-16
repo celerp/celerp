@@ -20,7 +20,7 @@ const fs = require("fs");
 const childProcess = require("child_process");
 const { execFileSync } = childProcess;
 const net = require("net");
-const { parseHandoffUrl, handoffFromArgs, handoffRestorePath } = require("./handoff-protocol");
+const { parseHandoffUrl, handoffFromArgs, handoffRestorePath, handoffOpenScript } = require("./handoff-protocol");
 let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-only
 
 // ── Asar path fix for embedded-postgres ─────────────────────────────────────
@@ -198,14 +198,7 @@ function showPendingHandoff() {
     return;
   }
   const link = pendingHandoffUrl;
-  const script = "(function () {"
-    + "if (location.origin !== " + JSON.stringify(origin) + ") return false;"
-    + "const field = document.querySelector('[name=handoff_link]');"
-    + "if (!field) return false;"
-    + "field.value = " + JSON.stringify(link) + ";"
-    + "field.dispatchEvent(new Event('input', { bubbles: true }));"
-    + "field.focus(); return true;"
-    + "})()";
+  const script = handoffOpenScript(origin, link);
   mainWindow.webContents.executeJavaScript(script).then((shown) => {
     if (shown && pendingHandoffUrl === link) pendingHandoffUrl = null;
   }).catch(() => {});
