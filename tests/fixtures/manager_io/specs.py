@@ -54,6 +54,9 @@ T = {name: uuid.UUID(guid) for name, guid in {
     "JournalEntry": "5ea52bc4-90ae-4e4a-aec4-ef1224b279ad",
     "Attachment": "2e541a82-94d7-42fc-a388-26bdc0803455",
     "SalesQuote": "ba89de75-cb87-4bde-b20f-314f01b31037",
+    "SalesOrder": "2dac5598-128d-4954-b2e4-21515047b3a7",
+    "PurchaseQuote": "38d606f7-6358-4ace-9d1d-f6c0b9ea9d68",
+    "PurchaseOrder": "a26bbea1-57aa-4fd9-b7c9-e26b83114385",
     "TrialBalance": "e5dc98ef-4662-4a68-8a9d-b3e2d12b55d6",
     "DeliveryNote": "a0f6a539-f6a4-4a38-a69a-546a608a1f6d",
     "GoodsReceipt": "866217a4-f841-47de-a4e6-87152405c88d",
@@ -321,6 +324,56 @@ def build_attachment_targets(path: Path) -> Path:
                                    for label, target in ATTACHMENT_TARGETS.items())]
     blobs = (*basic_blobs(), *(Blob(k(label), f"{label.lower()}.png", "image/png", PNG) for label in ATTACHMENT_TARGETS))
     return write_manager_file(path, objects, blobs)
+
+
+# ── Quotes and orders ─────────────────────────────────────────────────────────
+# Their lines share one layout: 1 item, 2 description, 3 quantity, 4 unit price,
+# 5 discount percentage, 6 discount amount, 7 tax code.
+
+ORDERS_CUTOVER = date(2026, 1, 31)
+
+
+def _order_line(description: str, qty: str, price: str, extra: dict | None = None) -> dict:
+    return {2: description, 3: D(qty), 4: D(price), **(extra or {})}
+
+
+def quote_order_objects() -> list[Obj]:
+    """Sales quotes and orders, purchase quotes and orders, and the invoices and bills they
+    became. Q-1 is open and valid for 30 days, Q-X cancelled. Q-2 became SO-1, which became
+    INV-O; Q-3 became INV-Q directly. PQ-1 became PO-1, which became BILL-O. PO-2 (a 10%
+    line discount) and SO-2 (tax included) are open after ORDERS_CUTOVER."""
+    vat, ca, sa, wid = k("VAT"), k("CA"), k("SA"), k("WID")
+    return [
+        *masters(),
+        obj("SalesQuote", "Q1", {1: date(2026, 1, 5), 2: "Q-1", 3: ca, 9: "Consulting proposal", 26: 30, 24: [
+            _order_line("Consulting hours", "2", "50", {7: vat})]}),
+        obj("SalesQuote", "QX", {1: date(2026, 1, 6), 2: "Q-X", 3: ca, 25: True, 24: [
+            _order_line("Withdrawn offer", "1", "80")]}),
+        obj("SalesQuote", "Q2", {1: date(2026, 1, 7), 2: "Q-2", 3: ca, 24: [
+            _order_line("Widgets", "2", "12.50", {1: wid})]}),
+        obj("SalesOrder", "SO1", {1: date(2026, 1, 8), 2: "SO-1", 3: ca, 19: k("Q2"), 18: [
+            _order_line("Widgets", "2", "12.50", {1: wid})]}),
+        obj("SalesInvoice", "INVO", {1: date(2026, 1, 12), 2: "INV-O", 3: ca, 50: k("SO1"), 51: k("Q2"), 49: [
+            {2: k("S1"), 17: "Widgets", 18: D("2"), 19: D("12.50")}]}),
+        obj("SalesQuote", "Q3", {1: date(2026, 1, 9), 2: "Q-3", 3: ca, 24: [
+            _order_line("Support", "1", "40")]}),
+        obj("SalesInvoice", "INVQ", {1: date(2026, 1, 14), 2: "INV-Q", 3: ca, 51: k("Q3"), 49: [
+            {2: k("S1"), 17: "Support", 18: D("1"), 19: D("40")}]}),
+        obj("PurchaseQuote", "PQ1", {1: date(2026, 1, 9), 2: "PQ-1", 3: sa, 17: [
+            _order_line("Widgets", "10", "4", {1: wid})]}),
+        obj("PurchaseOrder", "PO1", {1: date(2026, 1, 10), 2: "PO-1", 3: sa, 18: k("PQ1"), 17: [
+            _order_line("Widgets", "10", "4", {1: wid})]}),
+        obj("PurchaseInvoice", "BILLO", {1: date(2026, 1, 15), 2: "BILL-O", 3: sa, 29: k("PO1"), 28: k("PQ1"), 23: [
+            {2: k("OFF"), 17: "Widgets", 18: D("10"), 19: D("4")}]}),
+        obj("PurchaseOrder", "PO2", {1: date(2026, 2, 1), 2: "PO-2", 3: sa, 12: True, 13: 0, 17: [
+            _order_line("Widgets", "10", "4", {1: wid, 5: D("10")})]}),
+        obj("SalesOrder", "SO2", {1: date(2026, 2, 3), 2: "SO-2", 3: ca, 9: True, 18: [
+            _order_line("Support, tax included", "1", "55", {7: vat})]}),
+    ]
+
+
+def build_quotes_orders(path: Path) -> Path:
+    return write_manager_file(path, quote_order_objects())
 
 
 def inactive_masters() -> list[Obj]:

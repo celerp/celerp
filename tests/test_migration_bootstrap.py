@@ -67,7 +67,8 @@ async def test_bootstrap_scan_is_read_only(client, session, migration_env):
     assert scan["object_counts"] and all(isinstance(v, int) for v in scan["object_counts"].values())
     assert {c["source_type"] for c in scan["coverage"]} >= {"SalesInvoice", "SalesQuote"}
     assert scan["blockers"] == []
-    assert any("SalesQuote" in w for w in scan["warnings"])
+    # Every record in the file is carried; the not-carried warnings are covered in test_migration_lifecycle.
+    assert scan["warnings"] == []
     assert scan["decisions"] is None
 
     r = await save_decisions(client, scan_token, prepared_by="Example Accountant")

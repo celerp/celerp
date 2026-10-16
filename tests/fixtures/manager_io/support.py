@@ -13,6 +13,7 @@ from . import specs
 
 HERE = Path(__file__).resolve().parent
 BASIC = HERE / "basic.manager"
+ORDERS = HERE / "orders.manager"
 FX = HERE / "fx.manager"
 INVENTORY = HERE / "inventory.manager"
 CHECKPOINTS = json.loads((HERE / "checkpoints.json").read_text())

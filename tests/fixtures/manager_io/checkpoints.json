@@ -62,6 +62,10 @@
         "bill": [
           "USD",
           2
+        ],
+        "quotation": [
+          "USD",
+          1
         ]
       },
       "document_total": {
@@ -76,6 +80,10 @@
         "bill": [
           "USD",
           "94.00"
+        ],
+        "quotation": [
+          "USD",
+          "0.00"
         ]
       },
       "document_status": {
@@ -83,7 +91,8 @@
         "invoice:awaiting_payment": 2,
         "credit_note:paid": 1,
         "bill:paid": 1,
-        "bill:awaiting_payment": 1
+        "bill:awaiting_payment": 1,
+        "quotation:awaiting_payment": 1
       },
       "settlement_allocation": {
         "receipt": [
@@ -209,6 +218,10 @@
         "bill": [
           "USD",
           1
+        ],
+        "quotation": [
+          "USD",
+          1
         ]
       },
       "document_total": {
@@ -223,12 +236,17 @@
         "bill": [
           "USD",
           "44.00"
+        ],
+        "quotation": [
+          "USD",
+          "0.00"
         ]
       },
       "document_status": {
         "invoice:awaiting_payment": 2,
         "credit_note:paid": 1,
-        "bill:awaiting_payment": 1
+        "bill:awaiting_payment": 1,
+        "quotation:awaiting_payment": 1
       },
       "settlement_allocation": {
         "receipt": [
@@ -490,7 +508,18 @@
       "opening_value": {"WID": "85.00"}
     }
   },
+  "orders": {
+    "full_history": {
+      "document_count": {"quotation": ["USD", 6], "purchase_order": ["USD", 3]},
+      "document_total": {"quotation": ["USD", "335.00"], "purchase_order": ["USD", "116.00"]},
+      "document_status": {"quotation:void": 1, "quotation:awaiting_payment": 5, "purchase_order:awaiting_payment": 3}
+    }
+  },
   "type_checkpoints": {
+    "SalesQuote": ["orders.full_history.document_count", "orders.full_history.document_status"],
+    "SalesOrder": ["orders.full_history.document_count", "orders.full_history.document_total"],
+    "PurchaseQuote": ["orders.full_history.document_count", "orders.full_history.document_total"],
+    "PurchaseOrder": ["orders.full_history.document_count", "orders.full_history.document_status"],
     "BusinessDetails": [
       "basic.company"
     ],

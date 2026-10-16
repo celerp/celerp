@@ -240,7 +240,7 @@ def test_manager_attachment_handling_is_untrusted_and_reported(tmp_path):
     assert ("Attachment (rejected)", CoverageClass.MAPPED_WITH_LOSS) in {
         (row.source_type, row.coverage_class) for row in manifest.coverage
     }
-    assert len(manifest.bundle.documents) == 7
+    assert len(manifest.bundle.documents) == 8
     assert manifest.source_summary["attachments"]["accepted"] == 1
 
 
@@ -633,7 +633,7 @@ def test_attachments_move_only_to_records_that_hold_files(tmp_path):
     assert "Attachment (rejected)" not in coverage
     rejected = {row["source_external_id"] for row in manifest.source_summary["attachments"]["rejected"]}
     assert rejected == {ref(label) for label in ("AREC", "AFALL", "ATRF", "AJE", "ADN")}
-    assert len(manifest.bundle.documents) == 7
+    assert len(manifest.bundle.documents) == 8
 
 
 # ── Master data fidelity ──────────────────────────────────────────────────────
