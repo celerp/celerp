@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import secrets
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
@@ -24,7 +25,30 @@ ENTITY_SCOPE = {
 }
 SCOPE_ORDER = tuple(dict.fromkeys(ENTITY_SCOPE.values()))
 SCOPES = frozenset(SCOPE_ORDER)
+# The receiving company's own routes a key opens, each with the entity whose scope it
+# needs. A key reaches no other route.
+PEER_ROUTES = {
+    ("POST", "/crm/contacts/import/batch"): "contacts",
+    ("POST", "/items/import/batch"): "products",
+    ("POST", "/docs/import/batch"): "documents",
+    ("POST", "/docs/{entity_id}/files"): "attachments",
+    ("POST", "/lists/import/batch"): "inventory",
+}
+ENTITY_ROUTE = {entity: path for (_, path), entity in PEER_ROUTES.items()}
+# The header naming the sending company on every request signed with its key.
+SOURCE_HEADER = "X-Celerp-Source-Company"
+UNAVAILABLE = "Integration operation unavailable"
 MAX_ACTIVE = 5
+
+
+@dataclass(frozen=True)
+class PeerCaller:
+    """The connected company a request comes from, kept so each record it carries is
+    authenticated again in that record's own transaction."""
+    credential: str
+    source_company_id: uuid.UUID
+    scope: str
+
 # How long a key works, from issue and from each renewal.
 KEY_LIFETIME = timedelta(days=365)
 # Both companies are warned this long before a key expires.
@@ -59,6 +83,19 @@ def parse_pairing_code(code: object) -> tuple[uuid.UUID, str]:
     if base64.urlsafe_b64encode(raw).decode().rstrip("=") != bits[2] or len(name) > MAX_LABEL:
         raise ValueError("Invalid pairing code")
     return company_id, name
+
+
+def route_entity(method: str, path: str) -> str | None:
+    """The entity a request to ``path`` sends, when it is one of PEER_ROUTES; a ``{name}``
+    segment matches any one path segment."""
+    parts = path.rstrip("/").split("/")
+    for (verb, template), entity in PEER_ROUTES.items():
+        expected = template.split("/")
+        if verb == method and len(expected) == len(parts) and all(
+                e == p or (e.startswith("{") and e.endswith("}") and p)
+                for e, p in zip(expected, parts)):
+            return entity
+    return None
 
 
 def _instant(value: datetime) -> datetime:
@@ -137,7 +174,7 @@ async def authenticate(session: AsyncSession, credential: object, *,
                        now: datetime | None = None) -> CompanyPeerGrant:
     """Authenticate inside the domain transaction before mutating a company."""
     if scope not in SCOPES:
-        raise HTTPException(403, "Integration operation unavailable")
+        raise HTTPException(403, UNAVAILABLE)
     row = await held(session, credential, source_company_id=source_company_id, now=now)
     if scope not in row.scopes:
         raise HTTPException(401, INVALID)

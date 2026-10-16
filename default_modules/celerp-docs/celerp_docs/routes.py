@@ -45,6 +45,7 @@ from celerp.services.goods_cost import negative_cost_error
 from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
 from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_placing
 from celerp.services.physical_codes import lock_item_code_namespace
+from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
 from celerp.services.payments import recorded_unmatched, return_unmatched
 from celerp.tax_regimes import default_tax, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of
@@ -58,7 +59,7 @@ from celerp.services.document_lines import (
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
-from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, next_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
@@ -503,6 +504,7 @@ class DocImportRecord(BaseModel):
     source: str
     idempotency_key: str
     source_ts: str | None = None
+    source_revision: SourceRevision = None  # a connected company's records only
 
     _contact_fields = field_validator("data", mode="before")(_canonical_contact_payload)
 
@@ -7885,9 +7887,12 @@ async def batch_import_docs(
     __: None = require_permission("import_export_data"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> BatchImportResult:
     from celerp_docs import import_service
 
+    if (peer := await peer_batch(auth, session, body.records)) is not None:
+        return BatchImportResult(**peer)
     role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     outcome = await import_service.import_doc_records(
         session, company_id, user, role, settings, body.records, upsert=body.upsert,
@@ -9495,7 +9500,10 @@ async def batch_import_lists(
     __: None = require_permission("import_export_data"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> BatchImportResult:
+    if (peer := await peer_batch(auth, session, body.records)) is not None:
+        return BatchImportResult(**peer)
     role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     from sqlalchemy import select as _select
     from celerp.models.ledger import LedgerEntry
@@ -11803,7 +11811,18 @@ async def upload_doc_file(
     _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    auth: AuthContext = Depends(get_auth_context),
+    source_file_id: str | None = Form(default=None, min_length=1, max_length=255),
+    sha256_hex: str | None = Form(default=None, min_length=64, max_length=64),
+    document_tag: str | None = Form(default=None, max_length=128),
+    description: str | None = Form(default=None, max_length=4096),
 ) -> dict:
+    """Attach a file to a document. A connected company's key names the document and the
+    file by its own ids, with the file's checksum (peer_import.receive_file)."""
+    peer_fields = {"source_file_id": source_file_id, "sha256_hex": sha256_hex,
+                   "document_tag": document_tag, "description": description}
+    if (peer := await receive_file(auth, session, entity_id, file, **peer_fields)) is not None:
+        return peer
     async with storing(session, company_id) as store:
         try:
             meta = await store.upload(file)

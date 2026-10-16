@@ -55,7 +55,7 @@ async def test_draft_document_uses_existing_importer_and_maps_dependencies(monke
         ],
         "currency": "USD",
     }
-    assert await documents.receive_draft_document(
+    assert await documents.receive_document(
         _Session(), grant=grant, source_entity_id="doc:source",
         source_revision=3, data=payload) == "created"
     assert commits == [3]
@@ -72,7 +72,7 @@ async def test_issued_document_reuses_importer_and_preserves_revision_replay(mon
     async def claim(*args, **kwargs):
         return SimpleNamespace(replay=True)
     monkeypatch.setattr(documents, "claim_peer_revision", claim)
-    assert await documents.receive_draft_document(
+    assert await documents.receive_document(
         _Session(), grant=_grant(), source_entity_id="doc:a",
         source_revision=4, data=source) == "skipped"
     from celerp_docs import import_service
@@ -88,7 +88,7 @@ async def test_issued_document_reuses_importer_and_preserves_revision_replay(mon
     monkeypatch.setattr(documents, "claim_peer_revision", changed)
     monkeypatch.setattr(import_service, "import_doc_records", imported)
     monkeypatch.setattr(documents, "commit_peer_revision", commit)
-    assert await documents.receive_draft_document(
+    assert await documents.receive_document(
         _Session(), grant=_grant(), source_entity_id="doc:a",
         source_revision=5, data=source) == "created"
     assert imports[0]["status"] == "final" and commits == [5]
@@ -107,7 +107,7 @@ async def test_document_receiver_refuses_unapproved_fields_before_claim(monkeypa
         raise AssertionError("Invalid document reached peer revision claim")
     monkeypatch.setattr(documents, "claim_peer_revision", unexpected)
     with pytest.raises(HTTPException) as rejected:
-        await documents.receive_draft_document(
+        await documents.receive_document(
             _Session(), grant=_grant(), source_entity_id="doc:a",
             source_revision=1, data={"doc_type": "invoice", "status": "draft",
                                      field: value})
@@ -123,7 +123,7 @@ async def test_missing_reference_is_not_accepted_as_success(monkeypatch):
     monkeypatch.setattr(documents, "claim_peer_revision", claim)
     monkeypatch.setattr(documents, "_map_identity", missing)
     with pytest.raises(HTTPException) as err:
-        await documents.receive_draft_document(
+        await documents.receive_document(
             _Session(), grant=_grant(), source_entity_id="doc:source",
             source_revision=1,
             data={"doc_type": "invoice", "status": "draft",
@@ -150,7 +150,7 @@ async def test_issued_bill_uses_canonical_record_now_without_synthesized_payment
     payload = {"doc_type": "bill", "status": "final", "ref_id": "BILL-42",
                "currency": "USD", "line_items": [{"name": "Service", "quantity": 1,
                                                    "unit_price": 50}]}
-    assert await documents.receive_draft_document(
+    assert await documents.receive_document(
         _Session(), grant=_grant(), source_entity_id="doc:bill",
         source_revision=8, data=payload) == "created"
     assert calls[0]["status"] == "final"
@@ -188,7 +188,7 @@ async def test_issued_transition_finalizes_existing_draft_using_canonical_servic
         events.append(("sent", entity_id))
     monkeypatch.setattr(routes, "mark_doc_sent", marked_sent)
     monkeypatch.setattr(documents, "commit_peer_revision", commit)
-    assert await documents.receive_draft_document(
+    assert await documents.receive_document(
         HasDraft(), grant=_grant(), source_entity_id="doc:invoice",
         source_revision=3, data={"doc_type": "invoice", "status": "sent",
                                  "ref_id": "INV-10", "line_items": [
@@ -200,14 +200,14 @@ async def test_issued_transition_finalizes_existing_draft_using_canonical_servic
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status,kind", [
     ("void", "invoice"), ("closed", "invoice"), ("final", "credit_note"),
-    ("received", "bill"), ("sent", "bill"), ("paid", "memo"),
+    ("sent", "bill"), ("paid", "memo"),
 ])
 async def test_unsafe_lifecycle_stays_deferred(monkeypatch, status, kind):
     async def claim(*args, **kwargs):
         return SimpleNamespace(replay=False, target_id="doc:target")
     monkeypatch.setattr(documents, "claim_peer_revision", claim)
     with pytest.raises(HTTPException) as e:
-        await documents.receive_draft_document(
+        await documents.receive_document(
             _Session(), grant=_grant(), source_entity_id="doc:source",
             source_revision=6,
             data={"doc_type": kind, "status": status})
@@ -216,12 +216,31 @@ async def test_unsafe_lifecycle_stays_deferred(monkeypatch, status, kind):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status,kind,subject", [
+    ("closed", "invoice", "A closed document"),
+    ("final", "credit_note", "An issued credit note"),
+    ("final", "consignment_in", "An issued consignment in"),
+])
+async def test_document_not_copied_says_to_enter_it_by_hand(monkeypatch, status, kind, subject):
+    async def claim(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target")
+    monkeypatch.setattr(documents, "claim_peer_revision", claim)
+    with pytest.raises(HTTPException) as e:
+        await documents.receive_document(
+            _Session(), grant=_grant(), source_entity_id="doc:source",
+            source_revision=6, data={"doc_type": kind, "status": status})
+    assert e.value.status_code == 409
+    assert e.value.detail == (subject + " is not copied automatically. "
+                              "Enter it in the accountant's copy by hand.")
+
+
+@pytest.mark.asyncio
 async def test_paid_document_requires_payment_validation_before_revision_claim(monkeypatch):
     async def unexpected(*args, **kwargs):
         raise AssertionError("Claimed before validating missing cash")
     monkeypatch.setattr(documents, "claim_peer_revision", unexpected)
     with pytest.raises(HTTPException) as err:
-        await documents.receive_draft_document(
+        await documents.receive_document(
             _Session(), grant=_grant(), source_entity_id="doc:source",
             source_revision=3, data={"doc_type": "invoice", "status": "paid",
                                      "amount_paid": 30, "payments": []})
@@ -249,7 +268,7 @@ async def test_payment_posting_failure_prevents_revision_acknowledgement(monkeyp
     monkeypatch.setattr(peer_payments, "apply_source_payments", payment)
     monkeypatch.setattr(documents, "commit_peer_revision", commit)
     with pytest.raises(HTTPException) as err:
-        await documents.receive_draft_document(
+        await documents.receive_document(
             _Session(), grant=_grant(), source_entity_id="doc:source", source_revision=3,
             data={"doc_type": "invoice", "status": "paid", "amount_paid": 30,
                   "total": 30, "payments": [{"index": 0, "amount": 30,
@@ -288,7 +307,7 @@ async def test_peer_void_uses_canonical_operation_without_committing_receiver_tr
     monkeypatch.setattr(routes, "void_document", void_document)
     data = {"doc_type": "invoice", "status": "void", "total": 125,
             "amount_paid": 0, "currency": "USD"}
-    assert await documents.receive_draft_document(
+    assert await documents.receive_document(
         Issued(), grant=grant, source_entity_id="doc:source",
         source_revision=7, data=data) == "updated"
     assert events[0][0] == "doc:target" and events[0][-1] is False
@@ -315,7 +334,7 @@ async def test_peer_void_refuses_unissued_or_changed_receivable(monkeypatch, tar
                                mapping=SimpleNamespace(), source_key="key")
     monkeypatch.setattr(documents, "claim_peer_revision", claim)
     with pytest.raises(HTTPException) as error:
-        await documents.receive_draft_document(
+        await documents.receive_document(
             Existing(), grant=_grant(), source_entity_id="doc:source",
             source_revision=3, data={"doc_type": "invoice", "status": "void",
                                      "currency": "USD", "total": 125, "amount_paid": 0})
@@ -352,7 +371,7 @@ async def test_peer_document_line_uses_canonical_boundary_validation(monkeypatch
         return SimpleNamespace(replay=False, target_id="doc:receiving")
     monkeypatch.setattr(documents, "claim_peer_revision", claim)
     with pytest.raises(HTTPException) as exc:
-        await documents.receive_draft_document(
+        await documents.receive_document(
             _Session(), grant=_grant(), source_entity_id="doc:unsafe-line",
             source_revision=1,
             data={"doc_type": "invoice", "status": "draft",
@@ -371,24 +390,6 @@ async def test_peer_document_line_uses_canonical_boundary_validation(monkeypatch
 ])
 def test_issued_stock_documents_require_canonical_stock_operations(line, expected):
     assert documents.requires_stock_movement({"line_items": [line]}) is expected
-
-
-@pytest.mark.asyncio
-async def test_stock_invoice_refused_before_any_document_revision_claim(monkeypatch):
-    async def forbidden(*args, **kwargs):
-        raise AssertionError("A stock document must not reach the importer")
-    monkeypatch.setattr(documents, "claim_peer_revision", forbidden)
-    with pytest.raises(HTTPException) as exc:
-        await documents.receive_draft_document(
-            _Session(), grant=_grant(), source_entity_id="doc:stock",
-            source_revision=1,
-            data={"doc_type": "invoice", "status": "final",
-                  "line_items": [{"name": "Widget", "sku": "STOCK",
-                                  "quantity": 1, "unit_price": 50}],
-                  "currency": "USD"})
-    assert exc.value.status_code == 409
-    assert "Inventory-linked" in exc.value.detail
-
 
 
 @pytest.mark.asyncio
@@ -455,7 +456,7 @@ async def test_real_service_invoice_mirror_posts_once_in_second_company(client, 
     receiver_token = receiver.json()["access_token"]
     target_company = uuid.UUID(_company_id(receiver_token))
     grant = SimpleNamespace(company_id=target_company, source_company_id=source_company)
-    assert await documents.receive_draft_document(
+    assert await documents.receive_document(
         session, grant=grant, source_entity_id=source_doc,
         source_revision=source_revision, data=payload,
     ) == "created"
@@ -469,7 +470,7 @@ async def test_real_service_invoice_mirror_posts_once_in_second_company(client, 
         LedgerEntry.company_id == target_company)))
     assert before > 0
 
-    assert await documents.receive_draft_document(
+    assert await documents.receive_document(
         session, grant=grant, source_entity_id=source_doc,
         source_revision=source_revision, data=payload,
     ) == "skipped"
@@ -478,73 +479,8 @@ async def test_real_service_invoice_mirror_posts_once_in_second_company(client, 
         LedgerEntry.company_id == target_company)))
     assert after == before
     with pytest.raises(HTTPException) as conflicting:
-        await documents.receive_draft_document(
+        await documents.receive_document(
             session, grant=grant, source_entity_id=source_doc,
             source_revision=source_revision, data={**payload, "notes": "Changed receipt"},
         )
     assert conflicting.value.status_code == 409
-
-
-@pytest.mark.asyncio
-async def test_issued_service_label_cannot_mask_mapped_stock_item(monkeypatch):
-    from celerp_docs import import_service
-    from celerp.models.projections import Projection
-
-    class StockSession(_Session):
-        async def get(self, model, identifier):
-            if model is Projection:
-                return SimpleNamespace(entity_type="item", state={
-                    "inventory_type": "stocked", "sell_by": "piece"})
-            return await super().get(model, identifier)
-
-    async def claimed(*args, **kwargs):
-        return SimpleNamespace(replay=False, target_id="doc:target", mapping=None)
-    async def mapped(*args, **kwargs):
-        return "item:target"
-    async def forbidden(*args, **kwargs):
-        raise AssertionError("A mislabeled stock line must not reach the importer")
-
-    monkeypatch.setattr(documents, "claim_peer_revision", claimed)
-    monkeypatch.setattr(documents, "_map_identity", mapped)
-    monkeypatch.setattr(import_service, "import_doc_records", forbidden)
-    with pytest.raises(HTTPException) as exc:
-        await documents.receive_draft_document(
-            StockSession(), grant=_grant(), source_entity_id="doc:source",
-            source_revision=1, data={
-                "doc_type": "invoice", "status": "final", "currency": "USD",
-                "line_items": [{
-                    "name": "Service", "item_id": "item:source",
-                    "inventory_type": "service", "sell_by": "service",
-                    "quantity": 1, "unit_price": 40,
-                }],
-            })
-    assert exc.value.status_code == 409
-    assert "stock operations" in exc.value.detail
-
-
-@pytest.mark.asyncio
-async def test_issued_service_line_rejects_missing_mapped_item(monkeypatch):
-    from celerp_docs import import_service
-
-    async def claimed(*args, **kwargs):
-        return SimpleNamespace(replay=False, target_id="doc:target", mapping=None)
-    async def mapped(*args, **kwargs):
-        return "item:missing"
-    async def forbidden(*args, **kwargs):
-        raise AssertionError("An unavailable item must not be imported")
-
-    monkeypatch.setattr(documents, "claim_peer_revision", claimed)
-    monkeypatch.setattr(documents, "_map_identity", mapped)
-    monkeypatch.setattr(import_service, "import_doc_records", forbidden)
-    with pytest.raises(HTTPException) as exc:
-        await documents.receive_draft_document(
-            _Session(), grant=_grant(), source_entity_id="doc:source",
-            source_revision=1, data={
-                "doc_type": "bill", "status": "final", "currency": "USD",
-                "line_items": [{
-                    "name": "Service", "item_id": "item:source",
-                    "inventory_type": "service", "sell_by": "service",
-                    "quantity": 1, "unit_price": 25,
-                }],
-            })
-    assert exc.value.status_code == 409

@@ -24,7 +24,8 @@ from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.attachments import attach_file, local_attachment_url_path, remove_attachment, storing
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user
+from celerp.services.peer_import import peer_batch
 from celerp.services.company_lock import lock_projections
 from celerp.services.currencies import require_currency_code, require_phone
 from celerp.services.permissions import locked_authority, require_permission
@@ -1112,9 +1113,12 @@ async def batch_import_contacts(
     _: None = require_permission("edit_contacts"),
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> BatchImportResult:
     """Batch-import CIF contact records: a new contact is created, an existing one updated,
     an unchanged one skipped. Max 500 per call."""
+    if (peer := await peer_batch(auth, session, body.records)) is not None:
+        return BatchImportResult(**peer)
     await locked_authority(session, company_id, user.id, ("edit_contacts", "import_export_data"))
     outcome = await services.import_contact_records(session, company_id, user.id, body.records, match_identity=True)
     await session.commit()

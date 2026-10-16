@@ -47,10 +47,10 @@ async def test_versioned_contact_outbound_and_retry_reporting(monkeypatch):
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
-            assert url == "https://peer.example/company-peers/contacts"
+            assert url == "https://peer.example/crm/contacts/import/batch"
             sent.append(kwargs)
             return SimpleNamespace(status_code=200 if len(sent) == 1 else 409,
-                                   json=lambda: {"status": "updated"})
+                                   json=lambda: {"updated": 1, "errors": []})
     from celerp.connectors import sync_runner
     async def no_prior_sync(*args):
         return None
@@ -64,12 +64,14 @@ async def test_versioned_contact_outbound_and_retry_reporting(monkeypatch):
     assert len(result.errors) == 1
     assert result.attention == [{"id": "contact:b", "label": "B",
                                  "reason": "Receiving installation needs attention"}]
-    assert sent[0]["json"]["source_revision"] == 3
-    assert sent[0]["json"]["data"]["name"] == "A"
-    assert sent[0]["json"]["data"]["contact_type"] == "vendor"
-    assert sent[0]["json"]["data"]["email"] is None
-    assert "private_note" not in sent[0]["json"]["data"]
+    record = sent[0]["json"]["records"][0]
+    assert record["source_revision"] == 3 and record["entity_id"] == "contact:a"
+    assert record["data"]["name"] == "A"
+    assert record["data"]["contact_type"] == "vendor"
+    assert record["data"]["email"] is None
+    assert "private_note" not in record["data"]
     assert sent[0]["headers"]["Authorization"] == "Peer cp1.secret"
+    assert sent[0]["headers"]["X-Celerp-Source-Company"] == company
 
 
 def test_peer_credential_form_uses_key_and_https_origin():
@@ -124,9 +126,9 @@ async def test_product_sync_transmits_catalog_only_and_preserves_revision(monkey
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
-            assert url == "https://firm.example/company-peers/products"
+            assert url == "https://firm.example/items/import/batch"
             sent.append(kwargs)
-            return SimpleNamespace(status_code=200, json=lambda: {"status": "created"})
+            return SimpleNamespace(status_code=200, json=lambda: {"created": 1, "errors": []})
     monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
     monkeypatch.setattr(peer, "_read_products", products)
     monkeypatch.setattr(peer, "RateLimitedClient", Client)
@@ -136,15 +138,15 @@ async def test_product_sync_transmits_catalog_only_and_preserves_revision(monkey
     ))
     assert result.created == 1 and result.ok
     assert len(sent) == 1
-    envelope = sent[0]["json"]
-    assert envelope["source_revision"] == 5 and envelope["source_entity_id"] == "item:src"
+    envelope = sent[0]["json"]["records"][0]
+    assert envelope["source_revision"] == 5 and envelope["entity_id"] == "item:src"
     assert envelope["data"]["name"] == "Widget"
     assert "quantity" not in envelope["data"] and "cost_base" not in envelope["data"]
 
 
 def test_peer_product_payload_rejects_financial_movements_and_nonfinite_prices():
     from pydantic import ValidationError
-    from celerp.routers.company_peers import ProductData
+    from celerp.services.peer_import import ProductData
     for extra in ({"quantity": 8}, {"cost_total": 200}, {"retail_price": float("inf")}):
         with pytest.raises(ValidationError):
             ProductData.model_validate({"name": "Widget", **extra})
@@ -176,8 +178,8 @@ async def test_shared_peer_delivery_marks_failed_product_without_losing_source_r
         company_id=company, store_handle="https://firm.example", access_token="cp1.token"))
     assert not result.ok
     assert result.errors == ["Product delivery incomplete"]
-    assert seen[0]["source_revision"] == 9
-    assert seen[0]["source_entity_id"] == "item:a"
+    assert seen[0]["records"][0]["source_revision"] == 9
+    assert seen[0]["records"][0]["entity_id"] == "item:a"
 
 
 
@@ -209,17 +211,18 @@ async def test_draft_document_outbound_filters_private_and_excluded_fields(monke
         async def __aexit__(self, *args):
             pass
         async def post(self, url, **kwargs):
-            assert url == "https://peer.example/company-peers/documents"
-            seen.append(kwargs["json"])
-            return SimpleNamespace(status_code=200,
-                                   json=lambda: {"status": "skipped" if kwargs["json"]["source_entity_id"] == "doc:issued" else "created"})
+            assert url == "https://peer.example/docs/import/batch"
+            record = kwargs["json"]["records"][0]
+            seen.append(record)
+            status = "skipped" if record["entity_id"] == "doc:issued" else "created"
+            return SimpleNamespace(status_code=200, json=lambda: {status: 1, "errors": []})
     monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
     monkeypatch.setattr(peer, "_read_documents", docs)
     monkeypatch.setattr(peer, "RateLimitedClient", Client)
     result = await peer.CelerpConnector().sync_documents_out(ConnectorContext(
         company_id=company, store_handle="https://peer.example", access_token="cp1.secret"))
     assert result.ok and result.created == 1 and result.skipped == 2
-    assert [item["source_entity_id"] for item in seen] == ["doc:new", "doc:issued"]
+    assert [item["entity_id"] for item in seen] == ["doc:new", "doc:issued"]
     assert "internal_audit" not in seen[0]["data"]
     assert seen[0]["data"]["status"] == "draft"
     assert seen[1]["data"]["status"] == "sent"
@@ -227,16 +230,17 @@ async def test_draft_document_outbound_filters_private_and_excluded_fields(monke
 
 
 @pytest.mark.asyncio
-async def test_issued_stock_document_is_reviewed_not_silently_accounted(monkeypatch):
+async def test_receiving_company_refusal_is_the_attention_reason(monkeypatch):
     from celerp.connectors import sync_runner
 
     cid = str(uuid.uuid4())
     sent = []
+    refusal = "Line 1 names a product the accountant's copy does not hold yet"
     async def watermark(*args):
         return None
     async def page(company_id, after, since):
         return [
-            ("doc:stock", 9, {"doc_type": "invoice", "status": "final",
+            ("doc:stock", 9, {"doc_type": "invoice", "status": "final", "ref_id": "INV-9",
                               "line_items": [{"name": "Widget", "sku": "W1",
                                              "quantity": 1, "unit_price": 100}]}),
             ("doc:service", 4, {"doc_type": "invoice", "status": "final",
@@ -249,17 +253,21 @@ async def test_issued_stock_document_is_reviewed_not_silently_accounted(monkeypa
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
-            sent.append(kwargs["json"]["source_entity_id"])
-            return SimpleNamespace(status_code=200, json=lambda: {"status": "created"})
+            entity_id = kwargs["json"]["records"][0]["entity_id"]
+            sent.append(entity_id)
+            body = ({"created": 0, "updated": 0, "skipped": 0,
+                     "errors": [f"{entity_id}: {refusal}"]}
+                    if entity_id == "doc:stock" else {"created": 1, "errors": []})
+            return SimpleNamespace(status_code=200, json=lambda: body)
     monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
     monkeypatch.setattr(peer, "_read_documents", page)
     monkeypatch.setattr(peer, "RateLimitedClient", Client)
     result = await peer.CelerpConnector().sync_documents_out(ConnectorContext(
         company_id=cid, store_handle="https://firm.example", access_token="cp1.secret"))
-    assert sent == ["doc:service"]
+    assert sent == ["doc:stock", "doc:service"]
     assert not result.ok and result.created == 1
-    assert result.attention[0]["id"] == "doc:stock"
-    assert "Inventory-linked" in result.errors[0]
+    assert result.attention == [{"id": "doc:stock", "label": "INV-9", "reason": refusal}]
+    assert result.errors == ["Document delivery incomplete"]
 
 
 
@@ -292,8 +300,8 @@ async def test_stock_audit_does_not_require_contact_or_product_name(monkeypatch)
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
-            posted.append((url, kwargs["json"]))
-            return SimpleNamespace(status_code=200, json=lambda: {"status": "created"})
+            posted.append((url, kwargs["json"]["records"][0]))
+            return SimpleNamespace(status_code=200, json=lambda: {"created": 1, "errors": []})
     async def no_excluded_document(company_id):
         return None
     monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
@@ -304,8 +312,8 @@ async def test_stock_audit_does_not_require_contact_or_product_name(monkeypatch)
         company_id=source, store_handle="https://peer.example", access_token="cp1.key",
     ))
     assert result.ok and result.created == 1 and not result.errors
-    assert posted[0][0] == "https://peer.example/company-peers/inventory"
-    assert posted[0][1]["source_entity_id"] == "list:count-1"
+    assert posted[0][0] == "https://peer.example/lists/import/batch"
+    assert posted[0][1]["entity_id"] == "list:count-1"
     assert posted[0][1]["data"]["counts"][0]["counted_qty"] == 4
 
 

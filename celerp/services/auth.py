@@ -277,6 +277,8 @@ class AuthContext:
     company_id: uuid.UUID
     role: str
     snonce: str
+    # Set when a connected company's integration key signed the request (peer_access).
+    peer: object | None = None
 
 
 async def validate_access_token(session: AsyncSession, token: str) -> AuthContext:
@@ -343,7 +345,7 @@ SIGNED_TOKEN = "celerp_signed_access_token"
 
 async def get_auth_context(
     request: Request,
-    token: str = Depends(oauth2_scheme),
+    token: str | None = Depends(oauth2_scheme_optional),
     session: AsyncSession = Depends(get_session),
 ) -> AsyncIterator[AuthContext]:
     """FastAPI dependency: the one validated auth context for the request.
@@ -356,8 +358,18 @@ async def get_auth_context(
     are unaffected.
 
     A module's routes answer only for a company that uses the module.
+
+    A connected company's integration key (``Authorization: Peer <key>``) reaches only
+    the routes peer_access.PEER_ROUTES lists, acting as the receiving company's owner.
     """
-    ctx = await validate_access_token(session, token)
+    scheme, _, credential = request.headers.get("authorization", "").partition(" ")
+    if scheme == "Peer":
+        ctx, token = await _peer_context(request, session, credential), None
+    elif token:
+        ctx = await validate_access_token(session, token)
+    else:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated",
+                            headers={"WWW-Authenticate": "Bearer"})
     if ctx.company.is_migration_staged and not request.url.path.startswith(STAGED_ALLOWED_PREFIX):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("auth.company_staged"))
     from celerp.modules.loader import route_module
@@ -370,14 +382,39 @@ async def get_auth_context(
     # (company_lock), so a write that waits there never runs on revoked access.
     from celerp.services.permissions import authorize_request, end_request
     authority = authorize_request(session, ctx.company_id, ctx.user.id, ctx.role)
-    session.info[SIGNED_TOKEN] = token
+    if token is not None:
+        session.info[SIGNED_TOKEN] = token
     request.state.company_id = ctx.company_id  # the company a refused request places stock for (OlderStockMiddleware)
     try:
         yield ctx
     finally:
         end_request(session, authority)
-        if session.info.get(SIGNED_TOKEN) is token:
+        if token is not None and session.info.get(SIGNED_TOKEN) is token:
             session.info.pop(SIGNED_TOKEN, None)
+
+
+async def _peer_context(request: Request, session: AsyncSession, credential: str) -> AuthContext:
+    """The context of a request signed with a connected company's key: the key must hold
+    the scope of the route it calls, and the request acts as the company's owner."""
+    from celerp.services import peer_access
+
+    entity = peer_access.route_entity(request.method, request.url.path)
+    if entity is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=peer_access.UNAVAILABLE)
+    try:
+        source = uuid.UUID(request.headers.get(peer_access.SOURCE_HEADER, ""))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=peer_access.INVALID) from None
+    scope = peer_access.ENTITY_SCOPE[entity]
+    grant = await peer_access.authenticate(session, credential, source_company_id=source, scope=scope)
+    company = await session.get(Company, grant.company_id)
+    user = await session.scalar(select(User).join(UserCompany, UserCompany.user_id == User.id).where(
+        UserCompany.company_id == company.id, UserCompany.role == "owner",
+        UserCompany.is_active.is_(True), User.is_active.is_(True)).order_by(User.created_at, User.id).limit(1))
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=peer_access.UNAVAILABLE)
+    return AuthContext(claims={}, user=user, company=company, company_id=company.id, role="owner",
+                       snonce="", peer=peer_access.PeerCaller(credential, source, scope))
 
 
 async def signed_request_context(session: AsyncSession) -> AuthContext | None:

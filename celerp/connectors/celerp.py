@@ -14,16 +14,19 @@ from celerp.connectors.base import (
 )
 from celerp.connectors.http import RateLimitedClient
 from celerp.models.projections import Projection
-from celerp.services.peer_access import ENTITY_SCOPE
+from celerp.services.peer_access import ENTITY_ROUTE, SOURCE_HEADER
 
 _PAGE = 100
 _FIELDS = frozenset({
     "name", "company_name", "email", "phone", "billing_address",
     "shipping_address", "currency", "contact_type",
 })
+_PRODUCT_FIELDS = ("name", "sku", "description", "sell_by", "category",
+                   "barcode", "retail_price", "wholesale_price")
 
 
 def _target_url(ctx: ConnectorContext, entity: str = "contacts") -> str:
+    """The receiving company's route for ``entity``; a file route keeps its ``{entity_id}``."""
     raw = ctx.store_handle
     if not isinstance(raw, str) or len(raw) > 1024:
         raise ValueError("No receiving Celerp installation is connected")
@@ -37,9 +40,19 @@ def _target_url(ctx: ConnectorContext, entity: str = "contacts") -> str:
         valid = False
     if not valid:
         raise ValueError("The receiving Celerp address is invalid")
-    if entity not in ENTITY_SCOPE:
+    if entity not in ENTITY_ROUTE:
         raise ValueError("Unsupported peer entity")
-    return raw.rstrip("/") + "/company-peers/" + entity
+    return raw.rstrip("/") + ENTITY_ROUTE[entity]
+
+
+def peer_headers(ctx: ConnectorContext) -> dict:
+    """What every request to the receiving company carries: the key and the sending company."""
+    return {"Authorization": "Peer " + ctx.access_token, SOURCE_HEADER: str(ctx.company_id)}
+
+
+# The import record event each entity's record is written as at the receiving company.
+_EVENT = {"contacts": "crm.contact.created", "products": "item.created",
+          "documents": "doc.created", "inventory": "list.created"}
 
 
 async def _read_projection_page(company_id: uuid.UUID, after: str, since, entity: str) -> list[tuple[str, int, dict]]:
@@ -63,11 +76,66 @@ async def _read_page(company_id: uuid.UUID, after: str, since=None) -> list[tupl
 
 
 async def _read_products(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
-    return await _read_projection_page(company_id, after, since, "item")
+    """Products, each parcel a receipt created naming that receipt's document (``received_on``)."""
+    from celerp.db import get_session_ctx
+    from celerp.models.ledger import LedgerEntry
+
+    out = await _read_projection_page(company_id, after, since, "item")
+    if not out:
+        return out
+    async with get_session_ctx() as session:
+        created = (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.metadata_).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.event_type == "item.created",
+            LedgerEntry.entity_id.in_([eid for eid, _, _ in out])))).all()
+    received_on = {str(eid): meta["source_doc"] for eid, meta in created
+                   if isinstance(meta, dict) and meta.get("source_doc")}
+    return [(eid, revision, {**state, "received_on": received_on[eid]} if eid in received_on else state)
+            for eid, revision, state in out]
+
+
+async def _stock_receipts(session, company_id: uuid.UUID, doc_ids: list[str]) -> dict[str, list[dict]]:
+    """Each document's present receipts, in order: those after its last undo or revert, each
+    with its location and the current product data of every parcel it created."""
+    from celerp.models.company import Location
+    from celerp.models.ledger import LedgerEntry
+
+    events = (await session.execute(select(
+        LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data,
+        LedgerEntry.location_id, LedgerEntry.idempotency_key,
+    ).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(doc_ids),
+        LedgerEntry.event_type.in_(("doc.received", "doc.receive_undone", "doc.reverted")),
+    ).order_by(LedgerEntry.id))).all()
+    by_doc: dict[str, list[dict]] = {}
+    for event_id, entity_id, event_type, data, location_id, key in events:
+        if event_type != "doc.received":
+            by_doc[str(entity_id)] = []
+            continue
+        data = data or {}
+        location = await session.get(Location, location_id) if location_id else None
+        parcels = {}
+        for item_id in data.get("created_item_ids") or []:
+            item = await session.get(Projection, (company_id, item_id))
+            if item is not None:
+                parcels[str(item_id)] = {"revision": int(item.version), "data": {
+                    key: (item.state or {}).get(key) for key in _PRODUCT_FIELDS}}
+        by_doc.setdefault(str(entity_id), []).append({
+            "event_id": int(event_id),
+            # A receipt from before the company copy was taken is in the copy under this key.
+            "key": key,
+            "location": {"id": str(location_id or ""),
+                         "name": location.name if location is not None else "",
+                         "type": location.type if location is not None else ""},
+            "received_items": data.get("received_items") or [],
+            "created_item_ids": [str(x) for x in data.get("created_item_ids") or []],
+            "parcels": parcels,
+        })
+    return by_doc
 
 
 async def _read_documents(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
-    """Attach source refund entries, preserving their original order and accounting dates."""
+    """Attach each document's present receipts and its source refund entries, preserving
+    their original order and accounting dates."""
     from celerp.db import get_session_ctx
     from celerp.models.ledger import LedgerEntry
 
@@ -82,6 +150,11 @@ async def _read_documents(company_id: uuid.UUID, after: str, since=None) -> list
             query.order_by(Projection.entity_id).limit(_PAGE))).all()
         out = [(str(eid), int(version), dict(state or {}))
                for eid, version, state in rows]
+        received = [entity_id for entity_id, _, state in out
+                    if state.get("received_items") or state.get("received_item_ids")]
+        receipts = await _stock_receipts(session, company_id, received) if received else {}
+        out = [(eid, revision, {**state, "stock_receipts": receipts[eid]} if receipts.get(eid) else state)
+               for eid, revision, state in out]
         with_refunds = [
             entity_id for entity_id, _, state in out
             if any((p.get("refund_count") or p.get("refunded"))
@@ -112,7 +185,6 @@ async def _read_documents(company_id: uuid.UUID, after: str, since=None) -> list
             })
         return [(eid, revision, {**state, "payment_events": by_doc.get(eid, [])})
                 for eid, revision, state in out]
-
 
 
 async def _read_audits(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
@@ -219,6 +291,17 @@ async def _excluded_stock_document(company_id: uuid.UUID) -> tuple[str, str] | N
             after = rows[-1][0]
 
 
+class _Refused(ValueError):
+    """The receiving company refused a record and said why."""
+
+
+def _refusal(errors: list) -> str:
+    """The receiving company's reason, without the record id it prefixes."""
+    if not errors:
+        return "Receiving installation did not acknowledge update"
+    return str(errors[0]).partition(": ")[2] or str(errors[0])
+
+
 class CelerpConnector(ConnectorBase):
     name = "celerp"
     display_name = "Celerp Accountant"
@@ -259,10 +342,7 @@ class CelerpConnector(ConnectorBase):
             raise ValueError("No scoped receiving credential is connected")
         company_id = uuid.UUID(ctx.company_id)
         since = await _last_success_watermark(ctx.company_id, self.name, kind + "_out")
-        fields = (_FIELDS if kind == "contacts" else
-                  ("name", "sku", "description", "sell_by", "category",
-                   "barcode", "retail_price", "wholesale_price") if kind == "products"
-                  else None)
+        fields = _FIELDS if kind == "contacts" else _PRODUCT_FIELDS if kind == "products" else None
         after = ""
         async with RateLimitedClient(public_only=True) as client:
             while True:
@@ -292,11 +372,10 @@ class CelerpConnector(ConnectorBase):
                             result.skipped += 1
                             continue
                         data.setdefault("status", "draft")
-                        from celerp.services.peer_documents import requires_stock_movement
-                        if state.get("status", "draft") != "draft" and requires_stock_movement(state):
-                            reason = "Inventory-linked document requires full copy or shared access"
                     else:
                         data = {key: state.get(key) for key in fields}
+                        if kind == "products" and state.get("received_on"):
+                            data["received_on"] = state["received_on"]
                     if reason is None and kind in ("contacts", "products") and (not isinstance(data.get("name"), str) or not data["name"].strip()):
                         reason = "Contact name unavailable" if kind == "contacts" else "Product name missing"
                     if reason is not None:
@@ -309,24 +388,28 @@ class CelerpConnector(ConnectorBase):
                     if kind == "products" and not data.get("sell_by"):
                         data["sell_by"] = "piece"
                     try:
-                        response = await client.post(target, headers={
-                            "Authorization": "Peer " + ctx.access_token,
-                        }, json={
-                            "source_company_id": str(company_id),
-                            "source_entity_id": entity_id,
-                            "source_revision": revision, "data": data,
-                        })
+                        response = await client.post(target, headers=peer_headers(ctx), json={
+                            "records": [{
+                                "entity_id": entity_id, "event_type": _EVENT[kind],
+                                "data": data, "source": "celerp",
+                                "idempotency_key": f"peer:{company_id}:{entity_id}:{revision}",
+                                "source_revision": revision,
+                            }]})
                         if response.status_code != 200:
                             raise ValueError("Receiving installation refused update")
-                        status = response.json().get("status")
-                        if status not in ("created", "updated", "skipped"):
-                            raise ValueError("Receiving installation did not acknowledge update")
+                        body = response.json()
+                        refused = body.get("errors") or []
+                        status = next((s for s in ("created", "updated", "skipped")
+                                       if body.get(s) == 1), None)
+                        if refused or status is None:
+                            raise _Refused(_refusal(refused))
                         result.record(status)
-                    except Exception:
+                    except Exception as exc:
                         result.errors.append(label + " delivery incomplete")
                         result.attention.append({
                             "id": entity_id, "label": attention_label(state, entity_id),
-                            "reason": "Receiving installation needs attention",
+                            "reason": (str(exc) if isinstance(exc, _Refused)
+                                       else "Receiving installation needs attention"),
                         })
                 after = (str(page[-1][2]["source_closed_event_id"]) if kind == "inventory"
                          else page[-1][0])

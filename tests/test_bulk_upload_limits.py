@@ -186,10 +186,11 @@ async def test_company_archive_cap_applies_to_chunked_uploads(monkeypatch):
     assert received <= 1024 + 256 * 1024
 
 @pytest.mark.asyncio
-async def test_peer_attachment_upload_reuses_canonical_file_limit():
+async def test_document_file_upload_reuses_canonical_file_limit():
     from celerp.middleware import MaxBodySizeMiddleware
     from celerp.services.attachments import MAX_FILE_BYTES
     mw = MaxBodySizeMiddleware(_ok_app, max_body_size_bytes=10 * 1024 * 1024)
-    assert await _drive(mw, "/company-peers/attachments", 30 * 1024 * 1024) == 200
-    assert await _drive(mw, "/company-peers/attachments", MAX_FILE_BYTES + 256 * 1024 + 1) == 413
-    assert await _drive(mw, "/company-peers/contacts", 30 * 1024 * 1024) == 413
+    assert await _drive(mw, "/docs/doc:x/files", 30 * 1024 * 1024) == 200
+    assert await _drive(mw, "/docs/doc:x/files", MAX_FILE_BYTES + 256 * 1024 + 1) == 413
+    assert await _drive(mw, "/docs/doc:x/files/extra", 30 * 1024 * 1024) == 413
+    assert await _drive(mw, "/crm/contacts/import/batch", 30 * 1024 * 1024) == 413

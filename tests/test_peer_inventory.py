@@ -130,10 +130,13 @@ async def test_count_outbound_preserves_source_identity_and_retries(monkeypatch)
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kw):
-            assert url == "https://firm.example/company-peers/inventory"
-            deliveries.append(kw["json"])
-            return SimpleNamespace(status_code=200, json=lambda: {"status": "created"})
+            assert url == "https://firm.example/lists/import/batch"
+            deliveries.append(kw["json"]["records"][0])
+            return SimpleNamespace(status_code=200, json=lambda: {"created": 1, "errors": []})
+    async def no_excluded_document(cid):
+        return None
     monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
+    monkeypatch.setattr(connector, "_excluded_stock_document", no_excluded_document)
     monkeypatch.setattr(connector, "_read_audits", read_audits)
     monkeypatch.setattr(connector, "RateLimitedClient", Client)
     response = await connector.CelerpConnector().sync_inventory_out(ConnectorContext(
@@ -276,26 +279,19 @@ async def test_completed_stock_audits_page_in_posted_order_not_document_id(clien
 
 def test_stock_route_accepts_ordered_audit_contract_and_rejects_missing_position():
     from pydantic import ValidationError
-    from celerp.routers.company_peers import PeerStockAuditUpdate
+    from celerp.services.peer_import import StockCountData
 
     data = {
         "location_id": str(uuid.uuid4()), "location_name": "Warehouse",
         "location_type": "warehouse", "source_closed_event_id": 44,
         "counts": [{"item_id": "item:src", "counted_qty": 5}],
     }
-    incoming = PeerStockAuditUpdate(
-        source_company_id=uuid.uuid4(), source_entity_id="list:src",
-        source_revision=1, data=data,
-    )
-    assert incoming.data.model_dump(mode="json")["source_closed_event_id"] == 44
+    assert StockCountData.model_validate(data).model_dump(mode="json")["source_closed_event_id"] == 44
     for invalid in ({k: v for k, v in data.items() if k != "source_closed_event_id"},
                     {**data, "source_closed_event_id": True},
                     {**data, "source_closed_event_id": -1}):
         with pytest.raises(ValidationError):
-            PeerStockAuditUpdate(
-                source_company_id=uuid.uuid4(), source_entity_id="list:src",
-                source_revision=1, data=invalid,
-            )
+            StockCountData.model_validate(invalid)
 
 
 

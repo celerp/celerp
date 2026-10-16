@@ -66,6 +66,8 @@ _DOC = _rec("doc:RACED", "doc.created", {"doc_type": "invoice", "total": 1})
 _LIST = _rec("list:RACED", "list.created", {"ref_id": "RACED", "list_type": "sale", "total": 1})
 _ITEM = _rec("item:raced", "item.created", {"sku": "RACED", "name": "Raced", "quantity": 1, "sell_by": "piece"})
 _DOCS = ("edit_documents", "import_export_data")
+# A signed-in user's request: the batch routes read only whether a connected company sent it.
+_SIGNED_IN = types.SimpleNamespace(peer=None)
 
 _IMPORTS = {
     "taxes": _setting(companies.import_taxes_batch, "taxes", {"name": "Raced tax", "rate": 3}),
@@ -77,13 +79,13 @@ _IMPORTS = {
     "doc": _entity(_DOCS, lambda s, cid, user: docs.import_doc(
         docs.DocImportRecord(**_DOC), company_id=cid, user=user, session=s), _DOC["entity_id"]),
     "doc_batch": _entity(_DOCS, lambda s, cid, user: docs.batch_import_docs(
-        docs.DocBatchImportRequest(records=[_DOC]), company_id=cid, user=user, session=s), _DOC["entity_id"]),
+        docs.DocBatchImportRequest(records=[_DOC]), company_id=cid, user=user, session=s, auth=_SIGNED_IN), _DOC["entity_id"]),
     "list": _entity(_DOCS, lambda s, cid, user: docs.import_list(
         docs.ListImportRecord(**_LIST), company_id=cid, user=user, session=s), _LIST["entity_id"]),
     "list_batch": _entity(_DOCS, lambda s, cid, user: docs.batch_import_lists(
-        docs.ListBatchImportRequest(records=[_LIST]), company_id=cid, user=user, session=s), _LIST["entity_id"]),
+        docs.ListBatchImportRequest(records=[_LIST]), company_id=cid, user=user, session=s, auth=_SIGNED_IN), _LIST["entity_id"]),
     "item_batch": _entity(("import_export_data", "edit_inventory"), lambda s, cid, user: inventory.batch_import_items(
-        BatchImportRequest(records=[_ITEM]), company_id=cid, user=user, session=s), _ITEM["entity_id"]),
+        BatchImportRequest(records=[_ITEM]), company_id=cid, user=user, session=s, auth=_SIGNED_IN), _ITEM["entity_id"]),
 }
 
 

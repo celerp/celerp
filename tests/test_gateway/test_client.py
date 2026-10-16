@@ -307,6 +307,18 @@ def test_accountant_grant_management_is_not_reached_through_connect(client):
         assert client._local_port_for(path) == client._ui_port
 
 
+def test_peer_signed_import_routes_reach_the_api_port(client):
+    """A connected company's signed record or file goes to the API's import route; the same
+    path unsigned, or another method, stays with the UI."""
+    for path in ("/crm/contacts/import/batch", "/items/import/batch", "/docs/import/batch",
+                 "/lists/import/batch", "/docs/doc:x/files"):
+        assert client._local_port_for(path, "POST", "Peer cp1.key") == client._api_port
+        assert client._local_port_for(path, "POST") == client._ui_port
+        assert client._local_port_for(path, "POST", "Bearer token") == client._ui_port
+        assert client._local_port_for(path, "GET", "Peer cp1.key") == client._ui_port
+    assert client._local_port_for("/docs/import", "POST", "Peer cp1.key") == client._ui_port
+
+
 def test_stop_sets_running_false(client):
     """stop() sets _running=False."""
     client._running = True

@@ -102,7 +102,7 @@ async def test_attachment_sender_sends_only_company_file_with_proof(monkeypatch)
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return None
         async def post(self, url, **kwargs):
-            assert url == "https://firm.example/company-peers/attachments"
+            assert url == "https://firm.example/docs/doc:source/files"
             sends.append(kwargs)
             return SimpleNamespace(status_code=200, json=lambda: {"status": "created"})
     monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
@@ -117,3 +117,7 @@ async def test_attachment_sender_sends_only_company_file_with_proof(monkeypatch)
     assert sends[0]["data"]["sha256_hex"] == hashlib.sha256(b"PDF").hexdigest()
     assert sends[0]["files"]["file"] == ("receipt.pdf", b"PDF", "application/pdf")
     assert sends[0]["headers"]["Authorization"] == "Peer cp1.test"
+    assert sends[0]["headers"]["X-Celerp-Source-Company"] == str(cid)
+    assert sends[0]["data"]["source_file_id"] == "f1"
+    assert "source_company_id" not in sends[0]["data"]
+    assert "source_document_id" not in sends[0]["data"]

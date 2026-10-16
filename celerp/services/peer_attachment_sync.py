@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from urllib.parse import quote
 
 from celerp.services.attachments import MAX_FILE_BYTES, accepts_mime, read_company_file
 
@@ -13,7 +14,7 @@ async def sync_document_attachments(connector, ctx):
     from celerp.connectors.base import SyncDirection, SyncEntity, SyncResult
     from celerp.connectors.http import RateLimitedClient
     from celerp.connectors.celerp import (
-        _PAGE, _read_projection_page, _target_url, attention_label,
+        _PAGE, _read_projection_page, _target_url, attention_label, peer_headers,
     )
     from celerp.connectors.sync_runner import _last_success_watermark
 
@@ -64,8 +65,6 @@ async def sync_document_attachments(connector, ctx):
                         if content is None:
                             raise ValueError("File is missing or exceeds size limit")
                         form = {
-                            "source_company_id": str(cid),
-                            "source_document_id": source_doc_id,
                             "source_file_id": attachment_id,
                             "sha256_hex": hashlib.sha256(content).hexdigest(),
                         }
@@ -74,7 +73,8 @@ async def sync_document_attachments(connector, ctx):
                         if meta.get("description"):
                             form["description"] = str(meta["description"])
                         response = await client.post(
-                            target, headers={"Authorization": "Peer " + ctx.access_token},
+                            target.replace("{entity_id}", quote(source_doc_id, safe=":")),
+                            headers=peer_headers(ctx),
                             data=form, files={"file": (name, content, mime)},
                         )
                         if response.status_code != 200:

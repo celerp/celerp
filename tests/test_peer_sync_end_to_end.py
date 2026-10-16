@@ -57,8 +57,9 @@ async def _stock(client, tok: str) -> dict:
     return out
 
 
-async def _paired(real_client, real_engine):
-    """The demo company, its accountant's copy of it, and a key the copy issued to it."""
+async def _paired(real_client, real_engine, before_copy=None):
+    """The demo company, its accountant's copy of it, and a key the copy issued to it;
+    ``before_copy`` is what the company does before the copy is taken."""
     registered = await real_client.post("/auth/register", json={
         "company_name": "Demo Trading", "email": "demo-owner@example.test",
         "name": "Demo Owner", "password": "demopw1234"})
@@ -68,6 +69,8 @@ async def _paired(real_client, real_engine):
     contacts = await seed_demo.seed_contacts(real_client, tok)
     await seed_demo.seed_docs(real_client, tok, contacts, "invoice", 4)
     await seed_demo.seed_docs(real_client, tok, contacts, "purchase_order", 2)
+    if before_copy is not None:
+        await before_copy(tok, contacts)
 
     # The accountant opens the company copy as a company of their own.
     accountant = await owner(real_engine, "firm@example.test", "Firm Owner")
@@ -82,11 +85,18 @@ async def _paired(real_client, real_engine):
     firm_company = opened.json()["company_id"]
     firm_tok = await token(real_engine, accountant, firm_company)
     client_company = _company_of(tok)
-    # A copy opened from a link keeps the sending company's record identities.
+    # A copy opened from a link keeps the sending company's record identities; the restore
+    # gave the copy's locations new ids, which the link's restore passes on as its id map.
+    from celerp.models.company import Location
     from celerp.services.peer_identity import seed_restored_identities
     async with maker(real_engine)() as s:
-        await seed_restored_identities(s, target_company=uuid.UUID(firm_company),
-                                       source_company=uuid.UUID(client_company), id_map={})
+        def by_name(company_id):
+            return select(Location.name, Location.id).where(Location.company_id == uuid.UUID(company_id))
+        source = dict((await s.execute(by_name(client_company))).all())
+        target = dict((await s.execute(by_name(firm_company))).all())
+        await seed_restored_identities(
+            s, target_company=uuid.UUID(firm_company), source_company=uuid.UUID(client_company),
+            id_map={str(source[name]): str(target[name]) for name in source})
         await s.commit()
     granted = await real_client.post("/company-peers/grants", json={
         "source_company_id": client_company, "label": "Demo Trading",
@@ -164,13 +174,18 @@ async def _client_activity(real_client, real_engine, tok: str, contacts: list) -
         "name": "Northern Supply", "contact_type": "vendor"}, headers=auth(tok))
     assert supplier.status_code in (200, 201), supplier.text
     po = await new_doc("purchase_order", supplier.json()["id"], bought, 4, 10.0)
-    await seed_demo._advance(real_client, auth(tok), po, ("finalize",), "after-copy:po")
+    await _receive(real_client, real_engine, tok, po, bought, "after-copy")
+    await new_doc("invoice", customer.json()["id"], sold, 1, 40.0, ":draft")
+    return {"shipped": shipped, "fulfilled": fulfilled, "received": po}
+
+
+async def _receive(real_client, real_engine, tok: str, po: str, item: dict, key: str) -> None:
+    await seed_demo._advance(real_client, auth(tok), po, ("finalize",), f"{key}:po")
     r = await real_client.post(f"/docs/{po}/receive", json={
         "location_id": await _location(real_engine, _company_of(tok)),
-        "received_items": [{"item_id": _iid(bought), "quantity_received": 4, "po_line_index": 0}],
-        "idempotency_key": "after-copy:receive"}, headers=auth(tok))
+        "received_items": [{"item_id": _iid(item), "quantity_received": 4, "po_line_index": 0}],
+        "idempotency_key": f"{key}:receive"}, headers=auth(tok))
     assert r.status_code == 200, r.text
-    await new_doc("invoice", customer.json()["id"], sold, 1, 40.0, ":draft")
 
 
 async def test_peer_connector_uses_existing_apis(real_client, real_engine, monkeypatch):
@@ -250,3 +265,59 @@ async def test_source_revision_is_for_connected_companies_only(real_client, real
         "source": "csv", "idempotency_key": "x", "source_revision": 2}]}, headers=auth(tok))
     assert r.status_code == 422, r.text
     assert "connected company" in r.text
+
+
+async def test_undone_receipt_and_taken_back_shipment_follow_the_client(
+        real_client, real_engine, monkeypatch):
+    """A receipt the client undid and goods it took back from a customer are undone and
+    taken back in the accountant's copy on the next run, and the two still agree."""
+    tok, firm_tok, client_company, credential, contacts = await _paired(real_client, real_engine)
+    done = await _client_activity(real_client, real_engine, tok, contacts)
+    _route_to_app(monkeypatch, [])
+    await _sync(client_company, credential)
+
+    r = await real_client.delete(f"/docs/{done['received']}/receive", headers=auth(tok))
+    assert r.status_code == 200, r.text
+    shipped = (await real_client.get(f"/docs/{done['shipped']}", headers=auth(tok))).json()
+    r = await real_client.post(f"/docs/{done['shipped']}/revert-lines", json={
+        "line_ids": [shipped["line_items"][0]["line_id"]], "idempotency_key": "after-copy:take-back"},
+        headers=auth(tok))
+    assert r.status_code == 200, r.text
+    results = await _sync(client_company, credential)
+
+    assert [(r.entity.value, r.attention) for r in results if r.errors or r.attention] == []
+    assert await _stock(real_client, firm_tok) == await _stock(real_client, tok)
+    assert await _books(real_client, firm_tok) == await _books(real_client, tok)
+
+
+async def test_receipt_before_the_copy_is_not_received_twice(real_client, real_engine, monkeypatch):
+    """Goods received before the copy was taken are already in the copy; the bill's next
+    change does not receive them again."""
+    held: dict = {}
+
+    async def receive_first(tok, contacts):
+        items = (await real_client.get("/items", params={"limit": 500}, headers=auth(tok))).json()["items"]
+        item = sorted(items, key=lambda i: i["sku"])[0]
+        vendor = await real_client.post("/crm/contacts", json={
+            "name": "Early Supply", "contact_type": "vendor"}, headers=auth(tok))
+        r = await real_client.post("/docs", json={
+            "doc_type": "purchase_order", "contact_id": vendor.json()["id"],
+            "line_items": [{"item_id": _iid(item), "name": item["name"], "quantity": 4,
+                            "unit_price": 10.0, "line_total": 40.0}],
+            "total": 40.0, "idempotency_key": "before-copy:po"}, headers=auth(tok))
+        assert r.status_code in (200, 201), r.text
+        held["po"] = r.json()["id"]
+        await _receive(real_client, real_engine, tok, held["po"], item, "before-copy")
+
+    tok, firm_tok, client_company, credential, _ = await _paired(
+        real_client, real_engine, before_copy=receive_first)
+    r = await real_client.patch(f"/docs/{held['po']}", json={"notes": "Checked against the delivery note"},
+                                headers=auth(tok))
+    assert r.status_code == 200, r.text
+    _route_to_app(monkeypatch, [])
+
+    results = await _sync(client_company, credential)
+
+    assert [(r.entity.value, r.attention) for r in results if r.errors or r.attention] == []
+    assert await _stock(real_client, firm_tok) == await _stock(real_client, tok)
+    assert await _books(real_client, firm_tok) == await _books(real_client, tok)

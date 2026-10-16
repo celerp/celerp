@@ -57,6 +57,7 @@ from celerp.importers.tabular import SYSTEM_SKIP_COLS, CsvImportSpec, cell_error
 from celerp.services.item_erasure import erased_from_connector
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
 from celerp.services.money import to_stored_float, unit_price_from_total
+from celerp.services.peer_import import SourceRevision
 from celerp.services.permissions import role_has_permission
 from celerp.services.vertical_presets import category_item_defaults
 from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key, price_keys_in
@@ -2115,6 +2116,7 @@ class ImportRecord(BaseModel):
     source: str
     idempotency_key: str
     source_ts: str | None = None
+    source_revision: SourceRevision = None  # a connected company's records only
 
 
 class BatchImportResult(BaseModel):

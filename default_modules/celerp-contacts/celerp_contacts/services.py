@@ -12,6 +12,7 @@ from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.importers.results import ImportOutcome, failure_reason
 from celerp.models.projections import Projection
 from celerp.services.currencies import require_currency_code
+from celerp.services.peer_import import SourceRevision
 
 CONTACT_CREATED = "crm.contact.created"
 _NULLABLE_CONTACT_FIELDS = frozenset({
@@ -26,6 +27,7 @@ class CRMImportRecord(BaseModel):
     source: str
     idempotency_key: str
     source_ts: str | None = None
+    source_revision: SourceRevision = None  # a connected company's records only
 
 
 def contact_import_identity(data: dict) -> str:
