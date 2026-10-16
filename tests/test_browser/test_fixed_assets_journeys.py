@@ -463,3 +463,27 @@ def test_j10_revalue_on_a_cost_class_starts_the_class_workflow_and_revalues_it(p
     assert (assets[first], assets[second]) == (D(50000), D(47000))
     assert _classes(c)["Buildings"]["measurement_policy"] == "revaluation"
     _reconciled(page)
+
+
+def test_j11_split_short_of_the_balance_names_the_remainder_and_completes(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    site = _contributed(c, "Office fit-out", cost="20000", on="2026-02-01", cls="Assets under construction")
+
+    page.goto(f"/fixed-assets/assets/{site}/place-in-service")
+    page.locator("input[name=date]").fill("2026-03-01")
+    for n, (name, cls, amount) in enumerate((("Office fittings", "Furniture and fittings", "12000"),
+                                             ("Meeting room screens", "Computer equipment", "5000"))):
+        page.locator(f"input[name='row:{n}:name']").fill(name)
+        page.locator(f"select[name='row:{n}:class_id']").select_option(label=cls)
+        page.locator(f"input[name='row:{n}:amount']").fill(amount)
+    page.get_by_role("button", name="Review", exact=True).click()
+    preview = page.locator("#fa-preview")
+    expect(preview.locator("tr", has_text="Still under construction after")).to_contain_text("3,000.00")
+    expect(preview).to_contain_text("Meeting room screens")
+    with page.expect_navigation(url=f"**/fixed-assets/assets/{site}"):
+        preview.get_by_role("button", name="Confirm").click()
+    assets = {a["name"]: a for a in _ok(c.get(f"{API}/assets"))["items"]}
+    assert D(assets["Office fit-out"]["cost"]) == D(3000) and assets["Office fit-out"]["status"] == "active"
+    assert (D(assets["Office fittings"]["cost"]), D(assets["Meeting room screens"]["cost"])) == (D(12000), D(5000))
+    _reconciled(page)
