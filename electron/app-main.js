@@ -91,6 +91,8 @@ const APP_DIR = IS_DEV
 
 const DATA_DIR = path.join(app.getPath("userData"), "celerp-data");
 const PG_DATA_DIR = path.join(DATA_DIR, "postgres");
+// Runs a program with the administrator rights removed; also reports the token state.
+const RESTRICTED_LAUNCHER = path.join(APP_DIR, "celerp", "win_restricted_launch.py");
 const LOG_DIR = path.join(DATA_DIR, "logs");
 const MODULE_DIR = path.join(DATA_DIR, "modules");
 const CONFIG_PATH = path.join(DATA_DIR, "celerp-config.json");
@@ -194,7 +196,7 @@ const { openData, reopenData } = require("./boot");
 const { writeConfig: writeLockedConfig } = require("./config-writer");
 const { serveUpdateState } = require("./update-state");
 const { startupDeelevation, relaunchThroughExplorer } = require("./deelevation");
-const { windowsStartFailure, logSince } = require("./windows-start-errors");
+const { windowsStartFailure, clusterStartFailure, logSince } = require("./windows-start-errors");
 const { initialiseClusterOnce } = require("./windows-initdb");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
@@ -325,13 +327,27 @@ async function initialisePostgresWindows(password) {
  * Command words put before the postgres binary. Linux and macOS run it under
  * desktop_child.py so it stops with the app. Windows runs it directly (the app's
  * job object ends it), or, when the app is still elevated after de-elevation,
- * through win_restricted_launch.py, which drops the administrator rights Postgres
- * refuses to run with.
+ * through the restricted launcher.
  */
 function postgresLauncher() {
   if (process.platform !== "win32") return [pythonBin(), "-I", path.join(APP_DIR, "celerp", "desktop_child.py")];
-  if (deelevation === "boot-restricted") return [pythonBin(), "-I", path.join(APP_DIR, "celerp", "win_restricted_launch.py")];
-  return [];
+  return restrictedLauncher();
+}
+
+/**
+ * When the app is still elevated after de-elevation (Windows only), the words that
+ * start a program through win_restricted_launch.py, which drops the administrator
+ * rights Postgres refuses to run with and the servers have no need of. The launcher
+ * ends the program when it is itself killed. Empty otherwise.
+ */
+function restrictedLauncher() {
+  return deelevation === "boot-restricted" ? [pythonBin(), "-I", RESTRICTED_LAUNCHER] : [];
+}
+
+/** The command and arguments that start the server for `asgiApp` on `port`. */
+function serverCommand(asgiApp, port) {
+  const [command, ...prefix] = [...restrictedLauncher(), pythonBin()];
+  return [command, [...prefix, ...serverArgs(asgiApp, port)]];
 }
 
 async function startPostgres(dbPort) {
@@ -377,6 +393,9 @@ async function startPostgres(dbPort) {
     // start() rejects without a reason when postgres exits before it is ready.
     const known = windowsStartFailure({ exitCode: pgInstance.process?.exitCode, output: pgOutput.text() });
     if (known) throw new Error(known);
+    // Anything else on Windows may be a database an older version left half set up;
+    // say where it is and that it was left alone, never remove it.
+    if (process.platform === "win32") throw new Error(clusterStartFailure(PG_DATA_DIR, e?.message || pgOutput.text()));
     throw e;
   }
 
@@ -575,11 +594,7 @@ function startApi(dbUrl, cfg) {
       CELERP_PG_BIN_DIR: pgBinDir(),
       ...resolveStorageEnv(cfg),
     };
-    const proc = spawn(
-      pythonBin(),
-      serverArgs("celerp.main:app", apiPort),
-      { cwd: APP_DIR, env, stdio: "pipe" }
-    );
+    const proc = spawn(...serverCommand("celerp.main:app", apiPort), { cwd: APP_DIR, env, stdio: "pipe" });
     apiProcess = proc;
     const apiLog = openProcessLog("api.log");
     const logFile = path.join(LOG_DIR, "api.log");
@@ -653,11 +668,7 @@ function startUi(dbUrl, cfg) {
       CELERP_PG_BIN_DIR: pgBinDir(),
       ...resolveStorageEnv(cfg),
     };
-    uiProcess = spawn(
-      pythonBin(),
-      serverArgs("ui.app:app", uiPort),
-      { cwd: APP_DIR, env, stdio: "pipe" }
-    );
+    uiProcess = spawn(...serverCommand("ui.app:app", uiPort), { cwd: APP_DIR, env, stdio: "pipe" });
     const uiLog = openProcessLog("ui.log");
     const logFile = path.join(LOG_DIR, "ui.log");
     const output = outputTail();
@@ -1197,8 +1208,7 @@ ipcMain.handle("uninstall-delete-data", () => _doUninstallDeleteData());
 // single-instance lock so the relaunched copy can acquire it.
 function windowsTokenState() {
   try {
-    const script = path.join(APP_DIR, "celerp", "win_restricted_launch.py");
-    return childProcess.execFileSync(pythonBin(), ["-I", script, "--token-state"], {
+    return childProcess.execFileSync(pythonBin(), ["-I", RESTRICTED_LAUNCHER, "--token-state"], {
       encoding: "utf8", timeout: 15000, windowsHide: true,
     }).trim();
   } catch (e) {
@@ -1207,19 +1217,17 @@ function windowsTokenState() {
   }
 }
 
+const deelevationMarker = path.join(app.getPath("userData"), "deelevate-attempt");
 let deelevation = process.platform === "win32"
-  ? startupDeelevation({
-    token: windowsTokenState(),
-    markerPath: path.join(app.getPath("userData"), "deelevate-attempt"),
-    now: Date.now(),
-  })
+  ? startupDeelevation({ token: windowsTokenState(), markerPath: deelevationMarker, now: Date.now() })
   : "boot";
 
 if (deelevation === "relaunch") {
   if (relaunchThroughExplorer({
     spawnSync: childProcess.spawnSync, systemRoot: process.env.SystemRoot, exePath: process.execPath,
+    markerPath: deelevationMarker,
   })) {
-    console.log("[startup] elevated launch detected; relaunched through Explorer (Postgres cannot run as admin)");
+    console.log("[startup] elevated launch detected; the copy relaunched through Explorer has started (Postgres cannot run as admin)");
     app.quit();
     return;  // stop the elevated instance (CommonJS module: top-level return is valid)
   }

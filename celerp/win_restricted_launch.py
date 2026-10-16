@@ -9,7 +9,9 @@ then starts postgres through this script, which does what pg_ctl does for the
 same reason: it makes a restricted copy of its own token with the Administrators
 and Power Users groups set to deny-only and every privilege but change-notify
 removed, starts the program with that token and the same standard handles, waits,
-and exits with the program's exit code.
+and exits with the program's exit code. Like pg_ctl, it puts the program in a job
+object that ends it when this script ends, so killing the script (the process the
+app started) stops the program too.
 
   python -I win_restricted_launch.py PROGRAM ARGS...
 
@@ -46,6 +48,10 @@ TOKEN_ELEVATION_DEFAULT = 1
 TOKEN_ELEVATION_FULL = 2
 TOKEN_ELEVATION_LIMITED = 3
 WAIT_FAILED = 0xFFFFFFFF
+CREATE_SUSPENDED = 0x4
+JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+RESUME_FAILED = 0xFFFFFFFF
 
 
 class LaunchError(Exception):
@@ -89,6 +95,21 @@ def _api():
         _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
                     ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD)]
 
+    class BasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimitInformation), ("IoInfo", ctypes.c_uint64 * 6),
+            ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     signatures = {
@@ -99,6 +120,12 @@ def _api():
         (kernel32, "GetExitCodeProcess"): (wintypes.BOOL, [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]),
         (kernel32, "CloseHandle"): (wintypes.BOOL, [wintypes.HANDLE]),
         (kernel32, "LocalFree"): (ctypes.c_void_p, [ctypes.c_void_p]),
+        (kernel32, "CreateJobObjectW"): (wintypes.HANDLE, [ctypes.c_void_p, wintypes.LPCWSTR]),
+        (kernel32, "SetInformationJobObject"): (wintypes.BOOL, [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]),
+        (kernel32, "AssignProcessToJobObject"): (wintypes.BOOL, [wintypes.HANDLE, wintypes.HANDLE]),
+        (kernel32, "ResumeThread"): (wintypes.DWORD, [wintypes.HANDLE]),
+        (kernel32, "TerminateProcess"): (wintypes.BOOL, [wintypes.HANDLE, wintypes.UINT]),
         (advapi32, "CheckTokenMembership"): (wintypes.BOOL, [wintypes.HANDLE, ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL)]),
         (advapi32, "GetTokenInformation"): (wintypes.BOOL, [
             wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]),
@@ -115,7 +142,7 @@ def _api():
     for (dll, name), (restype, argtypes) in signatures.items():
         fn = getattr(dll, name)
         fn.restype, fn.argtypes = restype, argtypes
-    return kernel32, advapi32, wintypes, SidAndAttributes, StartupInfo, ProcessInformation
+    return kernel32, advapi32, wintypes, SidAndAttributes, StartupInfo, ProcessInformation, ExtendedLimitInformation
 
 
 def _check(ok, call: str) -> None:
@@ -165,7 +192,7 @@ def token_state() -> str:
 
 def run_restricted(argv: list[str]) -> int:
     """Start `argv` with the restricted token, wait for it, and return its exit code."""
-    kernel32, advapi32, wintypes, SidAndAttributes, StartupInfo, ProcessInformation = _api()
+    kernel32, advapi32, wintypes, SidAndAttributes, StartupInfo, ProcessInformation, ExtendedLimitInformation = _api()
 
     token = wintypes.HANDLE()
     _check(advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), TOKEN_ALL_ACCESS, ctypes.byref(token)),
@@ -183,7 +210,15 @@ def run_restricted(argv: list[str]) -> int:
             kernel32.LocalFree(sid)
         kernel32.CloseHandle(token)
 
+    # Never closed: the job, and the program in it, ends when this script does.
+    job = kernel32.CreateJobObjectW(None, None)
+    limits = ExtendedLimitInformation()
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     try:
+        _check(job, "CreateJobObjectW")
+        _check(kernel32.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                                                ctypes.byref(limits), ctypes.sizeof(limits)),
+               "SetInformationJobObject")
         startup = StartupInfo(cb=ctypes.sizeof(StartupInfo), dwFlags=STARTF_USESTDHANDLES)
         handles = [kernel32.GetStdHandle(n) for n in STD_HANDLES]
         for handle in handles:
@@ -192,13 +227,22 @@ def run_restricted(argv: list[str]) -> int:
         startup.hStdInput, startup.hStdOutput, startup.hStdError = handles
         process = ProcessInformation()
         line = ctypes.create_unicode_buffer(command_line(argv))
-        _check(advapi32.CreateProcessAsUserW(restricted, argv[0], line, None, None, True, 0, None, None,
-                                             ctypes.byref(startup), ctypes.byref(process)),
+        _check(advapi32.CreateProcessAsUserW(restricted, argv[0], line, None, None, True, CREATE_SUSPENDED,
+                                             None, None, ctypes.byref(startup), ctypes.byref(process)),
                "CreateProcessAsUserW")
     finally:
         kernel32.CloseHandle(restricted)
 
     try:
+        # Suspended until it is in the job, so nothing it starts can escape it.
+        if not kernel32.AssignProcessToJobObject(job, process.hProcess):
+            error = ctypes.get_last_error()
+            kernel32.TerminateProcess(process.hProcess, 1)
+            raise LaunchError(f"AssignProcessToJobObject failed (error {error})")
+        if kernel32.ResumeThread(process.hThread) == RESUME_FAILED:
+            error = ctypes.get_last_error()
+            kernel32.TerminateProcess(process.hProcess, 1)
+            raise LaunchError(f"ResumeThread failed (error {error})")
         _check(kernel32.WaitForSingleObject(process.hProcess, INFINITE) != WAIT_FAILED, "WaitForSingleObject")
         code = wintypes.DWORD()
         _check(kernel32.GetExitCodeProcess(process.hProcess, ctypes.byref(code)), "GetExitCodeProcess")

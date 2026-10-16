@@ -67,25 +67,48 @@ function startupDeelevation({ token, markerPath, now }) {
   }
 }
 
-// Explorer hands the app on and exits within a second or two.
+// Explorer hands the app on and exits within a second or two; the copy it starts
+// reads the marker early in its own start.
 const EXPLORER_TIMEOUT_MS = 15 * 1000;
+const HANDOFF_TIMEOUT_MS = 20 * 1000;
+const HANDOFF_POLL_MS = 200;
+
+/** Block this thread for `ms` (startup runs before the event loop matters). */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 /**
  * Hand the app back to Explorer (the shell) to start. This also sidesteps
  * Electron's job object: Electron runs its own children in a job with
  * KILL_ON_JOB_CLOSE, so a direct relaunch would die the moment this instance
  * exits, but an Explorer-launched process is the shell's child and survives.
- * Waits until Explorer has taken it, so the caller quits only once the relaunch
- * is under way. Explorer's exit code means nothing (it is 1 on success), so only
- * a failure to run it counts. Returns true when the relaunch is under way.
+ * Explorer's exit code means nothing (it is 1 on success), but it must have
+ * exited on its own: an error, a signal or no exit status is a failure. Explorer
+ * exiting does not prove the copy started, so this then waits for the copy to
+ * consume the relaunch marker, which every start does first. Returns true only
+ * once it has; on false the marker stays, so a copy that starts late boots
+ * restricted and yields to this instance through the single-instance lock.
  */
-function relaunchThroughExplorer({ spawnSync, systemRoot, exePath }) {
+function relaunchThroughExplorer({
+  spawnSync, systemRoot, exePath, markerPath,
+  handoffMs = HANDOFF_TIMEOUT_MS, pollMs = HANDOFF_POLL_MS, sleep = sleepSync,
+}) {
   try {
     const explorer = path.join(systemRoot || "C:\\Windows", "explorer.exe");
     const result = spawnSync(explorer, [exePath], { timeout: EXPLORER_TIMEOUT_MS, windowsHide: true });
-    if (result.error) {
-      console.error("[startup] de-elevation relaunch failed:", result.error);
+    if (result.error || result.signal || typeof result.status !== "number") {
+      console.error("[startup] de-elevation relaunch failed:",
+        result.error || `explorer.exe ended by ${result.signal || "no exit status"}`);
       return false;
+    }
+    const deadline = Date.now() + handoffMs;
+    while (fs.existsSync(markerPath)) {
+      if (Date.now() >= deadline) {
+        console.error("[startup] de-elevation relaunch failed: the relaunched copy did not start");
+        return false;
+      }
+      sleep(pollMs);
     }
     return true;
   } catch (e) {

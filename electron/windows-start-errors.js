@@ -31,13 +31,39 @@ function windowsStartFailure({ exitCode, output = "" }) {
   return null;
 }
 
-/** What was written to the log at `logPath` after byte `offset`; empty when it cannot be read. */
+/**
+ * The message for a database that would not start for a reason not recognised
+ * above, which may be one an older version left half set up. The folder is named
+ * and left exactly as it was; `reason` is the original error.
+ */
+function clusterStartFailure(dataDir, reason) {
+  return `Celerp's database in ${dataDir} could not start. Nothing in it was changed or removed. ` +
+    "If Celerp has never finished starting on this PC, move that folder somewhere else (keep it) " +
+    "and start Celerp again to set up a new database. Otherwise restore the folder from a backup." +
+    (reason ? ` Details: ${reason}` : "");
+}
+
+// Enough of an attempt's log to hold initdb's error, however long the log has grown.
+const LOG_SINCE_MAX_BYTES = 64 * 1024;
+
+/**
+ * What was written to the log at `logPath` after byte `offset`, at most its last
+ * LOG_SINCE_MAX_BYTES; empty when it cannot be read. Earlier attempts are never read.
+ */
 function logSince(logPath, offset) {
+  let fd;
   try {
-    return fs.readFileSync(logPath).subarray(offset).toString("utf8");
+    fd = fs.openSync(logPath, "r");
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(offset, size - LOG_SINCE_MAX_BYTES);
+    const buffer = Buffer.alloc(Math.max(size - start, 0));
+    const read = fs.readSync(fd, buffer, 0, buffer.length, start);
+    return buffer.subarray(0, read).toString("utf8");
   } catch {
     return "";
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
   }
 }
 
-module.exports = { windowsStartFailure, logSince };
+module.exports = { windowsStartFailure, clusterStartFailure, logSince, LOG_SINCE_MAX_BYTES };
