@@ -58,8 +58,7 @@ async def test_owner_receives_noncacheable_single_display_and_no_secret_in_listi
         return {"credential": "cp1.ONE-TIME-TEST-KEY"}
     monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
     handler = _endpoints()["/settings/accountant-access/grants"]
-    request = Request({"pairing_code": _code(source), "label": "Client",
-                       "lifetime_days": "30"})
+    request = Request({"pairing_code": _code(source), "label": "Client"})
     response = await handler(request)
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
@@ -67,7 +66,7 @@ async def test_owner_receives_noncacheable_single_display_and_no_secret_in_listi
     assert b"cp1.ONE-TIME-TEST-KEY" in response.body
     assert b"shown only once" in response.body
     assert issued == [{"source_company_id": source, "label": "Client",
-                       "scopes": ["contacts", "products"], "lifetime_days": 30}]
+                       "scopes": ["contacts", "products"]}]
 
 
 @pytest.mark.asyncio
@@ -82,7 +81,7 @@ async def test_member_cannot_issue_or_revoke_company_keys(monkeypatch):
                         lambda request: Response("denied", status_code=403))
     ends = _endpoints()
     request = Request({"pairing_code": _code(str(uuid.uuid4())),
-                       "label": "Client", "lifetime_days": "14"})
+                       "label": "Client"})
     assert (await ends["/settings/accountant-access/grants"](request)).status_code == 403
     assert (await ends["/settings/accountant-access/grants/{grant_id}/revoke"](
         request, str(uuid.uuid4()))).status_code == 403
@@ -94,13 +93,16 @@ def _grants(now):
     return [
         {"id": str(uuid.uuid4()), "label": "Soon Co", "scopes": ["contacts", "inventory"],
          "source_company_id": str(uuid.uuid4()), "created_at": (now - timedelta(days=25)).isoformat(),
-         "expires_at": (now + timedelta(days=3)).isoformat(), "revoked": False, "replaced": False},
+         "expires_at": (now + timedelta(days=3)).isoformat(), "revoked": False},
         {"id": str(uuid.uuid4()), "label": "Late Co", "scopes": ["documents"],
          "source_company_id": str(uuid.uuid4()), "created_at": (now - timedelta(days=40)).isoformat(),
-         "expires_at": (now - timedelta(days=2)).isoformat(), "revoked": False, "replaced": False},
+         "expires_at": (now - timedelta(days=2)).isoformat(), "revoked": False},
         {"id": str(uuid.uuid4()), "label": "Old Co", "scopes": ["products"],
          "source_company_id": str(uuid.uuid4()), "created_at": (now - timedelta(days=50)).isoformat(),
-         "expires_at": (now + timedelta(days=1)).isoformat(), "revoked": False, "replaced": True},
+         "expires_at": (now + timedelta(days=200)).isoformat(), "revoked": True},
+        {"id": str(uuid.uuid4()), "label": "Year Co", "scopes": ["products"],
+         "source_company_id": str(uuid.uuid4()), "created_at": (now - timedelta(days=20)).isoformat(),
+         "expires_at": (now + timedelta(days=20)).isoformat(), "revoked": False},
     ]
 
 
@@ -117,15 +119,18 @@ def test_accountant_access_table_labels_no_reload():
     assert grants[0]["source_company_id"] not in html and "T00:00" not in html
     assert "2026-10-15" in html and "Expires in 3 days" in html and "badge--soon" in html
     assert "Expired" in html and "badge--expired" in html
-    assert "Renewed by the client company" in html
-    assert html.count(">Extend<") == 2 and html.count(">Revoke<") == 2
+    # Warned from 14 days before expiry; a key further out is simply active.
+    assert "Expires in 20 days" in html and html.count("badge--soon") == 1
+    assert "Revoked" in html
+    assert html.count(">Renew key<") == 3 and html.count(">Revoke<") == 3
+    assert "Extend" not in html
     assert "HX-Refresh" not in html and 'hx-target="#accountant-access-grants"' in html
     assert to_xml(routes._grants_table([], "en", now=now)).count("No client access keys") == 1
 
 
 @pytest.mark.asyncio
 async def test_key_renewal_and_expiry_warning_on_the_access_page(monkeypatch):
-    """Extend and Revoke answer with the refreshed table instead of reloading the page."""
+    """Renew key and Revoke answer with the refreshed table instead of reloading the page."""
     from datetime import datetime, timezone
     from fasthtml.common import to_xml
 
@@ -137,8 +142,8 @@ async def test_key_renewal_and_expiry_warning_on_the_access_page(monkeypatch):
     async def listing(token):
         return {"items": grants}
 
-    async def extend(token, grant_id):
-        calls.append(("extend", grant_id))
+    async def renew(token, grant_id):
+        calls.append(("renew", grant_id))
         return {}
 
     async def revoke(token, grant_id):
@@ -146,16 +151,16 @@ async def test_key_renewal_and_expiry_warning_on_the_access_page(monkeypatch):
         return {"revoked": True}
 
     monkeypatch.setattr(api_client, "accountant_peer_grants", listing)
-    monkeypatch.setattr(api_client, "extend_accountant_peer_grant", extend)
+    monkeypatch.setattr(api_client, "renew_accountant_peer_grant", renew)
     monkeypatch.setattr(api_client, "revoke_accountant_peer_grant", revoke)
     ends = _endpoints()
     gid = grants[1]["id"]
-    for action in ("extend", "revoke"):
+    for action in ("renew", "revoke"):
         response = await ends[f"/settings/accountant-access/grants/{{grant_id}}/{action}"](Request(), gid)
         body = to_xml(response) if not hasattr(response, "body") else response.body.decode()
         assert 'id="accountant-access-grants"' in body
         assert "hx-refresh" not in {k.lower() for k in getattr(response, "headers", {})}
-    assert calls == [("extend", gid), ("revoke", gid)]
+    assert calls == [("renew", gid), ("revoke", gid)]
 
 
 @pytest.mark.asyncio
@@ -173,7 +178,7 @@ async def test_issued_key_has_copy_and_refreshes_the_list(monkeypatch):
     monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
     monkeypatch.setattr(api_client, "accountant_peer_grants", listing)
     response = await _endpoints()["/settings/accountant-access/grants"](Request({
-        "pairing_code": _code(uuid.uuid4()), "label": "Client", "lifetime_days": "30"}))
+        "pairing_code": _code(uuid.uuid4()), "label": "Client"}))
     body = response.body.decode()
     assert 'data-copy="#issued-peer-key"' in body and 'id="issued-peer-key"' in body
     assert 'hx-swap-oob="true"' in body and 'id="accountant-access-grants"' in body
@@ -192,12 +197,11 @@ async def test_documents_scope_can_be_granted_without_contact_permission(monkeyp
     response = await issue(Request({
         "pairing_code": _code(source),
         "label": "Finance documents only",
-        "lifetime_days": "14",
         "scopes": ["documents"],
     }))
     assert response.status_code == 200
     assert seen == [{"source_company_id": source, "label": "Finance documents only",
-                     "scopes": ["documents"], "lifetime_days": 14}]
+                     "scopes": ["documents"]}]
     assert response.headers["cache-control"] == "no-store"
 
 
@@ -211,7 +215,7 @@ async def test_accountant_grant_rejects_unapproved_or_empty_scope(monkeypatch):
     source = str(uuid.uuid4())
     for scopes in ([], ["attachments"], ["contacts", "manage_users"]):
         response = await issue(Request({
-            "pairing_code": _code(source), "label": "Test", "lifetime_days": "14",
+            "pairing_code": _code(source), "label": "Test",
             "scopes": scopes,
         }))
         from fasthtml.common import to_xml
@@ -243,17 +247,18 @@ async def test_pairing_code_carries_company_id(monkeypatch):
         return {"credential": "cp1.ONE-TIME-TEST-KEY"}
     monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
     issue = _endpoints()["/settings/accountant-access/grants"]
-    response = await issue(Request({"pairing_code": code, "label": "", "lifetime_days": "30"}))
+    response = await issue(Request({"pairing_code": code, "label": ""}))
     assert response.status_code == 200
     assert seen == [{"source_company_id": str(source), "label": "Acme Trading Co.",
-                     "scopes": ["contacts", "products"], "lifetime_days": 30}]
+                     "scopes": ["contacts", "products"]}]
 
-    response = await issue(Request({"pairing_code": str(source), "label": "Client",
-                                    "lifetime_days": "30"}))
+    response = await issue(Request({"pairing_code": str(source), "label": "Client"}))
     assert "Check the pairing code" in to_xml(response)
     assert len(seen) == 1
 
     page = routes._grant_form("en")
+    # Keys last one year; there is no expiry to choose.
+    assert 'name="lifetime_days"' not in to_xml(page)
     html = to_xml(page)
     assert 'name="pairing_code"' in html and 'name="source_company_id"' not in html
     assert "required" not in html
@@ -287,7 +292,7 @@ async def test_scopes_derived_from_entities(monkeypatch):
         return {"credential": "cp1.ONE-TIME-TEST-KEY"}
     monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
     response = await _endpoints()["/settings/accountant-access/grants"](Request({
-        "pairing_code": _code(uuid.uuid4()), "label": "Stock", "lifetime_days": "14",
+        "pairing_code": _code(uuid.uuid4()), "label": "Stock",
         "scopes": ["inventory"]}))
     assert response.status_code == 200
     assert seen[0]["scopes"] == ["inventory"]
