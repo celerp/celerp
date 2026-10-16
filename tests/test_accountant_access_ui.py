@@ -184,3 +184,37 @@ async def test_pairing_code_carries_company_id(monkeypatch):
     html = to_xml(page)
     assert 'name="pairing_code"' in html and 'name="source_company_id"' not in html
     assert "required" not in html
+
+
+@pytest.mark.asyncio
+async def test_scopes_derived_from_entities(monkeypatch):
+    """Every entity the connector sends, stock counts included, can be authorized."""
+    import typing
+
+    from fasthtml.common import to_xml
+
+    from celerp.connectors.celerp import CelerpConnector
+    from celerp.routers.company_peers import Scope
+    from celerp.services.peer_access import ENTITY_SCOPE, SCOPES
+
+    sent = {name[len("sync_"):-len("_out")] for name in dir(CelerpConnector)
+            if name.startswith("sync_") and name.endswith("_out")}
+    assert sent == set(ENTITY_SCOPE)
+    assert set(typing.get_args(Scope)) == SCOPES == set(ENTITY_SCOPE.values())
+
+    html = to_xml(routes._grant_form("en"))
+    for scope in SCOPES:
+        assert f'value="{scope}"' in html
+    assert "Stock counts" in html
+
+    _authenticated(monkeypatch)
+    seen = []
+    async def create(token, body):
+        seen.append(body)
+        return {"credential": "cp1.ONE-TIME-TEST-KEY"}
+    monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
+    response = await _endpoints()["/settings/accountant-access/grants"](Request({
+        "pairing_code": _code(uuid.uuid4()), "label": "Stock", "lifetime_days": "14",
+        "scopes": ["inventory"]}))
+    assert response.status_code == 200
+    assert seen[0]["scopes"] == ["inventory"]
