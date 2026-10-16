@@ -5670,5 +5670,8 @@
   "documents.err_asset_line_twice": "Line {line} names an asset another line already names. Each asset goes on one line.",
   "documents.err_asset_line_quantity": "Line {line} sells a fixed asset, so its quantity is 1.",
   "documents.err_asset_line_source": "Line {line} credits an asset that is not on the same line of the invoice. Credit the invoice line that sold it.",
-  "documents.err_asset_lines_unhandled": "This document sells or credits a fixed asset. Turn on Fixed Assets to finish it."
+  "documents.err_asset_lines_unhandled": "This document sells or credits a fixed asset. Turn on Fixed Assets to finish it.",
+  "event.fa.taxbook.recorded": "Tax book of an asset changed",
+  "event.fa.taxyear.recorded": "Tax year closed or reopened",
+  "event.fa.yearend.recorded": "Year-end item marked"
 }

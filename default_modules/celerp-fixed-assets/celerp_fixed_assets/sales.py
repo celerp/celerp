@@ -28,8 +28,9 @@ from sqlalchemy import select
 from celerp.models.projections import Projection
 from celerp_fixed_assets import disposal, runs, setup
 from celerp_fixed_assets.operations import (
-    MODULE, _amount, _cents, _date, _dec, _effects, _emit, _journal_view, _lines, _move, _post, _run, _state,
-    asset_movements, conflict)
+    MODULE, _amount, _cents, _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements,
+    conflict)
+from celerp_fixed_assets.store import _emit, _state
 
 # The permissions a person needs to post or reverse a document that sells or credits an
 # asset, and to write one.

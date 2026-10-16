@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from typing import Callable
 from urllib.parse import urlencode
 
@@ -232,6 +233,91 @@ def _ppa_rows(report: dict, currency: str) -> list[list]:
     return out
 
 
+# ── Book against tax ─────────────────────────────────────────────────────────
+
+_BOOK_TAX_MONEY = ("book_carrying", "tax_written_down_value", "difference")
+
+
+def _book_tax_fields(report: dict) -> tuple[str, ...]:
+    return (*_BOOK_TAX_MONEY, "deferred_tax") if report["deferred_tax"] else _BOOK_TAX_MONEY
+
+
+async def _book_tax_fetch(token: str, params: dict) -> dict | None:
+    """The book against tax for the regime asked for; None when the company has chosen none."""
+    if not params.get("regime"):
+        return None
+    return await api.fixed_assets_get(token, "/reports/book-tax", params)
+
+
+def _read_only(report: dict) -> list[FT]:
+    if not report.get("read_only"):
+        return []
+    return [Div(_text(report.get("read_only_reason")), cls="flash flash--warning")]
+
+
+def _book_tax_body(report: dict | None, currency: str) -> list[FT]:
+    if report is None:
+        return [empty_state_cta(t("fixed_assets.no_tax_regimes"), t("fixed_assets.settings_title"),
+                                "/settings/fixed-assets")]
+    fields = _book_tax_fields(report)
+    head = [Th(t("fixed_assets.tax_line")), Th(t("fixed_assets.tax_category")),
+            *[_amount_th(t(f"fixed_assets.col.{f}")) for f in fields]]
+    rows = [Tr(Td(_text(r["key"]), " ", _text(r.get("name")) if r.get("name") else ""),
+               Td(_text(r.get("category_label"))), *[_amount(r[f], currency) for f in fields])
+            for r in report["rows"]]
+    if not rows:
+        return [*_read_only(report), empty_state_cta(t("fixed_assets.book_tax_empty", year=report["year"]))]
+    rows.append(Tr(Td(Strong(t("fixed_assets.total"))), Td(""), *[_amount(report["totals"][f], currency)
+                                                                  for f in fields]))
+    return [*_read_only(report), P(t("fixed_assets.tax_year_dates", start=report["start"], end=report["end"]),
+                                   cls="settings-hint"), _table(head, rows)]
+
+
+def _book_tax_rows(report: dict | None, currency: str) -> list[list]:
+    if report is None:
+        return []
+    fields = _book_tax_fields(report)
+    out = [[t("fixed_assets.tax_line"), t("fixed_assets.name"), t("fixed_assets.tax_category"),
+            *[t(f"fixed_assets.col.{f}") for f in fields]]]
+    out += [[r["key"], r.get("name") or "", r.get("category_label") or "", *[csv_amount(r[f], currency) for f in fields]]
+            for r in report["rows"]]
+    return out
+
+
+# ── Country forms ────────────────────────────────────────────────────────────
+
+
+def _numeric(value) -> bool:
+    try:
+        Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return False
+    return value not in (None, "")
+
+
+def _statutory_body(report: dict, currency: str) -> list[FT]:
+    if not report["rows"]:
+        return [*_read_only(report), H3(report["label"]),
+                empty_state_cta(t("fixed_assets.statutory_empty", year=report["year"]))]
+    numeric = [all(_numeric(row[i]) for row in report["rows"] if row[i] is not None)
+               for i in range(len(report["columns"]))]
+    head = [_amount_th(c) if numeric[i] else Th(c) for i, c in enumerate(report["columns"])]
+    rows = [Tr(*[Td(EMPTY if v is None else f"{Decimal(str(v)):,}" if numeric[i] else v,
+                    cls="cell--number" if numeric[i] else None)
+                 for i, v in enumerate(row)]) for row in report["rows"]]
+    return [*_read_only(report), H3(report["label"]),
+            P(t("fixed_assets.statutory_regime", regime=report["regime_label"], start=report["start"],
+                end=report["end"]), cls="settings-hint"), _table(head, rows)]
+
+
+def _statutory_rows(report: dict, currency: str) -> list[list]:
+    return [report["columns"], *[["" if v is None else v for v in row] for row in report["rows"]]]
+
+
+async def _statutory_fetch(token: str, params: dict, form: str) -> dict:
+    return await api.fixed_assets_get(token, f"/reports/statutory/{form}", params)
+
+
 # ── The reports and their routes ─────────────────────────────────────────────
 
 
@@ -240,13 +326,16 @@ class Report:
     key: str
     title_key: str
     hint_key: str
-    # "range" (date_from, date_to), "year", or "register" (class and search filters).
+    # "range" (date_from, date_to), "year", "tax" (a chosen tax regime and its tax year),
+    # or "register" (class and search filters).
     period: str
     fetch: Callable
     body: Callable[[dict, str], list[FT]]
     rows: Callable[[dict, str], list[list]]
     # Too many columns for portrait paper: printed landscape, in a smaller type.
     wide: bool = False
+    # Read with a path parameter, such as the country form shown: ``fetch(token, params, value)``.
+    path_param: str | None = None
 
 
 _WIDE_PRINT_CSS = "@page { size: A4 landscape; } body { padding: 10mm; } table { font-size: 7pt; }"
@@ -269,7 +358,19 @@ REPORTS = (
            _api("/reports/disposals"), _disposals_body, _disposals_rows),
     Report("prior-period-adjustments", "fixed_assets.ppa_title", "fixed_assets.ppa_hint", "year",
            _api("/reports/prior-period-adjustments"), _ppa_body, _ppa_rows),
+    Report("book-tax", "fixed_assets.book_tax_title", "fixed_assets.book_tax_hint", "tax",
+           _book_tax_fetch, _book_tax_body, _book_tax_rows),
 )
+
+# Each country form a localization module provides, at /reports/statutory/{form}.
+STATUTORY = Report("statutory", "fixed_assets.statutory_title", "fixed_assets.statutory_hint", "year",
+                   _statutory_fetch, _statutory_body, _statutory_rows, path_param="form")
+
+
+def _chosen_regimes(setup: dict) -> list[dict]:
+    """The tax regimes the company chose that a module it uses provides."""
+    chosen = (setup.get("settings") or {}).get("tax_regimes") or []
+    return [r for r in (setup.get("rules") or {}).get("tax_regimes") or [] if r["key"] in chosen]
 
 
 def _params(report: Report, request: Request, setup: dict) -> dict:
@@ -278,6 +379,10 @@ def _params(report: Report, request: Request, setup: dict) -> dict:
     q = request.query_params
     if report.period == "year":
         return {"year": q.get("year") or str(date.today().year - 1)}
+    if report.period == "tax":
+        regimes = [r["key"] for r in _chosen_regimes(setup)]
+        regime = q.get("regime") if q.get("regime") in regimes else (regimes[0] if regimes else "")
+        return {"regime": regime, "year": q.get("year") or str(date.today().year - 1)}
     if report.period == "register":
         return {k: q[k] for k in ("class_id", "q") if q.get(k)}
     today = date.today()
@@ -286,10 +391,17 @@ def _params(report: Report, request: Request, setup: dict) -> dict:
     return {"date_from": q.get("date_from") or start, "date_to": q.get("date_to") or max(today.isoformat(), start)}
 
 
-def _chooser(report: Report, params: dict, classes: list[dict]) -> FT:
+def _year_input(params: dict) -> FT:
+    return _input("year", params["year"], type_="number", step="1", min="1900", aria_label=t("fixed_assets.year"))
+
+
+def _chooser(report: Report, params: dict, classes: list[dict], setup: dict, action: str) -> FT:
     if report.period == "year":
-        fields = [_input("year", params["year"], type_="number", step="1", min="1900",
-                         aria_label=t("fixed_assets.year"))]
+        fields = [_year_input(params)]
+    elif report.period == "tax":
+        fields = [Select(*[Option(r["label"], value=r["key"], selected=r["key"] == params["regime"])
+                           for r in _chosen_regimes(setup)], name="regime", cls="form-input",
+                         aria_label=t("fixed_assets.tax_regime")), _year_input(params)]
     elif report.period == "register":
         fields = [_input("q", params.get("q"), placeholder=t("fixed_assets.search"), aria_label=t("fixed_assets.search")),
                   Select(Option(t("fixed_assets.all_classes"), value=""),
@@ -299,10 +411,12 @@ def _chooser(report: Report, params: dict, classes: list[dict]) -> FT:
         fields = [_input("date_from", params["date_from"], type_="date", aria_label=t("fixed_assets.date_from")),
                   _input("date_to", params["date_to"], type_="date", aria_label=t("fixed_assets.date_to"))]
     return Form(*fields, Button(t("fixed_assets.show"), type="submit", cls="btn btn--secondary"),
-                method="get", action=f"{_BASE}/{report.key}", cls="flex-row")
+                method="get", action=action, cls="flex-row")
 
 
 def _subtitle(params: dict) -> str:
+    if params.get("regime"):
+        return t("fixed_assets.tax_year_n", year=params["year"])
     if "year" in params:
         return params["year"]
     if "date_from" in params:
@@ -310,9 +424,9 @@ def _subtitle(params: dict) -> str:
     return ""
 
 
-def _filename(report: Report, params: dict) -> str:
+def _filename(name: str, params: dict) -> str:
     suffix = fname_date(params.get("date_to") or params.get("year") or date.today().isoformat())
-    return f"fixed-asset-{report.key}-{suffix}.csv"
+    return f"fixed-asset-{name}-{suffix}.csv"
 
 
 def _crumbs(report: Report | None):
@@ -321,7 +435,44 @@ def _crumbs(report: Report | None):
 
 
 def _register_routes(app, report: Report) -> None:
-    path = f"{_BASE}/{report.key}"
+    path = f"{_BASE}/{report.key}" + (f"/{{{report.path_param}}}" if report.path_param else "")
+
+    async def fetch(token: str, params: dict, request: Request):
+        if report.path_param:
+            return await report.fetch(token, params, request.path_params[report.path_param])
+        return await report.fetch(token, params)
+
+    def name(request: Request) -> str:
+        return "-".join([report.key, *([request.path_params[report.path_param]] if report.path_param else [])])
+
+    # The CSV first: a path parameter would otherwise take the ".csv" with it.
+    @app.get(f"{path}.csv", name=f"fa_report_{report.key}_csv")
+    async def exported(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            setup, currency = await _context(token)
+            params = _params(report, request, setup)
+            data = await fetch(token, params, request)
+        except APIError as e:
+            return plain_error_response(e)
+        return csv_response(report.rows(data, currency), _filename(name(request), params))
+
+    @app.get(f"{path}/print", name=f"fa_report_{report.key}_print")
+    async def printed(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            setup, currency = await _context(token)
+            params = _params(report, request, setup)
+            data = await fetch(token, params, request)
+            company = await api.get_company(token)
+        except APIError as e:
+            return plain_error_response(e)
+        wide = Style(_WIDE_PRINT_CSS) if report.wide else None
+        return print_shell(company, t(report.title_key), _subtitle(params), Div(wide, *report.body(data, currency)))
 
     @app.get(path, name=f"fa_report_{report.key}")
     async def page(request: Request):
@@ -335,46 +486,19 @@ def _register_routes(app, report: Report) -> None:
         except APIError as e:
             return await _page(request, page_header(t(report.title_key)), Div(_error_text(e), cls="flash flash--error"),
                                title_key=report.title_key)
+        here = request.url.path
         params = _params(report, request, setup)
         try:
-            body = Div(*report.body(await report.fetch(token, params), currency), cls="detail-card section-card")
+            body = Div(*report.body(await fetch(token, params, request), currency), cls="detail-card section-card")
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             body = Div(_error_text(e), cls="flash flash--error")
         return await _page(request, _crumbs(report),
-                           page_header(t(report.title_key), action_bar(f"{path}/print", f"{path}.csv", params)),
-                           P(t(report.hint_key), cls="settings-hint"), _chooser(report, params, classes),
+                           page_header(t(report.title_key), action_bar(f"{here}/print", f"{here}.csv", params)),
+                           P(t(report.hint_key), cls="settings-hint"), _chooser(report, params, classes, setup, here),
                            *([H2(_subtitle(params), cls="section-title")] if _subtitle(params) else []), body,
                            title_key=report.title_key)
-
-    @app.get(f"{path}/print", name=f"fa_report_{report.key}_print")
-    async def printed(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            setup, currency = await _context(token)
-            params = _params(report, request, setup)
-            data = await report.fetch(token, params)
-            company = await api.get_company(token)
-        except APIError as e:
-            return plain_error_response(e)
-        wide = Style(_WIDE_PRINT_CSS) if report.wide else None
-        return print_shell(company, t(report.title_key), _subtitle(params), Div(wide, *report.body(data, currency)))
-
-    @app.get(f"{path}.csv", name=f"fa_report_{report.key}_csv")
-    async def exported(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            setup, currency = await _context(token)
-            params = _params(report, request, setup)
-            data = await report.fetch(token, params)
-        except APIError as e:
-            return plain_error_response(e)
-        return csv_response(report.rows(data, currency), _filename(report, params))
 
 
 def setup_report_routes(app) -> None:
@@ -387,9 +511,15 @@ def setup_report_routes(app) -> None:
             return RedirectResponse("/login", status_code=302)
         items = [Div(A(t(r.title_key), href=f"{_BASE}/{r.key}", cls="section-title"),
                      P(t(r.hint_key), cls="settings-hint"), cls="detail-card section-card") for r in REPORTS]
+        try:
+            forms = (await api.fixed_assets_get(token, "/setup"))["rules"]["statutory_reports"]
+        except APIError:
+            forms = []
+        items += [Div(A(f["label"], href=f"{_BASE}/{STATUTORY.key}/{f['key']}", cls="section-title"),
+                      P(t(STATUTORY.hint_key), cls="settings-hint"), cls="detail-card section-card") for f in forms]
         return await _page(request, _crumbs(None), page_header(t("fixed_assets.reports_title")),
                            P(t("fixed_assets.reports_hint"), cls="settings-hint"), *items,
                            title_key="fixed_assets.reports_title")
 
-    for report in REPORTS:
+    for report in (*REPORTS, STATUTORY):
         _register_routes(app, report)

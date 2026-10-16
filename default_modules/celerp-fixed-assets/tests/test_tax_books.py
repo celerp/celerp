@@ -57,6 +57,10 @@ async def test_tax_book_elections(fa, zz):
     car = await _setup(fa)
     await fa.ok(await fa.patch(f"/tax-books/{car}/zz_asset", {"elections": {"full_expensing": True}}))
     assert _figures(_row(await _tax_book(fa, "zz_asset", 2025), car)) == (D(0), D("12000"), D(0), D("12000"), D(0))
+    # Each election shows the name its module gives it, on the API and on the page.
+    assert (await _tax_book(fa, "zz_asset", 2025))["election_labels"] == {"full_expensing": "Full expensing"}
+    page = await fa.page("/fixed-assets/tax-books", regime="zz_asset", year=2025)
+    assert "Full expensing" in page.text and ">full_expensing<" not in page.text
     bad = await fa.patch(f"/tax-books/{car}/zz_asset", {"elections": {"bonus": True}})
     assert bad.status_code == 422 and "bonus" in bad.json()["detail"]
     wrong_type = await fa.patch(f"/tax-books/{car}/zz_asset", {"elections": {"full_expensing": "yes"}})

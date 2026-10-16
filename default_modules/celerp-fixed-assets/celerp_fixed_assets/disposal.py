@@ -19,11 +19,12 @@ from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException
 
-from celerp_fixed_assets import runs, setup
+from celerp_fixed_assets import projections, runs, setup
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
-    MODULE, _cents, _date, _dec, _effects, _emit, _journal_view, _lines, _move, _post, _reversed_lines, _run,
-    _state, asset_movements, conflict)
+    MODULE, _cents, _date, _dec, _effects, _journal_view, _lines, _move, _post, _reversed_lines, _run,
+    asset_movements, conflict)
+from celerp_fixed_assets.store import _emit, _state
 
 REASONS = ("scrapped", "lost", "donated", "other")
 _AD, _IMP, _SURPLUS = "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus"
@@ -122,7 +123,7 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
         raise conflict(f"{asset['number']}: Disposed on {asset['disposal']['date']}.")
     if asset.get("status") != "active":
         raise conflict(f"{asset['number']} is not in use, so it cannot be disposed of.")
-    live = runs.live(movements)
+    live = projections.live(movements)
     check_date(books, asset, live, day)
     cost = _dec(asset.get("cost"))
     gone_cost = _split(cost, share, currency)
@@ -273,7 +274,7 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
             raise HTTPException(status_code=404, detail="No such asset.")
         asset = row.state
         movements = await asset_movements(session, company_id, asset_id)
-        disposals = [m for m in runs.live(movements) if m.get("operation") == "disposal"]
+        disposals = [m for m in projections.live(movements) if m.get("operation") == "disposal"]
         if not disposals:
             raise setup.unprocessable(f"{asset['number']} has no disposal to undo.")
         latest = disposals[-1]

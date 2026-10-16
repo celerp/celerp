@@ -45,8 +45,10 @@ from celerp_fixed_assets.calc.engine import (
     schedule,
 )
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
-from celerp_fixed_assets.calc.rules import METHODS
-from celerp_fixed_assets.operations import MODULE, _cents, _dec, _emit, _entities, _move, _state, conflict
+from celerp_fixed_assets.calc import rules
+from celerp_fixed_assets.operations import MODULE, _cents, _dec, _move, conflict
+from celerp_fixed_assets.projections import REMEASUREMENTS, live
+from celerp_fixed_assets.store import _emit, _entities, _state
 
 log = logging.getLogger(__name__)
 
@@ -133,17 +135,9 @@ async def _ledger_basis(session, company_id, books: Books) -> list:
 
 # The operations that bring an asset in at the cutover, and the correction of those values.
 OPENING_OPERATIONS = ("opening", "opening_values")
-# Measurements that restate the carrying amount (calc.engine Revalue and Impair).
-REMEASUREMENTS = ("revaluation", "impairment", "impairment_reversal")
 # Operations whose cost is not an acquisition: the asset leaving the books in whole or part,
 # a remeasurement, an improvement (a layer of its own), and construction placed in service.
 _NOT_ACQUIRED = (*OPENING_OPERATIONS, *REMEASUREMENTS, "disposal", "improvement", "construction_out")
-
-
-def live(movements: list[dict]) -> list[dict]:
-    """The movements that still count: undone ones and their reversals cancel out."""
-    reversed_ids = {m.get("reverses") for m in movements if m.get("reverses")}
-    return [m for m in movements if m["id"] not in reversed_ids and not m.get("reverses")]
 
 
 def _first(movements: list[dict]) -> int | None:
@@ -204,7 +198,7 @@ def engine_movements(asset: dict, movements: list[dict], currency: str) -> list:
     readings = asset.get("readings") or {}
     for m in sorted((m for m in movements if m.get("operation") == "estimate"), key=lambda m: m["effective_date"]):
         on, new = date.fromisoformat(m["effective_date"]), m["policy"]
-        method = METHODS[new["method"]]
+        method = rules.method(new["method"])
         if method.uses_readings:
             used = sum((_dec(u) for p, u in readings.items() if parse_period(p) < month_index(on)), Decimal(0))
             left = _dec(new["params"].get("total_units")) - used
@@ -219,6 +213,17 @@ def engine_movements(asset: dict, movements: list[dict], currency: str) -> list:
                                   method=new["method"], params=new.get("params") or {},
                                   convention=new.get("convention")))
     return out
+
+
+def unavailable_rule(asset: dict, movements: list[dict], settings: dict) -> str | None:
+    """Why the asset cannot be depreciated for this company: a method or convention it
+    uses comes from a module the company has turned off, or that is no longer installed."""
+    policies = [base_policy(asset, movements), *(m["policy"] for m in live(movements) if m.get("operation") == "estimate")]
+    for policy in policies:
+        for kind, key in (("method", policy.get("method")), ("convention", policy.get("convention") or "full_month")):
+            if not rules.is_available(kind, key, settings):
+                return rules.unavailable_reason(kind, key)
+    return None
 
 
 def asset_schedule(asset: dict, movements: list[dict], settings: dict, through: int) -> list:
@@ -269,7 +274,8 @@ class Charge:
         self.asset_id, self.asset, self.cls, self.movements = asset_id, asset, cls, movements
         self.expense = asset.get("depreciation_account") or cls["depreciation_account"]
         self.accumulated = cls["accumulated_depreciation_account"]
-        periods = asset_schedule(asset, movements, books.settings, through)
+        self.reason = unavailable_rule(asset, movements, books.settings)
+        periods = [] if self.reason else asset_schedule(asset, movements, books.settings, through)
         charged = sum(charged_by_month(movements).values(), Decimal(0))
         # Owed per month: the schedule to date beyond what is on the asset already.
         self.owed: dict[int, Decimal] = {}
@@ -296,6 +302,8 @@ class Charge:
         unposted = [k for k, owed in self.owed.items() if owed or k >= self.start]
         first = min([*unposted, self.start])
         found: list[tuple[int, str]] = []
+        if self.reason:
+            found.append((first, "method_unavailable"))
         try:
             await require_destinations(session, company_id, {self.expense, self.accumulated})
         except HTTPException:
@@ -346,6 +354,7 @@ class Charge:
         amount = self.held_amount(months)
         return {"first_month": period_label(months[0]), "months": [period_label(k) for k in months],
                 "amount": None if amount is None else str(amount), "action": self.action,
+                "reason": self.reason if self.action == "method_unavailable" else None,
                 "responsible_user_id": str(user_id) if user_id else None}
 
 
@@ -420,7 +429,8 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
         for t, months in by_month.items():
             amount = c.held_amount(months)
             held[t][c.asset_id] = {"asset_id": c.asset_id, "number": c.asset["number"],
-                                   "amount": None if amount is None else _cents(amount), "action": c.action}
+                                   "amount": None if amount is None else _cents(amount), "action": c.action,
+                                   "reason": c.reason if c.action == "method_unavailable" else None}
         exceptions[c.asset_id] = (c.asset.get("exception"), c.exception(month, user_id))
     months, total = [], Decimal(0)
     for k in open_months if charges else []:
@@ -615,7 +625,7 @@ async def record_reading(session, company_id, user_id, asset_id: str, body: dict
     """The units an asset produced in a month, for a class that depreciates by units."""
     asset, books = await _open_asset(session, company_id, user_id, asset_id, ("manage_fixed_assets",))
     cls = await setup.get_class(session, company_id, asset.get("class_id"))
-    if not METHODS[cls["method"]].uses_readings:
+    if not rules.method(cls["method"]).uses_readings:
         raise setup.unprocessable("This asset's class does not depreciate by units, so it takes no readings.")
     month = _month(body.get("period"), "The period")
     units = operations._amount(body.get("units"), "Units")

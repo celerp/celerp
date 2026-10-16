@@ -24,10 +24,11 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
-from celerp_fixed_assets import disposal, operations, runs, setup
+from celerp_fixed_assets import disposal, operations, projections, runs, setup
 from celerp_fixed_assets.operations import (
-    _cents, _claim, _create_asset, _date, _dec, _effects, _emit, _entities, _journal_view, _move,
-    _next_numbers, _open_line, _post, _reclass, _run, _state, asset_movements, conflict)
+    _cents, _claim, _create_asset, _date, _dec, _effects, _journal_view, _move, _next_numbers, _open_line, _post,
+    _reclass, _run, asset_movements, conflict)
+from celerp_fixed_assets.store import _emit, _entities, _state
 
 KINDS = ("improvement", "replacement")
 # What Undo latest offers on the asset page; registration and disposal have their own Undo.
@@ -95,7 +96,7 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         funding = await _funding(session, company_id, body, cls["asset_account"], currency)
         day = _date(funding["day"], "The date")
         movements = await asset_movements(session, company_id, asset_id)
-        disposal.check_date(books, asset, runs.live(movements), day, what="addition", verb="Add")
+        disposal.check_date(books, asset, projections.live(movements), day, what="addition", verb="Add")
         life = _life(body.get("life_months"))
         shown = {"kind": kind, "date": day, "number": asset["number"], "amount": _cents(funding["amount"]),
                  "life_months": life}
@@ -222,7 +223,7 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
         day = _date(body.get("date"), "The available-for-use date")
         books = await runs._books(session, company_id)
         currency = books.settings.get("currency") or "USD"
-        disposal.check_date(books, site, runs.live(await asset_movements(session, company_id, asset_id)), day,
+        disposal.check_date(books, site, projections.live(await asset_movements(session, company_id, asset_id)), day,
                             what="available-for-use", verb="Place in service")
         rows = body.get("allocations")
         if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) for r in rows):
@@ -298,7 +299,7 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
 
 
 def _latest(movements: list[dict]) -> dict | None:
-    live = runs.live(movements)
+    live = projections.live(movements)
     return live[-1] if live else None
 
 

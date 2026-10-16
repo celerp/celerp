@@ -2426,6 +2426,7 @@ _CALLABLE_SLOTS = {
     "demo_records": ("handler", True),
     "background_loop": ("handler", True),
     "doc_asset_lines": ("handler", True),
+    "fixed_asset_rules": ("handler", False),
 }
 # Callable slots core calls with keyword arguments only, and those arguments. The
 # handler takes exactly these: no other parameter, none positional-only, and no
@@ -2582,6 +2583,7 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "demo_records": {},
     "background_loop": {},
     "doc_asset_lines": {},
+    "fixed_asset_rules": {"kind": (_TEXT, True), "key": (_TEXT, True)},
 }
 _TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",
                list: "a list", type(None): "None"}

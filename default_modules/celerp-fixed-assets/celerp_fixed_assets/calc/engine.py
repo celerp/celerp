@@ -32,7 +32,7 @@ from celerp_fixed_assets.calc.periods import (
     parse_period,
     period_label,
 )
-from celerp_fixed_assets.calc.rules import CONVENTIONS, METHODS
+from celerp_fixed_assets.calc import rules
 
 _ZERO = Decimal(0)
 _ONE = Decimal(1)
@@ -256,8 +256,8 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
              readings: dict[str, Decimal] | None = None) -> Schedule:
     """Monthly depreciation from the first month in service through ``through``
     (``YYYY-MM``), ending with the month of disposal."""
-    method = METHODS[policy.method]
-    convention = CONVENTIONS[policy.convention]
+    method = rules.method(policy.method)
+    convention = rules.convention(policy.convention)
     params = dict(policy.params)
     life = _life(method, policy.life_months, params)
     readings = readings or {}
@@ -293,11 +293,11 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
                     carrying = _carrying(layers)
                     retired.extend(layers)
                     if m.method is not None:
-                        method = METHODS[m.method]
+                        method = rules.method(m.method)
                     if m.params is not None:
                         params = dict(m.params)
                     if m.convention is not None:
-                        convention = CONVENTIONS[m.convention]
+                        convention = rules.convention(m.convention)
                     life = _life(method, policy.life_months, params)
                     layers = [Layer(carrying - m.residual, m.residual, Decimal(str(m.life_months)), index, [_ONE],
                                     method, params)]

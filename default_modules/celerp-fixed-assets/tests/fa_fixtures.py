@@ -27,6 +27,26 @@ class FA:
     async def patch(self, path: str, body: dict, headers=None):
         return await self.client.patch(f"{API}{path}", headers=headers or self.h, json=body)
 
+    async def page(self, path: str, **params):
+        """A UI page as this company's owner sees it, the UI talking to the API in process."""
+        from unittest.mock import patch
+
+        from httpx import ASGITransport, AsyncClient
+
+        from celerp.main import app
+        from ui.app import app as ui_app
+
+        token = self.h["Authorization"].removeprefix("Bearer ")
+
+        def bridged(tok, timeout=10.0):
+            return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                               headers={"Authorization": f"Bearer {tok}"}, follow_redirects=True)
+
+        with patch("ui.api_client._client", bridged):
+            async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
+                                   cookies={"celerp_token": token}) as ui:
+                return await ui.get(path, params=params)
+
     async def ok(self, response, status: int = 200) -> dict:
         assert response.status_code == status, response.text
         return response.json()

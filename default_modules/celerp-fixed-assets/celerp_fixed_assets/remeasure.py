@@ -30,11 +30,11 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
-from celerp_fixed_assets import disposal, notices, runs, setup
+from celerp_fixed_assets import disposal, notices, projections, runs, setup
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
-    _cents, _date, _dec, _effects, _emit, _entities, _journal_view, _lines, _move, _post, _run, _state,
-    asset_movements)
+    _cents, _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements)
+from celerp_fixed_assets.store import _emit, _entities, _state
 
 _AD, _IMP, _SURPLUS = "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus"
 _ZERO = Decimal(0)
@@ -62,11 +62,11 @@ def _position(books: runs.Books, asset: dict, movements: list[dict], day: str) -
     up to date, its carrying amount, what it would carry had it never been remeasured, and
     the losses in profit or loss its remeasurements have not yet reversed."""
     month = month_index(date.fromisoformat(day))
-    live = runs.live(movements)
+    live = projections.live(movements)
     charged = runs.charged_by_month(movements)
     depreciates = asset["policy"]["method"] != "none"
     restated: dict[int, Decimal] = {}
-    base = [m for m in live if m.get("operation") not in runs.REMEASUREMENTS]
+    base = [m for m in live if m.get("operation") not in projections.REMEASUREMENTS]
     cost_base = sum((_dec((m.get("amounts") or {}).get("cost")) for m in base), _ZERO)
     opening = sum((_dec((m.get("amounts") or {}).get(k)) for m in base if m.get("operation") in runs.OPENING_OPERATIONS
                    for k in (_AD, _IMP)), _ZERO)
@@ -84,7 +84,7 @@ def _position(books: runs.Books, asset: dict, movements: list[dict], day: str) -
     later = sum((v for k, v in charged.items() if k > month), _ZERO)
     accumulated = _dec(asset.get(_AD)) + caught_up - later
     carrying = _dec(asset.get("cost")) - accumulated - _dec(asset.get(_IMP))
-    losses = sum((_dec(m.get("pnl")) for m in live if m.get("operation") in runs.REMEASUREMENTS), _ZERO)
+    losses = sum((_dec(m.get("pnl")) for m in live if m.get("operation") in projections.REMEASUREMENTS), _ZERO)
     return {"month": month, "accumulated": accumulated, "carrying": carrying, "shadow": max(shadow, _ZERO),
             "losses": max(losses, _ZERO), "charged": charged}
 
@@ -112,7 +112,7 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
 
     if asset.get("status") != "active":
         raise HTTPException(status_code=409, detail=f"{asset['number']} is not in use, so it cannot be remeasured.")
-    disposal.check_date(books, asset, runs.live(movements), day, what="measurement", verb="Measure")
+    disposal.check_date(books, asset, projections.live(movements), day, what="measurement", verb="Measure")
     at = _position(books, asset, movements, day)
     carrying, impairment, surplus = at["carrying"], _dec(asset.get(_IMP)), _dec(asset.get(_SURPLUS))
     roles = disposal.accounts(books)
@@ -343,7 +343,7 @@ async def revalued_numbers(session, company_id, class_id: str) -> list[str]:
     out = []
     for asset_id, asset in await _class_assets(session, company_id, class_id):
         if any(m.get("operation") == "revaluation"
-               for m in runs.live(await asset_movements(session, company_id, asset_id))):
+               for m in projections.live(await asset_movements(session, company_id, asset_id))):
             out.append(asset["number"])
     return out
 

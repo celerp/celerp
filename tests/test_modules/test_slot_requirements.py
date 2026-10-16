@@ -24,6 +24,7 @@ _CODE = {
     "hooks.py": "async def hook(*a):\n    return None\nasync def loop():\n    return None\n",
     "search.py": "async def find(*a):\n    return {'items': []}\n",
     "render.py": "def render(doc):\n    return None\n",
+    "rules.py": "class Rate:\n    key = 'acme_rate'\n",
     "events.py": "def handle(state, event_type, data):\n    return state\n",
     "lineage.py": (
         "async def guard(*, session, entry, transition):\n    return None\n"
@@ -68,6 +69,7 @@ _VALID = {
     "demo_records": [{"handler": "{inner}.lineage:demo"}],
     "background_loop": [{"handler": "{inner}.hooks:loop"}],
     "doc_asset_lines": [{"handler": "{inner}.lineage:asset_lines"}],
+    "fixed_asset_rules": [{"kind": "method", "key": "acme_rate", "handler": "{inner}.rules:Rate"}],
 }
 
 # (slot, the entry's wrong key and value, the text the refusal names).
@@ -107,6 +109,8 @@ _WRONG = [
     ("projection_handler", {"prefix": 1}, "prefix"),
     ("doc_detail_actions", {"render": None}, "module.path:function"),
     ("on_doc_payment", {"handler": 5}, "module.path:function"),
+    ("fixed_asset_rules", {"kind": 3}, "kind"),
+    ("fixed_asset_rules", {"key": ""}, "key"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:sync_guard"}, "must be async"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:short_guard"}, "session, entry, transition"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:loose_guard"}, "session, entry, transition"),

@@ -77,8 +77,10 @@ async def test_year_end_accepted_lets_close_proceed(fa, zz):
     assert ye["ready"] is True and {i["state"] for i in ye["items"]} == {"accepted"}
     await fa.ok(await fa.post("/tax-years/zz_asset/2026/close", {}))
     # The printed year end lists what was accepted, with its reason and effect.
-    page = await fa.client.get("/fixed-assets/year-end/print", headers=fa.h, params={"year": 2026})
+    page = await fa.page("/fixed-assets/year-end/print", year=2026)
     assert page.status_code == 200 and "Reviewed at year end" in page.text and "None on the figures" in page.text
+    # Amounts sit right-aligned under their header on paper as on screen.
+    assert 'class="cell--money"' not in page.text and 'td class="cell--number"' in page.text
     # Back to open, the item waits again.
     await fa.ok(await _mark(fa, 2026, "run:2026-04", "open"))
     assert (await _year_end(fa, 2026))["ready"] is False
@@ -89,8 +91,8 @@ async def test_year_end_marks_need_manage_accounting(fa, zz):
     operator = await fa.role_headers("operator")
     refused = await _mark(fa, 2026, "run:2026-04", "noted", headers=operator, reason="x")
     assert refused.status_code == 403
-    viewer = await fa.role_headers("viewer")
-    assert (await fa.client.get("/fixed-assets/api/year-end", headers=viewer, params={"year": 2026})).status_code == 200
+    # Reading the year end needs only the fixed asset view.
+    assert (await fa.client.get("/fixed-assets/api/year-end", headers=operator, params={"year": 2026})).status_code == 200
 
 
 async def test_year_end_accept_needs_reason_and_effect(fa, zz):

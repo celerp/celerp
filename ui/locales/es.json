@@ -5670,5 +5670,8 @@
   "documents.err_asset_line_twice": "La línea {line} indica un activo que ya indica otra línea. Cada activo va en una sola línea.",
   "documents.err_asset_line_quantity": "La línea {line} vende un activo fijo, así que su cantidad es 1.",
   "documents.err_asset_line_source": "La línea {line} abona un activo que no está en la misma línea de la factura. Abone la línea de la factura que lo vendió.",
-  "documents.err_asset_lines_unhandled": "Este documento vende o abona un activo fijo. Active Activos fijos para terminarlo."
+  "documents.err_asset_lines_unhandled": "Este documento vende o abona un activo fijo. Active Activos fijos para terminarlo.",
+  "event.fa.taxbook.recorded": "Libro fiscal de un activo cambiado",
+  "event.fa.taxyear.recorded": "Año fiscal cerrado o reabierto",
+  "event.fa.yearend.recorded": "Elemento de cierre de año marcado"
 }

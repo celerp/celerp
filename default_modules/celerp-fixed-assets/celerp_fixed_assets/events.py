@@ -144,6 +144,25 @@ class ReconRecorded(_Event):
     amount: str
 
 
+class TaxBookRecorded(_Event):
+    asset_id: str
+    regime: str
+    elections: dict
+
+
+class TaxYearRecorded(_Event):
+    regime: str
+    year: int
+    status: str
+    rows: list
+    history: list
+
+
+class YearEndRecorded(_Event):
+    year: int
+    marks: dict
+
+
 EVENTS: dict[str, type[BaseModel]] = {
     "fa.class.created": ClassCreated,
     "fa.class.updated": Changes,
@@ -173,6 +192,9 @@ EVENTS: dict[str, type[BaseModel]] = {
     "fa.review.recorded": ReviewRecorded,
     "fa.review.status": AssetStatus,
     "fa.recon.recorded": ReconRecorded,
+    "fa.taxbook.recorded": TaxBookRecorded,
+    "fa.taxyear.recorded": TaxYearRecorded,
+    "fa.yearend.recorded": YearEndRecorded,
 }
 
 

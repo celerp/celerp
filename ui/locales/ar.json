@@ -5670,5 +5670,8 @@
   "documents.err_asset_line_twice": "السطر {line} يحدد أصلًا حدده سطر آخر. يوضع كل أصل في سطر واحد.",
   "documents.err_asset_line_quantity": "السطر {line} يبيع أصلًا ثابتًا، لذا كميته 1.",
   "documents.err_asset_line_source": "السطر {line} يخصم أصلًا ليس في السطر نفسه من الفاتورة. اخصم سطر الفاتورة الذي باعه.",
-  "documents.err_asset_lines_unhandled": "هذا المستند يبيع أصلًا ثابتًا أو يخصم منه. فعّل الأصول الثابتة لإكماله."
+  "documents.err_asset_lines_unhandled": "هذا المستند يبيع أصلًا ثابتًا أو يخصم منه. فعّل الأصول الثابتة لإكماله.",
+  "event.fa.taxbook.recorded": "تغيير الدفتر الضريبي لأصل",
+  "event.fa.taxyear.recorded": "إقفال سنة ضريبية أو إعادة فتحها",
+  "event.fa.yearend.recorded": "وضع علامة على بند نهاية السنة"
 }

@@ -14,9 +14,10 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
-from celerp_fixed_assets import recon, runs, setup
+from celerp_fixed_assets import projections, recon, runs, setup, taxbooks
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
-from celerp_fixed_assets.operations import _cents, _dec, _entities, _state
+from celerp_fixed_assets.operations import _cents, _dec
+from celerp_fixed_assets.store import _entities, _state
 from celerp_fixed_assets.sales import _credited, doc_number
 
 _ZERO = Decimal(0)
@@ -77,7 +78,7 @@ def _charge(mv: dict) -> Decimal:
 
 def _roll(movements: list[dict], start: str, end: str) -> dict[str, Decimal]:
     out = {k: _ZERO for k in FIGURES}
-    for mv in runs.live(movements):
+    for mv in projections.live(movements):
         amounts = mv.get("amounts") or {}
         cost, ad = _dec(amounts.get("cost")), _dec(amounts.get("accumulated_depreciation"))
         ai = _dec(amounts.get("accumulated_impairment"))
@@ -126,7 +127,7 @@ async def schedule(session, company_id, date_from, date_to) -> dict:
     groups: dict[str | None, dict] = {}
     for asset_id, asset in assets:
         moved = movements.get(asset_id) or []
-        if not runs.live(moved):
+        if not projections.live(moved):
             continue
         figures = _roll(moved, start.isoformat(), end.isoformat())
         figures["planned_not_posted"] = _planned(_scheduled(asset, moved, settings, months[-1]),
@@ -197,7 +198,7 @@ async def disposals(session, company_id, date_from, date_to) -> dict:
     items = []
     for asset_id, moved in movements.items():
         asset = states.get(asset_id) or {}
-        for mv in runs.live(moved):
+        for mv in projections.live(moved):
             if mv.get("operation") != "disposal" or not start.isoformat() <= mv["effective_date"] <= end.isoformat():
                 continue
             carrying = _carrying(mv)
@@ -218,3 +219,65 @@ async def disposals(session, company_id, date_from, date_to) -> dict:
     return {"date_from": start.isoformat(), "date_to": end.isoformat(), "items": items,
             "totals": {k: _cents(sum((_dec(r[k]) for r in items), _ZERO))
                        for k in ("proceeds", "credited", "carrying_amount", "gain_or_loss")}}
+
+
+# ── Tax ──────────────────────────────────────────────────────────────────────
+
+
+def _tax_lines(book: dict) -> list[dict]:
+    """What a book holds a written-down value for: its pools, or its assets worked out."""
+    if book["basis"] == "pool":
+        return [p for p in book["pools"] if p["status"] == "ok"]
+    return [r for r in book["rows"] if r["status"] == "ok"]
+
+
+async def book_tax(session, company_id, regime_key: str, year) -> dict:
+    """The book carrying amount beside the tax written-down value at the tax year end, per
+    pool or asset, with the deferred tax on the difference when the regime reports it."""
+    from celerp_fixed_assets.calc.tax import DeferredTaxInputs
+
+    settings = await setup.company_settings(session, company_id)
+    book = await taxbooks.book(session, company_id, regime_key, year, settings)
+    regime = taxbooks.regime_for(settings, regime_key)
+    _, movements, _ = await _register(session, company_id)
+    carrying = {asset_id: _roll(moved, "0000", book["end"])["nbv_closing"] for asset_id, moved in movements.items()}
+    rows = []
+    for line in _tax_lines(book):
+        assets = line.get("assets") or [line["asset_id"]]
+        book_value = sum((carrying.get(a, _ZERO) for a in assets), _ZERO)
+        tax_value = _dec(line["closing"])
+        row = {"key": line.get("number") or line["key"], "name": line.get("name"),
+               "category_label": line.get("category_label"), "book_carrying": _cents(book_value),
+               "tax_written_down_value": _cents(tax_value), "difference": _cents(book_value - tax_value)}
+        if regime.deferred_tax is not None:
+            row["deferred_tax"] = _cents(regime.deferred_tax(DeferredTaxInputs(
+                year=book["year"], book_carrying=book_value, tax_written_down_value=tax_value)).amount)
+        rows.append(row)
+    totals = {k: _cents(sum((_dec(r[k]) for r in rows), _ZERO))
+              for k in ("book_carrying", "tax_written_down_value", "difference", "deferred_tax")
+              if book["deferred_tax"] or k != "deferred_tax"}
+    return {**{k: book[k] for k in ("regime", "label", "basis", "year", "start", "end", "status", "read_only",
+                                    "read_only_reason", "deferred_tax")},
+            "currency": settings.get("currency"), "rows": rows, "totals": totals}
+
+
+async def statutory(session, company_id, report_key: str, year) -> dict:
+    """A country form, drawn by its module from its regime's book for the tax year."""
+    from fastapi import HTTPException
+
+    from celerp_fixed_assets.calc import rules
+    from ui.i18n import t
+
+    settings = await setup.company_settings(session, company_id)
+    try:
+        form = rules.statutory_report(report_key)
+    except rules.RuleUnavailable as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    if not rules.is_available("statutory_report", report_key, settings):
+        raise HTTPException(status_code=404, detail=rules.unavailable_reason("statutory_report", report_key))
+    book = await taxbooks.book(session, company_id, form.regime, year, settings)
+    rendered = form.render(_tax_lines(book), book["year"])
+    return {"key": report_key, "label": t(form.label_key), "regime": form.regime, "regime_label": book["label"],
+            "year": book["year"], "start": book["start"], "end": book["end"], "status": book["status"],
+            "columns": [t(c) for c in rendered["columns"]],
+            "rows": [[str(v) if v is not None else None for v in row] for row in rendered["rows"]]}

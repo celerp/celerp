@@ -143,7 +143,7 @@ async def test_l10n_bad_entry_skipped_named(fa, zz):
     assert "zz_broken" not in {m["key"] for m in rules["methods"]}
     # The module's other rules still load.
     assert "zz_fixed_rate" in {m["key"] for m in rules["methods"]}
-    page = await fa.client.get("/settings/fixed-assets", headers=fa.h)
+    page = await fa.page("/settings/fixed-assets")
     assert page.status_code == 200 and "zz_broken" in page.text
 
 
@@ -189,21 +189,20 @@ async def test_l10n_rule_unavailable_when_module_off(fa, zz):
 async def test_l10n_deferred_tax_only_from_regime(fa, zz):
     await fa.ok(await fa.patch("/settings", {"tax_regimes": ["zz_pool", "zz_pool_plain"], "tax_year_end": "12-31"}))
     await _map(fa, "Vehicles", {"zz_pool": "zz_cars", "zz_pool_plain": "zz_cars"})
-    await _managed_from(fa)
-    await _contributed(fa)
-    await _run(fa, "2026-12")
-    with_tax = await fa.ok(await fa.get("/reports/book-tax", regime="zz_pool", year=2026))
+    await _managed_from(fa, "2025-01-01")
+    await _contributed(fa, on="2025-01-15")
+    await _run(fa, "2025-12")
+    with_tax = await fa.ok(await fa.get("/reports/book-tax", regime="zz_pool", year=2025))
     assert with_tax["deferred_tax"] is True
     (row,) = with_tax["rows"]
     # Book: 12,000 less twelve months at 200; tax: 12,000 less a quarter.
     assert (D(row["book_carrying"]), D(row["tax_written_down_value"])) == (D("9600"), D("9000"))
     assert D(row["difference"]) == D("600") and D(row["deferred_tax"]) == D("120")
-    plain = await fa.ok(await fa.get("/reports/book-tax", regime="zz_pool_plain", year=2026))
+    plain = await fa.ok(await fa.get("/reports/book-tax", regime="zz_pool_plain", year=2025))
     assert plain["deferred_tax"] is False and "deferred_tax" not in plain["rows"][0]
-    page = await fa.client.get("/fixed-assets/reports/book-tax", headers=fa.h,
-                               params={"regime": "zz_pool_plain", "year": 2026})
+    page = await fa.page("/fixed-assets/reports/book-tax", regime="zz_pool_plain", year=2025)
     assert page.status_code == 200 and "Deferred tax" not in page.text
-    page = await fa.client.get("/fixed-assets/reports/book-tax", headers=fa.h, params={"regime": "zz_pool", "year": 2026})
+    page = await fa.page("/fixed-assets/reports/book-tax", regime="zz_pool", year=2025)
     assert "Deferred tax" in page.text and "Book-tax difference" in page.text
 
 
@@ -240,9 +239,9 @@ async def test_statutory_form_renders_from_regime(fa, zz):
     form = await fa.ok(await fa.get("/reports/statutory/zz_form_a", year=2026))
     assert form["columns"] == ["Pool", "Allowance", "Written-down value"]
     assert form["rows"] == [["zz_cars", "3000.00", "9000.00"]]
-    csv = await fa.client.get("/fixed-assets/reports/statutory/zz_form_a.csv", headers=fa.h, params={"year": 2026})
+    csv = await fa.page("/fixed-assets/reports/statutory/zz_form_a.csv", year=2026)
     assert csv.status_code == 200 and "zz_cars,3000.00,9000.00" in csv.text
-    assert (await fa.client.get("/fixed-assets/reports/statutory/zz_form_a/print", headers=fa.h,
-                                params={"year": 2026})).status_code == 200
+    printed = await fa.page("/fixed-assets/reports/statutory/zz_form_a/print", year=2026)
+    assert printed.status_code == 200 and "3,000.00" in printed.text and "9,000.00" in printed.text
     missing = await fa.get("/reports/statutory/zz_unknown", year=2026)
     assert missing.status_code == 404

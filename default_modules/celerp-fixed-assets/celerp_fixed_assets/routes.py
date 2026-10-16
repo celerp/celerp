@@ -20,7 +20,8 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.permissions import (
     assert_role_permission, get_current_company_settings, require_permission, role_has_permission)
 from celerp_fixed_assets import (
-    additions, corrections, disposal, opening, operations, recon, remeasure, reports, runs, sales, setup, sources)
+    additions, classtable, corrections, disposal, opening, operations, recon, remeasure, reports, runs, sales, setup,
+    sources, taxbooks, yearend)
 from celerp_fixed_assets.events import register_events
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
@@ -76,7 +77,8 @@ async def get_setup(company_settings: dict = Depends(get_current_company_setting
                     company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     fa = setup.settings_of(company_settings)
     first = await setup.first_period(session, company_id, fa) if fa.get("started") else None
-    return {"started": bool(fa.get("started")), "settings": setup.view(fa), "first_period": first}
+    return {"started": bool(fa.get("started")), "settings": setup.view(fa), "first_period": first,
+            "rules": setup.rules_view(company_settings)}
 
 
 @router.post("/start", dependencies=_ACCOUNTING)
@@ -528,6 +530,73 @@ async def depreciation_report(date_from: str, date_to: str, company_id=Depends(g
 async def disposals_report(date_from: str, date_to: str, company_id=Depends(get_current_company_id),
                            session: AsyncSession = Depends(get_session)) -> dict:
     return await reports.disposals(session, company_id, date_from, date_to)
+
+
+@router.post("/class-table", dependencies=_ACCOUNTING)
+async def apply_class_table(body: dict = Body(...), company_id=Depends(get_current_company_id),
+                            user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, classtable.apply_table, company_id, user.id, body)
+
+
+@router.post("/class-table/{op_key}/undo", dependencies=_ACCOUNTING)
+async def undo_class_table(op_key: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, classtable.undo_table, company_id, user.id, op_key, body)
+
+
+# ── Tax books and the year end ───────────────────────────────────────────────
+
+
+@router.get("/tax-books", dependencies=_REPORTS)
+async def get_tax_book(regime: str, year: int, company_id=Depends(get_current_company_id),
+                       session: AsyncSession = Depends(get_session)) -> dict:
+    return await taxbooks.book(session, company_id, regime, year)
+
+
+@router.patch("/tax-books/{asset_id}/{regime}", dependencies=_ACCOUNTING)
+async def set_tax_book(asset_id: str, regime: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, taxbooks.set_book, company_id, user.id, asset_id, regime, body)
+
+
+@router.post("/tax-years/{regime}/{year}/close", dependencies=_ACCOUNTING)
+async def close_tax_year(regime: str, year: int, company_id=Depends(get_current_company_id),
+                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, yearend.close, company_id, user.id, regime, year)
+
+
+@router.post("/tax-years/{regime}/{year}/reopen", dependencies=_ACCOUNTING)
+async def reopen_tax_year(regime: str, year: int, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                          user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, yearend.reopen, company_id, user.id, regime, year, body)
+
+
+@router.get("/year-end", dependencies=_VIEW)
+async def get_year_end(year: int, company_settings: dict = Depends(get_current_company_settings),
+                       role: str = Depends(get_current_role), company_id=Depends(get_current_company_id),
+                       session: AsyncSession = Depends(get_session)) -> dict:
+    result = await yearend.report(session, company_id, year)
+    if not _shows_money(company_settings, role):
+        result["items"] = [{**i, "amount": None, "accepted_amount": None} for i in result["items"]]
+    return result
+
+
+@router.post("/year-end/{year}/marks", dependencies=_ACCOUNTING)
+async def mark_year_end(year: int, body: dict = Body(...), company_id=Depends(get_current_company_id),
+                        user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    return await _write(session, yearend.mark, company_id, user.id, year, body)
+
+
+@router.get("/reports/book-tax", dependencies=_REPORTS)
+async def book_tax_report(regime: str, year: int, company_id=Depends(get_current_company_id),
+                          session: AsyncSession = Depends(get_session)) -> dict:
+    return await reports.book_tax(session, company_id, regime, year)
+
+
+@router.get("/reports/statutory/{report_key}", dependencies=_REPORTS)
+async def statutory_report(report_key: str, year: int, company_id=Depends(get_current_company_id),
+                           session: AsyncSession = Depends(get_session)) -> dict:
+    return await reports.statutory(session, company_id, report_key, year)
 
 
 def setup_api_routes(app) -> None:

@@ -23,11 +23,12 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
-from celerp_fixed_assets import notices, runs, setup, sources
+from celerp_fixed_assets import notices, projections, runs, setup, sources
 from celerp_fixed_assets.calc.periods import fiscal_year_start_index, month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
-    MODULE, _amount, _cents, _claim, _date, _dec, _emit, _entities, _journal_view, _lines, _move, _open_line,
-    _post, _reversed_lines, _run, _state, asset_movements, conflict)
+    MODULE, _amount, _cents, _claim, _date, _dec, _journal_view, _lines, _move, _open_line, _post, _reversed_lines,
+    _run, asset_movements, conflict)
+from celerp_fixed_assets.store import _emit, _entities, _state
 from celerp_fixed_assets.projections import BUCKETS
 
 ESTIMATE_FIELDS = setup.POLICY_FIELDS
@@ -117,7 +118,7 @@ class Draft:
                  books: runs.Books, posting: str | None):
         self.session, self.company_id = session, company_id
         self.asset_id, self.asset, self.cls, self.new_cls = asset_id, asset, cls, cls
-        self.movements, self.live, self.books, self.posting = movements, runs.live(movements), books, posting
+        self.movements, self.live, self.books, self.posting = movements, projections.live(movements), books, posting
         self.journals: list[dict] = []
         self.moves: list[dict] = []
         self.claims: list[tuple[dict, dict]] = []
@@ -483,10 +484,10 @@ async def plan(session, company_id, asset_id: str, body: dict, fa: dict) -> tupl
     asset, movements = await _open(session, company_id, asset_id)
     cls = await setup.get_class(session, company_id, asset.get("class_id"))
     books = await runs._books(session, company_id)
-    live = runs.live(movements)
+    live = projections.live(movements)
     start = _first_open(books, runs._first(live))
     # A remeasurement measured the asset as it then stood, so nothing before it is restated.
-    remeasured = max((m["effective_date"] for m in live if m.get("operation") in runs.REMEASUREMENTS), default=None)
+    remeasured = max((m["effective_date"] for m in live if m.get("operation") in projections.REMEASUREMENTS), default=None)
     shown = {"asset": {"id": asset_id, "number": asset["number"], "name": asset.get("name")},
              "classification": classification, "default_classification": default, "override_reason": reason}
     treatment = body.get("prior_years") or "retained_earnings"
@@ -498,7 +499,7 @@ async def plan(session, company_id, asset_id: str, body: dict, fa: dict) -> tupl
     policy_changes = {k: v for k, v in changes.items() if k in ESTIMATE_FIELDS}
     if policy_changes:
         policy = {**asset["policy"], **policy_changes}
-        setup.check_policy(policy)
+        setup.check_policy(policy, books.settings, asset["policy"])
         if policy == asset["policy"]:
             raise setup.unprocessable("The depreciation settings are already these.")
     if classification == "estimate":
@@ -816,7 +817,7 @@ async def fields(session, company_id, asset_id: str) -> dict:
     asset = await _state(session, company_id, asset_id)
     if asset is None or not asset_id.startswith("fa:asset:"):
         raise HTTPException(status_code=404, detail="No such asset.")
-    movements = runs.live(await asset_movements(session, company_id, asset_id))
+    movements = projections.live(await asset_movements(session, company_id, asset_id))
     opening = any(m.get("operation") == "opening" for m in movements)
     skip = {"opening_values"} if not opening else {"cost", "available_date", "maintenance"}
     if asset.get("sources"):

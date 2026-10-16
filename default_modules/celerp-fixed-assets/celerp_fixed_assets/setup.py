@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
-from celerp_fixed_assets.calc.rules import CONVENTIONS, METHODS
+from celerp_fixed_assets.calc import rules
 
 SETTINGS_KEY = "fixed_assets"
 RUN_MODES = ("prepare", "post", "manual")
@@ -36,7 +36,7 @@ STARTER_CLASSES = (
 
 CLASS_FIELDS = ("name", "kind", "asset_account", "accumulated_depreciation_account", "depreciation_account",
                 "method", "life_months", "residual_percent", "convention", "params", "archived",
-                "measurement_policy", "active_market", "construction")
+                "measurement_policy", "active_market", "construction", "tax_categories")
 # How a class measures its assets after recognition. A class moves to revaluation only by
 # revaluing every asset in it on one date (celerp_fixed_assets.remeasure).
 MEASUREMENT_POLICIES = ("cost", "revaluation")
@@ -75,6 +75,35 @@ def view(fa: dict) -> dict:
         "threshold": fa.get("threshold"),
         "first_managed_period": first,
         "cutover": (date.fromisoformat(first) - timedelta(days=1)).isoformat() if first else None,
+        "tax_year_end": fa.get("tax_year_end") or "12-31",
+        "tax_regimes": list(fa.get("tax_regimes") or []),
+    }
+
+
+def rules_view(company_settings: dict | None) -> dict:
+    """The rules the company may use, each with the module that registered it (None for
+    this module's own), and every rule entry that was skipped with its reason."""
+    from ui.i18n import t
+
+    def owner(kind, key):
+        found = rules.module_of(kind, key)
+        return found[0] if found else None
+
+    def base(kind, rule):
+        return {"key": rule.key, "module": owner(kind, rule.key), "label": t(rule.label_key)}
+
+    available = {kind: rules.available(kind, company_settings).values() for kind in rules.KINDS}
+    return {
+        "methods": [{**base("method", m), "params_schema": dict(m.params_schema), "uses_readings": bool(m.uses_readings)}
+                    for m in available["method"]],
+        "conventions": [base("convention", c) for c in available["convention"]],
+        "tax_regimes": [{**base("tax_regime", r), "country": r.country, "basis": r.basis,
+                         "categories": [{"key": c.key, "label": t(c.label_key)} for c in r.categories],
+                         "elections_schema": dict(r.elections_schema), "deferred_tax": r.deferred_tax is not None}
+                        for r in available["tax_regime"]],
+        "statutory_reports": [{**base("statutory_report", f), "country": f.country, "regime": f.regime}
+                              for f in available["statutory_report"]],
+        "problems": [dict(p) for p in rules.problems()],
     }
 
 
@@ -204,7 +233,8 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
     fa = settings_of(company.settings)
     if not fa.get("started"):
         raise HTTPException(status_code=409, detail="Start fixed assets first.")
-    unknown = set(body) - {"threshold", "run_mode", "run_day", "convention", "first_managed_period"}
+    unknown = set(body) - {"threshold", "run_mode", "run_day", "convention", "first_managed_period", "tax_year_end",
+                           "tax_regimes"}
     if unknown:
         raise unprocessable(f"Unknown setting: {sorted(unknown)[0]}.")
     if "threshold" in body:
@@ -225,9 +255,20 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
             raise unprocessable("The run day is a day of the month from 1 to 28.")
         fa["run_day"] = day
     if "convention" in body:
-        if body["convention"] not in CONVENTIONS:
+        if body["convention"] != fa.get("convention") and not rules.is_available(
+                "convention", body["convention"], company.settings):
             raise unprocessable("Choose a timing convention.")
         fa["convention"] = body["convention"]
+    if "tax_year_end" in body:
+        fa["tax_year_end"] = _month_day(body["tax_year_end"])
+    if "tax_regimes" in body:
+        chosen = body["tax_regimes"]
+        if not isinstance(chosen, list) or not all(isinstance(k, str) for k in chosen):
+            raise unprocessable("Tax regimes are a list of regime keys.")
+        for key in chosen:
+            if key not in (fa.get("tax_regimes") or []) and not rules.is_available("tax_regime", key, company.settings):
+                raise unprocessable(f"{key} is not a tax regime this company can use.")
+        fa["tax_regimes"] = list(dict.fromkeys(chosen))
     if "first_managed_period" in body:
         try:
             first = date.fromisoformat(str(body["first_managed_period"]))
@@ -246,10 +287,22 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
     return view(fa)
 
 
+def _month_day(value) -> str:
+    """A tax year end, as MM-DD. 29 February is refused: the year would end on a different
+    day in three years out of four."""
+    try:
+        day = date.fromisoformat(f"2025-{value}") if isinstance(value, str) and len(value) == 5 else None
+    except ValueError:
+        day = None
+    if day is None:
+        raise unprocessable("The tax year end is a month and day, such as 12-31.")
+    return day.strftime("%m-%d")
+
+
 def method_params(method: str, params) -> dict:
     """A method's parameters, checked against its schema. A method that reads units
     takes its life from ``total_units``, so that one is required."""
-    schema = METHODS[method].params_schema
+    schema = rules.method(method).params_schema
     if params is None:
         params = {}
     if not isinstance(params, dict):
@@ -270,23 +323,34 @@ def method_params(method: str, params) -> dict:
         if amount == 0:
             raise unprocessable(f"{name} must be more than zero.")
         out[name] = str(amount)
-    if METHODS[method].uses_readings and "total_units" not in out:
+    if rules.method(method).uses_readings and "total_units" not in out:
         raise unprocessable("A units-of-use class needs the total units the asset is expected to produce.")
     return out
 
 
-def check_policy(data: dict) -> None:
-    """Check the policy fields of a class or an asset, normalising its method settings."""
-    if data.get("method") not in METHODS:
+def check_policy(data: dict, company_settings: dict | None, current: dict | None = None) -> None:
+    """Check the policy fields of a class or an asset, normalising its method settings.
+    A method or convention from a module the company has turned off is refused, unless it
+    is the one already there: the record keeps it, and its parameters stand as they were."""
+    current = current or {}
+    method = data.get("method")
+    kept = method == current.get("method") and not rules.is_available("method", method, company_settings)
+    if not kept and not (isinstance(method, str) and rules.is_available("method", method, company_settings)):
         raise unprocessable("Choose a depreciation method.")
-    if data.get("convention") not in (None, *CONVENTIONS):
+    convention = data.get("convention")
+    if convention is not None and convention != current.get("convention") and not (
+            isinstance(convention, str) and rules.is_available("convention", convention, company_settings)):
         raise unprocessable("Choose a timing convention.")
     life = data.get("life_months")
     if life is not None and (not isinstance(life, int) or isinstance(life, bool) or life <= 0):
         raise unprocessable("The useful life is a whole number of months.")
-    if data["method"] != "none" and not METHODS[data["method"]].uses_readings and life is None:
-        raise unprocessable("A depreciated class needs a useful life.")
-    data["params"] = method_params(data["method"], data.get("params"))
+    if kept:
+        if data.get("params") != current.get("params"):
+            raise unprocessable(rules.unavailable_reason("method", method))
+    else:
+        if method != "none" and not rules.method(method).uses_readings and life is None:
+            raise unprocessable("A depreciated class needs a useful life.")
+        data["params"] = method_params(method, data.get("params"))
     residual = Decimal(_money(data.get("residual_percent"), "Residual percent") or 0)
     if residual >= 100:
         raise unprocessable("The residual percent is below 100.")
@@ -308,7 +372,29 @@ def _active_market(value) -> dict | None:
     return {"date": day, "basis": basis}
 
 
-async def _check_class(session, company_id, data: dict) -> None:
+def check_tax_categories(value, current: dict | None = None) -> dict:
+    """A class's tax category per regime: each regime registered by a module, each
+    category one of that regime's own. A mapping already there to a regime no longer
+    loaded is kept as it was."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise unprocessable("Tax categories name a category for each tax regime.")
+    current = current or {}
+    for regime_key, category in value.items():
+        if current.get(regime_key) == category:
+            continue
+        try:
+            regime = rules.regime(regime_key)
+        except rules.RuleUnavailable:
+            raise unprocessable(f"{regime_key} is not a tax regime any installed module provides.") from None
+        if category not in {c.key for c in regime.categories}:
+            raise unprocessable(f"{category} is not a category of the tax regime {regime_key}.")
+    return dict(value)
+
+
+async def check_class(session, company_id, data: dict, company_settings: dict | None,
+                       current: dict | None = None) -> None:
     from celerp.services.journal_accounts import require_destinations
 
     if not str(data.get("name") or "").strip():
@@ -319,31 +405,39 @@ async def _check_class(session, company_id, data: dict) -> None:
         raise unprocessable("Under construction is true or false.")
     if data["construction"] and data.get("method") != "none":
         raise unprocessable("A class for assets under construction is not depreciated. Choose no depreciation.")
-    check_policy(data)
+    check_policy(data, company_settings, current)
+    data["tax_categories"] = check_tax_categories(data.get("tax_categories"), (current or {}).get("tax_categories"))
     await require_destinations(session, company_id, {
         data[k] for k in ("asset_account", "accumulated_depreciation_account", "depreciation_account") if data.get(k)})
 
 
-async def create_class(session, company_id, user_id, body: dict) -> dict:
+def new_class(body: dict, company_settings: dict | None, seq: int) -> dict:
+    """A new class's record from what was entered, its accounts defaulting to the
+    company's account roles. Checked by check_class before it is recorded."""
     from celerp.services.account_roles import role_map
-    from celerp.services.permissions import locked_authority
 
-    _, settings = await locked_authority(session, company_id, user_id, ("manage_accounting",))
-    await require_started(session, company_id)
-    roles = role_map(settings)
-    data = {"name": str(body.get("name") or "").strip(), "kind": body.get("kind") or "tangible",
+    roles = role_map(company_settings)
+    if body.get("measurement_policy") not in (None, "cost"):
+        raise unprocessable("A new class uses the cost model. Change class to revaluation once its assets are in.")
+    return {"name": str(body.get("name") or "").strip(), "kind": body.get("kind") or "tangible",
             "asset_account": body.get("asset_account") or roles.get("fixed_assets") or "",
             "accumulated_depreciation_account": (body.get("accumulated_depreciation_account")
                                                  or roles.get("accumulated_depreciation") or ""),
             "depreciation_account": body.get("depreciation_account") or roles.get("depreciation_expense") or "",
             "method": body.get("method") or "straight_line", "life_months": body.get("life_months"),
             "residual_percent": str(body.get("residual_percent") or "0"), "convention": body.get("convention"),
-            "params": body.get("params"), "archived": False, "seq": len(await classes(session, company_id, include_archived=True)),
-            "measurement_policy": "cost", "active_market": None, "construction": body.get("construction", False)}
-    if body.get("measurement_policy") not in (None, "cost"):
-        raise unprocessable("A new class uses the cost model. Change class to revaluation once its assets are in.")
-    data["active_market"] = _active_market(body.get("active_market"))
-    await _check_class(session, company_id, data)
+            "params": body.get("params"), "archived": False, "seq": seq,
+            "measurement_policy": "cost", "active_market": _active_market(body.get("active_market")),
+            "construction": body.get("construction", False), "tax_categories": body.get("tax_categories")}
+
+
+async def create_class(session, company_id, user_id, body: dict) -> dict:
+    from celerp.services.permissions import locked_authority
+
+    _, settings = await locked_authority(session, company_id, user_id, ("manage_accounting",))
+    await require_started(session, company_id)
+    data = new_class(body, settings, len(await classes(session, company_id, include_archived=True)))
+    await check_class(session, company_id, data, settings)
     entity_id = f"fa:class:{uuid.uuid4()}"
     await _emit(session, company_id, user_id, entity_id, "fa.class.created", data)
     return {"id": entity_id, **data}
@@ -368,19 +462,13 @@ async def _check_measurement(session, company_id, class_id: str, policy) -> None
                                                     "the revaluation model.")
 
 
-async def update_class(session, company_id, user_id, class_id: str, body: dict) -> dict:
-    from celerp.services.company_lock import lock_projections
-    from celerp.services.permissions import locked_authority
-
-    await locked_authority(session, company_id, user_id, ("manage_accounting",))
-    rows = await lock_projections(session, company_id, [class_id])
-    row = rows.get(class_id)
-    if row is None or row.entity_type != "fa_class":
-        raise HTTPException(status_code=404, detail="No such asset class.")
+async def class_changes(session, company_id, company_settings: dict | None, class_id: str, current: dict,
+                        body: dict) -> dict:
+    """What ``body`` changes on a class, checked against the class it leaves."""
     unknown = set(body) - set(CLASS_FIELDS)
     if unknown:
         raise unprocessable(f"Unknown class field: {sorted(unknown)[0]}.")
-    changes = {k: v for k, v in body.items() if row.state.get(k) != v}
+    changes = {k: v for k, v in body.items() if current.get(k) != v}
     if "name" in changes:
         changes["name"] = str(changes["name"] or "").strip()
     if "archived" in changes and not isinstance(changes["archived"], bool):
@@ -389,10 +477,24 @@ async def update_class(session, company_id, user_id, class_id: str, body: dict) 
         await _check_measurement(session, company_id, class_id, changes["measurement_policy"])
     if "active_market" in changes:
         changes["active_market"] = _active_market(changes["active_market"])
-    checked = {"construction": False, **row.state, **changes}
-    await _check_class(session, company_id, checked)
-    if "params" in changes:
-        changes["params"] = checked["params"]
+    checked = {"construction": False, **current, **changes}
+    await check_class(session, company_id, checked, company_settings, current)
+    for name in ("params", "tax_categories"):
+        if name in changes:
+            changes[name] = checked[name]
+    return changes
+
+
+async def update_class(session, company_id, user_id, class_id: str, body: dict) -> dict:
+    from celerp.services.company_lock import lock_projections
+    from celerp.services.permissions import locked_authority
+
+    _, settings = await locked_authority(session, company_id, user_id, ("manage_accounting",))
+    rows = await lock_projections(session, company_id, [class_id])
+    row = rows.get(class_id)
+    if row is None or row.entity_type != "fa_class":
+        raise HTTPException(status_code=404, detail="No such asset class.")
+    changes = await class_changes(session, company_id, settings, class_id, row.state, body)
     if changes:
         await _emit(session, company_id, user_id, class_id, "fa.class.updated", {"changes": changes})
     return {"id": class_id, **row.state, **changes}

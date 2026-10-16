@@ -24,7 +24,7 @@ from celerp_fixed_assets.calc import (
     Policy,
     schedule,
 )
-from celerp_fixed_assets.calc.rules import CONVENTIONS, METHODS
+from celerp_fixed_assets.calc.rules import CORE
 
 D = Decimal
 
@@ -107,7 +107,7 @@ def test_s2_available_for_use_starts_depreciation():
     ("USD", "12345.67", "0.01", 2),
     ("KWD", "1234.567", "0.001", 3),
 ])
-@pytest.mark.parametrize("convention", sorted(CONVENTIONS))
+@pytest.mark.parametrize("convention", sorted(c.key for c in CORE["convention"]))
 def test_invariant_total_depreciation_exact(currency, cost, residual, places, convention):
     """Cumulative rounding lands the total exactly on the depreciable amount, at every
     currency precision and under every convention."""
@@ -177,9 +177,10 @@ def test_land_and_indefinite_life_never_depreciate():
 
 
 def test_the_registries_name_every_core_method_and_convention():
-    assert set(METHODS) == {"straight_line", "declining_balance", "sum_of_years_digits", "units_of_use", "none"}
-    assert set(CONVENTIONS) == {"full_month", "mid_month", "daily", "half_year"}
-    for entry in (*METHODS.values(), *CONVENTIONS.values()):
+    assert {m.key for m in CORE["method"]} == {"straight_line", "declining_balance", "sum_of_years_digits",
+                                               "units_of_use", "none"}
+    assert {c.key for c in CORE["convention"]} == {"full_month", "mid_month", "daily", "half_year"}
+    for entry in (*CORE["method"], *CORE["convention"]):
         assert entry.label_key.startswith("fixed_assets.")
 
 

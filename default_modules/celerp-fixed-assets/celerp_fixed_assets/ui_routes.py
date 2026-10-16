@@ -19,11 +19,14 @@ GET  /fixed-assets/classes/{id}/revalue Revalue every asset in a class on one da
 GET  /fixed-assets/corrections          Every correction newest first, and those waiting to be applied
 GET  /fixed-assets/corrections/{id}     One correction: what it changed and posted; apply, withdraw or undo it
 GET  /fixed-assets/classes/{id}/apply   Apply a class's depreciation settings to the assets on older ones
-GET  /fixed-assets/reports/prior-period-adjustments[.csv]  Earlier years restated by corrections
+GET  /fixed-assets/reports/...          The reports, each with its print view and CSV (celerp_fixed_assets.ui_reports)
 GET  /fixed-assets/reconciliation?at=   The register against the ledger, account by account, with every difference
 GET  /fixed-assets/opening              Opening balances at the cutover: finish, keep open or reopen them
 GET  /fixed-assets/runs                 Depreciation runs: run a month, every month's run newest first
 GET  /fixed-assets/runs/{month}         One month's run: its journal and the assets held out of it
+GET  /fixed-assets/tax-books?regime=&year=  One tax regime's book for a tax year: categories, elections, close, reopen
+GET  /fixed-assets/year-end?year=       What stands between a tax year and its close, each item noted or accepted
+GET  /fixed-assets/year-end/print?year= The year end on paper, with every accepted item's reason and effect
 GET  /settings/fixed-assets             Settings and asset classes
 
 Every financial action is one form with two steps: Review shows the exact journal lines
@@ -73,7 +76,7 @@ def _text(value) -> str:
 
 
 def _money_td(value, currency):
-    return Td(_money(value, currency), cls="cell--money")
+    return Td(_money(value, currency), cls="cell--number")
 
 
 def _money_th(label: str):
@@ -718,9 +721,28 @@ def _filters(q: str, class_id: str, classes: list[dict]) -> FT:
     )
 
 
-def _settings_form(settings: dict) -> FT:
-    from celerp_fixed_assets.calc.rules import CONVENTIONS
+def _rule_label(kind: str, key) -> str:
+    """A rule's name in the user's language; the key itself when no module provides it."""
+    from celerp_fixed_assets.calc import rules
+
+    rule = rules.registry().rules[kind].get(key)
+    return t(rule.label_key) if rule is not None else str(key or "")
+
+
+def _rule_options(available: list[dict], kind: str, current=None) -> dict[str, str]:
+    """The rules a company may choose, by key, keeping the current one even when its
+    module is turned off, so a select never changes a value on its own."""
+    options = {r["key"]: _rule_label(kind, r["key"]) for r in available}
+    if current and current not in options:
+        options[current] = _rule_label(kind, current)
+    return options
+
+
+def _settings_form(settings: dict, available: dict) -> FT:
     from celerp_fixed_assets.setup import RUN_MODES
+
+    chosen = set(settings.get("tax_regimes") or [])
+    regimes = [r["key"] for r in available["tax_regimes"]] + sorted(chosen - {r["key"] for r in available["tax_regimes"]})
 
     return Form(
         H2(t("fixed_assets.settings_title"), cls="section-title"),
@@ -730,15 +752,38 @@ def _settings_form(settings: dict) -> FT:
         _field(t("fixed_assets.run_day"), _input("run_day", settings.get("run_day"), type_="number", min="1",
                                                  max="28", step="1"), t("fixed_assets.run_day_hint")),
         _field(t("fixed_assets.convention"), Select(
-            *[Option(t(f"fixed_assets.convention.{c}"), value=c, selected=c == settings.get("convention"))
-              for c in CONVENTIONS], name="convention", cls="form-input")),
+            *[Option(label, value=c, selected=c == settings.get("convention"))
+              for c, label in _rule_options(available["conventions"], "convention",
+                                            settings.get("convention")).items()],
+            name="convention", cls="form-input")),
         _field(t("fixed_assets.threshold"), _input("threshold", settings.get("threshold"), type_="number",
                                                    step="0.01", min="0"), t("fixed_assets.threshold_hint")),
         _field(t("fixed_assets.first_managed_period"),
                _input("first_managed_period", settings.get("first_managed_period"), type_="date"),
                t("fixed_assets.first_managed_period_hint")),
+        _field(t("fixed_assets.tax_year_end"), _input("tax_year_end", settings.get("tax_year_end"),
+                                                      placeholder="12-31", pattern=r"\d\d-\d\d"),
+               t("fixed_assets.tax_year_end_hint")),
+        _field(t("fixed_assets.tax_regimes"), Div(
+            Input(type="hidden", name="tax_regimes:flag", value="1"),
+            *[Label(Input(type="checkbox", name="tax_regimes", value=k, checked=k in chosen), _rule_label("tax_regime", k),
+                    cls="settings-toggle") for k in regimes] or [P(t("fixed_assets.no_tax_regimes"), cls="form-hint")]),
+               t("fixed_assets.tax_regimes_hint")),
         hx_post="/settings/fixed-assets", hx_trigger="change", hx_swap="none", cls="settings-card",
     )
+
+
+def _rule_problems_card(problems: list[dict]) -> FT | None:
+    """Rules another module registered that could not be used, so whoever installed it can see why."""
+    if not problems:
+        return None
+    return Div(H2(t("fixed_assets.rule_problems"), cls="section-title"),
+               P(t("fixed_assets.rule_problems_hint"), cls="settings-hint"),
+               Table(Thead(Tr(Th(t("fixed_assets.module")), Th(t("fixed_assets.rule_kind")), Th(t("fixed_assets.rule_key")),
+                              Th(t("fixed_assets.reason")))),
+                     Tbody(*[Tr(Td(p.get("module") or "--"), Td(str(p.get("kind") or "--")), Td(str(p.get("key") or "--")),
+                                Td(p["reason"])) for p in problems]), cls="data-table"),
+               cls="settings-card")
 
 
 _CLASS_EDITABLE = {"name": "text", "method": "select", "life_months": "number", "residual_percent": "number",
@@ -750,16 +795,10 @@ def _class_cell(cls: dict, field: str, chart: list[dict]) -> FT:
     value = cls.get(field)
     labels = None
     if field == "method":
-        labels = {m: t(f"fixed_assets.method.{m}") for m in _methods()}
+        labels = {value: _rule_label("method", value)}
     return display_cell(cls["id"], field, value, "text", label_map=labels,
                         cls_extra="cell--number" if field in ("life_months", "residual_percent") else "",
                         edit_url=f"/settings/fixed-assets/classes/{quote(cls['id'], safe=':')}/{field}/edit")
-
-
-def _methods() -> list[str]:
-    from celerp_fixed_assets.calc.rules import METHODS
-
-    return list(METHODS)
 
 
 def _classes_card(classes: list[dict], chart: list[dict]) -> FT:
@@ -1159,17 +1198,16 @@ def _corrections_card(asset: dict, items: list[dict]) -> FT:
                cls="detail-card section-card")
 
 
-def _param_inputs(policy: dict) -> list[FT]:
+def _param_inputs(policy: dict, methods: list[dict]) -> list[FT]:
     """Each method's settings, filled from the asset's own where its method is that one."""
-    from celerp_fixed_assets.calc.rules import METHODS
-
     groups = []
-    for key, method in METHODS.items():
-        if not method.params_schema:
+    for method in methods:
+        key = method["key"]
+        if not method["params_schema"]:
             continue
         current = (policy.get("params") or {}) if policy.get("method") == key else {}
         inputs = []
-        for name, kind in method.params_schema.items():
+        for name, kind in method["params_schema"].items():
             field = f"params:{key}:{name}"
             if kind == "bool":
                 inputs += [Input(type="hidden", name=f"{field}:flag", value="1"),
@@ -1178,28 +1216,27 @@ def _param_inputs(policy: dict) -> list[FT]:
             else:
                 inputs.append(_field(t(f"fixed_assets.param.{name}"),
                                      _input(field, current.get(name), type_="number", step="any", min="0")))
-        groups.append(Fieldset(Legend(t("fixed_assets.params_for", method=t(f"fixed_assets.method.{key}"))),
+        groups.append(Fieldset(Legend(t("fixed_assets.params_for", method=_rule_label("method", key))),
                                *inputs, cls="form-fieldset"))
     return groups
 
 
-def _settings_fields(policy: dict) -> list[FT]:
-    from celerp_fixed_assets.calc.rules import CONVENTIONS
-
-    def select(name: str, values, label_prefix: str) -> FT:
-        return Select(*[Option(t(f"{label_prefix}.{v}"), value=v, selected=v == policy.get(name)) for v in values],
+def _settings_fields(policy: dict, available: dict) -> list[FT]:
+    def select(name: str, kind: str) -> FT:
+        options = _rule_options(available[f"{kind}s"], kind, policy.get(name))
+        return Select(*[Option(label, value=v, selected=v == policy.get(name)) for v, label in options.items()],
                       name=name, cls="form-input", aria_label=t(f"fixed_assets.{name}"))
 
     was = [Input(type="hidden", name=f"was:{k}", value=_blank(policy.get(k)))
            for k in ("method", "life_months", "residual_percent", "convention")]
     return [*was, Input(type="hidden", name="was:params", value=json.dumps(policy.get("params") or {})),
-            _field(t("fixed_assets.method"), select("method", _methods(), "fixed_assets.method")),
+            _field(t("fixed_assets.method"), select("method", "method")),
             _field(t("fixed_assets.life_months"), _input("life_months", policy.get("life_months"), type_="number",
                                                         step="1", min="1")),
             _field(t("fixed_assets.residual_percent"), _input("residual_percent", policy.get("residual_percent"),
                                                              type_="number", step="0.01", min="0", max="100")),
-            _field(t("fixed_assets.convention"), select("convention", CONVENTIONS, "fixed_assets.convention")),
-            *_param_inputs(policy),
+            _field(t("fixed_assets.convention"), select("convention", "convention")),
+            *_param_inputs(policy, available["methods"]),
             _field(t("fixed_assets.effective_month"), _input("effective_month", type_="month"),
                    t("fixed_assets.effective_month_hint")),
             _field(t("fixed_assets.classification"),
@@ -1270,6 +1307,152 @@ def _error_fields(field: str, asset: dict, offer: dict, classes: list[dict], cha
     return [*controls, *_posting_fields()]
 
 
+# ── Tax books and the year end ───────────────────────────────────────────────
+
+_TAX_FIGURES = ("opening", "additions", "disposals", "allowance", "closing")
+
+
+def _chosen_regimes(setup: dict) -> list[dict]:
+    """The tax regimes the company chose that a module it uses provides."""
+    chosen = (setup.get("settings") or {}).get("tax_regimes") or []
+    return [r for r in (setup.get("rules") or {}).get("tax_regimes") or [] if r["key"] in chosen]
+
+
+def _tax_chooser(regimes: list[dict], regime: str, year: int, action: str) -> FT:
+    return Form(Select(*[Option(r["label"], value=r["key"], selected=r["key"] == regime) for r in regimes],
+                       name="regime", cls="form-input", aria_label=t("fixed_assets.tax_regime")),
+                _input("year", year, type_="number", step="1", min="1900", aria_label=t("fixed_assets.year")),
+                Button(t("fixed_assets.show"), type="submit", cls="btn btn--secondary"),
+                method="get", action=action, cls="flex-row")
+
+
+def _tax_status(row: dict) -> FT | str:
+    if row["status"] == "ok":
+        return t("fixed_assets.tax_status.ok")
+    return Span(t(f"fixed_assets.tax_status.{row['status']}"), *([" ", _text(row["reason"])] if row.get("reason") else []),
+                cls="text-warning")
+
+
+def _election_input(name: str, kind: str, value, label: str) -> FT:
+    field = f"election.{name}"
+    if kind == "bool":
+        return Label(Input(type="checkbox", name=field, value="true", checked=value is True), " ", label)
+    if kind == "decimal":
+        return Label(label, " ", _input(field, value, type_="number", step="any", aria_label=label))
+    return Label(label, " ", _input(field, value, aria_label=label))
+
+
+def _tax_book_form(book: dict, row: dict) -> FT:
+    """The asset's category and elections under the regime, changed on the page."""
+    options = [(c["key"], c["label"]) for c in book["categories"]]
+    path = f"/fixed-assets/tax-books/{row['asset_id']}/{book['regime']}?year={book['year']}"
+    return Form(_picker("category", options, row.get("category") or "", label=t("fixed_assets.tax_category"),
+                        empty="fixed_assets.tax_category_from_class"),
+                *[_election_input(name, kind, (row.get("elections") or {}).get(name), book["election_labels"][name])
+                  for name, kind in book["elections_schema"].items()],
+                Button(t("fixed_assets.save"), type="submit", cls="btn btn--sm btn--secondary"),
+                hx_post=path, hx_swap="none", cls="flex-row")
+
+
+def _tax_rows_table(book: dict, currency: str) -> FT:
+    editable = book["status"] == "open" and not book["read_only"]
+    pooled = book["basis"] == "pool"
+    figures = ("additions", "disposals") if pooled else _TAX_FIGURES
+    head = [Th(t("fixed_assets.number")), Th(t("fixed_assets.name")), Th(t("fixed_assets.tax_category")),
+            *([Th(t("fixed_assets.tax_pool"))] if pooled else []),
+            *[_money_th(t(f"fixed_assets.tax_col.{f}")) for f in figures], Th(t("fixed_assets.status"))]
+    rows = [Tr(Td(A(r["number"] or EMPTY, href=f"/fixed-assets/assets/{r['asset_id']}")), Td(_text(r.get("name"))),
+               Td(_tax_book_form(book, r) if editable else _text(r.get("category_label"))),
+               *([Td(_text(r.get("pool")))] if pooled else []),
+               *[_money_td(r.get(f), currency) for f in figures], Td(_tax_status(r))) for r in book["rows"]]
+    return Table(Thead(Tr(*head)), Tbody(*rows), cls="data-table", id="fa-tax-rows")
+
+
+def _tax_pools_table(book: dict, currency: str) -> FT:
+    rows = [Tr(Td(_text(p["key"])), Td(_text(p.get("category_label"))), Td(str(len(p["assets"])), cls="cell--number"),
+               *[_money_td(p.get(f), currency) for f in _TAX_FIGURES], Td(_tax_status(p))) for p in book["pools"]]
+    return Table(Thead(Tr(Th(t("fixed_assets.tax_pool")), Th(t("fixed_assets.tax_category")),
+                          Th(t("fixed_assets.asset_count"), cls="cell--number"),
+                          *[_money_th(t(f"fixed_assets.tax_col.{f}")) for f in _TAX_FIGURES],
+                          Th(t("fixed_assets.status")))),
+                 Tbody(*rows), cls="data-table", id="fa-tax-pools")
+
+
+def _tax_year_actions(book: dict) -> FT | str:
+    """Close the year, or reopen a closed one with the reason."""
+    if book["read_only"]:
+        return ""
+    path = f"/fixed-assets/tax-years/{book['regime']}/{book['year']}"
+    if book["status"] == "closed":
+        return Form(_input("reason", placeholder=t("fixed_assets.reason"), aria_label=t("fixed_assets.reason")),
+                    Button(t("fixed_assets.tax_year_reopen"), type="submit", cls="btn btn--secondary"),
+                    hx_post=f"{path}/reopen", hx_swap="none", cls="flex-row", id="fa-tax-reopen")
+    return Div(Button(t("fixed_assets.tax_year_close"), type="button", cls="btn btn--primary", hx_post=f"{path}/close",
+                      hx_vals="{}", hx_swap="none"),
+               A(t("fixed_assets.year_end_title"), href=f"/fixed-assets/year-end?year={book['year']}",
+                 cls="btn btn--secondary"), cls="form-actions", id="fa-tax-close")
+
+
+def _history_table(history: list[dict]) -> FT:
+    rows = [Tr(Td(h["at"]), Td(t(f"fixed_assets.tax_history.{h['action']}")), Td(_text(h.get("reason"))))
+            for h in history]
+    return Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.action")), Th(t("fixed_assets.reason")))),
+                 Tbody(*rows), cls="data-table", id="fa-tax-history")
+
+
+def _tax_book_body(form, schema: dict) -> dict:
+    """A tax book row's form: the category (blank for the class's) and every election."""
+    elections = {}
+    for name, kind in schema.items():
+        value = form.get(f"election.{name}")
+        if kind == "bool":
+            elections[name] = value == "true"
+        elif value not in (None, ""):
+            elections[name] = str(value)
+    return {"category": str(form.get("category") or "") or None, "elections": elections}
+
+
+def _year_end_mark_form(year: int, item: dict) -> FT:
+    """Note an item or accept it for close, with its reason and effect, on the page."""
+    state = Select(*[Option(t(f"fixed_assets.recon_state.{s}"), value=s, selected=s == item["state"])
+                     for s in ("open", "noted", "accepted")], name="state", cls="form-input",
+                   aria_label=t("fixed_assets.status"))
+    return Form(Input(type="hidden", name="key", value=item["key"]),
+                Div(state, Button(t("fixed_assets.save"), type="submit", cls="btn btn--sm btn--secondary"),
+                    cls="flex-row"),
+                _input("reason", item.get("reason"), placeholder=t("fixed_assets.reason"),
+                       aria_label=t("fixed_assets.reason")),
+                _input("effect", item.get("effect"), placeholder=t("fixed_assets.recon_effect"),
+                       aria_label=t("fixed_assets.recon_effect")),
+                hx_post=f"/fixed-assets/year-end/{year}/marks", hx_swap="none", cls="flex-col")
+
+
+def _year_end_table(report: dict, currency: str, *, printed: bool = False) -> FT:
+    if not report["items"]:
+        return P(t("fixed_assets.ye_nothing"), cls="form-hint", id="fa-ye-items")
+    rows = []
+    for i in report["items"]:
+        lapsed = [P(t("fixed_assets.ye_lapsed"), cls="form-hint")] if i["lapsed"] else []
+        if printed:
+            status = Td(t(f"fixed_assets.recon_state.{i['state']}"), *([" ", i["at"]] if i.get("at") else []))
+            rows.append(Tr(Td(i["label"]), _money_td(i.get("amount"), currency), status, Td(_text(i.get("reason"))),
+                           Td(_text(i.get("effect")))))
+        else:
+            rows.append(Tr(Td(A(i["label"], href=i["href"]), *lapsed), _money_td(i.get("amount"), currency),
+                           Td(_year_end_mark_form(report["year"], i))))
+    head = [Th(t("fixed_assets.ye_item")), _money_th(t("fixed_assets.amount")), Th(t("fixed_assets.status")),
+            *([Th(t("fixed_assets.reason")), Th(t("fixed_assets.recon_effect"))] if printed else [])]
+    return Table(Thead(Tr(*head)), Tbody(*rows), cls="data-table", id="fa-ye-items")
+
+
+def _year_end_books(books: list[dict]) -> FT:
+    rows = [Tr(Td(A(b["label"], href=f"/fixed-assets/tax-books?regime={b['regime']}&year={b['year']}")),
+               Td(t(f"fixed_assets.tax_year_status.{b['status']}")),
+               Td(_text(b.get("read_only_reason")))) for b in books]
+    return Table(Thead(Tr(Th(t("fixed_assets.tax_regime")), Th(t("fixed_assets.status")), Th(t("fixed_assets.note")))),
+                 Tbody(*rows), cls="data-table", id="fa-ye-books")
+
+
 def setup_ui_routes(app) -> None:
     """Register the fixed assets pages into the FastHTML app."""
 
@@ -1301,6 +1484,7 @@ def setup_ui_routes(app) -> None:
             except APIError:
                 notice = ""  # The reconciliation is shown to those who manage accounting.
         actions = (A(t("fixed_assets.reports_title"), href="/fixed-assets/reports", cls="btn btn--secondary"),
+                   A(t("fixed_assets.year_end_title"), href="/fixed-assets/year-end", cls="btn btn--secondary"),
                    A(t("fixed_assets.corrections_title"), href="/fixed-assets/corrections", cls="btn btn--secondary"),
                    A(t("fixed_assets.runs_title"), href="/fixed-assets/runs", cls="btn btn--secondary"),
                    A(t("fixed_assets.register_from_bills"), href="/fixed-assets/intake", cls="btn btn--secondary"),
@@ -1534,10 +1718,10 @@ def setup_ui_routes(app) -> None:
                                   *_asset_fields(kind, classes, chart, with_name=False)),
                          cls="detail-card section-card")]
         if asset.get("status") == "active":
-            from celerp_fixed_assets.calc.rules import METHODS
+            from celerp_fixed_assets.calc import rules
 
             cls = next((c for c in classes if c["id"] == asset.get("class_id")), {})
-            if cls.get("method") in METHODS and METHODS[cls["method"]].uses_readings:
+            if getattr(rules.registry().rules["method"].get(cls.get("method")), "uses_readings", False):
                 extra.append(_readings_card(asset))
             extra.append(_skips_card(asset))
         if asset.get("review_due"):
@@ -1793,6 +1977,7 @@ def setup_ui_routes(app) -> None:
         try:
             _, currency = await _context(token)
             asset = await api.fixed_assets_get(token, path)
+            available = (await api.fixed_assets_get(token, "/setup"))["rules"]
             offer = await api.fixed_assets_get(token, f"{path}/correct-fields")
             classes = (await api.fixed_assets_get(token, "/classes"))["items"]
             choices = ["settings", *[f["field"] for f in offer["fields"] if f["classification"] == "error"],
@@ -1806,7 +1991,7 @@ def setup_ui_routes(app) -> None:
                               (asset["number"], f"/fixed-assets/assets/{asset_id}"), (t("fixed_assets.correct"), None)])
         tabs = _tabs(f"/fixed-assets/assets/{asset_id}/correct", "field", field, choices, "fixed_assets.correct_field")
         if field == "settings":
-            fields = [P(t("fixed_assets.correct_hint.estimate"), cls="settings-hint"), *_settings_fields(asset["policy"])]
+            fields = [P(t("fixed_assets.correct_hint.estimate"), cls="settings-hint"), *_settings_fields(asset["policy"], available)]
         else:
             fields = [P(t("fixed_assets.correct_hint.error"), cls="settings-hint"),
                       *_error_fields(field, asset, offer, classes, chart, intake, currency)]
@@ -2265,6 +2450,143 @@ def setup_ui_routes(app) -> None:
         return await _page(request, crumbs, page_header(t("fixed_assets.apply_to_assets_title", name=cls["name"])),
                            form, title_key="fixed_assets.apply_to_assets")
 
+    @app.get("/fixed-assets/tax-books")
+    async def tax_books_page(request: Request, regime: str = "", year: int = 0):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        title = "fixed_assets.tax_books_title"
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t(title), None)])
+        year = year or date.today().year - 1
+        try:
+            setup, currency = await _context(token)
+            regimes = _chosen_regimes(setup)
+            if not regimes:
+                return await _page(request, crumbs, page_header(t(title)),
+                                   empty_state_cta(t("fixed_assets.no_tax_regimes"), t("fixed_assets.settings_title"),
+                                                   "/settings/fixed-assets"), title_key=title)
+            regime = regime if regime in {r["key"] for r in regimes} else regimes[0]["key"]
+            book = await api.fixed_assets_get(token, "/tax-books", {"regime": regime, "year": year})
+        except APIError as e:
+            return await _refused(request, e, title)
+        status = P(Strong(t(f"fixed_assets.tax_year_status.{book['status']}")), " ",
+                   t("fixed_assets.tax_year_dates", start=book["start"], end=book["end"]), id="fa-tax-status")
+        banner = Div(book["read_only_reason"], cls="flash flash--warning") if book["read_only"] else ""
+        rows = (_tax_rows_table(book, currency) if book["rows"]
+                else P(t("fixed_assets.tax_book_empty", year=book["year"]), cls="form-hint"))
+        pools = [H2(t("fixed_assets.tax_pools"), cls="section-title"), _tax_pools_table(book, currency)] \
+            if book["pools"] else []
+        history = [H2(t("fixed_assets.tax_history_title"), cls="section-title"), _history_table(book["history"])] \
+            if book["history"] else []
+        return await _page(request, crumbs,
+                           page_header(t(title), A(t("fixed_assets.book_tax_title"),
+                                                   href=f"/fixed-assets/reports/book-tax?regime={regime}&year={year}",
+                                                   cls="btn btn--secondary")),
+                           P(t("fixed_assets.tax_books_hint"), cls="settings-hint"),
+                           _tax_chooser(regimes, regime, book["year"], "/fixed-assets/tax-books"), banner, status,
+                           _tax_year_actions(book), *pools, H2(t("fixed_assets.tax_assets"), cls="section-title"),
+                           rows, *history, title_key=title)
+
+    @app.post("/fixed-assets/tax-books/{asset_id}/{regime}")
+    async def tax_book_save(request: Request, asset_id: str, regime: str, year: int = 0):
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        try:
+            schema = (await api.fixed_assets_get(token, "/tax-books", {"regime": regime, "year": year}))[
+                "elections_schema"]
+        except APIError as e:
+            return Response(headers=toast_header(_error_text(e), "error", persist=True))
+        form = await request.form()
+        body = _tax_book_body(form, schema)
+        return await _hx_write(token, "PATCH", f"/tax-books/{asset_id}/{regime}", body,
+                               f"/fixed-assets/tax-books?{urlencode({'regime': regime, 'year': year})}")
+
+    @app.post("/fixed-assets/tax-years/{regime}/{year}/{action}")
+    async def tax_year_action(request: Request, regime: str, year: int, action: str):
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        if action not in ("close", "reopen"):
+            return Response(status_code=404)
+        form = await request.form()
+        body = {"reason": str(form.get("reason") or "")} if action == "reopen" else {}
+        return await _hx_write(token, "POST", f"/tax-years/{regime}/{year}/{action}", body,
+                               f"/fixed-assets/tax-books?{urlencode({'regime': regime, 'year': year})}")
+
+    async def _year_end(token: str, year: int) -> tuple[dict, list[dict], str, dict]:
+        setup, currency = await _context(token)
+        report = await api.fixed_assets_get(token, "/year-end", {"year": year})
+        books = []
+        for r in _chosen_regimes(setup):
+            try:
+                books.append(await api.fixed_assets_get(token, "/tax-books", {"regime": r["key"], "year": year}))
+            except APIError as e:
+                if e.status != 403:
+                    raise
+        return report, books, currency, setup
+
+    @app.get("/fixed-assets/year-end")
+    async def year_end_page(request: Request, year: int = 0):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        title = "fixed_assets.year_end_title"
+        year = year or date.today().year - 1
+        try:
+            report, books, currency, setup = await _year_end(token, year)
+        except APIError as e:
+            return await _refused(request, e, title)
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t(title), None)])
+        when = Form(_input("year", year, type_="number", step="1", min="1900", aria_label=t("fixed_assets.year")),
+                    Button(t("fixed_assets.show"), type="submit", cls="btn btn--secondary"),
+                    method="get", action="/fixed-assets/year-end", cls="flex-row")
+        ready = P(Strong(t("fixed_assets.ye_ready" if report["ready"] else "fixed_assets.ye_not_ready")), " ",
+                  t("fixed_assets.tax_year_dates", start=report["start"], end=report["end"]), id="fa-ye-status")
+        forms = (setup.get("rules") or {}).get("statutory_reports") or []
+        then = Ul(*[Li(A(b["label"], href=f"/fixed-assets/tax-books?regime={b['regime']}&year={year}"), ": ",
+                       t("fixed_assets.ye_close_in_book")) for b in books],
+                  Li(A(t("fixed_assets.book_tax_title"), href=f"/fixed-assets/reports/book-tax?year={year}")),
+                  *[Li(A(f["label"], href=f"/fixed-assets/reports/statutory/{f['key']}?year={year}")) for f in forms],
+                  Li(A(t("page.period_lock"), href="/settings/accounting?tab=period-lock")), id="fa-ye-next")
+        return await _page(request, crumbs,
+                           page_header(t(title), A(t("fixed_assets.print"), href=f"/fixed-assets/year-end/print?year={year}",
+                                                   cls="btn btn--secondary", target="_blank")),
+                           P(t("fixed_assets.year_end_hint"), cls="settings-hint"), when, ready,
+                           H2(t("fixed_assets.ye_items"), cls="section-title"), _year_end_table(report, currency),
+                           *([H2(t("fixed_assets.tax_books_title"), cls="section-title"), _year_end_books(books)]
+                             if books else []),
+                           H2(t("fixed_assets.ye_then"), cls="section-title"), then, title_key=title)
+
+    @app.get("/fixed-assets/year-end/print")
+    async def year_end_print(request: Request, year: int = 0):
+        from ui.components.report_kit import plain_error_response, print_shell
+
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        year = year or date.today().year - 1
+        try:
+            report, books, currency, _ = await _year_end(token, year)
+            company = await api.get_company(token)
+        except APIError as e:
+            return plain_error_response(e)
+        ready = t("fixed_assets.ye_ready" if report["ready"] else "fixed_assets.ye_not_ready")
+        body = Div(P(Strong(ready), " ", t("fixed_assets.tax_year_dates", start=report["start"], end=report["end"])),
+                   _year_end_table(report, currency, printed=True),
+                   *([H3(t("fixed_assets.tax_books_title")), _year_end_books(books)] if books else []))
+        return print_shell(company, t("fixed_assets.year_end_title"), t("fixed_assets.tax_year_n", year=year), body)
+
+    @app.post("/fixed-assets/year-end/{year}/marks")
+    async def year_end_mark(request: Request, year: int):
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        form = await request.form()
+        return await _hx_write(token, "POST", f"/year-end/{year}/marks",
+                               {k: str(form.get(k) or "") for k in ("key", "state", "reason", "effect")},
+                               f"/fixed-assets/year-end?year={year}")
+
     @app.get("/settings/fixed-assets")
     async def settings_page(request: Request):
         token = _token(request)
@@ -2278,8 +2600,9 @@ def setup_ui_routes(app) -> None:
             chart = (await api.get_chart(token)).get("items") or []
         except APIError as e:
             return await _refused(request, e, "fixed_assets.settings_title")
-        return await _page(request, page_header(t("fixed_assets.settings_title")), _settings_form(setup["settings"]),
-                           _classes_card(classes, chart), title_key="fixed_assets.settings_title")
+        return await _page(request, page_header(t("fixed_assets.settings_title")),
+                           _settings_form(setup["settings"], setup["rules"]), _classes_card(classes, chart),
+                           _rule_problems_card(setup["rules"]["problems"]), title_key="fixed_assets.settings_title")
 
     @app.post("/settings/fixed-assets")
     async def settings_save(request: Request):
@@ -2288,7 +2611,12 @@ def setup_ui_routes(app) -> None:
             return Response(status_code=401)
         form = await request.form()
         body = {k: str(form.get(k) or "").strip() or None
-                for k in ("run_mode", "run_day", "convention", "threshold", "first_managed_period") if k in form}
+                for k in ("run_mode", "run_day", "convention", "threshold", "first_managed_period", "tax_year_end")
+                if k in form}
+        if "tax_year_end" in body and body["tax_year_end"] is None:
+            del body["tax_year_end"]
+        if "tax_regimes:flag" in form:
+            body["tax_regimes"] = [str(v) for v in form.getlist("tax_regimes")]
         if (body.get("run_day") or "").isdigit():
             body["run_day"] = int(body["run_day"])
         try:
@@ -2345,7 +2673,12 @@ def setup_ui_routes(app) -> None:
         url = f"/settings/fixed-assets/classes/{quote(class_id, safe=':')}/{field}"
         options, labels = None, None
         if field == "method":
-            options, labels = _methods(), {m: t(f"fixed_assets.method.{m}") for m in _methods()}
+            try:
+                available = (await api.fixed_assets_get(token, "/setup"))["rules"]["methods"]
+            except APIError as e:
+                return P(_error_text(e), cls="cell-error")
+            labels = _rule_options(available, "method", cls.get("method"))
+            options = list(labels)
         elif field.endswith("account"):
             options = _account_options(chart)
         return editable_cell(class_id, field, cls.get(field),

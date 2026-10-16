@@ -13,5 +13,6 @@
   "zz.form.a": "Form A",
   "zz.form.pool": "Pool",
   "zz.form.allowance": "Allowance",
-  "zz.form.closing": "Written-down value"
+  "zz.form.closing": "Written-down value",
+  "zz.regime.asset.full_expensing": "Full expensing"
 }

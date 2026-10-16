@@ -108,6 +108,12 @@ def test_document_asset_lines_slot_is_first_party():
     assert loader._CALLABLE_SLOTS["doc_asset_lines"] == ("handler", True)
 
 
+def test_fixed_asset_rules_slot_is_open_to_every_module():
+    assert "fixed_asset_rules" in slots.SLOT_NAMES and "fixed_asset_rules" not in slots.FIRST_PARTY_SLOTS
+    # A rule is a class or plain function core calls without awaiting.
+    assert loader._CALLABLE_SLOTS["fixed_asset_rules"] == ("handler", False)
+
+
 def test_the_chart_of_accounts_is_not_a_slot():
     assert not {"journal_accounts", "chart_accounts", "add_chart_account"} & slots.SLOT_NAMES
 

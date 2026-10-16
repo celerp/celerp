@@ -34,8 +34,9 @@ from datetime import date
 from decimal import Decimal
 
 from celerp_fixed_assets import runs, setup, sources
-from celerp_fixed_assets.operations import MODULE, _cents, _dec, _emit, _entities, conflict
+from celerp_fixed_assets.operations import MODULE, _cents, _dec, conflict
 from celerp_fixed_assets.projections import fold_movements
+from celerp_fixed_assets.store import _emit, _entities
 
 RECON_STATES = ("open", "noted", "accepted")
 REGISTERED_RULES = (1, 2)

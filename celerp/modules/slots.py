@@ -67,6 +67,12 @@ doc_asset_lines    {"handler": "module.path:function"} naming
                    transaction; raising refuses the document action. Called whether or not the company uses the module, so
                    the module decides what it still allows. Filled by Celerp's own
                    modules only (FIRST_PARTY_SLOTS)
+fixed_asset_rules  {"kind", "key", "handler": "module.path:Name"}: a country rule for
+                   fixed assets, read by celerp-fixed-assets. kind is "method",
+                   "convention", "tax_regime" or "statutory_report"; handler names a
+                   class or function returning the rule object, whose interface that
+                   module documents (celerp_fixed_assets.calc.rules). A rule applies to
+                   a company only while it uses the contributing module
 search_provider    Contributes rows to the global search bar. Exactly one descriptor
                    dict per module: {"handler", "result_key", "permission"}. handler
                    names an in-module "module.path:function" resolved and validated
@@ -119,7 +125,7 @@ SLOT_NAMES = frozenset({
     "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
     "projection_handler", "on_company_created", "on_modules_ready", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
-    "demo_records", "background_loop", "doc_asset_lines",
+    "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules",
 })
 
 # Slots only Celerp's own (first-party) modules may fill; admission refuses any

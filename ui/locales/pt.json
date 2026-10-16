@@ -5670,5 +5670,8 @@
   "documents.err_asset_line_twice": "A linha {line} indica um ativo que outra linha já indica. Cada ativo fica numa só linha.",
   "documents.err_asset_line_quantity": "A linha {line} vende um ativo imobilizado, por isso a quantidade é 1.",
   "documents.err_asset_line_source": "A linha {line} credita um ativo que não está na mesma linha da fatura. Credite a linha da fatura que o vendeu.",
-  "documents.err_asset_lines_unhandled": "Este documento vende ou credita um ativo imobilizado. Ative Ativos imobilizados para o concluir."
+  "documents.err_asset_lines_unhandled": "Este documento vende ou credita um ativo imobilizado. Ative Ativos imobilizados para o concluir.",
+  "event.fa.taxbook.recorded": "Livro fiscal de um ativo alterado",
+  "event.fa.taxyear.recorded": "Ano fiscal encerrado ou reaberto",
+  "event.fa.yearend.recorded": "Item de fim de ano marcado"
 }

@@ -5670,5 +5670,8 @@
   "documents.err_asset_line_twice": "መስመር {line} ሌላ መስመር የጠቀሰውን ንብረት ይጠቅሳል። እያንዳንዱ ንብረት በአንድ መስመር ላይ ብቻ ይገባል።",
   "documents.err_asset_line_quantity": "መስመር {line} ቋሚ ንብረት ይሸጣል፣ ስለዚህ ብዛቱ 1 ነው።",
   "documents.err_asset_line_source": "መስመር {line} በደረሰኙ ተመሳሳይ መስመር ላይ የሌለን ንብረት ይቀንሳል። የሸጠውን የደረሰኝ መስመር ይቀንሱ።",
-  "documents.err_asset_lines_unhandled": "ይህ ሰነድ ቋሚ ንብረትን ይሸጣል ወይም ይቀንሳል። ለመጨረስ ቋሚ ንብረቶችን ያብሩ።"
+  "documents.err_asset_lines_unhandled": "ይህ ሰነድ ቋሚ ንብረትን ይሸጣል ወይም ይቀንሳል። ለመጨረስ ቋሚ ንብረቶችን ያብሩ።",
+  "event.fa.taxbook.recorded": "የንብረት የግብር መዝገብ ተቀይሯል",
+  "event.fa.taxyear.recorded": "የግብር ዓመት ተዘግቷል ወይም እንደገና ተከፍቷል",
+  "event.fa.yearend.recorded": "የዓመት መጨረሻ ንጥል ምልክት ተደርጎበታል"
 }

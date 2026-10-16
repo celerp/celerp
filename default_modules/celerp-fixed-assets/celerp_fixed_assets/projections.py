@@ -10,10 +10,18 @@ from decimal import Decimal
 
 # The money buckets a movement carries, as signed amounts.
 BUCKETS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus")
+# Measurements that restate the carrying amount (calc.engine Revalue and Impair).
+REMEASUREMENTS = ("revaluation", "impairment", "impairment_reversal")
 
 
 def _dec(value) -> Decimal:
     return Decimal(str(value or 0))
+
+
+def live(movements: list[dict]) -> list[dict]:
+    """The movements that still count: undone ones and their reversals cancel out."""
+    reversed_ids = {m.get("reverses") for m in movements if m.get("reverses")}
+    return [m for m in movements if m["id"] not in reversed_ids and not m.get("reverses")]
 
 
 def fold_movements(movements: list[dict]) -> dict:
@@ -42,7 +50,8 @@ def _moved(state: dict, data: dict) -> dict:
 def apply_fixed_asset_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state or {})
     if event_type in ("fa.class.created", "fa.movement.recorded", "fa.maint.recorded", "fa.op.recorded", "fa.review.recorded",
-                      "fa.run.prepared", "fa.run.posted", "fa.recon.recorded"):
+                      "fa.run.prepared", "fa.run.posted", "fa.recon.recorded", "fa.taxbook.recorded",
+                      "fa.taxyear.recorded", "fa.yearend.recorded"):
         return deepcopy(data)
     if event_type == "fa.correction.requested":
         return {**deepcopy(data), "state": "requested"}

@@ -16,8 +16,9 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from celerp_fixed_assets import runs, setup, sources
-from celerp_fixed_assets.operations import _dec, _entities, _move, conflict
+from celerp_fixed_assets import projections, runs, setup, sources
+from celerp_fixed_assets.operations import _dec, _move, conflict
+from celerp_fixed_assets.store import _entities
 
 OPENING_STATES = ("finished", "kept_open")
 
@@ -41,7 +42,7 @@ async def move_cutover(session, company_id, user_id, fa: dict, new_cut: str) -> 
     redate = []
     for asset_id, moved in sorted(movements.items()):
         number = assets.get(asset_id, {}).get("number") or asset_id
-        for mv in runs.live(moved):
+        for mv in projections.live(moved):
             if mv["operation"] == "opening":
                 if (assets[asset_id].get("available_date") or "") > new_cut:
                     raise conflict(f"{number} is an opening asset available from "
