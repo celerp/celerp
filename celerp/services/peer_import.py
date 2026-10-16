@@ -180,7 +180,8 @@ async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, r
                 reason = UNEXPECTED
             errors.append(f"{record.entity_id}: {reason}")
             await peer_attention.record(session, **where, source_entity_id=record.entity_id,
-                                        label=_label(record), reason=reason)
+                                        label=_label(record), reason=reason,
+                                        fix=getattr(exc, "fix", None))
             await session.commit()
             continue
         counts[status] += 1

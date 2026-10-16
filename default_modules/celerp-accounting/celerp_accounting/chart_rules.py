@@ -162,17 +162,22 @@ def cash_accounts(accounts, banks, settings: dict) -> set[str]:
 
 async def chart_accounts(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
     """Every account in the company's chart, in code order, as the posting-accounts
-    choices see it (``ChartAccess.list_accounts``). ``cash`` marks an account that
-    holds cash (cash_accounts)."""
+    choices and sync with a connected company see it (``ChartAccess.list_accounts``).
+    ``cash`` marks an account that holds cash (cash_accounts); ``currency`` is the
+    currency of the bank account kept on it, None for any other account."""
     rows = (await session.execute(
         select(Account).where(Account.company_id == company_id).order_by(Account.code)
     )).scalars().all()
     banks = (await session.execute(select(BankAccount).where(BankAccount.company_id == company_id))).scalars().all()
     cash = cash_accounts(rows, banks, await current_settings(session, company_id))
+    currencies = {b.chart_account_code: b.currency for b in banks if b.currency}
     parents = {r.parent_code for r in rows if r.parent_code}
     return [
-        {"code": r.code, "name": r.name, "account_type": r.account_type, "is_active": r.is_active,
-         "has_children": r.code in parents, "code_generated": r.code_generated, "cash": r.code in cash}
+        {"id": str(r.id), "code": r.code, "name": r.name, "account_type": r.account_type,
+         "parent_code": r.parent_code, "cash_flow_category": r.cash_flow_category,
+         "is_active": r.is_active, "has_children": r.code in parents,
+         "code_generated": r.code_generated, "cash": r.code in cash,
+         "currency": currencies.get(r.code)}
         for r in rows
     ]
 

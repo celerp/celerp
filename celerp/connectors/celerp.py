@@ -331,6 +331,14 @@ async def _read_journals(company_id: uuid.UUID, after: str, since=None) -> list[
     return out
 
 
+def _account_codes(data: dict) -> list[str]:
+    """The accounts a journal's lines, or a document's lines and payments, post to."""
+    codes = [line.get("account") for line in data.get("entries") or [] if isinstance(line, dict)]
+    codes += [line.get("account_code") for line in data.get("line_items") or [] if isinstance(line, dict)]
+    codes += [p.get("bank_account") for p in data.get("payments") or [] if isinstance(p, dict)]
+    return [code for code in codes if isinstance(code, str) and code]
+
+
 class _Refused(ValueError):
     """The receiving company refused a record and said why."""
 
@@ -373,7 +381,7 @@ class CelerpConnector(ConnectorBase):
         """Shared incremental delivery; entity-specific data never bypasses validation."""
         from celerp.connectors.sync_runner import _last_success_watermark
 
-        from celerp.services import peer_journals
+        from celerp.services import peer_accounts, peer_journals
         from celerp.services.peer_access import key_ids
 
         if kind not in ("contacts", "products", "documents", "inventory", "journals"):
@@ -387,7 +395,7 @@ class CelerpConnector(ConnectorBase):
         if not isinstance(ctx.access_token, str) or not ctx.access_token.startswith("cp1."):
             raise ValueError("No scoped receiving credential is connected")
         company_id = uuid.UUID(ctx.company_id)
-        grant_id = key_ids(ctx.access_token)[1]
+        firm_company, grant_id = key_ids(ctx.access_token)
         since = await _last_success_watermark(ctx.company_id, self.name, kind + "_out")
         fields = _FIELDS if kind == "contacts" else _PRODUCT_FIELDS if kind == "products" else None
         label = {"contacts": "Contact", "products": "Product", "documents": "Document",
@@ -449,6 +457,9 @@ class CelerpConnector(ConnectorBase):
                         continue
                     if kind == "products" and not data.get("sell_by"):
                         data["sell_by"] = "piece"
+                    if kind in ("journals", "documents"):
+                        data = {**data, "accounts": await peer_accounts.outgoing_for(
+                            company_id, firm_company, _account_codes(data))}
                     try:
                         response = await client.post(target, headers=peer_headers(ctx), json={
                             "records": [{

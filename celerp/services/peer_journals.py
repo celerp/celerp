@@ -29,7 +29,7 @@ from celerp.models.company import Company
 from celerp.models.company_peer import CompanyPeerDelivery, CompanyPeerIdentity
 from celerp.models.projections import Projection
 from celerp.schemas.numbers import FiniteFloat
-from celerp.services import peer_access, peer_attention
+from celerp.services import peer_access, peer_accounts, peer_attention
 from celerp.services.business_time import business_date_of
 from celerp.services.company_lock import locked_company
 from celerp.services.je_keys import je_void_data
@@ -83,12 +83,13 @@ def _lines_text(entries: list[dict]) -> str:
     return "; ".join(out)
 
 
-async def _notify(session: AsyncSession, company_id: uuid.UUID, key: str, **params) -> None:
+async def _notify(session: AsyncSession, company_id: uuid.UUID, key: str, *,
+                  action_url: str = FROM_ACCOUNTANT, **params) -> None:
     """One unmissable notice to the company, told once; the caller commits."""
     from celerp.notifications import service as notification_service
     await notification_service.notify_once(
         session, company_id, _CATEGORY, t(f"{key}.title", "en", **params),
-        t(f"{key}.body", "en", **params), action_url=FROM_ACCOUNTANT,
+        t(f"{key}.body", "en", **params), action_url=action_url,
         i18n={"title": f"{key}.title", "body": f"{key}.body", "params": params})
 
 
@@ -159,7 +160,8 @@ async def _caller_grant(session: AsyncSession, ctx):
 async def journal_feed(session: AsyncSession, ctx, after: str = "") -> dict:
     """The firm's own manual journal entries after ``after``, posted or voided, for the
     client its key belongs to; never one that came from that client. A line naming a
-    contact the client does not hold is held back with the reason."""
+    contact the client does not hold is held back with the reason. Each entry carries
+    the firm's accounts its lines name, with their parents, for the client to place."""
     grant = await _caller_grant(session, ctx)
     company = await session.get(Company, grant.company_id)
     if not isinstance(after, str) or len(after) > 512:
@@ -194,9 +196,11 @@ async def journal_feed(session: AsyncSession, ctx, after: str = "") -> dict:
                 else:
                     line["contact"] = contacts[line["contact"]]
             entries.append(line)
+        accounts = await peer_accounts.outgoing(session, grant.company_id, grant.source_company_id,
+                                                [line.get("account") for line in entries])
         items.append({"id": entity_id, "revision": int(version), "memo": state.get("memo") or "",
                       "ts": str(state.get("ts") or "")[:10], "status": state.get("status"),
-                      "entries": entries, "held": held})
+                      "entries": entries, "held": held, "accounts": accounts})
     peer_access.mark_used(grant)
     await session.commit()
     return {"firm": firm_name(company), "items": items,
@@ -245,6 +249,7 @@ class _Journal(BaseModel):
     status: str = Field(pattern="^(posted|void)$")
     entries: list[_Line] = Field(min_length=2, max_length=500)
     reverses: _Reverses | None = None
+    accounts: dict | None = None  # peer_accounts.parse
 
 
 class _Answered(BaseModel):
@@ -330,7 +335,15 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
         entries.append(stored)
     if debits != credits or debits == 0:
         raise HTTPException(422, "The journal entry does not balance.")
-    await require_destinations(session, company_id, {line.account for line in journal.entries})
+    company = await session.get(Company, company_id)
+    placed = await peer_accounts.place(
+        session, company_id=company_id, source_company_id=source,
+        accounts=peer_accounts.parse(journal.accounts), codes=[e["account"] for e in entries],
+        sender=grant.label, receiver=company.name, record=f"the journal {journal.memo or 'entry'}",
+        firm=True)
+    for stored in entries:
+        stored["account"] = placed[stored["account"]]
+    await require_destinations(session, company_id, {e["account"] for e in entries})
 
     reverses = origin = None
     if journal.reverses is not None:
@@ -395,26 +408,44 @@ def _firm_lock_of(settings: dict) -> date | None:
     return _day(held.get("date")) if isinstance(held, dict) else None
 
 
-async def _decline_reason(session: AsyncSession, company: Company, item: dict) -> str | None:
+@dataclass
+class _Placed:
+    """A journal of the firm's as the client's books would post it, or why they cannot:
+    ``fix`` says how to fix a hold on one of its accounts (peer_accounts.AccountHold)."""
+    entries: list[dict]
+    reason: str | None = None
+    fix: dict | None = None
+
+
+async def _place_firm_journal(session: AsyncSession, company: Company, firm: str,
+                              firm_company: uuid.UUID, item: dict) -> _Placed:
     from celerp.services.journal_accounts import require_destinations
 
+    entries = [dict(line) for line in item.get("entries") or []]
     if item.get("held"):
-        return str(item["held"])
+        return _Placed(entries, str(item["held"]))
     lock = _lock_of(company.settings or {})
     day = _day(item.get("ts"))
     if day is None:
-        return "Its date could not be read."
+        return _Placed(entries, "Its date could not be read.")
     if lock is not None and day <= lock:
-        return f"The books are locked through {lock.isoformat()}."
-    for line in item.get("entries") or []:
+        return _Placed(entries, f"The books are locked through {lock.isoformat()}.")
+    for line in entries:
         contact = line.get("contact")
         if contact and await session.get(Projection, (company.id, contact)) is None:
-            return "A line names a contact these books do not hold."
+            return _Placed(entries, "A line names a contact these books do not hold.")
     try:
-        await require_destinations(session, company.id, {line.get("account") for line in item.get("entries") or []})
+        placed = await peer_accounts.place(
+            session, company_id=company.id, source_company_id=firm_company,
+            accounts=peer_accounts.parse(item.get("accounts")),
+            codes=[line.get("account") for line in entries], sender=firm, receiver=None,
+            record=f"the journal {item.get('memo') or 'entry'}", firm=False)
+        for line in entries:
+            line["account"] = placed.get(line.get("account"), line.get("account"))
+        await require_destinations(session, company.id, {line.get("account") for line in entries})
     except HTTPException as exc:
-        return failure_reason(exc)
-    return None
+        return _Placed(entries, failure_reason(exc), getattr(exc, "fix", None))
+    return _Placed(entries)
 
 
 def _answer_record(item: dict, declined: str | None) -> dict:
@@ -463,15 +494,23 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
                 await session.commit()
             return Fetched("skipped", answer)
         company = await locked_company(session, company_id)
-        reason = await _decline_reason(session, company, item)
+        placed = await _place_firm_journal(session, company, firm, firm_company, item)
+        reason = placed.reason
+        hold = dict(company_id=company_id, source_company_id=firm_company, entity_type="journals",
+                    source_entity_id=firm_je)
         if reason is not None:
             await session.rollback()
             await _notify(session, company_id, "notice.peer_journal_declined", memo=memo,
                           date=str(item.get("ts"))[:10], firm=firm, reason=reason)
+            if placed.fix is not None:
+                await peer_attention.record(session, **hold, label=memo, reason=reason, fix=placed.fix)
+            else:
+                await peer_attention.clear(session, **hold)
             await session.commit()
             told = held is not None and held.refused == reason
             return Fetched("skipped", None if told else _answer_record(item, reason), reason)
-        entries = [dict(line) for line in item.get("entries") or []]
+        await peer_attention.clear(session, **hold)
+        entries = placed.entries
         data = {"memo": item.get("memo") or "", "ts": item["ts"], "entries": entries,
                 "je_type": "manual", "status": "posted",
                 "peer_origin": {"journal": firm_je, "firm": firm, "firm_company": str(firm_company),

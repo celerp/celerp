@@ -63,6 +63,7 @@ class CompanyPeerAttention(Base):
     source_entity_id: Mapped[str] = mapped_column(sa.Text, nullable=False)
     label: Mapped[str] = mapped_column(sa.Text, nullable=False)
     reason: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    fix: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
@@ -91,4 +92,31 @@ class CompanyPeerDelivery(Base):
     __table_args__ = (
         sa.UniqueConstraint("company_id", "grant_id", "entity", "entity_id",
                             name="uq_company_peer_delivery_record"),
+    )
+
+
+class CompanyPeerAccount(Base):
+    """One account of a connected company and the account of this company it posts to,
+    linked by the other side's account id so a rename on either side changes nothing.
+    `how` is copy (linked by the copy the firm opened from), match (same code, type,
+    name and currency on the first record), chosen (picked by a user), or added (made
+    by sync because this company had no such account)."""
+    __tablename__ = "company_peer_accounts"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), sa.ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    source_company_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), nullable=False)
+    other_account_id: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    other_code: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    other_name: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    account_id: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    code: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    how: Mapped[str] = mapped_column(sa.String(16), nullable=False)
+    added_from: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        sa.UniqueConstraint("company_id", "source_company_id", "other_account_id",
+                            name="uq_company_peer_account_link"),
+        sa.Index("ix_company_peer_accounts_company", "company_id"),
     )

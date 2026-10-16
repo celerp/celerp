@@ -46,7 +46,7 @@ from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, refusal
 from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
 from celerp.services.lot_origin import rerun_after_placing
-from celerp.services import peer_journals
+from celerp.services import peer_accounts, peer_journals
 from celerp.services.attachments import (
     company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
 )
@@ -4696,6 +4696,86 @@ async def prefill_journal(
 ) -> dict:
     """A new journal entry's fields copied from this one, dated on the first open day."""
     return await peer_journals.prefill(session, company_id, entity_id)
+
+
+class PeerHoldFix(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(pattern="^(use|add|unarchive)$")
+    account: str | None = Field(default=None, min_length=1, max_length=64)
+    code: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class PeerReviewAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    account: str = Field(min_length=1, max_length=64)
+    use: str | None = Field(default=None, min_length=1, max_length=64)
+    add: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class PeerReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_company_id: uuid.UUID
+    finish: bool = False
+    answers: list[PeerReviewAnswer] = Field(default_factory=list, max_length=1000)
+
+
+@router.get("/peer/holds")
+async def peer_holds(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Records a connected company sent that wait for one of their accounts to be fixed,
+    and the accounts sync added here, newest first."""
+    return {"items": await peer_accounts.holds(session, company_id),
+            "added": await peer_accounts.added(session, company_id)}
+
+
+@router.post("/peer/holds/{item_id}/fix")
+async def fix_peer_hold(
+    item_id: str,
+    body: PeerHoldFix,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Use another account for a held record's account, add it under a free code, or
+    unarchive the account it posts to; the record posts on the next sync."""
+    item = await peer_accounts.held_item(session, company_id, item_id)
+    if body.action == "unarchive":
+        if (item.fix or {}).get("kind") != "archived" or not item.fix.get("local"):
+            raise HTTPException(status_code=422, detail="This record is not held by an archived account.")
+        await change_account(session, company_id, item.fix["local"], is_active=True)
+    else:
+        await peer_accounts.fix_hold(session, company_id, item, action=body.action,
+                                     account=body.account, code=body.code)
+    await session.commit()
+    return {"ok": True}
+
+
+@router.get("/peer/review")
+async def peer_review(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Each client whose accounts wait for this company's review, with the accounts."""
+    return {"companies": await peer_accounts.review(session, company_id)}
+
+
+@router.post("/peer/review")
+async def answer_peer_review(
+    body: PeerReview,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Link or add a client's reviewed accounts; ``finish`` ends the review."""
+    await peer_accounts.answer_review(
+        session, company_id, body.source_company_id,
+        [a.model_dump(exclude_none=True) for a in body.answers], body.finish)
+    await session.commit()
+    return {"ok": True}
 
 
 @router.post("/period-lock")

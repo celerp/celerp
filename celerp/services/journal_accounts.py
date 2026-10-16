@@ -54,12 +54,15 @@ class ChartAccess:
 
     lock_accounts(session, company_id, codes) -> {code: {"code", "account_type",
     "is_active", "has_children"}}, share-locked; list_accounts(session, company_id) ->
-    the chart's rows; add_account(session, company_id, *, code, name, account_type).
+    the chart's rows, each with its id, code, name, account_type, parent_code,
+    cash_flow_category, is_active, has_children and currency (a bank account's, else
+    None); add_account(session, company_id, *, code, name, account_type, parent_code=None,
+    cash_flow_category=None) -> the new account's id.
     """
 
     lock_accounts: Callable[..., Awaitable[dict[str, dict]]]
     list_accounts: Callable[..., Awaitable[list[dict]]]
-    add_account: Callable[..., Awaitable[None]]
+    add_account: Callable[..., Awaitable[str]]
 
 
 class UntrustedChartError(ValueError):

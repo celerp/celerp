@@ -465,8 +465,12 @@ async def test_a_tax_code_crosses_with_its_document(real_client, real_engine, mo
             CompanyPeerIdentity.entity_type == "doc", CompanyPeerIdentity.source_entity_id == bill))
     state = (await real_client.get(f"/docs/{doc}", headers=auth(firm_tok))).json()
     assert state["tax"] == 11.0
-    tax_input = [s for s in (await _journals(real_engine, firm_company)).values()
-                 if s.get("source_doc_id") == doc or s.get("doc_id") == doc]
+    from celerp.models.ledger import LedgerEntry
+    async with maker(real_engine)() as s:
+        posted = set((await s.scalars(select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == uuid.UUID(firm_company), LedgerEntry.entity_type == "journal_entry",
+            LedgerEntry.metadata_["doc_id"].as_string() == doc))).all())
+    tax_input = [s for eid, s in (await _journals(real_engine, firm_company)).items() if eid in posted]
     assert any(l["account"] == "1150" and l["debit"] == 11.0 for s in tax_input for l in s["entries"])
 
 

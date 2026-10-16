@@ -98,6 +98,7 @@ EXCLUDED_TABLES = {
     "company_peer_identities": "company integration identity mappings",
     "company_peer_attention": "records a connected company sent that were not applied",
     "company_peer_deliveries": "records sent to or declined from a connected company",
+    "company_peer_accounts": "accounts linked to a connected company's chart",
     "marketplace_configs": "marketplace connection settings and credentials",
     "sync_runs": "connector sync history",
     "outbound_queue": "messages waiting to leave this installation",
@@ -1775,6 +1776,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 from celerp.services.peer_identity import seed_restored_identities
                 await seed_restored_identities(
                     session, target_company=new_id, source_company=uuid.UUID(source), id_map=id_map)
+                from celerp.services.peer_accounts import seed_copy
+                await seed_copy(session, target_company=new_id, source_company=uuid.UUID(source), id_map=id_map)
             if replacing is not None or _same_lineage(mode, current_company_id, source):
                 await _rebind_actors(session, new_id)
             await _turn_off_shop_sync(session, new_id, user.id)

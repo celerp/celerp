@@ -11,14 +11,14 @@ from celerp.services import peer_documents as documents
 
 
 def _grant():
-    return SimpleNamespace(company_id=uuid.uuid4(), source_company_id=uuid.uuid4())
+    return SimpleNamespace(company_id=uuid.uuid4(), source_company_id=uuid.uuid4(), label="Books")
 
 
 class _Session:
     async def get(self, model, identifier):
         from celerp.models.company import Company
         if model is Company:
-            return SimpleNamespace(is_active=True, is_migration_staged=False, settings={})
+            return SimpleNamespace(is_active=True, is_migration_staged=False, settings={}, name="Firm")
         return None
 
     async def execute(self, query):
@@ -267,6 +267,9 @@ async def test_payment_posting_failure_prevents_revision_acknowledgement(monkeyp
     monkeypatch.setattr(import_service, "import_doc_records", imported)
     monkeypatch.setattr(peer_payments, "apply_source_payments", payment)
     monkeypatch.setattr(documents, "commit_peer_revision", commit)
+    async def place(session, *, codes, **kwargs):
+        return {code: code for code in codes}
+    monkeypatch.setattr(documents.peer_accounts, "place", place)
     with pytest.raises(HTTPException) as err:
         await documents.receive_document(
             _Session(), grant=_grant(), source_entity_id="doc:source", source_revision=3,
@@ -458,7 +461,7 @@ async def test_real_service_invoice_mirror_posts_once_in_second_company(client, 
     assert receiver.status_code == 200, receiver.text
     receiver_token = receiver.json()["access_token"]
     target_company = uuid.UUID(_company_id(receiver_token))
-    grant = SimpleNamespace(company_id=target_company, source_company_id=source_company)
+    grant = SimpleNamespace(company_id=target_company, source_company_id=source_company, label="Books")
     assert await documents.receive_document(
         session, grant=grant, source_entity_id=source_doc,
         source_revision=source_revision, data=payload,

@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.importers.results import message_text
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
+from celerp.services import peer_accounts
+from celerp.services.company_lock import locked_company
 from celerp.services.peer_identity import (
     claim_peer_revision, commit_peer_revision, peer_identity,
 )
@@ -28,7 +30,7 @@ _FIELDS = frozenset({
     "payment_terms", "notes", "reference", "doc_taxes", "discount",
     "shipping", "subtotal", "total", "tax", "terms_text", "customer_note",
     "purchase_kind", "discount_type", "payments", "amount_paid", "payment_events",
-    "fulfilled_items", "stock_receipts",
+    "fulfilled_items", "stock_receipts", "accounts",
 })
 _SOURCE_ITEM_KEYS = ("item_id", "entity_id")
 # What a source receipt line may carry into the receiving company's receipt.
@@ -101,6 +103,8 @@ async def receive_document(
         require_doc_type(data["doc_type"])
     except (ValueError, TypeError):
         raise HTTPException(422, "Unsupported document type") from None
+    data = dict(data)
+    accounts = peer_accounts.parse(data.pop("accounts", None))
     from celerp.services.peer_payments import (
         validate_source_payments, validate_source_refunds, apply_source_payments,
     )
@@ -180,6 +184,8 @@ async def receive_document(
     ).order_by(User.id).limit(1))).first()
     if member is None:
         raise HTTPException(403, "Company owner unavailable")
+    if source_status != "void":
+        await _place_accounts(session, grant, company, incoming, payments, accounts)
     key = hashlib.sha256(source_entity_id.encode("utf-8")).hexdigest()
     record = DocImportRecord(
         entity_id=claim.target_id, event_type="doc.created",
@@ -258,6 +264,67 @@ async def receive_document(
         session, grant=grant, claim=claim, entity_type="doc",
         source_entity_id=source_entity_id, source_revision=source_revision)
     return outcome.records[0].status
+
+
+async def _place_accounts(session: AsyncSession, grant, company: Company, incoming: dict,
+                          payments: list, accounts: dict) -> None:
+    """Post each line and payment to the receiving company's account for the sender's,
+    adding what it lacks (peer_accounts.place), and add the tax codes the lines name."""
+    lines = incoming.get("line_items") or []
+    codes = [li["account_code"] for li in lines if li.get("account_code")]
+    codes += [p["bank_account"] for _, p in payments if p.get("bank_account")]
+    record = f"the {str(incoming.get('doc_type')).replace('_', ' ')} {incoming.get('ref_id') or ''}".strip()
+    await _add_taxes(session, company, incoming, sender=grant.label, record=record)
+    if not codes:
+        return
+    placed = await peer_accounts.place(
+        session, company_id=grant.company_id, source_company_id=grant.source_company_id,
+        accounts=accounts, codes=codes, sender=grant.label, receiver=company.name,
+        record=record, firm=True)
+    for line in lines:
+        if line.get("account_code"):
+            line["account_code"] = placed[line["account_code"]]
+    for _, payment in payments:
+        if payment.get("bank_account"):
+            payment["bank_account"] = placed[payment["bank_account"]]
+
+
+async def _add_taxes(session: AsyncSession, company: Company, incoming: dict, *, sender: str,
+                     record: str) -> None:
+    """Add to the document side's tax list each tax its lines name that the receiving
+    company does not have, at the sender's rate, with a notice; a tax of the same name
+    is left as the receiving company keeps it."""
+    from celerp.services.peer_journals import _notify
+    from celerp.tax_regimes import doc_side, side_taxes
+
+    named = [tax for line in incoming.get("line_items") or [] for tax in line.get("taxes") or []]
+    named += list(incoming.get("doc_taxes") or [])
+    if not named:
+        return
+    company = await locked_company(session, company.id)
+    settings = dict(company.settings or {})
+    taxes = list(side_taxes(settings, incoming.get("doc_type")))
+    have = {str(x.get("name") or "").strip().casefold() for x in taxes}
+    side = doc_side(incoming.get("doc_type"))
+    added = []
+    for tax in named:
+        name = str((tax or {}).get("code") or (tax or {}).get("name") or "").strip()
+        rate = tax.get("rate")
+        if (not name or name.casefold() in have or isinstance(rate, bool)
+                or not isinstance(rate, (int, float)) or not 0 <= rate <= 100):
+            continue
+        have.add(name.casefold())
+        taxes.append({"name": name, "rate": float(tax["rate"]), "tax_type": side, "is_default": False,
+                      "description": "", "is_compound": False, "default_order": 0})
+        added.append((name, float(tax["rate"])))
+    if not added:
+        return
+    settings["purchasing_taxes" if side == "purchase" else "taxes"] = taxes
+    company.settings = settings
+    page = "/settings/purchasing?tab=taxes" if side == "purchase" else "/settings/sales?tab=taxes"
+    for name, rate in added:
+        await _notify(session, company.id, "notice.peer_tax_added", tax=name, rate=f"{rate:g}",
+                      record=record, company=sender, action_url=page)
 
 
 def _keep_receipt_fields(lines: list[dict], target: dict, parcels: set[str]) -> None:

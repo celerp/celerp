@@ -279,7 +279,9 @@ async def test_scopes_derived_from_entities(monkeypatch):
 
     sent = {name[len("sync_"):-len("_out")] for name in vars(CelerpConnector)
             if name.startswith("sync_") and name.endswith("_out")}
-    assert sent == set(ENTITY_SCOPE)
+    # The receiving company's own journals and lock date are fetched, not sent.
+    assert sent | {"journals_in", "period_lock"} == set(ENTITY_SCOPE)
+    assert {"sync_journals", "sync_period_lock"} <= set(vars(CelerpConnector))
     assert set(typing.get_args(Scope)) == SCOPES == set(ENTITY_SCOPE.values())
 
     html = to_xml(routes._grant_form("en"))

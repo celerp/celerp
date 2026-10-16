@@ -18,19 +18,23 @@ REFUSED = "refused"
 # one the connected company reversed.
 DECLINED = "declined"
 REVERSAL = "reversal"
+# An account sync added to the receiving company's chart with a record that needed it,
+# open until the receiving company keeps, archives or removes it.
+ADDED = "added"
 
 
 async def record(session: AsyncSession, *, company_id: uuid.UUID, source_company_id: uuid.UUID,
                  entity_type: str, source_entity_id: str, label: str, reason: str,
-                 kind: str = REFUSED) -> None:
-    """Open the record's item, or replace its label and reason when it is already open."""
+                 kind: str = REFUSED, fix: dict | None = None) -> None:
+    """Open the record's item, or replace its label, reason and fix when it is already
+    open. ``fix`` is what a held record needs to post (peer_accounts.AccountHold)."""
     values = dict(company_id=company_id, source_company_id=source_company_id, kind=kind,
                   entity_type=entity_type, source_entity_id=source_entity_id,
-                  label=label, reason=reason, created_at=datetime.now(timezone.utc))
+                  label=label, reason=reason, fix=fix, created_at=datetime.now(timezone.utc))
     await session.execute(
         pg_insert(CompanyPeerAttention).values(id=uuid.uuid4(), **values)
         .on_conflict_do_update(constraint="uq_company_peer_attention_record",
-                               set_={"label": label, "reason": reason,
+                               set_={"label": label, "reason": reason, "fix": fix,
                                      "created_at": values["created_at"]}))
 
 
