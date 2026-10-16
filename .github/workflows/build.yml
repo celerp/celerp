@@ -829,8 +829,11 @@ jobs:
             $p = Start-Process -FilePath $setup -ArgumentList $installerArgs -Wait -PassThru
             return $p.ExitCode
           }
+          # The runner's account has no per-user uninstall key until something installs.
           function Entry {
-            Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
+            $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+            if (-not (Test-Path $key)) { return }
+            Get-ChildItem $key |
               Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like "Celerp*" } |
               Select-Object -First 1
           }

@@ -394,6 +394,10 @@ def test_windows_installer_check_covers_every_starting_point():
     assert "celerp-ci-sentinel.txt" in run
     assert 'if ($after -ne $before) { Fail "older installer changed the install' in run
     assert 'if ($code -ne 2) { Fail "older installer over 999.0.0' in run
+    # The full-disk and stopped-install checks look for an entry before anything has
+    # installed for the runner's account, when its uninstall key does not exist yet.
+    entry = run.split("function Entry {", 1)[1].split("\n          }\n", 1)[0]
+    assert entry.index("if (-not (Test-Path $key)) { return }") < entry.index("Get-ChildItem $key")
 
 
 def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
