@@ -1,3 +1,12 @@
 {
-  "fixed_assets.title": "สินทรัพย์ถาวร"
+  "fixed_assets.title": "สินทรัพย์ถาวร",
+  "fixed_assets.method.straight_line": "เส้นตรง",
+  "fixed_assets.method.declining_balance": "ยอดคงเหลือลดลง",
+  "fixed_assets.method.sum_of_years_digits": "ผลรวมจำนวนปี",
+  "fixed_assets.method.units_of_use": "ตามหน่วยการใช้งาน",
+  "fixed_assets.method.none": "ไม่คิดค่าเสื่อมราคา",
+  "fixed_assets.convention.full_month": "เต็มเดือน",
+  "fixed_assets.convention.mid_month": "กลางเดือน",
+  "fixed_assets.convention.daily": "รายวัน",
+  "fixed_assets.convention.half_year": "ครึ่งปี"
 }

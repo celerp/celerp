@@ -1,3 +1,12 @@
 {
-  "fixed_assets.title": "Fixed assets"
+  "fixed_assets.title": "Fixed assets",
+  "fixed_assets.method.straight_line": "Straight line",
+  "fixed_assets.method.declining_balance": "Declining balance",
+  "fixed_assets.method.sum_of_years_digits": "Sum of years' digits",
+  "fixed_assets.method.units_of_use": "Units of use",
+  "fixed_assets.method.none": "Not depreciated",
+  "fixed_assets.convention.full_month": "Full month",
+  "fixed_assets.convention.mid_month": "Mid-month",
+  "fixed_assets.convention.daily": "Daily",
+  "fixed_assets.convention.half_year": "Half-year"
 }

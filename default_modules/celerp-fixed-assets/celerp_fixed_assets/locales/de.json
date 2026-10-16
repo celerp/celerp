@@ -1,3 +1,12 @@
 {
-  "fixed_assets.title": "Anlagevermögen"
+  "fixed_assets.title": "Anlagevermögen",
+  "fixed_assets.method.straight_line": "Linear",
+  "fixed_assets.method.declining_balance": "Degressiv",
+  "fixed_assets.method.sum_of_years_digits": "Digital (Summe der Jahresziffern)",
+  "fixed_assets.method.units_of_use": "Leistungsabhängig",
+  "fixed_assets.method.none": "Keine Abschreibung",
+  "fixed_assets.convention.full_month": "Voller Monat",
+  "fixed_assets.convention.mid_month": "Monatsmitte",
+  "fixed_assets.convention.daily": "Taggenau",
+  "fixed_assets.convention.half_year": "Halbjahr"
 }

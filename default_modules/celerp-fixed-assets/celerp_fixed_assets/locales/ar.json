@@ -1,3 +1,12 @@
 {
-  "fixed_assets.title": "الأصول الثابتة"
+  "fixed_assets.title": "الأصول الثابتة",
+  "fixed_assets.method.straight_line": "القسط الثابت",
+  "fixed_assets.method.declining_balance": "الرصيد المتناقص",
+  "fixed_assets.method.sum_of_years_digits": "مجموع أرقام السنوات",
+  "fixed_assets.method.units_of_use": "وحدات الاستخدام",
+  "fixed_assets.method.none": "لا يُستهلك",
+  "fixed_assets.convention.full_month": "شهر كامل",
+  "fixed_assets.convention.mid_month": "منتصف الشهر",
+  "fixed_assets.convention.daily": "يومي",
+  "fixed_assets.convention.half_year": "نصف سنة"
 }

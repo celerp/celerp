@@ -1,3 +1,12 @@
 {
-  "fixed_assets.title": "Activos fijos"
+  "fixed_assets.title": "Activos fijos",
+  "fixed_assets.method.straight_line": "Línea recta",
+  "fixed_assets.method.declining_balance": "Saldo decreciente",
+  "fixed_assets.method.sum_of_years_digits": "Suma de dígitos de los años",
+  "fixed_assets.method.units_of_use": "Unidades de uso",
+  "fixed_assets.method.none": "Sin depreciación",
+  "fixed_assets.convention.full_month": "Mes completo",
+  "fixed_assets.convention.mid_month": "Mitad de mes",
+  "fixed_assets.convention.daily": "Diario",
+  "fixed_assets.convention.half_year": "Medio año"
 }

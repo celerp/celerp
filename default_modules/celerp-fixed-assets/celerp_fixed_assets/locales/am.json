@@ -1,3 +1,12 @@
 {
-  "fixed_assets.title": "ቋሚ ንብረቶች"
+  "fixed_assets.title": "ቋሚ ንብረቶች",
+  "fixed_assets.method.straight_line": "ቀጥተኛ መስመር",
+  "fixed_assets.method.declining_balance": "እየቀነሰ የሚሄድ ቀሪ",
+  "fixed_assets.method.sum_of_years_digits": "የዓመታት አሃዞች ድምር",
+  "fixed_assets.method.units_of_use": "በአጠቃቀም መጠን",
+  "fixed_assets.method.none": "አይቀነስም",
+  "fixed_assets.convention.full_month": "ሙሉ ወር",
+  "fixed_assets.convention.mid_month": "የወሩ አጋማሽ",
+  "fixed_assets.convention.daily": "በየቀኑ",
+  "fixed_assets.convention.half_year": "ግማሽ ዓመት"
 }

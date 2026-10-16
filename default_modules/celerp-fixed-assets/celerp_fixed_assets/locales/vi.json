@@ -1,3 +1,12 @@
 {
-  "fixed_assets.title": "Tài sản cố định"
+  "fixed_assets.title": "Tài sản cố định",
+  "fixed_assets.method.straight_line": "Đường thẳng",
+  "fixed_assets.method.declining_balance": "Số dư giảm dần",
+  "fixed_assets.method.sum_of_years_digits": "Tổng số năm",
+  "fixed_assets.method.units_of_use": "Theo đơn vị sử dụng",
+  "fixed_assets.method.none": "Không khấu hao",
+  "fixed_assets.convention.full_month": "Cả tháng",
+  "fixed_assets.convention.mid_month": "Giữa tháng",
+  "fixed_assets.convention.daily": "Theo ngày",
+  "fixed_assets.convention.half_year": "Nửa năm"
 }

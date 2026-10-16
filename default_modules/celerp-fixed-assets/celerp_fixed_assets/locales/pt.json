@@ -1,3 +1,12 @@
 {
-  "fixed_assets.title": "Ativo imobilizado"
+  "fixed_assets.title": "Ativo imobilizado",
+  "fixed_assets.method.straight_line": "Linha reta",
+  "fixed_assets.method.declining_balance": "Saldo decrescente",
+  "fixed_assets.method.sum_of_years_digits": "Soma dos dígitos dos anos",
+  "fixed_assets.method.units_of_use": "Unidades de uso",
+  "fixed_assets.method.none": "Não depreciado",
+  "fixed_assets.convention.full_month": "Mês inteiro",
+  "fixed_assets.convention.mid_month": "Meio do mês",
+  "fixed_assets.convention.daily": "Diário",
+  "fixed_assets.convention.half_year": "Meio ano"
 }

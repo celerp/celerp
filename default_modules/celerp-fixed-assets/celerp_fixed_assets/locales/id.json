@@ -1,3 +1,12 @@
 {
-  "fixed_assets.title": "Aset tetap"
+  "fixed_assets.title": "Aset tetap",
+  "fixed_assets.method.straight_line": "Garis lurus",
+  "fixed_assets.method.declining_balance": "Saldo menurun",
+  "fixed_assets.method.sum_of_years_digits": "Jumlah angka tahun",
+  "fixed_assets.method.units_of_use": "Unit pemakaian",
+  "fixed_assets.method.none": "Tidak disusutkan",
+  "fixed_assets.convention.full_month": "Bulan penuh",
+  "fixed_assets.convention.mid_month": "Pertengahan bulan",
+  "fixed_assets.convention.daily": "Harian",
+  "fixed_assets.convention.half_year": "Setengah tahun"
 }

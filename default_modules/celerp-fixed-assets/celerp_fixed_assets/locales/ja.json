@@ -1,3 +1,12 @@
 {
-  "fixed_assets.title": "固定資産"
+  "fixed_assets.title": "固定資産",
+  "fixed_assets.method.straight_line": "定額法",
+  "fixed_assets.method.declining_balance": "定率法",
+  "fixed_assets.method.sum_of_years_digits": "級数法",
+  "fixed_assets.method.units_of_use": "生産高比例法",
+  "fixed_assets.method.none": "償却しない",
+  "fixed_assets.convention.full_month": "月単位",
+  "fixed_assets.convention.mid_month": "月央",
+  "fixed_assets.convention.daily": "日割り",
+  "fixed_assets.convention.half_year": "半年"
 }
