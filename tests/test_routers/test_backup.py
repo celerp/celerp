@@ -345,7 +345,7 @@ async def test_import_bootstrap_blocked_when_users_exist(auth_client):
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         meta = _json.dumps({
             "celerp_version": __version__, "pg_version": "16",
-            "created_at": "2026-01-01T00:00:00Z", "company_name": "Test",
+            "created_at": "2026-01-01T00:00:00Z",
         }).encode()
         info = tarfile.TarInfo("meta.json")
         info.size = len(meta)
@@ -419,7 +419,7 @@ async def test_import_returns_warnings_field(auth_client, monkeypatch):
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         meta = _json.dumps({
             "celerp_version": __version__, "pg_version": "16",
-            "created_at": "2026-01-01T00:00:00Z", "company_name": "T",
+            "created_at": "2026-01-01T00:00:00Z",
             "enabled_modules": ["celerp-fictional"],
         }).encode()
         info = tarfile.TarInfo("meta.json")

@@ -2785,7 +2785,7 @@ async def test_celerp_module_restored_from_a_backup_needs_a_licence(tmp_path, mo
     _relay_identity(monkeypatch, tmp_path, _PAID)
     name = f"celerp-{_uid()}"
     meta = json.dumps({"celerp_version": __version__, "pg_version": "16",
-                       "created_at": "2026-10-06T00:00:00Z", "company_name": "T"}).encode()
+                       "created_at": "2026-10-06T00:00:00Z"}).encode()
     init = f"PLUGIN_MANIFEST = {{'name': {name!r}, 'version': '1.0.0'}}\n".encode()
     archive = tmp_path / "backup.celerp-backup"
     with released_migration_history(settings.database_url):

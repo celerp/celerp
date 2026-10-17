@@ -38,7 +38,7 @@ def _archive(path, dump: bytes) -> str:
     from celerp.migrations.compatibility import running_version
     from celerp.services.backup_export import _pg_version
     meta = {"celerp_version": running_version(), "pg_version": _pg_version(),
-            "company_name": "Harbor Goods Ltd", "enabled_modules": ["celerp-inventory"]}
+            "enabled_modules": ["celerp-inventory"]}
     with tarfile.open(path, "w:gz") as tar:
         for name, body in (("database.dump", dump), ("meta.json", json.dumps(meta).encode()),
                            ("attachments/new.pdf", b"NEW")):
