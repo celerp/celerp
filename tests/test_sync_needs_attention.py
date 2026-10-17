@@ -131,3 +131,26 @@ async def test_a_failed_sync_still_says_failed(real_client, real_engine, monkeyp
     card = to_xml(page._last_sync_info(run("partial", ["x"]), 1))
     assert "connector-sync-info--warn" in card and page._sync_status_label("partial") in card
     assert t("connectors.needs_attention") not in card
+
+
+async def test_the_needs_attention_toast_header_carries_thai_text():
+    """The toast travels in the HX-Trigger header: a Thai message must reach the page
+    intact, never fail the response when its headers are encoded."""
+    import json
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+
+    from starlette.responses import HTMLResponse
+
+    from ui.components.shell import toast_header
+    from ui.routes import settings_connectors as page
+
+    now = datetime.now(timezone.utc)
+    runs = {"journals": SimpleNamespace(status="success", errors=None, finished_at=now, started_at=now,
+                                        created_count=0, updated_count=0)}
+    entry = [{"id": "x", "label": "ค่าใช้จ่ายค้างจ่าย", "reason": "locked", "entity": "journals"}]
+    msg, kind = page._sync_complete_toast(runs, entry, "Celerp", "th")
+    response = HTMLResponse("", headers=toast_header(msg, kind))
+    toast = json.loads(response.headers["HX-Trigger"])["celerpToast"]
+    assert toast == {"message": t("connectors.sync_complete_attention", "th", n=1), "type": "warning"}
+    assert "ต้องดูแล" in toast["message"]
