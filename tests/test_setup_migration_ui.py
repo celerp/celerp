@@ -1518,6 +1518,21 @@ async def test_preparing_run_explains_and_waits_without_a_start_button(ui, fake_
 
 
 @pytest.mark.asyncio
+async def test_the_polled_progress_drops_still_running_once_ready(ui, fake_api):
+    """The line saying the move keeps running is part of what the page re-reads, so it
+    goes when the run is ready; the attachments count reads as a plain number."""
+    _owner(ui)
+    run_id = fake_api.add_run("running")
+    hx = {"HX-Request": "true"}
+    assert "The migration keeps running" in (await ui.get(f"/migrations/{run_id}", headers=hx)).text
+    fake_api.runs[run_id]["status"] = "ready_to_finalize"
+    fake_api.runs[run_id]["phases"][-1].update(phase="attachments", created=1)
+    html = (await ui.get(f"/migrations/{run_id}", headers=hx)).text
+    assert "The migration keeps running" not in html
+    assert "1 attachments" not in html and '<td class="cell--number">1</td>' in html
+
+
+@pytest.mark.asyncio
 async def test_failed_run_shows_plain_message_and_never_says_still_running(ui, fake_api):
     _owner(ui)
     run_id = fake_api.add_run("failed")
