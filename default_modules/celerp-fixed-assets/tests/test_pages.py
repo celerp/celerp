@@ -100,6 +100,29 @@ async def test_register_a_bill_line_from_the_intake_page(owner_ui):
     assert any(ln["source"] == line["source"] for ln in (await owner_ui.api.get(f"{API}/intake")).json()["items"])
 
 
+async def test_u32_a_registering_review_shows_the_class_date_and_how_it_depreciates(owner_ui):
+    await _demo(owner_ui)
+    await _start(owner_ui)
+    line = next(ln for ln in (await owner_ui.api.get(f"{API}/intake")).json()["items"]
+                if ln["kind"] == "acquisition" and str(ln["quantity"]) in ("1", "1.0"))
+    vehicles = await _class(owner_ui, "Vehicles")
+    reviews = [
+        (line["date"], await owner_ui.post("/fixed-assets/op/register/review", data={
+            "source": line["source"], "mode": "separate", "class_id": vehicles["id"], "name": "Delivery van",
+            "available_date": line["date"], "idempotency_key": str(uuid.uuid4())})),
+        ("2020-01-01", await owner_ui.post("/fixed-assets/op/add-asset/review", data={
+            "kind": "opening", "name": "Forklift", "class_id": vehicles["id"], "available_date": "2020-01-01",
+            "cost": "9000", "idempotency_key": str(uuid.uuid4())})),
+    ]
+    for day, review in reviews:
+        text = re.sub(r"<[^>]+>", " ", review.text)
+        for label, value in ((t("fixed_assets.class"), "Vehicles"), (t("fixed_assets.available_date"), day),
+                             (t("fixed_assets.method"), t(f"fixed_assets.method.{vehicles['method']}")),
+                             (t("fixed_assets.life_months"), str(vehicles["life_months"]))):
+            assert re.search(re.escape(label) + r"\s+" + re.escape(value), text), (label, value)
+        assert "fixed_assets." not in review.text
+
+
 async def test_add_an_opening_asset_by_hand(owner_ui):
     await _demo(owner_ui)
     await _start(owner_ui)

@@ -227,6 +227,10 @@ def _preview(action: str, result: dict, currency: str) -> FT:
         parts.append(Table(Thead(Tr(Th(t("fixed_assets.number")), Th(t("fixed_assets.name")),
                                     *([_money_th(t("fixed_assets.amount"))] if priced else []))),
                            Tbody(*rows), cls="data-table"))
+    if registers := result.get("registers"):
+        parts.append(_detail_table([(t("fixed_assets.class"), registers["class"]),
+                                    (t("fixed_assets.available_date"), registers["available_date"]),
+                                    *_policy_rows(registers["policy"])]))
     if result.get("classification"):
         parts += _correction_preview(result, currency)
     if result.get("open_draft"):
@@ -1143,15 +1147,20 @@ def _figures_card(asset: dict, class_name: str, currency: str) -> FT:
     )
 
 
-def _depreciation_card(asset: dict, currency: str) -> FT:
-    """How the asset depreciates, and what the next run charges it."""
-    policy = asset.get("policy") or {}
+def _policy_rows(policy: dict) -> list[tuple[str, object]]:
+    """How an asset depreciates, as detail rows: its method, and unless it is not depreciated, the rest."""
     rows = [(t("fixed_assets.method"), _rule_label("method", policy.get("method")))]
     if policy.get("method") != "none":
         rows += [(t("fixed_assets.life_months"), _text(policy.get("life_months"))),
                  (t("fixed_assets.residual_percent"), _text(policy.get("residual_percent"))),
                  (t("fixed_assets.convention"), _rule_label("convention", policy.get("convention") or "full_month")),
                  *[(t(f"fixed_assets.param.{name}"), _text(value)) for name, value in (policy.get("params") or {}).items()]]
+    return rows
+
+
+def _depreciation_card(asset: dict, currency: str) -> FT:
+    """How the asset depreciates, and what the next run charges it."""
+    rows = _policy_rows(asset.get("policy") or {})
     upcoming = asset.get("next_charge")
     if upcoming and upcoming["held"]:
         rows.append((t("fixed_assets.next_charge"),

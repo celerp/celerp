@@ -356,7 +356,8 @@ async def register(session, company_id, user_id, body: dict) -> dict:
         context.update(cls=cls, name=name, available=available, each=each, numbers=numbers, journals=journals,
                        policy=setup.policy_of(cls, fa))
         return {"journals": [_journal_view(j, currency) for j in journals],
-                "assets": [{"number": n, "name": name, "cost": money(c, currency)} for n, (c, _) in zip(numbers, each)]}, context
+                "assets": [{"number": n, "name": name, "cost": money(c, currency)} for n, (c, _) in zip(numbers, each)],
+                "registers": _registers(cls, available, context["policy"])}, context
 
     async def apply(context, op_key):
         line, mode = context["line"], context["mode"]
@@ -499,6 +500,11 @@ def after_cutover(cut: str) -> str:
     return f"Dated after the cutover {cut}. Enter the bill, or use Contributed or acquired without a bill."
 
 
+def _registers(cls: dict, available, policy: dict) -> dict:
+    """What a review shows an asset will be registered as: its class, date and depreciation."""
+    return {"class": cls["name"], "available_date": str(available), "policy": policy}
+
+
 async def _financials(session, company_id, fa: dict, body: dict) -> dict:
     """The checked financial details of an opening or contributed asset."""
     kind = body.get("kind")
@@ -577,7 +583,8 @@ async def create_asset(session, company_id, user_id, body: dict) -> dict:
                 "name": name, "number": number}
         details = await _financials(session, company_id, fa, body)
         _, shown = _financials_shown(details)
-        return ({"journals": shown, "assets": [{"number": number, "name": name, "cost": money(details["cost"], details["currency"])}]},
+        return ({"journals": shown, "assets": [{"number": number, "name": name, "cost": money(details["cost"], details["currency"])}],
+                 "registers": _registers(details["cls"], details["available"], details["policy"])},
                 {"name": name, "number": number, "details": details})
 
     async def apply(context, op_key):
@@ -613,7 +620,8 @@ async def add_financial_details(session, company_id, user_id, asset_id: str, bod
         details = await _financials(session, company_id, fa, body)
         _, shown = _financials_shown(details)
         return ({"journals": shown, "assets": [{"number": row.state["number"], "name": row.state["name"],
-                                                "cost": money(details["cost"], details["currency"])}]},
+                                                "cost": money(details["cost"], details["currency"])}],
+                 "registers": _registers(details["cls"], details["available"], details["policy"])},
                 {"asset": row.state, "details": details})
 
     async def apply(context, op_key):
