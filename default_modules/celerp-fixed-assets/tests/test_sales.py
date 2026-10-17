@@ -1165,3 +1165,33 @@ async def test_d4_reconciliation_follows_the_accounts_the_sale_used(fa):
     by_account = {a["account"]: a for a in recon["accounts"]}
     assert by_account["3400"]["ledger"] == "-50.00" and by_account["3400"]["status"] == "Reconciled"
     assert by_account[CLEARING]["status"] == "Reconciled", by_account[CLEARING]
+
+
+async def test_l1_a_return_restores_what_the_sale_took_off_and_no_more(fa):
+    """Two identical cars, both impaired on 10 May (which charges May's depreciation then);
+    one is sold on 20 May and returned on 10 June. Once June is run, the returned car stands
+    exactly where its twin does, and the accounts hold both cars' figures: the return put
+    back what the sale took off, and the month the sale took back is charged again."""
+    from test_remeasure import _impair
+
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    twin = await _contributed(fa, name="Twin car")
+    await _run(fa, "2026-03")
+    before = {code: await fa.balance(code) for code in ("1210", "1220")}
+    for asset_id in (car, twin):
+        await _impair(fa, asset_id, "2026-05-10", "9000")
+    inv = await _sell(fa, car, price="10000")
+    await _finalize(fa, inv)
+    await _credit(fa, inv, "10000", on="2026-06-10", returned=True)
+    await _run(fa, "2026-06")
+    a, b = await fa.asset(car), await fa.asset(twin)
+    for key in ("cost", "accumulated_depreciation", "accumulated_impairment", "nbv"):
+        assert D(a[key]) == D(b[key]), (key, a[key], b[key])
+    assert a["status"] == "active"
+    moved = {code: await fa.balance(code) - before[code] for code in before}
+    assert moved["1210"] == 0
+    assert moved["1220"] == -2 * (D(b["accumulated_depreciation"]) + D(b["accumulated_impairment"]) - D("600"))
+    assert await fa.balance("6980") == 0
+    await _assert_clearing(fa, car, "0")
+    await fa.fold_matches(car)
