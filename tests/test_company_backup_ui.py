@@ -1189,6 +1189,7 @@ async def test_handoffs_table_header_dates_order_revoke_undo(ui, real_engine, mo
     renewed = await ui.post(f"{route.HANDOFFS}/{older['id']}/new-link", headers=swap,
                             data={"operation_id": operation})
     assert t("company_backup.copies_new_link_done") in _page(renewed)
+    assert "Celerp has not emailed it. Use Copy link to send it to them." in _page(renewed)
     assert "handoffs/b/open" in renewed.text
     refused = await ui.post(f"{route.HANDOFFS}/{newer['id']}/new-link", headers=swap,
                             data={"operation_id": str(uuid.uuid4())})
