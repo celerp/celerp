@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape as _xml_escape
 
@@ -32,11 +33,13 @@ from reportlab.pdfgen import canvas as _rl_canvas
 from celerp.output.branding import BRAND_TEXT as _BRAND_TEXT, brand_url as _brand_url
 from celerp.output.document_context import prepare_document_output
 
-# Register DejaVu Sans (Unicode-capable - supports currency symbols like ฿, ₹, €, etc.)
+# DejaVu Sans (Unicode-capable - supports currency symbols like ฿, ₹, €, etc.) ships
+# in fonts/ so PDFs render on every platform, not only where the OS provides it.
 _FONT = "DejaVuSans"
 _FONT_BOLD = "DejaVuSans-Bold"
-pdfmetrics.registerFont(TTFont(_FONT, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
-pdfmetrics.registerFont(TTFont(_FONT_BOLD, "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+_FONTS = Path(__file__).parent / "fonts"
+pdfmetrics.registerFont(TTFont(_FONT, str(_FONTS / "DejaVuSans.ttf")))
+pdfmetrics.registerFont(TTFont(_FONT_BOLD, str(_FONTS / "DejaVuSans-Bold.ttf")))
 
 _BRAND_URL = _brand_url("pdf")
 
