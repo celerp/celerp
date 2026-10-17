@@ -3832,6 +3832,7 @@
   "migration.discard": "移行を破棄する",
   "migration.pause": "インポートを一時停止",
   "migration.discard_confirm": "{company} への移行を破棄しますか？会社、インポートしたデータ、アップロードしたファイルが削除されます。この操作は元に戻せません。やり直すには、ファイルをもう一度アップロードしてください。",
+  "migration.discarded": "{company} への移行を破棄しました。会社、データ、アップロードしたファイルは削除されました。",
   "migration.phase.company_settings": "会社と設定",
   "migration.phase.currencies_taxes_accounts": "会計マスタ情報",
   "migration.phase.contacts_locations": "取引先と拠点",

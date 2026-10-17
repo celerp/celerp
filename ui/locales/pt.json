@@ -3832,6 +3832,7 @@
   "migration.discard": "Descartar migração",
   "migration.pause": "Pausar importação",
   "migration.discard_confirm": "Descartar a migração para {company}? A empresa, os dados importados e o arquivo enviado são excluídos. Isso não pode ser desfeito; para recomeçar, envie o arquivo novamente.",
+  "migration.discarded": "Migração para {company} descartada. A empresa, os dados e o arquivo enviado foram excluídos.",
   "migration.phase.company_settings": "Empresa e configurações",
   "migration.phase.currencies_taxes_accounts": "Cadastros contábeis",
   "migration.phase.contacts_locations": "Contatos e locais",

@@ -33,13 +33,13 @@ from urllib.parse import urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from starlette.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 
 from celerp.accounting_roles import account_label
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.posting_accounts import NEW_ACCOUNT, account_picker
-from ui.components.shell import auth_shell, client_scripts, flash, page_title
+from ui.components.shell import auth_shell, client_scripts, flash, page_title, toast_header
 from ui.components.activity import fmt_qty
 from ui.components.files import fmt_size
 from ui.components.table import EMPTY, display_enum, fmt_money, format_value, searchable_select
@@ -1728,12 +1728,18 @@ def migrations_routes(app) -> None:
 
     @app.post("/migrations/{run_id}/discard")
     async def migration_discard(request: Request, run_id: str):
+        run, failure = await _load_run(request, run_id)
+        if failure is not None:
+            return failure
         result, error = await _action(request, run_id, "discard")
         if error is not None:
-            run, failure = await _load_run(request, run_id)
-            return failure if failure is not None else _discard_page(request, run, error)
+            return _discard_page(request, run, error)
         target = result.get("redirect") or "/"
         resp = RedirectResponse(target, status_code=303)
+        if request.headers.get("HX-Request"):
+            # The next page is another company's; the notice says which migration went.
+            resp = Response(status_code=204, headers={"HX-Redirect": target, **toast_header(
+                t("migration.discarded", company=run.get("company_name", "")), persist=True)})
         if target in ("/setup", START_COMPANY.back):
             # The login has no company left, so its session has nothing to open.
             clear_session_cookies(resp, request)
@@ -2101,6 +2107,7 @@ def _discard_page(request: Request, run: dict, error: str | None = None):
         Form(flash(error) if error else "",
              P(t("migration.discard_confirm", company=run.get("company_name", ""))),
              Button(t("migration.discard"), type="submit", cls="btn btn--danger btn--full"),
+             hx_post=f"/migrations/{run_id}/discard", hx_target="body",
              method="post", action=f"/migrations/{run_id}/discard", cls="auth-form"),
         back_link(f"/migrations/{run_id}"),
     )

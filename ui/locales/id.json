@@ -3832,6 +3832,7 @@
   "migration.discard": "Batalkan migrasi",
   "migration.pause": "Jeda impor",
   "migration.discard_confirm": "Buang migrasi ke {company}? Perusahaan, data yang diimpor, dan file yang diunggah akan dihapus. Ini tidak dapat dibatalkan; untuk memulai lagi, unggah file itu lagi.",
+  "migration.discarded": "Migrasi ke {company} dibuang. Perusahaan, data, dan file yang diunggah telah dihapus.",
   "migration.phase.company_settings": "Perusahaan dan pengaturan",
   "migration.phase.currencies_taxes_accounts": "Data induk akuntansi",
   "migration.phase.contacts_locations": "Kontak dan lokasi",

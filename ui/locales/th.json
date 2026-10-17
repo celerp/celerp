@@ -3832,6 +3832,7 @@
   "migration.discard": "ยกเลิกการย้ายข้อมูล",
   "migration.pause": "หยุดการนำเข้าชั่วคราว",
   "migration.discard_confirm": "ยกเลิกการย้ายข้อมูลไปยัง {company} หรือไม่? บริษัท ข้อมูลที่นำเข้า และไฟล์ที่อัปโหลดจะถูกลบ ไม่สามารถย้อนกลับได้ หากต้องการเริ่มใหม่ ให้อัปโหลดไฟล์อีกครั้ง",
+  "migration.discarded": "ยกเลิกการย้ายข้อมูลไปยัง {company} แล้ว บริษัท ข้อมูล และไฟล์ที่อัปโหลดถูกลบแล้ว",
   "migration.phase.company_settings": "บริษัทและการตั้งค่า",
   "migration.phase.currencies_taxes_accounts": "ข้อมูลหลักด้านบัญชี",
   "migration.phase.contacts_locations": "ผู้ติดต่อและสถานที่",

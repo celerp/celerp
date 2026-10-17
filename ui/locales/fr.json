@@ -3832,6 +3832,7 @@
   "migration.discard": "Abandonner la migration",
   "migration.pause": "Mettre l'import en pause",
   "migration.discard_confirm": "Abandonner la migration vers {company} ? L'entreprise, ses données importées et le fichier envoyé sont supprimés. Cette action est irréversible ; pour recommencer, envoyez de nouveau le fichier.",
+  "migration.discarded": "Migration vers {company} abandonnée. L'entreprise, ses données et le fichier envoyé sont supprimés.",
   "migration.phase.company_settings": "Société et paramètres",
   "migration.phase.currencies_taxes_accounts": "Données comptables de base",
   "migration.phase.contacts_locations": "Contacts et sites",

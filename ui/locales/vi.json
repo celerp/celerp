@@ -3832,6 +3832,7 @@
   "migration.discard": "Hủy quá trình di chuyển",
   "migration.pause": "Tạm dừng nhập",
   "migration.discard_confirm": "Hủy bỏ quá trình di chuyển vào {company}? Công ty, dữ liệu đã nhập và tệp đã tải lên sẽ bị xóa. Không thể hoàn tác; để bắt đầu lại, hãy tải tệp lên lần nữa.",
+  "migration.discarded": "Đã hủy bỏ quá trình di chuyển vào {company}. Công ty, dữ liệu và tệp đã tải lên đã bị xóa.",
   "migration.phase.company_settings": "Công ty và thiết lập",
   "migration.phase.currencies_taxes_accounts": "Danh mục kế toán",
   "migration.phase.contacts_locations": "Liên hệ và địa điểm",

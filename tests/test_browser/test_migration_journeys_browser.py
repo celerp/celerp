@@ -161,9 +161,9 @@ def test_journey_1_existing_business_keeps_running(page, fresh_company, held_run
     finally:
         other.close()
 
-    # Cancel, let the runner acknowledge it, then resume to the end.
+    # Pause, let the runner acknowledge it, then resume to the end.
     page.goto(f"/migrations/{run_id}")
-    page.click('button:has-text("Cancel")')
+    page.click('button:has-text("Pause import")')
     page.wait_for_url(re.compile(rf"/migrations/{run_id}$"))
     held_runner.set()
     page.reload()
