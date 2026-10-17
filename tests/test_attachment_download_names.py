@@ -17,10 +17,9 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from starlette.responses import FileResponse
 
-from test_helpers import make_test_token
+from test_helpers import ACCOUNT_NAMES, make_test_token
 
-THAI = "ใบแจ้งหนี้.pdf"
-ARABIC = "فاتورة.pdf"
+NAMES = [f"{name}.pdf" for name in ACCOUNT_NAMES.values()] + ["invoice.pdf"]
 
 
 @pytest_asyncio.fixture
@@ -56,7 +55,7 @@ def _sent_name(cd: str) -> str:
     ("/contacts/c1/files/f1/download", "download_contact_file", "attachment"),
     ("/docs/d1/files/f1/download", "download_doc_file", "attachment"),
 ])
-@pytest.mark.parametrize("name", [THAI, ARABIC, "invoice.pdf"])
+@pytest.mark.parametrize("name", NAMES)
 @pytest.mark.asyncio
 async def test_download_keeps_the_attachment_name(ui_client, monkeypatch, tmp_path, route, api_fn,
                                                   disposition, name):

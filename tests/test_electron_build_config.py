@@ -571,3 +571,15 @@ def test_windows_smoke_commands_run_with_the_account_user_name():
     env_set = smoke.split("$envSet = ", 1)[1].split("\n", 1)[0]
     assert "set USERNAME=$u`r`n" in env_set
     assert "set USERDOMAIN=$env:COMPUTERNAME`r`n" in env_set
+
+
+def test_windows_account_names_match_the_named_name_tests():
+    """The release build runs the packaged app under every name in ACCOUNT_NAMES, so
+    the file-name tests and the Windows accounts cover the same scripts."""
+    import yaml
+
+    from test_helpers import ACCOUNT_NAMES
+
+    workflow = yaml.safe_load((Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text())
+    rows = workflow["jobs"]["win-names"]["strategy"]["matrix"]["include"]
+    assert {r["case"]: r["user"] for r in rows} == ACCOUNT_NAMES

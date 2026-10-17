@@ -30,6 +30,23 @@ REPO_ROOT = Path(__file__).resolve().parent
 # imported; the default is just a sane placeholder for the Postgres-only app.
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp")
 
+# The Windows account names the release build runs the packaged app under (build.yml
+# win-names), one per way a name can break: scripts outside the ANSI code page, a
+# 20-character name, a supplementary-plane character, accents the code page holds, and
+# characters Windows maps to look-alike ASCII. Tests of user text in file names and
+# downloads run over the same list.
+ACCOUNT_NAMES = {
+    "thai": "สมชาย",
+    "thai-20": "สมชายใจดีมีทรัพย์มาก",
+    "arabic": "محمد",
+    "chinese": "张伟",
+    "supplementary": "𠮷 Test",
+    "accented": "José Müller",
+    "fullwidth": "Ｊｏｓｅ Ｌｉｍａ",
+    "arabic-indic-digits": "Ali ٣٤",
+    "ascii": "Celerp Upgrade",
+}
+
 _crm_src = os.path.join(os.path.dirname(__file__), "..", "premium_modules", "celerp-sales-funnel")
 _crm_available = os.path.isfile(os.path.join(_crm_src, "celerp_sales_funnel", "__init__.py"))
 
