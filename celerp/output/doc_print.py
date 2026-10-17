@@ -77,32 +77,37 @@ def currency_symbol(currency: str | None) -> str:
 def fmt_money(value: str | float, currency: str | None = None) -> str:
     """Format a money AMOUNT (total, tax, etc.) at currency precision."""
     from celerp.services.money import currency_dp as _cdp
-    sym = currency_symbol(currency)
     try:
         v = float(value)
     except (ValueError, TypeError):
         return EMPTY
-    return f"{sym}{v:,.{_cdp(currency or 'USD')}f}"
+    return _signed(v, f"{abs(v):,.{_cdp(currency or 'USD')}f}", currency)
+
+
+def _signed(value: float, digits: str, currency: str | None) -> str:
+    """``digits`` after the currency symbol, with the minus sign in front of both
+    (-$50.00, not $-50.00); a figure that shows as zero carries no sign."""
+    shown = f"{currency_symbol(currency)}{digits}"
+    return f"-{shown}" if value < 0 and digits.strip("0.,") else shown
 
 
 def fmt_rate(value: str | float, currency: str | None = None) -> str:
     """Format a unit price (a RATE): currency symbol + at least currency_dp decimals, up to rate_dp,
     with trailing zeros beyond currency precision trimmed (15.28, 15.285, 15.30 - never 15.2850)."""
     from celerp.services.money import currency_dp as _cdp, rate_dp as _rdp
-    sym = currency_symbol(currency)
     try:
         v = float(value)
     except (ValueError, TypeError):
         return EMPTY
     lo, hi = _cdp(currency or "USD"), _rdp(currency or "USD")
-    s = f"{v:,.{hi}f}"
+    s = f"{abs(v):,.{hi}f}"
     if "." in s:
         intp, frac = s.split(".")
         frac = frac.rstrip("0")
         if len(frac) < lo:
             frac = frac.ljust(lo, "0")
         s = f"{intp}.{frac}" if frac else intp
-    return f"{sym}{s}"
+    return _signed(v, s, currency)
 
 
 def unwrap_address(raw) -> str:
