@@ -383,7 +383,8 @@ def test_j8_over_credit_is_refused_then_the_asset_is_returned_from_correct_sale(
                             "source_line_id": line["line_id"], "asset_id": car}]}))["id"]
 
     _ok(c.post(f"/docs/{note(2000, '2026-06-10')}/finalize"))
-    page.goto(f"/docs/{note(9000, '2026-06-15')}")
+    over = note(9000, '2026-06-15')
+    page.goto(f"/docs/{over}")
     _finalize_doc(page)
     toast = page.locator(".toast-container .toast--error").last
     expect(toast).to_contain_text("8,000")
@@ -393,6 +394,11 @@ def test_j8_over_credit_is_refused_then_the_asset_is_returned_from_correct_sale(
     page.wait_for_url(f"**/fixed-assets/assets/{car}**")
     sale = page.locator(f"[id='fa-sale-{car}']")
     expect(sale).to_contain_text("8,000.00")
+    # The refused credit note stays open as a draft, so the sale offers it rather than a second one.
+    expect(sale.get_by_role("link", name="Open the credit note")).to_have_attribute("href", f"/docs/{over}")
+    expect(sale.locator("select[name=kind]")).to_have_count(0)
+    assert c.delete(f"/docs/{over}").status_code == 200
+    page.reload()
     sale.locator("select[name=kind]").select_option(label="Asset returned")
     sale.locator("input[name=date]").fill("2026-06-20")
     sale.get_by_role("button", name="Credit the sale", exact=True).click()
