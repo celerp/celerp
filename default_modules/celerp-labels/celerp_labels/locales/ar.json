@@ -14,8 +14,5 @@
   "labels.selected": "المحدد: {ids}{more}",
   "labels.template_deleted": "تم حذف القالب.",
   "labels.template_not_found": "القالب غير موجود.",
-  "labels.width_example": "على سبيل المثال 50",
-  "labels.no_source_template": "لا يوجد قالب ملصق يناسب {name} بعد.",
-  "labels.create_source_template": "إنشاء قالب {name}",
-  "labels.ask_for_source_template": "اطلب من المسؤول إنشاء قالب {name}."
+  "labels.width_example": "على سبيل المثال 50"
 }

@@ -14,8 +14,5 @@
   "labels.selected": "ተመርጧል: {ids}{more}",
   "labels.template_deleted": "አብነቱ ተሰርዟል።",
   "labels.template_not_found": "አብነቱ አልተገኘም።",
-  "labels.width_example": "ለምሳሌ. 50",
-  "labels.no_source_template": "ለ{name} የሚስማማ የመለያ አብነት እስካሁን የለም።",
-  "labels.create_source_template": "የ{name} አብነት ፍጠር",
-  "labels.ask_for_source_template": "አስተዳዳሪ የ{name} አብነት እንዲፈጥር ይጠይቁ።"
+  "labels.width_example": "ለምሳሌ. 50"
 }

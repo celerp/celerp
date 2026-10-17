@@ -14,8 +14,5 @@
   "labels.selected": "選択済み：{ids}{more}",
   "labels.template_deleted": "テンプレートを削除しました。",
   "labels.template_not_found": "テンプレートが見つかりません。",
-  "labels.width_example": "例：50",
-  "labels.no_source_template": "{name} に合うラベルテンプレートはまだありません。",
-  "labels.create_source_template": "{name} テンプレートを作成",
-  "labels.ask_for_source_template": "管理者に {name} テンプレートの作成を依頼してください。"
+  "labels.width_example": "例：50"
 }

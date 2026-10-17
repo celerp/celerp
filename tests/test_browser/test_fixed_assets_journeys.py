@@ -494,7 +494,6 @@ def test_j6_labels_off_asks_an_admin_and_the_admin_turns_it_on_and_prints(page: 
         tag.get_by_role("button", name="Turn on").click()
     tag.get_by_role("link", name="Print tag").click()
     page.wait_for_url("**/labels/print-source**")
-    page.get_by_role("button", name="Create Asset tags template").click()
     expect(page.locator("body")).to_contain_text(number)
 
 

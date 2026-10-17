@@ -88,25 +88,8 @@ async def list_templates(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    async def _query():
-        return (
-            await session.execute(
-                select(LabelTemplate)
-                .where(LabelTemplate.company_id == company_id)
-                .order_by(LabelTemplate.created_at)
-            )
-        ).scalars().all()
-
-    rows = await _query()
-    if not rows:
-        # Seed the default presets on first read so every consumer (inventory/doc print
-        # dropdowns, the labels page) sees them immediately — not only after visiting Settings.
-        from .presets import PRESET_TEMPLATES
-        for preset in PRESET_TEMPLATES:
-            session.add(LabelTemplate(id=uuid.uuid4(), company_id=company_id, **TemplateCreate(**preset).model_dump()))
-        await session.commit()
-        rows = await _query()
-    items = [item.as_dict() for item in rows]
+    await _seed_presets(session, company_id)
+    items = [item.as_dict() for item in await _templates(session, company_id)]
     return {"items": items, "total": len(items)}
 
 
@@ -221,11 +204,11 @@ async def get_source(
     settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """A kind of record labels print for: the fields its rows carry, the template offered
-    when the company has none for it, and the company's templates its rows can fill."""
+    """A kind of record labels print for: the fields its rows carry and the company's
+    templates its rows can fill."""
     entry = _label_source(source, role, settings)
     return {"entity_type": source, "label_key": entry["label_key"], "keys": entry["keys"],
-            "preset": entry["preset"], "templates": await _source_templates(session, company_id, entry)}
+            "templates": await _source_templates(session, company_id, entry)}
 
 
 @router.get("/source-rows")
@@ -251,15 +234,12 @@ async def print_source(
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """A PDF label sheet for records of a registered kind, on the chosen template, else the
-    first of the company's that the rows can fill. Refused while none can: the kind's preset
-    becomes a template only when someone creates it."""
+    first of the company's that the rows can fill."""
     from celerp_labels.service import render_label_pdf
 
     entry = _label_source(body.source, role, settings)
     rows = await _rows(session, company_id, entry, body.ids)
     templates = await _source_templates(session, company_id, entry)
-    if not templates:
-        raise HTTPException(status_code=409, detail="No label template fits these records yet. Create one first.")
     template = next((tpl for tpl in templates if tpl["id"] == body.template_id), None) or templates[0]
     pdf = render_label_pdf(rows, template, await _unit_map(session, company_id))
     return Response(content=pdf, media_type="application/pdf",
@@ -294,11 +274,24 @@ async def _rows(session: AsyncSession, company_id: uuid.UUID, entry: dict, ids: 
     return [found[i] for i in wanted if i in found]
 
 
-async def _source_templates(session: AsyncSession, company_id: uuid.UUID, entry: dict) -> list[dict]:
-    """The company's templates whose every field the source's rows carry, oldest first."""
-    keys = set(entry["keys"])
-    rows = (await session.execute(select(LabelTemplate).where(LabelTemplate.company_id == company_id)
+async def _templates(session: AsyncSession, company_id: uuid.UUID) -> list[LabelTemplate]:
+    """The company's templates, oldest first."""
+    return (await session.execute(select(LabelTemplate).where(LabelTemplate.company_id == company_id)
                                   .order_by(LabelTemplate.created_at))).scalars().all()
+
+
+async def _seed_presets(session: AsyncSession, company_id: uuid.UUID) -> None:
+    """Give a company with no templates the default presets, on first read, so every consumer
+    (inventory/doc print dropdowns, the labels page) sees them without visiting Settings first."""
+    if await _templates(session, company_id):
+        return
+    from .presets import PRESET_TEMPLATES
+    for preset in PRESET_TEMPLATES:
+        session.add(LabelTemplate(id=uuid.uuid4(), company_id=company_id, **TemplateCreate(**preset).model_dump()))
+    await session.commit()
+
+
+def _fitting(rows: list[LabelTemplate], keys: set[str]) -> list[dict]:
     fits = []
     for row in rows:
         tpl = row.as_dict()
@@ -306,6 +299,25 @@ async def _source_templates(session: AsyncSession, company_id: uuid.UUID, entry:
         if fields and set(fields) <= keys:
             fits.append(tpl)
     return fits
+
+
+async def _source_templates(session: AsyncSession, company_id: uuid.UUID, entry: dict) -> list[dict]:
+    """The company's templates whose every field the source's rows carry, oldest first. Like
+    the default presets, the kind's own template (its preset, in the reader's language) is
+    added on first read, so its first labels print at once and it can be edited in Labels."""
+    from ui.i18n import t as translate
+
+    keys = set(entry["keys"])
+    fits = _fitting(await _templates(session, company_id), keys)
+    if fits:
+        return fits
+    await _seed_presets(session, company_id)
+    preset = entry["preset"]
+    fields = [{**f, "label": translate(f["label"]) if f.get("label") else ""} for f in preset.get("fields") or []]
+    session.add(LabelTemplate(id=uuid.uuid4(), company_id=company_id, **TemplateCreate(
+        **{**preset, "name": translate(entry["label_key"]), "fields": fields}).model_dump()))
+    await session.commit()
+    return _fitting(await _templates(session, company_id), keys)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

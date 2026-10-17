@@ -1769,53 +1769,18 @@ def setup_ui_routes(app) -> None:
 
     @app.get("/labels/print-source")
     async def labels_print_source(request: Request):
-        """Labels for records another module registers: printed on the company's first
-        template that fits them, else an offer to create the module's own template."""
+        """Labels for records another module registers, printed on the template chosen, else
+        the company's first that fits them (the module's own asset tag, say, on first print)."""
         import ui.api_client as api
-        from fasthtml.common import Button, Div, Form, H1, Input, P
-        from celerp.services.permissions import role_has_permission
-        from ui.config import get_role
 
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         source, ids, back = _source_args(request.query_params)
         try:
-            info = await api.label_source(token, source)
-            if info["templates"]:
-                chosen = request.query_params.get("template_id")
-                template = next((tpl for tpl in info["templates"] if tpl["id"] == chosen), info["templates"][0])
-                return await _source_sheet(token, source, ids, template, back)
-            settings = (await api.get_company(token)).get("settings") or {}
-        except api.APIError as e:
-            return await _source_error(request, back, e)
-        name = t(info["label_key"])
-        if role_has_permission(settings, get_role(request), "manage_labels"):
-            offer = Form(Input(type="hidden", name="source", value=source),
-                         Input(type="hidden", name="ids", value=",".join(ids)),
-                         Input(type="hidden", name="back", value=back),
-                         Button(t("labels.create_source_template", name=name), type="submit", cls="btn btn--primary"),
-                         method="post", action="/labels/print-source/template")
-        else:
-            offer = P(t("labels.ask_for_source_template", name=name))
-        return await _source_page(request, back, H1(name, cls="page-title"),
-                                  Div(P(t("labels.no_source_template", name=name)), offer, cls="section-card"))
-
-    @app.post("/labels/print-source/template")
-    async def labels_print_source_template(request: Request):
-        """Create the module's own template for its records, then print on it."""
-        import ui.api_client as api
-
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        source, ids, back = _source_args(await request.form())
-        try:
-            info = await api.label_source(token, source)
-            preset = info["preset"]
-            fields = [{**f, "label": t(f["label"]) if f.get("label") else ""} for f in preset.get("fields") or []]
-            template = await api.create_label_template(token, {**preset, "name": t(info["label_key"]),
-                                                               "fields": fields})
+            templates = (await api.label_source(token, source))["templates"]
+            chosen = request.query_params.get("template_id")
+            template = next((tpl for tpl in templates if tpl["id"] == chosen), templates[0])
             return await _source_sheet(token, source, ids, template, back)
         except api.APIError as e:
             return await _source_error(request, back, e)

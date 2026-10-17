@@ -188,34 +188,33 @@ async def test_label_rows_for_assets(fa):
     viewer = await fa.role_headers("viewer")
     refused = await fa.client.get("/api/labels/source-rows", headers=viewer, params={"source": "fa_asset", "ids": car})
     assert refused.status_code == 403
-    no_template = await fa.client.post("/api/labels/print-source", headers=fa.h,
-                                       json={"source": "fa_asset", "ids": [car]})
-    assert no_template.status_code == 409
-    await _labels(fa, True)
-    await fa.submit("/labels/print-source/template", {"source": "fa_asset", "ids": car})
+    # The first print, before anyone has made a template, uses the shipped asset tag.
     pdf = await fa.client.post("/api/labels/print-source", headers=fa.h, json={"source": "fa_asset", "ids": [car]})
     assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
 
 
-async def test_print_tag_needs_an_asset_template_then_prints(fa):
+async def test_u49_the_first_print_tag_prints_on_the_shipped_asset_tag(fa):
+    from celerp_labels.presets import PRESET_TEMPLATES
     from ui.i18n import t
 
     await _labels(fa, True)
     car = await _contributed(fa)
     await _tag(fa, car, "TAG-9")
-    page = await fa.page("/labels/print-source", source="fa_asset", ids=car, back=f"/fixed-assets/assets/{car}")
-    assert page.status_code == 200 and t("labels.create_source_template", name=t("fixed_assets.asset_tags")) in page.text
+    printed = await fa.page("/labels/print-source", source="fa_asset", ids=car, back=f"/fixed-assets/assets/{car}")
+    assert printed.status_code == 200 and "TAG-9" in printed.text and "window.print()" in printed.text
+    assert f"{t('fixed_assets.number')}: " in printed.text and "fixed_assets.number" not in printed.text
+    assert f'href="/fixed-assets/assets/{car}"' in printed.text or f"'/fixed-assets/assets/{car}'" in printed.text
 
+    # A role that may not manage labels prints on it too.
     operator = await fa.role_headers("operator")
     await _grant(fa, "manage_labels", ["owner", "admin", "manager"])
-    asked = await _ui(fa, "GET", "/labels/print-source", operator, params={"source": "fa_asset", "ids": car})
-    assert t("labels.ask_for_source_template", name=t("fixed_assets.asset_tags")) in asked.text
+    again = await _ui(fa, "GET", "/labels/print-source", operator, params={"source": "fa_asset", "ids": car})
+    assert "TAG-9" in again.text and "window.print()" in again.text
 
-    made = await fa.submit("/labels/print-source/template", {"source": "fa_asset", "ids": car,
-                                                             "back": f"/fixed-assets/assets/{car}"})
-    assert made.status_code == 200 and "TAG-9" in made.text and "window.print()" in made.text
-    assert f"{t('fixed_assets.number')}: " in made.text and "fixed_assets.number" not in made.text
-    assert f'href="/fixed-assets/assets/{car}"' in made.text or f"'/fixed-assets/assets/{car}'" in made.text
+    # It is the company's own template, kept once and editable in Labels, beside the usual presets.
+    names = [tpl["name"] for tpl in (await fa.client.get("/api/labels/templates", headers=fa.h)).json()["items"]]
+    assert names.count(t("fixed_assets.asset_tags")) == 1, names
+    assert {p["name"] for p in PRESET_TEMPLATES} <= set(names), names
 
 
 async def test_print_tag_when_labels_are_off(fa):

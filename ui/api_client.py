@@ -4080,8 +4080,3 @@ async def label_source(token: str, source: str) -> dict:
 async def label_source_rows(token: str, source: str, ids: list[str]) -> list[dict]:
     async with _api_client(token) as c:
         return _raise(await c.get("/api/labels/source-rows", params={"source": source, "ids": ",".join(ids)})).json()["rows"]
-
-
-async def create_label_template(token: str, data: dict) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post("/api/labels/templates", json=data)).json()

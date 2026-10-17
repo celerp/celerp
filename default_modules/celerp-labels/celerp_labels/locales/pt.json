@@ -14,8 +14,5 @@
   "labels.selected": "Selecionado: {ids}{more}",
   "labels.template_deleted": "Modelo excluído.",
   "labels.template_not_found": "Modelo não encontrado.",
-  "labels.width_example": "p. ex., 50",
-  "labels.no_source_template": "Ainda nenhum modelo de etiqueta serve para {name}.",
-  "labels.create_source_template": "Criar modelo de {name}",
-  "labels.ask_for_source_template": "Peça a um administrador para criar um modelo de {name}."
+  "labels.width_example": "p. ex., 50"
 }
