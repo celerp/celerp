@@ -18,6 +18,12 @@
 #   -Previous      a released installer: the account installs it, it opens fresh data and
 #                  keeps records in it, then this build installs over it and must serve the
 #                  same records (scripts/smoke_records.py).
+#   -PreviousFails with -Previous: the released copy cannot set up its database under this
+#                  account (it must not reach db:ok); this build installs over what it left
+#                  and must start clean.
+#   -Installer     a built Celerp-Setup.exe to test instead of dist/Celerp-Setup.exe. Without
+#                  the unpacked build next to it the install folder is not compared file by
+#                  file; the build job's own smokes do that.
 #   -NoShortNames  Windows stops making short (8.3) names before the account is created,
 #                  so its profile folder has none; the smoke checks that it has none.
 #                  With a name Postgres cannot read in the ANSI code page (Thai, Chinese)
@@ -26,11 +32,16 @@
 #   -OverRunning   once the app is ready, the account runs this build's installer again
 #                  with the app open (its processes and API checked alive first); it must
 #                  end exactly those processes, leave a whole install, and boot again.
-#   -BackupRestore once the app is ready, keeps records and an attachment named in
-#                  Thai, Arabic and Chinese, downloads a full backup, changes the data,
-#                  restores the backup through System Recovery and restarts; the app
-#                  must publish its new API port and serve exactly the backed-up records
-#                  and attachment (scripts/smoke_records.py backup-restore, restored).
+#   -Demo          once the app is ready, moves the sample company in, with the account's
+#                  name as a customer, the invoice number prefix and an attachment name;
+#                  the attachment, the invoice PDF, the CSV exports and a company backup
+#                  restored as a new company must all carry it (smoke_records.py demo).
+#                  Then keeps records and an attachment named in Thai, Arabic and Chinese,
+#                  downloads a full backup, changes the data, restores the backup through
+#                  System Recovery and restarts; the app must publish its new API port and
+#                  serve exactly the backed-up records and attachment (backup-restore,
+#                  restored). Last, a force-quit and a fresh launch must serve the same
+#                  records again (carried).
 #
 # After every install the installed folder must hold exactly the build's files, byte for
 # byte, plus the uninstaller (scripts/check_win_bundle.py installed). Install and start times go to the job summary; they are reported, never
@@ -42,20 +53,23 @@ param(
   [string]$UserName = "celerpci",
   [ValidateSet("user", "machine")][string]$Install = "user",
   [string]$Previous = "",
+  [switch]$PreviousFails,
+  [string]$Installer = "dist/Celerp-Setup.exe",
   [switch]$NoShortNames,
   [switch]$OverRunning,
-  [switch]$BackupRestore
+  [switch]$Demo
 )
 $ErrorActionPreference = "Stop"
 
 $smoke = "$Account account, $Install install"
 function Fail([string]$why) { Write-Host "::error::boot smoke ($smoke) FAILED on Windows - $why"; exit 1 }
-if ($Account -eq "admin" -and ($Install -ne "user" -or $Previous -or $OverRunning -or $NoShortNames -or $BackupRestore -or $PSBoundParameters.ContainsKey("UserName"))) {
-  Fail "the administrator smoke runs the built-in Administrator on a fresh install for itself; -UserName, -Install machine, -Previous, -NoShortNames, -OverRunning and -BackupRestore are for a standard account"
+if ($Account -eq "admin" -and ($Install -ne "user" -or $Previous -or $OverRunning -or $NoShortNames -or $Demo -or $PSBoundParameters.ContainsKey("UserName"))) {
+  Fail "the administrator smoke runs the built-in Administrator on a fresh install for itself; -UserName, -Install machine, -Previous, -NoShortNames, -OverRunning and -Demo are for a standard account"
 }
 if ($Previous -and $Install -eq "machine") { Fail "-Previous upgrades an install for the account itself; it does not combine with -Install machine" }
-if ($Previous -and $BackupRestore) { Fail "-BackupRestore keeps its own records on fresh data; it does not combine with -Previous" }
+if ($PreviousFails -and -not $Previous) { Fail "-PreviousFails needs -Previous" }
 if ($Previous -and -not (Test-Path $Previous)) { Fail "no previous installer at $Previous" }
+if (-not (Test-Path $Installer)) { Fail "no installer at $Installer" }
 
 function Timing([string]$what, [Diagnostics.Stopwatch]$watch) {
   $line = "- Windows $smoke ($u): $what {0:N1} s" -f $watch.Elapsed.TotalSeconds
@@ -172,9 +186,11 @@ function RunAs([string]$name, [string]$commandLine, [int]$timeoutMs) {
   [pscustomobject]@{ Lines = @($lines | Where-Object { $_ -ne $last }); Code = [int]($last -replace '^exit (-?\d+)\s*$', '$1') }
 }
 
-$build = (Resolve-Path "dist/win-unpacked").Path
+$build = Join-Path (Split-Path (Resolve-Path $Installer)) "win-unpacked"
+if (-not (Test-Path $build)) { $build = $null }
+if ($Install -eq "machine" -and -not $build) { Fail "-Install machine sizes its folder from the unpacked build next to $Installer" }
 $setup = Join-Path $pub "Celerp-Setup.exe"
-Copy-Item "dist/Celerp-Setup.exe" $setup -Force
+Copy-Item $Installer $setup -Force
 $udd = "$profileDir\AppData\Roaming"
 if ($Install -eq "machine") {
   $deepest = (Get-ChildItem $build -Recurse -File | ForEach-Object { $_.FullName.Length - $build.Length - 1 } | Measure-Object -Maximum).Maximum
@@ -209,6 +225,7 @@ function InstallSetup([string]$installer, [string]$what) {
 # The installed folder holds exactly the build's files, byte for byte, plus the
 # uninstaller: nothing left from an earlier copy, nothing missing, nothing part written.
 function TreeMatches([string]$dir, [string]$what) {
+  if (-not $build) { Write-Host "smoke: no unpacked build next to $Installer, so the folder after $what is not compared file by file"; return }
   python scripts\check_win_bundle.py installed $build $dir
   if ($LASTEXITCODE -ne 0) { Fail "after $what the install folder differs from the build" }
 }
@@ -220,7 +237,7 @@ Write-Host "smoke: enabling $enabled"
 
 # Launches the installed app exactly as a user would (default data directory, no
 # --user-data-dir) and waits for db:ok; returns the API port.
-function Launch([string]$exe, [string]$what) {
+function Launch([string]$exe, [string]$what, [switch]$MustFail) {
   Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Remove-Item -Force
   $boot = Join-Path $pub "celerp-boot.out"
   $run  = Join-Path $pub "celerp-run.cmd"
@@ -237,12 +254,20 @@ function Launch([string]$exe, [string]$what) {
       if ($pf) { $port = (Get-Content $pf.FullName -Raw).Trim(); Write-Host "smoke: app published API port $port ($($pf.FullName))" }
     }
     if ($port) {
-      try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { $watch.Stop(); Timing "$what, launch to db:ok" $watch; return $port } } catch { }
+      try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { if ($MustFail) { Fail "$what reached db:ok on port $port, so this account can keep data in it: upgrade with data instead" }; $watch.Stop(); Timing "$what, launch to db:ok" $watch; return $port } } catch { }
     }
     if (($tick % 10) -eq 0) { Write-Host "smoke: t+$($tick*2)s Celerp procs=$(@(Get-Process Celerp -EA SilentlyContinue).Count) portFound=$([bool]$port)" }
     $tick++; Start-Sleep -Seconds 2
   }
   taskkill /IM Celerp.exe /F 2>$null | Out-Null
+  if ($MustFail) {
+    $dir = Split-Path $exe
+    for ($i = 0; $i -lt 15 -and @(Ours $dir).Count; $i++) { Start-Sleep -Seconds 2 }
+    if (@(Ours $dir).Count) { Fail "$what`: closing it left its processes running" }
+    Write-Host "smoke: $what did not reach db:ok in 240 s, as expected for this account; its output:"
+    if (Test-Path $boot) { Get-Content $boot -Tail 40 }
+    return
+  }
   Write-Host "===== Electron stdout/stderr ($boot) ====="
   if (Test-Path $boot) { Get-Content $boot -Tail 200 } else { Write-Host "(no captured output)" }
   Write-Host "===== boot-relevant files (logs / postgres state) ====="
@@ -291,7 +316,10 @@ function Records([string]$command, [string]$port, [string]$out, [string]$folder)
   if ($LASTEXITCODE -ne 0) { Get-Content $out -EA SilentlyContinue | Write-Host; Fail "smoke_records.py $command against port $port exited $LASTEXITCODE" }
 }
 
-if ($Previous) {
+if ($PreviousFails) {
+  $installDir = InstallSetup $Previous "previous release install"
+  Launch (Join-Path $installDir "Celerp.exe") "previous release" -MustFail
+} elseif ($Previous) {
   $installDir = InstallSetup $Previous "previous release install"
   $port = Launch (Join-Path $installDir "Celerp.exe") "previous release"
   Records seed $port (Join-Path $pub "celerp-previous.seed")
@@ -320,7 +348,7 @@ Write-Host "boot smoke OK on Windows ($smoke, account $u, port $port)"
 
 # A new database under a profile path with letters outside ASCII is set up in the
 # account's private folder, which only the account, SYSTEM and administrators can open.
-if (-not $Previous -and $profileDir -notmatch '^[\x20-\x7e]+$') {
+if ((-not $Previous -or $PreviousFails) -and $profileDir -notmatch '^[\x20-\x7e]+$') {
   if (-not (Test-Path (Join-Path $private "postgres\PG_VERSION"))) { Fail "no database in the private folder $private" }
   $acl = Get-Acl $private
   $others = @($acl.Access | Where-Object { $_.IsInherited -or $_.IdentityReference.Value -notin @("$env:COMPUTERNAME\$u", "NT AUTHORITY\SYSTEM", "BUILTIN\Administrators") })
@@ -328,16 +356,22 @@ if (-not $Previous -and $profileDir -notmatch '^[\x20-\x7e]+$') {
   Write-Host "smoke: the database is in $private, open only to $u, SYSTEM and administrators"
 }
 
-if ($Previous) {
+if ($Previous -and -not $PreviousFails) {
   Records snapshot $port (Join-Path $pub "celerp-candidate.snapshot")
   python ..\scripts\smoke_records.py carried (Join-Path $pub "celerp-previous.snapshot") (Join-Path $pub "celerp-candidate.snapshot")
   if ($LASTEXITCODE -ne 0) { Fail "the upgrade from the previous release did not keep its records" }
 }
 
-if ($BackupRestore) {
+if ($Demo) {
   $work = Join-Path $env:RUNNER_TEMP "celerp-backup-restore"
-  Records seed $port (Join-Path $pub "celerp-recovery.seed")
   $pf = Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
+  # The sample turns on modules, so Celerp restarts onto a new port during it.
+  $demoOut = Join-Path $pub "celerp-demo.out"
+  python ..\scripts\smoke_records.py demo $pf.FullName (Join-Path $env:RUNNER_TEMP "celerp-demo") ..\celerp\importers\sample\sample.manager $u > $demoOut
+  $demoCode = $LASTEXITCODE
+  Get-Content $demoOut -EA SilentlyContinue | Write-Host
+  if ($demoCode -ne 0) { Fail "smoke_records.py demo exited $demoCode" }
+  $port = (Get-Content $pf.FullName -Raw).Trim()
   Records backup-restore $port (Join-Path $pub "celerp-recovery.out") $work
   Get-Content (Join-Path $pub "celerp-recovery.out") | Write-Host
   # The restart moves the API to a new port: the app must publish it, and serve there.
@@ -356,6 +390,14 @@ if ($BackupRestore) {
   $port = $restarted
   Records restored $port (Join-Path $pub "celerp-recovery.check") $work
   Get-Content (Join-Path $pub "celerp-recovery.check") | Write-Host
+
+  # Closing and opening it again keeps everything.
+  Records snapshot $port (Join-Path $pub "celerp-open.snapshot")
+  ForceQuit $installDir $port "before reopening"
+  $port = Launch $exe "reopen"
+  Records snapshot $port (Join-Path $pub "celerp-reopened.snapshot")
+  python ..\scripts\smoke_records.py carried (Join-Path $pub "celerp-open.snapshot") (Join-Path $pub "celerp-reopened.snapshot")
+  if ($LASTEXITCODE -ne 0) { Fail "reopening the app did not serve the same records" }
 }
 
 if ($OverRunning) {

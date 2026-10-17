@@ -351,7 +351,7 @@ def test_build_workflow_validates_final_macos_dmg_before_distribution():
     publish_idx = workflow.index("  publish-release:")
     publish_block = workflow[publish_idx:publish_idx + 300]
     needs_line = next(l for l in publish_block.splitlines() if l.strip().startswith("needs:"))
-    assert needs_line.strip() == "needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke]"
+    assert needs_line.strip() == "needs: [prepare-release, setup-matrix, build, account-names, openapi-asset, upgrade-smoke]"
 
 
 def test_build_workflow_exports_versioned_openapi_before_publish():

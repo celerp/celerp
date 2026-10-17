@@ -223,7 +223,7 @@ def _job(name: str, conclusion: str | None = "success", attempt: int = 1, starte
 def _build_jobs(conclusions: dict[str, str | None] | None = None) -> list[dict]:
     """build.yml's jobs for a tag in GitHub's order, each succeeded unless given by
     name; "absent" leaves a job out. The release job is still waiting for PyPI."""
-    names = ["setup-matrix", "prepare-release", _LINUX, _WINDOWS, _MAC, "openapi-asset",
+    names = ["setup-matrix", "prepare-release", _LINUX, _WINDOWS, _MAC, "account-names", "openapi-asset",
              _UPGRADE_CHECK, _UPGRADE_LINUX, _UPGRADE_WINDOWS]
     given = conclusions or {}
     jobs = [_job(n, given.get(n, "success")) for n in names if given.get(n) != "absent"]

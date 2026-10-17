@@ -787,53 +787,6 @@ jobs:
         working-directory: electron
         run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName "Célerp Tëst ü" -OverRunning
 
-      # The latest release, installed and opened by an account whose name has a space.
-      # It keeps records; this build then installs over it and must serve the same
-      # records. (Releases up to 2.5.6 cannot set up their database under a non-ASCII
-      # account name, so the upgrade runs under an ASCII one.)
-      - name: Boot smoke (Windows, upgrade from the latest release)
-        timeout-minutes: 25
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: electron
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $previous = Join-Path $env:RUNNER_TEMP "previous"
-          $tag = gh release view --repo $env:GITHUB_REPOSITORY --json tagName --jq .tagName
-          if ($LASTEXITCODE -ne 0 -or -not $tag) { Write-Host "::error::no latest release to upgrade from"; exit 1 }
-          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern Celerp-Setup.exe --dir $previous
-          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not download Celerp-Setup.exe from $tag"; exit 1 }
-          Write-Host "upgrading from $tag"
-          ./scripts/win-boot-smoke.ps1 -Account standard -UserName "Celerp Upgrade" -Previous (Join-Path $previous "Celerp-Setup.exe")
-
-      # Accounts named in Thai and in Chinese, on a PC that makes no short (8.3) names:
-      # Postgres cannot read their profile paths, and there is no short form to fall
-      # back on. The database must be set up in the account's private folder.
-      # The Thai and Arabic accounts also back up, change, restore and restart: the
-      # records and an attachment named in those scripts must come back exactly.
-      - name: Boot smoke (Windows, Thai account name, no short names, backup and restore)
-        timeout-minutes: 25
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: electron
-        run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName "ทดสอบ เซเลิร์ป" -NoShortNames -BackupRestore
-
-      - name: Boot smoke (Windows, Arabic account name, no short names, backup and restore)
-        timeout-minutes: 25
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: electron
-        run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName "محمد اختبار" -NoShortNames -BackupRestore
-
-      - name: Boot smoke (Windows, Chinese account name, no short names)
-        timeout-minutes: 20
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: electron
-        run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName "测试 用户" -NoShortNames
-
       # The installer reads the installed version from the uninstall entry. Over an
       # existing install: none -> installs; the same version run silently ->
       # reinstalls; installed newer -> stops with exit 2 and changes nothing (the
@@ -1107,6 +1060,72 @@ jobs:
             electron/dist/Celerp.deb
           if-no-files-found: warn
 
+  # ── Windows accounts named in every script (Windows builds) ──────────────
+  # The built installer, run by a real local account per name with its profile
+  # loaded, so the profile, data, temp and install folders all carry the name. On
+  # a PC that makes no short (8.3) names Postgres cannot read a profile path
+  # outside the ANSI code page and has no short form to fall back on, so the
+  # database must be set up in the account's private folder. Each account first
+  # installs a release: where that release keeps data under the name, the
+  # upgrade must keep it; where 2.5.6 cannot start ("fails"), this build must
+  # start clean from what it left behind. Then the sample company, attachment,
+  # exports, company and full backups, restores and a reopen, all named in the
+  # account's script (win-boot-smoke.ps1 -Demo).
+  win-names:
+    needs: [setup-matrix, build]
+    if: success() && contains(needs.setup-matrix.outputs.matrix, 'windows-latest')
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { case: thai, user: "สมชาย", previous: v2.5.6, fails: true }
+          - { case: thai-20, user: "สมชายใจดีมีทรัพย์มาก", previous: v2.5.6, fails: true }
+          - { case: arabic, user: "محمد", previous: v2.5.6, fails: true }
+          - { case: chinese, user: "张伟", previous: v2.5.6, fails: true }
+          - { case: supplementary, user: "𠮷 Test", previous: v2.5.6, fails: true }
+          - { case: accented, user: "José Müller", previous: v2.5.6, fails: false }
+          - { case: fullwidth, user: "Ｊｏｓｅ Ｌｉｍａ", previous: v2.5.6, fails: true }
+          - { case: arabic-indic-digits, user: "Ali ٣٤", previous: v2.5.6, fails: true }
+          - { case: ascii, user: "Celerp Upgrade", previous: latest, fails: false }
+    name: win-names (${{ matrix.case }})
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: binaries-windows-latest
+          path: ${{ runner.temp }}/candidate
+      - name: Account ${{ matrix.user }}, from ${{ matrix.previous }}
+        shell: pwsh
+        working-directory: electron
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CASE_USER: ${{ matrix.user }}
+          CASE_PREVIOUS: ${{ matrix.previous }}
+          CASE_FAILS: ${{ matrix.fails }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $previous = Join-Path $env:RUNNER_TEMP "previous"
+          $tag = if ($env:CASE_PREVIOUS -eq "latest") { gh release view --repo $env:GITHUB_REPOSITORY --json tagName --jq .tagName } else { $env:CASE_PREVIOUS }
+          if ($LASTEXITCODE -ne 0 -or -not $tag) { Write-Host "::error::no release $env:CASE_PREVIOUS to upgrade from"; exit 1 }
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern Celerp-Setup.exe --dir $previous
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not download Celerp-Setup.exe from $tag"; exit 1 }
+          Write-Host "upgrading from $tag"
+          $smoke = @{ Account = "standard"; UserName = $env:CASE_USER; Previous = (Join-Path $previous "Celerp-Setup.exe")
+                      Installer = (Join-Path $env:RUNNER_TEMP "candidate\Celerp-Setup.exe"); Demo = $true
+                      PreviousFails = ($env:CASE_FAILS -eq "true"); NoShortNames = ($env:CASE_USER -notmatch '^[\x20-\x7e]+$') }
+          ./scripts/win-boot-smoke.ps1 @smoke
+
+  # One job for the release to wait on: every account in win-names passed.
+  account-names:
+    needs: [setup-matrix, win-names]
+    if: always() && contains(needs.setup-matrix.outputs.matrix, 'windows-latest')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every account name passed
+        run: test "${{ needs.win-names.result }}" = success
+
   # ── Attach the OpenAPI schema as a release asset (tag builds only) ────────
   # The website renders a static API reference from this schema, fetching
   # openapi.json from the latest release. Generated without booting a server:
@@ -1209,7 +1228,7 @@ jobs:
   # /releases/latest keeps serving the previous complete release: no 404 window
   # during a build, and no partial or untested release.
   publish-release:
-    needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke]
+    needs: [prepare-release, setup-matrix, build, account-names, openapi-asset, upgrade-smoke]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
     # Tags build side by side; only this job queues, so GitHub releases are
     # published one at a time, in the order their runs reach this job (not the
@@ -1299,7 +1318,7 @@ jobs:
   # This is the only signal that e.g. macOS notarization broke (Apple agreement
   # expiry) - after which NO platform ships until it is fixed and the tag re-pushed.
   notify-release-failure:
-    needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke, publish-release]
+    needs: [prepare-release, setup-matrix, build, account-names, openapi-asset, upgrade-smoke, publish-release]
     if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
