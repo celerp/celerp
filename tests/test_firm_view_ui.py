@@ -84,6 +84,9 @@ async def test_filters_round_trip_through_the_url(monkeypatch):
     assert seen == [{"q": "demo", "sync": "off"}]
     assert response.headers["HX-Push-Url"] == "/companies?q=demo&sync=off"
     assert "No companies match this search." in response.body.decode()
+    # A sync filter alone searched nothing, so it says so instead.
+    html = (await endpoint(Request({"sync": "failing"}))).body.decode()
+    assert "No companies with this sync status." in html and "match this search" not in html
 
     form = to_xml(routes._filters("demo", "off", "en"))
     assert 'value="demo"' in form and '<option value="off" selected>' in form
