@@ -24,11 +24,13 @@ import pytest
 # DATABASE_URL is provided by the root conftest (Postgres via testcontainers or a
 # preset URL); the browser servers run against that same database.
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
+# The browser servers run every first-party module. Set in api_server, not here: pytest
+# imports this file for any run over tests/, and a unit test must not run as a server
+# whose ENABLED_MODULES pins the module list.
 _ALL_MODULES = (
     "celerp-accounting,celerp-ai,celerp-connectors,celerp-contacts,celerp-sales-funnel,celerp-dashboard,celerp-docs,celerp-inventory,"
     "celerp-labels,celerp-manufacturing,celerp-reports,celerp-subscriptions,celerp-verticals"
 )
-os.environ.setdefault("ENABLED_MODULES", _ALL_MODULES)
 
 # Per-xdist-worker ports so the browser suite can SHARD with `-n` (each worker boots its own API +
 # UI servers and browser against its own worker database — see the root conftest's per-worker DB).
@@ -96,6 +98,7 @@ def api_server():
     """Start FastAPI on this worker's API port against the (Postgres) test database."""
     _require_free_port(_API_PORT)
     import uvicorn
+    os.environ.setdefault("ENABLED_MODULES", _ALL_MODULES)
     # Start from a clean schema; the app rebuilds tables on startup (create_all).
     _reset_pg_database()
 
