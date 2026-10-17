@@ -1097,9 +1097,30 @@ async def test_company_handoff_activity_revoke_and_navigation(ui, real_engine, m
 def _copy_row(**over) -> dict:
     row = {"id": str(uuid.uuid4()), "status": "sent", "sent_at": "2026-10-10T08:00:00+00:00",
            "expires_at": "2026-10-24T08:00:00+00:00", "opened": False, "downloaded": False,
-           "company_opened": False, "stored": True, "can_restore": False,
+           "company_opened": False, "stored": True, "can_restore": False, "renewable": True,
            "firm_name": "Example Accounting", "recipient": "client@example.com", "link": None}
     return {**row, **over}
+
+
+async def test_new_link_is_offered_only_for_a_copy_whose_key_is_kept(ui, real_engine, monkeypatch):
+    """A stored copy whose key this computer no longer holds has no New link; the row
+    says why and what to do, and Resend is still there."""
+    from ui.routes import company_backup as route
+    from ui import api_client as api
+
+    _, _, tok = await _setup(real_engine, name="Company copies keys")
+    ui.cookies.set("celerp_token", tok)
+    kept = _copy_row(link="https://relay.celerp.com/handoffs/a/open#" + "A" * 43)
+    lost = _copy_row(sent_at="2026-10-12T08:00:00+00:00", renewable=False, recipient="other@example.com")
+
+    async def listed(token):
+        return {"items": [kept, lost]}
+    monkeypatch.setattr(api, "company_backup_handoffs", listed)
+    page = _page(await ui.get(route.HANDOFFS))
+    assert f'{route.HANDOFFS}/{kept["id"]}/new-link' in page
+    assert f'{route.HANDOFFS}/{lost["id"]}/new-link' not in page
+    assert t("company_backup.copies_key_missing") in page
+    assert "recipient=other%40example.com" in page
 
 
 async def test_handoffs_table_header_dates_order_revoke_undo(ui, real_engine, monkeypatch):
