@@ -5958,6 +5958,7 @@
   "accountant_access.pairing_link": "Link di abbinamento del commercialista",
   "accountant_access.pairing_link_invalid": "Controlla il link di abbinamento. Se ancora non funziona, chiedine uno nuovo al commercialista.",
   "accountant_access.address": "Il tuo indirizzo Celerp",
+  "accountant_access.address_hint": "L'indirizzo web con cui il Celerp dei suoi clienti raggiunge questo Celerp, come https://books.example.com senza nulla dopo il nome host.",
   "accountant_access.address_invalid": "Inserisci il tuo indirizzo Celerp che inizia con https:// e senza nulla dopo il nome host. Connettiti a Celerp Cloud per ottenerne uno.",
   "accountant_access.copy_link": "Copia link",
   "connectors.send_to_accountant": "Invia questa pagina al tuo commercialista",

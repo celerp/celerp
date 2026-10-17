@@ -5958,6 +5958,7 @@
   "accountant_access.pairing_link": "ลิงก์จับคู่จากนักบัญชีของคุณ",
   "accountant_access.pairing_link_invalid": "ตรวจสอบลิงก์จับคู่ หากยังใช้ไม่ได้ ให้ขอลิงก์ใหม่จากนักบัญชีของคุณ",
   "accountant_access.address": "ที่อยู่ Celerp ของคุณ",
+  "accountant_access.address_hint": "ที่อยู่เว็บที่ Celerp ของลูกค้าใช้เชื่อมต่อมายัง Celerp นี้ เช่น https://books.example.com โดยไม่มีอะไรต่อท้ายชื่อโฮสต์",
   "accountant_access.address_invalid": "กรอกที่อยู่ Celerp ที่ขึ้นต้นด้วย https:// และไม่มีอะไรต่อท้ายชื่อโฮสต์ เชื่อมต่อ Celerp Cloud เพื่อรับที่อยู่",
   "accountant_access.copy_link": "คัดลอกลิงก์",
   "connectors.send_to_accountant": "ส่งหน้านี้ให้นักบัญชีของคุณ",

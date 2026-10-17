@@ -5958,6 +5958,7 @@
   "accountant_access.pairing_link": "Link de emparelhamento do seu contador",
   "accountant_access.pairing_link_invalid": "Verifique o link de emparelhamento. Se ainda não funcionar, peça um novo ao seu contador.",
   "accountant_access.address": "O seu endereço Celerp",
+  "accountant_access.address_hint": "O endereço web pelo qual o Celerp dos seus clientes chega a este Celerp, como https://books.example.com sem nada depois do nome do host.",
   "accountant_access.address_invalid": "Digite o seu endereço Celerp começando com https:// e sem nada após o nome do host. Conecte-se ao Celerp Cloud para obter um.",
   "accountant_access.copy_link": "Copiar link",
   "connectors.send_to_accountant": "Envie esta página ao seu contador",

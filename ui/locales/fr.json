@@ -5958,6 +5958,7 @@
   "accountant_access.pairing_link": "Lien d'association de votre comptable",
   "accountant_access.pairing_link_invalid": "Vérifiez le lien d'association. S'il ne fonctionne toujours pas, demandez-en un nouveau à votre comptable.",
   "accountant_access.address": "Votre adresse Celerp",
+  "accountant_access.address_hint": "L'adresse web à laquelle le Celerp de vos clients joint ce Celerp, comme https://books.example.com sans rien après le nom d'hôte.",
   "accountant_access.address_invalid": "Saisissez votre adresse Celerp commençant par https:// et sans rien après le nom d'hôte. Connectez-vous à Celerp Cloud pour en obtenir une.",
   "accountant_access.copy_link": "Copier le lien",
   "connectors.send_to_accountant": "Envoyez cette page à votre comptable",

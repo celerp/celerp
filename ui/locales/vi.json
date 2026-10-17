@@ -5958,6 +5958,7 @@
   "accountant_access.pairing_link": "Liên kết ghép nối từ kế toán của bạn",
   "accountant_access.pairing_link_invalid": "Hãy kiểm tra liên kết ghép nối. Nếu vẫn không được, hãy xin kế toán một liên kết mới.",
   "accountant_access.address": "Địa chỉ Celerp của bạn",
+  "accountant_access.address_hint": "Địa chỉ web mà Celerp của khách hàng dùng để kết nối tới Celerp này, ví dụ https://books.example.com không có gì sau tên máy chủ.",
   "accountant_access.address_invalid": "Nhập địa chỉ Celerp của bạn bắt đầu bằng https:// và không có gì sau tên máy chủ. Kết nối Celerp Cloud để có một địa chỉ.",
   "accountant_access.copy_link": "Sao chép liên kết",
   "connectors.send_to_accountant": "Gửi trang này cho kế toán của bạn",

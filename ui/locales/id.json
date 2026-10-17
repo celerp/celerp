@@ -5958,6 +5958,7 @@
   "accountant_access.pairing_link": "Tautan pemasangan dari akuntan Anda",
   "accountant_access.pairing_link_invalid": "Periksa tautan pemasangan. Jika masih tidak berhasil, minta tautan baru dari akuntan Anda.",
   "accountant_access.address": "Alamat Celerp Anda",
+  "accountant_access.address_hint": "Alamat web yang dipakai Celerp klien Anda untuk menjangkau Celerp ini, seperti https://books.example.com tanpa apa pun setelah nama host.",
   "accountant_access.address_invalid": "Masukkan alamat Celerp Anda yang diawali https:// tanpa apa pun setelah nama host. Hubungkan ke Celerp Cloud untuk mendapatkannya.",
   "accountant_access.copy_link": "Salin tautan",
   "connectors.send_to_accountant": "Kirim halaman ini ke akuntan Anda",

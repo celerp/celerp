@@ -5958,6 +5958,7 @@
   "accountant_access.pairing_link": "会計士からのペアリングリンク",
   "accountant_access.pairing_link_invalid": "ペアリングリンクを確認してください。それでも使えない場合は、会計士に新しいリンクを依頼してください。",
   "accountant_access.address": "あなたの Celerp アドレス",
+  "accountant_access.address_hint": "クライアントの Celerp がこの Celerp に接続するときのウェブアドレスです。例: https://books.example.com (ホスト名の後には何も付けません)",
   "accountant_access.address_invalid": "https:// で始まり、ホスト名の後に何も付かない Celerp アドレスを入力してください。アドレスは Celerp Cloud に接続すると取得できます。",
   "accountant_access.copy_link": "リンクをコピー",
   "connectors.send_to_accountant": "このページを会計士に送る",

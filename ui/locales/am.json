@@ -5958,6 +5958,7 @@
   "accountant_access.pairing_link": "ከሂሳብ ባለሙያዎ የተገኘ የማጣመሪያ ሊንክ",
   "accountant_access.pairing_link_invalid": "የማጣመሪያ ሊንኩን ያረጋግጡ። አሁንም ካልሰራ፣ ከሂሳብ ባለሙያዎ አዲስ ይጠይቁ።",
   "accountant_access.address": "የእርስዎ Celerp አድራሻ",
+  "accountant_access.address_hint": "የደንበኞችዎ Celerp ይህን Celerp የሚደርስበት የድር አድራሻ፣ ለምሳሌ https://books.example.com ከአስተናጋጁ ስም በኋላ ምንም ሳይኖር።",
   "accountant_access.address_invalid": "የCelerp አድራሻዎን በhttps:// የሚጀምር እና ከአስተናጋጁ ስም በኋላ ምንም የሌለው አድርገው ያስገቡ። አድራሻ ለማግኘት ከCelerp Cloud ጋር ይገናኙ።",
   "accountant_access.copy_link": "ሊንክ ቅዳ",
   "connectors.send_to_accountant": "ይህን ገጽ ለሂሳብ ባለሙያዎ ይላኩ",

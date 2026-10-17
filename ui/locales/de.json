@@ -5958,6 +5958,7 @@
   "accountant_access.pairing_link": "Kopplungslink von Ihrem Steuerberater",
   "accountant_access.pairing_link_invalid": "Prüfen Sie den Kopplungslink. Wenn er weiterhin nicht funktioniert, bitten Sie Ihren Steuerberater um einen neuen.",
   "accountant_access.address": "Ihre Celerp-Adresse",
+  "accountant_access.address_hint": "Die Webadresse, unter der das Celerp Ihrer Mandanten dieses Celerp erreicht, etwa https://books.example.com ohne etwas nach dem Hostnamen.",
   "accountant_access.address_invalid": "Geben Sie Ihre Celerp-Adresse ein, beginnend mit https:// und ohne etwas nach dem Hostnamen. Verbinden Sie sich mit Celerp Cloud, um eine zu erhalten.",
   "accountant_access.copy_link": "Link kopieren",
   "connectors.send_to_accountant": "Diese Seite an Ihren Steuerberater senden",

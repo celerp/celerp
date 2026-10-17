@@ -5958,6 +5958,7 @@
   "accountant_access.pairing_link": "Pairing link from your accountant",
   "accountant_access.pairing_link_invalid": "Check the pairing link. If it still does not work, ask your accountant for a new one.",
   "accountant_access.address": "Your Celerp address",
+  "accountant_access.address_hint": "The web address your clients' Celerp reaches this Celerp at, such as https://books.example.com with nothing after the host name.",
   "accountant_access.address_invalid": "Enter your Celerp address starting with https:// and with nothing after the host name. Connect to Celerp Cloud to get one.",
   "accountant_access.copy_link": "Copy link",
   "connectors.send_to_accountant": "Send this page to your accountant",

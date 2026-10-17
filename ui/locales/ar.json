@@ -5958,6 +5958,7 @@
   "accountant_access.pairing_link": "رابط الاقتران من محاسبك",
   "accountant_access.pairing_link_invalid": "تحقق من رابط الاقتران. إذا لم يعمل بعد ذلك، فاطلب من محاسبك رابطًا جديدًا.",
   "accountant_access.address": "عنوان Celerp الخاص بك",
+  "accountant_access.address_hint": "عنوان الويب الذي يصل منه Celerp لدى عملائك إلى Celerp هذا، مثل https://books.example.com دون أي شيء بعد اسم المضيف.",
   "accountant_access.address_invalid": "أدخل عنوان Celerp الخاص بك بحيث يبدأ بـ https:// ولا يأتي بعد اسم المضيف شيء. اتصل بـ Celerp Cloud للحصول على عنوان.",
   "accountant_access.copy_link": "نسخ الرابط",
   "connectors.send_to_accountant": "أرسل هذه الصفحة إلى محاسبك",

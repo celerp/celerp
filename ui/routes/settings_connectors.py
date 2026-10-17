@@ -1241,6 +1241,7 @@ def _grant_form(lang: str) -> FT:
         Label(t("accountant_access.address", lang)),
         Input(name="address", type="url", maxlength="512",
               value=settings.celerp_public_url or "", cls="form-input"),
+        P(t("accountant_access.address_hint", lang), cls="form-hint"),
         Label(t("accountant_access.label", lang)),
         Input(name="label", maxlength="128",
               placeholder=t("accountant_access.label_example", lang),
@@ -1257,7 +1258,7 @@ def _grant_form(lang: str) -> FT:
         hx_target="#accountant-access-result",
         hx_swap="innerHTML",
         hx_disabled_elt="find button",  # a second click would issue a second key nobody holds
-        cls="form-card",
+        id="accountant-access-form", cls="form-card",
     )
 
 
