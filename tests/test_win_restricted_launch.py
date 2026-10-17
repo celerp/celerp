@@ -211,10 +211,15 @@ def test_the_private_folder_is_made_once_owned_by_the_user_and_closed_to_others(
     acl = subprocess.run(["icacls", str(folder)], capture_output=True, text=True).stdout
     # Only the user, SYSTEM and Administrators, none of it inherited from the parent.
     assert "BUILTIN\\Users" not in acl and "Everyone" not in acl and "(I)" not in acl, acl
-    owner = subprocess.run(["powershell", "-NoProfile", "-Command", f"(Get-Acl -LiteralPath '{folder}').Owner"],
-                           capture_output=True, text=True).stdout.strip()
-    whoami = subprocess.run(["whoami"], capture_output=True, text=True).stdout.strip()
-    assert owner.lower() == whoami.lower()
+    # .NET directly: Get-Acl's module does not load in Windows PowerShell started from a pwsh session.
+    owner = subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         f"[System.IO.Directory]::GetAccessControl('{folder}').GetOwner("
+         "[System.Security.Principal.SecurityIdentifier]).Value"],
+        capture_output=True, text=True)
+    user_sid = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"],
+                              capture_output=True, text=True).stdout.strip().split(",")[-1].strip('"')
+    assert owner.stdout.strip() == user_sid == folder.name.removeprefix("Celerp-"), owner.stderr
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows junctions")
