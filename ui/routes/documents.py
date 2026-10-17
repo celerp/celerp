@@ -646,14 +646,18 @@ async def _doc_results(token: str, state: dict[str, str], date_from: str, date_t
     return docs, total, summary if isinstance(summary, dict) else {}
 
 
+_ACCOUNTING_SYNC_CHOICES = (
+    ("", "documents.accounting_sync_all"),
+    ("included", "documents.accounting_sync_included"),
+    ("excluded", "documents.accounting_sync_excluded"),
+)
+
+
 def _accounting_sync_filter(state: dict[str, str]) -> FT:
-    """Document-list view filter; keep every other selection and sort key."""
+    """Document-list view filter; keep every other selection and sort key. A value it does not
+    know filters nothing, and says so."""
     links = []
-    for choice, title in (
-        ("", "documents.accounting_sync_all"),
-        ("included", "documents.accounting_sync_included"),
-        ("excluded", "documents.accounting_sync_excluded"),
-    ):
+    for choice, title in _ACCOUNTING_SYNC_CHOICES:
         params = {k: v for k, v in state.items() if k != "accounting_sync"}
         if choice:
             params["accounting_sync"] = choice
@@ -662,6 +666,9 @@ def _accounting_sync_filter(state: dict[str, str]) -> FT:
             cls="btn btn--sm " + (
                 "btn--primary" if state.get("accounting_sync", "") == choice else "btn--secondary"),
         ))
+    if state.get("accounting_sync", "") not in dict(_ACCOUNTING_SYNC_CHOICES):
+        return Div(P(t("documents.accounting_sync_unknown"), cls="flash flash--warning"),
+                   Div(*links, cls="filter-actions"))
     return Div(*links, cls="filter-actions")
 
 

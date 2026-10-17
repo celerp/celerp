@@ -5897,6 +5897,7 @@
   "documents.accounting_sync_exclude_action": "Escludi dalla sincronizzazione contabile",
   "documents.accounting_sync_exclude_confirm": "I documenti già inviati al contabile rimarranno nei suoi registri. Escluderli ora non li ritirerà. Continuare?",
   "documents.accounting_sync_excluded": "Escluso",
+  "documents.accounting_sync_unknown": "Celerp non conosce questo filtro di sincronizzazione, quindi sono mostrati tutti i record. Scegli Incluso o Escluso per filtrare.",
   "documents.accounting_sync_include_action": "Includi nella sincronizzazione contabile",
   "documents.accounting_sync_included": "Incluso",
   "documents.accounting_sync_invalid": "Seleziona un'azione valida per la sincronizzazione contabile.",

@@ -5897,6 +5897,7 @@
   "documents.accounting_sync_exclude_action": "Kecualikan dari sinkronisasi akuntansi",
   "documents.accounting_sync_exclude_confirm": "Dokumen yang sudah dikirim ke akuntan tetap ada dalam pembukuannya. Mengecualikannya sekarang tidak akan menariknya kembali. Lanjutkan?",
   "documents.accounting_sync_excluded": "Dikecualikan",
+  "documents.accounting_sync_unknown": "Filter sinkronisasi ini tidak dikenal Celerp, jadi semua catatan ditampilkan. Pilih Disertakan atau Dikecualikan untuk memfilter.",
   "documents.accounting_sync_include_action": "Sertakan dalam sinkronisasi akuntansi",
   "documents.accounting_sync_included": "Disertakan",
   "documents.accounting_sync_invalid": "Pilih tindakan sinkronisasi akuntansi yang valid.",
