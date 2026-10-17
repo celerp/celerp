@@ -849,3 +849,28 @@ async def test_u17_a_page_waiting_on_setup_offers_the_step_in_place_and_opening_
         "the refusal carries the way to record the opening journal"
     form = await owner_ui.get(journal)
     assert f'value="{cutover}"' in form.text, "the journal form opens on the cutover"
+
+
+async def test_u18_the_asset_page_shows_how_it_depreciates_and_its_next_charge(owner_ui):
+    from decimal import Decimal
+
+    car = await _managed_car(owner_ui)
+    policy = (await _class(owner_ui, "Vehicles"))
+    assert policy["method"] == "straight_line"
+    cost, life = Decimal("12000"), int(policy["life_months"])
+    monthly = ((cost - cost * Decimal(str(policy["residual_percent"])) / 100) / life).quantize(Decimal("0.01"))
+
+    def card(html: str) -> str:
+        at = html.index('id="fa-depreciation"')
+        return html[at:html.index("</table>", at)]
+
+    shown = card((await owner_ui.get(f"/fixed-assets/assets/{car}")).text)
+    for words in (t("fixed_assets.method.straight_line"), t("fixed_assets.life_months"), str(life),
+                  t("fixed_assets.residual_percent"), t("fixed_assets.convention"), t("fixed_assets.next_charge")):
+        assert words in shown, words
+    assert "2026-08" in shown and f"{monthly:,}" in shown, "the next run charges August, the first managed month"
+
+    await _review_and_confirm(owner_ui, "run", {"month": "2026-08"})
+    shown = card((await owner_ui.get(f"/fixed-assets/assets/{car}")).text)
+    assert "2026-09" in shown and "2026-08" not in shown and f"{monthly:,}" in shown, \
+        "once August is posted, the next charge is September's"

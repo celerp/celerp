@@ -1117,6 +1117,27 @@ def _figures_card(asset: dict, class_name: str, currency: str) -> FT:
     )
 
 
+def _depreciation_card(asset: dict, currency: str) -> FT:
+    """How the asset depreciates, and what the next run charges it."""
+    policy = asset.get("policy") or {}
+    rows = [(t("fixed_assets.method"), _rule_label("method", policy.get("method")))]
+    if policy.get("method") != "none":
+        rows += [(t("fixed_assets.life_months"), _text(policy.get("life_months"))),
+                 (t("fixed_assets.residual_percent"), _text(policy.get("residual_percent"))),
+                 (t("fixed_assets.convention"), _rule_label("convention", policy.get("convention") or "full_month")),
+                 *[(t(f"fixed_assets.param.{name}"), _text(value)) for name, value in (policy.get("params") or {}).items()]]
+    upcoming = asset.get("next_charge")
+    if upcoming and upcoming["held"]:
+        rows.append((t("fixed_assets.next_charge"),
+                     Span(t("fixed_assets.next_charge_held", month=upcoming["month"]), " ",
+                          A(t("fixed_assets.runs_title"), href="/fixed-assets/runs"))))
+    elif upcoming:
+        rows.append((t("fixed_assets.next_charge"), " ".join(
+            x for x in (upcoming["month"], _money(upcoming["amount"], currency) if upcoming["amount"] else "") if x)))
+    return Div(H2(t("fixed_assets.depreciation_card"), cls="section-title"), _detail_table(rows),
+               cls="detail-card section-card", id="fa-depreciation")
+
+
 def _sources_card(asset: dict, currency: str) -> FT:
     sources = asset.get("sources") or []
     if not sources:
@@ -2185,6 +2206,7 @@ def setup_ui_routes(app) -> None:
                            Div(_details_card(asset, members),
                                _figures_card(asset, _class_names(classes).get(asset.get("class_id")), currency),
                                cls="detail-grid"),
+                           _depreciation_card(asset, currency) if asset.get("status") not in ("physical", "undone") else "",
                            "" if asset.get("transferred_from") else _sources_card(asset, currency), *physical, upkeep, *extra,
                            Div(H2(t("fixed_assets.movements"), cls="section-title"),
                                _movements_table(movements, currency), cls="detail-card section-card"),

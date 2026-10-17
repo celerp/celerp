@@ -364,6 +364,23 @@ class Charge:
                 "responsible_user_id": str(user_id) if user_id else None}
 
 
+async def next_charge(session, company_id, asset_id: str, asset: dict) -> dict | None:
+    """What the next run charges the asset: its month and the amount, months it catches up
+    included, or held when something holds the asset then. None when no run charges it."""
+    cls = await _state(session, company_id, str(asset.get("class_id") or ""))
+    if asset.get("status") != "active" or cls is None or asset["policy"]["method"] == "none":
+        return None
+    books = await _books(session, company_id)
+    month = books.last + 1 if books.last is not None else books.first
+    charge = Charge(asset_id, asset, cls, await operations.asset_movements(session, company_id, asset_id), books,
+                    month, month)
+    await charge.hold(session, company_id, books, month, {})
+    if charge.held(month):
+        return {"month": period_label(month), "held": True, "amount": None}
+    return {"month": period_label(month), "held": False,
+            "amount": money(sum((a for _, a in charge.postable()), Decimal(0)), books.currency)}
+
+
 async def _charges(session, company_id, books: Books, through: int, start: int) -> list[Charge]:
     classes = {c["id"]: c for c in await setup.classes(session, company_id, include_archived=True)}
     movements = await movements_by_asset(session, company_id)

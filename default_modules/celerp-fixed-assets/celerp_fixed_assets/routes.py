@@ -262,7 +262,8 @@ async def get_asset(asset_id: str, company_id=Depends(get_current_company_id), m
     state = await _asset(session, company_id, asset_id)
     return {**asset_out(asset_id, state, money=money),
             **views.readable(await remeasure.asset_facts(session, company_id, asset_id, state), money),
-            "undoable": await additions.undoable(session, company_id, asset_id)}
+            "undoable": await additions.undoable(session, company_id, asset_id),
+            "next_charge": views.readable(await runs.next_charge(session, company_id, asset_id, state), money)}
 
 
 @router.patch("/assets/{asset_id}", dependencies=[require_permission("manage_fixed_assets")])
