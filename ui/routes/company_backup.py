@@ -250,10 +250,15 @@ _BUTTONS = {_CREATE: "company_backup.restore", _RETURN: "company_backup.open_exi
 _MISSING, _INCOMPATIBLE, _ENABLE = "missing", "incompatible", "enable_required"
 
 
-def _plan_lines(mode: WizardMode, preview: dict) -> list:
+def _separate_line(mode: WizardMode) -> list:
+    return [P(t("company_backup.separate_company"), cls="form-hint")] if mode is SETTINGS else []
+
+
+def _plan_lines(mode: WizardMode, preview: dict, replace: bool) -> list:
     """What restoring does, as the preview states it: a new company, or the company the
     backup was already restored as, the team members it gives access, and whose role
-    permissions they work under."""
+    permissions they work under. With a replace on offer, that a restore is a separate
+    company is said under that choice instead."""
     action = preview.get("action") or _CREATE
     name = preview.get("destination_name") or preview.get("company_name") or ""
     team = _count(preview.get("team_members")) if mode is SETTINGS else 0
@@ -263,7 +268,7 @@ def _plan_lines(mode: WizardMode, preview: dict) -> list:
     if action == _REACTIVATE:
         return [P(t("company_backup.deactivated_exists", name=name), cls="flash flash--warning")]
     if action == _CREATE:
-        lines = [P(t("company_backup.separate_company"), cls="form-hint")] if mode is SETTINGS else []
+        lines = [] if replace else _separate_line(mode)
         if team:
             lines += [P(t("company_backup.team_keeps_access", count=team), cls="flash flash--warning"),
                       P(t(policy, name=name), cls="form-hint")]
@@ -400,7 +405,7 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
         auth_header(preview.get("company_name", ""), t("company_backup.preview_subtitle")),
         flash(error) if error else "",
         wizard_table(Tbody(*[Tr(Td(k), Td(v)) for k, v in rows])),
-        *_plan_lines(mode, preview),
+        *_plan_lines(mode, preview, replace=bool(replace)),
         *_scope_lines(preview),
         P(t("company_backup.nothing_written"), cls="form-hint"),
         *(_replace_section(mode, preview, replace) if replace else []),
@@ -466,7 +471,7 @@ def _replace_section(mode: WizardMode, preview: dict, replace: dict) -> list:
     else:
         lines.append(P(t("company_backup.err_replace_owner_only", company=company), cls="flash flash--warning"))
     lines.append(H2(t("company_backup.replace_or_separate"), cls="mt-md"))
-    return lines
+    return lines + _separate_line(mode)
 
 
 def _with_cookie(resp, mode: WizardMode, request: Request, upload_token: str):
