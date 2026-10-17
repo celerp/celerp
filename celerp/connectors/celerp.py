@@ -350,6 +350,18 @@ def _account_codes(data: dict) -> list[str]:
     return [code for code in codes if isinstance(code, str) and code]
 
 
+def _reversed_last(items: list) -> list:
+    """Journals reversing these books' own journals, each after the one it reverses when
+    both are here, so a reversal, its undo, and so on reach the firm in that order."""
+    pending = {item[0][0]: item for item in items}
+    ordered = []
+    while pending:
+        ready = [eid for eid, item in pending.items()
+                 if item[0][2]["reverses"]["journal"] not in pending] or list(pending)
+        ordered += [pending.pop(eid) for eid in sorted(ready)]
+    return ordered
+
+
 class _Refused(ValueError):
     """The receiving company refused a record and said why."""
 
@@ -407,102 +419,115 @@ class CelerpConnector(ConnectorBase):
         since = await _last_success_watermark(ctx.company_id, self.name, kind + "_out")
         fields = _FIELDS if kind == "contacts" else _PRODUCT_FIELDS if kind == "products" else None
         label = spec.label
-        after = ""
-        async with RateLimitedClient(public_only=True) as client:
+
+        async def records():
+            """Each record with its last delivery and the firm's lock date, in reading
+            order, except that a journal reversing one of these books' own journals goes
+            after it: the firm takes a reversal only of a journal it already has."""
+            after, later = "", []
             while True:
                 page = await reader(company_id, after, since)
                 if not page:
                     break
                 marks, firm_lock = await peer_journals.sent_marks(
                     company_id, grant_id, kind, [entity_id for entity_id, _, _ in page])
-                for entity_id, revision, state in page:
-                    sent = marks.get(entity_id)
-                    if sent is not None and sent[0] == revision:
-                        if sent[1] is None:
-                            result.skipped += 1  # the firm has this revision
-                            continue
-                        if peer_journals.refused_by_lock(sent[1], firm_lock):
-                            result.errors.append(label + " delivery incomplete")
-                            result.attention.append({
-                                "id": entity_id, "label": attention_label(state, entity_id),
-                                "reason": sent[1]})
-                            continue
-                    reason = None
-                    if type(revision) is not int or revision < 1:
-                        reason = "Contact version unavailable" if kind == "contacts" else "Product state needs review"
-                    elif kind == "contacts" and state.get("is_self"):
-                        result.skipped += 1
-                        continue
-                    elif state.get("deleted") or state.get("merged_into"):
-                        reason = "Deleted contact needs review" if kind == "contacts" else "Product state needs review"
-                    if kind == "journals":
-                        data = state
-                    elif kind == "inventory":
-                        data = state
-                        if (not data.get("location_id") or not data.get("location_name")
-                                or not data.get("location_type") or not data.get("counts")):
-                            reason = "Stock count location or entries need review"
-                    elif kind == "documents":
-                        from celerp.services.peer_documents import _FIELDS as doc_fields
-                        data = {key: state[key] for key in doc_fields if key in state}
-                        if state.get("accounting_sync_excluded"):
-                            result.skipped += 1
-                            continue
-                        data.setdefault("status", "draft")
+                for record in page:
+                    item = (record, marks.get(record[0]), firm_lock)
+                    if kind == "journals" and (record[2].get("reverses") or {}).get("journal"):
+                        later.append(item)
                     else:
-                        data = {key: state.get(key) for key in fields}
-                        if kind == "products" and state.get("received_on"):
-                            data["received_on"] = state["received_on"]
-                    if reason is None and kind in ("contacts", "products") and (not isinstance(data.get("name"), str) or not data["name"].strip()):
-                        reason = "Contact name unavailable" if kind == "contacts" else "Product name missing"
-                    if reason is not None:
-                        result.errors.append(reason)
-                        result.attention.append({
-                            "id": entity_id, "label": attention_label(state, entity_id),
-                            "reason": reason,
-                        })
-                        continue
-                    if kind == "products" and not data.get("sell_by"):
-                        data["sell_by"] = "piece"
-                    if kind in ("journals", "documents"):
-                        data = {**data, "accounts": await peer_accounts.outgoing_for(
-                            company_id, firm_company, _account_codes(data))}
-                    try:
-                        response = await client.post(target, headers=peer_headers(ctx), json={
-                            "records": [{
-                                "entity_id": entity_id, "event_type": spec.event,
-                                "data": data, "source": "celerp",
-                                "idempotency_key": f"peer:{company_id}:{entity_id}:{revision}",
-                                "source_revision": revision,
-                            }]})
-                        if response.status_code == 403 and kind == "journals":
-                            return result  # the firm's key does not open journals
-                        if response.status_code != 200:
-                            raise ValueError("Receiving installation refused update")
-                        body = response.json()
-                        refused = body.get("errors") or []
-                        status = next((s for s in ("created", "updated", "skipped")
-                                       if body.get(s) == 1), None)
-                        if refused or status is None:
-                            raise _Refused(_refusal(refused))
-                        await peer_journals.note_delivery(company_id, grant_id, kind, entity_id,
-                                                          revision, None, "")
-                        result.record(status)
-                    except Exception as exc:
-                        if isinstance(exc, _Refused):
-                            await peer_journals.note_delivery(
-                                company_id, grant_id, kind, entity_id, revision, str(exc),
-                                f"{label} {attention_label(state, entity_id)}")
-                        result.errors.append(label + " delivery incomplete")
-                        result.attention.append({
-                            "id": entity_id, "label": attention_label(state, entity_id),
-                            "reason": (str(exc) if isinstance(exc, _Refused)
-                                       else "Receiving installation needs attention"),
-                        })
+                        yield item
                 after = (str(page[-1][2]["source_closed_event_id"]) if kind == "inventory"
                          else page[-1][0])
                 if len(page) < _PAGE:
                     break
+            for item in _reversed_last(later):
+                yield item
+
+        async with RateLimitedClient(public_only=True) as client:
+            async for (entity_id, revision, state), sent, firm_lock in records():
+                if sent is not None and sent[0] == revision:
+                    if sent[1] is None:
+                        result.skipped += 1  # the firm has this revision
+                        continue
+                    if peer_journals.refused_by_lock(sent[1], firm_lock):
+                        result.errors.append(label + " delivery incomplete")
+                        result.attention.append({
+                            "id": entity_id, "label": attention_label(state, entity_id),
+                            "reason": sent[1]})
+                        continue
+                reason = None
+                if type(revision) is not int or revision < 1:
+                    reason = "Contact version unavailable" if kind == "contacts" else "Product state needs review"
+                elif kind == "contacts" and state.get("is_self"):
+                    result.skipped += 1
+                    continue
+                elif state.get("deleted") or state.get("merged_into"):
+                    reason = "Deleted contact needs review" if kind == "contacts" else "Product state needs review"
+                if kind == "journals":
+                    data = state
+                elif kind == "inventory":
+                    data = state
+                    if (not data.get("location_id") or not data.get("location_name")
+                            or not data.get("location_type") or not data.get("counts")):
+                        reason = "Stock count location or entries need review"
+                elif kind == "documents":
+                    from celerp.services.peer_documents import _FIELDS as doc_fields
+                    data = {key: state[key] for key in doc_fields if key in state}
+                    if state.get("accounting_sync_excluded"):
+                        result.skipped += 1
+                        continue
+                    data.setdefault("status", "draft")
+                else:
+                    data = {key: state.get(key) for key in fields}
+                    if kind == "products" and state.get("received_on"):
+                        data["received_on"] = state["received_on"]
+                if reason is None and kind in ("contacts", "products") and (not isinstance(data.get("name"), str) or not data["name"].strip()):
+                    reason = "Contact name unavailable" if kind == "contacts" else "Product name missing"
+                if reason is not None:
+                    result.errors.append(reason)
+                    result.attention.append({
+                        "id": entity_id, "label": attention_label(state, entity_id),
+                        "reason": reason,
+                    })
+                    continue
+                if kind == "products" and not data.get("sell_by"):
+                    data["sell_by"] = "piece"
+                if kind in ("journals", "documents"):
+                    data = {**data, "accounts": await peer_accounts.outgoing_for(
+                        company_id, firm_company, _account_codes(data))}
+                try:
+                    response = await client.post(target, headers=peer_headers(ctx), json={
+                        "records": [{
+                            "entity_id": entity_id, "event_type": spec.event,
+                            "data": data, "source": "celerp",
+                            "idempotency_key": f"peer:{company_id}:{entity_id}:{revision}",
+                            "source_revision": revision,
+                        }]})
+                    if response.status_code == 403 and kind == "journals":
+                        return result  # the firm's key does not open journals
+                    if response.status_code != 200:
+                        raise ValueError("Receiving installation refused update")
+                    body = response.json()
+                    refused = body.get("errors") or []
+                    status = next((s for s in ("created", "updated", "skipped")
+                                   if body.get(s) == 1), None)
+                    if refused or status is None:
+                        raise _Refused(_refusal(refused))
+                    await peer_journals.note_delivery(company_id, grant_id, kind, entity_id,
+                                                      revision, None, "")
+                    result.record(status)
+                except Exception as exc:
+                    if isinstance(exc, _Refused):
+                        await peer_journals.note_delivery(
+                            company_id, grant_id, kind, entity_id, revision, str(exc),
+                            f"{label} {attention_label(state, entity_id)}")
+                    result.errors.append(label + " delivery incomplete")
+                    result.attention.append({
+                        "id": entity_id, "label": attention_label(state, entity_id),
+                        "reason": (str(exc) if isinstance(exc, _Refused)
+                                   else "Receiving installation needs attention"),
+                    })
         return result
 
     async def _fetch(self, client, ctx: ConnectorContext, entity: str, params: dict | None = None,
