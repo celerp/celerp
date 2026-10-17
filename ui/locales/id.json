@@ -211,6 +211,8 @@
   "acct.err_je_unbalanced_credit": "Jurnal ini tidak seimbang dalam {base}: debit {debits} dan kredit {credits}. Tambahkan {gap} ke sisi kredit, atau perbaiki jumlahnya, lalu posting ulang.",
   "acct.err_je_zero": "Jurnal ini berjumlah nol. Masukkan jumlah yang ingin diposting lalu coba lagi.",
   "acct.err_je_not_found": "Celerp tidak menemukan jurnal ini. Jurnal itu mungkin sudah dibatalkan atau dihapus. Muat ulang jurnal lalu coba lagi.",
+  "acct.post_again_gone": "Entri yang akan diposting ulang sudah tidak ada di pembukuan ini, jadi tidak ada yang diisi.",
+  "acct.post_again_back": "Kembali ke {page}",
   "acct.err_je_not_manual": "Jurnal ini dibuat oleh dokumen (seperti faktur atau tagihan), jadi tidak bisa dibatalkan di sini. Buka dokumen itu lalu batalkan atau urungkan dari sana.",
   "acct.err_je_from_peer": "{company} mengirim entri jurnal ini, jadi hanya {company} yang dapat membatalkannya. Untuk mengoreksinya di sini, posting entri jurnal (journal entry) Anda sendiri.",
   "acct.err_je_peer_origin": "Akuntan Anda memposting entri jurnal ini, jadi tidak dapat dibatalkan di sini. Balikkan saja, dan akuntan Anda akan melihat pembalikannya.",

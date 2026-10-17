@@ -211,6 +211,8 @@
   "acct.err_je_unbalanced_credit": "Questa registrazione non quadra in {base}: dare {debits}, avere {credits}. Aggiungi {gap} in avere, oppure correggi gli importi, poi registra di nuovo.",
   "acct.err_je_zero": "Questa registrazione ha totale zero. Inserisci gli importi da registrare e riprova.",
   "acct.err_je_not_found": "Celerp non ha trovato questa registrazione. Potrebbe essere stata stornata o rimossa. Aggiorna il giornale e riprova.",
+  "acct.post_again_gone": "La registrazione da ripetere non è più in questi libri, quindi non è stato compilato nulla.",
+  "acct.post_again_back": "Torna a {page}",
   "acct.err_je_not_manual": "Questa registrazione è stata creata da un documento (come una fattura o una fattura passiva), quindi non si può stornare qui. Apri quel documento e annullalo da lì.",
   "acct.err_je_from_peer": "{company} ha inviato questa scrittura, quindi solo {company} può annullarla. Per correggerla qui, registra una tua scrittura (journal entry).",
   "acct.err_je_peer_origin": "Il tuo commercialista ha registrato questa scrittura, quindi non può essere annullata qui. Stornala invece: il commercialista vedrà lo storno.",

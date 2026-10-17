@@ -211,6 +211,8 @@
   "acct.err_je_unbalanced_credit": "Diese Buchung ist in {base} nicht ausgeglichen: Soll {debits}, Haben {credits}. Fügen Sie {gap} auf der Habenseite hinzu oder korrigieren Sie die Beträge und buchen Sie dann erneut.",
   "acct.err_je_zero": "Diese Buchung ergibt null. Geben Sie die Beträge ein, die Sie buchen möchten, und versuchen Sie es erneut.",
   "acct.err_je_not_found": "Celerp konnte diese Buchung nicht finden. Sie wurde möglicherweise storniert oder entfernt. Aktualisieren Sie das Journal und versuchen Sie es erneut.",
+  "acct.post_again_gone": "Die erneut zu buchende Buchung ist nicht mehr in diesen Büchern, daher wurde nichts ausgefüllt.",
+  "acct.post_again_back": "Zurück zu {page}",
   "acct.err_je_not_manual": "Diese Buchung wurde von einem Beleg (etwa einer Rechnung oder Eingangsrechnung) erstellt und kann hier nicht storniert werden. Öffnen Sie den Beleg und stornieren oder widerrufen Sie ihn dort.",
   "acct.err_je_from_peer": "{company} hat diesen Buchungssatz gesendet, daher kann nur {company} ihn stornieren. Um ihn hier zu korrigieren, buchen Sie einen eigenen Buchungssatz (journal entry).",
   "acct.err_je_peer_origin": "Ihr Steuerberater hat diesen Buchungssatz gebucht, daher kann er hier nicht storniert werden. Kehren Sie ihn stattdessen um; Ihr Steuerberater sieht die Umkehrung.",

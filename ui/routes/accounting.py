@@ -165,7 +165,7 @@ def setup_routes(app):
         )
 
     async def _render_journal_form(request: Request, token: str, ts: str, memo: str,
-                                   lines: list[dict], idem_token: str, error: str | None,
+                                   lines: list[dict], idem_token: str, error: str | FT | None,
                                    date_from: str = "", date_to: str = ""):
         try:
             _settings = (await api.get_company(token)).get("settings") or {}
@@ -224,7 +224,11 @@ def setup_routes(app):
                           "credit": str(l["credit"]) if l.get("credit") else ""}
                          for l in copied.get("entries") or []]
             except APIError as e:
-                error = str(e.detail)
+                # Post again is chosen on Client companies, so a missing entry leads back there.
+                error = (Span(t("acct.post_again_gone"), " ",
+                              A(t("acct.post_again_back", page=t("firm_view.title")),
+                                href="/companies"))
+                         if e.status == 404 else str(e.detail))
         return await _render_journal_form(
             request, token,
             ts=ts, memo=memo, lines=lines,
@@ -481,7 +485,7 @@ def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]],
 
 
 def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[dict],
-                        idem_token: str, error: str | None = None,
+                        idem_token: str, error: str | FT | None = None,
                         date_from: str = "", date_to: str = "",
                         base_currency: str = "",
                         contacts: list[dict] | None = None,

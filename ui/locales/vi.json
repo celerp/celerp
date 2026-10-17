@@ -211,6 +211,8 @@
   "acct.err_je_unbalanced_credit": "Bút toán này không cân bằng theo {base}: Nợ {debits} và Có {credits}. Hãy thêm {gap} vào bên Có, hoặc sửa số tiền, rồi ghi sổ lại.",
   "acct.err_je_zero": "Bút toán này có tổng bằng 0. Hãy nhập số tiền cần ghi sổ rồi thử lại.",
   "acct.err_je_not_found": "Celerp không tìm thấy bút toán này. Có thể nó đã bị hủy hoặc xóa. Hãy tải lại sổ nhật ký rồi thử lại.",
+  "acct.post_again_gone": "Bút toán cần ghi lại không còn trong sổ sách này, nên không có gì được điền sẵn.",
+  "acct.post_again_back": "Quay lại {page}",
   "acct.err_je_not_manual": "Bút toán này được tạo từ một chứng từ (như hóa đơn bán hoặc hóa đơn mua), nên không thể hủy tại đây. Hãy mở chứng từ đó và hủy hoặc hoàn tác ở đó.",
   "acct.err_je_from_peer": "{company} đã gửi bút toán này nên chỉ {company} mới hủy được. Để sửa ở đây, hãy ghi một bút toán (journal entry) của riêng bạn.",
   "acct.err_je_peer_origin": "Kế toán viên của bạn đã ghi bút toán này nên không thể hủy ở đây. Hãy đảo bút toán thay vào đó, kế toán viên sẽ thấy bút toán đảo.",

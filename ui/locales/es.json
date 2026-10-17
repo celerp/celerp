@@ -211,6 +211,8 @@
   "acct.err_je_unbalanced_credit": "Este asiento no cuadra en {base}: los débitos suman {debits} y los créditos {credits}. Añada {gap} al crédito, o corrija los importes, y registre de nuevo.",
   "acct.err_je_zero": "Este asiento suma cero. Escriba los importes que quiere registrar e inténtelo de nuevo.",
   "acct.err_je_not_found": "Celerp no encontró este asiento. Puede que se haya anulado o eliminado. Actualice el diario e inténtelo de nuevo.",
+  "acct.post_again_gone": "El asiento que se iba a volver a registrar ya no está en estos libros, así que no se rellenó nada.",
+  "acct.post_again_back": "Volver a {page}",
   "acct.err_je_not_manual": "Este asiento lo creó un documento (como una factura o una factura de proveedor), así que no se puede anular aquí. Abra ese documento y anúlelo o deshágalo allí.",
   "acct.err_je_from_peer": "{company} envió este asiento, así que solo {company} puede anularlo. Para corregirlo aquí, registre su propio asiento (journal entry).",
   "acct.err_je_peer_origin": "Su contador registró este asiento, así que no se puede anular aquí. Reviértalo; su contador verá la reversión.",
