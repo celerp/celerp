@@ -27,8 +27,8 @@ from ui.api_client import start_company as api_start_company
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.api_client import migration_staged_run as api_migration_staged_run
-from ui.components.shell import auth_shell, client_scripts, flash, page_title, toast_header
-from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies
+from ui.components.shell import auth_shell, client_scripts, flash, landing_path, page_title, toast_header
+from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies, get_role
 from ui.i18n import t, get_lang
 from celerp.services.app_paths import is_app_local_path
 from celerp.config import settings as _settings
@@ -357,9 +357,9 @@ def setup_routes(app):
         except APIError as e:
             return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         if bootstrapped:
-            # A second submit after setup finished: the signed-in owner goes on to the
-            # dashboard, anyone else signs in.
-            return RedirectResponse("/dashboard" if request.cookies.get(COOKIE_NAME) else "/login",
+            # A second submit after setup finished: the signed-in owner goes on to their
+            # first page, anyone else signs in.
+            return RedirectResponse("/" if request.cookies.get(COOKIE_NAME) else "/login",
                                     status_code=302)
         form = await request.form()
         values = {k: str(form.get(k, "")).strip() for k in _SETUP_KEPT_FIELDS}
@@ -416,7 +416,7 @@ def setup_routes(app):
         # Validate token - stale cookies (e.g. after init --force) must not
         # skip setup when the DB has been wiped.
         try:
-            await api_get_company(token)
+            co = await api_get_company(token)
         except APIError as e:
             if e.status == 401:
                 bootstrapped = await bootstrap_status()
@@ -427,9 +427,9 @@ def setup_routes(app):
                 return RedirectResponse("/setup", status_code=302)
             elif e.status == 403 and (staged := await _staged_run_redirect(token)):
                 return staged
-            # Any other API error: let them through to dashboard (transient failure)
-            return RedirectResponse("/dashboard", status_code=302)
-        return RedirectResponse("/dashboard", status_code=302)
+            # Any other API error is transient: let them through to their first page
+            return RedirectResponse(landing_path({}, get_role(request)), status_code=302)
+        return RedirectResponse(landing_path(co.get("settings") or {}, get_role(request)), status_code=302)
 
     # ── Company switcher (HTMX partial) ─────────────────────────────────────
 

@@ -429,6 +429,35 @@ class TestAuthRouting:
         assert "/dashboard" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("nav, company_settings, role, landing", [
+        # The installation does not run the dashboard module: the first page in the menu,
+        # top-level entries before grouped ones, as the sidebar lists them.
+        ([{"group": "Inventory", "key": "inventory", "href": "/inventory", "order": 10, "_module": "celerp-inventory"},
+          {"group": None, "key": "ai", "href": "/ai", "order": 90, "_module": "celerp-ai"}],
+         {}, "owner", "/ai"),
+        # The company turned the dashboard off.
+        ([{"group": None, "key": "dashboard", "href": "/dashboard", "order": 1, "_module": "celerp-dashboard"},
+          {"group": "Inventory", "key": "inventory", "href": "/inventory", "order": 10, "_module": "celerp-inventory"}],
+         {"enabled_modules": ["celerp-inventory"]}, "owner", "/inventory"),
+        # The role may see no page in the menu: Settings, which every role can open.
+        ([{"group": None, "key": "dashboard", "href": "/dashboard", "order": 1, "_module": "celerp-dashboard",
+           "permission": "view_dashboards"}],
+         {"role_grants": {"view_dashboards": ["owner"]}}, "viewer", "/settings/general"),
+    ])
+    async def test_authenticated_root_lands_on_a_page_that_exists(self, ui_client, monkeypatch,
+                                                                  nav, company_settings, role, landing):
+        """Signing in, and signing the other user out, land on /. Without the dashboard
+        module, or for a role that may not see it, / must not send the user to a
+        /dashboard that answers Page Not Found."""
+        import celerp.modules.slots as slots
+        monkeypatch.setattr(slots, "get", lambda slot: [dict(i) for i in nav] if slot == "nav" else [])
+        company = {"id": "c1", "name": "Acme", "settings": company_settings, "current_role": role}
+        with patch("ui.routes.auth.api_get_company", new=AsyncMock(return_value=company)):
+            r = await ui_client.get("/", cookies=_authed(role=role))
+        assert r.status_code == 302
+        assert r.headers["location"] == landing
+
+    @pytest.mark.asyncio
     async def test_logout_post_clears_cookie_and_redirects(self, ui_client):
         """POST /logout → redirect to /login and clears auth cookie."""
         r = await ui_client.post("/logout", cookies=_authed())

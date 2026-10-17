@@ -2508,16 +2508,28 @@ def module_active(settings: dict | None, name: str) -> bool:
     return any(item.get("_module") == name for item in module_nav(settings))
 
 
+def visible_nav(settings: dict | None, role: str) -> list[dict]:
+    """The nav entries this role sees for the company, in display order."""
+    from ui.module_slots import slot_permission_allows
+    settings = settings or {}
+    return [item for item in module_nav(settings) if slot_permission_allows(item, settings, role)]
+
+
+def landing_path(settings: dict | None, role: str) -> str:
+    """Where signing in lands: the first page in the caller's menu, which is the dashboard
+    where the company runs it and the role may see it. With nothing in the menu, Settings,
+    which every role can open."""
+    items = visible_nav(settings, role)
+    first = next((item for item in items if not item.get("group")), None) or next(iter(items), None)
+    return (first or {}).get("href") or "/settings/general"
+
+
 def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, settings: dict | None = None) -> FT:
     """Build sidebar entirely from module nav slots + kernel entries."""
     from collections import defaultdict
     from celerp.services.permissions import role_has_permission
-    from ui.module_slots import slot_permission_allows
 
     settings = settings or {}
-
-    def _allowed(item: dict) -> bool:
-        return slot_permission_allows(item, settings, role)
 
     # Drop what this company cannot see before deduplicating, not after. Two modules
     # may offer the same section: accounting and reports both declare "reports",
@@ -2525,7 +2537,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
     # Deduplicating first lets a disabled module's entry win the key and then be
     # filtered out, taking the enabled module's entry with it and leaving the
     # section missing from the nav altogether.
-    visible = [item for item in module_nav(settings) if _allowed(item)]
+    visible = visible_nav(settings, role)
 
     # Deduplicate by key (first occurrence wins - kernel entries are last, so module wins)
     seen_keys: set[str] = set()
