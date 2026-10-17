@@ -405,3 +405,28 @@ async def test_l4_depreciation_journalled_before_the_cutover_with_no_asset_moves
     assert opening(after) - opening(before) == D("-533.34")
     assert [d for d in _account(after, "1220")["differences"] if d["rule"] != "opening"] == \
         [d for d in _account(before, "1220")["differences"] if d["rule"] != "opening"]
+
+
+async def test_u3_a_register_that_does_not_add_up_names_both_figures_as_the_table_does(fa, monkeypatch):
+    """When the assets' own balances and the Register column disagree, the alert names the
+    account by code and name and gives both amounts in the money format, each called what
+    the table calls it."""
+    from celerp_fixed_assets import recon
+
+    real = recon._register
+
+    async def off_by(*args, **kwargs):
+        opening, standing = await real(*args, **kwargs)
+        return opening, {**standing, "1210": standing.get("1210", D(0)) + D("1234.5")}
+
+    monkeypatch.setattr(recon, "_register", off_by)
+    today = date.today().isoformat()
+    report = await _recon(fa, today)
+    registered = _account(report, "1210")["registered"]
+    assert report["errors"] == [{"account": "1210", "name": _account(report, "1210")["name"],
+                                 "held": str(D(registered) + D("1234.50")), "registered": registered}]
+    page = (await fa.page("/fixed-assets/reconciliation", at=today)).text
+    box = page[page.index('id="fa-recon-errors"'):]
+    box = box[:box.index("</div>")]
+    assert f"1210 {_account(report, '1210')['name']}" in box and "1,234.50" in box, box
+    assert "1234.50" not in box and 'class="error-list"' in box, box

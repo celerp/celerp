@@ -2165,7 +2165,10 @@ def setup_ui_routes(app) -> None:
                                                                 min=report["cutover"])),
                     Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary"),
                     method="get", action="/fixed-assets/reconciliation", cls="flex-row")
-        errors = Div(H3(t("fixed_assets.recon_errors")), Ul(*[Li(e) for e in report["errors"]]),
+        errors = Div(H3(t("fixed_assets.recon_errors")),
+                     Ul(*[Li(t("fixed_assets.recon_error", account=f"{e['account']} {e['name']}",
+                                held=_money(e["held"], currency), registered=_money(e["registered"], currency)))
+                          for e in report["errors"]], cls="error-list"),
                      cls="flash flash--error", id="fa-recon-errors") if report["errors"] else ""
         return await _page(request, crumbs, page_header(t("fixed_assets.recon_title"),
                                                         A(t("fixed_assets.opening_title"), href="/fixed-assets/opening",

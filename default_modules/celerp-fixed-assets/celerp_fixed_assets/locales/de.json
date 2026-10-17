@@ -504,6 +504,7 @@
   "fixed_assets.recon_hint": "Das Anlagenverzeichnis gegen das Hauptbuch auf jedem Anlagenkonto, ab dem Stichtag {cutover}. Jede Differenz zeigt ihre Ursache und was sie ausgleicht.",
   "fixed_assets.recon_at": "Stand",
   "fixed_assets.recon_errors": "Das Anlagenverzeichnis geht nicht auf",
+  "fixed_assets.recon_error": "{account}: Die Anlagen im Verzeichnis ergeben {held}, aber die Spalte Anlagenverzeichnis, aus ihren Buchungen gelesen, zeigt {registered}.",
   "fixed_assets.recon_ledger": "Hauptbuch",
   "fixed_assets.recon_registered": "Anlagenverzeichnis",
   "fixed_assets.recon_status.reconciled": "Abgestimmt",

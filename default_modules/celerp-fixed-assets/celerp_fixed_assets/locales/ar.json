@@ -504,6 +504,7 @@
   "fixed_assets.recon_hint": "السجل مقابل دفتر الأستاذ في كل حساب أصول، منذ تاريخ الانتقال {cutover}. يُظهر كل فرق سببه وما يسوّيه.",
   "fixed_assets.recon_at": "حتى تاريخ",
   "fixed_assets.recon_errors": "السجل غير متوازن",
+  "fixed_assets.recon_error": "{account}: مجموع الأصول في السجل {held}، لكن عمود «السجل»، المقروء من قيودها، يُظهر {registered}.",
   "fixed_assets.recon_ledger": "دفتر الأستاذ",
   "fixed_assets.recon_registered": "السجل",
   "fixed_assets.recon_status.reconciled": "مُسوّى",

@@ -504,6 +504,7 @@
   "fixed_assets.recon_hint": "El registro frente al libro mayor en cada cuenta de activos, desde el corte {cutover}. Cada diferencia muestra su causa y cómo se resuelve.",
   "fixed_assets.recon_at": "A fecha de",
   "fixed_assets.recon_errors": "El registro no cuadra",
+  "fixed_assets.recon_error": "{account}: los activos del registro suman {held}, pero la columna Registro, leída de sus asientos, muestra {registered}.",
   "fixed_assets.recon_ledger": "Libro mayor",
   "fixed_assets.recon_registered": "Registro",
   "fixed_assets.recon_status.reconciled": "Conciliado",

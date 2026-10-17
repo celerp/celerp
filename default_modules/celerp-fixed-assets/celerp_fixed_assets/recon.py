@@ -261,8 +261,9 @@ async def report(session, company_id, at: str | None = None) -> dict:
             amount = -u["amount"] if u.get("synthetic") else u["amount"]
             differences.append(_difference(u["key"], u["rule"], _CAUSES[u["rule"]], amount, u["date"], [u], fixing))
         if account not in clearings and registered != standing.get(account, Decimal(0)):
-            errors.append(f"{account}: the register holds {money(standing.get(account, 0), currency)} and its journals "
-                          f"{money(registered, currency)} at {at}.")
+            # The assets' own balances against the Register column, read from their journals.
+            errors.append({"account": account, "name": names.get(account) or account,
+                           "held": money(standing.get(account, 0), currency), "registered": money(registered, currency)})
         out.append({"account": account, "name": names.get(account) or account, "ledger": money(ledger, currency),
                     "registered": money(registered, currency), "status": _status(ledger, registered, differences),
                     "differences": differences})

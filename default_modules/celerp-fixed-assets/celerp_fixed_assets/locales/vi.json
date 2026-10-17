@@ -504,6 +504,7 @@
   "fixed_assets.recon_hint": "Sổ đăng ký so với sổ cái trên từng tài khoản tài sản, từ ngày chuyển đổi {cutover}. Mỗi chênh lệch cho biết nguyên nhân và cách xử lý.",
   "fixed_assets.recon_at": "Tính đến",
   "fixed_assets.recon_errors": "Sổ đăng ký không khớp",
+  "fixed_assets.recon_error": "{account}: các tài sản trong sổ cộng lại là {held}, nhưng cột Sổ đăng ký, đọc từ các bút toán, hiển thị {registered}.",
   "fixed_assets.recon_ledger": "Sổ cái",
   "fixed_assets.recon_registered": "Sổ đăng ký",
   "fixed_assets.recon_status.reconciled": "Đã khớp",

@@ -504,6 +504,7 @@
   "fixed_assets.recon_hint": "The register against the ledger on each asset account, from the cutover {cutover}. Each difference shows its cause and what clears it.",
   "fixed_assets.recon_at": "As at",
   "fixed_assets.recon_errors": "The register does not add up",
+  "fixed_assets.recon_error": "{account}: the assets in the register add up to {held}, but the Register column, read from their journals, shows {registered}.",
   "fixed_assets.recon_ledger": "Ledger",
   "fixed_assets.recon_registered": "Register",
   "fixed_assets.recon_status.reconciled": "Reconciled",

@@ -504,6 +504,7 @@
   "fixed_assets.recon_hint": "Il registro rispetto al libro mastro su ogni conto dei cespiti, dalla data di passaggio {cutover}. Ogni differenza mostra la causa e cosa la risolve.",
   "fixed_assets.recon_at": "Al",
   "fixed_assets.recon_errors": "Il registro non quadra",
+  "fixed_assets.recon_error": "{account}: i cespiti del registro sommano {held}, ma la colonna Registro cespiti, letta dalle loro registrazioni, mostra {registered}.",
   "fixed_assets.recon_ledger": "Libro mastro",
   "fixed_assets.recon_registered": "Registro cespiti",
   "fixed_assets.recon_status.reconciled": "Riconciliato",

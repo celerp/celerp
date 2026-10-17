@@ -504,6 +504,7 @@
   "fixed_assets.recon_hint": "Le registre face au grand livre sur chaque compte d'immobilisations, depuis la date de bascule {cutover}. Chaque écart indique sa cause et ce qui le résout.",
   "fixed_assets.recon_at": "Au",
   "fixed_assets.recon_errors": "Le registre ne s'équilibre pas",
+  "fixed_assets.recon_error": "{account} : les immobilisations du registre totalisent {held}, mais la colonne Registre, lue dans leurs écritures, affiche {registered}.",
   "fixed_assets.recon_ledger": "Grand livre",
   "fixed_assets.recon_registered": "Registre",
   "fixed_assets.recon_status.reconciled": "Rapproché",

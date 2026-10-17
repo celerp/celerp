@@ -504,6 +504,7 @@
   "fixed_assets.recon_hint": "ทะเบียนเทียบกับบัญชีแยกประเภทในแต่ละบัญชีสินทรัพย์ ตั้งแต่วันตัดยอด {cutover} ผลต่างแต่ละรายการแสดงสาเหตุและวิธีแก้",
   "fixed_assets.recon_at": "ณ วันที่",
   "fixed_assets.recon_errors": "ทะเบียนไม่ตรงกัน",
+  "fixed_assets.recon_error": "{account}: สินทรัพย์ในทะเบียนรวมเป็น {held} แต่คอลัมน์ทะเบียนซึ่งอ่านจากรายการบัญชีแสดง {registered}",
   "fixed_assets.recon_ledger": "บัญชีแยกประเภท",
   "fixed_assets.recon_registered": "ทะเบียน",
   "fixed_assets.recon_status.reconciled": "กระทบยอดแล้ว",

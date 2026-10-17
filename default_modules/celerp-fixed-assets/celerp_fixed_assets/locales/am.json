@@ -504,6 +504,7 @@
   "fixed_assets.recon_hint": "መዝገቡ ከዋናው ሂሳብ መዝገብ ጋር በእያንዳንዱ የንብረት ሂሳብ፣ ከመሸጋገሪያው ቀን {cutover} ጀምሮ። እያንዳንዱ ልዩነት ምክንያቱንና የሚያስተካክለውን ያሳያል።",
   "fixed_assets.recon_at": "እስከ",
   "fixed_assets.recon_errors": "መዝገቡ አይመጣጠንም",
+  "fixed_assets.recon_error": "{account}፦ በመዝገቡ ውስጥ ያሉት ንብረቶች ድምር {held} ነው፣ ነገር ግን ከጆርናሎቻቸው የተነበበው የ«መዝገብ» ዓምድ {registered} ያሳያል።",
   "fixed_assets.recon_ledger": "ዋና መዝገብ",
   "fixed_assets.recon_registered": "መዝገብ",
   "fixed_assets.recon_status.reconciled": "ታርቋል",

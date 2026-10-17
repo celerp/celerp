@@ -504,6 +504,7 @@
   "fixed_assets.recon_hint": "Register dibandingkan buku besar di setiap akun aset, sejak tanggal peralihan {cutover}. Setiap selisih menunjukkan penyebab dan cara menyelesaikannya.",
   "fixed_assets.recon_at": "Per",
   "fixed_assets.recon_errors": "Register tidak sesuai",
+  "fixed_assets.recon_error": "{account}: aset di register berjumlah {held}, tetapi kolom Register aset, yang dibaca dari jurnalnya, menunjukkan {registered}.",
   "fixed_assets.recon_ledger": "Buku besar",
   "fixed_assets.recon_registered": "Register aset",
   "fixed_assets.recon_status.reconciled": "Sesuai",

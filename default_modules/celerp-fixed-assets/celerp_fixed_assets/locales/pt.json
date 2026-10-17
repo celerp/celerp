@@ -504,6 +504,7 @@
   "fixed_assets.recon_hint": "O registro frente ao razão em cada conta de ativos, desde o corte {cutover}. Cada diferença mostra sua causa e o que a resolve.",
   "fixed_assets.recon_at": "Em",
   "fixed_assets.recon_errors": "O registro não fecha",
+  "fixed_assets.recon_error": "{account}: os ativos do registro somam {held}, mas a coluna Registro de ativos, lida dos seus lançamentos, mostra {registered}.",
   "fixed_assets.recon_ledger": "Razão",
   "fixed_assets.recon_registered": "Registro de ativos",
   "fixed_assets.recon_status.reconciled": "Conciliado",

@@ -504,6 +504,7 @@
   "fixed_assets.recon_hint": "移行日 {cutover} 以降の、各資産勘定における台帳と総勘定元帳の比較です。差額ごとに原因と解消方法を示します。",
   "fixed_assets.recon_at": "基準日",
   "fixed_assets.recon_errors": "台帳の合計が合いません",
+  "fixed_assets.recon_error": "{account}: 台帳の資産の合計は {held} ですが、仕訳から読み取った「台帳」列は {registered} です。",
   "fixed_assets.recon_ledger": "総勘定元帳",
   "fixed_assets.recon_registered": "台帳",
   "fixed_assets.recon_status.reconciled": "照合済み",
