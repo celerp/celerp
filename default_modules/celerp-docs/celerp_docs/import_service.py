@@ -21,7 +21,6 @@ from celerp.importers.results import ImportOutcome, OutcomeStatus, failure_reaso
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services import auto_je
 from celerp.services.journal_accounts import require_line_destinations
 from celerp.services.locations import require_ship_from
 from celerp_docs.doc_money import money_from_lines
@@ -176,6 +175,8 @@ async def create_imported_doc(
     treatment books for it (import_treatment): nothing when the opening balances hold it,
     otherwise the entries the app posts for it (_import_auto_je). Shared by the single and
     batch imports; returns the doc.created entry."""
+    from celerp.services import auto_je
+
     await _lock_imported_contact(session, company_id, "doc", rec.data)
     await _assert_import_number_free(session, company_id, "doc", rec.data)
     if auto_je.imported_issue_kind(rec.data) is not None:

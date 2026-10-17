@@ -116,7 +116,7 @@ async def test_the_tab_shows_the_accountant_view_with_pagers_and_bulk_correction
     body, get = await _tab(ui_client, _PAGED, query="&account=1130-OB&lots_offset=50&limit=50")
 
     assert get.await_args.args[1] == {"account": "1130-OB", "lots_offset": "50", "limit": "50"}
-    assert 'id="older-stock-summary"' in body and "$-4.25" in body and "$1,264.50" in body
+    assert 'id="older-stock-summary"' in body and "-$4.25" in body and "$1,264.50" in body
     assert 'class="pagination"' in body and "lots_offset=100" in body and "account=1130-OB" in body
     assert "51-100 of 120" in body
     assert 'id="bulkbar-older-stock-placements"' in body

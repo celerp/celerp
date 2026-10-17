@@ -14,6 +14,9 @@ PUT    /api/labels/templates/{id}         Update a template
 DELETE /api/labels/templates/{id}         Delete a template
 POST   /api/labels/print/{entity_id}      Print a single item label (returns PDF)
 POST   /api/labels/bulk-print             Print labels for multiple items (returns PDF)
+GET    /api/labels/sources/{source}       A kind of record other modules register (label_source)
+GET    /api/labels/source-rows            The label rows of such records
+POST   /api/labels/print-source           Print labels for such records (returns PDF)
 """
 from __future__ import annotations
 
@@ -35,6 +38,8 @@ from celerp_labels.models import LabelTemplate
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/labels", tags=["labels"], dependencies=[Depends(get_current_user)])
+# The most records one label sheet is printed for.
+_MAX_SOURCE_IDS = 500
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -70,6 +75,12 @@ class BulkPrintBody(BaseModel):
     template_id: str | None = None
 
 
+class SourcePrintBody(BaseModel):
+    source: str
+    ids: list[str] = Field(..., min_length=1, max_length=_MAX_SOURCE_IDS)
+    template_id: str | None = None
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @router.get("/templates")
@@ -77,25 +88,8 @@ async def list_templates(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    async def _query():
-        return (
-            await session.execute(
-                select(LabelTemplate)
-                .where(LabelTemplate.company_id == company_id)
-                .order_by(LabelTemplate.created_at)
-            )
-        ).scalars().all()
-
-    rows = await _query()
-    if not rows:
-        # Seed the default presets on first read so every consumer (inventory/doc print
-        # dropdowns, the labels page) sees them immediately — not only after visiting Settings.
-        from .presets import PRESET_TEMPLATES
-        for preset in PRESET_TEMPLATES:
-            session.add(LabelTemplate(id=uuid.uuid4(), company_id=company_id, **TemplateCreate(**preset).model_dump()))
-        await session.commit()
-        rows = await _query()
-    items = [item.as_dict() for item in rows]
+    await _seed_presets(session, company_id)
+    items = [item.as_dict() for item in await _templates(session, company_id)]
     return {"items": items, "total": len(items)}
 
 
@@ -198,6 +192,132 @@ async def bulk_print(
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="labels.pdf"'},
     )
+
+
+# ── Other records (the label_source slot) ────────────────────────────────────
+
+@router.get("/sources/{source}")
+async def get_source(
+    source: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """A kind of record labels print for: the fields its rows carry and the company's
+    templates its rows can fill."""
+    entry = _label_source(source, role, settings)
+    return {"entity_type": source, "label_key": entry["label_key"], "keys": entry["keys"],
+            "templates": await _source_templates(session, company_id, entry)}
+
+
+@router.get("/source-rows")
+async def source_rows(
+    source: str,
+    ids: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The label rows of the records ``ids`` (comma separated), in the order asked."""
+    entry = _label_source(source, role, settings)
+    return {"rows": await _rows(session, company_id, entry, ids.split(","))}
+
+
+@router.post("/print-source")
+async def print_source(
+    body: SourcePrintBody,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """A PDF label sheet for records of a registered kind, on the chosen template, else the
+    first of the company's that the rows can fill."""
+    from celerp_labels.service import render_label_pdf
+
+    entry = _label_source(body.source, role, settings)
+    rows = await _rows(session, company_id, entry, body.ids)
+    templates = await _source_templates(session, company_id, entry)
+    template = next((tpl for tpl in templates if tpl["id"] == body.template_id), None) or templates[0]
+    pdf = render_label_pdf(rows, template, await _unit_map(session, company_id))
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{body.source}-labels.pdf"'})
+
+
+def _label_source(source: str, role: str, settings: dict) -> dict:
+    """The label_source entry for ``source`` from a module the company uses, refused when the
+    role may not see those records."""
+    from celerp.modules.registry import uses_module
+    from celerp.modules.slots import get as get_slot
+
+    entry = next((c for c in get_slot("label_source")
+                  if c.get("entity_type") == source and uses_module(settings, c.get("_module"))), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Labels are not printed for {source} records.")
+    if not role_has_permission(settings, role, entry["permission"]):
+        raise HTTPException(status_code=403, detail="Your role cannot see these records, so it cannot print their labels.")
+    return entry
+
+
+async def _rows(session: AsyncSession, company_id: uuid.UUID, entry: dict, ids: list[str]) -> list[dict]:
+    from celerp.modules.slots import resolve_handler
+
+    wanted = list(dict.fromkeys(i.strip() for i in ids if i.strip()))
+    if not wanted:
+        raise HTTPException(status_code=422, detail="Choose the records to print labels for.")
+    if len(wanted) > _MAX_SOURCE_IDS:
+        raise HTTPException(status_code=422, detail=f"Print at most {_MAX_SOURCE_IDS} labels at a time.")
+    found = {r["id"]: r for r in await resolve_handler(entry["handler"])(
+        session=session, company_id=company_id, ids=wanted)}
+    return [found[i] for i in wanted if i in found]
+
+
+async def _templates(session: AsyncSession, company_id: uuid.UUID) -> list[LabelTemplate]:
+    """The company's templates, oldest first."""
+    return (await session.execute(select(LabelTemplate).where(LabelTemplate.company_id == company_id)
+                                  .order_by(LabelTemplate.created_at))).scalars().all()
+
+
+async def _seed_presets(session: AsyncSession, company_id: uuid.UUID) -> None:
+    """Give a company with no templates the default presets, on first read, so every consumer
+    (inventory/doc print dropdowns, the labels page) sees them without visiting Settings first."""
+    if await _templates(session, company_id):
+        return
+    from .presets import PRESET_TEMPLATES
+    for preset in PRESET_TEMPLATES:
+        session.add(LabelTemplate(id=uuid.uuid4(), company_id=company_id, **TemplateCreate(**preset).model_dump()))
+    await session.commit()
+
+
+def _fitting(rows: list[LabelTemplate], keys: set[str]) -> list[dict]:
+    fits = []
+    for row in rows:
+        tpl = row.as_dict()
+        fields = [f.get("key") if isinstance(f, dict) else f for f in tpl.get("fields") or []]
+        if fields and set(fields) <= keys:
+            fits.append(tpl)
+    return fits
+
+
+async def _source_templates(session: AsyncSession, company_id: uuid.UUID, entry: dict) -> list[dict]:
+    """The company's templates whose every field the source's rows carry, oldest first. Like
+    the default presets, the kind's own template (its preset, in the reader's language) is
+    added on first read, so its first labels print at once and it can be edited in Labels."""
+    from ui.i18n import t as translate
+
+    keys = set(entry["keys"])
+    fits = _fitting(await _templates(session, company_id), keys)
+    if fits:
+        return fits
+    await _seed_presets(session, company_id)
+    preset = entry["preset"]
+    fields = [{**f, "label": translate(f["label"]) if f.get("label") else ""} for f in preset.get("fields") or []]
+    session.add(LabelTemplate(id=uuid.uuid4(), company_id=company_id, **TemplateCreate(
+        **{**preset, "name": translate(entry["label_key"]), "fields": fields}).model_dump()))
+    await session.commit()
+    return _fitting(await _templates(session, company_id), keys)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

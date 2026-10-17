@@ -24,6 +24,12 @@ _ALLOWED = {
         "restores a backup into an installation that has no users yet; the setup code authorizes it",
     ("POST", "celerp_inventory.routes:set_item_price"):
         "decides per request: set_inventory_prices, or edit_inventory for the cost of a draft being entered",
+    ("POST", "celerp_fixed_assets.custody:confirm"):
+        "decides per request: only the asset's custodian, whatever their role",
+    ("POST", "celerp_fixed_assets.custody:report_problem"):
+        "decides per request: only the asset's custodian, whatever their role",
+    ("POST", "celerp_labels.routes:print_source"):
+        "decides per request: the permission the chosen record kind names",
 }
 
 

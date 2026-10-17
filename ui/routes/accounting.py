@@ -213,9 +213,14 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        # A page that sends the user here to record a journal may name its date (``ts``).
+        try:
+            ts = _date.fromisoformat(request.query_params.get("ts", "")).isoformat()
+        except ValueError:
+            ts = _date.today().isoformat()
         return await _render_journal_form(
             request, token,
-            ts=_date.today().isoformat(), memo="", lines=[],
+            ts=ts, memo="", lines=[],
             idem_token=str(uuid.uuid4()), error=None,
             date_from=request.query_params.get("date_from", ""),
             date_to=request.query_params.get("date_to", ""),

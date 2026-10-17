@@ -44,6 +44,7 @@ from ui.routes.account import (
     GATE_UNREACHABLE, _DISMISS_GATE_MODAL, account_gate, gate_modal_response,
 )
 from celerp.modules.outcome import NOT_REPORTED
+from celerp.services.app_paths import is_app_local_path
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
@@ -78,6 +79,20 @@ def _build_card(lang: str) -> FT:
 def manages_modules(role: str) -> bool:
     """Whether *role* may open the Modules page."""
     return _ROLE_LEVELS.get(role, 0) >= _ROLE_LEVELS["admin"]
+
+
+def turn_on_action(role: str, settings: dict, module: str, offer: str, ask: str, back: str,
+                   primary: bool = False) -> FT:
+    """How a page reached with *module* off for the company gets it on: a Turn on button
+    that comes back to *back* for whoever may turn modules on, else the ask-an-admin text."""
+    from celerp.services.permissions import role_has_permission
+
+    if manages_modules(role) and role_has_permission(settings, role, "manage_company_settings"):
+        return Form(P(offer, cls="settings-hint"), Input(type="hidden", name="next", value=back),
+                    Button(t("modules.turn_on"), type="submit", cls="btn " + ("btn--primary" if primary
+                                                                              else "btn--secondary")),
+                    hx_post=f"/modules/{module}/enable", hx_swap="none")
+    return P(ask, cls="settings-hint")
 
 
 def _is_admin(request: Request) -> bool:
@@ -153,6 +168,20 @@ def _tabs(active: str, lang: str) -> FT:
 
 
 # ── local modules panel ────────────────────────────────────────────────────────
+
+def _turn_off_items(found: dict | None, lang: str):
+    """The work an enabled module would leave open, beside its Turn off: what must be
+    finished first, then what is kept while it is off."""
+    if not found:
+        return ""
+    if found.get("failed"):
+        return Div(t("modules.turn_off_check_failed", lang), cls="module-turn-off text-muted small")
+    parts = []
+    for kind, key in (("blocking", "modules.turn_off_finish_first"), ("listed", "modules.turn_off_kept")):
+        if found.get(kind):
+            parts += [Div(t(key, lang)), Ul(*(Li(A(item["label"], href=item["href"])) for item in found[kind]))]
+    return Div(*parts, cls="module-turn-off small") if parts else ""
+
 
 def _deps_cell(m: dict, name_map: dict[str, str] | None = None) -> FT:
     """The Module Dependencies cell: the other modules a listing needs, so nothing
@@ -317,7 +346,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
             Td(f"v{version}" if version and version != "unknown" else "--"),
             Td(author or "--"),
             Td(*status_parts, data_filter_value=status_filter),
-            Td(*action_parts),
+            Td(*action_parts, _turn_off_items(m.get("turn_off") if enabled else None, lang)),
             # Disabled rows are shaded so their off state reads at a glance.
             cls="data-row" if enabled else "data-row module-row--disabled",
         ))
@@ -1180,8 +1209,15 @@ def setup_routes(app):
         labels = {m.get("name"): m.get("label") or m.get("name") for m in modules}
         also = [labels.get(n, n) for n in result.get("also_enabled") or []]
         notice = t("modules.also_enabled", lang, names=", ".join(also)) if also else None
-        return _toast(_local_panel(modules, lang=lang, owner=await api.installation_owner(token)),
-                      notice, error=False)
+        response = _toast(_local_panel(modules, lang=lang, owner=await api.installation_owner(token)),
+                          notice, error=False)
+        # Turned on from another page (a module's own "Turn on"): go back there, or to this
+        # page when the module needs a restart before it can be used. A next leaving the app
+        # is ignored.
+        back = str((await request.form()).get("next") or "")
+        if is_app_local_path(back):
+            response.headers["HX-Redirect"] = "/modules" if result.get("restart_required") else back
+        return response
 
     @app.post("/modules/{module_name}/disable")
     async def module_disable(request: Request, module_name: str):
