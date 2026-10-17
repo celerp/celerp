@@ -214,6 +214,8 @@ async def test_reverse_dates_follow_both_locks(real_client, real_engine, monkeyp
     assert received[0]["memo"] == "Dated today"  # newest first
     row = received[0]
     await _lock(real_client, tok, today)
+    locked = (await _received(real_client, tok))[0]
+    assert locked["reverse_on"] is None and locked["locked_through"] == today  # named on the row
     before = await _journals(real_engine, client_company)
     r = await real_client.post(f"/accounting/journal-entries/{row['id']}/reverse", headers=auth(tok))
     assert r.status_code == 422 and today in r.text, r.text

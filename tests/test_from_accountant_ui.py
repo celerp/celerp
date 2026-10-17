@@ -18,7 +18,7 @@ pytestmark = pytest.mark.asyncio
 
 ITEMS = [
     {"id": "je-3", "memo": "Dated today", "ts": "2026-10-16", "status": "posted", "lines": "1200 Dr 30.00",
-     "total": 30.0, "reverse_on": None, "reversal": None},
+     "total": 30.0, "reverse_on": None, "locked_through": "2026-12-31", "reversal": None},
     {"id": "je-2", "memo": "Year-end accrual", "ts": "2026-06-30", "status": "posted", "lines": None,
      "total": 80.0, "reverse_on": "2026-06-30", "reversal": {"id": "je-2r", "ts": "2026-06-30",
                                                              "undo_on": "2026-10-16"}},
@@ -63,7 +63,9 @@ async def test_section_lists_entries_with_what_each_can_do(monkeypatch):
     assert 'id="from-accountant"' in html and "From your accountant" in html
     order = [html.index(m) for m in ("Dated today", "Year-end accrual", "2026-03-31", "Withdrawn")]
     assert order == sorted(order)  # the books' newest-first order is kept
-    assert "Locked through today" in html  # no open date: no button
+    # no open date: the lock date is named, with the way to move it
+    assert "The books are locked through 2026-12-31, so no date is open for the reversal." in html
+    assert 'href="/settings/accounting?tab=period-lock"' in html
     assert "Reversed on 2026-06-30" in html and "/from-accountant/je-2r/reverse" in html
     assert "Undo the reversal of Year-end accrual? The undo posts on 2026-10-16." in html
     assert "Reverse --? The reversal posts on 2026-03-31." in html  # an empty memo shows --
