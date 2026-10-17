@@ -176,6 +176,8 @@ a:hover { text-decoration: underline; }
 /* Client companies: reasons wrap in their cell; the filters keep their own width. */
 #firm-view .data-table { width: 100%; }
 #firm-view .data-table td.firm-view-attention { white-space: normal; overflow-wrap: break-word; }
+#accountant-access-grants .data-table { width: 100%; }
+#accountant-access-grants .data-table td.grant-scopes { white-space: normal; overflow-wrap: break-word; padding-block: 6px; }
 #sync-accounts .data-table { width: 100%; }
 #sync-accounts .data-table td { white-space: normal; overflow-wrap: break-word; padding-block: 6px; }
 #sync-accounts .data-table td:first-child { white-space: nowrap; }

@@ -1305,7 +1305,8 @@ def _grants_table(grants: list[dict], lang: str, now: datetime | None = None, **
     rows = [
         Tr(
             Td(g.get("label") or "--"),
-            Td(", ".join(t(f"accountant_access.{scope}", lang) for scope in g.get("scopes") or []) or "--"),
+            Td(", ".join(t(f"accountant_access.{scope}", lang) for scope in g.get("scopes") or []) or "--",
+               cls="grant-scopes"),
             Td(format_value(g.get("created_at"), "date")),
             Td(format_value(g.get("expires_at"), "date")),
             Td(_grant_status(g, lang, when)),
