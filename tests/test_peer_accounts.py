@@ -190,6 +190,14 @@ async def test_first_pairing_without_a_copy_waits_for_the_review(real_client, re
         "source_company_id": second_company, "finish": True,
         "answers": [{"account": row["id"], "use": "6800"}]}, headers=auth(second_books))
     assert r.status_code == 200, r.text
+    # Until the next sync the held record says it is fixed, here and on Client companies.
+    [held] = (await real_client.get("/accounting/peer/holds", headers=auth(second_books))).json()["items"]
+    assert held["label"] == "Courier run" and held["fix"]["fixed"]
+    assert held["reason"] == "Accounts reviewed. It posts on the next sync."
+    view = (await real_client.get("/auth/firm-view", headers=auth(firm_tok))).json()["items"]
+    [item] = [i for row in view if row["company_name"] == "Second Trading books" for i in row["attention"]
+              if i["label"] == "Courier run"]
+    assert item["reason"] == held["reason"] and not item["href"]
     await _two_way(second_company, second_key)
     books = await _journals(real_engine, _company_of(second_books))
     assert _lines(_sent_journal(books, first)) == {("6800", 9.0, 0.0), ("6200", 0.0, 9.0)}

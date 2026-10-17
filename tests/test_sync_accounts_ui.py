@@ -169,6 +169,16 @@ async def test_review_lists_only_rows_needing_an_answer(monkeypatch):
     assert "Waiting for Demo Books to review accounts." not in html  # review holds are not listed twice
 
 
+async def test_a_confirmed_review_lists_its_records_as_fixed(monkeypatch):
+    reviewed = {**HOLDS[-1], "reason": "Accounts reviewed. It posts on the next sync.",
+                "fix": {**HOLDS[-1]["fix"], "fixed": True}}
+    _app(monkeypatch, holds=[reviewed], added=[], review=[])
+    html = to_xml(await routes.sync_accounts_body("test-token", "en"))
+    row = html[html.index("Rent"):].split("</tr>")[0]
+    assert "Accounts reviewed. It posts on the next sync." in row and "Fixed." in row
+    assert "Nothing to fix." not in html
+
+
 def test_review_counts_one_account_in_the_singular():
     company = {**REVIEW[0], "accounts": REVIEW[0]["accounts"][1:]}
     html = to_xml(routes._review(company, [], "en"))
