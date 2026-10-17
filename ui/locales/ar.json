@@ -5076,6 +5076,7 @@
   "module_journal.source": "يشير قيد الوحدة إلى أحد سجلات الوحدة نفسها في هذه الشركة.",
   "module_journal.key": "لا يحتوي مفتاح القيد إلا على حروف وأرقام و : . _ -",
   "module_journal.key_reused": "سُجّلت هذه العملية من قبل بتفاصيل مختلفة.",
+  "module_journal.key_voided": "أُلغي قيد هذه العملية. سجّل العملية من جديد لترحيل قيد جديد.",
   "module_journal.moves_more_than_recognized": "هذا ينقل من الحساب {code} أكثر مما سجّلته الوحدة فيه.",
   "module_journal.accounting_off": "المحاسبة لا تعمل، لذا لا يمكن تقييد أي قيد.",
   "module_journal.not_found": "لا يوجد قيد كهذا لعكسه.",

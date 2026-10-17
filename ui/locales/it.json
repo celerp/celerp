@@ -5076,6 +5076,7 @@
   "module_journal.source": "Una scrittura di modulo rimanda a un record del modulo stesso in questa azienda.",
   "module_journal.key": "Una chiave di scrittura può contenere solo lettere, cifre e : . _ -",
   "module_journal.key_reused": "Questa operazione è già stata registrata con dati diversi.",
+  "module_journal.key_voided": "La scrittura di questa operazione è stata annullata. Registra di nuovo l'operazione per contabilizzarne una nuova.",
   "module_journal.moves_more_than_recognized": "Questo sposta dal conto {code} più di quanto il modulo vi abbia registrato.",
   "module_journal.accounting_off": "La contabilità non è in esecuzione, quindi non si può registrare alcuna scrittura.",
   "module_journal.not_found": "Questa scrittura non esiste e non può essere stornata.",

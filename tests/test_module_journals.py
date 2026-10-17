@@ -417,3 +417,101 @@ async def test_s6_journal_links_its_source_and_manual_void_refuses_it(client, se
                           json={"reason": "review"})
     assert r.status_code == 422, r.text
     assert await probe["status"](session, company_id=auth["company_id"], key="shown") == "posted"
+
+
+# ── Replaying a key ────────────────────────────────────────────────────────────
+
+
+async def _held_on(client, auth, account: str) -> Decimal:
+    """What the books hold on ``account``, debit less credit, from the trial balance."""
+    r = await client.get("/accounting/trial-balance", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    return sum((Decimal(str(row["net"])) for row in r.json()["lines"] if row["code"] == account), Decimal(0))
+
+
+async def _journals(session, company_id, prefix: str) -> dict[str, str]:
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+
+    rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_id.like(f"je:mod:{MODULE}:{prefix}%")))).all()
+    return {entity_id: state.get("status") for entity_id, state in rows}
+
+
+@pytest.mark.asyncio
+async def test_f05_a_key_replays_only_while_its_journal_is_posted(client, session, auth, registry):
+    """The same request again returns the journal while it stands. Once it is voided the
+    key is spent: asking again is refused, never reported as posted, and the books keep
+    the void. A new key posts afresh."""
+    probe = _probe()
+    probe["register"]({"s6_capitalize": ("manage_accounting",)}, source_prefix="fa:")
+    cid = auth["company_id"]
+    source = await _asset_record(session, cid)
+    await session.commit()
+    before = await _held_on(client, auth, "1210")
+
+    first = await _post(probe, session, auth, source, key="spent")
+    await session.commit()
+    # A retry after a commit the caller never heard back from.
+    again = await _post(probe, session, auth, source, key="spent")
+    assert (first.existing, again.existing, again.je_id) == (False, True, first.je_id)
+    assert await _held_on(client, auth, "1210") == before + 100
+
+    await probe["reverse"](session, company_id=cid, user_id=auth["user_id"], key="spent",
+                           operation="s6_capitalize", reason="Undo")
+    await session.commit()
+    assert await _held_on(client, auth, "1210") == before
+    with pytest.raises(HTTPException) as exc:
+        await _post(probe, session, auth, source, key="spent")
+    _refused(exc, 409, "module_journal.key_voided")
+    with pytest.raises(HTTPException) as exc:
+        await _post(probe, session, auth, source, key="spent", lines=_lines("1210", "1111", "99.00"))
+    _refused(exc, 409, "module_journal.key_reused")
+    assert await _journals(session, cid, "spent") == {first.je_id: "void"}
+    assert await _held_on(client, auth, "1210") == before
+
+    renewed = await _post(probe, session, auth, source, key="spent:2")
+    await session.commit()
+    assert renewed.existing is False
+    assert await _journals(session, cid, "spent") == {first.je_id: "void", renewed.je_id: "posted"}
+    assert await _held_on(client, auth, "1210") == before + 100
+
+
+@pytest.mark.asyncio
+async def test_f05_the_same_key_at_once_posts_one_journal(committed_engine, registry):
+    """Two requests with one key at the same moment: one posts, the other waits for it
+    and gets that journal back. One journal, posted once."""
+    import asyncio
+
+    from sqlalchemy import func, select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from celerp.models.ledger import LedgerEntry
+    from test_fresh_authority_races_pg import _seed
+    from test_helpers import provision_company_books
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    c = await _seed(factory)
+    cid = c["company_id"]
+    auth = {"company_id": cid, "user_id": c["ids"]["owner"]}
+    async with factory() as s:
+        await provision_company_books(s, cid)
+        source = await _asset_record(s, cid)
+        await s.commit()
+    probe = _probe()
+    probe["register"]({"s6_capitalize": ("manage_accounting",)}, source_prefix="fa:")
+
+    async def post():
+        async with factory() as s:
+            posted = await _post(probe, s, auth, source, key="once")
+            await s.commit()
+            return posted
+
+    one, two = await asyncio.wait_for(asyncio.gather(post(), post()), 60)
+    assert one.je_id == two.je_id and sorted((one.existing, two.existing)) == [False, True]
+    async with factory() as s:
+        assert await _journals(s, cid, "once") == {one.je_id: "posted"}
+        events = (await s.execute(select(func.count()).select_from(LedgerEntry).where(
+            LedgerEntry.company_id == cid, LedgerEntry.entity_id == one.je_id))).scalar_one()
+    assert events == 2

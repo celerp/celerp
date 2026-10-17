@@ -5076,6 +5076,7 @@
   "module_journal.source": "Jurnal modul merujuk ke salah satu catatan milik modul itu di perusahaan ini.",
   "module_journal.key": "Kunci jurnal hanya boleh berisi huruf, angka, dan : . _ -",
   "module_journal.key_reused": "Operasi ini sudah dicatat dengan rincian yang berbeda.",
+  "module_journal.key_voided": "Jurnal untuk operasi ini sudah dibatalkan. Catat operasi ini lagi untuk memposting jurnal baru.",
   "module_journal.moves_more_than_recognized": "Ini memindahkan dari akun {code} lebih banyak daripada yang dicatat modul di sana.",
   "module_journal.accounting_off": "Akuntansi tidak berjalan, jadi tidak ada jurnal yang dapat diposting.",
   "module_journal.not_found": "Jurnal tersebut tidak ada untuk dibalik.",

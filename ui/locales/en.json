@@ -5074,6 +5074,7 @@
   "module_journal.source": "A module journal points at one of the module's own records in this company.",
   "module_journal.key": "A journal key may hold only letters, digits and : . _ -",
   "module_journal.key_reused": "This operation was already recorded with different details.",
+  "module_journal.key_voided": "The journal for this operation was voided. Record the operation again to post a new one.",
   "module_journal.moves_more_than_recognized": "This moves more off account {code} than the module recorded there.",
   "module_journal.accounting_off": "Accounting is not running, so no journal can be posted.",
   "module_journal.not_found": "There is no such journal to reverse.",

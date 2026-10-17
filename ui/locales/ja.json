@@ -5074,6 +5074,7 @@
   "module_journal.source": "モジュールの仕訳は、この会社にあるそのモジュール自身の記録を指します。",
   "module_journal.key": "仕訳キーに使えるのは英字、数字、: . _ - だけです",
   "module_journal.key_reused": "この操作は別の内容ですでに記録されています。",
+  "module_journal.key_voided": "この操作の仕訳は取り消されています。新しい仕訳を計上するには、操作をもう一度記録してください。",
   "module_journal.moves_more_than_recognized": "勘定 {code} から、モジュールがそこに計上した額を超えて振り替えようとしています。",
   "module_journal.accounting_off": "会計が動作していないため、仕訳を計上できません。",
   "module_journal.not_found": "取り消す仕訳がありません。",

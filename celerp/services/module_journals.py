@@ -35,6 +35,7 @@ from sqlalchemy import select
 from celerp.accounting_roles import refusal
 from celerp.models.projections import Projection
 from celerp.services.app_paths import is_app_local_path
+from celerp.services.company_lock import lock_projections
 from celerp.services.je_keys import je_void_data
 from celerp.services.journal_accounts import UnbalancedJournalEntry, lock_accounts, require_destinations
 from celerp.services.permissions import is_permission_key, locked_authority
@@ -287,18 +288,22 @@ async def post_journal(session, *, company_id, user_id, module: str, key: str, o
                        date: str, memo: str, lines: list[JournalLine], source: JournalSource,
                        intent: dict) -> PostedJournal:
     """Post one journal of ``module`` under ``key``, or return the one already posted
-    there for the same request."""
+    there for the same request. A key whose journal was voided is spent: asking again is
+    refused, so a caller posting afresh uses a new key."""
     _check_caller(module)
     je_id = _je_id(module, key)
     op = _operation(module, operation)
     await _authorize(session, company_id, user_id, module, op)
     await _check_source(session, company_id, op, source)
     intent_hash = _intent_hash(operation, date, lines, source, intent)
-    existing = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    existing = (await lock_projections(session, company_id, [je_id])).get(je_id)
     if existing is not None:
         if existing.state.get("intent_hash") != intent_hash:
             raise _refuse(409, "module_journal.key_reused",
                           "This operation was already recorded with different details.")
+        if existing.state.get("status") != "posted":
+            raise _refuse(409, "module_journal.key_voided",
+                          "The journal for this operation was voided. Record the operation again to post a new one.")
         return PostedJournal(je_id, True)
     await _check_accounts(session, company_id, module, lines)
     entries = []
@@ -330,7 +335,7 @@ async def reverse_journal(session, *, company_id, user_id, module: str, key: str
     je_id = _je_id(module, key)
     op = _operation(module, operation)
     await _authorize(session, company_id, user_id, module, op)
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    row = (await lock_projections(session, company_id, [je_id])).get(je_id)
     if row is None:
         raise _refuse(404, "module_journal.not_found", "There is no such journal to reverse.")
     if row.state.get("status") == "void":

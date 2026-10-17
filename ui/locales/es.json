@@ -5076,6 +5076,7 @@
   "module_journal.source": "Un asiento de módulo apunta a un registro propio del módulo en esta empresa.",
   "module_journal.key": "Una clave de asiento solo puede contener letras, dígitos y : . _ -",
   "module_journal.key_reused": "Esta operación ya se registró con otros datos.",
+  "module_journal.key_voided": "El asiento de esta operación se anuló. Registra la operación de nuevo para contabilizar uno nuevo.",
   "module_journal.moves_more_than_recognized": "Esto mueve de la cuenta {code} más de lo que el módulo registró en ella.",
   "module_journal.accounting_off": "La contabilidad no está en funcionamiento, así que no se puede registrar ningún asiento.",
   "module_journal.not_found": "No existe ese asiento para revertir.",

@@ -5076,6 +5076,7 @@
   "module_journal.source": "Um lançamento de módulo aponta para um registro do próprio módulo nesta empresa.",
   "module_journal.key": "Uma chave de lançamento só pode conter letras, dígitos e : . _ -",
   "module_journal.key_reused": "Esta operação já foi registrada com outros dados.",
+  "module_journal.key_voided": "O lançamento desta operação foi anulado. Registre a operação de novo para lançar outro.",
   "module_journal.moves_more_than_recognized": "Isto retira da conta {code} mais do que o módulo registrou nela.",
   "module_journal.accounting_off": "A contabilidade não está em execução, então nenhum lançamento pode ser feito.",
   "module_journal.not_found": "Esse lançamento não existe para ser estornado.",

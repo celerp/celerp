@@ -5076,6 +5076,7 @@
   "module_journal.source": "Une écriture de module renvoie à un enregistrement du module dans cette société.",
   "module_journal.key": "Une clé d'écriture ne peut contenir que des lettres, des chiffres et : . _ -",
   "module_journal.key_reused": "Cette opération a déjà été enregistrée avec d'autres détails.",
+  "module_journal.key_voided": "L'écriture de cette opération a été annulée. Enregistrez l'opération à nouveau pour en passer une nouvelle.",
   "module_journal.moves_more_than_recognized": "Cela sort du compte {code} plus que ce que le module y a enregistré.",
   "module_journal.accounting_off": "La comptabilité ne fonctionne pas, aucune écriture ne peut donc être passée.",
   "module_journal.not_found": "Cette écriture n'existe pas, elle ne peut pas être contrepassée.",
