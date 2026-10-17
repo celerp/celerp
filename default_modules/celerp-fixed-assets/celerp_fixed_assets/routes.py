@@ -456,11 +456,7 @@ async def revalue_class(class_id: str, body: dict = Body(...), company_id=Depend
 async def due_reviews(company_id=Depends(get_current_company_id),
                       company_settings: dict = Depends(get_current_company_settings), money: bool = _MONEY,
                       session: AsyncSession = Depends(get_session)) -> dict:
-    from datetime import date
-
-    from celerp.services.business_time import business_date_of
-
-    today = date.fromisoformat(business_date_of(None, company_settings.get("timezone")))
+    today = setup.today_in(company_settings)
     return {"items": views.readable(await remeasure.due_reviews(session, company_id, today), money)}
 
 

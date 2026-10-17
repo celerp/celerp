@@ -431,7 +431,6 @@ async def tell_reviews(session, company_id, today: date) -> None:
 async def record_review(session, company_id, user_id, asset_id: str, body: dict) -> dict:
     """Record an impairment review: no indication of impairment, or the recoverable amount
     found. A recoverable amount below the carrying amount returns the impairment to make."""
-    from celerp.services.business_time import business_date_of
     from celerp.services.company_lock import lock_projections
     from celerp.services.permissions import locked_authority
 
@@ -445,7 +444,7 @@ async def record_review(session, company_id, user_id, asset_id: str, body: dict)
     if asset.get("status") != "active":
         raise HTTPException(status_code=409, detail=f"{asset['number']} is not in use, so it is not reviewed.")
     day = _date(body.get("date"), "The review date")
-    today = business_date_of(None, settings.get("timezone"))
+    today = setup.today_in(settings).isoformat()
     if day > today:
         raise setup.unprocessable(f"The review date {day} is after today.")
     if day < (asset.get("available_date") or day):

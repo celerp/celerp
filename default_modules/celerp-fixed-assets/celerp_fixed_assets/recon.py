@@ -217,7 +217,7 @@ async def report(session, company_id, at: str | None = None) -> dict:
 
     fa = await setup.require_managed(session, company_id)
     cut = setup.cutover(fa)
-    at = at or date.today().isoformat()
+    at = at or (await setup.business_today(session, company_id)).isoformat()
     try:
         at = date.fromisoformat(at).isoformat()
     except ValueError:
@@ -350,6 +350,6 @@ async def acknowledge(session, company_id, user_id, body: dict) -> dict:
     if _dec(body.get("amount")) != _dec(found["amount"]):
         raise conflict(f"The difference is now {found['amount']}. Review it again.")
     data = {"key": key, "state": state, "amount": found["amount"], "reason": reason or None,
-            "effect": effect or None, "by": str(user_id), "at": date.today().isoformat()}
+            "effect": effect or None, "by": str(user_id), "at": (await setup.business_today(session, company_id)).isoformat()}
     await _emit(session, company_id, user_id, recon_id(key), "fa_recon", "fa.recon.recorded", data)
     return {**found, "state": state, "reason": data["reason"], "effect": data["effect"]}

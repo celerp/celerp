@@ -145,6 +145,17 @@ async def company_settings(session, company_id) -> dict:
                 or {})
 
 
+def today_in(company_settings: dict | None) -> date:
+    """Today in the company's business timezone, which decides every period and due date."""
+    from celerp.services.business_time import business_date_of
+
+    return date.fromisoformat(business_date_of(None, (company_settings or {}).get("timezone")))
+
+
+async def business_today(session, company_id) -> date:
+    return today_in(await company_settings(session, company_id))
+
+
 async def currency(session, company_id) -> str:
     """The currency the company keeps its books in."""
     from celerp.services.money import books_currency

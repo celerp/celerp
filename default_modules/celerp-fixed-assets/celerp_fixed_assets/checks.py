@@ -20,7 +20,7 @@ from celerp.services.company_lock import lock_projections
 from celerp.services.permissions import require_permission
 
 from celerp_fixed_assets import setup
-from celerp_fixed_assets.custody import _locations, _today
+from celerp_fixed_assets.custody import _locations
 from celerp_fixed_assets.moves import _GONE
 from celerp_fixed_assets.operations import by_tag
 from celerp_fixed_assets.store import _emit, _entities, _state
@@ -44,7 +44,7 @@ async def record_check(session, company_id, user_id, tag: str) -> dict:
         raise setup.unprocessable(_LEFT[asset["status"]].format(date=(asset.get("disposal") or {}).get("date")))
     check_id = f"fa:check:{asset_id.removeprefix('fa:asset:')}:{uuid.uuid4()}"
     data = {"asset_id": asset_id, "number": asset["number"], "user_id": str(user_id),
-            "date": await _today(session, company_id), "at": datetime.now(timezone.utc).isoformat()}
+            "date": (await setup.business_today(session, company_id)).isoformat(), "at": datetime.now(timezone.utc).isoformat()}
     await _emit(session, company_id, user_id, check_id, ENTITY_TYPE, "fa.check.recorded", data)
     await session.commit()
     return {"id": check_id, **data}
@@ -103,7 +103,7 @@ async def remove_check(check_id: str, company_id=Depends(get_current_company_id)
         raise HTTPException(status_code=404, detail="No such check.")
     if row.state["user_id"] != str(user.id):
         raise HTTPException(status_code=403, detail="Only the person who recorded a check can remove it.")
-    if row.state["date"] != await _today(session, company_id):
+    if row.state["date"] != (await setup.business_today(session, company_id)).isoformat():
         raise setup.unprocessable(f"This check was recorded on {row.state['date']}. A check can only be removed on "
                                   "the day it was recorded.")
     await _emit(session, company_id, user.id, check_id, ENTITY_TYPE, "fa.check.removed", {"user_id": str(user.id)})

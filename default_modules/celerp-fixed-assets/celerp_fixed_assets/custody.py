@@ -67,12 +67,6 @@ async def _locked_held(session, company_id, user_id, asset_id: str) -> dict:
     return state
 
 
-async def _today(session, company_id) -> str:
-    from celerp.services.business_time import business_date_of
-
-    return business_date_of(None, (await setup.company_settings(session, company_id)).get("timezone"))
-
-
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
@@ -105,7 +99,7 @@ async def confirm(asset_id: str, company_id=Depends(get_current_company_id), use
     """The custodian confirms they still hold the asset, today."""
     await _locked_held(session, company_id, user.id, asset_id)
     await _emit(session, company_id, user.id, asset_id, "fa_asset", "fa.asset.confirmed",
-                {"confirmed": {"user_id": str(user.id), "date": await _today(session, company_id)}})
+                {"confirmed": {"user_id": str(user.id), "date": (await setup.business_today(session, company_id)).isoformat()}})
     await session.commit()
     return shown(asset_id, await _state(session, company_id, asset_id), await _locations(session, company_id))
 
@@ -126,7 +120,7 @@ async def report_problem(asset_id: str, text: str = Form(""), photo: UploadFile 
         if not held_by(state, user.id):
             raise HTTPException(status_code=404, detail="No such asset in your care.")
         problem = {"id": str(uuid.uuid4()), "text": text, "user_id": str(user.id),
-                   "date": await _today(session, company_id)}
+                   "date": (await setup.business_today(session, company_id)).isoformat()}
         await _emit(session, company_id, user.id, asset_id, "fa_asset", "fa.asset.problem", {"problem": problem})
         responsible = state.get("responsible_user_id")
         await create_keyed(session, company_id, "fixed_assets", "fixed_assets.notice.problem",

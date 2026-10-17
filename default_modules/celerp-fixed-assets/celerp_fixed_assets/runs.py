@@ -410,7 +410,7 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
     label = period_label(month)
     if books.last is not None and month <= books.last:
         raise conflict(f"Depreciation for {label} is already posted.")
-    if _end(month) > today:
+    if _end(month) >= today:
         raise setup.unprocessable(f"{label} has not ended yet. Depreciation runs for a month once it has ended.")
     if month < books.first:
         raise setup.unprocessable(f"{label} is before the first managed period.")
@@ -542,7 +542,7 @@ async def run(session, company_id, user_id, body: dict, *, today: date | None = 
     month = _month(body.get("month"))
 
     async def plan(fa):
-        return await plan_run(session, company_id, month, today or date.today(), user_id)
+        return await plan_run(session, company_id, month, today or await setup.business_today(session, company_id), user_id)
 
     async def apply(context, op_key):
         return await _post(session, company_id, user_id, context, op_key, manual=True), operations._effects()
@@ -708,9 +708,10 @@ async def _may_post(session, company_id, settings: dict, user_id) -> bool:
     return role_has_permission(settings, role, "manage_accounting")
 
 
-async def tick(session, company_id, today: date) -> str | None:
-    """Last month's run for one company, once its run day has come: prepared, or posted
-    as the user who chose automatic posting. The caller commits."""
+async def tick(session, company_id, today: date | None = None) -> str | None:
+    """Last month's run for one company, once its run day has come in the company's
+    timezone (``today`` when given): prepared, or posted as the user who chose automatic
+    posting. The caller commits."""
     from celerp.modules.registry import uses_module
     from celerp.services.company_lock import lock_company
 
@@ -719,6 +720,7 @@ async def tick(session, company_id, today: date) -> str | None:
     if books is None:
         return None
     fa = books.fa
+    today = today or setup.today_in(books.settings)
     if not uses_module(books.settings, MODULE):
         if fa.get("run_mode") == "post" and not fa.get("auto_post_paused"):
             await _set(session, company_id, auto_post_paused=True)
@@ -777,7 +779,7 @@ async def loop() -> None:
                 await session.commit()
                 for company_id in companies:
                     try:
-                        await tick(session, company_id, date.today())
+                        await tick(session, company_id)
                         await session.commit()
                     except Exception as exc:
                         await session.rollback()

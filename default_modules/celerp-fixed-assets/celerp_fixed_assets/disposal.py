@@ -100,12 +100,10 @@ def check_date(books: runs.Books, asset: dict, live: list[dict], day: str, *, wh
                verb: str = "Dispose") -> None:
     """``day`` is open, in service, not ahead of today and not before the asset's latest
     change other than depreciation. ``what`` names the date, ``verb`` the action."""
-    from celerp.services.business_time import business_date_of
-
     if day < (asset.get("available_date") or day):
         raise setup.unprocessable(f"The {what} date is before {asset['number']} was available for use "
                                   f"({asset['available_date']}).")
-    if day > business_date_of(None, books.settings.get("timezone")):
+    if day > setup.today_in(books.settings).isoformat():
         raise setup.unprocessable(f"The {what} date {day} is after today.")
     setup.require_open(books.lock, day)
     changed = max((m["effective_date"] for m in live if m.get("operation") not in _CHARGES), default=day)

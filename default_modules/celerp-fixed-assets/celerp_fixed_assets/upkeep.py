@@ -28,7 +28,6 @@ from celerp.services.money import books_currency
 from celerp.services.permissions import get_current_company_settings, require_permission, role_has_permission
 
 from celerp_fixed_assets import files, setup
-from celerp_fixed_assets.custody import _today
 from celerp_fixed_assets.moves import _GONE, _locked_assets, member_name
 from celerp_fixed_assets.store import _emit, _entities, _state
 from celerp_fixed_assets.views import money_shown, readable
@@ -440,7 +439,7 @@ async def create_reminder(asset_id: str, body: dict = Body(...), company_id=Depe
 
 @router.get("/reminders", dependencies=_VIEW)
 async def list_due(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    today = await _today(session, company_id)
+    today = (await setup.business_today(session, company_id)).isoformat()
     return {"items": [{k: v for k, v in r.items() if k != "told"} for r in await due_items(session, company_id, today)]}
 
 

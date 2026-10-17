@@ -14,7 +14,6 @@ movement and a new one, so movements stay as recorded.
 from __future__ import annotations
 
 import uuid
-from datetime import date
 
 from celerp_fixed_assets import projections, runs, setup, sources
 from celerp_fixed_assets.operations import _dec, _move, conflict
@@ -91,7 +90,7 @@ async def finish(session, company_id, user_id, body: dict) -> dict:
                            + ". Record the opening journal or the missing opening assets, or keep the differences open.")
     fa = setup.settings_of(company.settings)
     state = None if reopen else OPENING_STATES[1] if keep_open else OPENING_STATES[0]
-    fa["opening"] = {"state": state, "by": str(user_id), "on": date.today().isoformat()} if state else None
+    fa["opening"] = {"state": state, "by": str(user_id), "on": setup.today_in(company.settings).isoformat()} if state else None
     company.settings = {**(company.settings or {}), setup.SETTINGS_KEY: fa}
     await session.flush()
     return {**shown, "state": state}

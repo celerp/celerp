@@ -180,7 +180,7 @@ async def mark(session, company_id, user_id, year, body: dict) -> dict:
         marks.pop(key, None)
     else:
         marks[key] = {"state": state, "reason": reason, "effect": effect or None, "amount": found["amount"],
-                      "at": date.today().isoformat(), "user": str(user_id)}
+                      "at": (await setup.business_today(session, company_id)).isoformat(), "user": str(user_id)}
     await _emit(session, company_id, user_id, yearend_id(year), "fa_yearend", "fa.yearend.recorded",
                 {"year": year, "marks": marks})
     return {**found, "state": state, "reason": reason or None, "effect": effect or None}
@@ -189,8 +189,8 @@ async def mark(session, company_id, user_id, year, body: dict) -> dict:
 # ── Closing and reopening a tax year ─────────────────────────────────────────
 
 
-def _history(saved: dict, action: str, user_id, reason: str | None = None) -> list:
-    return [{"action": action, "reason": reason, "at": date.today().isoformat(), "user": str(user_id)},
+def _history(saved: dict, settings: dict, action: str, user_id, reason: str | None = None) -> list:
+    return [{"action": action, "reason": reason, "at": setup.today_in(settings).isoformat(), "user": str(user_id)},
             *(saved.get("history") or [])]
 
 
@@ -215,7 +215,7 @@ async def close(session, company_id, user_id, regime_key: str, year) -> dict:
     if saved.get("status") == "closed":
         raise conflict(f"Tax year {year} is already closed.")
     start, end = regime.tax_year(taxbooks.tax_year_end(settings), year)
-    if end >= date.today():
+    if end >= setup.today_in(settings):
         raise conflict(f"Tax year {year} ends on {end.isoformat()}, so it cannot close yet.")
     years = await taxbooks.years(session, company_id, settings, regime, year)
     earlier = [y for y, f in sorted(years.items()) if y < year and f.get("status") != "closed"
@@ -228,7 +228,7 @@ async def close(session, company_id, user_id, regime_key: str, year) -> dict:
     figures = years.get(year) or {"rows": [], "pools": []}
     data = {"regime": regime_key, "year": year, "status": "closed", "start": start.isoformat(),
             "end": end.isoformat(), "rows": figures["rows"], "pools": figures["pools"],
-            "history": _history(saved, "closed", user_id)}
+            "history": _history(saved, settings, "closed", user_id)}
     await _emit(session, company_id, user_id, taxbooks.taxyear_id(regime_key, year), "fa_taxyear",
                 "fa.taxyear.recorded", data)
     return data
@@ -247,7 +247,7 @@ async def reopen(session, company_id, user_id, regime_key: str, year, body: dict
     if later:
         raise conflict(f"Reopen tax year {later[-1]} first.")
     data = {**saved, "status": "open", "rows": [], "pools": [],
-            "history": _history(saved, "reopened", user_id, reason)}
+            "history": _history(saved, settings, "reopened", user_id, reason)}
     await _emit(session, company_id, user_id, taxbooks.taxyear_id(regime_key, year), "fa_taxyear",
                 "fa.taxyear.recorded", data)
     return data

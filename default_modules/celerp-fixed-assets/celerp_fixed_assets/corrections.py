@@ -462,10 +462,9 @@ def _first_open(books: runs.Books, start: int | None) -> int:
 
 
 async def _posting_day(session, company_id, books: runs.Books, original: str, chosen) -> str:
-    from celerp.services.business_time import business_date_of
     from celerp.services.posting_dates import correction_day
 
-    today = business_date_of(None, books.settings.get("timezone"))
+    today = setup.today_in(books.settings).isoformat()
     if chosen:
         chosen = _date(chosen, "The posting date")
         if chosen > today:
