@@ -473,7 +473,7 @@ async def _place_firm_journal(session: AsyncSession, company: Company, firm: str
             codes=[line.get("account") for line in entries], sender=firm, receiver=None,
             record=f"the journal {item.get('memo') or 'entry'}", firm=False)
         for line in entries:
-            line["account"] = placed.get(line.get("account"), line.get("account"))
+            line["account"] = placed[line.get("account")]
         await require_destinations(session, company.id, {line.get("account") for line in entries})
     except HTTPException as exc:
         return _Placed(entries, failure_reason(exc), getattr(exc, "fix", None))

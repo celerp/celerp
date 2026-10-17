@@ -83,7 +83,7 @@ def parse(value) -> dict[str, dict]:
         out = {code: _Account.model_validate(a).model_dump() for code, a in value.items()}
     except ValidationError:
         raise HTTPException(422, "Invalid accounts") from None
-    if any(code != a["code"] for code, a in out.items()):
+    if any(code != a["code"] for code, a in out.items()) or len({a["id"] for a in out.values()}) != len(out):
         raise HTTPException(422, "Invalid accounts")
     return out
 
@@ -259,12 +259,14 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
                 record: str, firm: bool) -> dict[str, str]:
     """Each of ``codes`` (the sender's) as the receiver's code, adding the accounts the
     receiver lacks; raises AccountHold, before writing anything, for a record that cannot
-    post. A code the record carries no account for stays as it is. ``receiver`` names the
+    post. An account lands only where its details (type, currency, role) agree with the
+    receiver's account, or where an existing link of it points; a code the record carries
+    no details for posts only by such a link. ``receiver`` names the
     receiving company in a hold's reason, None when it is read by the receiver itself;
     ``firm`` is True on the firm's side, where an unreviewed client's accounts wait."""
     codes = list(dict.fromkeys(codes))
     chart = chart_access()
-    if chart is None or not accounts:
+    if chart is None:
         return {c: c for c in codes}
     names = _Names(sender, receiver)
     company = await session.get(Company, company_id)
@@ -274,13 +276,17 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
     by_id = {a["id"]: a for a in local.values()}
     linked = {row.other_account_id: row for row in await links(session, company_id, source_company_id)}
     taken = {row.code: row.other_account_id for row in linked.values()}
+    by_other_code: dict[str, list[CompanyPeerAccount]] = {}
+    for row in linked.values():
+        by_other_code.setdefault(row.other_code, []).append(row)
     roles = role_map(settings)
+    role_of = {c: r for r, c in roles.items() if _postable([r])}
     review = firm and await review_pending(session, company, source_company_id)
     plan, waiting = _Plan(), []
     for code in codes:
         other = accounts.get(code)
         if other is None:
-            plan.codes[code] = code
+            plan.codes[code] = _by_link(names, code, by_other_code.get(code) or [], by_id, record)
             continue
         parent = _local_parent(other, accounts, local, by_id, linked)
         role = next(iter(_postable(other["roles"])), None)
@@ -293,6 +299,13 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
                     f"{label(other)} is the {role_label} account of {sender}, and {has} no "
                     f"{role_label} account chosen. Choose it in Settings > Accounting > Posting accounts.",
                     _fix("role", other, add=False, role=role, href=POSTING_ACCOUNTS))
+            if _kind(target, books) != _kind(other, books):
+                whose = "your" if receiver is None else f"{receiver}'s"
+                raise AccountHold(
+                    f"{label(other)} is the {role_label} account of {sender}, {_kind_text(other, books)}, "
+                    f"and {whose} {role_label} account {label(target)} is {_kind_text(target, books)}. "
+                    f"Choose one that matches in Settings > Accounting > Posting accounts.",
+                    _fix("role", other, add=False, role=role, href=POSTING_ACCOUNTS))
             if not target["is_active"]:
                 raise _archived(names, other, target)
             plan.codes[code] = target["code"]
@@ -301,14 +314,18 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
         target = by_id.get(row.account_id) if row is not None else None
         how = None
         if target is not None:
+            _differs(names, other, target, books, f"{label(target)}, where it posts in {names.chart},",
+                     next_free(code, set(local)), parent)
             plan.seen.append((row, other))
         elif other["yours"] in by_id:
             target, how = by_id[other["yours"]], "match"
+            _differs(names, other, target, books, f"{label(target)}, where {sender} posts it in {names.chart},",
+                     next_free(code, set(local)), parent)
         else:
             same = local.get(code)
-            exact = (same is not None and same["account_type"] == other["account_type"]
-                     and _currency(same, books) == _currency(other, books)
-                     and _same_name(same["name"], other["name"]) and taken.get(code) in (None, other["id"]))
+            exact = (same is not None and _kind(same, books) == _kind(other, books)
+                     and _same_name(same["name"], other["name"]) and taken.get(code) in (None, other["id"])
+                     and code not in role_of)
             if exact:
                 target, how = same, "match"
             elif review:
@@ -316,21 +333,13 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
                 continue
             elif same is not None:
                 suggested = next_free(code, set(local))
-                if same["account_type"] != other["account_type"]:
-                    raise AccountHold(
-                        f"{sender}'s account {label(other)} is {_article(other['account_type'])} account, "
-                        f"and {label(same)} in {names.chart} is {_article(same['account_type'])} account. "
-                        f"Use another {other['account_type']} account, or add it as {suggested}.",
-                        _fix("type", other, local=same, suggested=suggested, parent=parent))
-                if _currency(same, books) != _currency(other, books):
-                    raise AccountHold(
-                        f"{sender}'s account {label(other)} is kept in {_currency(other, books)}, and "
-                        f"{label(same)} in {names.chart} is kept in {_currency(same, books)}. "
-                        f"Use an account kept in {_currency(other, books)}.",
-                        _fix("currency", other, local=same, add=False))
+                _differs(names, other, same, books, f"{label(same)} in {names.chart}", suggested, parent)
+                held_role = role_of.get(code)
+                why = (f", the {ROLE_LABELS[AccountRole(held_role)]} account there, which {sender} does not "
+                       f"post it as" if held_role else "")
                 raise AccountHold(
                     f"{sender}'s account {label(other)} has the same code as {label(same)} in "
-                    f"{names.chart}. Use {label(same)} for it, or add it as {suggested}.",
+                    f"{names.chart}{why}. Use {label(same)} for it, or add it as {suggested}.",
                     _fix("collision", other, local=same, suggested=suggested, parent=parent))
             elif _currency(other, books) != books:
                 raise AccountHold(
@@ -352,6 +361,45 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
     await _write(session, company_id, source_company_id, plan, accounts, local, by_id, linked,
                  sender=sender, record=record)
     return plan.codes
+
+
+def _kind(account: dict, books: str) -> tuple[str, str]:
+    return account["account_type"], _currency(account, books)
+
+
+def _kind_text(account: dict, books: str) -> str:
+    return f"{_article(account['account_type'])} account kept in {_currency(account, books)}"
+
+
+def _differs(names: _Names, other: dict, target: dict, books: str, where: str, suggested: str,
+             parent: str | None) -> None:
+    """Hold ``other`` when ``target`` (``where`` names it) is another type of account, or
+    kept in another currency."""
+    if target["account_type"] != other["account_type"]:
+        raise AccountHold(
+            f"{names.sender}'s account {label(other)} is {_article(other['account_type'])} account, "
+            f"and {where} is {_article(target['account_type'])} account. "
+            f"Use another {other['account_type']} account, or add it as {suggested}.",
+            _fix("type", other, local=target, suggested=suggested, parent=parent))
+    if _currency(target, books) != _currency(other, books):
+        raise AccountHold(
+            f"{names.sender}'s account {label(other)} is kept in {_currency(other, books)}, and "
+            f"{where} is kept in {_currency(target, books)}. "
+            f"Use an account kept in {_currency(other, books)}.",
+            _fix("currency", other, local=target, add=False))
+
+
+def _by_link(names: _Names, code: str, rows: list[CompanyPeerAccount], by_id: dict, record: str) -> str:
+    """The receiver's account for the sender's ``code`` when a record carries no details
+    of it: the one account a link of that code points to, else the record is held."""
+    target = by_id.get(rows[0].account_id) if len(rows) == 1 else None
+    if target is None:
+        raise HTTPException(409, f"{names.sender} sent {record} without the name, type and currency of "
+                                 f"its account {code}, so it is not matched to an account in {names.chart}. "
+                                 f"It posts when {names.sender} sends it again with them.")
+    if not target["is_active"]:
+        raise _archived(names, {"code": code, "name": rows[0].other_name}, target)
+    return target["code"]
 
 
 def _archived(names: _Names, other: dict, target: dict) -> AccountHold:
