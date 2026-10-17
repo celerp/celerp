@@ -90,6 +90,8 @@ NEW_COMPANY = WizardMode("new_company", "/setup/new-company/restore-backup", "/s
                          _TITLE, _OWNER_ONLY)
 BOOTSTRAP = WizardMode("bootstrap", "/setup/restore-backup", "/setup", _TITLE, _OWNER_ONLY)
 START_COMPANY = WizardMode("start_company", START_COMPANY_RESTORE, START_COMPANY_PAGE, _TITLE, _OWNER_ONLY)
+# Sending, listing and saved copies refuse a non-owner under a heading of their own.
+COPIES = WizardMode("settings", SETTINGS.base, BACKUP_TAB, "company_backup.handoffs_title", _OWNER_ONLY)
 
 USERS_AND_ROLES = "/settings/general?tab=users"
 
@@ -1137,7 +1139,7 @@ def _copies_table(items: list[dict], *, notice: str | None = None, warning: str 
 
 
 async def _handoffs_page(request: Request):
-    if (denied := await _gate(request, SETTINGS)) is not None:
+    if (denied := await _gate(request, COPIES)) is not None:
         return denied
     try:
         rows = (await api.company_backup_handoffs(get_token(request)))["items"]
@@ -1156,7 +1158,7 @@ async def _handoffs_page(request: Request):
 async def _copy_action(request: Request, act, done: str):
     """Revoke, Undo or New link: the table swaps in place with what happened. Without
     htmx the page loads again."""
-    if (denied := await _gate(request, SETTINGS)) is not None:
+    if (denied := await _gate(request, COPIES)) is not None:
         return denied
     notice = warning = None
     token = get_token(request)
@@ -1247,7 +1249,7 @@ async def _company_name(token: str) -> str:
 
 
 async def _saved_page(request: Request, *, warning: str | None = None, status_code: int = 200):
-    if (denied := await _gate(request, SETTINGS)) is not None:
+    if (denied := await _gate(request, COPIES)) is not None:
         return denied
     token = get_token(request)
     try:
@@ -1265,7 +1267,7 @@ async def _saved_page(request: Request, *, warning: str | None = None, status_co
 
 
 async def _saved_download(request: Request):
-    if (denied := await _gate(request, SETTINGS)) is not None:
+    if (denied := await _gate(request, COPIES)) is not None:
         return denied
     if (kept := _kept_id(request)) is None:
         return await _saved_page(request, warning=t("company_backup.err_kept_not_found"), status_code=404)
@@ -1280,7 +1282,7 @@ async def _saved_download(request: Request):
 async def _saved_delete(request: Request):
     """Delete a saved copy, after the page asked. The table swaps in place; without htmx
     the page loads again."""
-    if (denied := await _gate(request, SETTINGS)) is not None:
+    if (denied := await _gate(request, COPIES)) is not None:
         return denied
     token = get_token(request)
     notice = warning = None
@@ -1303,7 +1305,7 @@ async def _saved_delete(request: Request):
 
 async def _put_back(request: Request):
     """Put a saved copy back in place of this company, once its name is typed."""
-    if (denied := await _gate(request, SETTINGS)) is not None:
+    if (denied := await _gate(request, COPIES)) is not None:
         return denied
     if (kept := _kept_id(request)) is None:
         return await _saved_page(request, warning=t("company_backup.err_kept_not_found"), status_code=404)
@@ -1322,7 +1324,7 @@ async def _send_page(request: Request, *, error: str | None = None, values: dict
                      status_code: int = 200, account: bool = False):
     """The send form. *account* embeds the free-account sign-in in place of the
     error; once verified it submits this same form again (same operation)."""
-    if (denied := await _gate(request, SETTINGS)) is not None:
+    if (denied := await _gate(request, COPIES)) is not None:
         return denied
     if not values:
         # The firm name and reply address start as the last send's; Resend from the
@@ -1375,7 +1377,7 @@ async def _send_page(request: Request, *, error: str | None = None, values: dict
 
 
 async def _send_handoff(request: Request):
-    if (denied := await _gate(request, SETTINGS)) is not None:
+    if (denied := await _gate(request, COPIES)) is not None:
         return denied
     form = await request.form()
     keys = ("operation_id", "key", "firm_name", "recipient", "reply_to", "note")

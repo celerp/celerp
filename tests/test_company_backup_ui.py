@@ -1374,9 +1374,11 @@ async def test_copies_page_shows_the_cloud_refusal(ui, real_engine, monkeypatch)
     assert t("company_backup.handoffs_unavailable") in page and "Could not confirm" not in page
 
 
-@pytest.mark.parametrize("path", ["/settings/company-handoff", "/settings/company-handoffs"])
+@pytest.mark.parametrize("path", ["/settings/company-handoff", "/settings/company-handoffs",
+                                  "/settings/saved-copies"])
 async def test_a_non_owner_is_refused_under_the_company_copies_heading(ui, real_engine, monkeypatch, path):
-    """Send and the copies list refuse a non-owner under their own heading, not the open-a-copy one."""
+    """Send, the copies list and saved copies refuse a non-owner under their own heading, not the
+    open-a-copy one."""
     import ui.routes.migrations as migrations
     _, _, tok = await _setup(real_engine)
     ui.cookies.set("celerp_token", tok)
