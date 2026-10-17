@@ -84,7 +84,7 @@ def _archive(path: Path, files: dict[str, bytes] | None = None, *, dump: bytes =
              version: str | None = None) -> Path:
     """A whole-installation archive in the .celerp-backup layout, made by Celerp *version*
     (None: an archive from before backups recorded their version)."""
-    meta = {"pg_version": "unknown", "company_name": "Harbor Goods Ltd", "enabled_modules": modules}
+    meta = {"pg_version": "unknown", "enabled_modules": modules}
     if version is not None:
         meta["celerp_version"] = version
     with tarfile.open(path, "w:gz") as tar:
@@ -337,6 +337,17 @@ async def test_cloud_snapshot_meta_lists_every_company_module(rec, real_engine):
     await company(real_engine, user, "Beta Trading", "beta", settings={"enabled_modules": ["celerp-contacts"]})
     meta = await backup_export.archive_meta()
     assert sorted(meta["enabled_modules"]) == sorted(_closure(["celerp-contacts", "celerp-labels"]))
+
+
+async def test_full_backup_meta_names_no_single_company(rec, real_engine):
+    """A full backup holds the whole installation, so its metadata names no one
+    company: there is no field to fall back to a made-up name such as "unknown"."""
+    from celerp.services import backup_export
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await company(real_engine, user, "Beta Trading", "beta")
+    meta = await backup_export.archive_meta()
+    assert "company_name" not in meta
 
 
 async def test_old_backup_fallback_uses_every_company_module(rec, real_engine, tmp_path):

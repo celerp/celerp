@@ -68,7 +68,7 @@ def _archive(path, members: list[tuple[str, bytes]]):
     from celerp.services.backup import dump_database
 
     meta = json.dumps({"celerp_version": __version__, "pg_version": "16",
-                       "created_at": "2026-06-04T00:00:00Z", "company_name": "T"}).encode()
+                       "created_at": "2026-06-04T00:00:00Z"}).encode()
     with tarfile.open(path, mode="w:gz") as tar:
         with released_migration_history(settings.database_url):
             dump_database(settings.database_url, path.with_suffix(".dump"))

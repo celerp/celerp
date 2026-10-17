@@ -65,8 +65,7 @@ def _consume_restore_notice() -> dict | None:
 
 def _restore_notice_message(notice: dict) -> str:
     """One readable sentence block for the post-restore login banner."""
-    company = notice.get("company_name") or "backup"
-    parts = [t("auth.restore_notice_message", company=company)]
+    parts = [t("auth.backup_restored_signin")]
     parts.extend(str(w) for w in notice.get("warnings") or [])
     if notice.get("safety_archive"):
         parts.append(t("system_recovery.safety_saved", path=notice["safety_archive"]))
@@ -121,7 +120,12 @@ def setup_routes(app):
             by_ip = str(_ip.ip_address(by_ip_raw)) if by_ip_raw else ""
         except ValueError:
             by_ip = ""
-        if deactivated:
+        # A recovery ends every session, so the page that ran it arrives here as
+        # an eviction; its outcome is the true reason and is shown first.
+        if (restore_notice := _consume_restore_notice()) is not None:
+            notice = flash(_restore_notice_message(restore_notice),
+                           kind="warning" if restore_notice.get("warnings") else "success")
+        elif deactivated:
             notice = flash(t("auth.company_deactivated"))
         elif reason == "evicted":
             ip_note = t("auth.evicted_from_ip", ip=by_ip) if by_ip else ""
@@ -136,9 +140,6 @@ def setup_routes(app):
             notice = flash(t("auth.signed_out_idle"), kind="warning")
         elif reason == "password-changed":
             notice = flash(t("settings.password_changed"), kind="success")
-        elif (restore_notice := _consume_restore_notice()) is not None:
-            notice = flash(_restore_notice_message(restore_notice),
-                           kind="warning" if restore_notice.get("warnings") else "success")
         elif request.query_params.get("imported"):
             notice = flash(t("auth.backup_restored_signin"), kind="success")
         else:

@@ -60,7 +60,6 @@ class ImportMeta:
     celerp_version: str
     pg_version: str
     created_at: str
-    company_name: str
     # Modules the source system had enabled at export time. Empty for old
     # backups (pre-2026-06-04). Used by the install pass to surface
     # missing modules to the user before they reach a broken dashboard.
@@ -131,7 +130,6 @@ def validate_archive(path: Path) -> ImportMeta:
         celerp_version=meta_data.get("celerp_version") or "unknown",
         pg_version=meta_data.get("pg_version", "unknown"),
         created_at=meta_data.get("created_at", "unknown"),
-        company_name=meta_data.get("company_name", "unknown"),
         enabled_modules=modules,
     )
 
@@ -613,8 +611,8 @@ def _missing_module_warnings(modules: list[str]) -> list[str]:
     return [missing_modules_sentence(missing)]
 
 
-def _write_restore_notice(company_name: str | None, warnings: list[str],
-                          safety_archive: str | None, restart_scheduled: bool) -> None:
+def _write_restore_notice(warnings: list[str], safety_archive: str | None,
+                          restart_scheduled: bool) -> None:
     """Persist a one-shot restore notice for the login page.
 
     The post-restore restart can replace the page that showed the result (the
@@ -626,7 +624,6 @@ def _write_restore_notice(company_name: str | None, warnings: list[str],
         path = settings.data_dir / RESTORE_NOTICE_FILE
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({
-            "company_name": company_name,
             "warnings": warnings,
             "safety_archive": safety_archive,
             "restart_scheduled": restart_scheduled,
@@ -963,7 +960,7 @@ async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | Non
         from celerp.services.payments import reconcile_payments
         await reconcile_payments()
         warnings = _missing_module_warnings(modules)
-        _write_restore_notice(prepared.meta.company_name, warnings, safety, restart_scheduled)
+        _write_restore_notice(warnings, safety, restart_scheduled)
         return BackupResult(ok=True, size_bytes=prepared.files[_STAGED_DUMP], warnings=warnings,
                             restart_scheduled=restart_scheduled, safety_archive=safety)
     finally:

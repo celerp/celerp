@@ -298,15 +298,13 @@ async def import_backup(
     tmp_path = await _spool_upload(file)
     try:
         try:
-            meta = validate_archive(tmp_path)
+            validate_archive(tmp_path)
         except ValueError as exc:
             return _flash(str(exc), "error")
 
         await session.close()
         result = await run_recovery(tmp_path)
-        return _recovery_response(
-            result, t("system_recovery.imported", company=meta.company_name or "unknown"),
-        )
+        return _recovery_response(result, t("system_recovery.imported"))
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -354,7 +352,7 @@ async def import_backup_bootstrap(
     tmp_path = await _spool_upload(file)
     try:
         try:
-            meta = validate_archive(tmp_path)
+            validate_archive(tmp_path)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -378,7 +376,6 @@ async def import_backup_bootstrap(
 
         return {
             "ok": True,
-            "company_name": meta.company_name,
             "warnings": result.warnings,
             "restart_scheduled": result.restart_scheduled,
         }

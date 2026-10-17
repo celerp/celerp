@@ -461,7 +461,6 @@ class TestRestoreJourneyNotice:
 
         monkeypatch.setattr(settings, "data_dir", tmp_path)
         (tmp_path / RESTORE_NOTICE_FILE).write_text(_json.dumps({
-            "company_name": "Acme",
             "warnings": ["celerp-fictional"],
             "safety_archive": "/data/recovery-safety/pre-recovery.celerp-backup",
             "restart_scheduled": True,
@@ -469,13 +468,39 @@ class TestRestoreJourneyNotice:
         with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
             r = await ui_client.get("/login")
             assert r.status_code == 200
-            assert "Backup from Acme restored" in r.text
+            assert "Backup restored. Sign in with the credentials from the backup." in r.text
             assert "celerp-fictional" in r.text
             assert "/data/recovery-safety/pre-recovery.celerp-backup" in r.text
             assert not (tmp_path / RESTORE_NOTICE_FILE).exists()  # consumed
 
             r2 = await ui_client.get("/login")
-            assert "Backup from Acme restored" not in r2.text  # one-shot, not perpetual
+            assert "Backup restored" not in r2.text  # one-shot, not perpetual
+
+    @pytest.mark.asyncio
+    async def test_restore_notice_wins_over_the_eviction_redirect(self, ui_client, monkeypatch, tmp_path):
+        """A recovery ends every session, so the open page's event stream sends the
+        browser to /login?reason=evicted. The recovery is the true reason: the user
+        sees its outcome, never "a new session was started", and the notice is
+        consumed there rather than left for some later sign-out."""
+        import json as _json
+        from celerp.config import settings
+        from celerp.services.backup_import import RESTORE_NOTICE_FILE
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        (tmp_path / RESTORE_NOTICE_FILE).write_text(_json.dumps({
+            "warnings": [], "safety_archive": "/data/recovery-safety/pre-recovery.celerp-backup",
+            "restart_scheduled": False,
+        }))
+        with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
+            r = await ui_client.get("/login?reason=evicted&next=%2Fsettings%2Fsystem-recovery")
+            assert r.status_code == 200
+            assert "Backup restored. Sign in with the credentials from the backup." in r.text
+            assert "/data/recovery-safety/pre-recovery.celerp-backup" in r.text
+            assert "a new session was started" not in r.text
+            assert not (tmp_path / RESTORE_NOTICE_FILE).exists()
+
+            r2 = await ui_client.get("/login?reason=evicted")
+            assert "a new session was started" in r2.text  # an ordinary eviction is unchanged
 
 
 @pytest.mark.asyncio

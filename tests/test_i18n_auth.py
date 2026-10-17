@@ -33,7 +33,7 @@ _XX = {
     "auth.backup_file_label": "XX_BACKUP_FILE_LABEL",
     "auth.restore_backup_btn": "XX_RESTORE_BTN",
     "auth.restoring": "XX_RESTORING",
-    "auth.restore_notice_message": "XX_RESTORED {company}",
+    "auth.backup_restored_signin": "XX_RESTORED",
     "auth.direct_connection_gate_body": "XX_GATE_BODY",
 }
 
@@ -68,11 +68,9 @@ def test_restore_button_loading_label_via_data_attr():
     assert 'data-loading-label="XX_RESTORING"' in html
 
 
-def test_restore_notice_message_interpolates():
-    # Interpolation: the company name fills the {company} placeholder at render.
-    out = _restore_notice_message({"company_name": "Acme"})
-    assert "XX_RESTORED" in out
-    assert "Acme" in out
+def test_restore_notice_message_translates():
+    out = _restore_notice_message({"warnings": [], "safety_archive": None})
+    assert out == "XX_RESTORED"
 
 
 def test_direct_connection_gate_body_translates():

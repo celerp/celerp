@@ -185,7 +185,6 @@ async def test_restored_connector_cleanup_fences_stale_context(
 
 
 def _make_archive(
-    company_name: str = "Test",
     version: str | None = None,
     extra_meta: dict | None = None,
     include_dump: bool = True,
@@ -205,7 +204,6 @@ def _make_archive(
                 "celerp_version": version,
                 "pg_version": "16",
                 "created_at": "2026-01-01T00:00:00Z",
-                "company_name": company_name,
             }
             if extra_meta:
                 meta.update(extra_meta)
@@ -670,12 +668,12 @@ class TestRestoreNotice:
         from ui.routes.auth import _consume_restore_notice
 
         monkeypatch.setattr(settings, "data_dir", tmp_path)
-        _write_restore_notice("Acme", ["celerp-labels"], "/data/recovery-safety/pre.celerp-backup", True)
+        _write_restore_notice(["celerp-labels"], "/data/recovery-safety/pre.celerp-backup", True)
         assert (tmp_path / RESTORE_NOTICE_FILE).is_file()
 
         notice = _consume_restore_notice()
         assert notice is not None
-        assert notice["company_name"] == "Acme"
+        assert "company_name" not in notice
         assert notice["warnings"] == ["celerp-labels"]
         assert notice["safety_archive"] == "/data/recovery-safety/pre.celerp-backup"
         assert notice["restart_scheduled"] is True
@@ -686,11 +684,10 @@ class TestRestoreNotice:
         from ui.routes.auth import _restore_notice_message
 
         msg = _restore_notice_message({
-            "company_name": "Acme",
             "warnings": ["celerp-labels"],
             "safety_archive": "/data/recovery-safety/pre.celerp-backup",
         })
-        assert "Acme" in msg
+        assert msg.startswith("Backup restored. Sign in with the credentials from the backup.")
         assert "celerp-labels" in msg
         assert "/data/recovery-safety/pre.celerp-backup" in msg
 
@@ -759,7 +756,6 @@ class TestRecoveryPropagation:
         _stub_recovery(monkeypatch, tmp_path, restart=True)
 
         archive = _make_archive(
-            company_name="Acme",
             extra_meta={"enabled_modules": ["celerp-fictional"]},
         )
         path = _write_archive_to_tmp(archive)
@@ -774,7 +770,7 @@ class TestRecoveryPropagation:
         assert any("celerp-fictional" in w for w in result.warnings)
 
         notice = json.loads((tmp_path / "data" / backup_import.RESTORE_NOTICE_FILE).read_text())
-        assert notice["company_name"] == "Acme"
+        assert "company_name" not in notice
         assert notice["restart_scheduled"] is True
         assert notice["safety_archive"] == result.safety_archive
         assert notice["warnings"] == result.warnings

@@ -102,7 +102,7 @@ def fake_repo(monkeypatch, tmp_path):
 
     async def fake_meta():
         return {"celerp_version": running_version(), "pg_version": "16", "created_at": "2026-06-25T00:00:00Z",
-                "company_name": "TestCo", "enabled_modules": []}
+                "enabled_modules": []}
     monkeypatch.setattr("celerp.services.backup_export.archive_meta", fake_meta)
 
     settings.backup_encryption_key = base64.b64encode(secrets.token_bytes(32)).decode()
@@ -163,7 +163,7 @@ async def test_snapshot_round_trip_rebuilds_valid_archive(fake_repo):
     path = await backup_repo.reassemble_snapshot(snap_id)
     try:
         meta = validate_archive(path)  # raises if not a valid .celerp-backup
-        assert meta.company_name == "TestCo"
+        assert meta.created_at == "2026-06-25T00:00:00Z"
         with tarfile.open(path, "r:gz") as tar:
             assert tar.extractfile("database.dump").read() == b"PGDUMP-CUSTOM-FORMAT"
             assert tar.extractfile("attachments/doc.pdf").read() == b"PDF-BYTES"
