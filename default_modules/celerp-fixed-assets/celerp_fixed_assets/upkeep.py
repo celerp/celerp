@@ -22,7 +22,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_projections
 from celerp.services.money import books_currency
 from celerp.services.permissions import get_current_company_settings, require_permission, role_has_permission
@@ -31,6 +31,7 @@ from celerp_fixed_assets import files, setup
 from celerp_fixed_assets.custody import _today
 from celerp_fixed_assets.moves import _GONE, _locked_assets, member_name
 from celerp_fixed_assets.store import _emit, _entities, _state
+from celerp_fixed_assets.views import money_shown, readable
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
 _VIEW = [require_permission("view_fixed_assets")]
@@ -332,27 +333,26 @@ async def attach_to_entry(session, company_id, user_id, maint_id: str, file: Upl
     return {"id": maint_id, **await _state(session, company_id, maint_id)}
 
 
-def entry_out(maint_id: str, entry: dict, asset: dict | None, *, currency: str | None) -> dict:
-    """A log entry as shown; its amount (from the bill) only with a ``currency``, which is
-    given to roles that see money."""
+def entry_out(maint_id: str, entry: dict, asset: dict | None, *, currency: str) -> dict:
+    """A log entry as shown, its amount (from the bill) at the books' precision."""
     from celerp.services.money import round_money
 
     stored = {f["id"]: f for f in (asset or {}).get("files") or []}
     amount = entry.get("amount")
     return {"id": maint_id, "date": entry.get("date"), "work": entry.get("work"), "by": entry.get("by"),
             "next_due": entry.get("next_due"), "reminder_id": entry.get("reminder_id"),
-            "amount": str(round_money(amount, currency)) if currency and amount is not None else None,
+            "amount": str(round_money(amount, currency)) if amount is not None else None,
             "bill_ref": entry.get("bill_ref"),
             "source": entry.get("source"), "status": entry["status"],
             "files": [stored[f] for f in entry.get("files") or [] if f in stored]}
 
 
-async def of_asset(session, company_id, asset_id: str, *, money: bool) -> dict:
+async def of_asset(session, company_id, asset_id: str) -> dict:
     """An asset's reminders, open ones soonest first, and its maintenance log, newest first."""
     asset = await _state(session, company_id, asset_id)
     if asset is None or not asset.get("number"):
         raise HTTPException(status_code=404, detail="No such asset.")
-    currency = await setup.currency(session, company_id) if money else None
+    currency = await setup.currency(session, company_id)
     reminders = [reminder_out(r, s) for r, s in await _entities(session, company_id, REMINDER)
                  if s["asset_id"] == asset_id]
     log = [entry_out(m, s, asset, currency=currency) for m, s in await _entities(session, company_id, MAINT)
@@ -427,11 +427,9 @@ async def tell_reminders(session, company_id, today: date) -> None:
 
 
 @router.get("/assets/{asset_id}/upkeep", dependencies=_VIEW)
-async def get_upkeep(asset_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
-                     company_settings: dict = Depends(get_current_company_settings),
+async def get_upkeep(asset_id: str, company_id=Depends(get_current_company_id), money: bool = Depends(money_shown),
                      session: AsyncSession = Depends(get_session)) -> dict:
-    money = role_has_permission(company_settings, role, "view_financial_reports")
-    return await of_asset(session, company_id, asset_id, money=money)
+    return readable(await of_asset(session, company_id, asset_id), money)
 
 
 @router.post("/assets/{asset_id}/reminders", dependencies=_MANAGE)
@@ -456,9 +454,9 @@ async def _one(session, company_id, entity_id: str, entity_type: str) -> dict:
 
 
 @router.get("/reminders/{reminder_id}", dependencies=_VIEW)
-async def get_reminder(reminder_id: str, company_id=Depends(get_current_company_id),
+async def get_reminder(reminder_id: str, company_id=Depends(get_current_company_id), money: bool = Depends(money_shown),
                        session: AsyncSession = Depends(get_session)) -> dict:
-    return reminder_out(reminder_id, await _one(session, company_id, reminder_id, REMINDER))
+    return readable(reminder_out(reminder_id, await _one(session, company_id, reminder_id, REMINDER)), money)
 
 
 @router.post("/reminders/{reminder_id}/done", dependencies=_MANAGE)
@@ -498,14 +496,13 @@ async def create_entry(asset_id: str, body: dict = Body(...), company_id=Depends
 
 
 @router.get("/maintenance/{maint_id}", dependencies=_VIEW)
-async def get_entry(maint_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
+async def get_entry(maint_id: str, company_id=Depends(get_current_company_id), money: bool = Depends(money_shown),
                     company_settings: dict = Depends(get_current_company_settings),
                     session: AsyncSession = Depends(get_session)) -> dict:
     entry = await _one(session, company_id, maint_id, MAINT)
-    money = role_has_permission(company_settings, role, "view_financial_reports")
-    return {"asset_id": entry["asset_id"], **entry_out(
+    return readable({"asset_id": entry["asset_id"], **entry_out(
         maint_id, entry, await _state(session, company_id, entry["asset_id"]),
-        currency=books_currency(company_settings) if money else None)}
+        currency=books_currency(company_settings))}, money)
 
 
 @router.patch("/maintenance/{maint_id}", dependencies=_MANAGE)

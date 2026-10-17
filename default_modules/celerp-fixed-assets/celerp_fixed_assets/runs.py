@@ -505,19 +505,16 @@ async def _post(session, company_id, user_id, context: dict, op_key: str, *, man
 
 async def _prepare(session, company_id, context: dict) -> None:
     books: Books = context["books"]
-    currency = books.currency
-    total = Decimal(0)
     for k in context["months"]:
         items, held = context["items"][k], context["held"][k]
         month_total = sum((it["amount"] for it in items), Decimal(0))
-        total += month_total
         record = _record(k, "prepared", month_total, held, books.currency)
         current = books.records.get(k)
         if current is None or any(current.get(f) != record[f] for f in ("status", "total", "exceptions")):
             await _emit(session, company_id, None, f"fa:run:{record['month']}", "fa_run", "fa.run.prepared", record)
     await notices.tell(session, company_id, notices.READY,
-                       f"Depreciation for {_long(context['month'])} is ready to post: {money(total, currency)}.",
-                       month=period_label(context["month"]), total=money(total, currency))
+                       f"Depreciation for {_long(context['month'])} is ready to post.",
+                       month=period_label(context["month"]))
 
 
 async def _tell_attention(session, company_id) -> None:
@@ -743,12 +740,10 @@ async def tick(session, company_id, today: date) -> str | None:
     if shown["empty"]:
         return None
     if fa.get("run_mode") == "post" and not fa.get("auto_post_paused") and may_post:
-        done = await _post(session, company_id, uuid.UUID(user), context, f"auto.{period_label(month)}", manual=False)
-        total = money(sum((Decimal(r["total"]) for r in done["runs"]), Decimal(0)), books.currency)
+        await _post(session, company_id, uuid.UUID(user), context, f"auto.{period_label(month)}", manual=False)
         await notices.tell(session, company_id, notices.AUTO_POSTED,
-                           f"Depreciation for {_long(month)} was posted automatically: {total}.",
-                           action_url=f"{notices.RUNS_URL}/{period_label(month)}", month=period_label(month),
-                           total=total)
+                           f"Depreciation for {_long(month)} was posted automatically.",
+                           action_url=f"{notices.RUNS_URL}/{period_label(month)}", month=period_label(month))
         return "posted"
     await _prepare(session, company_id, context)
     if fa.get("run_mode") == "post" and fa.get("auto_post_paused"):

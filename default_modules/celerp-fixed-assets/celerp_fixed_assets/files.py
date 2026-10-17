@@ -4,7 +4,8 @@
 
 The bill or invoice an asset came from, or was sold on, keeps its own files; they are
 listed with the asset's only to roles that see money (view_financial_reports), since a
-bill shows what was paid.
+bill shows what was paid. The asset's own bills, valuations, insurance and disposal
+papers (views.FINANCIAL_TAGS) are listed and served only to those roles too.
 """
 from __future__ import annotations
 
@@ -14,10 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.services.attachments import attach_file, local_attachment_url_path, storing
-from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
-from celerp.services.permissions import get_current_company_settings, require_permission, role_has_permission
+from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.permissions import require_permission
 
-from celerp_fixed_assets import setup
+from celerp_fixed_assets import setup, views
 from celerp_fixed_assets.moves import _locked_assets
 from celerp_fixed_assets.store import _emit, _state
 
@@ -137,13 +138,11 @@ async def _asset_state(session, company_id, asset_id: str) -> dict:
 
 
 @router.get("/assets/{asset_id}/files", dependencies=_VIEW)
-async def list_files(asset_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
-                     company_settings: dict = Depends(get_current_company_settings),
+async def list_files(asset_id: str, company_id=Depends(get_current_company_id), money: bool = Depends(views.money_shown),
                      session: AsyncSession = Depends(get_session)) -> dict:
     state = await _asset_state(session, company_id, asset_id)
-    money = role_has_permission(company_settings, role, "view_financial_reports")
-    return {"files": state.get("files") or [], "linked": await linked(session, company_id, state) if money else [],
-            "tags": list(ASSET_FILE_TAGS)}
+    return {"files": views.readable(state.get("files") or [], money),
+            "linked": await linked(session, company_id, state) if money else [], "tags": list(ASSET_FILE_TAGS)}
 
 
 @router.post("/assets/{asset_id}/files", dependencies=_MANAGE)
@@ -175,8 +174,11 @@ async def describe_file(asset_id: str, file_id: str, description: str = Form("")
 
 @router.get("/assets/{asset_id}/files/{file_id}", dependencies=_VIEW)
 async def download_file(asset_id: str, file_id: str, company_id=Depends(get_current_company_id),
-                        session: AsyncSession = Depends(get_session)):
-    return serve(company_id, file_of(await _asset_state(session, company_id, asset_id), file_id))
+                        money: bool = Depends(views.money_shown), session: AsyncSession = Depends(get_session)):
+    f = file_of(await _asset_state(session, company_id, asset_id), file_id)
+    if not money and views.financial_file(f):
+        raise HTTPException(status_code=403, detail="Your role cannot open files that show amounts.")
+    return serve(company_id, f)
 
 
 @router.post("/classes/{class_id}/valuer-report", dependencies=_MANAGE)

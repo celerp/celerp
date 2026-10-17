@@ -17,11 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
-from celerp.services.permissions import (
-    assert_role_permission, get_current_company_settings, require_permission, role_has_permission)
+from celerp.services.permissions import assert_role_permission, get_current_company_settings, require_permission
 from celerp_fixed_assets import (
     additions, classtable, corrections, disposal, fixaccount, imports, moves, opening, operations, recon, reclassify, remeasure, reports,
-    runs, sales, setup, sources, taxbooks, transfer, yearend)
+    runs, sales, setup, sources, taxbooks, transfer, views, yearend)
 from celerp_fixed_assets.events import register_events
 from celerp_fixed_assets.search import matching
 
@@ -38,15 +37,12 @@ OPERATION_TYPES = {name: ("manage_accounting",)
                                 "transfer_in", "fix_account")} | dict.fromkeys(SALE_OPERATIONS, sales.SALE_KEYS)
 
 _MONEY_FIELDS = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "nbv")
+_MONEY = Depends(views.money_shown)
 _VIEW = [require_permission("view_fixed_assets")]
 _ACCOUNTING = [require_permission("manage_accounting")]
 _MANAGE = [require_permission("manage_fixed_assets")]
 _REPORTS = [require_permission("view_financial_reports")]
 _SELL = [require_permission("edit_documents"), require_permission("manage_fixed_assets")]
-
-
-def _shows_money(settings: dict, role: str) -> bool:
-    return role_has_permission(settings, role, "view_financial_reports")
 
 
 def asset_out(asset_id: str, state: dict, *, money: bool = True) -> dict:
@@ -58,12 +54,7 @@ def asset_out(asset_id: str, state: dict, *, money: bool = True) -> dict:
     else:
         out["nbv"] = str(Decimal(str(state.get("cost") or 0)) - Decimal(str(state.get("accumulated_depreciation") or 0))
                          - Decimal(str(state.get("accumulated_impairment") or 0)))
-    if not money:
-        out.update(dict.fromkeys(_MONEY_FIELDS))
-        out["sources"] = [{"source": s.get("source"), "ref": s.get("ref")} for s in out.get("sources") or []]
-        if out.get("exception"):
-            out["exception"] = {**out["exception"], "amount": None}
-    return out
+    return views.readable(out, money)
 
 
 async def _asset(session, company_id, asset_id: str) -> dict:
@@ -235,15 +226,13 @@ async def acknowledge(body: dict = Body(...), company_id=Depends(get_current_com
 
 @router.get("/assets", dependencies=_VIEW)
 async def list_assets(class_id: str | None = None, q: str | None = None, limit: int = 50, offset: int = 0,
-                      company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
-                      company_settings: dict = Depends(get_current_company_settings),
+                      company_id=Depends(get_current_company_id), money: bool = _MONEY,
                       session: AsyncSession = Depends(get_session)) -> dict:
     if limit < 1 or limit > 500 or offset < 0:
         raise setup.unprocessable("Choose a page of 1 to 500 assets.")
     rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "fa_asset"))).all()
     found = [(eid, s) for eid, s in matching(rows, q) if not class_id or s.get("class_id") == class_id]
-    money = _shows_money(company_settings, role)
     return {"items": [asset_out(eid, s, money=money) for eid, s in found[offset:offset + limit]],
             "total": len(found), "limit": limit, "offset": offset}
 
@@ -260,22 +249,20 @@ async def create_asset(body: dict = Body(...), company_id=Depends(get_current_co
 
 
 @router.get("/assets/{asset_id}", dependencies=_VIEW)
-async def get_asset(asset_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
-                    company_settings: dict = Depends(get_current_company_settings),
+async def get_asset(asset_id: str, company_id=Depends(get_current_company_id), money: bool = _MONEY,
                     session: AsyncSession = Depends(get_session)) -> dict:
     state = await _asset(session, company_id, asset_id)
-    return {**asset_out(asset_id, state, money=_shows_money(company_settings, role)),
-            **await remeasure.asset_facts(session, company_id, asset_id, state),
+    return {**asset_out(asset_id, state, money=money),
+            **views.readable(await remeasure.asset_facts(session, company_id, asset_id, state), money),
             "undoable": await additions.undoable(session, company_id, asset_id)}
 
 
 @router.patch("/assets/{asset_id}", dependencies=[require_permission("manage_fixed_assets")])
 async def update_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
-                       user=Depends(get_current_user), role: str = Depends(get_current_role),
-                       company_settings: dict = Depends(get_current_company_settings),
+                       user=Depends(get_current_user), money: bool = _MONEY,
                        session: AsyncSession = Depends(get_session)) -> dict:
     state = await _write(session, operations.update_asset, company_id, user.id, asset_id, body)
-    return asset_out(asset_id, state, money=_shows_money(company_settings, role))
+    return asset_out(asset_id, state, money=money)
 
 
 @router.post("/assets/{asset_id}/undo", dependencies=_ACCOUNTING)
@@ -292,31 +279,23 @@ async def financial_details(asset_id: str, body: dict = Body(...), company_id=De
 
 @router.get("/assets/{asset_id}/movements", dependencies=_VIEW)
 async def list_movements(asset_id: str, limit: int = 50, offset: int = 0,
-                         company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
-                         company_settings: dict = Depends(get_current_company_settings),
+                         company_id=Depends(get_current_company_id), money: bool = _MONEY,
                          session: AsyncSession = Depends(get_session)) -> dict:
     if limit < 1 or limit > 500 or offset < 0:
         raise setup.unprocessable("Choose a page of 1 to 500 movements.")
     await _asset(session, company_id, asset_id)
     items = sorted(await operations.asset_movements(session, company_id, asset_id),
                    key=lambda m: (m.get("posting_date") or "", int(m["id"].rsplit(":", 1)[1])), reverse=True)
-    if not _shows_money(company_settings, role):
-        items = [{**m, "amounts": None, "contributions": None} for m in items]
-    return {"items": items[offset:offset + limit], "total": len(items), "limit": limit, "offset": offset}
+    return {"items": views.readable(items[offset:offset + limit], money), "total": len(items), "limit": limit, "offset": offset}
 
 
 # ── Depreciation runs ────────────────────────────────────────────────────────
 
 
 @router.get("/runs", dependencies=_VIEW)
-async def list_runs(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
-                    company_settings: dict = Depends(get_current_company_settings),
+async def list_runs(company_id=Depends(get_current_company_id), money: bool = _MONEY,
                     session: AsyncSession = Depends(get_session)) -> dict:
-    items = await runs.records(session, company_id)
-    if not _shows_money(company_settings, role):
-        items = [{**r, "total": None, "exceptions": [{**e, "amount": None} for e in r.get("exceptions") or []]}
-                 for r in items]
-    return {"items": items}
+    return {"items": views.readable(await runs.records(session, company_id), money)}
 
 
 @router.post("/runs", dependencies=_ACCOUNTING)
@@ -332,13 +311,9 @@ async def reverse_run(month: str, body: dict = Body(...), company_id=Depends(get
 
 
 @router.get("/attention", dependencies=_VIEW)
-async def attention(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role),
-                    company_settings: dict = Depends(get_current_company_settings),
+async def attention(company_id=Depends(get_current_company_id), money: bool = _MONEY,
                     session: AsyncSession = Depends(get_session)) -> dict:
-    items = await runs.attention(session, company_id)
-    if not _shows_money(company_settings, role):
-        items = [{**a, "exception": {**a["exception"], "amount": None}} for a in items]
-    return {"items": items}
+    return {"items": views.readable(await runs.attention(session, company_id), money)}
 
 
 @router.post("/assets/{asset_id}/readings", dependencies=[require_permission("manage_fixed_assets")])
@@ -363,9 +338,9 @@ async def withdraw_skip(asset_id: str, month: str, company_id=Depends(get_curren
 
 
 @router.get("/assets/{asset_id}/correct-fields", dependencies=_VIEW)
-async def correct_fields(asset_id: str, company_id=Depends(get_current_company_id),
+async def correct_fields(asset_id: str, company_id=Depends(get_current_company_id), money: bool = _MONEY,
                          session: AsyncSession = Depends(get_session)) -> dict:
-    return await corrections.fields(session, company_id, asset_id)
+    return views.readable(await corrections.fields(session, company_id, asset_id), money)
 
 
 @router.post("/assets/{asset_id}/dispose", dependencies=_ACCOUNTING)
@@ -387,9 +362,9 @@ async def sell_asset(asset_id: str, body: dict = Body(...), company_id=Depends(g
 
 
 @router.get("/assets/{asset_id}/sale", dependencies=_VIEW)
-async def get_sale(asset_id: str, company_id=Depends(get_current_company_id),
+async def get_sale(asset_id: str, company_id=Depends(get_current_company_id), money: bool = _MONEY,
                    session: AsyncSession = Depends(get_session)) -> dict:
-    return await sales.view(session, company_id, asset_id)
+    return views.readable(await sales.view(session, company_id, asset_id), money)
 
 
 @router.post("/assets/{asset_id}/sale/{action}", dependencies=_SELL)
@@ -421,14 +396,15 @@ async def request_correction(asset_id: str, body: dict = Body(...), company_id=D
 
 @router.get("/corrections", dependencies=_VIEW)
 async def list_corrections(asset_id: str | None = None, company_id=Depends(get_current_company_id),
-                           session: AsyncSession = Depends(get_session)) -> dict:
-    return {"items": await corrections.records(session, company_id, asset_id)}
+                           money: bool = _MONEY, session: AsyncSession = Depends(get_session)) -> dict:
+    return {"items": views.readable(await corrections.records(session, company_id, asset_id), money)}
 
 
 @router.get("/corrections/{correction_id}", dependencies=_VIEW)
-async def get_correction(correction_id: str, company_id=Depends(get_current_company_id),
+async def get_correction(correction_id: str, company_id=Depends(get_current_company_id), money: bool = _MONEY,
                          session: AsyncSession = Depends(get_session)) -> dict:
-    return {"id": correction_id, **await corrections.record(session, company_id, correction_id)}
+    return {"id": correction_id,
+            **views.readable(await corrections.record(session, company_id, correction_id), money)}
 
 
 @router.post("/corrections/{correction_id}/apply", dependencies=_ACCOUNTING)
@@ -478,21 +454,21 @@ async def revalue_class(class_id: str, body: dict = Body(...), company_id=Depend
 
 @router.get("/reviews", dependencies=_VIEW)
 async def due_reviews(company_id=Depends(get_current_company_id),
-                      company_settings: dict = Depends(get_current_company_settings),
+                      company_settings: dict = Depends(get_current_company_settings), money: bool = _MONEY,
                       session: AsyncSession = Depends(get_session)) -> dict:
     from datetime import date
 
     from celerp.services.business_time import business_date_of
 
     today = date.fromisoformat(business_date_of(None, company_settings.get("timezone")))
-    return {"items": await remeasure.due_reviews(session, company_id, today)}
+    return {"items": views.readable(await remeasure.due_reviews(session, company_id, today), money)}
 
 
 @router.get("/assets/{asset_id}/reviews", dependencies=_VIEW)
-async def list_reviews(asset_id: str, company_id=Depends(get_current_company_id),
+async def list_reviews(asset_id: str, company_id=Depends(get_current_company_id), money: bool = _MONEY,
                        session: AsyncSession = Depends(get_session)) -> dict:
     await _asset(session, company_id, asset_id)
-    return {"items": list(reversed(await remeasure.reviews(session, company_id, asset_id)))}
+    return {"items": views.readable(list(reversed(await remeasure.reviews(session, company_id, asset_id))), money)}
 
 
 @router.post("/assets/{asset_id}/reviews", dependencies=_ACCOUNTING)
@@ -517,12 +493,9 @@ async def add_to_asset(asset_id: str, body: dict = Body(...), company_id=Depends
 
 
 @router.get("/assets/{asset_id}/components", dependencies=_VIEW)
-async def list_components(asset_id: str, company_id=Depends(get_current_company_id),
-                          role: str = Depends(get_current_role),
-                          company_settings: dict = Depends(get_current_company_settings),
+async def list_components(asset_id: str, company_id=Depends(get_current_company_id), money: bool = _MONEY,
                           session: AsyncSession = Depends(get_session)) -> dict:
     await _asset(session, company_id, asset_id)
-    money = _shows_money(company_settings, role)
     return {"items": [asset_out(c.pop("id"), c, money=money)
                       for c in await additions.components(session, company_id, asset_id)]}
 
@@ -660,13 +633,10 @@ async def reopen_tax_year(regime: str, year: int, body: dict = Body(...), compan
 
 
 @router.get("/year-end", dependencies=_VIEW)
-async def get_year_end(year: int, company_settings: dict = Depends(get_current_company_settings),
-                       role: str = Depends(get_current_role), company_id=Depends(get_current_company_id),
+async def get_year_end(year: int, money: bool = _MONEY, company_id=Depends(get_current_company_id),
                        session: AsyncSession = Depends(get_session)) -> dict:
     result = await yearend.report(session, company_id, year)
-    if not _shows_money(company_settings, role):
-        result["items"] = [{**i, "amount": None, "accepted_amount": None} for i in result["items"]]
-    return result
+    return {**result, "items": views.readable(result["items"], money)}
 
 
 @router.post("/year-end/{year}/marks", dependencies=_ACCOUNTING)

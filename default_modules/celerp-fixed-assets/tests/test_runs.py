@@ -448,7 +448,8 @@ async def test_s8_auto_post_user_revoked_prepares(fa):
     assert sorted(await _run_journals(fa)) == ["run:2026-01:1"]
     (posted,) = [n for n in await _notices(fa) if n.title == "Depreciation posted automatically"]
     assert posted.priority == "high" and posted.action_url == "/fixed-assets/runs/2026-01"
-    assert posted.body == "Depreciation for January 2026 was posted automatically: 200.00.", posted.body
+    # Told to the whole company, so it names the month and no amount.
+    assert posted.body == "Depreciation for January 2026 was posted automatically.", posted.body
     demoted = await fa.client.patch(f"/companies/me/users/{manager_id}", headers=fa.h, json={"role": "viewer"})
     assert demoted.status_code == 200, demoted.text
     await _tick(fa, date(2026, 4, 2))
@@ -466,7 +467,7 @@ async def test_loop_prepares_and_notifies(fa):
     (run,) = await _runs(fa)
     assert run["month"] == "2026-01" and run["status"] == "prepared" and D(run["total"]) == D("200")
     (notice,) = await _notices(fa)
-    assert "Depreciation for January 2026 is ready to post: 200.00" in notice.body
+    assert notice.body == "Depreciation for January 2026 is ready to post.", notice.body
     await _tick(fa, date(2026, 2, 1))
     assert len(await _notices(fa)) == 1
     await fa.ok(await fa.patch("/settings", {"run_day": 5}))
