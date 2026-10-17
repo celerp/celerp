@@ -169,6 +169,12 @@ async def test_review_lists_only_rows_needing_an_answer(monkeypatch):
     assert "Waiting for Demo Books to review accounts." not in html  # review holds are not listed twice
 
 
+def test_review_counts_one_account_in_the_singular():
+    company = {**REVIEW[0], "accounts": REVIEW[0]["accounts"][1:]}
+    html = to_xml(routes._review(company, [], "en"))
+    assert "1 account to review" in html and "1 accounts" not in html
+
+
 async def test_nothing_to_fix_says_so(monkeypatch):
     _app(monkeypatch, holds=[], added=[], review=[])
     html = to_xml(await routes.sync_accounts_body("test-token", "en"))
