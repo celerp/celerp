@@ -287,11 +287,14 @@ def test_journey_8_discard_while_storage_is_unavailable(page, fresh_company, mon
         m.setattr(store, "_remove_tree", refuse)
         m.setattr(attachments.LocalBackend, "delete_company", refuse_company)
         page.goto(f"/migrations/{run_id}/discard")
+        assert "cannot be undone" in page.content()
         page.click('button:has-text("Discard migration")')
         page.wait_for_url(lambda url: "/migrations/" not in urlsplit(url).path, timeout=_WAIT_MS)
-        # Straight back to the working company, with the files kept for a later cleanup.
+        # Straight back to the working company, with the files kept for a later cleanup,
+        # and a notice that says which migration went.
         assert _session_company(page.context) == company_a["id"]
         assert company_a["name"] in page.content()
+        page.locator(".toast", has_text=f"Migration into {moved} discarded").wait_for(timeout=_WAIT_MS)
         assert _company_count(moved) == 0
         tasks = _db_rows("SELECT company_id, run_ids FROM migration_cleanup_tasks WHERE company_id = %s", moved_id)
         assert len(tasks) == 1 and tasks[0][1] == [run_id]
