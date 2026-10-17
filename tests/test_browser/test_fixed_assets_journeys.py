@@ -358,6 +358,20 @@ def test_u33_an_asset_page_reads_cleanly_with_its_rare_actions_grouped(page: Pag
     expect(page).to_have_url(re.compile(r"/move$"))
 
 
+def test_u35_enter_a_bill_stands_below_its_hint_and_clear_of_the_kind_buttons(page: Page, fresh_company):
+    _started(fresh_company)
+    page.goto("/fixed-assets/assets/new?kind=contributed")
+    hint = page.get_by_text("If you paid a supplier", exact=False)
+    button = page.get_by_role("button", name="Enter a bill")
+    kinds = page.get_by_role("link", name="Contributed or acquired without a bill")
+    h, b, k = hint.bounding_box(), button.bounding_box(), kinds.bounding_box()
+    assert b["y"] >= h["y"] + h["height"] and abs(b["x"] - h["x"]) <= 1, (h, b)
+    assert h["y"] - (k["y"] + k["height"]) >= 8, (k, h)
+    # The kind buttons stand apart from each other.
+    opening = page.get_by_role("link", name="Already in my accounts").bounding_box()
+    assert k["x"] - (opening["x"] + opening["width"]) >= 4, (opening, k)
+
+
 def _details(page: Page, table: str, text: str):
     """Open a row's details with its labelled button and return the row it opens."""
     button = page.locator(f"{table} tbody tr", has_text=text).first.get_by_role("button", name="Details")

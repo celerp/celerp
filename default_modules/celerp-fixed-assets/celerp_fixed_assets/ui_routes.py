@@ -1595,11 +1595,11 @@ def _asset_fields(kind: str, classes: list[dict], chart: list[dict], *, with_nam
     return fields
 
 
-def _tabs(base: str, param: str, current: str, choices, label_prefix: str) -> FT:
-    """One button per choice, the current one highlighted, each passing its choice in the URL."""
-    return Div(*[A(t(f"{label_prefix}.{c}"), href=f"{base}?{urlencode({param: c})}",
+def _tabs(base: str, param: str, current: str, choices, label_prefix: str, **query) -> FT:
+    """One button per choice, the current one highlighted, each passing its choice (after ``query``) in the URL."""
+    return Div(*[A(t(f"{label_prefix}.{c}"), href=f"{base}?{urlencode({**query, param: c})}",
                    cls="btn btn--sm " + ("btn--primary" if c == current else "btn--secondary")) for c in choices],
-               cls="flex-row")
+               cls="flex-row flex-wrap gap-sm mb-md")
 
 
 def _kind_tabs(base: str, kind: str, kinds: tuple[str, ...]) -> FT:
@@ -2108,10 +2108,7 @@ def setup_ui_routes(app) -> None:
         hidden = Input(type="hidden", name="source", value=source)
         manual = line["source"].startswith(MANUAL_PREFIX)
         def line_tabs(choices: list[str], current: str) -> FT:
-            return Div(*[A(t(f"fixed_assets.line_action.{c}"), cls="btn btn--sm " + (
-                "btn--primary" if c == current else "btn--secondary"),
-                href=f"/fixed-assets/intake/line?{urlencode({'source': source, 'action': c})}") for c in choices],
-                cls="flex-row")
+            return _tabs("/fixed-assets/intake/line", "action", current, choices, "fixed_assets.line_action", source=source)
 
         if line["kind"] != "acquisition":
             choices = ["link-depreciation"] + (["keep-line"] if manual and line["kind"] == "depreciation" else [])
@@ -2210,7 +2207,7 @@ def setup_ui_routes(app) -> None:
         # A paid supplier belongs on a bill, where tax and the supplier balance are kept.
         bill = (Div(P(t("fixed_assets.paid_supplier_hint"), cls="settings-hint"),
                     Button(t("fixed_assets.enter_bill"), hx_post="/docs/create-blank?type=bill", hx_swap="none",
-                           cls="btn btn--sm btn--secondary write-only"), cls="flex-row")
+                           cls="btn btn--sm btn--secondary write-only"), cls="mb-md")
                 if kind == "contributed" else "")
         return await _page(request, crumbs, page_header(t("fixed_assets.add_asset")),
                            _kind_tabs("/fixed-assets/assets/new", kind, kinds), bill, form,
