@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.company_lock import lock_projections
+from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.permissions import require_permission
 
 from celerp_fixed_assets import setup
@@ -36,6 +36,8 @@ async def record_check(session, company_id, user_id, tag: str) -> dict:
     tag = str(tag or "").strip()
     if not tag:
         raise setup.unprocessable("Scan or type an asset tag.")
+    # Tags move under the company lock, so resolve the tag only once any move has committed.
+    await lock_company(session, company_id)
     found = by_tag(await _entities(session, company_id, "fa_asset"), tag)
     if found is None:
         raise setup.unprocessable(f"No asset with tag {tag}.")

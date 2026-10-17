@@ -9,15 +9,17 @@ sees the assets in their care without money, and only the photos and manuals on 
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.services.business_time import business_date_of
 from fa_fixtures import FA
 from test_disposal import _dispose
-from test_runs import _contributed, _managed_from
+from test_runs import _contributed, _managed_from, _race_company
 from test_transfer import _location, _move
 
 pytestmark = pytest.mark.asyncio
@@ -403,6 +405,52 @@ async def test_checks_disposed_removal_and_not_seen_report(fa):
     assert csv.status_code == 200 and (await fa.asset(car))["number"] in csv.text
     printed = await fa.page("/fixed-assets/checks/not-seen/print", since=today)
     assert printed.status_code == 200 and (await fa.asset(car))["number"] in printed.text
+
+
+async def test_f09_check_waits_for_a_tag_being_moved(committed_engine):
+    """A scan while the tag is being moved to another asset records the asset that carries
+    the tag once the move commits, never the one it is leaving."""
+    from celerp_fixed_assets import checks, operations, setup
+    from celerp.services.company_lock import lock_company
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    cid, uid = await _race_company(factory)
+    async with factory() as s:
+        cls = next(c for c in await setup.classes(s, cid) if c["name"] == "Vehicles")
+        body = {"kind": "contributed", "class_id": cls["id"], "name": "Van", "available_date": "2026-01-15",
+                "cost": "9000", "credit_account": "3100", "op_key": "van"}
+        preview = await operations.create_asset(s, cid, uid, {**body, "preview": True})
+        van = (await operations.create_asset(s, cid, uid, {**body, "fingerprint": preview["fingerprint"]}))["assets"][0]["id"]
+        await s.commit()
+    async with factory() as s:
+        (car,) = [a for a, st in await checks._entities(s, cid, "fa_asset") if st.get("name") == "Car"]
+        await operations.update_asset(s, cid, uid, car, {"changes": {"tag": "T-1"}, "previous": {"tag": None}})
+        await s.commit()
+
+    async def scan(tag: str) -> dict:
+        async with factory() as s:
+            return await checks.record_check(s, cid, uid, tag)
+
+    async with factory() as mover:
+        await lock_company(mover, cid)
+        await operations.update_asset(mover, cid, uid, car, {"changes": {"tag": "T-2"}, "previous": {"tag": "T-1"}})
+        await operations.update_asset(mover, cid, uid, van, {"changes": {"tag": "T-1"}, "previous": {"tag": None}})
+        pending = asyncio.create_task(scan("T-1"))
+        await asyncio.sleep(0.5)
+        assert not pending.done(), "the check resolved the tag while it was being moved"
+        await mover.commit()
+    check = await asyncio.wait_for(pending, 10)
+    assert check["asset_id"] == van
+
+    # The tag the car now carries finds the car; an unknown tag is still refused, and the
+    # check is stored under the asset it names.
+    assert (await scan("t-2"))["asset_id"] == car
+    with pytest.raises(Exception) as unknown:
+        await scan("T-3")
+    assert getattr(unknown.value, "status_code", None) == 422
+    async with factory() as s:
+        stored = {c["id"]: c["asset_id"] for c in await checks.live_checks(s, cid)}
+    assert stored[check["id"]] == van and sorted(stored.values()) == sorted([van, car])
 
 
 # ── Who sees what ────────────────────────────────────────────────────────────
