@@ -1069,6 +1069,26 @@ def test_visual_esc_empty_marks_newest_first_and_alignment_on_screen_and_in_prin
     page.emulate_media(media="screen")
 
 
+def _figure_font(page: Page) -> str:
+    """The typeface of the report's first figure."""
+    return page.eval_on_selector("main table td.cell--number, body > div table td.cell--number",
+                                 "td => getComputedStyle(td).fontFamily")
+
+
+def test_u42_figures_keep_one_typeface_on_screen_and_in_print(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _contributed(c, "Owner's car")
+    _run(c, "2026-01")
+    query = "?date_from=2026-01-01&date_to=2026-01-31"
+    page.goto(f"/fixed-assets/reports/schedule{query}")
+    screen = _figure_font(page)
+    assert "mono" in screen.lower(), screen
+    page.goto(f"/fixed-assets/reports/schedule/print{query}")
+    expect(page.locator("body")).to_contain_text("Owner's car")
+    assert _figure_font(page) == screen
+
+
 def test_j21_bill_line_account_is_kept_and_the_finalized_bill_leads_to_registering_it(page: Page, fresh_company):
     c = fresh_company
     _started(c)

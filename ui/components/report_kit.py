@@ -308,6 +308,10 @@ thead th { background: #f5f5f5; font-weight: 700; text-align: center; padding: 1
 thead th.cell--number, thead th.cell--right { text-align: right; }
 tbody td { padding: 1.2mm 2mm; border-bottom: 1px solid #eee; }
 td.cell--number, td.cell--right { text-align: right; }
+/* Figures print in the typeface the screen gives them (--font-mono in app.css); the
+   "--" empty mark keeps the body font, as on screen. */
+td.cell--number, td.cell--money { font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; }
+.cell-empty { font-family: 'Arial', sans-serif; }
 td.cell--muted { color: #888; font-size: 8pt; }
 td.cell--mono { font-family: 'Courier New', monospace; font-size: 8.5pt; }
 
