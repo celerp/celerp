@@ -115,10 +115,8 @@ async def _owner_id(fa: FA) -> str:
 
 async def test_run_posts_one_journal_per_month_at_month_end(fa):
     await _managed_from(fa)
-    empty = await fa.ok(await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "e"}))
-    assert empty["empty"] is True and empty["months"] == []
-    refused = await fa.post("/runs", {"month": "2026-03", "preview": False, "op_key": "e",
-                                      "fingerprint": empty["fingerprint"]})
+    # Review refuses a run with nothing in it, as Confirm would.
+    refused = await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "e"})
     assert refused.status_code == 422 and "Nothing to depreciate yet" in refused.json()["detail"]
 
     car = await _contributed(fa)

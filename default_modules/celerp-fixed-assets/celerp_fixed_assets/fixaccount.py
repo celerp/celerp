@@ -47,6 +47,51 @@ def past_accounts(cls: dict) -> set[str]:
     return {held["account"] for held in cls.get("account_history") or [] if held.get("field") in BALANCE_SHEET}
 
 
+PROBLEMS = {"posting.destination.not_in_chart": "not_in_chart", "posting.destination.inactive": "inactive",
+            "posting.destination.header": "header"}
+UNUSABLE = {"not_in_chart": "{asset_class} posts to account {account}, which is not in the chart of accounts.",
+            "inactive": "{asset_class} posts to account {account}, which is inactive.",
+            "header": "{asset_class} posts to account {account}, which is a header account with accounts under it."}
+
+
+async def unusable(session, company_id, cls: dict) -> list[dict]:
+    """The class's accounts the chart no longer takes postings on, each with why and as
+    the user knows it (``label``: the code and the chart's name)."""
+    from celerp.services.journal_accounts import require_destinations
+    from celerp.services.posting_readiness import account_names
+
+    out = []
+    for field in FIELDS:
+        try:
+            await require_destinations(session, company_id, {cls.get(field) or ""})
+        except HTTPException as e:
+            out.append({"field": field, "account": cls.get(field) or "", "problem": PROBLEMS[e.detail["message_key"]]})
+    names = await account_names(session, company_id, [p["account"] for p in out]) if out else {}
+    return [{**p, "label": p["account"] if names[p["account"]] == p["account"] else f"{p['account']} {names[p['account']]}",
+             "href": f"/fixed-assets/classes/{cls['id']}/fix-account?field={p['field']}"} for p in out]
+
+
+async def class_refusal(session, company_id, exc: HTTPException) -> HTTPException:
+    """A posting refused on an account a class posts to, said as the class's problem with
+    the link to fix it: the operation's form has no account to choose. Any other refusal
+    is returned as it is."""
+    from celerp.accounting_roles import refusal
+
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    code = (detail.get("params") or {}).get("code")
+    if detail.get("message_key") not in (*PROBLEMS, "posting.continued_account_unusable") or not code:
+        return exc
+    for cls in await setup.classes(session, company_id):
+        for found in await unusable(session, company_id, cls):
+            if found["account"] == code:
+                return HTTPException(status_code=422, detail=refusal(
+                    f"fixed_assets.class_account_{found['problem']}",
+                    UNUSABLE[found["problem"]].format(asset_class=cls["name"], account=found["label"]),
+                    asset_class=cls["name"], account=found["label"],
+                    href=found["href"]))
+    return exc
+
+
 async def _class_assets(session, company_id, class_id: str) -> list[tuple[str, dict]]:
     return [(eid, s) for eid, s in await _entities(session, company_id, "fa_asset")
             if s.get("class_id") == class_id and s.get("status") not in ("undone", "physical")]

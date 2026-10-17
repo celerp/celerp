@@ -130,3 +130,17 @@ async def test_s2_construction_allocated_exactly_once(fa):
     assert got["status"] == "active" and D(got["cost"]) == D(3000)
     assert [a["status"] for a in await fa.entities("fa_asset") if a.get("name") == "Reception desk"] == ["undone"]
     await fa.fold_matches(site)
+
+
+async def test_u7_a_header_account_is_refused_at_review_and_not_offered(fa):
+    """Review refuses a header credit account as Confirm would, posting nothing; the Add
+    form offers only accounts a journal line can post to."""
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    moves, held = len(await _movements(fa, car)), await fa.balance("1110")
+    r = await fa.post(f"/assets/{car}/add", {"kind": "improvement", "date": "2026-07-01", "amount": "1080",
+                                             "credit_account": "1110", "preview": True, "op_key": "u7-review"})
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "posting.destination.header", r.text
+    assert len(await _movements(fa, car)) == moves and await fa.balance("1110") == held
+    form = (await fa.page(f"/fixed-assets/assets/{car}/add")).text
+    assert 'value="1110"' not in form and 'value="3100"' in form, "a header is no choice; a leaf is"

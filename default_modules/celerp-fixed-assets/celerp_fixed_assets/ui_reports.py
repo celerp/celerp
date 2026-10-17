@@ -27,7 +27,7 @@ from celerp_fixed_assets.ui_routes import (
     _chosen_regimes,
     _context,
     _doc_href,
-    _error_text,
+    _error_box,
     _input,
     _money_td,
     _money_th,
@@ -479,7 +479,7 @@ def _register_routes(app, report: Report) -> None:
             classes = ((await api.fixed_assets_get(token, "/classes"))["items"]
                        if report.period == "register" else [])
         except APIError as e:
-            return await _page(request, page_header(t(report.title_key)), Div(_error_text(e), cls="flash flash--error"),
+            return await _page(request, page_header(t(report.title_key)), _error_box(e),
                                title_key=report.title_key)
         here = request.url.path
         params = _params(report, request, setup)
@@ -488,7 +488,7 @@ def _register_routes(app, report: Report) -> None:
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            body = Div(_error_text(e), cls="flash flash--error")
+            body = _error_box(e)
         return await _page(request, _crumbs(report),
                            page_header(t(report.title_key), action_bar(f"{here}/print", f"{here}.csv", params)),
                            P(t(report.hint_key), cls="settings-hint"), _chooser(report, params, classes, setup, here),

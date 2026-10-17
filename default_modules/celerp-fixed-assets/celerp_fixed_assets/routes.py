@@ -95,7 +95,8 @@ async def update_settings(body: dict = Body(...), company_id=Depends(get_current
 @router.get("/classes", dependencies=_VIEW)
 async def list_classes(include_archived: bool = False, company_id=Depends(get_current_company_id),
                        session: AsyncSession = Depends(get_session)) -> dict:
-    return {"items": await setup.classes(session, company_id, include_archived=include_archived)}
+    return {"items": [{**c, "account_problems": await fixaccount.unusable(session, company_id, c)}
+                      for c in await setup.classes(session, company_id, include_archived=include_archived)]}
 
 
 @router.post("/classes", dependencies=_ACCOUNTING)

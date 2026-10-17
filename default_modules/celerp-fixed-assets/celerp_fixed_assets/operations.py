@@ -3,8 +3,9 @@
 """Asset operations: registering source lines, adding assets by hand, and undoing both.
 
 Every write follows one contract. The caller takes the company lock and its authority,
-then the operation is planned from what the books hold now. A preview returns the plan
-with a fingerprint of it; a confirm plans again under the lock and refuses when the
+then the operation is planned from what the books hold now. A preview applies the plan,
+takes it back, and returns it with a fingerprint of it, so it refuses whatever a confirm
+would; a confirm plans again under the lock and refuses when the
 fingerprint differs, so nothing is posted that the user did not see. A confirmed
 operation is recorded under its operation key (``fa:op:<key>``) with a hash of the
 request: the same key and request returns the recorded result, the same key with a
@@ -16,6 +17,7 @@ movements and claims as one more operation.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -221,18 +223,36 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
     generation = context.get("generation", 0)
     fingerprint = f"{generation}.{_hash({'shown': shown, 'basis': context.get('basis')})}"
     if body.get("preview"):
-        return {**shown, "fingerprint": fingerprint}
+        result = copy.deepcopy({**shown, "fingerprint": fingerprint})
+        context["intent_hash"] = intent_hash
+        # Review refuses what Confirm would: the operation is applied and taken back.
+        savepoint = await session.begin_nested()
+        try:
+            await _applied(session, company_id, apply, context, op_key)
+        finally:
+            await savepoint.rollback()
+        return result
     previewed = str(body.get("fingerprint") or "")
     if previewed != fingerprint:
         if previewed.split(".", 1)[0] != str(generation):
             raise conflict("Line was registered and released since you opened this form. Review again.")
         raise conflict("Assets, accounts or postings changed since preview. Review again.")
     context["intent_hash"] = intent_hash
-    result, effects = await apply(context, op_key)
+    result, effects = await _applied(session, company_id, apply, context, op_key)
     await _emit(session, company_id, user_id, f"fa:op:{op_key}", "fa_op", "fa.op.recorded", {
         "type": op_type, "intent_hash": intent_hash, "result": result, "effects": effects},
         key=f"fa:op:{op_key}")
     return result
+
+
+async def _applied(session, company_id, apply, context: dict, op_key: str):
+    """``apply``, a refusal on an account a class posts to said as the class's to fix."""
+    from celerp_fixed_assets.fixaccount import class_refusal
+
+    try:
+        return await apply(context, op_key)
+    except HTTPException as e:
+        raise await class_refusal(session, company_id, e) from e
 
 
 def _effects(**kw) -> dict:
@@ -460,8 +480,6 @@ def after_cutover(cut: str) -> str:
 
 async def _financials(session, company_id, fa: dict, body: dict) -> dict:
     """The checked financial details of an opening or contributed asset."""
-    from celerp.services.journal_accounts import require_destinations
-
     kind = body.get("kind")
     cls = await setup.get_class(session, company_id, body.get("class_id"))
     available = _date(body.get("available_date"), "The available-for-use date")
@@ -482,8 +500,6 @@ async def _financials(session, company_id, fa: dict, body: dict) -> dict:
         credit = str(body.get("credit_account") or "")
         if not credit:
             raise setup.unprocessable("Choose the account the asset was contributed from.")
-        # The preview refuses what the confirm would: both lines are new postings.
-        await require_destinations(session, company_id, {cls["asset_account"], credit})
         lock = (await setup.company_settings(session, company_id)).get("lock_date")
         setup.require_open(date.fromisoformat(lock) if lock else None, available)
         out.update(credit=credit, posting=available)

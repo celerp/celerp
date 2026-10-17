@@ -145,3 +145,46 @@ async def test_s2_inactive_historical_account_reclass_source(fa):
     january = await fa.ok(await fa.get("/reconciliation", at="2026-01-31"))
     assert january["errors"] == []
     assert {a["account"]: a for a in january["accounts"]}["1215"]["status"] == "Reconciled"
+
+
+async def test_u6_a_class_account_the_chart_no_longer_takes_is_refused_at_review_with_the_way_to_fix_it(fa):
+    """With the class's accumulated depreciation account inactive, Review of a disposal
+    refuses as Confirm would, names the class and the account and links the class's fix;
+    the class list, home and settings say so before anyone tries. Review changes nothing,
+    and making the account active again clears it."""
+    from test_runs import _movements
+
+    await _managed(fa)
+    await _account(fa, "1221", "Accumulated depreciation - vehicles", "asset", "1200")
+    class_id = (await _vehicles(fa))["id"]
+    await fa.ok(await fa.patch(f"/classes/{class_id}", {"accumulated_depreciation_account": "1221"}))
+    car = await _contributed(fa)
+    await _run(fa, "2026-01")
+    fix = f"/fixed-assets/classes/{class_id}/fix-account?field=accumulated_depreciation_account"
+    assert (await _vehicles(fa))["account_problems"] == []
+    await _archive(fa, "1221")
+    (problem,) = (await _vehicles(fa))["account_problems"]
+    assert problem == {"field": "accumulated_depreciation_account", "account": "1221", "problem": "inactive",
+                       "label": "1221 Accumulated depreciation - vehicles", "href": fix}
+    held, moves = await fa.balance("1221"), len(await _movements(fa, car))
+
+    body = {"date": "2026-03-15", "reason": "scrapped", "preview": True}
+    r = await fa.post(f"/assets/{car}/dispose", {**body, "op_key": "u6-review"})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "fixed_assets.class_account_inactive" and detail["params"]["href"] == fix
+    assert detail["message"] == f"Vehicles posts to account {problem['label']}, which is inactive.", detail
+    assert await fa.balance("1221") == held and len(await _movements(fa, car)) == moves
+
+    review = await fa.submit("/fixed-assets/op/dispose/review", {"asset_id": car, "date": "2026-03-15",
+                                                                 "reason": "scrapped", "idempotency_key": "u6-page"})
+    assert fix.replace("&", "&amp;") in review.text or fix in review.text, review.text
+    for page in ("/fixed-assets", "/settings/fixed-assets"):
+        text = (await fa.page(page)).text
+        assert 'id="fa-class-accounts"' in text and (fix in text or fix.replace("&", "&amp;") in text), page
+
+    r = await fa.client.patch("/accounting/accounts/1221", headers=fa.h, json={"is_active": True})
+    assert r.status_code == 200, r.text
+    assert (await _vehicles(fa))["account_problems"] == []
+    await fa.ok(await fa.post(f"/assets/{car}/dispose", {**body, "op_key": "u6-again"}))
+    assert 'id="fa-class-accounts"' not in (await fa.page("/fixed-assets")).text

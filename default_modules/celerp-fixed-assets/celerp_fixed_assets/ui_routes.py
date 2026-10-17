@@ -79,6 +79,13 @@ def _error_text(e: APIError) -> str:
     return refusal_text((e.data or {}).get("detail")) or str(e.detail) or t("fixed_assets.error")
 
 
+def _error_box(e: APIError):
+    """A refusal, with the way to fix it when it names one (a class's posting account)."""
+    href = ((e.data or {}).get("params") or {}).get("href")
+    return Div(_error_text(e), *([" ", A(t("fixed_assets.action.fix_account"), href=href)] if href else []),
+               cls="flash flash--error")
+
+
 def _money(value, currency: str | None) -> FT | str:
     return empty_mark() if value in (None, "") else fmt_money(float(value), currency)
 
@@ -118,10 +125,12 @@ def _picker(name: str, options: list[tuple[str, str]], value: str = "", *, label
                   name=name, cls="form-input", aria_label=label)
 
 
-def _account_options(chart: list[dict]) -> list[tuple[str, str]]:
-    """Every account in the chart. A header or inactive one is refused on save, by name,
-    rather than hidden (rule e)."""
-    return [(a["code"], f"{a['code']} {a['name']}") for a in chart]
+def _account_options(chart: list[dict], keep: str = "") -> list[tuple[str, str]]:
+    """The accounts a journal line can post to (a header or inactive account is no choice
+    for a posting, and is refused at Review by name), and ``keep``, the value a field holds
+    now, so it shows as it is."""
+    postable = {a["code"] for a in _postable(chart)}
+    return [(a["code"], f"{a['code']} {a['name']}") for a in chart if a["code"] in postable or a["code"] == keep]
 
 
 def _field(label: str, control: FT, hint: str | None = None) -> FT:
@@ -171,7 +180,7 @@ async def _page(request: Request, *content, title_key: str, nav: str = "fixed_as
 def _refused(request: Request, e: APIError, title_key: str):
     if e.status == 401:
         return RedirectResponse("/login", status_code=302)
-    return _page(request, page_header(t(title_key)), Div(_error_text(e), cls="flash flash--error"),
+    return _page(request, page_header(t(title_key)), _error_box(e),
                  title_key=title_key)
 
 
@@ -1234,6 +1243,19 @@ def _recon_banner() -> FT:
                cls="flash flash--warning", id="fa-recon-banner")
 
 
+def _class_accounts_banner(classes: list[dict]) -> FT | str:
+    """Each class account the chart no longer takes postings on, before anything is refused
+    for it, with the way to fix it."""
+    found = [(c, p) for c in classes if not c.get("archived") for p in c.get("account_problems") or []]
+    if not found:
+        return ""
+    return Div(H3(t("fixed_assets.class_accounts_title")),
+               Ul(*[Li(t(f"fixed_assets.class_account_{p['problem']}", asset_class=c["name"], account=p["label"]),
+                       " ", A(t("fixed_assets.action.fix_account"), href=p["href"])) for c, p in found],
+                  cls="error-list"),
+               cls="flash flash--error", id="fa-class-accounts")
+
+
 def _recon_accounts_table(accounts: list[dict], currency: str) -> FT:
     rows = [Tr(Td(f"{a['account']} {a['name']}"), _money_td(a["ledger"], currency),
                _money_td(a["registered"], currency),
@@ -1783,7 +1805,7 @@ def setup_ui_routes(app) -> None:
             body = Div(_register_toolbar(), _register_table(found["items"], _class_names(classes), currency),
                        pagination(page, found["total"], per_page, "/fixed-assets", urlencode(params)))
         return await _page(request, page_header(t("fixed_assets.title"), *actions),
-                           P(t("fixed_assets.register_hint"), cls="settings-hint"), notice,
+                           P(t("fixed_assets.register_hint"), cls="settings-hint"), _class_accounts_banner(classes), notice,
                            _attention_card(held) if held else "", _reviews_due_card(due) if due else "",
                            due_soon_card(upkeep_due) if upkeep_due else "",
                            _filters(q, class_id, [c for c in classes if not c.get("archived")]), body,
@@ -1932,7 +1954,7 @@ def setup_ui_routes(app) -> None:
             result = await api.fixed_assets_send(token, "POST", path_of(form), body)
             _, currency = await _context(token)
         except APIError as e:
-            return Div(Div(_error_text(e), cls="flash flash--error"),
+            return Div(_error_box(e),
                        *([Button(t("fixed_assets.review_again"), type="button", cls="btn btn--secondary",
                                  hx_post=f"/fixed-assets/op/{action}/review", hx_include="closest form",
                                  hx_target="closest #fa-preview", hx_swap="outerHTML")] if step == "confirm" else []),
@@ -2837,7 +2859,7 @@ def setup_ui_routes(app) -> None:
                                                  {}, files=payload)
         except APIError as e:
             return await _revalue_class_view(request, token, class_id,
-                                             notices=(Div(_error_text(e), cls="flash flash--error"),))
+                                             notices=(_error_box(e),))
         return await _revalue_class_view(request, token, class_id, report=report)
 
     @app.post("/fixed-assets/classes/{class_id}/revalue/report/remove")
@@ -3170,7 +3192,7 @@ def setup_ui_routes(app) -> None:
             chart = (await api.get_chart(token)).get("items") or []
         except APIError as e:
             return await _refused(request, e, "fixed_assets.settings_title")
-        return await _page(request, page_header(t("fixed_assets.settings_title")),
+        return await _page(request, page_header(t("fixed_assets.settings_title")), _class_accounts_banner(classes),
                            _settings_form(setup["settings"], setup["rules"]), _classes_card(classes, chart),
                            _rule_problems_card(setup["rules"]["problems"]), title_key="fixed_assets.settings_title")
 
@@ -3253,7 +3275,7 @@ def setup_ui_routes(app) -> None:
             labels = _rule_options(available, "method", cls.get("method"))
             options = list(labels)
         elif field.endswith("account"):
-            options = _account_options(chart)
+            options = _account_options(chart, cls.get(field) or "")
         return editable_cell(class_id, field, cls.get(field),
                              "select" if options is not None else _CLASS_EDITABLE[field], options=options,
                              label_map=labels, patch_url=url, restore_url=f"{url}/display",
