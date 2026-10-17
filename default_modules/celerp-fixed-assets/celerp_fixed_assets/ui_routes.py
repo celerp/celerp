@@ -979,7 +979,7 @@ def _filters(q: str, class_id: str, classes: list[dict]) -> FT:
         _picker("class_id", [(c["id"], c["name"]) for c in classes], class_id, label=t("fixed_assets.class"),
                 empty="fixed_assets.all_classes"),
         Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary"),
-        method="get", action="/fixed-assets", cls="flex-row",
+        method="get", action="/fixed-assets", cls="flex-row mt-md",
     )
 
 
@@ -1395,9 +1395,9 @@ def _first_period_card(first: dict, back: str = "/fixed-assets") -> FT:
                P(t("fixed_assets.first_period_suggested", period=first["suggested"]), " ", why),
                Form(Input(type="hidden", name="first_managed_period", value=first["suggested"]),
                     Input(type="hidden", name="back", value=back),
-                    Button(t("fixed_assets.first_period_confirm"), type="submit", cls="btn btn--primary"), " ",
+                    Button(t("fixed_assets.first_period_confirm"), type="submit", cls="btn btn--primary"),
                     A(t("fixed_assets.first_period_other"), href="/settings/fixed-assets#first_managed_period"),
-                    hx_post="/fixed-assets/first-period", hx_swap="none"),
+                    hx_post="/fixed-assets/first-period", hx_swap="none", cls="flex-row gap-md"),
                cls="flash flash--warning", id="fa-first-period")
 
 
@@ -1999,13 +1999,14 @@ def setup_ui_routes(app) -> None:
             except APIError:
                 notice = ""  # The reconciliation is shown to those who manage accounting.
         actions = (A(t("fixed_assets.reports_title"), href="/fixed-assets/reports", cls="btn btn--secondary"),
-                   A(t("fixed_assets.year_end_title"), href="/fixed-assets/year-end", cls="btn btn--secondary"),
-                   A(t("fixed_assets.corrections_title"), href="/fixed-assets/corrections", cls="btn btn--secondary"),
                    A(t("fixed_assets.runs_title"), href="/fixed-assets/runs", cls="btn btn--secondary"),
-                   A(t("fixed_assets.checks_title"), href="/fixed-assets/checks", cls="btn btn--secondary"),
                    A(t("fixed_assets.register_from_bills"), href="/fixed-assets/intake", cls="btn btn--secondary"),
-                   A(t("fixed_assets.import_register"), href="/fixed-assets/import", cls="btn btn--secondary"),
-                   A(t("fixed_assets.add_asset"), href="/fixed-assets/assets/new", cls="btn btn--primary"))
+                   A(t("fixed_assets.add_asset"), href="/fixed-assets/assets/new", cls="btn btn--primary"),
+                   _more_menu(*[A(t(key), href=href, cls="row-menu-item") for key, href in (
+                       ("fixed_assets.year_end_title", "/fixed-assets/year-end"),
+                       ("fixed_assets.corrections_title", "/fixed-assets/corrections"),
+                       ("fixed_assets.checks_title", "/fixed-assets/checks"),
+                       ("fixed_assets.import_register", "/fixed-assets/import"))]))
         if not found["items"] and not params:
             body = Div(empty_state_cta(t("fixed_assets.empty"), t("fixed_assets.register_from_bills"),
                                        "/fixed-assets/intake", hint=t("fixed_assets.empty_hint")))

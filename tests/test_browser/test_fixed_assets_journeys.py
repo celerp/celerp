@@ -383,6 +383,35 @@ def test_u40_a_repeat_scan_keeps_one_row_named_with_controls_level(page: Page, f
     _level(page.locator("input[name=since]"), page.get_by_role("button", name="Show"))
 
 
+def test_u45_the_register_header_keeps_everyday_actions_and_its_banner_reads_in_line(page: Page, fresh_company):
+    c = fresh_company
+    _books(c)
+    _ok(c.post(f"{API}/start"))
+    page.goto("/fixed-assets")
+    header = page.locator(".page-header")
+    # The everyday actions stand on one line; the rest wait under More.
+    tops = {round(b["y"]) for b in (el.bounding_box() for el in header.locator(".page-actions > .btn, "
+                                                                            ".page-actions summary").all())}
+    assert len(tops) == 1, tops
+    expect(header.get_by_role("link", name="Add asset")).to_be_visible()
+    rare = header.get_by_role("link", name="Year end")
+    expect(rare).to_be_hidden()
+    header.get_by_text("More", exact=True).click()
+    expect(rare).to_be_visible()
+    for name in ("Corrections", "Checks", "Import register"):
+        expect(header.get_by_role("link", name=name)).to_be_visible()
+    page.keyboard.press("Escape")
+    # The banner's button and its link share a line, and the filters stand clear of it.
+    banner = page.locator("#fa-first-period")
+    confirm = banner.get_by_role("button", name="Confirm").bounding_box()
+    other = banner.get_by_role("link", name="Choose another month").bounding_box()
+    assert abs((confirm["y"] + confirm["height"] / 2) - (other["y"] + other["height"] / 2)) <= 1, (confirm, other)
+    assert other["x"] - (confirm["x"] + confirm["width"]) >= 8, (confirm, other)
+    below = banner.bounding_box()
+    search = page.locator("main input[name=q]").bounding_box()
+    assert search["y"] - (below["y"] + below["height"]) >= 12, (below, search)
+
+
 def test_u35_enter_a_bill_stands_below_its_hint_and_clear_of_the_kind_buttons(page: Page, fresh_company):
     _started(fresh_company)
     page.goto("/fixed-assets/assets/new?kind=contributed")
