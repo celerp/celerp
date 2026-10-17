@@ -549,6 +549,33 @@ async def test_a_deleted_sale_draft_is_reissued_or_cancelled_from_the_asset_page
     assert t("fixed_assets.cancel_sale") not in page.text and f'href="/fixed-assets/assets/{car}/sell"' in page.text
 
 
+async def test_u10_u11_a_sale_that_cannot_complete_says_why_and_what_to_do(owner_ui):
+    car = await _managed_car(owner_ui)
+    href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",
+                                                       "contact_name": "Buyer Co"})
+    invoice_id = href.removeprefix("/docs/")
+    number = (await owner_ui.api.get(href)).json()["ref_id"]
+    # Dated before the car was available, the invoice cannot complete the sale: said as what
+    # finalizing it would meet and how to fix it, never as an error nobody caused.
+    r = await owner_ui.api.patch(href, json={"fields_changed": {"issue_date": {"new": "2026-08-01"}}})
+    assert r.status_code == 200, r.text
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    card = page.text[page.text.index('id="fa-sale-'):]
+    assert "flash--error" not in card
+    assert t("fixed_assets.sale_blocked", invoice=number) in card and "before" in card
+    assert f'href="/docs/{invoice_id}"' in card
+    r = await owner_ui.api.patch(href, json={"fields_changed": {"issue_date": {"new": "2026-10-05"}}})
+    assert r.status_code == 200, r.text
+    assert (await owner_ui.api.post(f"{href}/finalize")).status_code == 200
+    final = (await owner_ui.api.get(href)).json()["doc_number"]
+    assert (await owner_ui.api.post(f"{href}/void", json={})).status_code == 200
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert t("fixed_assets.sale_invoice_void", invoice=final) in page.text
+    assert t("fixed_assets.sale_pending_hint", invoice=final) not in page.text
+    assert t("fixed_assets.reissue") in page.text and t("fixed_assets.cancel_sale") in page.text
+    assert "fixed_assets." not in page.text
+
+
 async def _class(ui, name: str) -> dict:
     return next(c for c in (await ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == name)
 

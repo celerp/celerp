@@ -149,7 +149,7 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     if asset.get("status") != "active":
         raise conflict(f"{asset['number']} is not in use, so it cannot be disposed of.")
     live = projections.live(movements)
-    check_date(books, asset, live, day)
+    check_date(books, asset, live, day, **({"what": "sale", "verb": "Date the sale"} if clearing_role else {}))
     cost = _dec(asset.get("cost"))
     gone_cost = _split(cost, share, currency)
     month = month_index(date.fromisoformat(day))

@@ -822,10 +822,16 @@ def _sale_card(asset: dict, sale: dict, currency: str) -> FT | str:
     if sale.get("draft_deleted"):
         parts.append(Div(Strong(t("fixed_assets.sale_draft_deleted")), " ", t("fixed_assets.sale_draft_deleted_hint"),
                          cls="flash flash--warning"))
+    elif sale.get("invoice_void"):
+        parts.append(Div(t("fixed_assets.sale_invoice_void", invoice=sale["invoice_number"]),
+                         cls="flash flash--warning"))
     elif sale["state"] == "pending":
         parts.append(P(t("fixed_assets.sale_pending_hint", invoice=sale["invoice_number"]), cls="settings-hint"))
-    if sale.get("problem"):
-        parts.append(Div(sale["problem"], cls="flash flash--error"))
+        if sale.get("problem"):
+            # What finalizing the invoice would meet, and where it is fixed.
+            parts.append(Div(t("fixed_assets.sale_blocked", invoice=sale["invoice_number"]), " ", sale["problem"],
+                             " ", A(t("fixed_assets.open_invoice"), href=_doc_href(sale["invoice_id"])),
+                             cls="flash flash--warning"))
     parts.append(_detail_table(rows))
     if (sale.get("journal") or {}).get("lines"):
         parts += [H4(t("fixed_assets.sale_journal_" + ("pending" if sale["state"] == "pending" else "posted"))),

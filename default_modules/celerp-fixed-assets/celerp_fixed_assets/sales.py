@@ -460,7 +460,8 @@ async def view(session, company_id, asset_id: str) -> dict:
         proceeds = _dec(sale.get("price"))
         if line is not None:
             proceeds = asset_line_proceeds(invoice, books.currency, asset_id)
-        out["draft_deleted"] = line is None and (invoice or {}).get("status") != "void"
+        out["invoice_void"] = (invoice or {}).get("status") == "void"
+        out["draft_deleted"] = line is None and not out["invoice_void"]
         out["actions"] = ["cancel"] + (["reissue"] if line is None or invoice.get("status") == "void" else [])
         currency = books.currency
         out.update(proceeds=money(proceeds, currency), credited=money(0, currency),

@@ -700,6 +700,21 @@ async def reverse_move(session, company_id, user_id, movement_id: str, mv: dict,
                        quantity=str(-_dec(mv.get("quantity"))), reverses=movement_id)
 
 
+async def _way_back(session, company_id, asset: dict) -> str:
+    """Why an asset that has changed since it was registered cannot be undone, and the way
+    back to its page's Correct, which an active asset offers."""
+    number = asset["number"]
+    sale = asset.get("sale") or {}
+    if asset.get("status") == "sold" and sale.get("invoice_id"):
+        invoice = await _state(session, company_id, sale["invoice_id"]) or {}
+        ref = invoice.get("doc_number") or invoice.get("ref_id") or sale["invoice_id"].removeprefix("doc:")
+        return (f"{number} was sold on invoice {ref}. Void that invoice and cancel the sale on {number}'s page, "
+                "then use Correct there.")
+    if asset.get("status") in ("sold", "disposed"):
+        return f"{number} was disposed of. Undo the disposal on its page, then use Correct there."
+    return f"{number} has changed since it was registered. Use Correct on its page instead."
+
+
 async def _undo(session, company_id, user_id, target_keys: list[str], body: dict, *, subject: str | None = None,
                 done=None) -> dict:
     """Undo the operations ``target_keys`` together, as one operation. ``subject`` is what the
@@ -727,9 +742,10 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         claims = [sources.claim_id(s) for s in effects["claims"]]
         rows = await lock_projections(session, company_id, [*effects["assets"], *claims])
         assets = [rows[a].state for a in effects["assets"]]
-        changed = [a["number"] for a in assets if int(a.get("movement_count") or 0) > 1]
+        moved = [a for a in assets if int(a.get("movement_count") or 0) > 1]
+        changed = [a["number"] for a in moved]
         if len(changed) == 1:
-            raise conflict(f"{changed[0]} has changed since it was registered. Use Correct instead.")
+            raise conflict(await _way_back(session, company_id, moved[0]))
         if changed:
             raise conflict(f"These assets have changed since they were added: {', '.join(changed)}. "
                            "Use Correct on each instead.")
