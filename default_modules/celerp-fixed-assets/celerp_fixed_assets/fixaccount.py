@@ -58,7 +58,6 @@ async def unusable(session, company_id, cls: dict) -> list[dict]:
     """The class's accounts the chart no longer takes postings on, each with why and as
     the user knows it (``label``: the code and the chart's name)."""
     from celerp.services.journal_accounts import require_destinations
-    from celerp.services.posting_readiness import account_names
 
     out = []
     for field in FIELDS:
@@ -66,9 +65,8 @@ async def unusable(session, company_id, cls: dict) -> list[dict]:
             await require_destinations(session, company_id, {cls.get(field) or ""})
         except HTTPException as e:
             out.append({"field": field, "account": cls.get(field) or "", "problem": PROBLEMS[e.detail["message_key"]]})
-    names = await account_names(session, company_id, [p["account"] for p in out]) if out else {}
-    return [{**p, "label": p["account"] if names[p["account"]] == p["account"] else f"{p['account']} {names[p['account']]}",
-             "href": f"/fixed-assets/classes/{cls['id']}/fix-account?field={p['field']}"} for p in out]
+    labels = await setup.account_labels(session, company_id, [p["account"] for p in out]) if out else {}
+    return [{**p, "label": labels[p["account"]], "href": f"/fixed-assets/classes/{cls['id']}/fix-account?field={p['field']}"} for p in out]
 
 
 async def class_refusal(session, company_id, exc: HTTPException) -> HTTPException:

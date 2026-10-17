@@ -209,6 +209,10 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
                  "rate": str(rate) if rate != 1 else None, "their_number": number,
                  "their_cost": money(cost, theirs_in), "their_class": their_cls["name"], "their_currency": theirs_in,
                  "journals": [_journal_view(item["lines"], ours_in), _journal_view(their_lines, theirs_in)]}
+        # Their lines name accounts in their chart, not ours.
+        labels = await setup.account_labels(session, theirs, [ln.account for ln in their_lines])
+        for ln in shown["journals"][1]["lines"]:
+            ln["label"] = labels[ln["account"]]
         return shown, {
             "item": item, "day": day, "price": price, "cost": cost, "their_cls": their_cls,
             "their_lines": their_lines, "number": number, "currency": ours_in, "our_name": our_name, "their_name": their_name,

@@ -156,6 +156,15 @@ async def business_today(session, company_id) -> date:
     return today_in(await company_settings(session, company_id))
 
 
+async def account_labels(session, company_id, codes) -> dict[str, str]:
+    """Each account as the user knows it: its code and the chart's name, or the code alone
+    when the chart does not hold it."""
+    from celerp.services.posting_readiness import account_names
+
+    names = await account_names(session, company_id, set(codes))
+    return {code: code if name == code else f"{code} {name}" for code, name in names.items()}
+
+
 async def currency(session, company_id) -> str:
     """The currency the company keeps its books in."""
     from celerp.services.money import books_currency
@@ -181,6 +190,8 @@ async def first_period(session, company_id, fa: dict) -> dict | None:
               for e in je.get("entries") or []
               if e.get("account") in accumulated and Decimal(str(e.get("credit") or 0)) > 0]
     earliest = next((day for _, _, day in rows if day), None)
+    labels = await account_labels(session, company_id, [b["account"] for b in booked])
+    booked = [{**b, "label": labels[b["account"]]} for b in booked]
     if booked:
         suggested = date.fromisoformat(booked[-1]["date"]) + timedelta(days=1)
         if suggested.day != 1:

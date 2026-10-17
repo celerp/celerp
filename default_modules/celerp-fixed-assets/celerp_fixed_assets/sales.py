@@ -41,6 +41,7 @@ from celerp_fixed_assets.operations import (
     _run,
     asset_movements,
     conflict,
+    label_lines,
 )
 from celerp_fixed_assets.store import _emit, _state
 from fastapi import HTTPException
@@ -474,6 +475,7 @@ async def view(session, company_id, asset_id: str) -> dict:
         else:
             out.update(carrying_amount=item["shown"]["carrying_amount"], gain_or_loss=item["shown"]["gain_or_loss"],
                        journal=_journal_view(item["lines"], currency))
+        await label_lines(session, company_id, out)
         return out
     currency = await setup.currency(session, company_id)
     if sale["state"] == "returned":
@@ -493,6 +495,7 @@ async def view(session, company_id, asset_id: str) -> dict:
                journal={"lines": [{"account": e["account"], "debit": money(e.get("debit"), currency),
                                    "credit": money(e.get("credit"), currency)}
                                   for e in (je or {}).get("entries") or []]})
+    await label_lines(session, company_id, out)
     return out
 
 

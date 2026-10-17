@@ -113,12 +113,13 @@ async def lines(session, company_id) -> list[dict]:
     found = [*await _bill_lines(session, company_id, company_settings, asset_accounts),
              *await _manual_lines(session, company_id, asset_accounts, accum_accounts)]
     claims = await _claims(session, company_id, [f["source"] for f in found])
+    labels = await setup.account_labels(session, company_id, [f["account"] for f in found])
     threshold = _dec(fa.get("threshold")) if fa.get("threshold") else None
     cut = setup.cutover(fa)
     for f in found:
         claim = claims.get(claim_id(f["source"])) or {}
         per_unit = _dec(f["amount"]) / _dec(f["quantity"])
-        f.update(generation=int(claim.get("generation") or 0),
+        f.update(generation=int(claim.get("generation") or 0), account_label=labels[f["account"]],
                  claim=claim if claim.get("status") == "claimed" else None,
                  before_cutover=bool(cut) and f["date"] <= cut,
                  below_threshold=threshold is not None and per_unit < threshold)

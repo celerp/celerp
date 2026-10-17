@@ -88,7 +88,8 @@ async def test_s7_first_period_explicit(client, session):
     got = await fa.ok(await fa.get("/setup"))
     after = (booked + timedelta(days=1)).isoformat()
     assert got["first_period"]["suggested"] == after
-    assert {"account": "1220", "date": booked.isoformat(), "journal_id": je} in got["first_period"]["evidence"][
+    assert {"account": "1220", "label": "1220 Accumulated Depreciation", "date": booked.isoformat(),
+            "journal_id": je} in got["first_period"]["evidence"][
         "depreciation"]
     assert got["settings"]["first_managed_period"] is None, "a suggestion is never applied without confirm"
 
@@ -424,6 +425,7 @@ async def test_u3_a_register_that_does_not_add_up_names_both_figures_as_the_tabl
     report = await _recon(fa, today)
     registered = _account(report, "1210")["registered"]
     assert report["errors"] == [{"account": "1210", "name": _account(report, "1210")["name"],
+                                 "label": _account(report, "1210")["label"],
                                  "held": str(D(registered) + D("1234.50")), "registered": registered}]
     page = (await fa.page("/fixed-assets/reconciliation", at=today)).text
     box = page[page.index('id="fa-recon-errors"'):]

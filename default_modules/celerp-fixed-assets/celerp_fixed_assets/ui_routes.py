@@ -371,7 +371,7 @@ def _restated_table(years: list[dict], currency: str) -> FT:
 
 
 def _lines_table(lines: list[dict], currency: str) -> FT:
-    rows = [Tr(Td(ln["account"]), _money_td(ln.get("debit") if ln.get("debit") != "0.00" else None, currency),
+    rows = [Tr(Td(ln.get("label") or ln["account"]), _money_td(ln.get("debit") if ln.get("debit") != "0.00" else None, currency),
                _money_td(ln.get("credit") if ln.get("credit") != "0.00" else None, currency)) for ln in lines]
     return Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.debit")),
                           _money_th(t("fixed_assets.credit")))), Tbody(*rows), cls="data-table")
@@ -707,13 +707,18 @@ def _start_panel(currency: str) -> FT:
     )
 
 
-def _document(line: dict) -> str:
-    return line.get("document_ref") or line.get("document") or EMPTY
-
-
 def _source_document(source: str) -> str:
     """The document or journal a source line ("<document>:<line>") sits on."""
     return source.rsplit(":", 1)[0]
+
+
+def _source_name(source: str, ref: str | None = None) -> str:
+    """The document a source line sits on as the user knows it: its number, or "Journal
+    entry" for a manual journal, which has none."""
+    if ref:
+        return ref
+    document = _source_document(source)
+    return t("fixed_assets.manual_journal") if document.startswith(MANUAL_PREFIX) else document
 
 
 def _doc_href(doc_id: str) -> str:
@@ -1091,7 +1096,7 @@ def _sources_card(asset: dict, currency: str) -> FT:
     if not sources:
         body = P(t("fixed_assets.no_sources"), cls="form-hint")
     else:
-        body = Ul(*[Li(A(s.get("ref") or _source_document(s["source"]), href=_source_href(s["source"])), " ",
+        body = Ul(*[Li(A(_source_name(s["source"], s.get("ref")), href=_source_href(s["source"])), " ",
                        _money(s.get("amount"), currency) if s.get("amount") is not None else "")
                     for s in sources])
     return Div(H2(t("fixed_assets.sources"), cls="section-title"), body, cls="detail-card section-card")
@@ -1259,7 +1264,7 @@ def _first_period_card(first: dict, back: str = "/fixed-assets") -> FT:
     evidence = first.get("evidence") or {}
     booked = evidence.get("depreciation") or []
     if booked:
-        why = t("fixed_assets.first_period_from_depreciation", account=booked[-1]["account"], date=booked[-1]["date"])
+        why = t("fixed_assets.first_period_from_depreciation", account=booked[-1]["label"], date=booked[-1]["date"])
     elif evidence.get("earliest_journal"):
         why = t("fixed_assets.first_period_from_journal", date=evidence["earliest_journal"])
     else:
@@ -1294,7 +1299,7 @@ def _class_accounts_banner(classes: list[dict]) -> FT | str:
 
 
 def _recon_accounts_table(accounts: list[dict], currency: str) -> FT:
-    rows = [Tr(Td(f"{a['account']} {a['name']}"), _money_td(a["ledger"], currency),
+    rows = [Tr(Td(a["label"]), _money_td(a["ledger"], currency),
                _money_td(a["registered"], currency),
                _money_td(str(Decimal(a["ledger"]) - Decimal(a["registered"])), currency),
                Td(t(f"fixed_assets.recon_status.{_RECON_STATUS[a['status']]}"))) for a in accounts]
@@ -1352,7 +1357,7 @@ def _differences_table(accounts: list[dict], currency: str) -> FT:
     rows = []
     for a, d in found:
         lines = "; ".join(_text(li.get("description")) for li in d["lines"]) or EMPTY
-        rows.append(Tr(Td(d["date"]), Td(a["account"]), Td(_recon_cause(d)), Td(lines),
+        rows.append(Tr(Td(d["date"]), Td(a["label"]), Td(_recon_cause(d)), Td(lines),
                        _money_td(d["amount"], currency), Td(_recon_next(a, d)),
                        Td(_text(d.get("reason")) if d["rule"] == 4 else _acknowledge_form(d))))
     return Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.account")), Th(t("fixed_assets.recon_cause")),
@@ -1365,7 +1370,7 @@ def _opening_table(accounts: list[dict], currency: str) -> FT:
     """Each asset account at the cutover: the ledger, the register and, in an import's
     review, what the import adds, with the difference left."""
     importing = any("importing" in a for a in accounts)
-    rows = [Tr(Td(f"{a['account']} {a['name']}"), _money_td(a["ledger"], currency), _money_td(a["registered"], currency),
+    rows = [Tr(Td(a["label"]), _money_td(a["ledger"], currency), _money_td(a["registered"], currency),
                *([_money_td(a["importing"], currency)] if importing else []),
                _money_td(a["difference"], currency)) for a in accounts]
     return Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.recon_ledger")),
@@ -1548,7 +1553,7 @@ def _posting_fields() -> list[FT]:
 
 
 def _source_options(items: list[dict], currency: str) -> list[tuple[str, str]]:
-    return [(s["source"], " ".join(x for x in (s.get("document_ref") or s.get("ref") or _source_document(s["source"]),
+    return [(s["source"], " ".join(x for x in (_source_name(s["source"], s.get("document_ref") or s.get("ref")),
                                                s.get("description") or "",
                                                fmt_money(float(s["amount"]), currency) if s.get("amount") else "")
                                    if x)) for s in items]
@@ -1894,14 +1899,18 @@ def setup_ui_routes(app) -> None:
         if not items:
             body = empty_state_cta(t("fixed_assets.intake_empty"), t("fixed_assets.title"), "/fixed-assets")
         else:
+            # A depreciation line is not an asset: it is linked to the assets it depreciated.
             rows = [Tr(Td(_text(ln.get("date"))),
-                       Td(A(_document(ln), href=ln["href"])),
-                       Td(_text(ln.get("description"))), Td(_text(ln.get("account"))),
+                       Td(A(_source_name(ln["source"], ln.get("document_ref")), href=ln["href"])),
+                       Td(t(f"fixed_assets.line_kind.{ln['kind']}")),
+                       Td(_text(ln.get("description"))), Td(_text(ln.get("account_label"))),
                        Td(_text(ln.get("quantity")), cls="cell--number"), _money_td(ln.get("amount"), currency),
-                       Td(A(t("fixed_assets.deal_with_line"), cls="btn btn--sm btn--primary",
+                       Td(A(t("fixed_assets.deal_with_line" if ln["kind"] == "acquisition"
+                              else "fixed_assets.line_action.link-depreciation"), cls="btn btn--sm btn--primary",
                             href=f"/fixed-assets/intake/line?{urlencode({'source': ln['source']})}")))
                     for ln in items]
             body = Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.document")),
+                                  Th(t("fixed_assets.line_kind_title")),
                                   Th(t("fixed_assets.description")), Th(t("fixed_assets.account")),
                                   Th(t("fixed_assets.quantity"), cls="cell--number"),
                                   _money_th(t("fixed_assets.amount")), Th(""))),
@@ -1932,9 +1941,9 @@ def setup_ui_routes(app) -> None:
                                empty_state_cta(t("fixed_assets.line_gone"), t("fixed_assets.intake_title"),
                                                "/fixed-assets/intake"),
                                title_key="fixed_assets.line_title")
-        summary = Div(P(Strong(_text(line.get("description"))), " ", _document(line), " ",
-                        _text(line.get("date"))),
-                      P(t("fixed_assets.account"), ": ", _text(line.get("account")), " ",
+        summary = Div(P(Strong(_text(line.get("description"))), " ",
+                        _source_name(line["source"], line.get("document_ref")), " ", _text(line.get("date"))),
+                      P(t("fixed_assets.account"), ": ", _text(line.get("account_label")), " ",
                         t("fixed_assets.amount"), ": ", _money(line.get("amount"), currency)),
                       cls="detail-card section-card")
         hidden = Input(type="hidden", name="source", value=source)
@@ -2246,7 +2255,7 @@ def setup_ui_routes(app) -> None:
                     Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary"),
                     method="get", action="/fixed-assets/reconciliation", cls="flex-row")
         errors = Div(H3(t("fixed_assets.recon_errors")),
-                     Ul(*[Li(t("fixed_assets.recon_error", account=f"{e['account']} {e['name']}",
+                     Ul(*[Li(t("fixed_assets.recon_error", account=e["label"],
                                 held=_money(e["held"], currency), registered=_money(e["registered"], currency)))
                           for e in report["errors"]], cls="error-list"),
                      cls="flash flash--error", id="fa-recon-errors") if report["errors"] else ""

@@ -244,6 +244,7 @@ async def report(session, company_id, at: str | None = None) -> dict:
     fixing = {"marks": marks, "owners": owners, "lock": date.fromisoformat(lock) if lock else None,
               "currency": currency}
     names = await account_names(session, company_id, accounts)
+    labels = await setup.account_labels(session, company_id, accounts)
     out, errors = [], []
     for account in accounts:
         mine = [u for u in units if u["account"] == account]
@@ -262,9 +263,9 @@ async def report(session, company_id, at: str | None = None) -> dict:
             differences.append(_difference(u["key"], u["rule"], _CAUSES[u["rule"]], amount, u["date"], [u], fixing))
         if account not in clearings and registered != standing.get(account, Decimal(0)):
             # The assets' own balances against the Register column, read from their journals.
-            errors.append({"account": account, "name": names.get(account) or account,
+            errors.append({"account": account, "name": names.get(account) or account, "label": labels[account],
                            "held": money(standing.get(account, 0), currency), "registered": money(registered, currency)})
-        out.append({"account": account, "name": names.get(account) or account, "ledger": money(ledger, currency),
+        out.append({"account": account, "name": names.get(account) or account, "label": labels[account], "ledger": money(ledger, currency),
                     "registered": money(registered, currency), "status": _status(ledger, registered, differences),
                     "differences": differences})
     statuses = {a["status"] for a in out}

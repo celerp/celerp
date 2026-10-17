@@ -67,7 +67,7 @@ async def view(session, company_id) -> dict:
     fa = await setup.require_managed(session, company_id)
     at_cut = await recon.report(session, company_id, setup.cutover(fa))
     return {"cutover": at_cut["cutover"], "state": at_cut["opening"],
-            "accounts": [{"account": a["account"], "name": a["name"], "ledger": a["ledger"],
+            "accounts": [{"account": a["account"], "name": a["name"], "label": a["label"], "ledger": a["ledger"],
                           "registered": a["registered"],
                           "difference": str(_dec(a["ledger"]) - _dec(a["registered"]))}
                          for a in at_cut["accounts"]]}
@@ -84,7 +84,7 @@ async def finish(session, company_id, user_id, body: dict) -> dict:
     reopen, keep_open = bool(body.get("reopen")), bool(body.get("keep_open"))
     shown = await view(session, company_id)
     if not reopen and not keep_open:
-        apart = [f"{a['account']} {a['name']} ({a['difference']})" for a in shown["accounts"] if _dec(a["difference"])]
+        apart = [f"{a['label']} ({a['difference']})" for a in shown["accounts"] if _dec(a["difference"])]
         if apart:
             raise conflict("The ledger and the register differ at the cutover on " + ", ".join(apart)
                            + ". Record the opening journal or the missing opening assets, or keep the differences open.")

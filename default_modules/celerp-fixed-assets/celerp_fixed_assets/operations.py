@@ -224,6 +224,7 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
     fingerprint = f"{generation}.{_hash({'shown': shown, 'basis': context.get('basis')})}"
     if body.get("preview"):
         result = copy.deepcopy({**shown, "fingerprint": fingerprint})
+        await label_lines(session, company_id, result)
         context["intent_hash"] = intent_hash
         # Review refuses what Confirm would: the operation is applied and taken back.
         savepoint = await session.begin_nested()
@@ -243,6 +244,26 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
         "type": op_type, "intent_hash": intent_hash, "result": result, "effects": effects},
         key=f"fa:op:{op_key}")
     return result
+
+
+def _journal_lines(value) -> list[dict]:
+    """Every journal line shown anywhere in ``value``."""
+    if isinstance(value, list):
+        return [ln for v in value for ln in _journal_lines(v)]
+    if not isinstance(value, dict):
+        return []
+    lines = [ln for ln in value.get("lines") or [] if isinstance(ln, dict) and "account" in ln] \
+        if isinstance(value.get("lines"), list) else []
+    return [*lines, *(ln for k, v in value.items() if k != "lines" for ln in _journal_lines(v))]
+
+
+async def label_lines(session, company_id, preview: dict) -> None:
+    """Each previewed journal line names its account as the user knows it. A line already
+    labelled (another company's, in a transfer) keeps its label."""
+    lines = [ln for ln in _journal_lines(preview) if "label" not in ln]
+    labels = await setup.account_labels(session, company_id, [ln["account"] for ln in lines if ln["account"]])
+    for ln in lines:
+        ln["label"] = labels.get(ln["account"]) or ln["account"]
 
 
 async def _applied(session, company_id, apply, context: dict, op_key: str):

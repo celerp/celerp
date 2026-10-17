@@ -758,3 +758,35 @@ async def test_reports_index_schedule_page_print_and_csv(owner_ui):
     refused = await owner_ui.get("/fixed-assets/reports/schedule", params={"date_from": "2024-01-01",
                                                                           "date_to": "2024-12-31"})
     assert refused.status_code == 200 and "first managed period" in refused.text
+
+
+async def test_u15_u30_intake_names_journals_and_line_kinds_and_every_account_reads_code_and_name(owner_ui):
+    car = await _managed_car(owner_ui)
+    chart = {a["code"]: a["name"] for a in (await owner_ui.api.get("/accounting/chart")).json()["items"]}
+    r = await owner_ui.api.post("/accounting/journal-entries", json={
+        "ts": "2026-09-30", "memo": "Monthly depreciation", "idempotency_token": str(uuid.uuid4()), "entries": [
+            {"account": "6400", "debit": 100}, {"account": "1220", "credit": 100}]})
+    assert r.status_code == 200, r.text
+    je_id = r.json()["je_id"]
+
+    page = await owner_ui.get("/fixed-assets/intake")
+    at = page.text.index("Monthly depreciation")
+    row = page.text[page.text.rindex("<tr", 0, at):page.text.index("</tr>", at) + 5]
+    assert f">{je_id}<" not in row and f">{t('fixed_assets.manual_journal')}</a>" in row, \
+        "a manual journal reads as a journal entry, not its id"
+    assert t("fixed_assets.line_kind.depreciation") in row and f"1220 {chart['1220']}" in row
+    assert t("fixed_assets.line_action.link-depreciation") in row and f">{t('fixed_assets.deal_with_line')}<" not in row, \
+        "depreciation is linked to its assets, not registered as one"
+    line = await owner_ui.get("/fixed-assets/intake/line", params={"source": f"{je_id}:1"})
+    assert t("fixed_assets.manual_journal") in line.text and f"1220 {chart['1220']}" in line.text
+
+    review = await owner_ui.post("/fixed-assets/op/impair/review", data={
+        "asset_id": car, "date": "2026-09-30", "recoverable_amount": "9000", "basis": "Dealer quote",
+        "idempotency_key": str(uuid.uuid4())})
+    journal = review.text[review.text.index(t("fixed_assets.debit")):]
+    accumulated = (await _class(owner_ui, "Vehicles"))["accumulated_depreciation_account"]
+    assert re.search(r"<td>\d{4}</td>", journal) is None, "a previewed journal names every account"
+    assert f"<td>{accumulated} {chart[accumulated]}</td>" in journal
+
+    recon = await owner_ui.get("/fixed-assets/reconciliation")
+    assert f"1210 {chart['1210']}" in recon.text and "<td>1220</td>" not in recon.text
