@@ -64,7 +64,7 @@ def _scan_view(source: str, file_name: str, *, suggested: str = _ACCOUNT_OPTIONS
     display = next(s["display_name"] for s in _SOURCES if s["key"] == source)
     return {
         "source_system": source, "display_name": display, "file_name": file_name,
-        "size_bytes": 20480, "sha256_short": "9f2c41aa", "source_schema_version": "7",
+        "size_bytes": 20480, "source_schema_version": "7",
         "company_name": "Harbor Goods Ltd", "base_currency": "USD",
         "period_start": "2024-01-01", "period_end": "2025-12-31",
         "currencies": ["USD", "EUR"],
@@ -1537,6 +1537,7 @@ async def test_review_shows_company_currency_scope_and_plain_outcomes(ui, fake_a
     text = _visible(r)
     for expected in ("Harbor Goods Ltd", "USD", "2024-01-01", "Sales invoice", "Will move", "Will not move"):
         assert expected in text, expected
+    assert "(20 KB)" in text                                  # the file's size, not a hash of it
     assert "sales_invoices" not in _page(r) and "sales invoices" not in text
 
 

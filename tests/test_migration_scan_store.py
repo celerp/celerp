@@ -75,7 +75,6 @@ async def test_migration_scan_streams_and_bounds_upload(client, session, migrati
     assert r.status_code == 200, r.text
     scan = r.json()["scan"]
     assert scan["size_bytes"] == len(data)
-    assert scan["sha256_short"] == sha256(data)[:12]
     stored = json.loads((migration_env["data_dir"] / "migration_scans" / r.json()["scan_token"] / "scan.json").read_text())
     assert [a["sha256"] for a in stored["artifacts"]] == [sha256(data)]
     baseline = _scan_dirs(migration_env)
