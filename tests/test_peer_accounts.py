@@ -303,6 +303,9 @@ async def test_collision_type_and_currency_hold_until_fixed(real_client, real_en
     assert "asset" in holds["Deposit"]["reason"] and "expense" in holds["Deposit"]["reason"]
 
     await _fix(real_client, firm_tok, holds["Courier"], action="use", account="6150")
+    # Until the next sync the held record says it is fixed, as a confirmed review's do.
+    courier = {h["label"]: h for h in await _holds(real_client, firm_tok)}["Courier"]
+    assert courier["fix"]["fixed"] and courier["reason"] == "Fixed. It posts on the next sync."
     await _fix(real_client, firm_tok, holds["Fuel"], action="add", code="6171")
     r = await real_client.post(f"/accounting/peer/holds/{holds['Deposit']['id']}/fix",
                                json={"action": "use", "account": "6500"}, headers=auth(firm_tok))
