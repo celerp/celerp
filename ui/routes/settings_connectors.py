@@ -1627,10 +1627,12 @@ def setup_routes(app):
         company_id = _request_company_id(request)
         lang = get_lang(request)
 
-        from ui.api_client import delete_connector_credentials
+        from ui.api_client import APIError, delete_connector_credentials
         force = request.query_params.get("force") == "1"
         try:
             revoke_result = await delete_connector_credentials(token, platform, force=force)
+        except APIError as exc:
+            revoke_result = {"ok": False, "detail": exc.detail}
         except Exception as exc:
             revoke_result = {"ok": False, "detail": str(exc)}
         if not revoke_result.get("ok"):
@@ -1650,9 +1652,10 @@ def setup_routes(app):
             )
 
         if request.query_params.get("redirect"):
-            # Disconnected from the full-page detail view -> return to the overview tab.
+            # Disconnected from the full-page detail view -> return to the connector's tab.
             from starlette.responses import Response
-            return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud?tab=website"})
+            tab = _local_connector_entry(platform)["category"]
+            return Response(status_code=204, headers={"HX-Redirect": f"/settings/cloud?tab={tab}"})
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
@@ -1708,11 +1711,15 @@ def setup_routes(app):
             return err
 
     
+        from ui.api_client import APIError
+
         company_id = _request_company_id(request)
         lang = get_lang(request)
 
         try:
             await _kickoff_connector_sync(company_id, platform, token)
+        except APIError as exc:
+            return Span(f"✗ {refusal_text(exc.detail) or exc.detail}", cls="flash flash--warning")
         except Exception as exc:
             return Span(f"✗ {exc}", cls="flash flash--warning")
 
@@ -1862,8 +1869,7 @@ def setup_routes(app):
         company_id = _request_company_id(request)
         lang = get_lang(request)
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
-        c = next((x for x in catalog if x["id"] == platform),
-                 {"id": platform, "name": platform.title(), "category": "website"})
+        c = next((x for x in catalog if x["id"] == platform), _local_connector_entry(platform))
         config = await _get_connector_config(company_id, platform)
         runs = await _entity_runs(company_id, platform)
         deposit = await _deposit_context(token) if platform == "woocommerce" else None
