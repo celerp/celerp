@@ -5995,6 +5995,7 @@
   "company_backup.saved_download": "Descargar",
   "company_backup.saved_put_back": "Devolver",
   "company_backup.saved_put_back_hint": "Para devolver una copia guardada, escriba {company} junto a ella. La versión que reemplaza también se guarda aquí.",
+  "company_backup.saved_type_name": "Escriba {company} para restaurarla",
   "company_backup.saved_delete_confirm": "¿Eliminar esta copia guardada? No se puede deshacer.",
   "company_backup.saved_delete_reason": "Eliminar una copia guardada no se puede deshacer: el propio archivo se borra de este equipo.",
   "company_backup.saved_deleted": "Copia guardada eliminada.",

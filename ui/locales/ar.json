@@ -5995,6 +5995,7 @@
   "company_backup.saved_download": "تنزيل",
   "company_backup.saved_put_back": "إعادة",
   "company_backup.saved_put_back_hint": "لإعادة نسخة محفوظة، اكتب {company} بجانبها. النسخة التي تستبدلها تُحفظ هنا بدورها.",
+  "company_backup.saved_type_name": "اكتب {company} لإعادتها",
   "company_backup.saved_delete_confirm": "حذف هذه النسخة المحفوظة؟ لا يمكن التراجع عن ذلك.",
   "company_backup.saved_delete_reason": "لا يمكن التراجع عن حذف نسخة محفوظة: يُزال الملف نفسه من هذا الكمبيوتر.",
   "company_backup.saved_deleted": "تم حذف النسخة المحفوظة.",

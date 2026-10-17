@@ -5995,6 +5995,7 @@
   "company_backup.saved_download": "Unduh",
   "company_backup.saved_put_back": "Kembalikan",
   "company_backup.saved_put_back_hint": "Untuk mengembalikan salinan tersimpan, ketik {company} di sebelahnya. Versi yang digantinya juga disimpan di sini.",
+  "company_backup.saved_type_name": "Ketik {company} untuk mengembalikannya",
   "company_backup.saved_delete_confirm": "Hapus salinan tersimpan ini? Tindakan ini tidak dapat dibatalkan.",
   "company_backup.saved_delete_reason": "Menghapus salinan tersimpan tidak dapat dibatalkan: filenya sendiri dihapus dari komputer ini.",
   "company_backup.saved_deleted": "Salinan tersimpan dihapus.",

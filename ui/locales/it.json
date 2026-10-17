@@ -5995,6 +5995,7 @@
   "company_backup.saved_download": "Scarica",
   "company_backup.saved_put_back": "Ripristina",
   "company_backup.saved_put_back_hint": "Per ripristinare una copia salvata, digita {company} accanto. La versione che sostituisce viene a sua volta salvata qui.",
+  "company_backup.saved_type_name": "Digita {company} per ripristinarla",
   "company_backup.saved_delete_confirm": "Eliminare questa copia salvata? L'operazione non si può annullare.",
   "company_backup.saved_delete_reason": "L'eliminazione di una copia salvata non si può annullare: il file stesso viene rimosso da questo computer.",
   "company_backup.saved_deleted": "Copia salvata eliminata.",

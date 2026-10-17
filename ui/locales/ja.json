@@ -5995,6 +5995,7 @@
   "company_backup.saved_download": "ダウンロード",
   "company_backup.saved_put_back": "元に戻す",
   "company_backup.saved_put_back_hint": "保存済みコピーを戻すには、その横に{company}と入力してください。置き換えられるバージョンも同様にここに保存されます。",
+  "company_backup.saved_type_name": "元に戻すには {company} と入力してください",
   "company_backup.saved_delete_confirm": "この保存済みコピーを削除しますか？元に戻せません。",
   "company_backup.saved_delete_reason": "保存済みコピーの削除は元に戻せません。ファイルそのものがこのコンピューターから削除されます。",
   "company_backup.saved_deleted": "保存済みコピーを削除しました。",

@@ -5995,6 +5995,7 @@
   "company_backup.saved_download": "Tải xuống",
   "company_backup.saved_put_back": "Khôi phục",
   "company_backup.saved_put_back_hint": "Để khôi phục một bản sao đã lưu, hãy nhập {company} bên cạnh nó. Phiên bản bị thay thế cũng được lưu tại đây.",
+  "company_backup.saved_type_name": "Nhập {company} để đặt lại bản này",
   "company_backup.saved_delete_confirm": "Xóa bản sao đã lưu này? Không thể hoàn tác.",
   "company_backup.saved_delete_reason": "Xóa bản sao đã lưu không thể hoàn tác: chính tệp sẽ bị xóa khỏi máy tính này.",
   "company_backup.saved_deleted": "Đã xóa bản sao đã lưu.",

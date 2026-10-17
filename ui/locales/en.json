@@ -5995,6 +5995,7 @@
   "company_backup.saved_download": "Download",
   "company_backup.saved_put_back": "Put back",
   "company_backup.saved_put_back_hint": "To put a saved copy back, type {company} next to it. The version it replaces is saved here in turn.",
+  "company_backup.saved_type_name": "Type {company} to put it back",
   "company_backup.saved_delete_confirm": "Delete this saved copy? This cannot be undone.",
   "company_backup.saved_delete_reason": "Deleting a saved copy cannot be undone: the file itself is removed from this computer.",
   "company_backup.saved_deleted": "Saved copy deleted.",

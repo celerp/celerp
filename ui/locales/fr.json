@@ -5995,6 +5995,7 @@
   "company_backup.saved_download": "Télécharger",
   "company_backup.saved_put_back": "Remettre",
   "company_backup.saved_put_back_hint": "Pour remettre une copie enregistrée, saisissez {company} à côté. La version qu'elle remplace est enregistrée ici à son tour.",
+  "company_backup.saved_type_name": "Saisissez {company} pour la remettre en place",
   "company_backup.saved_delete_confirm": "Supprimer cette copie enregistrée ? Cette action est irréversible.",
   "company_backup.saved_delete_reason": "La suppression d'une copie enregistrée est irréversible : le fichier lui-même est retiré de cet ordinateur.",
   "company_backup.saved_deleted": "Copie enregistrée supprimée.",

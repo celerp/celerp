@@ -5995,6 +5995,7 @@
   "company_backup.saved_download": "ดาวน์โหลด",
   "company_backup.saved_put_back": "นำกลับมา",
   "company_backup.saved_put_back_hint": "หากต้องการนำสำเนาที่บันทึกไว้กลับมา ให้พิมพ์ {company} ข้างสำเนานั้น เวอร์ชันที่ถูกแทนที่จะถูกบันทึกไว้ที่นี่เช่นกัน",
+  "company_backup.saved_type_name": "พิมพ์ {company} เพื่อนำกลับมา",
   "company_backup.saved_delete_confirm": "ลบสำเนาที่บันทึกไว้นี้หรือไม่ เลิกทำไม่ได้",
   "company_backup.saved_delete_reason": "การลบสำเนาที่บันทึกไว้เลิกทำไม่ได้ เพราะไฟล์จะถูกลบออกจากคอมพิวเตอร์นี้",
   "company_backup.saved_deleted": "ลบสำเนาที่บันทึกไว้แล้ว",

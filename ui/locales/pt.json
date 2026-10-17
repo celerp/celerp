@@ -5995,6 +5995,7 @@
   "company_backup.saved_download": "Baixar",
   "company_backup.saved_put_back": "Devolver",
   "company_backup.saved_put_back_hint": "Para devolver uma cópia salva, digite {company} ao lado dela. A versão que ela substitui também é salva aqui.",
+  "company_backup.saved_type_name": "Digite {company} para restaurá-la",
   "company_backup.saved_delete_confirm": "Excluir esta cópia salva? Isso não pode ser desfeito.",
   "company_backup.saved_delete_reason": "Excluir uma cópia salva não pode ser desfeito: o próprio arquivo é removido deste computador.",
   "company_backup.saved_deleted": "Cópia salva excluída.",

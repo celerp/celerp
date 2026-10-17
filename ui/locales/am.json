@@ -5995,6 +5995,7 @@
   "company_backup.saved_download": "አውርድ",
   "company_backup.saved_put_back": "መልስ",
   "company_backup.saved_put_back_hint": "የተቀመጠ ቅጂ ለመመለስ ከጎኑ {company} ብለው ይተይቡ። የሚተካው ስሪትም እዚህ ይቀመጣል።",
+  "company_backup.saved_type_name": "መልሶ ለማስቀመጥ {company} ይተይቡ",
   "company_backup.saved_delete_confirm": "ይህን የተቀመጠ ቅጂ ይሰርዙ? ይህ ሊቀለበስ አይችልም።",
   "company_backup.saved_delete_reason": "የተቀመጠ ቅጂ መሰረዝ ሊቀለበስ አይችልም፦ ፋይሉ ራሱ ከዚህ ኮምፒውተር ይወገዳል።",
   "company_backup.saved_deleted": "የተቀመጠው ቅጂ ተሰርዟል።",

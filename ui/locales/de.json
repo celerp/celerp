@@ -5995,6 +5995,7 @@
   "company_backup.saved_download": "Herunterladen",
   "company_backup.saved_put_back": "Zurückholen",
   "company_backup.saved_put_back_hint": "Um eine gespeicherte Kopie zurückzuholen, geben Sie daneben {company} ein. Die Version, die sie ersetzt, wird hier ebenfalls gespeichert.",
+  "company_backup.saved_type_name": "Geben Sie {company} ein, um sie zurückzulegen",
   "company_backup.saved_delete_confirm": "Diese gespeicherte Kopie löschen? Das kann nicht rückgängig gemacht werden.",
   "company_backup.saved_delete_reason": "Das Löschen einer gespeicherten Kopie kann nicht rückgängig gemacht werden: Die Datei selbst wird von diesem Computer entfernt.",
   "company_backup.saved_deleted": "Gespeicherte Kopie gelöscht.",

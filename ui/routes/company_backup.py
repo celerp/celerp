@@ -416,10 +416,10 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
     )
 
 
-def _typed_name(company: str, label: str) -> FT:
-    """The field the owner types the company's name into before a replace."""
-    return Div(Label(t(label, company=company), For="confirm_company_name", cls="form-label"),
-               Input(type="text", id="confirm_company_name", name="company_name", value="", required=True,
+def _typed_name(company: str, label: str, field_id: str = "confirm_company_name") -> FT:
+    """The field the owner types the company's name into before a replace or put-back."""
+    return Div(Label(t(label, company=company), For=field_id, cls="form-label"),
+               Input(type="text", id=field_id, name="company_name", value="", required=True,
                      autocomplete="off", cls="form-input"), cls="form-group")
 
 
@@ -1216,9 +1216,7 @@ def _saved_table(items: list[dict], company: str, *, notice: str | None = None,
                        hx_confirm=t("company_backup.saved_delete_confirm"), hx_target="#saved-copies",
                        hx_swap="outerHTML", cls="btn btn--danger btn--sm"),
                 cls="flex-row gap-sm"),
-            Form(Input(type="text", name="company_name", value="", required=True, autocomplete="off",
-                       placeholder=company, aria_label=t("company_backup.undo_type_name", company=company),
-                       cls="form-input"),
+            Form(_typed_name(company, "company_backup.saved_type_name", f"put-back-{item['id']}"),
                  Button(t("company_backup.saved_put_back"), type="submit", cls="btn btn--primary btn--sm"),
                  method="post", action=f"{path}/put-back", cls="flex-row gap-sm"),
             cls="flex-col gap-sm")
