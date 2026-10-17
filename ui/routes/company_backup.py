@@ -1415,7 +1415,7 @@ async def _ready_page(request: Request, values: dict, sent: dict):
         Ul(Li(t("company_backup.ready_receives", email=values["recipient"], firm=values["firm_name"])),
            Li(expiry),
            Li(A(t("company_backup.ready_watch"), href=HANDOFFS)),
-           Li(t("company_backup.ready_new_link"))),
+           Li(A(t("company_backup.ready_new_link"), href=HANDOFFS))),
         back_link(BACKUP_TAB), title="company_backup.ready_title",
     )
 
