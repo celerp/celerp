@@ -54,7 +54,7 @@ from ui.api_client import APIError
 from ui.components.operation_key import FIELD as OP_KEY_FIELD, operation_key_input
 from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import (EMPTY, breadcrumbs, bulk_toolbar, display_cell, editable_cell, empty_mark, empty_state_cta,
-                                 fmt_money, pagination, row_menu, searchable_select, _SEARCHABLE_THRESHOLD)
+                                 fmt_money, pagination, row_menu, searchable_select)
 from ui.config import get_role, get_token as _token
 from ui.i18n import refusal_text, t
 from ui.routes.csv_import import read_tabular_source
@@ -117,12 +117,9 @@ def _postable(chart: list[dict]) -> list[dict]:
 
 def _picker(name: str, options: list[tuple[str, str]], value: str = "", *, label: str,
             empty: str = "fixed_assets.choose") -> FT:
-    """A select, searchable once it could hold more than ten options (rule i). `empty` labels no choice."""
-    if len(options) > _SEARCHABLE_THRESHOLD:
-        return searchable_select(name, options, value=value, placeholder=t(empty), aria_label=label)
-    return Select(Option(t(empty), value="", selected=not value),
-                  *[Option(text, value=v, selected=v == value) for v, text in options],
-                  name=name, cls="form-input", aria_label=label)
+    """A searchable choice from a list the company can grow past ten (rule i): classes,
+    accounts, places, people, lines. `empty` labels no choice, which stays pickable."""
+    return searchable_select(name, [("", t(empty)), *options], value=value, placeholder=t(empty), aria_label=label)
 
 
 def _account_options(chart: list[dict], keep: str = "") -> list[tuple[str, str]]:

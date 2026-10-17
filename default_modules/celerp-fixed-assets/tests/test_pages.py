@@ -874,3 +874,23 @@ async def test_u18_the_asset_page_shows_how_it_depreciates_and_its_next_charge(o
     shown = card((await owner_ui.get(f"/fixed-assets/assets/{car}")).text)
     assert "2026-09" in shown and "2026-08" not in shown and f"{monthly:,}" in shown, \
         "once August is posted, the next charge is September's"
+
+
+async def test_u19_u20_every_open_ended_list_is_searchable_and_a_fixed_one_is_a_plain_select(owner_ui):
+    car = await _managed_car(owner_ui)
+
+    def searchable(html: str, name: str) -> bool:
+        return re.search(rf'<input type="hidden" name="{re.escape(name)}"[^>]*>', html) is not None \
+            and f'<select name="{name}"' not in html
+
+    home = await owner_ui.get("/fixed-assets")
+    assert searchable(home.text, "class_id"), "classes are added by the company, so the filter is searchable"
+    assert t("fixed_assets.all_classes") in home.text
+    register = await owner_ui.get("/fixed-assets/reports/register")
+    assert searchable(register.text, "class_id")
+    move = await owner_ui.get(f"/fixed-assets/assets/{car}/move")
+    assert searchable(move.text, "location_id") and searchable(move.text, "custodian_user")
+    add = await owner_ui.get(f"/fixed-assets/assets/{car}/add")
+    assert searchable(add.text, "source")
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert re.search(r'<select name="kind"', page.text), "a reminder's kind is one of a fixed few"

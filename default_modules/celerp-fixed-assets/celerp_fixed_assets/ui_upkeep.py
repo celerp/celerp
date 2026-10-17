@@ -129,8 +129,9 @@ def _add_reminder_form(asset_id: str, members: dict[str, str]) -> FT:
     kinds = [(k, t(f"fixed_assets.reminder_kind.{k}")) for k in KINDS]
     return Details(
         Summary(t("fixed_assets.add_reminder")),
-        Form(_field(t("fixed_assets.reminder_kind"), _picker("kind", kinds, "maintenance",
-                                                             label=t("fixed_assets.reminder_kind"))),
+        Form(_field(t("fixed_assets.reminder_kind"), Select(
+                 *[Option(text, value=k, selected=k == "maintenance") for k, text in kinds], name="kind",
+                 cls="form-input", aria_label=t("fixed_assets.reminder_kind"))),
              _field(t("fixed_assets.reminder_detail"), _input("detail", required=True)),
              _field(t("fixed_assets.due"), _input("due", type_="date", required=True)),
              _field(t("fixed_assets.every_months"), _input("every_months", type_="number", min="1", step="1"),

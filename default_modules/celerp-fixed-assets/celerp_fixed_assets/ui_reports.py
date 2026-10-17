@@ -33,6 +33,7 @@ from celerp_fixed_assets.ui_routes import (
     _money_th,
     _no_tax_regime,
     _page,
+    _picker,
     _restated_table,
     _text,
 )
@@ -399,9 +400,8 @@ def _chooser(report: Report, params: dict, classes: list[dict], setup: dict, act
                          aria_label=t("fixed_assets.tax_regime")), _year_input(params)]
     elif report.period == "register":
         fields = [_input("q", params.get("q"), placeholder=t("fixed_assets.search"), aria_label=t("fixed_assets.search")),
-                  Select(Option(t("fixed_assets.all_classes"), value=""),
-                         *[Option(c["name"], value=c["id"], selected=c["id"] == params.get("class_id"))
-                           for c in classes], name="class_id", cls="form-input", aria_label=t("fixed_assets.class"))]
+                  _picker("class_id", [(c["id"], c["name"]) for c in classes], params.get("class_id") or "",
+                          label=t("fixed_assets.class"), empty="fixed_assets.all_classes")]
     else:
         fields = [_input("date_from", params["date_from"], type_="date", aria_label=t("fixed_assets.date_from")),
                   _input("date_to", params["date_to"], type_="date", aria_label=t("fixed_assets.date_to"))]

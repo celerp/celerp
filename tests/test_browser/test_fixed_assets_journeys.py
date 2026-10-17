@@ -143,8 +143,8 @@ def test_j2_voided_bill_is_replaced_from_the_asset(page: Page, fresh_company):
     expect(card).to_contain_text("Review the source")
     card.get_by_role("link", name="Replace source").click()
     page.wait_for_url("**field=replace_source**")
-    page.locator("select[name=old]").select_option(index=1)
-    page.locator("select[name=new]").select_option(index=1)
+    _choose(page, "old", "12,000")
+    _choose(page, "new", "12,100")
     page.locator("input[name=posting_date]").fill("2026-04-20")
     page.get_by_role("button", name="Review", exact=True).first.click()
     preview = page.locator("#fa-preview")
@@ -215,7 +215,7 @@ def test_j4_locked_date_is_refused_and_the_first_open_date_saves(page: Page, fre
     page.get_by_role("link", name="Add asset").click()
     page.get_by_role("link", name="Contributed or acquired without a bill").click()
     page.locator("input[name=name]").fill("Owner's car")
-    page.locator("select[name=class_id]").select_option(label="Vehicles")
+    _choose(page, "class_id", "Vehicles")
     page.locator("input[name=available_date]").fill("2026-03-15")
     page.locator("input[name=cost]").fill("12000")
     _choose(page, "credit_account", "3100")
@@ -423,7 +423,7 @@ def test_j9_stale_move_form_asks_for_a_new_review_and_the_move_succeeds(page: Pa
 
     page.goto(f"/fixed-assets/assets/{car}/move")
     page.locator("input[name=date]").fill("2026-02-01")
-    page.locator("select[name=location_id]").select_option(label="North store")
+    _choose(page, "location_id", "North store")
     page.get_by_role("button", name="Review", exact=True).click()
     expect(page.locator("#fa-preview")).to_contain_text("North store")
     # Someone else moves the car while this review is open.
@@ -477,7 +477,7 @@ def test_j11_split_short_of_the_balance_names_the_remainder_and_completes(page: 
     for n, (name, cls, amount) in enumerate((("Office fittings", "Furniture and fittings", "12000"),
                                              ("Meeting room screens", "Computer equipment", "5000"))):
         page.locator(f"input[name='row:{n}:name']").fill(name)
-        page.locator(f"select[name='row:{n}:class_id']").select_option(label=cls)
+        _choose(page, f"row:{n}:class_id", cls)
         page.locator(f"input[name='row:{n}:amount']").fill(amount)
     page.get_by_role("button", name="Review", exact=True).click()
     preview = page.locator("#fa-preview")
@@ -508,7 +508,7 @@ def test_j12_unexplained_journal_names_its_fix_and_is_registered(page: Page, fre
     page.locator("tr", has_text="Generator paid in cash").get_by_role("link").last.click()
     page.wait_for_url("**/fixed-assets/intake/line**")
     page.locator("input[name=name]").fill("Standby generator")
-    page.locator("select[name=class_id]").select_option(label=cls["name"])
+    _choose(page, "class_id", cls["name"])
     _review_and_confirm(page)
     (generator,) = [a for a in _ok(c.get(f"{API}/assets"))["items"] if a["name"] == "Standby generator"]
     assert D(generator["cost"]) == D(900)
@@ -913,8 +913,7 @@ def test_j21_bill_line_account_is_kept_and_the_finalized_bill_leads_to_registeri
     page.get_by_role("link", name="Register as asset").click()
     page.wait_for_url("**/fixed-assets/intake/line**")
     page.locator("input[name=name]").fill("Coffee roaster")
-    page.locator("select[name=class_id]").select_option(
-        label=next(k for k in _classes(c).values() if k["asset_account"] == "1210")["name"])
+    _choose(page, "class_id", next(k for k in _classes(c).values() if k["asset_account"] == "1210")["name"])
     _review_and_confirm(page)
     (roaster,) = [a for a in _ok(c.get(f"{API}/assets"))["items"] if a["name"] == "Coffee roaster"]
 
