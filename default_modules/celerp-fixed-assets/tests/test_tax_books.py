@@ -162,6 +162,32 @@ async def test_tax_figure_missing_cannot_be_accepted_or_closed(fa, zz):
     await fa.ok(await fa.post("/tax-years/zz_asset/2025/close", {}))
 
 
+async def test_tax_acceptance_saved_before_the_rule_does_not_close(fa, zz):
+    from celerp_fixed_assets import yearend
+    from celerp_fixed_assets.store import _emit
+
+    car = await _setup(fa, mapped=False)
+    number = (await fa.asset(car))["number"]
+    key = f"tax:zz_asset:{car}"
+    await _accept_books(fa, 2025)
+    saved = (await fa.state(yearend.yearend_id(2025))) or {}
+    marks = {**(saved.get("marks") or {}), key: {"state": "accepted", "reason": "Reviewed", "effect": "None",
+                                                 "amount": None, "at": "2025-07-01", "user": "x"}}
+    await _emit(fa.session, fa.auth["company_id"], None, yearend.yearend_id(2025), "fa_yearend",
+                "fa.yearend.recorded", {"year": 2025, "marks": marks})
+    await fa.session.commit()
+    items = {i["key"]: i for i in (await _year_end(fa, 2025))["items"]}
+    assert items[key]["state"] == "open" and items[key]["accepted_amount"] is None
+    close = await fa.post("/tax-years/zz_asset/2025/close", {})
+    assert close.status_code == 409 and number in close.json()["detail"], close.text
+    await fa.ok(await fa.patch(f"/tax-books/{car}/zz_asset", {"category": "zz_plant"}))
+    await fa.ok(await fa.post("/tax-years/zz_asset/2025/close", {}))
+    again = await fa.post("/tax-years/zz_asset/2025/close", {})
+    assert again.status_code == 409 and "already closed" in again.json()["detail"]
+    book = await _tax_book(fa, "zz_asset", 2025)
+    assert book["status"] == "closed" and [h["action"] for h in book.get("history") or []] in ([], ["closed"])
+
+
 async def test_tax_close_refusal_in_thai_names_the_asset(fa, zz):
     await fa.ok(await fa.patch("/settings", {"tax_regimes": ["zz_asset"], "tax_year_end": "06-30"}))
     await _managed_from(fa, "2024-01-01")
