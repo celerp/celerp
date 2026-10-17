@@ -595,3 +595,26 @@ def test_windows_account_rows_expect_2_5_6_to_fail_under_every_non_ascii_name():
     workflow = yaml.safe_load((Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text())
     rows = workflow["jobs"]["win-names"]["strategy"]["matrix"]["include"]
     assert {r["case"]: r["fails"] for r in rows} == {r["case"]: not r["user"].isascii() for r in rows}
+
+
+def test_jobs_downstream_of_the_tag_only_job_run_outside_tags_when_they_should():
+    """prepare-release runs only for a tag, so outside a tag it is skipped, and success()
+    is false in every job that depends on it, however indirectly. A job gated on
+    success() below it is then skipped too: on a pull request the account-name matrix
+    never ran and account-names failed with nothing tested. Below prepare-release,
+    success() is only for jobs that run for tags alone; the rest check the result of
+    the job they need."""
+    jobs = _workflow("build.yml")["jobs"]
+
+    def needs(name):
+        n = jobs[name].get("needs", [])
+        return [n] if isinstance(n, str) else n
+
+    def below_tag_only(name):
+        return any(n == "prepare-release" or below_tag_only(n) for n in needs(name))
+
+    for name, job in jobs.items():
+        cond = str(job.get("if", ""))
+        if below_tag_only(name) and "success()" in cond:
+            assert "startsWith(github.ref, 'refs/tags/v')" in cond, name
+    assert jobs["win-names"]["if"].startswith("always() && needs.build.result == 'success'")

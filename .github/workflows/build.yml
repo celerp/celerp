@@ -1071,10 +1071,11 @@ jobs:
   # ASCII, since 2.5.6 hands Postgres the path in the ANSI code page), this
   # build must start clean from what it left behind. Then the sample company, attachment,
   # exports, company and full backups, restores and a reopen, all named in the
-  # account's script (win-boot-smoke.ps1 -Demo).
+  # account's script (win-boot-smoke.ps1 -Demo). Gated on the build's result, not
+  # success(): outside a tag prepare-release is skipped, which makes success() false.
   win-names:
     needs: [setup-matrix, build]
-    if: success() && contains(needs.setup-matrix.outputs.matrix, 'windows-latest')
+    if: always() && needs.build.result == 'success' && contains(needs.setup-matrix.outputs.matrix, 'windows-latest')
     runs-on: windows-latest
     timeout-minutes: 45
     strategy:
