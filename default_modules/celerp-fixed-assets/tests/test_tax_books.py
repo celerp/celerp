@@ -304,3 +304,32 @@ async def test_tax_pool_additions_counted_once_across_a_closed_year(fa, zz):
     (after,) = [p for p in (await _tax_book(fa, "zz_pool", 2026))["pools"] if p["key"] == "zz_cars"]
     assert (after["opening"], after["additions"], after["closing"]) == (
         before["opening"], before["additions"], before["closing"])
+
+
+_TAX_SURFACES = ("/fixed-assets/tax-books", "/fixed-assets/reports/book-tax", "/fixed-assets/year-end",
+                 "/settings/fixed-assets")
+
+
+async def test_u4_with_no_tax_regime_to_choose_every_tax_surface_says_so_and_how_one_is_added(fa):
+    """No module provides a tax regime: each tax surface says no tax books are kept, that
+    the books are not affected, and that a regime comes from a module, linking Modules."""
+    from ui.i18n import t
+
+    await _managed_from(fa)
+    for path in _TAX_SURFACES:
+        text = (await fa.page(path)).text
+        assert t("fixed_assets.no_tax_regime") in text and t("fixed_assets.no_tax_regime_install") in text, path
+        assert 'href="/modules"' in text and 'name="regime"' not in text, path
+
+
+async def test_u4_with_a_regime_to_choose_the_tax_surfaces_link_the_choice(fa, zz):
+    from ui.i18n import t
+
+    await _managed_from(fa)
+    for path in _TAX_SURFACES[:3]:
+        text = (await fa.page(path)).text
+        assert t("fixed_assets.no_tax_regime") in text and t("fixed_assets.no_tax_regime_effect") in text, path
+        assert 'href="/settings/fixed-assets#fa-tax-regimes"' in text and 'name="regime"' not in text, path
+    settings = (await fa.page("/settings/fixed-assets")).text
+    assert 'id="fa-tax-regimes"' in settings and 'value="zz_asset"' in settings
+    assert t("fixed_assets.no_tax_regime_install") not in settings

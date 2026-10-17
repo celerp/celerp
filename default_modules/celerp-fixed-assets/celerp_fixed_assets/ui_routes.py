@@ -927,7 +927,9 @@ def _settings_form(settings: dict, available: dict) -> FT:
         _field(t("fixed_assets.tax_regimes"), Div(
             Input(type="hidden", name="tax_regimes:flag", value="1"),
             *[Label(Input(type="checkbox", name="tax_regimes", value=k, checked=k in chosen), _rule_label("tax_regime", k),
-                    cls="settings-toggle") for k in regimes] or [P(t("fixed_assets.no_tax_regimes"), cls="form-hint")]),
+                    cls="settings-toggle") for k in regimes] or [
+                P(t("fixed_assets.no_tax_regime"), " ", t("fixed_assets.no_tax_regime_install"), " ",
+                  A(t("fixed_assets.open_modules"), href="/modules"), cls="form-hint")], id="fa-tax-regimes"),
                t("fixed_assets.tax_regimes_hint")),
         hx_post="/settings/fixed-assets", hx_trigger="change", hx_swap="none", cls="settings-card",
     )
@@ -1564,6 +1566,17 @@ def _chosen_regimes(setup: dict) -> list[dict]:
     """The tax regimes the company chose that a module it uses provides."""
     chosen = (setup.get("settings") or {}).get("tax_regimes") or []
     return [r for r in (setup.get("rules") or {}).get("tax_regimes") or [] if r["key"] in chosen]
+
+
+def _no_tax_regime(setup: dict) -> FT:
+    """What a tax surface shows while the company keeps no tax books: what that means, and
+    where it changes. A regime comes from a localization module, so with none installed
+    the way on is Modules; otherwise it is the choice in the fixed asset settings."""
+    if (setup.get("rules") or {}).get("tax_regimes"):
+        return empty_state_cta(t("fixed_assets.no_tax_regime"), t("fixed_assets.choose_tax_regime"),
+                               "/settings/fixed-assets#fa-tax-regimes", hint=t("fixed_assets.no_tax_regime_effect"))
+    return empty_state_cta(t("fixed_assets.no_tax_regime"), t("fixed_assets.open_modules"), "/modules",
+                           hint=t("fixed_assets.no_tax_regime_install"))
 
 
 def _tax_chooser(regimes: list[dict], regime: str, year: int, action: str) -> FT:
@@ -3054,9 +3067,7 @@ def setup_ui_routes(app) -> None:
             setup, currency = await _context(token)
             regimes = _chosen_regimes(setup)
             if not regimes:
-                return await _page(request, crumbs, page_header(t(title)),
-                                   empty_state_cta(t("fixed_assets.no_tax_regimes"), t("fixed_assets.settings_title"),
-                                                   "/settings/fixed-assets"), title_key=title)
+                return await _page(request, crumbs, page_header(t(title)), _no_tax_regime(setup), title_key=title)
             regime = regime if regime in {r["key"] for r in regimes} else regimes[0]["key"]
             book = await api.fixed_assets_get(token, "/tax-books", {"regime": regime, "year": year})
         except APIError as e:
@@ -3146,8 +3157,8 @@ def setup_ui_routes(app) -> None:
                                                    cls="btn btn--secondary", target="_blank")),
                            P(t("fixed_assets.year_end_hint"), cls="settings-hint"), when, ready,
                            H2(t("fixed_assets.ye_items"), cls="section-title"), _year_end_table(report, currency),
-                           *([H2(t("fixed_assets.tax_books_title"), cls="section-title"), _year_end_books(books)]
-                             if books else []),
+                           H2(t("fixed_assets.tax_books_title"), cls="section-title"),
+                           _year_end_books(books) if _chosen_regimes(setup) else _no_tax_regime(setup),
                            H2(t("fixed_assets.ye_then"), cls="section-title"), then, title_key=title)
 
     @app.get("/fixed-assets/year-end/print")
@@ -3159,14 +3170,16 @@ def setup_ui_routes(app) -> None:
             return RedirectResponse("/login", status_code=302)
         year = year or date.today().year - 1
         try:
-            report, books, currency, _ = await _year_end(token, year)
+            report, books, currency, setup = await _year_end(token, year)
             company = await api.get_company(token)
         except APIError as e:
             return plain_error_response(e)
         ready = t("fixed_assets.ye_ready" if report["ready"] else "fixed_assets.ye_not_ready")
         body = Div(P(Strong(ready), " ", t("fixed_assets.tax_year_dates", start=report["start"], end=report["end"])),
                    _year_end_table(report, currency, printed=True),
-                   *([H3(t("fixed_assets.tax_books_title")), _year_end_books(books)] if books else []))
+                   H3(t("fixed_assets.tax_books_title")),
+                   _year_end_books(books) if _chosen_regimes(setup) else
+                   P(t("fixed_assets.no_tax_regime"), " ", t("fixed_assets.no_tax_regime_effect")))
         return print_shell(company, t("fixed_assets.year_end_title"), t("fixed_assets.tax_year_n", year=year), body)
 
     @app.post("/fixed-assets/year-end/{year}/marks")

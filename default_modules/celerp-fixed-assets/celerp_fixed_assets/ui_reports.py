@@ -31,6 +31,7 @@ from celerp_fixed_assets.ui_routes import (
     _input,
     _money_td,
     _money_th,
+    _no_tax_regime,
     _page,
     _restated_table,
     _text,
@@ -258,8 +259,7 @@ def _read_only(report: dict) -> list[FT]:
 
 def _book_tax_body(report: dict | None, currency: str) -> list[FT]:
     if report is None:
-        return [empty_state_cta(t("fixed_assets.no_tax_regimes"), t("fixed_assets.settings_title"),
-                                "/settings/fixed-assets")]
+        return [P(t("fixed_assets.no_tax_regime"), " ", t("fixed_assets.no_tax_regime_effect"))]
     fields = _book_tax_fields(report)
     head = [Th(t("fixed_assets.tax_line")), Th(t("fixed_assets.tax_category")),
             *[_money_th(t(f"fixed_assets.col.{f}")) for f in fields]]
@@ -483,6 +483,10 @@ def _register_routes(app, report: Report) -> None:
                                title_key=report.title_key)
         here = request.url.path
         params = _params(report, request, setup)
+        if report.period == "tax" and not params["regime"]:
+            return await _page(request, _crumbs(report), page_header(t(report.title_key)),
+                               P(t(report.hint_key), cls="settings-hint"), _no_tax_regime(setup),
+                               title_key=report.title_key)
         try:
             body = Div(*report.body(await fetch(token, params, request), currency), cls="detail-card section-card")
         except APIError as e:
