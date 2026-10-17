@@ -6068,7 +6068,7 @@
   "sync_accounts.fixed_syncing": "修正しました。同期中のため、記録は今回転記されます。",
   "sync_accounts.fixed_next_sync": "修正しました。記録は接続先の会社の次回同期で転記されます。",
   "sync_accounts.keep_done": "{account} を保持しました。",
-  "sync_accounts.archive_done": "{account} をアーカイブしました。",
+  "sync_accounts.archive_done": "{account} をアーカイブしました。再び使うには、Settings > Accounting > 勘定科目表 を開き、その勘定の 編集 を選んで アクティブ に設定してください。",
   "sync_accounts.remove_done": "{account} を削除しました。",
   "sync_accounts.review_done": "勘定を確定しました。記録は次回の同期で転記されます。",
   "sync_accounts.review_saved": "回答を保存しました。準備ができたら確認を完了してください。",

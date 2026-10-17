@@ -6068,7 +6068,7 @@
   "sync_accounts.fixed_syncing": "Fixed. Syncing now, so the record posts on this run.",
   "sync_accounts.fixed_next_sync": "Fixed. The record posts on the connected company's next sync.",
   "sync_accounts.keep_done": "Kept {account}.",
-  "sync_accounts.archive_done": "Archived {account}.",
+  "sync_accounts.archive_done": "Archived {account}. To use it again, open Settings > Accounting > Chart of Accounts, choose Edit on it and set it to Active.",
   "sync_accounts.remove_done": "Removed {account}.",
   "sync_accounts.review_done": "Accounts confirmed. Their records post on the next sync.",
   "sync_accounts.review_saved": "Answers saved. Finish the review when you are ready.",

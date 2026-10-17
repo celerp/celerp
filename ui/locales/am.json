@@ -6068,7 +6068,7 @@
   "sync_accounts.fixed_syncing": "ተስተካክሏል። አሁን በማመሳሰል ላይ ስለሆነ መዝገቡ በዚህ ዙር ይመዘገባል።",
   "sync_accounts.fixed_next_sync": "ተስተካክሏል። መዝገቡ በተገናኘው ኩባንያ ቀጣይ ማመሳሰል ይመዘገባል።",
   "sync_accounts.keep_done": "{account} ተቀምጧል።",
-  "sync_accounts.archive_done": "{account} በማህደር ተቀምጧል።",
+  "sync_accounts.archive_done": "{account} በማህደር ተቀምጧል። እንደገና ለመጠቀም Settings > Accounting > የመለያዎች ሰንጠረዥ ይክፈቱ፣ በእሱ ላይ አስተካክል ይምረጡ እና ንቁ ያድርጉት።",
   "sync_accounts.remove_done": "{account} ተወግዷል።",
   "sync_accounts.review_done": "ሂሳቦች ተረጋግጠዋል። መዝገቦቻቸው በሚቀጥለው ማመሳሰል ይመዘገባሉ።",
   "sync_accounts.review_saved": "መልሶች ተቀምጠዋል። ዝግጁ ሲሆኑ ግምገማውን ይጨርሱ።",

@@ -6068,7 +6068,7 @@
   "sync_accounts.fixed_syncing": "Diperbaiki. Sinkronisasi berjalan, catatan diposting pada putaran ini.",
   "sync_accounts.fixed_next_sync": "Diperbaiki. Catatan diposting pada sinkronisasi berikutnya dari perusahaan terhubung.",
   "sync_accounts.keep_done": "{account} disimpan.",
-  "sync_accounts.archive_done": "{account} diarsipkan.",
+  "sync_accounts.archive_done": "{account} diarsipkan. Untuk memakainya lagi, buka Settings > Accounting > Daftar Akun, pilih Sunting pada akun itu dan setel ke Aktif.",
   "sync_accounts.remove_done": "{account} dihapus.",
   "sync_accounts.review_done": "Akun dikonfirmasi. Catatannya diposting pada sinkronisasi berikutnya.",
   "sync_accounts.review_saved": "Jawaban disimpan. Selesaikan tinjauan saat Anda siap.",

@@ -6068,7 +6068,7 @@
   "sync_accounts.fixed_syncing": "Corrigé. Synchronisation en cours, l'écriture est comptabilisée maintenant.",
   "sync_accounts.fixed_next_sync": "Corrigé. L'écriture sera comptabilisée à la prochaine synchronisation de la société connectée.",
   "sync_accounts.keep_done": "{account} conservé.",
-  "sync_accounts.archive_done": "{account} archivé.",
+  "sync_accounts.archive_done": "{account} archivé. Pour le réutiliser, ouvrez Settings > Accounting > Plan comptable, choisissez Modifier sur ce compte et passez-le à Actif.",
   "sync_accounts.remove_done": "{account} supprimé.",
   "sync_accounts.review_done": "Comptes confirmés. Leurs écritures seront comptabilisées à la prochaine synchronisation.",
   "sync_accounts.review_saved": "Réponses enregistrées. Terminez l'examen quand vous êtes prêt.",

@@ -6068,7 +6068,7 @@
   "sync_accounts.fixed_syncing": "Corregido. Sincronizando ahora, así que el registro se contabiliza en esta ejecución.",
   "sync_accounts.fixed_next_sync": "Corregido. El registro se contabiliza en la próxima sincronización de la empresa conectada.",
   "sync_accounts.keep_done": "{account} conservada.",
-  "sync_accounts.archive_done": "{account} archivada.",
+  "sync_accounts.archive_done": "{account} archivada. Para volver a usarla, abra Settings > Accounting > Plan de cuentas, elija Editar en ella y márquela como Activo.",
   "sync_accounts.remove_done": "{account} eliminada.",
   "sync_accounts.review_done": "Cuentas confirmadas. Sus registros se contabilizan en la próxima sincronización.",
   "sync_accounts.review_saved": "Respuestas guardadas. Termine la revisión cuando esté listo.",

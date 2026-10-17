@@ -6068,7 +6068,7 @@
   "sync_accounts.fixed_syncing": "Korrigiert. Die Synchronisierung läuft, der Datensatz wird jetzt gebucht.",
   "sync_accounts.fixed_next_sync": "Korrigiert. Der Datensatz wird bei der nächsten Synchronisierung des verbundenen Unternehmens gebucht.",
   "sync_accounts.keep_done": "{account} behalten.",
-  "sync_accounts.archive_done": "{account} archiviert.",
+  "sync_accounts.archive_done": "{account} archiviert. Um es wieder zu verwenden, öffnen Sie Settings > Accounting > Kontenplan, wählen Sie dort Bearbeiten und setzen Sie es auf Aktiv.",
   "sync_accounts.remove_done": "{account} entfernt.",
   "sync_accounts.review_done": "Konten bestätigt. Die Datensätze werden bei der nächsten Synchronisierung gebucht.",
   "sync_accounts.review_saved": "Antworten gespeichert. Schließen Sie die Prüfung ab, wenn Sie bereit sind.",

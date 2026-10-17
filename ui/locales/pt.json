@@ -6068,7 +6068,7 @@
   "sync_accounts.fixed_syncing": "Corrigido. A sincronizar agora, o registo é lançado nesta execução.",
   "sync_accounts.fixed_next_sync": "Corrigido. O registo é lançado na próxima sincronização da empresa ligada.",
   "sync_accounts.keep_done": "{account} mantida.",
-  "sync_accounts.archive_done": "{account} arquivada.",
+  "sync_accounts.archive_done": "{account} arquivada. Para usá-la de novo, abra Settings > Accounting > Plano de contas, escolha Editar nela e defina como Ativo.",
   "sync_accounts.remove_done": "{account} removida.",
   "sync_accounts.review_done": "Contas confirmadas. Os registos são lançados na próxima sincronização.",
   "sync_accounts.review_saved": "Respostas guardadas. Termine a revisão quando estiver pronto.",

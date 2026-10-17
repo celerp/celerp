@@ -6068,7 +6068,7 @@
   "sync_accounts.fixed_syncing": "Corretto. Sincronizzazione in corso, la registrazione viene contabilizzata ora.",
   "sync_accounts.fixed_next_sync": "Corretto. La registrazione verrà contabilizzata alla prossima sincronizzazione dell'azienda collegata.",
   "sync_accounts.keep_done": "{account} mantenuto.",
-  "sync_accounts.archive_done": "{account} archiviato.",
+  "sync_accounts.archive_done": "{account} archiviato. Per usarlo di nuovo, apri Settings > Accounting > Piano dei conti, scegli Modifica sul conto e impostalo su Attivo.",
   "sync_accounts.remove_done": "{account} rimosso.",
   "sync_accounts.review_done": "Conti confermati. Le registrazioni verranno contabilizzate alla prossima sincronizzazione.",
   "sync_accounts.review_saved": "Risposte salvate. Completa la revisione quando sei pronto.",
