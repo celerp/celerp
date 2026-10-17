@@ -1479,7 +1479,8 @@ def plan_review_panel(
                                       cls="cell-edit input--error")))
             else:
                 cells.append(Td(value or "--", cls="cell-ro"))
-        cells.append(Td("; ".join(e["message"] for e in by_row.get(n, [])) if n not in excluded else ""))
+        cells.append(Td("; ".join(e["message"] for e in by_row.get(n, [])) if n not in excluded else "",
+                        cls="import-problem"))
         body.append(Tr(*cells, cls="data-row" + (" import-row--excluded" if n in excluded else "")))
     file_errors = by_row.get(0, [])
     counts = plan.get("counts") or {}
@@ -1512,7 +1513,7 @@ def plan_review_panel(
                              Th(t("import.col_problem")))),
                     Tbody(*body),
                     cls="csv-fix-table data-table import-preview-table",
-                ), cls="table-scroll"),
+                ), cls="table-scroll-wrap"),
                 P(t("import.showing_rows", n=len(body), total=len(rows)), cls="import-hint")
                 if len(body) < len(rows) else "",
                 Div(

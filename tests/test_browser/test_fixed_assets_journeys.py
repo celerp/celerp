@@ -273,6 +273,34 @@ def test_j5_bad_import_rows_are_fixed_in_the_grid_and_imported(page: Page, fresh
     expect(page.locator("#fa-opening-accounts")).to_contain_text("310,100")
 
 
+def test_u25_the_import_review_grid_scrolls_in_its_own_box_with_whole_problems_and_values(page: Page, fresh_company):
+    from celerp_fixed_assets.imports import COLUMNS
+
+    c = fresh_company
+    _started(c)
+    row = {"number": "FA-0001", "name": "Warehouse", "class": "Buildings", "available_date": "2020-01-01",
+           "cost": "250000", "accumulated_depreciation": "40000"}
+    lines = [",".join(COLUMNS), *[",".join(row.get(k, "") for k in COLUMNS)] * 2]
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.goto("/fixed-assets/import")
+    page.locator("input[type='file']").first.set_input_files(
+        {"name": "register.csv", "mimeType": "text/csv", "buffer": "\n".join(lines).encode()})
+    page.locator("#csv-preview-btn").click()
+    page.get_by_role("button", name="Continue to Preview").click()
+    grid = page.locator("#import-preview .csv-fix-table")
+    expect(grid.locator("input.cell-edit").first).to_be_visible()
+    # Every register column is in the grid, which scrolls inside its own box: the page never does.
+    assert page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth") <= 0
+    assert page.evaluate("document.querySelector('#import-preview .csv-fix-table').parentElement"
+                         ".getBoundingClientRect().right") <= 1440
+    # A problem reads in full, and a cell to fix shows its whole value.
+    for cell in page.locator("#import-preview .csv-fix-table td.import-problem").all():
+        assert cell.evaluate("e => e.scrollWidth <= e.clientWidth"), cell.inner_text()
+    assert page.locator("#import-preview .csv-fix-table td.import-problem").count() == 2
+    for box in grid.locator("input.cell-edit").all():
+        assert box.evaluate("e => e.scrollWidth <= e.clientWidth"), box.input_value()
+
+
 def _as_member(page: Page, c, api_server: str, role: str) -> None:
     """Sign the browser in as a new member with ``role``."""
     import psycopg2

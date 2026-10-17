@@ -1361,6 +1361,9 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .import-preview-table { font-size: 12px; margin-bottom: 16px; }
 .import-preview-table th { font-size: 11px; color: var(--c-text2); text-align: center; }
 .import-preview-table td { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A problem reads in full, and a cell to fix is wide enough to show its value. */
+.import-preview-table td.import-problem { min-width: 16rem; max-width: 24rem; white-space: normal; overflow: visible; }
+.import-preview-table td:has(> input.cell-edit) { min-width: 9rem; max-width: none; overflow: visible; }
 
 /* Error progress bar */
 .import-progress { height: 6px; border-radius: 3px; background: var(--c-border); overflow: hidden; margin-bottom: 12px; }
