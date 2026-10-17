@@ -116,3 +116,7 @@ def test_status_view_names_records_and_aligns_numbers():
     table = to_xml(_entity_status_table({"documents_out": run}))
     headers = table.split("<thead>")[1].split("</thead>")[0]
     assert headers.count('class="cell--number"') == 2, headers
+    # Changes read as words, in the table and on the last-sync card alike.
+    from ui.routes.settings_connectors import _last_sync_info
+    assert "1 added, 0 updated" in table and "+1" not in table
+    assert "1 added, 0 updated" in to_xml(_last_sync_info(run))

@@ -199,6 +199,9 @@ async def test_reverse_dates_follow_both_locks(real_client, real_engine, monkeyp
     await _two_way(client_company, credential)
     [row] = await _received(real_client, tok)
     assert row["reverse_on"] == ADJUSTED  # the confirm names the date
+    chart = (await real_client.get("/accounting/chart", headers=auth(tok))).json()["items"]
+    names = {a["code"]: a["name"] for a in chart}
+    assert row["lines"] == f"6500 {names['6500']} Dr 10.00; 6200 {names['6200']} Cr 10.00"
     r = await real_client.post(f"/accounting/journal-entries/{row['id']}/reverse", headers=auth(tok))
     assert r.status_code == 200, r.text
     assert r.json()["ts"] == ADJUSTED

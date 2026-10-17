@@ -68,6 +68,7 @@ async def test_section_lists_entries_with_what_each_can_do(monkeypatch):
     assert 'href="/settings/accounting?tab=period-lock"' in html
     # the date shown is the reversal entry's own date, not the day someone reversed it
     assert "Reversal dated 2026-06-30" in html and "/from-accountant/je-2r/reverse" in html
+    assert "<td>1200 Dr 30.00</td>" in html  # lines read in the table's own font
     assert "Undo the reversal of Year-end accrual? The undo posts on 2026-10-16." in html
     assert "Reverse --? The reversal posts on 2026-03-31." in html  # an empty memo shows --
     assert "/from-accountant/je-1/reverse" in html
