@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
 """Every call to accounting_roles.refusal() in production code names a key that
-ui/locales/en.json actually defines. A typo'd or renamed-but-not-migrated key
+ui/locales/en.json, or the bundled module's own locales/en.json, actually defines. A typo'd or renamed-but-not-migrated key
 renders the raw key string to the user instead of a message; nothing else in the
 suite catches that, because test_i18n.py only checks the catalog's internal
 consistency (placeholder parity, keyset completeness across the 12 shipped
@@ -10,8 +10,9 @@ locales), never whether the call sites actually use what the catalog has.
 
 Once a key is confirmed present here, test_i18n.py's
 test_release_complete_locales_have_full_keyset and
-test_every_shipped_locale_placeholder_parity already guarantee it exists with
-matching {placeholder} sets in all 12 shipped locales (en is in
+test_every_shipped_locale_placeholder_parity (and, for a bundled module's catalog,
+test_bundled_module_locales_keyset_exact_for_complete_locales) already guarantee it
+exists with matching {placeholder} sets in all 12 shipped locales (en is in
 _COMPLETE_LOCALES there), so this file does not re-check locales itself."""
 
 from __future__ import annotations
@@ -25,7 +26,12 @@ _ROOTS = [_ROOT / "celerp", _ROOT / "default_modules"]
 
 
 def _en_keys() -> set[str]:
-    return set(json.loads((_ROOT / "ui" / "locales" / "en.json").read_text(encoding="utf-8")))
+    """The English catalog as the app merges it: the central file plus every bundled
+    module's own catalog, which the module registers at startup."""
+    keys: set[str] = set()
+    for path in (_ROOT / "ui" / "locales" / "en.json", *_ROOT.glob("default_modules/*/*/locales/en.json")):
+        keys |= set(json.loads(path.read_text(encoding="utf-8")))
+    return keys
 
 
 def _literal_or_prefix(node: ast.expr):

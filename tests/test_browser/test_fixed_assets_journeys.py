@@ -101,16 +101,7 @@ def _classes(c) -> dict[str, dict]:
     return {k["name"]: k for k in _ok(c.get(f"{API}/classes"))["items"]}
 
 
-def _pick(page: Page, cell, text: str) -> None:
-    """Open a click-to-edit account cell and choose the account whose label starts with `text`."""
-    cell.dblclick()
-    box = page.locator("td.cell--editing .combobox-input").first
-    box.click()
-    box.fill(text)
-    page.locator(".combobox-option:visible", has_text=text).first.click()
-
-
-def test_j1_header_account_is_refused_and_the_picker_stays_open(page: Page, fresh_company):
+def test_j1_the_account_picker_offers_only_postable_accounts_and_saves_a_pick(page: Page, fresh_company):
     c = fresh_company
     _books(c)
     page.goto("/fixed-assets")
@@ -120,14 +111,13 @@ def test_j1_header_account_is_refused_and_the_picker_stays_open(page: Page, fres
     page.goto("/settings/fixed-assets")
     cell = page.locator(f'td[hx-get="/settings/fixed-assets/classes/{vehicles}/asset_account/edit"]')
 
-    _pick(page, cell, "1200 ")
-    error = page.locator("td.cell--editing .cell-error")
-    expect(error).to_contain_text("1200")
-    expect(page.locator("td.cell--editing .combobox-input")).to_be_visible()
-    assert _classes(c)["Vehicles"]["asset_account"] != "1200"
-
+    # 1200 is a header with accounts under it: no journal line can post to it, so it is not offered.
+    cell.dblclick()
     box = page.locator("td.cell--editing .combobox-input").first
     box.click()
+    box.fill("1200 ")
+    expect(page.locator(".combobox-option:visible", has_text="1200 ")).to_have_count(0)
+
     box.fill("1210")
     page.locator(".combobox-option:visible", has_text="1210").first.click()
     expect(cell).to_contain_text("1210")
