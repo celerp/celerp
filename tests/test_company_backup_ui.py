@@ -1372,3 +1372,18 @@ async def test_copies_page_shows_the_cloud_refusal(ui, real_engine, monkeypatch)
     refusal["error"] = api.APIError(502, "Could not confirm the company copy. Retry the same operation")
     page = _page(await ui.get(route.HANDOFFS))
     assert t("company_backup.handoffs_unavailable") in page and "Could not confirm" not in page
+
+
+@pytest.mark.parametrize("path", ["/settings/company-handoff", "/settings/company-handoffs"])
+async def test_a_non_owner_is_refused_under_the_company_copies_heading(ui, real_engine, monkeypatch, path):
+    """Send and the copies list refuse a non-owner under their own heading, not the open-a-copy one."""
+    import ui.routes.migrations as migrations
+    _, _, tok = await _setup(real_engine)
+    ui.cookies.set("celerp_token", tok)
+    monkeypatch.setattr(migrations, "get_role", lambda request: "admin")
+    r = await ui.get(path)
+    assert r.status_code == 403, r.text
+    page = _page(r)
+    assert "Only the company owner can make, send or open a company copy." in page
+    assert '<h1 class="auth-title">Company copies</h1>' in page
+    assert "Open a company copy" not in page
