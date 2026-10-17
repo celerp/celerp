@@ -1067,8 +1067,9 @@ jobs:
   # outside the ANSI code page and has no short form to fall back on, so the
   # database must be set up in the account's private folder. Each account first
   # installs a release: where that release keeps data under the name, the
-  # upgrade must keep it; where 2.5.6 cannot start ("fails"), this build must
-  # start clean from what it left behind. Then the sample company, attachment,
+  # upgrade must keep it; where 2.5.6 cannot start ("fails": any name outside
+  # ASCII, since 2.5.6 hands Postgres the path in the ANSI code page), this
+  # build must start clean from what it left behind. Then the sample company, attachment,
   # exports, company and full backups, restores and a reopen, all named in the
   # account's script (win-boot-smoke.ps1 -Demo).
   win-names:
@@ -1085,7 +1086,7 @@ jobs:
           - { case: arabic, user: "محمد", previous: v2.5.6, fails: true }
           - { case: chinese, user: "张伟", previous: v2.5.6, fails: true }
           - { case: supplementary, user: "𠮷 Test", previous: v2.5.6, fails: true }
-          - { case: accented, user: "José Müller", previous: v2.5.6, fails: false }
+          - { case: accented, user: "José Müller", previous: v2.5.6, fails: true }
           - { case: fullwidth, user: "Ｊｏｓｅ Ｌｉｍａ", previous: v2.5.6, fails: true }
           - { case: arabic-indic-digits, user: "Ali ٣٤", previous: v2.5.6, fails: true }
           - { case: ascii, user: "Celerp Upgrade", previous: latest, fails: false }

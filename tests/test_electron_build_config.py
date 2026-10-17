@@ -583,3 +583,15 @@ def test_windows_account_names_match_the_named_name_tests():
     workflow = yaml.safe_load((Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text())
     rows = workflow["jobs"]["win-names"]["strategy"]["matrix"]["include"]
     assert {r["case"]: r["user"] for r in rows} == ACCOUNT_NAMES
+
+
+def test_windows_account_rows_expect_2_5_6_to_fail_under_every_non_ascii_name():
+    """2.5.6 hands the profile path to the Postgres bootstrap in the ANSI code page, so
+    its database setup fails under any name outside ASCII, accents the code page holds
+    included ("José" arrives as the byte 0xE9). A row that expects 2.5.6 to start under
+    such a name fails at the old release instead of testing the upgrade."""
+    import yaml
+
+    workflow = yaml.safe_load((Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text())
+    rows = workflow["jobs"]["win-names"]["strategy"]["matrix"]["include"]
+    assert {r["case"]: r["fails"] for r in rows} == {r["case"]: not r["user"].isascii() for r in rows}
