@@ -136,3 +136,27 @@ async def test_l2_operator_is_told_what_disposing_needs(fa):
     r = await fa.post(f"/assets/{car}/dispose", {"date": "2026-05-01", "reason": "lost", "preview": True,
                                                  "op_key": "l2"}, operator)
     assert r.status_code == 403 and "Manage accounting" in r.json()["detail"], r.text
+
+
+@pytest.mark.asyncio
+async def test_l3_a_role_outside_the_known_levels_cannot_be_given_and_reaches_nothing(fa):
+    """No route assigns a role outside the known levels; a membership holding one anyway
+    is refused every fixed asset read and write, never granted by accident."""
+    from test_runs import _contributed, _managed_from
+
+    r = await fa.client.post("/companies/me/users", headers=fa.h, json={
+        "email": "l3@test.co", "name": "L3", "role": "staff", "password": "pass1234"})
+    assert r.status_code == 400 and "Invalid role" in r.text, r.text
+    uid, _ = await fa.member("operator")
+    r = await fa.client.patch(f"/companies/me/users/{uid}", headers=fa.h, json={"role": "staff"})
+    assert r.status_code == 400 and "Invalid role" in r.text, r.text
+
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    staff = await fa.role_headers("staff")
+    assert (await fa.client.get("/fixed-assets/api/assets", headers=staff)).status_code == 403
+    r = await fa.post(f"/assets/{car}/move", {"location": "Back room", "op_key": "l3"}, staff)
+    assert r.status_code == 403, r.text
+    r = await fa.post(f"/assets/{car}/dispose", {"date": "2026-05-01", "reason": "lost", "preview": True,
+                                                 "op_key": "l3"}, staff)
+    assert r.status_code == 403, r.text
