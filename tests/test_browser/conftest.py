@@ -332,6 +332,20 @@ def clear_session_registry() -> None:
     conn.close()
 
 
+def wait_for_landing(page, timeout: float = 30000) -> str:
+    """Waits until the page has left Settings and returns the path it landed on, after
+    checking it is where signing in lands: the first page in the menu (top-level entries
+    render before the groups, so it is the sidebar's first link)."""
+    from urllib.parse import urlsplit
+    page.wait_for_url(lambda u: not urlsplit(u).path.startswith("/settings"), timeout=timeout)
+    page.wait_for_load_state("load")
+    url = urlsplit(page.url)
+    landed = url.path + (f"?{url.query}" if url.query else "")
+    first = page.locator(".sidebar a.nav-link").first.get_attribute("href")
+    assert landed == first, f"landed on {landed}, the first page in the menu is {first}"
+    return landed
+
+
 @pytest.fixture
 def keep_sign_ins():
     """For a test that signs everyone out (a forced sign-in, a recovery): puts every
