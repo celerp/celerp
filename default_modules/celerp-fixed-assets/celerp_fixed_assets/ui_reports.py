@@ -57,28 +57,30 @@ _SCHEDULE = (
                            "cost_closing")),
     ("fixed_assets.accumulated_depreciation", ("depreciation_opening", "depreciation_charge",
                                                "depreciation_disposals", "depreciation_other",
-                                               "depreciation_closing")),
+                                               "depreciation_closing", "planned_not_posted")),
     ("fixed_assets.accumulated_impairment", ("impairment_opening", "impairment_charge", "impairment_disposals",
                                              "impairment_closing")),
     ("fixed_assets.nbv", ("nbv_opening", "nbv_closing")),
-    (None, ("planned_not_posted",)),
 )
 _SCHEDULE_FIELDS = [f for _, fields in _SCHEDULE for f in fields]
 
 
 def _schedule_body(report: dict, currency: str) -> list[FT]:
-    groups = Tr(Th(""), *[Th(t(label) if label else "", colspan=str(len(fields))) for label, fields in _SCHEDULE])
-    head = [Th(t("fixed_assets.asset")), *[_money_th(t(f"fixed_assets.col.{f}")) for f in _SCHEDULE_FIELDS]]
-    rows: list[FT] = []
-    for c in report["classes"]:
-        rows.append(Tr(Td(Strong(_text(c["name"]))), *[_money_td(c[f], currency) for f in _SCHEDULE_FIELDS]))
-        rows += [Tr(Td(_asset_link(a), " ", _text(a.get("name"))), *[_money_td(a[f], currency) for f in _SCHEDULE_FIELDS])
-                 for a in c["assets"]]
-    if not rows:
-        rows = [Tr(Td(t("fixed_assets.schedule_empty")), *[_money_td(None, currency) for _ in _SCHEDULE_FIELDS])]
-    rows.append(Tr(Td(Strong(t("fixed_assets.total"))), *[_money_td(report["totals"][f], currency)
-                                                          for f in _SCHEDULE_FIELDS]))
-    return [_table(head, rows, groups)]
+    """One table per section, each led by its classes and assets, so every column stays in view
+    on screen and on paper."""
+    body: list[FT] = []
+    for label, fields in _SCHEDULE:
+        head = [Th(t("fixed_assets.asset")), *[_money_th(t(f"fixed_assets.col.{f}")) for f in fields]]
+        rows: list[FT] = []
+        for c in report["classes"]:
+            rows.append(Tr(Td(Strong(_text(c["name"]))), *[_money_td(c[f], currency) for f in fields]))
+            rows += [Tr(Td(_asset_link(a), " ", _text(a.get("name"))), *[_money_td(a[f], currency) for f in fields])
+                     for a in c["assets"]]
+        if not rows:
+            rows = [Tr(Td(t("fixed_assets.schedule_empty")), *[_money_td(None, currency) for _ in fields])]
+        rows.append(Tr(Td(Strong(t("fixed_assets.total"))), *[_money_td(report["totals"][f], currency) for f in fields]))
+        body += [H2(t(label), cls="section-title"), _table(head, rows)]
+    return body
 
 
 def _schedule_rows(report: dict, currency: str) -> list[list]:
@@ -336,12 +338,8 @@ class Report:
     body: Callable[[dict, str], list[FT]]
     rows: Callable[[dict, str], list[list]]
     # Too many columns for portrait paper: printed landscape, in a smaller type.
-    wide: bool = False
     # Read with a path parameter, such as the country form shown: ``fetch(token, params, value)``.
     path_param: str | None = None
-
-
-_WIDE_PRINT_CSS = "@page { size: A4 landscape; } body { padding: 10mm; } table { font-size: 7pt; }"
 
 
 def _api(path: str) -> Callable:
@@ -352,7 +350,7 @@ def _api(path: str) -> Callable:
 
 REPORTS = (
     Report("schedule", "fixed_assets.schedule_title", "fixed_assets.schedule_hint", "range",
-           _api("/reports/schedule"), _schedule_body, _schedule_rows, wide=True),
+           _api("/reports/schedule"), _schedule_body, _schedule_rows),
     Report("register", "fixed_assets.register_report_title", "fixed_assets.register_report_hint", "register",
            _register_fetch, _register_body, _register_rows),
     Report("depreciation", "fixed_assets.depreciation_title", "fixed_assets.depreciation_hint", "range",
@@ -467,8 +465,7 @@ def _register_routes(app, report: Report) -> None:
             company = await api.get_company(token)
         except APIError as e:
             return plain_error_response(e)
-        wide = Style(_WIDE_PRINT_CSS) if report.wide else None
-        return print_shell(company, t(report.title_key), _subtitle(params), Div(wide, *report.body(data, currency)))
+        return print_shell(company, t(report.title_key), _subtitle(params), Div(*report.body(data, currency)))
 
     @app.get(path, name=f"fa_report_{report.key}")
     async def page(request: Request):

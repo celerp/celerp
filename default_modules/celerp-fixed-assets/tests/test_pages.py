@@ -811,6 +811,26 @@ async def test_reports_index_schedule_page_print_and_csv(owner_ui):
     assert refused.status_code == 200 and "first managed period" in refused.text
 
 
+async def test_u24_the_schedule_is_one_table_per_section_on_screen_and_paper(owner_ui):
+    car = await _managed_car(owner_ui)
+    assert car
+    params = {"date_from": "2026-08-01", "date_to": "2026-12-31"}
+    for path in ("/fixed-assets/reports/schedule", "/fixed-assets/reports/schedule/print"):
+        page = (await owner_ui.get(path, params=params)).text
+        parts = re.split(r"<table\b", page)
+        before, tables = parts[:-1], parts[1:]
+        assert len(tables) == 4, (path, len(tables))
+        for key, lead, table in zip(("cost", "accumulated_depreciation", "accumulated_impairment", "nbv"),
+                                    before, tables):
+            # Each section's title sits right before its own table.
+            assert lead.rstrip().rsplit("<h", 1)[1].count(t(f"fixed_assets.{key}")) == 1, (path, key)
+            head = table.split("</thead>", 1)[0]
+            columns = len(re.findall(r"<th\b", head))
+            assert columns <= 8, (path, key, columns)
+            assert "Delivery car" in table and t("fixed_assets.total") in table, (path, key)
+        assert "landscape" not in page, path
+
+
 async def test_u15_u30_intake_names_journals_and_line_kinds_and_every_account_reads_code_and_name(owner_ui):
     car = await _managed_car(owner_ui)
     chart = {a["code"]: a["name"] for a in (await owner_ui.api.get("/accounting/chart")).json()["items"]}
