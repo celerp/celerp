@@ -313,18 +313,41 @@ def api(api_server, seeded_user):
         yield client
 
 
-def clear_session_registry() -> None:
-    """Wipe session_registry rows so a second user can log in (the direct
-    connection limit allows one active session; nonces stay valid)."""
+def _test_db():
     import psycopg2
     from urllib.parse import urlsplit
     parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
     conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
                             password=parts.password, dbname=parts.path.lstrip("/"))
     conn.autocommit = True
+    return conn
+
+
+def clear_session_registry() -> None:
+    """Wipe session_registry rows so a second user can log in (the direct
+    connection limit allows one active session; nonces stay valid)."""
+    conn = _test_db()
     with conn.cursor() as cur:
         cur.execute("DELETE FROM session_registry;")
     conn.close()
+
+
+@pytest.fixture
+def keep_sign_ins():
+    """For a test that signs everyone out (a forced sign-in, a recovery): puts every
+    user's session nonce back afterwards, so the suite's shared tokens stay valid."""
+    conn = _test_db()
+    with conn.cursor() as cur:
+        cur.execute("SELECT user_id, nonce FROM user_auth_state")
+        rows = cur.fetchall()
+    try:
+        yield
+    finally:
+        with conn.cursor() as cur:
+            for user_id, nonce in rows:
+                cur.execute("UPDATE user_auth_state SET nonce = %s WHERE user_id = %s", (nonce, user_id))
+        conn.close()
+        clear_session_registry()
 
 
 def _set_auth_cookie(browser_context, token: str) -> None:

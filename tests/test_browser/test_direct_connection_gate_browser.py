@@ -18,7 +18,8 @@ def _hold_direct_connection(api_server: str) -> None:
 
 
 @pytest.mark.parametrize("start, landing", [("/login", "/dashboard"), ("/login?next=/settings/general", "/settings/general")])
-def test_continue_signing_out_the_other_user_lands_where_sign_in_would(unauthed_page, api_server, start, landing):
+def test_continue_signing_out_the_other_user_lands_where_sign_in_would(unauthed_page, api_server, keep_sign_ins,
+                                                                       start, landing):
     page = unauthed_page
     page.context.clear_cookies()
     _hold_direct_connection(api_server)

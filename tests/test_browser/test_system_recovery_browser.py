@@ -153,20 +153,8 @@ def test_import_backup_cancelled_at_the_warning_sends_nothing_browser(page, reco
     assert set(_company_names(url)) == {_RENAMED}
 
 
-def _auth_nonces(url: str) -> list[tuple]:
-    with psycopg2.connect(url) as conn, conn.cursor() as cur:
-        cur.execute("SELECT user_id, nonce FROM user_auth_state")
-        return cur.fetchall()
-
-
-def _put_back_nonces(url: str, rows: list[tuple]) -> None:
-    with psycopg2.connect(url) as conn, conn.cursor() as cur:
-        for user_id, nonce in rows:
-            cur.execute("UPDATE user_auth_state SET nonce = %s WHERE user_id = %s", (nonce, user_id))
-
-
 def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
-        page, ui_server, api, seeded_user, tmp_path, monkeypatch):
+        page, ui_server, api, seeded_user, keep_sign_ins, tmp_path, monkeypatch):
     """A recovery that fails after it started is put back and signs everyone out. The page
     says so and offers sign-in; the login page does not show the failure; the first page
     after signing in again does, once."""
@@ -179,7 +167,6 @@ def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
 
     url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
     names = _company_names(url)
-    nonces = _auth_nonces(url)
     backup.dump_database(settings.database_url, tmp_path / "database.dump")
     dump = (tmp_path / "database.dump").read_bytes()
     real_reconcile = backup_import._reconcile_schema
@@ -225,6 +212,4 @@ def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
         page.wait_for_selector("#main-content", timeout=_WAIT_MS)
         assert "did not complete" not in page.locator("#main-content").inner_text()
     finally:
-        _put_back_nonces(url, nonces)
-        clear_session_registry()
         _set_auth_cookie(page.context, api.headers["Authorization"].split(" ", 1)[1])
