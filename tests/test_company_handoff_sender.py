@@ -187,6 +187,27 @@ def test_relay_refusal_reason_reaches_the_sender(tmp_path, monkeypatch):
     assert str(refused.value) == limit
 
 
+@pytest.mark.parametrize("status", [503, 409])
+def test_a_reason_the_cloud_gives_is_kept_on_an_unavailable_service_too(monkeypatch, status):
+    """A service the cloud says is not set up (503) is a reason the owner can act on,
+    not something to try again; a 503 with no reason stays unconfirmed."""
+    reason = "Fetching attachments from Xero is not set up on this Celerp service. The attachments stay in Xero."
+
+    async def refuse(method, path, **kw):
+        return httpx.Response(status, json={"detail": reason})
+    monkeypatch.setattr(sender.cloud_entitlement, "authenticated_request", refuse)
+    with pytest.raises(sender.HandoffRefused) as refused:
+        _run(sender.cloud_json("POST", "/xero-attachments", unconfirmed="unconfirmed", account_needed="account"))
+    assert str(refused.value) == reason and refused.value.status_code == status
+
+    async def bare(method, path, **kw):
+        return httpx.Response(503, text="<html>Service Unavailable</html>")
+    monkeypatch.setattr(sender.cloud_entitlement, "authenticated_request", bare)
+    with pytest.raises(sender.HandoffSendError) as unconfirmed:
+        _run(sender.cloud_json("POST", "/xero-attachments", unconfirmed="unconfirmed", account_needed="account"))
+    assert str(unconfirmed.value) == "unconfirmed" and not isinstance(unconfirmed.value, sender.HandoffRefused)
+
+
 def _relay_copies(monkeypatch, company_id, copy_id):
     """A relay holding one sent copy; New link replaces its public link id."""
     row = {"id": str(copy_id), "link_id": str(copy_id), "company_id": str(company_id),
