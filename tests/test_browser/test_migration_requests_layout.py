@@ -86,3 +86,27 @@ def test_the_revoke_note_stands_off_send_company_copy(browser):
     finally:
         page.close()
     assert gap >= 12, f"Send company copy sits {gap}px under the revoke note"
+
+
+def test_a_note_stands_off_the_table_or_form_after_it(browser):
+    """On a wizard card a note never sits flush on the table or form that follows it."""
+    from fasthtml.common import Input, Label, P, Tbody, Td, Tr
+
+    from ui.routes.migrations import wizard_table
+
+    body = to_xml(Div(P("Nothing has been written yet.", cls="form-hint", id="n1"),
+                      Form(Label("Destination company name"), Input(), cls="auth-form", id="f"),
+                      P("This company uses this installation's role permissions.", cls="form-hint", id="n2"),
+                      wizard_table(Tbody(Tr(Td("Trial balance")))),
+                      cls="auth-card migration-wizard"))
+    page = browser.new_page(viewport={"width": 1440, "height": 900})
+    try:
+        page.set_content(f"<style>{_CSS}</style>{body}")
+        gaps = page.evaluate("""() => {
+            const box = id => document.getElementById(id).getBoundingClientRect();
+            const table = document.querySelector('.table-scroll-wrap').getBoundingClientRect();
+            return [box('f').top - box('n1').bottom, table.top - box('n2').bottom];
+        }""")
+    finally:
+        page.close()
+    assert min(gaps) >= 12, gaps
