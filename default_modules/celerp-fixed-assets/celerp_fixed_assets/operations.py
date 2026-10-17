@@ -145,6 +145,21 @@ async def _move(session, company_id, user_id, asset_id: str, *, kind: str, opera
     return movement_id
 
 
+async def catch_up(session, company_id, user_id, asset_id: str, *, day: str, periods: dict, op_key: str,
+                   journal_id: str | None) -> dict:
+    """Record the depreciation an operation brings up to date before it (``periods``, by
+    month) as a Depreciation movement of its own on the operation's journal. Returns what
+    the operation's movement carries: that it charges no month itself, and the catch-up's id
+    when one was owed."""
+    if not periods:
+        return {"periods": {}}
+    charged = sum((_dec(v) for v in periods.values()), Decimal(0))
+    movement_id = await _move(session, company_id, user_id, asset_id, kind="posted", operation="depreciation",
+                              effective=day, posting=day, amounts={"accumulated_depreciation": charged},
+                              op_key=op_key, periods=periods, journal_id=journal_id)
+    return {"periods": {}, "catch_up": movement_id}
+
+
 async def _continued(session, company_id, lines: list) -> list:
     """``lines``, each account posted for a role checked it can still take that role's
     postings: a balance keeps moving on the account it was recognized on, so one that no
@@ -720,13 +735,20 @@ def _reversed_lines(je: dict, currency: str) -> dict:
                       for e in je.get("entries") or []]}
 
 
-async def reverse_move(session, company_id, user_id, movement_id: str, mv: dict, op_key: str) -> str:
-    """Record the movement that undoes ``mv``: every amount, contribution and quantity negated."""
-    return await _move(session, company_id, user_id, mv["asset_id"], kind="reversal", operation="undo",
-                       effective=mv["effective_date"], posting=mv["posting_date"],
-                       amounts={k: -_dec(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
-                       contributions=[{**c, "amount": str(-_dec(c.get("amount")))} for c in mv.get("contributions") or []],
-                       quantity=str(-_dec(mv.get("quantity"))), reverses=movement_id)
+async def reverse_move(session, company_id, user_id, movement_id: str, mv: dict, op_key: str,
+                       operation: str = "undo") -> str:
+    """Record the movement that undoes ``mv``: every amount, contribution and quantity negated,
+    and then the same for the depreciation it brought up to date (:func:`catch_up`)."""
+    reversed_id = await _move(session, company_id, user_id, mv["asset_id"], kind="reversal", operation=operation,
+                              effective=mv["effective_date"], posting=mv["posting_date"],
+                              amounts={k: -_dec(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
+                              contributions=[{**c, "amount": str(-_dec(c.get("amount")))}
+                                             for c in mv.get("contributions") or []],
+                              quantity=str(-_dec(mv.get("quantity"))), reverses=movement_id)
+    if mv.get("catch_up"):
+        await reverse_move(session, company_id, user_id, mv["catch_up"],
+                           await _state(session, company_id, mv["catch_up"]), op_key, operation)
+    return reversed_id
 
 
 async def _way_back(session, company_id, asset: dict) -> str:

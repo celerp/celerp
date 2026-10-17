@@ -40,8 +40,10 @@ from celerp_fixed_assets.operations import (
     _post,
     _run,
     asset_movements,
+    catch_up,
     conflict,
     label_lines,
+    reverse_move,
 )
 from celerp_fixed_assets.store import _emit, _state
 from fastapi import HTTPException
@@ -524,9 +526,11 @@ async def _dispose(session, company_id, user_id, asset_id: str, asset: dict, sal
                         href=_href(asset_id), label=asset["number"], op_key=op_key)
     currency = books.currency
     gain = money(_total(held) + item["gain"], currency)
+    caught = await catch_up(session, company_id, user_id, asset_id, day=day, periods=item["periods"], op_key=op_key,
+                            journal_id=je_id)
     movement_id = await _move(session, company_id, user_id, asset_id, kind="posted", operation="disposal",
                               effective=day, posting=day, amounts=item["amounts"], op_key=op_key,
-                              quantity=str(-item["quantity"]), periods=item["periods"], share="1", reason="sold",
+                              quantity=str(-item["quantity"]), **caught, share="1", reason="sold",
                               note=None, journal_id=je_id, gain_or_loss=gain, invoice_id=sale["invoice_id"])
     await _set(session, company_id, user_id, asset_id, "sold", exception=None, disposal={
         "date": day, "reason": "sold", "note": None, "op_key": op_key, "movement_id": movement_id,
@@ -559,10 +563,7 @@ async def _unsell(session, company_id, user_id, asset_id: str, asset: dict, sale
     books = await runs._books(session, company_id)
     await _reverse(session, company_id, user_id, sale["journal_id"], "sale_reverse", "Sale invoice reversed")
     mv = await _state(session, company_id, sale["movement_id"])
-    await _move(session, company_id, user_id, asset_id, kind="reversal", operation="sale_reverse",
-                effective=mv["effective_date"], posting=mv["posting_date"],
-                amounts={k: -_dec(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
-                quantity=str(-_dec(mv.get("quantity"))), reverses=sale["movement_id"])
+    await reverse_move(session, company_id, user_id, sale["movement_id"], mv, op_key, "sale_reverse")
     # A return or credit voided since leaves the gain and loss other journals hold; they
     # settle back to nothing on the accounts holding them, through the sale's clearing.
     accounts = disposal.accounts(books)
@@ -620,8 +621,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     mv = await _state(session, company_id, sale["movement_id"])
     cls = await setup.get_class(session, company_id, asset.get("class_id"))
     moved = {k: _dec((mv.get("amounts") or {}).get(k)) for k in ("cost", _AD, _IMP, _SURPLUS)}
-    depreciation = sum((_dec(v) for v in (mv.get("periods") or {}).values()), Decimal(0))
-    gone_cost, gone_ad, gone_imp = -moved["cost"], depreciation - moved[_AD], -moved[_IMP]
+    gone_cost, gone_ad, gone_imp = -moved["cost"], -moved[_AD], -moved[_IMP]
     from celerp.services.module_journals import JournalLine
 
     lines = [JournalLine(account=cls["asset_account"], debit=gone_cost)]
@@ -645,11 +645,6 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     await _move(session, company_id, user_id, asset_id, kind="reversal", operation="sale_return",
                 effective=mv["effective_date"], posting=day, amounts={k: -v for k, v in moved.items()},
                 op_key=op_key, quantity=str(-_dec(mv.get("quantity"))), reverses=sale["movement_id"])
-    if depreciation:
-        # The depreciation the sale brought up to date stays charged.
-        await _move(session, company_id, user_id, asset_id, kind="posted", operation="depreciation",
-                    effective=mv["effective_date"], posting=day, amounts={_AD: depreciation}, op_key=op_key,
-                    periods=mv.get("periods"))
     credits = {**(sale.get("credits") or {}), doc_id: {"kind": "returned", "amount": money(amount, books.currency),
                                                        "journal_id": je_id, "live": True, "date": day,
                                                        "clearing": clearing}}

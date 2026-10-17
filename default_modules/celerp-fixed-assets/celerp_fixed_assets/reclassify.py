@@ -20,7 +20,7 @@ from celerp_fixed_assets import disposal, projections, runs, setup
 from celerp_fixed_assets.calc.periods import month_index, period_label
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
-    _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, conflict)
+    _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, catch_up, conflict)
 from celerp_fixed_assets.store import _emit
 
 _AD, _IMP = "accumulated_depreciation", "accumulated_impairment"
@@ -71,18 +71,18 @@ async def reclassify(session, company_id, user_id, asset_id: str, body: dict) ->
         disposal.check_date(books, asset, projections.live(movements), day, what="reclassification",
                             verb="Reclassify")
         owed, _ = disposal.owed(books, asset, movements, month - 1, month - 1)
-        catch_up = sum(owed.values(), Decimal(0))
+        caught_up = sum(owed.values(), Decimal(0))
         cost, ad, imp = _dec(asset.get("cost")), _dec(asset.get(_AD)), _dec(asset.get(_IMP))
         expense = asset.get("depreciation_account") or old["depreciation_account"]
-        lines = _lines(expense, old["accumulated_depreciation_account"], catch_up) if catch_up else []
-        for moved, _ in balance_moves(asset["number"], old, new, cost, ad + catch_up + imp):
+        lines = _lines(expense, old["accumulated_depreciation_account"], caught_up) if caught_up else []
+        for moved, _ in balance_moves(asset["number"], old, new, cost, ad + caught_up + imp):
             lines += moved
         shown = {"number": asset["number"], "date": day, "from_class": old["name"], "to_class": new["name"],
-                 "depreciation": money(catch_up, books.currency),
+                 "depreciation": money(caught_up, books.currency),
                  "journals": [_journal_view(lines, books.currency)] if lines else []}
-        return shown, {"asset": asset, "old": old, "new": new, "day": day, "lines": lines, "catch_up": catch_up,
+        return shown, {"asset": asset, "old": old, "new": new, "day": day, "lines": lines,
                        "periods": {period_label(k): str(v) for k, v in owed.items()},
-                       "amounts": {"cost": cost, _AD: ad + catch_up, _IMP: imp},
+                       "amounts": {"cost": cost, _AD: ad + caught_up, _IMP: imp},
                        "policy": setup.policy_of(new, fa),
                        "basis": [asset.get("version"), asset.get("movement_count"),
                                  await runs._ledger_basis(session, company_id, books)]}
@@ -98,10 +98,12 @@ async def reclassify(session, company_id, user_id, asset_id: str, body: dict) ->
                 lines=context["lines"], source_id=asset_id, href=f"/fixed-assets/assets/{asset_id}",
                 label=asset["number"], op_key=op_key))
         amounts = context["amounts"]
+        caught = await catch_up(session, company_id, user_id, asset_id, day=day, periods=context["periods"],
+                                op_key=op_key, journal_id=journals[0] if journals else None)
         out = await _move(session, company_id, user_id, asset_id, kind="posted", operation="reclassify",
                           effective=day, posting=day, op_key=op_key, side="out", class_id=old["id"],
-                          amounts={k: context["catch_up"] - v if k == _AD else -v for k, v in amounts.items()},
-                          periods=context["periods"], journal_id=journals[0] if journals else None)
+                          amounts={k: -v for k, v in amounts.items()}, **caught,
+                          journal_id=journals[0] if journals else None)
         into = await _move(session, company_id, user_id, asset_id, kind="posted", operation="reclassify",
                            effective=day, posting=day, op_key=op_key, side="in", class_id=new["id"],
                            amounts=amounts, periods={}, policy=context["policy"], previous=asset["policy"],

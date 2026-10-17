@@ -57,6 +57,25 @@ async def _latest_journal(fa: FA, asset_id: str) -> dict:
     return await fa.state(moves[-1]["journal_id"])
 
 
+async def test_u37_an_impairment_brings_depreciation_up_to_date_as_its_own_movement(fa):
+    """Owed depreciation an impairment charges first is a Depreciation movement, not part of
+    the Impairment; undoing the impairment undoes both."""
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    await _impair(fa, car, "2026-06-30", "8000")
+    moves = await _movements(fa, car)
+    assert await fa.charges_apart(car) == ["contributed", "depreciation", "impairment"]
+    caught_up = moves[1]
+    assert D(caught_up["amounts"]["accumulated_depreciation"]) == sum(D(v) for v in caught_up["periods"].values()) > 0
+    assert caught_up["journal_id"] == moves[2]["journal_id"] and caught_up["op_key"] == moves[2]["op_key"]
+    assert D(moves[2]["amounts"].get("accumulated_depreciation") or 0) == 0
+    await fa.fold_matches(car)
+    await fa.operate(f"/assets/{car}/undo-latest", {}, key=_key("ul"))
+    got = await fa.asset(car)
+    assert D(got["accumulated_depreciation"]) == 0 and D(got["accumulated_impairment"]) == 0
+    await fa.fold_matches(car)
+
+
 async def test_revaluation_reversal_pnl_first_then_surplus(fa):
     await _managed_from(fa)
     land = await _contributed(fa, "Plot", cls="Land", cost="600")

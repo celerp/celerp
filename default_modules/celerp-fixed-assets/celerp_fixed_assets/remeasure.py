@@ -43,6 +43,7 @@ from celerp_fixed_assets.operations import (
     _post,
     _run,
     asset_movements,
+    catch_up,
 )
 from celerp_fixed_assets.store import _emit, _entities, _state
 from fastapi import HTTPException
@@ -191,7 +192,7 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
     if depreciation:
         expense = asset.get("depreciation_account") or cls["depreciation_account"]
         lines = _lines(expense, accumulated_account, depreciation) + lines
-    amounts[_AD] = depreciation + accumulated_after
+    amounts[_AD] = accumulated_after
     shown = {"number": asset["number"], "name": asset["name"], "depreciation": money(depreciation, currency),
              "carrying_amount": money(carrying, currency), "measured": money(value, currency),
              "new_carrying_amount": money(new_carrying, currency), "surplus": money(to_surplus, currency),
@@ -229,10 +230,11 @@ async def _record(session, company_id, user_id, item: dict, day: str, operation:
                         lines=await _continued(session, company_id, item["lines"]), source_id=asset_id,
                         href=f"/fixed-assets/assets/{asset_id}", label=asset["number"], op_key=op_key)
     surplus = next((ln.account for ln in item["lines"] if ln.role == _SURPLUS), None)
+    caught = await catch_up(session, company_id, user_id, asset_id, day=day, periods=item["periods"], op_key=op_key,
+                            journal_id=je_id)
     movement_id = await _move(session, company_id, user_id, asset_id, kind="posted", operation=operation,
                               effective=day, posting=day, amounts=item["amounts"], op_key=op_key,
-                              surplus_account=surplus,
-                              periods=item["periods"], pnl=str(item["pnl"]),
+                              surplus_account=surplus, pnl=str(item["pnl"]), **caught,
                               carrying_amount=str(item["carrying_amount"]), measured=str(item["value"]),
                               basis=item["basis"], journal_id=je_id)
     return je_id, movement_id

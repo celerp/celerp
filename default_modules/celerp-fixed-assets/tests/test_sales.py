@@ -312,6 +312,27 @@ async def test_s4_credit_note_adjusts_proceeds(fa):
     assert D((await _sale(fa, car))["credited"]) == 0
 
 
+async def test_u37_a_sale_brings_depreciation_up_to_date_as_its_own_movement(fa):
+    """The depreciation a sale charges up to its date is a Depreciation movement before the
+    disposal, and voiding the invoice reverses both."""
+    car, inv = await _sold_car(fa)
+    assert (await fa.charges_apart(car))[-2:] == ["depreciation", "disposal"]
+    await fa.ok(await _doc(fa, inv, "void"))
+    got = await fa.asset(car)
+    assert D(got["accumulated_depreciation"]) == D("600")  # the March run alone
+    await fa.fold_matches(car)
+    await fa.charges_apart(car)
+
+
+async def test_u37_a_returned_sale_keeps_the_depreciation_it_brought_up_to_date(fa):
+    car, inv = await _sold_car(fa)
+    await _credit(fa, inv, "10000", on="2026-07-05", returned=True)
+    got = await fa.asset(car)
+    assert got["status"] == "active" and D(got["accumulated_depreciation"]) == D("800")
+    assert (await fa.charges_apart(car))[-3:] == ["depreciation", "disposal", "sale_return"]
+    await fa.fold_matches(car)
+
+
 async def test_s4_partial_credit_return_remaining_reverse_return_then_depreciation(fa):
     car, inv = await _sold_car(fa)
     await _assert_clearing(fa, car, "10000")
@@ -337,8 +358,9 @@ async def test_s4_partial_credit_return_remaining_reverse_return_then_depreciati
     assert again["ts"][:10] == "2026-05-20"
     assert _lines(again) == {"1220": (D("1400"), D(0)), "6400": (D(0), D("600")), CLEARING: (D("8000"), D(0)),
                              "1210": (D(0), D("12000")), "6980": (D("3200"), D(0))}
-    moves = await _movements(fa, car)
-    assert moves[-1]["periods"] == {"2026-05": "-200.00", "2026-06": "-200.00", "2026-07": "-200.00"}
+    taken_back = (await _movements(fa, car))[-2]
+    assert taken_back["operation"] == "depreciation"
+    assert taken_back["periods"] == {"2026-05": "-200.00", "2026-06": "-200.00", "2026-07": "-200.00"}
     got = await fa.asset(car)
     assert got["status"] == "sold" and got["sale"]["state"] == "sold"
     await _assert_clearing(fa, car, "8000")
@@ -456,7 +478,9 @@ async def test_s4_reissued_in_later_period_recomputes(fa):
     assert je["ts"][:10] == "2026-04-15"
     assert _lines(je) == {"1220": (D("1000"), D(0)), "6400": (D(0), D("400")), CLEARING: (D("10000"), D(0)),
                           "1210": (D(0), D("12000")), "6980": (D("1400"), D(0))}
-    assert (await _movements(fa, car))[-1]["periods"] == {"2026-04": "-200.00", "2026-05": "-200.00"}
+    taken_back = (await _movements(fa, car))[-2]
+    assert taken_back["operation"] == "depreciation" and taken_back["periods"] == {"2026-04": "-200.00",
+                                                                                   "2026-05": "-200.00"}
     assert D((await fa.asset(car))["disposal"]["gain_or_loss"]) == D("-1400")
     await _assert_clearing(fa, car, "10000")
     await fa.fold_matches(car)

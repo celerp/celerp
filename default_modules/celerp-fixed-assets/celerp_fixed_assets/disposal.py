@@ -32,6 +32,7 @@ from celerp_fixed_assets.operations import (
     _reversed_lines,
     _run,
     asset_movements,
+    catch_up,
     conflict,
     reverse_move,
 )
@@ -203,7 +204,7 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
              "carrying_amount": money(carrying, currency), "gain_or_loss": money(gain, currency)}
     return {"asset_id": asset_id, "asset": asset, "shown": shown, "lines": lines, "full": share == 1,
             "quantity": quantity, "gain": gain,
-            "amounts": {"cost": -gone_cost, _AD: depreciation - gone_ad, _IMP: -gone_imp, _SURPLUS: -gone_surplus},
+            "amounts": {"cost": -gone_cost, _AD: -gone_ad, _IMP: -gone_imp, _SURPLUS: -gone_surplus},
             "periods": {period_label(k): str(v) for k, v in diff.items()}, "share": share,
             "currency": books.currency}
 
@@ -221,9 +222,11 @@ async def record(session, company_id, user_id, item: dict, day: str, reason: str
                         operation=operation, day=day, memo=f"{asset['number']} {asset['name']} {memo}",
                         lines=item["lines"], source_id=asset_id, href=f"/fixed-assets/assets/{asset_id}",
                         label=asset["number"], op_key=op_key)
+    caught = await catch_up(session, company_id, user_id, asset_id, day=day, periods=item["periods"], op_key=op_key,
+                            journal_id=je_id)
     movement_id = await _move(session, company_id, user_id, asset_id, kind="posted", operation="disposal",
                               effective=day, posting=day, amounts=item["amounts"], op_key=op_key,
-                              quantity=str(-item["quantity"]), periods=item["periods"],
+                              quantity=str(-item["quantity"]), **caught,
                               share=str(item["share"]), reason=reason, note=note, journal_id=je_id,
                               gain_or_loss=money(item["gain"], item["currency"]), **extra)
     if item["full"]:

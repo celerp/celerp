@@ -65,8 +65,9 @@ async def test_dispose_before_posted_runs_takes_back_their_depreciation(fa):
     je = await _disposal_journal(fa, car)
     assert _lines(je) == {"1220": (D("600") + D("600"), D(0)), "6400": (D(0), D("600")),
                           "1210": (D(0), D("12000")), "6980": (D("11400"), D(0))}
-    moves = await _movements(fa, car)
-    assert moves[-1]["periods"] == {"2026-04": "-200.00", "2026-05": "-200.00", "2026-06": "-200.00"}
+    taken_back = (await _movements(fa, car))[-2]
+    assert taken_back["operation"] == "depreciation"
+    assert taken_back["periods"] == {"2026-04": "-200.00", "2026-05": "-200.00", "2026-06": "-200.00"}
     await fa.fold_matches(car)
 
 
@@ -193,6 +194,23 @@ async def test_partial_dispose_of_a_quantity_record_by_quantity(fa):
     r = await fa.post(f"/assets/{record}/dispose", {"date": laptops["date"], "reason": "lost", "percent": "50",
                                                     "preview": True, "op_key": "pq"})
     assert r.status_code == 422 and "quantity" in r.json()["detail"]
+
+
+async def test_u37_a_disposal_brings_depreciation_up_to_date_as_its_own_movement(fa):
+    """The depreciation a disposal charges up to its date is a Depreciation movement before
+    it; undoing the disposal undoes both."""
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    await _dispose(fa, car, "2026-05-20")
+    moves = await _movements(fa, car)
+    assert await fa.charges_apart(car) == ["contributed", "depreciation", "disposal"]
+    assert D(moves[1]["amounts"]["accumulated_depreciation"]) == sum(D(v) for v in moves[1]["periods"].values()) > 0
+    assert D(moves[2]["amounts"]["accumulated_depreciation"]) == -D(moves[1]["amounts"]["accumulated_depreciation"])
+    await fa.fold_matches(car)
+    await fa.operate(f"/assets/{car}/undo-disposal", {}, key="undo-u37")
+    got = await fa.asset(car)
+    assert got["status"] == "active" and D(got["accumulated_depreciation"]) == 0
+    await fa.fold_matches(car)
 
 
 async def test_bulk_dispose_and_undo_disposal(fa):

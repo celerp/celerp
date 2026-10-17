@@ -182,6 +182,17 @@ class FA:
         for key in ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "quantity"):
             assert Decimal(str(state[key])) == Decimal(str(folded[key])), (key, state, folded)
 
+    async def charges_apart(self, asset_id: str) -> list[str]:
+        """The asset's movements by operation, after checking depreciation is charged only by
+        movements of its own (a run, or the catch-up an operation brings up to date first)."""
+        moves = sorted((m for m in await self.entities("fa_movement") if m["asset_id"] == asset_id),
+                       key=lambda m: int(m["entity_id"].rsplit(":", 1)[1]))
+        for m in moves:
+            if m["operation"] in ("run", "depreciation"):
+                continue
+            assert not m.get("periods"), m
+        return [m["operation"] for m in moves]
+
 
 async def demo_owner(client) -> dict:
     """A company signed up the way a user signs up, with its owner's headers."""
