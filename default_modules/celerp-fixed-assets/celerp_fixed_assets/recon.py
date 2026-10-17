@@ -16,8 +16,8 @@ by the first rule that applies:
 
 At a date on or after the cutover, the ledger balance of an account is the sum of its
 lines to that date. The registered balance is the opening register (the opening values
-of every opening asset, whenever they were last corrected) plus the lines of rules 1 and
-2 after the cutover. Their difference is the opening difference (the ledger at the
+of every opening asset, whenever they were last corrected, and every movement posted on
+or before the cutover) plus the lines of rules 1 and 2 after the cutover. Their difference is the opening difference (the ledger at the
 cutover less the opening register) plus every later line of rules 3 to 6, each listed.
 
 The registered balance is checked against the assets themselves: their movements to the
@@ -183,8 +183,9 @@ def _balances(cls: dict, figures: dict, surplus: str | None) -> dict[str, Decima
 
 async def _register(session, company_id, classes: dict, surplus: str | None, cut: str,
                     at: str) -> tuple[dict, dict]:
-    """The opening register mapped to the accounts at the cutover, and every asset's
-    balances at ``at`` mapped to the accounts its class posted to then."""
+    """The opening register (opening values, and every movement posted on or before the
+    cutover, such as an asset contributed before it) mapped to the accounts at the cutover,
+    and every asset's balances at ``at`` mapped to the accounts its class posted to then."""
     assets = dict(await _entities(session, company_id, "fa_asset"))
     recorded = dict(await _entities(session, company_id, "fa_movement"))
 
@@ -201,7 +202,7 @@ async def _register(session, company_id, classes: dict, surplus: str | None, cut
     for asset_id, moved in movements.items():
         asset = assets[asset_id]
         for target, day, chosen in (
-                (opening, cut, [m for m in moved if in_opening(m)]),
+                (opening, cut, [m for m in moved if in_opening(m) or m["posting_date"] <= cut]),
                 (standing, at, [m for m in moved if in_opening(m) or m["posting_date"] <= at])):
             cls = classes.get(_class_at(asset, day))
             if cls is None or not chosen:

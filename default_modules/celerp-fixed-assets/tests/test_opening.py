@@ -359,3 +359,28 @@ async def test_s7_each_difference_names_its_fix_and_when(fa):
     assert r.status_code == 200, r.text
     locked = manual(await _recon(fa, date.today().isoformat()))
     assert locked["fix_from"] == (booked + timedelta(days=1)).isoformat()
+
+
+async def test_u2_asset_added_before_the_cutover_is_in_the_opening_register(fa):
+    """A van contributed before the cutover is part of the register at the cutover, so its
+    later disposal leaves the register and the ledger together: no opening difference for
+    it, the registered balance never below zero, and the register's own balances agree."""
+    from test_runs import _contributed
+
+    cutover = date.fromisoformat((await _settings(fa))["cutover"])
+    added = (cutover - timedelta(days=80)).isoformat()
+    at_cut = await _check_identity(fa, cutover.isoformat())
+    van = await _contributed(fa, name="Van", cost="32000", on=added)
+    opened = await _check_identity(fa, cutover.isoformat())
+    assert D(_account(opened, "1210")["registered"]) - D(_account(at_cut, "1210")["registered"]) == D("32000")
+    assert [d["amount"] for d in _account(opened, "1210")["differences"]] == \
+        [d["amount"] for d in _account(at_cut, "1210")["differences"]]
+    today = date.today().isoformat()
+    await fa.operate(f"/assets/{van}/dispose", {"date": today, "reason": "scrapped"}, key="u2-dispose")
+    after = await _check_identity(fa, today)
+    assert D(_account(after, "1210")["registered"]) >= 0
+    assert D(_account(after, "1210")["registered"]) == D(_account(at_cut, "1210")["registered"])
+    def opening_differences(report):
+        return [d["amount"] for d in _account(report, "1210")["differences"] if d["rule"] == "opening"]
+
+    assert opening_differences(after) == opening_differences(at_cut)
