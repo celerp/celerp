@@ -384,3 +384,24 @@ async def test_u2_asset_added_before_the_cutover_is_in_the_opening_register(fa):
         return [d["amount"] for d in _account(report, "1210")["differences"] if d["rule"] == "opening"]
 
     assert opening_differences(after) == opening_differences(at_cut)
+
+
+async def test_l4_depreciation_journalled_before_the_cutover_with_no_asset_moves_the_opening_difference(fa):
+    """A manual depreciation journal on 1220 before the cutover, for no asset in the
+    register, moves the 1220 opening difference by its amount and nothing else: 1210 is
+    untouched, nothing is invented in the register and the identity holds."""
+    cutover = date.fromisoformat((await _settings(fa))["cutover"])
+    before = await _check_identity(fa, cutover.isoformat())
+    await fa.journal((cutover - timedelta(days=10)).isoformat(),
+                     [{"account": "6400", "debit": 533.34}, {"account": "1220", "credit": 533.34}])
+    after = await _check_identity(fa, cutover.isoformat())
+    assert _account(after, "1210") == _account(before, "1210")
+    assert D(_account(after, "1220")["ledger"]) - D(_account(before, "1220")["ledger"]) == D("-533.34")
+    assert D(_account(after, "1220")["registered"]) == D(_account(before, "1220")["registered"])
+
+    def opening(report):
+        return sum((D(d["amount"]) for d in _account(report, "1220")["differences"] if d["rule"] == "opening"), D(0))
+
+    assert opening(after) - opening(before) == D("-533.34")
+    assert [d for d in _account(after, "1220")["differences"] if d["rule"] != "opening"] == \
+        [d for d in _account(before, "1220")["differences"] if d["rule"] != "opening"]
