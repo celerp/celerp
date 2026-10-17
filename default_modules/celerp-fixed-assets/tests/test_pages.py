@@ -291,6 +291,25 @@ async def test_settings_page_saves_the_run_day(owner_ui):
     assert "error" in bad.headers.get("HX-Trigger", "")
 
 
+async def test_u5_the_class_table_names_accounts_and_keeps_row_actions_in_a_menu(owner_ui):
+    await _demo(owner_ui)
+    await owner_ui.post("/fixed-assets/start")
+    chart = {a["code"]: a["name"] for a in (await owner_ui.api.get("/accounting/chart")).json()["items"]}
+    vehicles = next(c for c in (await owner_ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == "Vehicles")
+    page = await owner_ui.get("/settings/fixed-assets")
+    row = page.text[page.text.index(f'id="cell-{vehicles["id"].replace(":", "-")}-name"'):]
+    row = row[:row.index("</tr>")]
+    assert f"1210 {chart['1210']}" in row and f"6400 {chart['6400']}" in row, "accounts read as code and name"
+    assert 'class="row-menu"' in row and t("fixed_assets.apply_to_assets") in row
+    assert "btn btn--sm" not in row, "row actions sit in the row menu, not as buttons widening the table"
+    assert t("label.dblclick_to_edit").split()[0] in t("fixed_assets.classes_hint")
+    assert t("fixed_assets.tax_regimes_hint") not in page.text, "with no regime offered, no hint repeats the statement"
+
+    saved = await owner_ui.patch(f"/settings/fixed-assets/classes/{vehicles['id']}/depreciation_account",
+                                 data={"value": "6400"})
+    assert f"6400 {chart['6400']}" in saved.text, "a saved account cell still reads as code and name"
+
+
 async def _car(ui, name: str) -> str:
     vehicles = next(c for c in (await ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == "Vehicles")
     href = await _review_and_confirm(ui, "add-asset", {

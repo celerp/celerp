@@ -54,7 +54,7 @@ from ui.api_client import APIError
 from ui.components.operation_key import FIELD as OP_KEY_FIELD, operation_key_input
 from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import (EMPTY, breadcrumbs, bulk_toolbar, display_cell, editable_cell, empty_mark, empty_state_cta,
-                                 fmt_money, pagination, searchable_select, _SEARCHABLE_THRESHOLD)
+                                 fmt_money, pagination, row_menu, searchable_select, _SEARCHABLE_THRESHOLD)
 from ui.config import get_role, get_token as _token
 from ui.i18n import refusal_text, t
 from ui.routes.csv_import import read_tabular_source
@@ -959,7 +959,8 @@ def _settings_form(settings: dict, available: dict) -> FT:
                     cls="settings-toggle") for k in regimes] or [
                 P(t("fixed_assets.no_tax_regime"), " ", t("fixed_assets.no_tax_regime_install"), " ",
                   A(t("fixed_assets.open_modules"), href="/modules"), cls="form-hint")], id="fa-tax-regimes"),
-               t("fixed_assets.tax_regimes_hint")),
+               # With none offered, the statement above already says where a regime comes from.
+               t("fixed_assets.tax_regimes_hint") if regimes else None),
         hx_post="/settings/fixed-assets", hx_trigger="change", hx_swap="none", cls="settings-card",
     )
 
@@ -987,6 +988,8 @@ def _class_cell(cls: dict, field: str, chart: list[dict]) -> FT:
     labels = None
     if field == "method":
         labels = {value: _rule_label("method", value)}
+    elif field.endswith("account"):
+        labels = {a["code"]: f"{a['code']} {a['name']}" for a in chart}
     return display_cell(cls["id"], field, value, "text", label_map=labels,
                         cls_extra="cell--number" if field in ("life_months", "residual_percent") else "",
                         edit_url=f"/settings/fixed-assets/classes/{quote(cls['id'], safe=':')}/{field}/edit")
@@ -994,18 +997,18 @@ def _class_cell(cls: dict, field: str, chart: list[dict]) -> FT:
 
 def _classes_card(classes: list[dict], chart: list[dict]) -> FT:
     rows = [Tr(*[_class_cell(c, f, chart) for f in _CLASS_EDITABLE],
-               Td(Div(*([] if c.get("archived") else [
-                         A(t("fixed_assets.apply_to_assets"), cls="btn btn--sm btn--secondary",
-                           href=f"/fixed-assets/classes/{quote(c['id'], safe=':')}/apply"),
-                         *([] if c.get("construction") else [
-                             A(t("fixed_assets.revalue_class" if c.get("measurement_policy") == "revaluation"
-                                 else "fixed_assets.change_to_revaluation"), cls="btn btn--sm btn--secondary",
-                               href=f"/fixed-assets/classes/{quote(c['id'], safe=':')}/revalue")])]),
-                      Button(t("fixed_assets.restore") if c.get("archived") else t("fixed_assets.archive"),
-                             type="button", cls="btn btn--sm btn--secondary",
-                             hx_post=f"/settings/fixed-assets/classes/{quote(c['id'], safe=':')}/archive",
-                             hx_vals=f'{{"archived": "{"0" if c.get("archived") else "1"}"}}',
-                             hx_target="#fa-classes", hx_swap="outerHTML"), cls="flex-row")),
+               row_menu(c["id"].replace(":", "-"), *([] if c.get("archived") else [
+                   A(t("fixed_assets.apply_to_assets"), cls="row-menu-item",
+                     href=f"/fixed-assets/classes/{quote(c['id'], safe=':')}/apply"),
+                   *([] if c.get("construction") else [
+                       A(t("fixed_assets.revalue_class" if c.get("measurement_policy") == "revaluation"
+                           else "fixed_assets.change_to_revaluation"), cls="row-menu-item",
+                         href=f"/fixed-assets/classes/{quote(c['id'], safe=':')}/revalue")])]),
+                   Button(t("fixed_assets.restore") if c.get("archived") else t("fixed_assets.archive"),
+                          type="button", cls="row-menu-item",
+                          hx_post=f"/settings/fixed-assets/classes/{quote(c['id'], safe=':')}/archive",
+                          hx_vals=f'{{"archived": "{"0" if c.get("archived") else "1"}"}}',
+                          hx_target="#fa-classes", hx_swap="outerHTML")),
                cls="row--muted" if c.get("archived") else None)
             for c in classes]
     return Div(
@@ -1014,12 +1017,15 @@ def _classes_card(classes: list[dict], chart: list[dict]) -> FT:
                    hx_post="/settings/fixed-assets/classes", hx_target="#fa-classes", hx_swap="outerHTML"),
             cls="flex-row flex-between settings-card-header"),
         P(t("fixed_assets.classes_hint"), cls="settings-hint"),
-        Div(Table(Thead(Tr(Th(t("fixed_assets.name")), Th(t("fixed_assets.method")),
-                       Th(t("fixed_assets.life_months"), cls="cell--number"),
-                       Th(t("fixed_assets.residual_percent"), cls="cell--number"),
-                       Th(t("fixed_assets.asset_account")), Th(t("fixed_assets.accumulated_depreciation_account")),
-                       Th(t("fixed_assets.depreciation_account")), Th(""))),
-              Tbody(*rows), cls="data-table"), cls="table-scroll-wrap"),
+        # The three accounts sit under one "Posting accounts" heading, so their short labels
+        # keep the table inside the card at desktop width.
+        Div(Table(Thead(Tr(Th(t("fixed_assets.name"), rowspan="2"), Th(t("fixed_assets.method"), rowspan="2"),
+                           Th(t("fixed_assets.life_months"), cls="cell--number", rowspan="2"),
+                           Th(t("fixed_assets.residual_percent"), cls="cell--number", rowspan="2"),
+                           Th(t("fixed_assets.posting_accounts"), colspan="3"), Th("", rowspan="2")),
+                        Tr(Th(t("fixed_assets.asset")), Th(t("fixed_assets.accumulated_depreciation")),
+                           Th(t("fixed_assets.depreciation_expense")))),
+                  Tbody(*rows), cls="data-table"), cls="table-scroll-wrap"),
         cls="settings-card", id="fa-classes",
     )
 
@@ -3350,7 +3356,11 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             # The editor stays open on the refused row, the reason under it.
             return (await _class_editor(token, class_id, field))(P(_error_text(e), cls="cell-error"))
-        return _class_cell(cls, field, [])
+        try:
+            chart = (await api.get_chart(token)).get("items") or []
+        except APIError:
+            chart = []
+        return _class_cell(cls, field, chart)
 
     from celerp_fixed_assets.ui_physical import physical_cards, setup_physical_routes
     from celerp_fixed_assets.ui_imports import setup_import_routes
