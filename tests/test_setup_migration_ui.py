@@ -1063,6 +1063,9 @@ async def test_migration_progress_survives_process_restart(ui, router, fake_api)
     assert "1203" in page  # inventory phase created counter
     assert "0 attachments" in page
     assert 'hx-trigger="every 2s"' in _page(r)
+    # Once started, the footnote no longer counts down to a start, and stopping reads as a pause.
+    assert "if you do not start" not in page and "when the migration finishes or is discarded" in page
+    assert re.search(rf'action="/migrations/{run_id}/cancel"[^>]*>\s*<button[^>]*>Pause import</button>', _page(r))
 
     # The runner process died: the API reports the stale heartbeat as interrupted
     # with the durable counters from the last committed batch.
