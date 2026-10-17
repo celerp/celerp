@@ -133,6 +133,7 @@ def setup_routes(app):
     @app.get("/companies")
     async def firm_view_page(request: Request):
         from ui.components.shell import base_shell, page_header
+        from ui.components.table import breadcrumbs
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -149,6 +150,8 @@ def setup_routes(app):
         if request.headers.get("HX-Request"):
             return search_results(table, "/companies" + (f"?{urlencode(params)}" if params else ""))
         return await base_shell(
+            breadcrumbs([(t("settings.your_companies", lang), "/settings/general?tab=company"),
+                         (t("firm_view.title", lang), None)]),
             page_header(
                 t("firm_view.title", lang),
                 A(t("firm_view.move", lang), href=MOVE_PAGE, cls="btn btn--secondary btn--sm"),
