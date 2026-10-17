@@ -176,6 +176,8 @@ a:hover { text-decoration: underline; }
 /* Client companies: reasons wrap in their cell; the filters keep their own width. */
 #firm-view .data-table { width: 100%; }
 #firm-view .data-table td.firm-view-attention { white-space: normal; overflow-wrap: break-word; }
+.export-requests { display: flex; flex-direction: column; gap: 12px; margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--c-border); }
+.export-requests > * { margin: 0; }
 #accountant-access-grants .data-table { width: 100%; }
 #accountant-access-grants .data-table td.grant-scopes { white-space: normal; overflow-wrap: break-word; padding-block: 6px; }
 #sync-accounts .data-table { width: 100%; }
@@ -2990,7 +2992,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .connector-info { flex: 1; }
 .connector-name-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .connector-name { font-size: 1.05rem; font-weight: 600; }
-.connector-desc { margin: 4px 0 0; color: var(--text-muted); font-size: 0.875rem; }
+.connector-desc { margin: 4px 0 0; color: var(--c-text2); font-size: 0.875rem; }
 
 .connector-badge {
   font-size: 0.75rem;
@@ -3000,7 +3002,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   white-space: nowrap;
 }
 .connector-badge--connected { background: #dcfce7; color: #166534; }
-.connector-badge--idle      { background: var(--surface-alt, #f3f4f6); color: var(--text-muted); }
+.connector-badge--idle      { background: var(--surface-alt, #f3f4f6); color: var(--c-text2); }
 .connector-badge--soon      { background: #fef9c3; color: #854d0e; }
 
 .connector-entity-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
@@ -3036,7 +3038,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .connector-action-area { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 
 /* --- Form hints --- */
-.form-hint { font-size: 0.78rem; color: var(--text-muted); margin: 2px 0 0; }
+.form-hint { font-size: 0.78rem; color: var(--c-text2); margin: 2px 0 0; }
 .form-field-error { font-size: 0.78rem; color: var(--c-red-dark); margin: 4px 0 0; }
 .form-input[aria-invalid="true"] { border-color: var(--c-red); }
 
@@ -3234,7 +3236,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   padding-top: 4px;
   border-top: 1px solid var(--c-border);
 }
-.modal-dialog__quota { margin-right: auto; align-self: center; font-size: 0.75rem; color: var(--text-muted); }
+.modal-dialog__quota { margin-right: auto; align-self: center; font-size: 0.75rem; color: var(--c-text2); }
 .modal-body { padding: 16px 24px 24px; }
 
 /* --- Share modal --- */
