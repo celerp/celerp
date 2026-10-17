@@ -547,7 +547,7 @@ async def reclassify_asset(asset_id: str, body: dict = Body(...), company_id=Dep
 @router.get("/transfer-targets", dependencies=_ACCOUNTING)
 async def transfer_targets(company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                            session: AsyncSession = Depends(get_session)) -> dict:
-    return {"items": await transfer.targets(session, company_id, user.id)}
+    return await transfer.targets(session, company_id, user.id)
 
 
 @router.post("/assets/{asset_id}/transfer", dependencies=_ACCOUNTING)

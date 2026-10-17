@@ -59,10 +59,11 @@ def _uses(settings: dict | None) -> bool:
             and bool(fa.get("first_managed_period")))
 
 
-async def targets(session, company_id, user_id) -> list[dict]:
-    """The other companies the user may transfer an asset to: a member there with both
-    rights, in a company that uses fixed assets. Each comes with the classes in use there
-    and the accounts a transfer can credit there, since the form chooses both."""
+async def targets(session, company_id, user_id) -> dict:
+    """The other companies the user may transfer an asset to (``items``): a member there with
+    both rights, in a company that uses fixed assets. Each comes with the classes in use
+    there and the accounts a transfer can credit there, since the form chooses both. The
+    user's other companies (``others``) say which of the two each lacks."""
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company
     from celerp.services.journal_accounts import chart_access
@@ -72,16 +73,19 @@ async def targets(session, company_id, user_id) -> list[dict]:
         UserCompany, UserCompany.company_id == Company.id).where(
         UserCompany.user_id == user_id, UserCompany.is_active.is_(True), Company.id != company_id))).all()
     chart = chart_access()
-    out = []
+    out, others = [], []
     for c, role in sorted(rows, key=lambda r: r[0].name):
-        if not _uses(c.settings) or not all(role_has_permission(c.settings, role, k) for k in KEYS):
+        lacks = ("not_using" if not _uses(c.settings)
+                 else None if all(role_has_permission(c.settings, role, k) for k in KEYS) else "no_rights")
+        if lacks:
+            others.append({"company_id": str(c.id), "name": c.name, "reason": lacks})
             continue
         accounts = await chart.list_accounts(session, c.id) if chart else []
         out.append({"company_id": str(c.id), "name": c.name, "currency": books_currency(c.settings),
                     "classes": [{"id": k["id"], "name": k["name"]} for k in await setup.classes(session, c.id)],
                     "accounts": [{"code": a["code"], "name": a["name"]} for a in accounts
                                  if a["is_active"] and not a["has_children"] and a["account_type"] == "liability"]})
-    return out
+    return {"items": out, "others": others}
 
 
 def _company_id(value) -> uuid.UUID:

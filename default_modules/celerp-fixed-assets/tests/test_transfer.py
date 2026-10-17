@@ -275,7 +275,9 @@ async def test_transfer_targets_only_companies_the_user_can_post_in(fa):
     assert "2110" in [a["code"] for a in targets[0]["accounts"]]
     assert "1120" not in [a["code"] for a in targets[0]["accounts"]]
     await _set_module(b, False)
-    assert (await fa.ok(await fa.get("/transfer-targets")))["items"] == []
+    reachable = await fa.ok(await fa.get("/transfer-targets"))
+    assert reachable["items"] == []
+    assert reachable["others"] == [{"company_id": str(b.auth["company_id"]), "name": "Beta Co", "reason": "not_using"}]
 
 
 async def test_s5_transfer_uses_related_party_accounts_no_clearing(fa):
@@ -358,7 +360,8 @@ async def test_s5_authority_checked_in_both(fa):
     await fa.session.commit()
     refused = await fa.post(f"/assets/{car}/transfer", {**body, "fingerprint": preview["fingerprint"]})
     assert refused.status_code == 403
-    assert (await fa.ok(await fa.get("/transfer-targets")))["items"] == []
+    reachable = await fa.ok(await fa.get("/transfer-targets"))
+    assert reachable["items"] == [] and [o["reason"] for o in reachable["others"]] == ["no_rights"]
     assert (await fa.asset(car))["status"] == "active"
     # An operator in the source company cannot transfer either.
     operator = await fa.role_headers("operator")

@@ -1135,6 +1135,18 @@ def _depreciation_card(asset: dict, currency: str) -> FT:
                cls="detail-card section-card", id="fa-depreciation")
 
 
+def _transfer_needs(others: list[dict]) -> FT:
+    """What a transfer needs when no company can take the asset: another company, or in each
+    of the user's others, fixed assets in use or a role there with both rights."""
+    if not others:
+        return P(t("fixed_assets.transfer_only_company"), " ", A(t("fixed_assets.add_company"), href="/setup/new-company"),
+                 cls="form-hint")
+    return Ul(*[Li(t(f"fixed_assets.transfer_other.{o['reason']}", company=o["name"]),
+                   *((" ", A(t("fixed_assets.switch_to", company=o["name"]), href=f"/switch-company/{o['company_id']}"))
+                     if o["reason"] == "not_using" else ()))
+                for o in others], cls="form-hint")
+
+
 def _sources_card(asset: dict, currency: str) -> FT:
     sources = asset.get("sources") or []
     if not sources:
@@ -2605,7 +2617,8 @@ def setup_ui_routes(app) -> None:
         try:
             _, currency = await _context(token)
             asset, crumbs = await _asset_crumbs(token, asset_id, "fixed_assets.transfer")
-            targets = (await api.fixed_assets_get(token, "/transfer-targets"))["items"]
+            reachable = await api.fixed_assets_get(token, "/transfer-targets")
+            targets = reachable["items"]
             chart = (await api.get_chart(token)).get("items") or [] if targets else []
         except APIError as e:
             return await _refused(request, e, "fixed_assets.transfer")
@@ -2614,8 +2627,7 @@ def setup_ui_routes(app) -> None:
         hint = P(t("fixed_assets.transfer_taxable_hint"), " ", sell, cls="settings-hint")
         if not targets:
             return await _page(request, crumbs, title, P(t("fixed_assets.transfer_hint"), cls="settings-hint"), hint,
-                               P(t("fixed_assets.transfer_no_targets"), cls="form-hint"),
-                               title_key="fixed_assets.transfer")
+                               _transfer_needs(reachable["others"]), title_key="fixed_assets.transfer")
         target = next((x for x in targets if x["company_id"] == company), targets[0])
         tabs = Div(*[A(x["name"], href=f"/fixed-assets/assets/{asset_id}/transfer?{urlencode({'company': x['company_id']})}",
                        cls="btn btn--sm " + ("btn--primary" if x is target else "btn--secondary")) for x in targets],

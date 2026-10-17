@@ -894,3 +894,19 @@ async def test_u19_u20_every_open_ended_list_is_searchable_and_a_fixed_one_is_a_
     assert searchable(add.text, "source")
     page = await owner_ui.get(f"/fixed-assets/assets/{car}")
     assert re.search(r'<select name="kind"', page.text), "a reminder's kind is one of a fixed few"
+
+
+async def test_u21_transfer_says_what_it_needs_when_no_company_can_take_the_asset(owner_ui):
+    car = await _managed_car(owner_ui)
+    alone = await owner_ui.get(f"/fixed-assets/assets/{car}/transfer")
+    assert t("fixed_assets.transfer_only_company") in alone.text
+    assert f'<a href="/setup/new-company">{t("fixed_assets.add_company")}</a>' in alone.text
+
+    r = await owner_ui.api.post("/companies", json={"name": "Beta Co"})
+    assert r.status_code == 200, r.text
+    beta = (await owner_ui.api.get("/companies/me", headers={"Authorization": f"Bearer {r.json()['access_token']}"})).json()
+    others = (await owner_ui.api.get(f"{API}/transfer-targets")).json()["others"]
+    assert others == [{"company_id": beta["id"], "name": "Beta Co", "reason": "not_using"}]
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}/transfer")
+    assert t("fixed_assets.transfer_other.not_using", company="Beta Co") in page.text
+    assert f'href="/switch-company/{beta["id"]}"' in page.text, "the step is taken in the other company"
