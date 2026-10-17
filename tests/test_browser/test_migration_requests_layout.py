@@ -55,3 +55,19 @@ def test_request_sections_stand_apart(browser):
     under_button, between_sections = gaps
     assert under_button >= 12, f"the table heading sits {under_button}px under the button"
     assert between_sections >= 24, f"the sections are {between_sections}px apart"
+
+
+def test_the_sign_in_box_stands_off_the_fetch_button(browser):
+    from starlette.requests import Request
+
+    from ui.routes.migrations import _xero_attachments_panel
+
+    request = Request({"type": "http", "method": "GET", "path": "/", "headers": [], "query_string": b""})
+    panel = _xero_attachments_panel(request, "run-1", {}, account=True).body.decode()
+    page = _render(browser, panel)
+    try:
+        gap = page.evaluate("""() => document.querySelector('#xero-attachments-form').getBoundingClientRect().top
+            - document.querySelector('#celerp-account-panel').getBoundingClientRect().bottom""")
+    finally:
+        page.close()
+    assert gap >= 12, f"the fetch button sits {gap}px under the sign-in box"
