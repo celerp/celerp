@@ -80,9 +80,13 @@ def _table(rows: list[dict], lang: str, params: dict, error: str | None = None) 
     """The companies, newest activity first; replaced in place when the filters change.
     ``params`` are the filters applied: with none, an empty list invites the first move."""
     notice = [P(error, cls="flash flash--warning")] if error else []
-    if not rows and not error:
-        if params:
-            body = [P(t("firm_view.no_match" if params.get("q") else "firm_view.no_sync_match", lang))]
+    if not rows:
+        if params:  # the filters found nothing, or were refused: lead back to the whole list
+            none = "firm_view.no_match" if params.get("q") else "firm_view.no_sync_match"
+            body = [*([] if error else [P(t(none, lang))]),
+                    A(t("acct.filter_clear", lang), href="/companies", cls="btn btn--secondary btn--sm")]
+        elif error:
+            body = []
         else:
             body = [P(t("firm_view.empty", lang)),
                     A(t("firm_view.move", lang), href=MOVE_PAGE, cls="btn btn--primary btn--sm")]
