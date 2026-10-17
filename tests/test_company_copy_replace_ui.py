@@ -118,6 +118,11 @@ async def test_saved_copies_listed_newest_first_and_deleted_after_asking(ui, rea
     assert NAME in listing and "cannot be undone: the file itself is removed" in listing
     button = re.search(rf'<button\b[^>]*hx-post="{SAVED}/{kept}/delete"[^>]*>', listing).group(0)
     assert 'hx-confirm="Delete this saved copy? This cannot be undone."' in button
+    # The name box starts empty, with what to type as its visible label rather than a
+    # grey placeholder that reads as already filled.
+    field = re.search(r'<input\b[^>]*name="company_name"[^>]*>', listing.split(f"{SAVED}/{kept}/put-back")[1]).group(0)
+    assert "placeholder" not in field
+    assert f"Type {NAME} to put it back" in listing
 
     gone = await ui.post(f"{SAVED}/{kept}/delete", headers={"HX-Request": "true"})
     assert gone.status_code == 200
