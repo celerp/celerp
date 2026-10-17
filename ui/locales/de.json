@@ -3307,7 +3307,7 @@
   "connectors.authorize_link": "Falls sich nichts geöffnet hat, klicken Sie hier, um die Autorisierung durchzuführen",
   "connectors.authorize_opened": "Die Autorisierung wird in einem neuen Tab geöffnet. Schließen Sie den Vorgang dort ab und kehren Sie dann hierher zurück.",
   "connectors.back_to_connectors": "Zurück zu den Konnektoren",
-  "connectors.changes": "Änderungen",
+  "connectors.changes": "{added} hinzugefügt, {updated} aktualisiert",
   "connectors.connect_check_failed": "Celerp konnte keine Verbindung zum Shop herstellen: {detail}. Prüfen Sie Shop-Adresse und Schlüssel und versuchen Sie es dann erneut.",
   "connectors.connect_failed": "Celerp konnte die Verbindung nicht speichern. Versuchen Sie es erneut; wenn es weiter passiert, starten Sie Celerp neu.",
   "connectors.disable_shopify_sync": "Shopify-Synchronisierung deaktivieren",

@@ -3306,7 +3306,7 @@
   "connectors.authorize_link": "إذا لم يتم فتح أي شيء، انقر هنا للتفويض",
   "connectors.authorize_opened": "يتم فتح نافذة التفويض في علامة تبويب جديدة. أكمل الإجراء هناك، ثم عد إلى هنا.",
   "connectors.back_to_connectors": "العودة إلى الموصلات",
-  "connectors.changes": "التغييرات",
+  "connectors.changes": "أُضيف {added}، وحُدّث {updated}",
   "connectors.connect_check_failed": "تعذّر على Celerp الاتصال بالمتجر: {detail}. تحقق من عنوان المتجر ومفاتيحه، ثم حاول مرة أخرى.",
   "connectors.connect_failed": "تعذّر على Celerp حفظ الاتصال. حاول مرة أخرى؛ وإذا تكرر ذلك، فأعد تشغيل Celerp.",
   "connectors.disable_shopify_sync": "تعطيل مزامنة Shopify",

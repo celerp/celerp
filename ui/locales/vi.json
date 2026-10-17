@@ -3306,7 +3306,7 @@
   "connectors.authorize_link": "Nếu chưa có gì mở ra, hãy nhấp vào đây để ủy quyền",
   "connectors.authorize_opened": "Đang mở trang ủy quyền trong một tab mới. Hoàn tất tại đó, sau đó quay lại đây.",
   "connectors.back_to_connectors": "Quay lại các trình kết nối",
-  "connectors.changes": "Thay đổi",
+  "connectors.changes": "Thêm {added}, cập nhật {updated}",
   "connectors.connect_check_failed": "Celerp không kết nối được với cửa hàng: {detail}. Hãy kiểm tra địa chỉ và khóa của cửa hàng rồi thử lại.",
   "connectors.connect_failed": "Celerp không lưu được kết nối. Hãy thử lại; nếu vẫn xảy ra, hãy khởi động lại Celerp.",
   "connectors.disable_shopify_sync": "Tắt đồng bộ hóa Shopify",

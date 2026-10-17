@@ -21,6 +21,7 @@ from test_peer_sync_end_to_end import _company_of, _iid, _route_to_app, seed_dem
 from test_peer_two_way_sync import (
     ADJUSTED, _journals, _notices, _pair_journals, _post_journal, _two_way,
 )
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -46,6 +47,12 @@ async def _chart(client, tok: str) -> dict[str, dict]:
     r = await client.get("/accounting/chart", headers=auth(tok))
     assert r.status_code == 200, r.text
     return {a["code"]: a for a in r.json()["items"]}
+
+
+async def _added_told(engine, company_id: str, account: str) -> list[tuple]:
+    """The notices that told the company sync added ``account`` to its chart."""
+    return [n for n in await _notices(engine, company_id)
+            if n[0] == t("notice.peer_account_added.title") and account in n[1]]
 
 
 async def _holds(client, tok: str) -> list[dict]:
@@ -256,8 +263,8 @@ async def test_a_missing_account_is_added_with_the_record_both_ways(real_client,
     received = [s for s in (await _journals(real_engine, client_company)).values()
                 if (s.get("peer_origin") or {}).get("journal") == firm_je]
     assert _lines(received[0]) == {("6160", 33.0, 0.0), ("6200", 0.0, 33.0)}
-    firm_told = [n for n in await _notices(real_engine, firm_company) if "6150 Courier" in n[1]]
-    client_told = [n for n in await _notices(real_engine, client_company) if "6160 Audit adjustments" in n[1]]
+    firm_told = await _added_told(real_engine, firm_company, "6150 Courier")
+    client_told = await _added_told(real_engine, client_company, "6160 Audit adjustments")
     assert len(firm_told) == 1 and "Demo Trading" in firm_told[0][1], firm_told
     assert len(client_told) == 1 and "Firm Practice" in client_told[0][1], client_told
     [link] = [l for l in await _links(real_engine, firm_company) if l.code == "6150"]
@@ -266,9 +273,8 @@ async def test_a_missing_account_is_added_with_the_record_both_ways(real_client,
     await _two_way(client_company, credential)
     assert await _chart(real_client, firm_tok) == firm_chart
     assert await _chart(real_client, tok) == client_chart
-    assert len([n for n in await _notices(real_engine, firm_company) if "6150 Courier" in n[1]]) == 1
-    assert len([n for n in await _notices(real_engine, client_company)
-                if "6160 Audit adjustments" in n[1]]) == 1
+    assert len(await _added_told(real_engine, firm_company, "6150 Courier")) == 1
+    assert len(await _added_told(real_engine, client_company, "6160 Audit adjustments")) == 1
 
 
 # ---- AC33 collision, type and currency -------------------------------------------------
@@ -541,7 +547,7 @@ async def test_a_held_record_writes_nothing(real_client, real_engine, monkeypatc
     await _two_way(client_company, credential)
     assert "6150" not in await _chart(real_client, firm_tok)
     assert not [l for l in await _links(real_engine, firm_company) if l.other_code == "6150"]
-    assert not [n for n in await _notices(real_engine, firm_company) if "6150 Courier" in n[1]]
+    assert not await _added_told(real_engine, firm_company, "6150 Courier")
 
 
 # ---- AC39 an added account kept, archived or removed ----------------------------------

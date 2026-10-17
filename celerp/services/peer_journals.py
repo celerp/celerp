@@ -34,6 +34,7 @@ from celerp.services import journal_reversals, peer_access, peer_accounts, peer_
 from celerp.services.business_time import business_date_of
 from celerp.services.company_lock import locked_company
 from celerp.services.je_keys import je_void_data
+from celerp.services.posting_readiness import account_names
 from ui.i18n import t
 
 FROM_ACCOUNTANT = "/settings/connectors/celerp#from-accountant"
@@ -78,12 +79,18 @@ def _amount(line: dict) -> tuple[str, Decimal]:
     return ("Dr", debit) if debit else ("Cr", Decimal(str(line.get("credit") or 0)))
 
 
-def _lines_text(entries: list[dict]) -> str:
-    """Each line as its account, side and amount: "6500 Dr 125.00; 6200 Cr 125.00"."""
+async def _names(session: AsyncSession, company_id: uuid.UUID, entries: list[dict]) -> dict[str, str]:
+    return await account_names(session, company_id, {line.get("account") for line in entries})
+
+
+def _lines_text(entries: list[dict], names: dict[str, str]) -> str:
+    """Each line as its account, with its name from ``names``, then side and amount:
+    "6500 Audit fees Dr 125.00; 6200 Accruals Cr 125.00"."""
     out = []
     for line in entries:
-        side, amount = _amount(line)
-        out.append(f"{line.get('account')} {side} {amount.quantize(Decimal('0.01'))}")
+        code, (side, amount) = line.get("account"), _amount(line)
+        account = code if names[code] == code else f"{code} {names[code]}"
+        out.append(f"{account} {side} {amount.quantize(Decimal('0.01'))}")
     return "; ".join(out)
 
 
@@ -591,8 +598,9 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
         await emit_event(session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
                          event_type="acc.journal_entry.posted", data={"ts": item["ts"]}, actor_id=None,
                          location_id=None, source="connector", idempotency_key=f"{je_id}:p", metadata_={})
+        lines = _lines_text(entries, await _names(session, company_id, entries))
         await _notify(session, company_id, "notice.peer_journal_posted", memo=memo,
-                      date=str(item["ts"])[:10], lines=_lines_text(entries), firm=firm)
+                      date=str(item["ts"])[:10], lines=lines, firm=firm)
         if held is None or not held.refused:
             await mark(session, company_id=company_id, grant_id=grant_id, entity=INBOUND,
                        entity_id=firm_je, revision=revision, refused=None)
@@ -682,6 +690,7 @@ async def from_accountant(session: AsyncSession, company_id: uuid.UUID) -> list[
     undone = {str(eid) for eid, in (await session.execute(select(Projection.entity_id).where(
         Projection.company_id == company_id,
         Projection.entity_id.in_([reversal_id(r) for r in reversals])))).all()} if reversals else set()
+    names = await _names(session, company_id, [line for _, state in rows for line in (state or {}).get("entries") or []])
     items = []
     for eid, state in rows:
         state = dict(state or {})
@@ -693,7 +702,7 @@ async def from_accountant(session: AsyncSession, company_id: uuid.UUID) -> list[
             "id": str(eid), "memo": state.get("memo") or "", "ts": str(state.get("ts") or "")[:10],
             "status": state.get("status"), "firm": (state.get("peer_origin") or {}).get("firm"),
             "entries": state.get("entries") or [],
-            "lines": _lines_text(state.get("entries") or []),
+            "lines": _lines_text(state.get("entries") or [], names),
             "total": float(sum(Decimal(str(l.get("debit") or 0)) for l in state.get("entries") or [])),
             "reverse_on": day, "locked_through": lock,
             "reversal": ({"id": rid, "ts": str(reversal.get("ts"))[:10],

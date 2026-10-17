@@ -520,7 +520,7 @@
   "connectors.authorize_link": "If nothing opened, click here to authorize",
   "connectors.authorize_opened": "Opening authorization in a new tab. Complete it there, then return here.",
   "connectors.back_to_connectors": "Back to connectors",
-  "connectors.changes": "Changes",
+  "connectors.changes": "{added} added, {updated} updated",
   "connectors.coming_soon": "Coming soon",
   "connectors.connect": "Connect",
   "connectors.connect_check_failed": "Celerp couldn't connect to the store: {detail}. Check the store address and keys, then try again.",

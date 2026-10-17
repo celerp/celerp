@@ -160,6 +160,11 @@ def _sync_reasons(runs: dict, service: str, lang: str = "en") -> FT:
     )
 
 
+def _changes(run, lang: str | None = None) -> str:
+    """What a sync run added and updated, in words."""
+    return t("connectors.changes", lang, added=f"{run.created_count:,}", updated=f"{run.updated_count:,}")
+
+
 def _last_sync_info(run, attention: int = 0, href: str = "") -> FT:
     """Compact summary of the latest SyncRun, or a 'never synced' note. Uses the shared
     relative_time() formatter and thousands-separated counts for consistency with the
@@ -178,7 +183,7 @@ def _last_sync_info(run, attention: int = 0, href: str = "") -> FT:
         "partial": "connector-sync-info--warn",
         "failed": "connector-sync-info--err",
     }.get(run.status, "")
-    counts = f"+{run.created_count:,} ~{run.updated_count:,}"
+    counts = _changes(run)
     status = _sync_status_label(run.status)
     if href and run.status in ("failed", "partial") and getattr(run, "errors", None):
         status = A(status, href=f"{href}#{_SYNC_REASONS_ID}")
@@ -543,7 +548,7 @@ def _entity_status_table(runs: dict, lang: str = "en", attention: dict[str, int]
         r = runs[e]
         running = getattr(r, "finished_at", None) is None
         when = t("connectors.syncing", lang) if running else relative_time(r.finished_at.isoformat())
-        counts = "…" if running else f"+{r.created_count:,} ~{r.updated_count:,}"
+        counts = "…" if running else _changes(r, lang)
         errs = list(getattr(r, "errors", None) or [])
         rows.append(Tr(
             Td(_entity_label(e, lang)),
@@ -1192,7 +1197,7 @@ def _from_accountant(items: list[dict] | None, lang: str, error: str | None = No
                      Th(t("th.total", lang), cls="cell--number"), Th(t("th.actions", lang)))),
             Tbody(*[Tr(
                 Td(item.get("ts") or EMPTY), Td(item.get("memo") or EMPTY),
-                Td(item.get("lines") or EMPTY, cls="cell--mono"),
+                Td(item.get("lines") or EMPTY),
                 Td(fmt_money(item.get("total")), cls="cell--number"),
                 Td(_from_accountant_action(item, lang)),
                 cls="data-row",
