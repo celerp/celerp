@@ -59,6 +59,7 @@ from celerp.accounting_roles import (
     INVENTORY_ORIGIN_SCHEMA,
     LOT_ACCOUNT_FIELD,
     ON_BOOKS_FIELD,
+    PERIOD_LOCK_PATH,
     POSTING_ACCOUNTS_PATH,
     SCHEMA_KEY,
     SOURCE_CONTROLS_KEY,
@@ -1071,7 +1072,6 @@ async def consumed_facts(session: AsyncSession, company_id, marker: str,
     return found
 
 
-PERIOD_LOCK_PATH = f"{ACCOUNTING_SETTINGS_PATH}?tab=period-lock"
 LOCKED_NOTICE = "notice.older_stock_locked"
 
 

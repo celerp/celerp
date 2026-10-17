@@ -3630,6 +3630,7 @@
   "connectors.deposit_unknown_account": "{code} non è un conto bancario attivo. Scegli un conto bancario dall'elenco.",
   "connectors.attention_header": "Ordini che richiedono attenzione",
   "connectors.attention_header_records": "Record che richiedono attenzione",
+  "connectors.attention_locked": "Sposta indietro la data di blocco e verrà registrata alla prossima sincronizzazione:",
   "connectors.attention_count": "{n} richiedono attenzione",
   "connectors.attention_mark_reconciled": "Segna come riconciliato",
   "connectors.attention_reconciled": "Segnato come riconciliato. Resta qui finché l'ordine non cambia nel negozio.",

@@ -3630,6 +3630,7 @@
   "connectors.deposit_unknown_account": "{code} は有効な銀行口座ではありません。一覧から銀行口座を選んでください。",
   "connectors.attention_header": "対応が必要な注文",
   "connectors.attention_header_records": "確認が必要な記録",
+  "connectors.attention_locked": "ロック日を前に戻すと、次回の同期で計上されます:",
   "connectors.attention_count": "{n} 件が対応待ち",
   "connectors.attention_mark_reconciled": "照合済みにする",
   "connectors.attention_reconciled": "照合済みにしました。ストアで注文が変わるまでここに残ります。",

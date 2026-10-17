@@ -170,7 +170,7 @@ async def test_firm_journal_in_client_locked_period_is_declined(real_client, rea
     assert _from_firm(await _journals(real_engine, client_company)) == {}
     notices = [n for n in await _notices(real_engine, client_company) if "Year-end accrual" in n[1]]
     assert len(notices) == 1 and "2026-06-30" in notices[0][1], notices
-    assert notices[0][2] == PERIOD_LOCK  # the notice opens where the lock date moves
+    assert notices[0][2].startswith(PERIOD_LOCK)  # the notice opens where the lock date moves
     [entry] = results["journals"].attention
     held = to_xml(_attention_list("celerp", [entry], "en"))
     assert "Move the lock date back and it posts on the next sync:" in held
@@ -278,8 +278,9 @@ async def test_firm_lock_applies_forward_once(real_client, real_engine, monkeypa
     lock = (await real_client.get("/accounting/period-lock", headers=auth(tok))).json()
     assert lock["lock_date"] == "2026-03-31"
     assert lock["firm_lock"] == {"date": "2026-03-31", "firm": "Firm Practice"}
-    assert [n[2] for n in await _notices(real_engine, client_company)
-            if "2026-03-31" in n[1] and "Firm Practice" in n[1]] == [PERIOD_LOCK]
+    [opens] = [n[2] for n in await _notices(real_engine, client_company)
+               if "2026-03-31" in n[1] and "Firm Practice" in n[1]]
+    assert opens.startswith(PERIOD_LOCK)
 
     await _lock(real_client, tok, "2026-01-31")  # the client moves it back
     await _two_way(client_company, credential)

@@ -588,7 +588,7 @@ class CelerpConnector(ConnectorBase):
                         if fetched.declined is not None:
                             result.skipped += 1
                             result.attention.append({"id": str(item.get("id")), "label": label,
-                                                     "reason": fetched.declined})
+                                                     "reason": fetched.declined, "locked": fetched.locked})
                         else:
                             result.record(fetched.status)
                     except Exception as exc:

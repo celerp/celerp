@@ -63,6 +63,8 @@ ON_BOOKS_FIELD = "inventory_on_books"
 ACCOUNTING_SETTINGS_PATH = "/settings/accounting"
 # Where a user fixes a missing or invalid role.
 POSTING_ACCOUNTS_PATH = f"{ACCOUNTING_SETTINGS_PATH}?tab=posting-accounts"
+# Where a user moves the lock date.
+PERIOD_LOCK_PATH = f"{ACCOUNTING_SETTINGS_PATH}?tab=period-lock"
 
 
 class AccountRole(StrEnum):

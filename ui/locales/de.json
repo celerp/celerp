@@ -3630,6 +3630,7 @@
   "connectors.deposit_unknown_account": "{code} ist kein aktives Bankkonto. Wählen Sie ein Bankkonto aus der Liste.",
   "connectors.attention_header": "Bestellungen, die Aufmerksamkeit brauchen",
   "connectors.attention_header_records": "Datensätze, die Aufmerksamkeit erfordern",
+  "connectors.attention_locked": "Verschieben Sie das Sperrdatum zurück, dann wird er bei der nächsten Synchronisierung gebucht:",
   "connectors.attention_count": "{n} brauchen Aufmerksamkeit",
   "connectors.attention_mark_reconciled": "Als abgeglichen markieren",
   "connectors.attention_reconciled": "Als abgeglichen markiert. Bleibt hier, bis sich die Bestellung im Shop ändert.",

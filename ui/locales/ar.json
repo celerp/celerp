@@ -3630,6 +3630,7 @@
   "connectors.deposit_unknown_account": "{code} ليس حسابًا مصرفيًا نشطًا. اختر حسابًا مصرفيًا من القائمة.",
   "connectors.attention_header": "طلبات تحتاج إلى انتباه",
   "connectors.attention_header_records": "سجلات تحتاج إلى انتباه",
+  "connectors.attention_locked": "انقل تاريخ القفل إلى الوراء وسيُرحَّل في المزامنة التالية:",
   "connectors.attention_count": "{n} تحتاج إلى انتباه",
   "connectors.attention_mark_reconciled": "وضع علامة كمطابق",
   "connectors.attention_reconciled": "تم وضع علامة كمطابق. يبقى هنا حتى يتغير الطلب في المتجر.",

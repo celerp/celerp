@@ -3630,6 +3630,7 @@
   "connectors.deposit_unknown_account": "{code} não é uma conta bancária ativa. Escolha uma conta bancária da lista.",
   "connectors.attention_header": "Pedidos que precisam de atenção",
   "connectors.attention_header_records": "Registros que precisam de atenção",
+  "connectors.attention_locked": "Mova a data de bloqueio para trás e ele será lançado na próxima sincronização:",
   "connectors.attention_count": "{n} precisam de atenção",
   "connectors.attention_mark_reconciled": "Marcar como conciliado",
   "connectors.attention_reconciled": "Marcado como conciliado. Fica aqui até o pedido mudar na loja.",

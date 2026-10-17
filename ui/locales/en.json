@@ -3630,6 +3630,7 @@
   "connectors.deposit_unknown_account": "{code} isn't an active bank account. Choose a bank account from the list.",
   "connectors.attention_header": "Orders needing attention",
   "connectors.attention_header_records": "Records needing attention",
+  "connectors.attention_locked": "Move the lock date back and it posts on the next sync:",
   "connectors.attention_count": "{n} need attention",
   "connectors.attention_mark_reconciled": "Mark reconciled",
   "connectors.attention_reconciled": "Marked reconciled. It stays here until the order changes in the store.",

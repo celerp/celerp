@@ -20,6 +20,7 @@ from ui.i18n import get_lang, refusal_text, t
 from ui.routes.settings import _check_permission, _token
 from ui.security import is_safe_authorize_url
 
+from celerp.accounting_roles import PERIOD_LOCK_PATH
 from celerp.connectors.base import (
     INBOUND_ENTITIES, OUTBOUND_ENTITIES, ConnectorCategory, SyncFrequency,
 )
@@ -565,8 +566,8 @@ def _entity_status_table(runs: dict, lang: str = "en", attention: dict[str, int]
 
 def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | None = None) -> FT:
     """One record waiting on a person. A change only a person can reconcile
-    (it carries a signature) offers Mark reconciled, and Undo once marked.
-    ``error`` explains why the last Mark or Undo did not apply."""
+    (it carries a signature) offers Mark reconciled, and Undo once marked; one the lock
+    date holds links to Period lock. ``error`` explains why the last Mark or Undo did not apply."""
     record_id = str(entry.get("id", ""))
     item_id = f"connector-attention-{platform}-{record_id}"
     action = Span()
@@ -586,9 +587,11 @@ def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | N
                 hx_vals=hx_vals({"signature": entry["signature"]}), **common,
             ))
     from ui.components.shell import flash
+    locked = Span(" ", t("connectors.attention_locked", lang), " ",
+                  A(t("page.period_lock", lang), href=PERIOD_LOCK_PATH)) if entry.get("locked") else Span()
     return Li(
         Strong(str(entry.get("label", record_id))), ": ", str(entry.get("reason", "")),
-        action, flash(error) if error else Span(), id=item_id,
+        locked, action, flash(error) if error else Span(), id=item_id,
     )
 
 
@@ -1159,7 +1162,7 @@ def _from_accountant_action(item: dict, lang: str) -> FT:
     target, day = (reversal["id"], reversal.get("undo_on")) if reversal else (item["id"], item.get("reverse_on"))
     if day is None:
         return Span(t("accountant_access.from_no_open_date", lang, date=item.get("locked_through") or "--"),
-                    " ", A(t("page.period_lock", lang), href="/settings/accounting?tab=period-lock"))
+                    " ", A(t("page.period_lock", lang), href=PERIOD_LOCK_PATH))
     url = f"/settings/connectors/celerp/from-accountant/{quote(target, safe='')}/reverse"
     if reversal:
         return Span(

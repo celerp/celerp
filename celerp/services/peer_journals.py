@@ -23,6 +23,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import PERIOD_LOCK_PATH
 from celerp.events.engine import emit_event, write_period_lock
 from celerp.importers.results import failure_reason
 from celerp.models.company import Company
@@ -36,6 +37,9 @@ from celerp.services.je_keys import je_void_data
 from ui.i18n import t
 
 FROM_ACCOUNTANT = "/settings/connectors/celerp#from-accountant"
+# Period lock under an address of its own, so moving the lock date for older stock never
+# withdraws these notices (notifications.service.mark_done).
+LOCK_DATE = f"{PERIOD_LOCK_PATH}#period-lock-content"
 _CATEGORY = "integrations"
 _PAGE = 100
 # The delivery marks of the firm's journals the client fetched.
@@ -415,10 +419,12 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
 @dataclass
 class Fetched:
     """What became of one journal of the firm's on the client: the run's outcome, the
-    answer to send the firm (None when it already has it), and the reason it was declined."""
+    answer to send the firm (None when it already has it), the reason it was declined, and
+    whether that reason is the lock date, which the client moves in Period lock."""
     status: str
     answer: dict | None = None
     declined: str | None = None
+    locked: bool = False
 
 
 def _lock_of(settings: dict) -> date | None:
@@ -462,10 +468,12 @@ def _firm_lock_of(settings: dict) -> date | None:
 @dataclass
 class _Placed:
     """A journal of the firm's as the client's books would post it, or why they cannot:
-    ``fix`` says how to fix a hold on one of its accounts (peer_accounts.AccountHold)."""
+    ``fix`` says how to fix a hold on one of its accounts (peer_accounts.AccountHold);
+    ``locked`` that the lock date holds it."""
     entries: list[dict]
     reason: str | None = None
     fix: dict | None = None
+    locked: bool = False
 
 
 async def _place_firm_journal(session: AsyncSession, company: Company, firm: str,
@@ -480,7 +488,7 @@ async def _place_firm_journal(session: AsyncSession, company: Company, firm: str
     if day is None:
         return _Placed(entries, "Its date could not be read.")
     if lock is not None and day <= lock:
-        return _Placed(entries, f"The books are locked through {lock.isoformat()}.")
+        return _Placed(entries, f"The books are locked through {lock.isoformat()}.", locked=True)
     for line in entries:
         contact = line.get("contact")
         if contact and await session.get(Projection, (company.id, contact)) is None:
@@ -562,14 +570,15 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
         if reason is not None:
             await session.rollback()
             await _notify(session, company_id, "notice.peer_journal_declined", memo=memo,
-                          date=str(item.get("ts"))[:10], firm=firm, reason=reason)
+                          date=str(item.get("ts"))[:10], firm=firm, reason=reason,
+                          action_url=LOCK_DATE if placed.locked else FROM_ACCOUNTANT)
             if placed.fix is not None:
                 await peer_attention.record(session, **hold, label=memo, reason=reason, fix=placed.fix)
             else:
                 await peer_attention.clear(session, **hold)
             await session.commit()
             told = held is not None and held.refused == reason
-            return Fetched("skipped", None if told else _answer_record(item, reason), reason)
+            return Fetched("skipped", None if told else _answer_record(item, reason), reason, placed.locked)
         await peer_attention.clear(session, **hold)
         entries = placed.entries
         data = {"memo": item.get("memo") or "", "ts": item["ts"], "entries": entries,
@@ -650,7 +659,8 @@ async def apply_firm_lock(company_id: uuid.UUID, grant_id: uuid.UUID, body: dict
                 CompanyPeerDelivery.entity != INBOUND,
                 CompanyPeerDelivery.refused.is_not(None)))
         if moved:
-            await _notify(session, company_id, "notice.peer_lock_applied", firm=firm, date=lock)
+            await _notify(session, company_id, "notice.peer_lock_applied", firm=firm, date=lock,
+                          action_url=LOCK_DATE)
             await place_after_lock_change(session, company_id)
         await session.commit()
         return settings != original
