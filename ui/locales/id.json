@@ -43,7 +43,7 @@
   "accountant_access.from_lines": "Baris",
   "accountant_access.from_reverse": "Balikkan",
   "accountant_access.from_reverse_confirm": "Balikkan {memo}? Pembalikan diposting pada {date}.",
-  "accountant_access.from_reversed_on": "Dibalik pada {date}",
+  "accountant_access.from_reversed_on": "Pembalikan bertanggal {date}",
   "accountant_access.from_undo_confirm": "Batalkan pembalikan {memo}? Pembatalan diposting pada {date}.",
   "accountant_access.from_no_open_date": "Pembukuan terkunci hingga {date}, jadi tidak ada tanggal terbuka untuk pembalikan. Pindahkan tanggal penguncian untuk membaliknya:",
   "accountant_access.from_voided": "Dibatalkan oleh akuntan Anda",

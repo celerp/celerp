@@ -43,7 +43,7 @@
   "accountant_access.from_lines": "البنود",
   "accountant_access.from_reverse": "عكس",
   "accountant_access.from_reverse_confirm": "عكس {memo}؟ يُرحَّل القيد العكسي بتاريخ {date}.",
-  "accountant_access.from_reversed_on": "عُكس بتاريخ {date}",
+  "accountant_access.from_reversed_on": "قيد العكس بتاريخ {date}",
   "accountant_access.from_undo_confirm": "التراجع عن عكس {memo}؟ يُرحَّل التراجع بتاريخ {date}.",
   "accountant_access.from_no_open_date": "الدفاتر مقفلة حتى {date}، فلا يوجد تاريخ مفتوح للعكس. انقل تاريخ القفل لعكسه:",
   "accountant_access.from_voided": "ألغاه محاسبك",

@@ -43,7 +43,7 @@
   "accountant_access.from_lines": "บรรทัด",
   "accountant_access.from_reverse": "กลับรายการ",
   "accountant_access.from_reverse_confirm": "กลับรายการ {memo} หรือไม่ การกลับรายการจะบันทึกในวันที่ {date}",
-  "accountant_access.from_reversed_on": "กลับรายการแล้วเมื่อ {date}",
+  "accountant_access.from_reversed_on": "รายการกลับบัญชีลงวันที่ {date}",
   "accountant_access.from_undo_confirm": "เลิกทำการกลับรายการ {memo} หรือไม่ จะบันทึกในวันที่ {date}",
   "accountant_access.from_no_open_date": "บัญชีถูกปิดงวดถึง {date} จึงไม่มีวันที่เปิดให้บันทึกกลับรายการ ย้ายวันที่ปิดงวดเพื่อกลับรายการ:",
   "accountant_access.from_voided": "นักบัญชีของคุณยกเลิกแล้ว",

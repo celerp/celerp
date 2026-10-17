@@ -43,7 +43,7 @@
   "accountant_access.from_lines": "明細",
   "accountant_access.from_reverse": "逆仕訳",
   "accountant_access.from_reverse_confirm": "{memo}を逆仕訳しますか？逆仕訳は{date}付で記帳されます。",
-  "accountant_access.from_reversed_on": "{date}に逆仕訳済み",
+  "accountant_access.from_reversed_on": "逆仕訳の日付 {date}",
   "accountant_access.from_undo_confirm": "{memo}の逆仕訳を元に戻しますか？{date}付で記帳されます。",
   "accountant_access.from_no_open_date": "帳簿は {date} までロックされているため、逆仕訳を計上できる日付がありません。逆仕訳するにはロック日を変更してください:",
   "accountant_access.from_voided": "会計士が取り消し済み",

@@ -43,7 +43,7 @@
   "accountant_access.from_lines": "Lines",
   "accountant_access.from_reverse": "Reverse",
   "accountant_access.from_reverse_confirm": "Reverse {memo}? The reversal posts on {date}.",
-  "accountant_access.from_reversed_on": "Reversed on {date}",
+  "accountant_access.from_reversed_on": "Reversal dated {date}",
   "accountant_access.from_undo_confirm": "Undo the reversal of {memo}? The undo posts on {date}.",
   "accountant_access.from_no_open_date": "The books are locked through {date}, so no date is open for the reversal. Move the lock date to reverse it:",
   "accountant_access.from_voided": "Voided by your accountant",

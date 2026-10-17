@@ -43,7 +43,7 @@
   "accountant_access.from_lines": "Lignes",
   "accountant_access.from_reverse": "Contrepasser",
   "accountant_access.from_reverse_confirm": "Contrepasser {memo} ? La contrepassation est passée le {date}.",
-  "accountant_access.from_reversed_on": "Contrepassée le {date}",
+  "accountant_access.from_reversed_on": "Contrepassation datée du {date}",
   "accountant_access.from_undo_confirm": "Annuler la contrepassation de {memo} ? L'annulation est passée le {date}.",
   "accountant_access.from_no_open_date": "Les livres sont clôturés jusqu'au {date} : aucune date n'est ouverte pour la contrepassation. Déplacez la date de clôture pour la contrepasser :",
   "accountant_access.from_voided": "Annulée par votre comptable",
