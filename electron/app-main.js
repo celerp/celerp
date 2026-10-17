@@ -122,7 +122,7 @@ function _readStoredDbPassword() {
 function getBundledDbPassword() {
   const stored = _readStoredDbPassword();
   if (stored) return stored;
-  const firstBoot = !fs.existsSync(path.join(PG_DATA_DIR, "PG_VERSION"));
+  const firstBoot = !fs.existsSync(path.join(pgDataDir(), "PG_VERSION"));
   if (firstBoot) {
     const pw = require("crypto").randomBytes(24).toString("hex");
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -197,7 +197,7 @@ const { writeConfig: writeLockedConfig } = require("./config-writer");
 const { serveUpdateState } = require("./update-state");
 const { startupDeelevation, relaunchThroughExplorer } = require("./deelevation");
 const { windowsStartFailure, clusterStartFailure, logSince } = require("./windows-start-errors");
-const { initialiseClusterOnce, initdbShareDir } = require("./windows-initdb");
+const { initialiseClusterOnce, postgresPaths } = require("./windows-initdb");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -246,9 +246,7 @@ function pgBinDir() {
   if (process.platform === "darwin") {
     return path.join(process.resourcesPath, `pg-${process.arch}`, "bin");
   }
-  if (process.platform === "win32") {
-    return path.join(process.resourcesPath, "pg-win", "bin");
-  }
+  if (process.platform === "win32") return windowsPgPaths().clientBinDir;
   if (process.platform === "linux") {
     return path.join(process.resourcesPath, "pg-linux", "bin");
   }
@@ -274,14 +272,44 @@ function pythonBin() {
 
 // ── Startup sequence ─────────────────────────────────────────────────────────
 
-/** The Windows short (8.3) form of an existing path, or "" when it has none. */
-function windowsShortPath(p) {
-  const r = childProcess.spawnSync(pythonBin(), ["-I", "-c",
-    "import ctypes,sys;b=ctypes.create_unicode_buffer(32768);" +
-    "n=ctypes.windll.kernel32.GetShortPathNameW(sys.argv[1],b,32768);" +
-    "sys.stdout.write(b.value if 0<n<32768 else '')", p],
-  { encoding: "utf8", env: { ...process.env, PYTHONIOENCODING: "utf-8" }, timeout: 30000 });
-  return r.status === 0 ? r.stdout.trim() : "";
+/**
+ * The user's private ASCII folder under ProgramData, made or checked by
+ * win_restricted_launch.py --private-dir. Throws a message the user can act on
+ * when the folder there is not the user's own.
+ */
+function windowsPrivateRoot() {
+  const parent = process.env.ProgramData;
+  if (!parent) throw new Error("Windows did not say where its ProgramData folder is, so Celerp cannot set up its database.");
+  const r = childProcess.spawnSync(pythonBin(), ["-I", RESTRICTED_LAUNCHER, "--private-dir", parent, "Celerp-"],
+    { encoding: "utf8", env: { ...process.env, PYTHONIOENCODING: "utf-8" }, timeout: 30000 });
+  if (r.status === 0) return r.stdout.trim();
+  const reason = (r.stderr || r.error?.message || `exit code ${r.status}`).replace(/^win_restricted_launch:\s*/, "").trim();
+  throw new Error(
+    `Celerp keeps its database in a folder under ${parent}, because your Windows account name has ` +
+    `letters the database cannot read, and it cannot use that folder: ${reason}. Ask whoever ` +
+    "manages this PC to remove that folder, then start Celerp again. Your data is not affected.");
+}
+
+let windowsPgPathsCache = null;
+
+/** Windows: the folders Postgres runs from and keeps its data in (windows-initdb.js postgresPaths). */
+function windowsPgPaths() {
+  windowsPgPathsCache ??= postgresPaths({
+    dataDir: PG_DATA_DIR,
+    // The platform package's "exports" blocks require.resolve of its package.json, so
+    // locate the binaries under the unpacked resources directly (asarUnpack keeps the
+    // native bins outside app.asar).
+    nativeDir: path.join(process.resourcesPath, "app.asar.unpacked", "node_modules",
+      "@embedded-postgres", "windows-x64", "native"),
+    clientBinDir: path.join(process.resourcesPath, "pg-win", "bin"),
+    privateRoot: windowsPrivateRoot,
+  });
+  return windowsPgPathsCache;
+}
+
+/** The bundled cluster's data folder. */
+function pgDataDir() {
+  return process.platform === "win32" && !IS_DEV ? windowsPgPaths().dataDir : PG_DATA_DIR;
 }
 
 // Windows-only first-boot initdb that mirrors embedded-postgres's initialise()
@@ -292,15 +320,12 @@ function windowsShortPath(p) {
 async function initialisePostgresWindows(password) {
   const logPath = path.join(LOG_DIR, "initdb-win.log");
   const trace = (m) => { try { fs.appendFileSync(logPath, m + "\n"); } catch { /* ignore */ } };
-  // The platform package's "exports" blocks require.resolve of its package.json, so
-  // locate the binary under the unpacked resources directly (asarUnpack keeps the
-  // native bins outside app.asar).
-  const initdbBin = path.join(process.resourcesPath, "app.asar.unpacked", "node_modules",
-    "@embedded-postgres", "windows-x64", "native", "bin", "initdb.exe");
+  const { nativeDir, dataDir } = windowsPgPaths();
+  const initdbBin = path.join(nativeDir, "bin", "initdb.exe");
   trace(`initdb bin=${initdbBin} exists=${fs.existsSync(initdbBin)}`);
   const runInitdb = async (target) => {
-    const shareDir = initdbShareDir(path.join(path.dirname(path.dirname(initdbBin)), "share"), windowsShortPath);
-    const pwfile = path.join(DATA_DIR, `pg-pwfile-${process.pid}`);
+    // Next to the target, so its path is one initdb can read too.
+    const pwfile = path.join(path.dirname(target), `pg-pwfile-${process.pid}`);
     fs.writeFileSync(pwfile, `${password}\n`);
     // Only this run's part of the log is read back to explain a failure.
     const offset = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
@@ -317,7 +342,7 @@ async function initialisePostgresWindows(password) {
           // against a WIN1252 database.
           "--encoding=UTF8",
           "--no-locale",
-          "-L", shareDir,
+          "-L", path.join(nativeDir, "share"),
         ], { stdio: ["ignore", out, out], env: { ...process.env } });
         proc.on("error", (e) => { trace("initdb spawn error: " + e.message); reject(e); });
         proc.on("exit", (code) => {
@@ -332,7 +357,7 @@ async function initialisePostgresWindows(password) {
       try { fs.rmSync(pwfile, { force: true }); } catch { /* ignore */ }
     }
   };
-  await initialiseClusterOnce({ dataDir: PG_DATA_DIR, runInitdb });
+  await initialiseClusterOnce({ dataDir, runInitdb });
 }
 
 /**
@@ -363,7 +388,8 @@ function serverCommand(asgiApp, port) {
 }
 
 async function startPostgres(dbPort) {
-  fs.mkdirSync(PG_DATA_DIR, { recursive: true });
+  const dataDir = pgDataDir();
+  fs.mkdirSync(dataDir, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
 
   if (!EmbeddedPostgres) {
@@ -373,7 +399,9 @@ async function startPostgres(dbPort) {
   const dbPassword = getBundledDbPassword();
   const pgOutput = outputTail();
   pgInstance = new EmbeddedPostgres({
-    databaseDir: PG_DATA_DIR,
+    databaseDir: dataDir,
+    // Windows runs the server from a path it can read (windowsPgPaths).
+    ...(process.platform === "win32" && !IS_DEV && { postgresBinary: path.join(windowsPgPaths().nativeDir, "bin", "postgres.exe") }),
     user: "celerp",
     password: dbPassword,
     port: dbPort,
@@ -388,7 +416,7 @@ async function startPostgres(dbPort) {
   // Only run initdb on first boot — PG_VERSION is written by initdb and
   // signals that the cluster is already initialised. Calling initialise()
   // on an existing data directory causes initdb to exit non-zero and crash.
-  const pgVersionFile = path.join(PG_DATA_DIR, "PG_VERSION");
+  const pgVersionFile = path.join(dataDir, "PG_VERSION");
   if (!fs.existsSync(pgVersionFile)) {
     // First boot: create the cluster. On Windows we initialise it ourselves (see
     // initialisePostgresWindows) because embedded-postgres is ESM and imports the
@@ -407,7 +435,7 @@ async function startPostgres(dbPort) {
     if (known) throw new Error(known);
     // Anything else on Windows: say where the database is and that it was left
     // alone, never remove it (the message tells an unfinished one from a used one).
-    if (process.platform === "win32") throw new Error(clusterStartFailure(PG_DATA_DIR, e?.message || pgOutput.text()));
+    if (process.platform === "win32") throw new Error(clusterStartFailure(dataDir, e?.message || pgOutput.text()));
     throw e;
   }
 
@@ -999,7 +1027,15 @@ async function _doUninstallDeleteData() {
   // userData throughout the process lifetime; deleting userData itself leaves those
   // dirs behind on macOS. DATA_DIR is everything Celerp owns (postgres, modules,
   // config, JWT secret) and is safe to remove while the process is still running.
-  const dataPath = DATA_DIR;
+  // On Windows the database may instead sit in the user's private folder under
+  // ProgramData (windowsPgPaths), which goes too.
+  const dataPaths = [DATA_DIR];
+  if (process.platform === "win32" && !IS_DEV) {
+    try {
+      const { privateRoot } = windowsPgPaths();
+      if (privateRoot) dataPaths.push(privateRoot);
+    } catch (err) { console.error("[uninstall] cannot use the private database folder:", err); }
+  }
   const { response } = await dialog.showMessageBox(mainWindow, {
     type: "warning",
     buttons: ["Cancel", "Delete Data & Quit"],
@@ -1009,14 +1045,18 @@ async function _doUninstallDeleteData() {
     message: "Delete all Celerp data?",
     detail:
       "This will permanently delete:\n\n" +
-      `• ${dataPath}\n\n` +
+      dataPaths.map((p) => `• ${p}\n`).join("") + "\n" +
       "This includes your database, configuration, modules, and all business data. " +
       "This cannot be undone.\n\n" +
       "After quitting, drag Celerp from Applications to Trash to complete removal.",
   });
   if (response === 1) {
-    try { fs.rmSync(dataPath, { recursive: true, force: true }); }
-    catch (err) { console.error("[uninstall] failed to delete data dir:", err); }
+    // A link in the private folder is removed as a link; the program folder it
+    // points to is not followed.
+    for (const p of dataPaths) {
+      try { fs.rmSync(p, { recursive: true, force: true }); }
+      catch (err) { console.error("[uninstall] failed to delete data dir:", err); }
+    }
     isQuitting = true;
     app.quit();
   }

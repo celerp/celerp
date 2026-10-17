@@ -18,6 +18,11 @@
 #   -Previous      a released installer: the account installs it, it opens fresh data and
 #                  keeps records in it, then this build installs over it and must serve the
 #                  same records (scripts/smoke_records.py).
+#   -NoShortNames  Windows stops making short (8.3) names before the account is created,
+#                  so its profile folder has none; the smoke checks that it has none.
+#                  With a name Postgres cannot read in the ANSI code page (Thai, Chinese)
+#                  the database must then be set up in the account's private folder
+#                  under %ProgramData% (Celerp-<account SID>).
 #   -OverRunning   once the app is ready, the account runs this build's installer again
 #                  with the app open (its processes and API checked alive first); it must
 #                  end exactly those processes, leave a whole install, and boot again.
@@ -32,14 +37,15 @@ param(
   [string]$UserName = "celerpci",
   [ValidateSet("user", "machine")][string]$Install = "user",
   [string]$Previous = "",
+  [switch]$NoShortNames,
   [switch]$OverRunning
 )
 $ErrorActionPreference = "Stop"
 
 $smoke = "$Account account, $Install install"
 function Fail([string]$why) { Write-Host "::error::boot smoke ($smoke) FAILED on Windows - $why"; exit 1 }
-if ($Account -eq "admin" -and ($Install -ne "user" -or $Previous -or $OverRunning -or $PSBoundParameters.ContainsKey("UserName"))) {
-  Fail "the administrator smoke runs the built-in Administrator on a fresh install for itself; -UserName, -Install machine, -Previous and -OverRunning are for a standard account"
+if ($Account -eq "admin" -and ($Install -ne "user" -or $Previous -or $OverRunning -or $NoShortNames -or $PSBoundParameters.ContainsKey("UserName"))) {
+  Fail "the administrator smoke runs the built-in Administrator on a fresh install for itself; -UserName, -Install machine, -Previous, -NoShortNames and -OverRunning are for a standard account"
 }
 if ($Previous -and $Install -eq "machine") { Fail "-Previous upgrades an install for the account itself; it does not combine with -Install machine" }
 if ($Previous -and -not (Test-Path $Previous)) { Fail "no previous installer at $Previous" }
@@ -52,6 +58,10 @@ function Timing([string]$what, [Diagnostics.Stopwatch]$watch) {
 
 $pw  = "Ci-" + [guid]::NewGuid().ToString("N").Substring(0,16) + "!Aa9"
 $sec = ConvertTo-SecureString $pw -AsPlainText -Force
+if ($NoShortNames) {
+  fsutil 8dot3name set 1 | Write-Host
+  if ($LASTEXITCODE -ne 0) { Fail "fsutil could not stop short name creation" }
+}
 if ($Account -eq "standard") {
   $u = $UserName
   New-LocalUser -Name $u -Password $sec -AccountNeverExpires -PasswordNeverExpires | Out-Null
@@ -126,6 +136,13 @@ Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "exit 0" -Credential $cred
 $sid = (New-Object System.Security.Principal.NTAccount("$env:COMPUTERNAME\$u")).Translate([System.Security.Principal.SecurityIdentifier]).Value
 $profileDir = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid }).LocalPath
 if (-not $profileDir) { Fail "no profile created for $u" }
+if ($NoShortNames) {
+  Add-Type -Namespace Win32 -Name Paths -MemberDefinition '[DllImport("kernel32.dll", CharSet=CharSet.Unicode)] public static extern uint GetShortPathNameW(string longPath, System.Text.StringBuilder shortPath, uint size);'
+  $short = New-Object System.Text.StringBuilder 1024
+  if ([Win32.Paths]::GetShortPathNameW($profileDir, $short, 1024) -eq 0) { Fail "could not read the short form of $profileDir" }
+  if ($short.ToString() -ne $profileDir) { Fail "the profile $profileDir still has a short name ($short)" }
+  Write-Host "smoke: the profile $profileDir has no short name"
+}
 # The wrappers are UTF-8 and switch cmd to UTF-8 first, so a profile path with non-ASCII
 # letters reaches the app as it is.
 $envSet = "set USERNAME=$u`r`nset USERDOMAIN=$env:COMPUTERNAME`r`nset USERPROFILE=$profileDir`r`nset APPDATA=$profileDir\AppData\Roaming`r`nset LOCALAPPDATA=$profileDir\AppData\Local`r`nset TEMP=$profileDir\AppData\Local\Temp`r`nset TMP=$profileDir\AppData\Local\Temp`r`nif not exist `"%APPDATA%`" mkdir `"%APPDATA%`"`r`nif not exist `"%TEMP%`" mkdir `"%TEMP%`""
@@ -290,6 +307,17 @@ Write-Host "token states OK for $Account"
 
 $port = Launch $exe "first launch"
 Write-Host "boot smoke OK on Windows ($smoke, account $u, port $port)"
+
+# A new database under a profile path with letters outside ASCII is set up in the
+# account's private folder, which only the account, SYSTEM and administrators can open.
+if (-not $Previous -and $profileDir -notmatch '^[\x20-\x7e]+$') {
+  $private = Join-Path $env:ProgramData "Celerp-$sid"
+  if (-not (Test-Path (Join-Path $private "postgres\PG_VERSION"))) { Fail "no database in the private folder $private" }
+  $acl = Get-Acl $private
+  $others = @($acl.Access | Where-Object { $_.IsInherited -or $_.IdentityReference.Value -notin @("$env:COMPUTERNAME\$u", "NT AUTHORITY\SYSTEM", "BUILTIN\Administrators") })
+  if ($others.Count) { $acl.Access | Format-Table | Out-String | Write-Host; Fail "the private folder $private is open to others" }
+  Write-Host "smoke: the database is in $private, open only to $u, SYSTEM and administrators"
+}
 
 if ($Previous) {
   Records snapshot $port (Join-Path $pub "celerp-candidate.snapshot")

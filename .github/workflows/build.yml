@@ -808,6 +808,23 @@ jobs:
           Write-Host "upgrading from $tag"
           ./scripts/win-boot-smoke.ps1 -Account standard -UserName "Celerp Upgrade" -Previous (Join-Path $previous "Celerp-Setup.exe")
 
+      # Accounts named in Thai and in Chinese, on a PC that makes no short (8.3) names:
+      # Postgres cannot read their profile paths, and there is no short form to fall
+      # back on. The database must be set up in the account's private folder.
+      - name: Boot smoke (Windows, Thai account name, no short names)
+        timeout-minutes: 20
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: electron
+        run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName "ทดสอบ เซเลิร์ป" -NoShortNames
+
+      - name: Boot smoke (Windows, Chinese account name, no short names)
+        timeout-minutes: 20
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: electron
+        run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName "测试 用户" -NoShortNames
+
       # The installer reads the installed version from the uninstall entry. Over an
       # existing install: none -> installs; the same version run silently ->
       # reinstalls; installed newer -> stops with exit 2 and changes nothing (the

@@ -10,7 +10,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { initialiseClusterOnce, initdbShareDir } = require("../windows-initdb");
+const { initialiseClusterOnce, postgresPaths } = require("../windows-initdb");
 
 function dataDirIn(root = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-pg-"))) {
   const dataDir = path.join(root, "pg");
@@ -213,27 +213,76 @@ test("a cluster an older version left half set up is kept exactly as it is", asy
   expect(fs.readFileSync(path.join(dataDir, "base", "1", "1259"), "utf8")).toBe("partial");
 });
 
-// initdb writes the path of its input files into SQL on a UTF-8 database, so a
-// per-user install under an account named with accents must hand it an ASCII path.
-describe("initdbShareDir", () => {
-  const share = "C:\\Users\\Célerp Tëst ü\\AppData\\Local\\Programs\\Celerp\\native\\share";
+// Postgres on Windows reads its paths in the ANSI code page, so under an account
+// named in Thai or Chinese it is run through an ASCII folder private to the user,
+// with no reliance on short (8.3) names, which a PC may not make.
+describe("postgresPaths", () => {
+  const thai = (root) => path.join(root, "\u0e17\u0e14\u0e2a\u0e2d\u0e1a \u6d4b\u8bd5");
 
-  test("an ASCII folder is used as it is, without asking Windows", () => {
-    const shortPath = jest.fn();
-    const plain = "C:\\Program Files\\Celerp\\native\\share";
-    expect(initdbShareDir(plain, shortPath)).toBe(plain);
-    expect(shortPath).not.toHaveBeenCalled();
+  function setup() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-paths-"));
+    const user = thai(root);
+    const nativeDir = path.join(user, "Programs", "Celerp", "native");
+    const clientBinDir = path.join(user, "Programs", "Celerp", "pg-win", "bin");
+    fs.mkdirSync(path.join(nativeDir, "bin"), { recursive: true });
+    fs.mkdirSync(clientBinDir, { recursive: true });
+    const privateDir = path.join(root, "ProgramData", "Celerp-S-1-5-21-1");
+    const privateRoot = jest.fn(() => { fs.mkdirSync(privateDir, { recursive: true }); return privateDir; });
+    return { root, user, nativeDir, clientBinDir, dataDir: path.join(user, "Roaming", "celerp", "postgres"), privateDir, privateRoot };
+  }
+
+  test("ASCII paths are used as they are and no private folder is made", () => {
+    const privateRoot = jest.fn();
+    const given = { dataDir: "C:\\Users\\celerp user\\pg", nativeDir: "C:\\Program Files\\Celerp\\native", clientBinDir: "C:\\Program Files\\Celerp\\bin" };
+    expect(postgresPaths({ ...given, privateRoot })).toEqual({ ...given, privateRoot: null });
+    expect(privateRoot).not.toHaveBeenCalled();
   });
 
-  test("a folder with letters outside ASCII is given as its short form", () => {
-    const shortPath = jest.fn(() => "C:\\Users\\CLERPT~1\\AppData\\Local\\Programs\\Celerp\\native\\share");
-    expect(initdbShareDir(share, shortPath)).toBe("C:\\Users\\CLERPT~1\\AppData\\Local\\Programs\\Celerp\\native\\share");
-    expect(shortPath).toHaveBeenCalledWith(share);
-  });
-
-  test.each([["no short form", ""], ["a short form that is not ASCII either", share]])(
-    "%s stops the setup with a message saying how to reinstall", (_label, result) => {
-      expect(() => initdbShareDir(share, () => result))
-        .toThrow(/cannot set up its database from .*Reinstall Celerp for all users/);
+  test("program folders outside ASCII are reached through links in the private folder, and a new database is set up there", () => {
+    const s = setup();
+    const paths = postgresPaths(s);
+    expect(paths).toEqual({
+      nativeDir: path.join(s.privateDir, "native"),
+      clientBinDir: path.join(s.privateDir, "pg-bin"),
+      dataDir: path.join(s.privateDir, "postgres"),
+      privateRoot: s.privateDir,
     });
+    expect(s.privateRoot).toHaveBeenCalledTimes(1);
+    expect(fs.realpathSync(path.join(paths.nativeDir, "bin"))).toBe(fs.realpathSync(path.join(s.nativeDir, "bin")));
+    expect(fs.realpathSync(paths.clientBinDir)).toBe(fs.realpathSync(s.clientBinDir));
+  });
+
+  test("a database that already exists where the app keeps its data stays there", () => {
+    const s = setup();
+    fs.mkdirSync(s.dataDir, { recursive: true });
+    fs.writeFileSync(path.join(s.dataDir, "PG_VERSION"), "17\n");
+    expect(postgresPaths(s).dataDir).toBe(s.dataDir);
+  });
+
+  test("a link left by an earlier install is pointed at the current one", () => {
+    const s = setup();
+    const old = path.join(s.root, "old-native");
+    fs.mkdirSync(path.join(s.privateDir), { recursive: true });
+    fs.mkdirSync(old);
+    fs.symlinkSync(old, path.join(s.privateDir, "native"), "junction");
+    postgresPaths(s);
+    expect(fs.realpathSync(path.join(s.privateDir, "native"))).toBe(fs.realpathSync(s.nativeDir));
+    expect(fs.existsSync(old)).toBe(true);
+  });
+
+  test("a real folder where a link belongs is left alone and stops the start", () => {
+    const s = setup();
+    fs.mkdirSync(path.join(s.privateDir, "native"), { recursive: true });
+    fs.writeFileSync(path.join(s.privateDir, "native", "keep"), "keep me");
+    const native = path.join(s.privateDir, "native");
+    expect(() => postgresPaths(s)).toThrow(`Celerp found ${native}, which it did not create. Move it somewhere else`);
+    expect(fs.readFileSync(path.join(s.privateDir, "native", "keep"), "utf8")).toBe("keep me");
+  });
+
+  test("a private folder whose path is outside ASCII stops the start with its path", () => {
+    const s = setup();
+    const bad = thai(path.join(s.root, "ProgramData"));
+    expect(() => postgresPaths({ ...s, privateRoot: () => bad }))
+      .toThrow(`The folder ${bad} for the database has letters outside ASCII.`);
+  });
 });

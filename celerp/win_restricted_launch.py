@@ -26,6 +26,16 @@ prints "standard" (no administrator rights), "elevated" (administrator, with a
 standard token behind it: UAC on, Run as administrator) or "admin"
 (administrator with nothing behind it: UAC off, or the built-in Administrator).
 
+It also makes the folder the app keeps Postgres paths in when the user's own
+folder has letters Postgres cannot read:
+
+  python -I win_restricted_launch.py --private-dir PARENT PREFIX
+
+creates PARENT\\PREFIX<user SID> owned by the token's user and open only to that
+user, SYSTEM and Administrators, or checks that the folder already there is a
+real folder owned by that user, and prints its path. A folder another account
+made in its place is refused, never used.
+
 On failure it writes one line starting with FAILURE_PREFIX to stderr and exits 1;
 the app recognises that prefix (electron/windows-start-errors.js).
 """
@@ -61,6 +71,13 @@ CREATE_SUSPENDED = 0x4
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 RESUME_FAILED = 0xFFFFFFFF
+SDDL_REVISION_1 = 1
+SE_FILE_OBJECT = 1
+OWNER_SECURITY_INFORMATION = 0x1
+ERROR_ALREADY_EXISTS = 183
+INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
+FILE_ATTRIBUTE_DIRECTORY = 0x10
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
 class LaunchError(Exception):
@@ -82,6 +99,25 @@ def classify(is_admin: bool, elevation_type: int) -> str:
     if not is_admin:
         return "standard"
     return "elevated" if elevation_type == TOKEN_ELEVATION_FULL else "admin"
+
+
+def private_dir_sddl(user_sid: str) -> str:
+    """The security of a private folder: owned by the user, with full access for the
+    user, SYSTEM and Administrators, passed on to everything inside it, and nothing
+    inherited from the folder it sits in."""
+    return f"O:{user_sid}D:P(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+
+
+def private_dir_problem(attributes: int, owner_sid: str | None, user_sid: str) -> str | None:
+    """Why the existing folder cannot be used as the user's private folder, or None.
+    `owner_sid` is read only for a real folder (None otherwise)."""
+    if attributes == INVALID_FILE_ATTRIBUTES or not attributes & FILE_ATTRIBUTE_DIRECTORY:
+        return "is not a folder"
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT:
+        return "is a link to another place"
+    if owner_sid != user_sid:
+        return f"belongs to another account ({owner_sid})"
+    return None
 
 
 def _api():
@@ -155,6 +191,14 @@ def _api():
             wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]),
         (advapi32, "SetEntriesInAclW"): (wintypes.DWORD, [
             wintypes.ULONG, ctypes.POINTER(ExplicitAccess), ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]),
+        (kernel32, "CreateDirectoryW"): (wintypes.BOOL, [wintypes.LPCWSTR, ctypes.c_void_p]),
+        (kernel32, "GetFileAttributesW"): (wintypes.DWORD, [wintypes.LPCWSTR]),
+        (advapi32, "ConvertSidToStringSidW"): (wintypes.BOOL, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]),
+        (advapi32, "ConvertStringSecurityDescriptorToSecurityDescriptorW"): (wintypes.BOOL, [
+            wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]),
+        (advapi32, "GetNamedSecurityInfoW"): (wintypes.DWORD, [
+            wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]),
         (advapi32, "CreateProcessAsUserW"): (wintypes.BOOL, [
             wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
             wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
@@ -244,6 +288,68 @@ def token_state() -> str:
     return classify(is_admin, elevation_type.value)
 
 
+def _sid_string(kernel32, advapi32, wintypes, sid) -> str:
+    text = ctypes.c_void_p()
+    _check(advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)), "ConvertSidToStringSidW")
+    try:
+        return ctypes.wstring_at(text.value)
+    finally:
+        kernel32.LocalFree(text)
+
+
+def private_dir(parent: str, prefix: str) -> str:
+    """Create or check the user's private folder PARENT\\PREFIX<user SID>; return its path."""
+    kernel32, advapi32, wintypes, *_ = _api()
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
+                    ("bInheritHandle", wintypes.BOOL)]
+
+    token = wintypes.HANDLE()
+    _check(advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)),
+           "OpenProcessToken")
+    try:
+        user = _token_information(advapi32, wintypes, token, TOKEN_USER_CLASS, "GetTokenInformation(TokenUser)")
+        # TOKEN_USER starts with a pointer to the user's SID.
+        user_sid = _sid_string(kernel32, advapi32, wintypes, ctypes.c_void_p.from_buffer(user).value)
+    finally:
+        kernel32.CloseHandle(token)
+    folder = parent.rstrip("\\") + "\\" + prefix + user_sid
+
+    # Created with its security in the one call, so no other account can reach it
+    # in between.
+    descriptor = ctypes.c_void_p()
+    _check(advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        private_dir_sddl(user_sid), SDDL_REVISION_1, ctypes.byref(descriptor), None),
+        "ConvertStringSecurityDescriptorToSecurityDescriptorW")
+    try:
+        attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor.value, False)
+        if not kernel32.CreateDirectoryW(folder, ctypes.byref(attributes)):
+            error = ctypes.get_last_error()
+            if error != ERROR_ALREADY_EXISTS:
+                raise LaunchError(f"CreateDirectoryW failed (error {error})")
+    finally:
+        kernel32.LocalFree(descriptor)
+
+    found = kernel32.GetFileAttributesW(folder)
+    owner_sid = None
+    if found != INVALID_FILE_ATTRIBUTES and found & FILE_ATTRIBUTE_DIRECTORY and not found & FILE_ATTRIBUTE_REPARSE_POINT:
+        owner = ctypes.c_void_p()
+        security = ctypes.c_void_p()
+        error = advapi32.GetNamedSecurityInfoW(folder, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+                                               ctypes.byref(owner), None, None, None, ctypes.byref(security))
+        if error:
+            raise LaunchError(f"GetNamedSecurityInfoW failed (error {error})")
+        try:
+            owner_sid = _sid_string(kernel32, advapi32, wintypes, owner)
+        finally:
+            kernel32.LocalFree(security)
+    problem = private_dir_problem(found, owner_sid, user_sid)
+    if problem:
+        raise LaunchError(f"{folder} {problem}")
+    return folder
+
+
 def run_restricted(argv: list[str]) -> int:
     """Start `argv` with the restricted token, wait for it, and return its exit code."""
     (kernel32, advapi32, wintypes, SidAndAttributes, StartupInfo, ProcessInformation,
@@ -315,6 +421,9 @@ def main(argv: list[str]) -> int:
     try:
         if argv == ["--token-state"]:
             print(token_state())
+            return 0
+        if argv[0] == "--private-dir" and len(argv) == 3:
+            print(private_dir(argv[1], argv[2]))
             return 0
         return exit_status(run_restricted(argv))
     except LaunchError as e:

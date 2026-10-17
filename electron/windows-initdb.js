@@ -147,26 +147,60 @@ async function initialiseClusterOnce({ dataDir, runInitdb, isRunning = processIs
   }
 }
 
-// initdb writes the path of its input files into SQL it runs on a UTF-8 database,
-// in the Windows ANSI code page. A path with letters outside ASCII (a per-user
-// install under an account named with accents or another script) is not valid
-// UTF-8 there and setup fails, so initdb is given an ASCII form of that path.
+// Postgres on Windows reads its own path, its data folder and the paths it is
+// given in the ANSI code page, so letters outside it (an account named in Thai or
+// Chinese, whose user folder holds a per-user install and every data folder) turn
+// into "?" and setup or start fails. A path with letters outside ASCII is replaced
+// by one in an ASCII folder private to the user: the program folders by links to
+// them, a new database by a folder there. A database that already exists stays
+// where it is.
 const ASCII_PATH = /^[\x20-\x7e]+$/;
 
-/**
- * The folder of initdb's input files as a path initdb can use: `shareDir` when it
- * is ASCII, otherwise its Windows short (8.3) form from `shortPath(shareDir)`.
- * Throws a message the user can act on when the folder has no ASCII form.
- */
-function initdbShareDir(shareDir, shortPath) {
-  if (ASCII_PATH.test(shareDir)) return shareDir;
-  const short = shortPath(shareDir);
-  if (short && ASCII_PATH.test(short)) return short;
-  throw new Error(
-    `Celerp cannot set up its database from ${shareDir}, because the folder name has ` +
-    "letters the database setup cannot read. Reinstall Celerp for all users of this " +
-    "PC (it then goes into Program Files), or into a folder whose path uses only " +
-    "English letters and digits. Your data is not affected.");
+/** Point the link at `linkPath` to `target`, creating or repointing it. */
+function linkTo(linkPath, target) {
+  let found = null;
+  try {
+    found = fs.lstatSync(linkPath);
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+  }
+  // Anything at the path other than a link is not this code's to replace.
+  if (found && !found.isSymbolicLink()) {
+    throw new Error(
+      `Celerp found ${linkPath}, which it did not create. Move it somewhere else (keep ` +
+      "it if it may hold data), then start Celerp again.");
+  }
+  if (found) {
+    if (path.resolve(fs.readlinkSync(linkPath)) === path.resolve(target)) return linkPath;
+    fs.unlinkSync(linkPath);
+  }
+  fs.symlinkSync(target, linkPath, "junction");
+  return linkPath;
 }
 
-module.exports = { initialiseClusterOnce, initdbShareDir };
+/**
+ * The folders Postgres is run with: `nativeDir` (the server programs and their
+ * input files), `clientBinDir` (the backup tools) and `dataDir`, each as given
+ * when Postgres can read it, plus `privateRoot`: the user's private ASCII folder
+ * when one is used, else null. `privateRoot()` returns that folder, creating it;
+ * it is called only when a path needs replacing.
+ */
+function postgresPaths({ dataDir, nativeDir, clientBinDir, privateRoot }) {
+  let root = null;
+  const inRoot = (name) => {
+    if (root === null) {
+      root = privateRoot();
+      if (!ASCII_PATH.test(root)) throw new Error(`The folder ${root} for the database has letters outside ASCII.`);
+    }
+    return path.join(root, name);
+  };
+  const usable = (p) => ASCII_PATH.test(p);
+  const paths = {
+    nativeDir: usable(nativeDir) ? nativeDir : linkTo(inRoot("native"), nativeDir),
+    clientBinDir: usable(clientBinDir) ? clientBinDir : linkTo(inRoot("pg-bin"), clientBinDir),
+    dataDir: usable(dataDir) || fs.existsSync(path.join(dataDir, "PG_VERSION")) ? dataDir : inRoot("postgres"),
+  };
+  return { ...paths, privateRoot: root };
+}
+
+module.exports = { initialiseClusterOnce, postgresPaths };
