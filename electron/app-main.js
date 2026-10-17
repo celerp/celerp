@@ -594,45 +594,54 @@ function _copyDirSync(src, dst) {
   }
 }
 
+// The environment both Python servers start with. They are separate processes that
+// share the data folder (recovery and restore outcomes, caches), so every path and
+// setting they have in common is set here, once.
+function serverEnv(dbUrl, cfg) {
+  return {
+    ...process.env,
+    // Scrub Python environment variables that the user's shell may have set
+    // (pyenv, conda, Homebrew, virtualenv). If inherited, they redirect the
+    // bundled standalone Python to the wrong stdlib and crash uvicorn before
+    // it ever binds a port. This is the cause of "Port N never opened" when
+    // launching a notarized app from the terminal (Finder launch gets a clean
+    // environment and never triggers this).
+    PYTHONHOME: undefined,
+    PYTHONSTARTUP: undefined,
+    VIRTUAL_ENV: undefined,
+    CONDA_PREFIX: undefined,
+    CONDA_DEFAULT_ENV: undefined,
+    PYTHONUTF8: "1",  // UTF-8 file I/O on Windows (cp1252 default crashes on UTF-8 data)
+    DATABASE_URL: dbUrl,
+    JWT_SECRET: getOrCreateJwtSecret(),
+    PYTHONPATH: `${APP_DIR}${path.delimiter}${MODULE_DIR}`,
+    MODULE_DIR: MODULE_DIR,
+    // Tell the Python module loader that DEFAULT_MODULES_SRC is first-party trusted.
+    // Seeded copies in MODULE_DIR inherit trust; without this the loader's BSL AST
+    // scan rejects celerp-ai, celerp-connectors, celerp-backup, and celerp-admin.
+    CELERP_TRUSTED_MODULE_DIRS: DEFAULT_MODULES_SRC,
+    CELERP_DATA_DIR: DATA_DIR,
+    CELERP_CONFIG: PYTHON_CONFIG_PATH,
+    CELERP_MODE: "desktop",
+    CELERP_API_PORT: String(apiPort),
+    CELERP_UI_PORT: String(uiPort),
+    CELERP_PG_BIN_DIR: pgBinDir(),
+    ...resolveStorageEnv(cfg),
+  };
+}
+
 function startApi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
     // apiPort and uiPort are pre-allocated by the caller before startApi/startUi
     // are invoked, so both values are already set here.
     const env = {
-      ...process.env,
-      // Scrub Python environment variables that the user's shell may have set
-      // (pyenv, conda, Homebrew, virtualenv). If inherited, they redirect the
-      // bundled standalone Python to the wrong stdlib and crash uvicorn before
-      // it ever binds a port. This is the cause of "Port N never opened" when
-      // launching a notarized app from the terminal (Finder launch gets a clean
-      // environment and never triggers this).
-      PYTHONHOME: undefined,
-      PYTHONSTARTUP: undefined,
-      VIRTUAL_ENV: undefined,
-      CONDA_PREFIX: undefined,
-      CONDA_DEFAULT_ENV: undefined,
-      PYTHONUTF8: "1",  // UTF-8 file I/O on Windows (cp1252 default crashes on UTF-8 data)
-      DATABASE_URL: dbUrl,
-      JWT_SECRET: getOrCreateJwtSecret(),
-      PYTHONPATH: `${APP_DIR}${path.delimiter}${MODULE_DIR}`,
-      MODULE_DIR: MODULE_DIR,
-      // Tell the Python module loader that DEFAULT_MODULES_SRC is first-party trusted.
-      // Seeded copies in MODULE_DIR inherit trust; without this the loader's BSL AST
-      // scan rejects celerp-ai, celerp-connectors, celerp-backup, and celerp-admin.
-      CELERP_TRUSTED_MODULE_DIRS: DEFAULT_MODULES_SRC,
-      CELERP_DATA_DIR: DATA_DIR,
-      CELERP_CONFIG: PYTHON_CONFIG_PATH,
+      ...serverEnv(dbUrl, cfg),
       CELERP_INSTALL_CHANNEL: "electron",
-      CELERP_MODE: "desktop",
       // C2: make the desktop app version authoritative everywhere. The PC-browser/relay
       // path reads the version from /health (it has no window.celerp), so pass the Electron
       // app version through to the API; /health reports it instead of the Python package
       // version, keeping desktop and relay in agreement.
       CELERP_APP_VERSION: app.getVersion(),
-      CELERP_API_PORT: String(apiPort),
-      CELERP_UI_PORT: String(uiPort),
-      CELERP_PG_BIN_DIR: pgBinDir(),
-      ...resolveStorageEnv(cfg),
     };
     const proc = spawn(...serverCommand("celerp.main:app", apiPort), { cwd: APP_DIR, env, stdio: "pipe" });
     apiProcess = proc;
@@ -686,29 +695,7 @@ function serverArgs(asgiApp, port) {
 function startUi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
     // uiPort is pre-allocated by the caller; no need to allocate here.
-    const env = {
-      ...process.env,
-      // Scrub Python environment variables that the user's shell may have set.
-      // See startApi comment for full explanation.
-      PYTHONHOME: undefined,
-      PYTHONSTARTUP: undefined,
-      VIRTUAL_ENV: undefined,
-      CONDA_PREFIX: undefined,
-      CONDA_DEFAULT_ENV: undefined,
-      API_URL: `http://127.0.0.1:${apiPort}`,
-      PYTHONUTF8: "1",  // UTF-8 file I/O on Windows (cp1252 default crashes on UTF-8 data)
-      DATABASE_URL: dbUrl,
-      JWT_SECRET: getOrCreateJwtSecret(),
-      PYTHONPATH: `${APP_DIR}${path.delimiter}${MODULE_DIR}`,
-      MODULE_DIR: MODULE_DIR,
-      CELERP_TRUSTED_MODULE_DIRS: DEFAULT_MODULES_SRC,
-      CELERP_CONFIG: PYTHON_CONFIG_PATH,
-      CELERP_MODE: "desktop",
-      CELERP_UI_PORT: String(uiPort),
-      CELERP_API_PORT: String(apiPort),
-      CELERP_PG_BIN_DIR: pgBinDir(),
-      ...resolveStorageEnv(cfg),
-    };
+    const env = { ...serverEnv(dbUrl, cfg), API_URL: `http://127.0.0.1:${apiPort}` };
     uiProcess = spawn(...serverCommand("ui.app:app", uiPort), { cwd: APP_DIR, env, stdio: "pipe" });
     const uiLog = openProcessLog("ui.log");
     const logFile = path.join(LOG_DIR, "ui.log");

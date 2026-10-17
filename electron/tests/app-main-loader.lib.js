@@ -18,7 +18,9 @@ const APP_MAIN = path.join(__dirname, "..", "app-main.js");
 const SETTERS = "\n;module.exports.setMainWindow = (win) => { mainWindow = win; };\n" +
   ";module.exports.setServices = (api, ui, pg) => { apiProcess = api; uiProcess = ui; pgInstance = pg; };\n" +
   ";module.exports.postgresLauncher = () => postgresLauncher();\n" +
-  ";module.exports.serverCommand = (asgiApp, port) => serverCommand(asgiApp, port);\n";
+  ";module.exports.serverCommand = (asgiApp, port) => serverCommand(asgiApp, port);\n" +
+  ";module.exports.startServer = (which, dbUrl, cfg) => { apiPort = apiPort || 9; uiPort = uiPort || 9; " +
+  "return (which === \"api\" ? startApi : startUi)(dbUrl, cfg); };\n";
 
 // Runs app-main.js as Node would (it has a top-level return), resolving the
 // modules below to fakes and everything else normally. `app` and `extraFakes`
@@ -69,7 +71,7 @@ function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resou
   body(mod.exports, fakeRequire, mod, APP_MAIN, path.dirname(APP_MAIN), proc);
   return { handlers, listeners, updater, setMainWindow: mod.exports.setMainWindow,
            setServices: mod.exports.setServices, postgresLauncher: mod.exports.postgresLauncher,
-           serverCommand: mod.exports.serverCommand };
+           serverCommand: mod.exports.serverCommand, startServer: mod.exports.startServer };
 }
 
 module.exports = { loadAppMain };
