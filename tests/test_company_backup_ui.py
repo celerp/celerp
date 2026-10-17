@@ -1271,7 +1271,7 @@ async def test_sent_page_has_copy_and_next_steps(ui, real_engine, monkeypatch):
     assert any(f"The link expires on {d}." in page for d in _dates("2026-10-30T09:00:00+00:00"))
     assert _link(page, HANDOFFS, "Company copies")
     assert "See when they open it in Company copies." in re.sub(r"<[^>]+>", "", page)
-    assert "To send a new link, open Company copies and use New link." in page
+    assert f'<a href="{HANDOFFS}">To send a new link, open Company copies and use New link.</a>' in page
 
 
 async def test_company_copy_ready_state(ui, real_engine, monkeypatch):
