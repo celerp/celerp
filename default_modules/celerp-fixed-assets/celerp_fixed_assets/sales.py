@@ -142,9 +142,8 @@ async def _plan(session, company_id, books: runs.Books, asset_id: str, asset: di
 
 async def _draft(session, company_id, user_id, data: dict, before=None) -> str:
     """Create a draft invoice or credit note from ``data``, its money taken from its lines.
-    ``before(doc_id)`` runs ahead of the check of its asset lines."""
+    ``before(doc_id)`` runs ahead of the check of its asset lines (at emit_event)."""
     from celerp.events.engine import emit_event
-    from celerp.services import doc_asset_lines
     from celerp.services.company_lock import locked_company
     from celerp_docs.doc_money import money_from_lines
     from celerp_docs.sequences import next_draft_ref
@@ -156,7 +155,6 @@ async def _draft(session, company_id, user_id, data: dict, before=None) -> str:
     data.update(ref_id=ref, status="draft", amount_paid=0.0, amount_outstanding=data["total"])
     if before is not None:
         await before(doc_id)
-    await doc_asset_lines.check_write(session, company_id=company_id, user_id=user_id, doc_id=doc_id, doc=data)
     await emit_event(session, company_id=company_id, entity_id=doc_id, entity_type="doc", event_type="doc.created",
                      data=data, actor_id=user_id, location_id=None, source="fixed_assets",
                      idempotency_key=f"fa:doc:{doc_id}")
@@ -567,12 +565,22 @@ async def _authorize(session, company_id, user_id, change: str, numbers: str) ->
 
 async def on_asset_lines(*, session, company_id, user_id, doc_id: str, doc: dict, change: str) -> None:
     """The doc_asset_lines slot: follow a document's asset lines through its ``change``
-    (write, finalize, credit, void, revert, unvoid). A refusal refuses the document action."""
+    (write, unlink, finalize, credit, void, revert, unvoid). A refusal refuses the document action."""
     from celerp.modules.registry import uses_module
     from celerp.services.doc_asset_lines import asset_lines
     from celerp.services.line_measures import line_label
 
     lines = asset_lines(doc)
+    if change == "unlink":
+        # A draft invoice an asset is waiting on keeps its line, so the sale never waits on
+        # a document that no longer sells it. Cancelling the sale voids the draft.
+        for li in lines if doc.get("doc_type") == "invoice" else ():
+            asset = await _state(session, company_id, li["asset_id"]) or {}
+            sale = asset.get("sale") or {}
+            if sale.get("state") == "pending" and sale.get("invoice_id") == doc_id:
+                raise conflict(f"{asset['number']} is waiting on this invoice. Keep its line, or cancel the sale "
+                               "from the asset's page, which voids this draft.")
+        return
     rows = await _locked(session, company_id, [li["asset_id"] for li in lines])
     for li in lines:
         row = rows.get(li["asset_id"])

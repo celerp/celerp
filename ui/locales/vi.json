@@ -5690,6 +5690,8 @@
   "documents.err_asset_line_quantity": "Dòng {line} bán một tài sản cố định, nên số lượng là 1.",
   "documents.err_asset_line_source": "Dòng {line} ghi giảm một tài sản không nằm trên cùng dòng của hóa đơn. Hãy ghi giảm dòng hóa đơn đã bán tài sản đó.",
   "documents.err_asset_lines_unhandled": "Chứng từ này bán hoặc ghi giảm một tài sản cố định. Bật Tài sản cố định để hoàn tất.",
+  "documents.err_asset_line_id": "Dòng {line} có tham chiếu tài sản không phải là mã tài sản. Hãy xóa nó, hoặc bán tài sản từ trang của tài sản.",
+  "documents.err_asset_lines_issued": "Chứng từ này đã phát hành, nên tài sản trên các dòng của nó không thể thay đổi. Hãy bán tài sản từ trang của tài sản; để đổi dòng tài sản, hãy đưa chứng từ về bản nháp trước.",
   "event.fa.taxbook.recorded": "Đã thay đổi sổ thuế của tài sản",
   "event.fa.taxyear.recorded": "Đã khóa hoặc mở lại năm tính thuế",
   "event.fa.yearend.recorded": "Đã đánh dấu mục cuối năm",

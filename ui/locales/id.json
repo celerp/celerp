@@ -5690,6 +5690,8 @@
   "documents.err_asset_line_quantity": "Baris {line} menjual aset tetap, jadi jumlahnya 1.",
   "documents.err_asset_line_source": "Baris {line} mengkredit aset yang tidak ada di baris faktur yang sama. Kredit baris faktur yang menjualnya.",
   "documents.err_asset_lines_unhandled": "Dokumen ini menjual atau mengkredit aset tetap. Aktifkan Aset Tetap untuk menyelesaikannya.",
+  "documents.err_asset_line_id": "Baris {line} memiliki rujukan aset yang bukan ID aset. Hapus rujukan itu, atau jual aset dari halamannya.",
+  "documents.err_asset_lines_issued": "Dokumen ini sudah diterbitkan, jadi aset pada barisnya tidak dapat berubah. Jual aset dari halamannya; untuk mengubah barisnya, kembalikan dokumen ke draf terlebih dahulu.",
   "event.fa.taxbook.recorded": "Buku pajak aset diubah",
   "event.fa.taxyear.recorded": "Tahun pajak ditutup atau dibuka kembali",
   "event.fa.yearend.recorded": "Item akhir tahun ditandai",

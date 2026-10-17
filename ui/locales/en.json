@@ -5690,6 +5690,8 @@
   "documents.err_asset_line_quantity": "Line {line} sells a fixed asset, so its quantity is 1.",
   "documents.err_asset_line_source": "Line {line} credits an asset that is not on the same line of the invoice. Credit the invoice line that sold it.",
   "documents.err_asset_lines_unhandled": "This document sells or credits a fixed asset. Turn on Fixed Assets to finish it.",
+  "documents.err_asset_line_id": "Line {line} has an asset reference that is not an asset id. Remove it, or sell the asset from its page.",
+  "documents.err_asset_lines_issued": "This document is issued, so the assets on its lines cannot change. Sell an asset from its page; to change an asset line, revert the document to draft first.",
   "event.fa.taxbook.recorded": "Tax book of an asset changed",
   "event.fa.taxyear.recorded": "Tax year closed or reopened",
   "event.fa.yearend.recorded": "Year-end item marked",

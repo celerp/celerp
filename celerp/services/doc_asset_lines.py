@@ -45,13 +45,33 @@ async def notify(session, *, company_id, user_id, doc_id: str, doc: dict, change
                                        doc_id=doc_id, doc=doc, change=change)
 
 
-async def check_write(session, *, company_id, user_id, doc_id: str, doc: dict) -> None:
-    """Refuse (422, naming the line) asset lines a document cannot carry: on a document that
-    is not an invoice or credit note, the same asset twice, a quantity other than one, or a
-    credit note line that does not credit the same asset's line on its invoice. Then the
-    module checks the assets themselves (notify, change "write")."""
+async def check_write(session, *, company_id, user_id, doc_id: str, doc: dict, before: dict) -> None:
+    """Check a write that takes a document from ``before`` to ``doc``; every writer of a
+    document's lines, type or original document comes here (emit_event).
+
+    Refuse (422, naming the line) asset lines a document cannot carry: an asset id that is
+    not text, a document that is not an invoice or credit note, the same asset twice, a
+    quantity other than one, or a credit note line that does not credit the same asset's
+    line on its invoice. An issued document's assets never change (409); its postings
+    follow it through the posting hooks instead. On a draft, the module is told of the
+    asset lines the write takes off (notify, change "unlink") and then checks the assets
+    it carries (change "write")."""
     lines = doc.get("line_items") or []
     named = [(i, li) for i, li in enumerate(lines) if isinstance(li, dict) and li.get("asset_id")]
+    for i, li in named:
+        if not isinstance(li["asset_id"], str):
+            _refuse("documents.err_asset_line_id", li, i)
+    gone = {li["asset_id"] for li in asset_lines(before)} - {li["asset_id"] for _, li in named}
+    if not named and not gone:
+        return
+    if (doc.get("status") or "draft") != "draft":
+        if sorted(li["asset_id"] for _, li in named) != sorted(li["asset_id"] for li in asset_lines(before)):
+            raise HTTPException(status_code=409, detail=t("documents.err_asset_lines_issued"))
+        return
+    if gone:
+        await notify(session, company_id=company_id, user_id=user_id, doc_id=doc_id,
+                     doc={**before, "line_items": [li for li in asset_lines(before) if li["asset_id"] in gone]},
+                     change="unlink")
     if not named:
         return
     if doc.get("doc_type") not in ASSET_DOC_TYPES:

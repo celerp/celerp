@@ -5690,6 +5690,8 @@
   "documents.err_asset_line_quantity": "La ligne {line} vend une immobilisation, sa quantité est donc 1.",
   "documents.err_asset_line_source": "La ligne {line} crédite une immobilisation absente de la même ligne de la facture. Créditez la ligne de facture qui l'a vendue.",
   "documents.err_asset_lines_unhandled": "Ce document vend ou crédite une immobilisation. Activez Immobilisations pour le terminer.",
+  "documents.err_asset_line_id": "La ligne {line} contient une référence d'immobilisation qui n'est pas un identifiant d'immobilisation. Supprimez-la, ou vendez l'immobilisation depuis sa page.",
+  "documents.err_asset_lines_issued": "Ce document est émis, les immobilisations de ses lignes ne peuvent donc pas changer. Vendez une immobilisation depuis sa page ; pour modifier sa ligne, repassez d'abord le document en brouillon.",
   "event.fa.taxbook.recorded": "Registre fiscal d'une immobilisation modifié",
   "event.fa.taxyear.recorded": "Exercice fiscal clôturé ou rouvert",
   "event.fa.yearend.recorded": "Élément de fin d'exercice marqué",

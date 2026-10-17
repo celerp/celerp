@@ -5690,6 +5690,8 @@
   "documents.err_asset_line_quantity": "La riga {line} vende un cespite, quindi la quantità è 1.",
   "documents.err_asset_line_source": "La riga {line} storna un cespite che non è sulla stessa riga della fattura. Storna la riga della fattura che lo ha venduto.",
   "documents.err_asset_lines_unhandled": "Questo documento vende o storna un cespite. Attiva Cespiti per completarlo.",
+  "documents.err_asset_line_id": "La riga {line} ha un riferimento al cespite che non è un identificativo di cespite. Rimuovilo, oppure vendi il cespite dalla sua pagina.",
+  "documents.err_asset_lines_issued": "Questo documento è emesso, quindi i cespiti delle sue righe non possono cambiare. Vendi un cespite dalla sua pagina; per cambiarne la riga, riporta prima il documento a bozza.",
   "event.fa.taxbook.recorded": "Registro fiscale di un cespite modificato",
   "event.fa.taxyear.recorded": "Anno fiscale chiuso o riaperto",
   "event.fa.yearend.recorded": "Voce di fine anno contrassegnata",

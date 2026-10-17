@@ -39,7 +39,6 @@ from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
 from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
 from celerp.services.account_roles import current_settings, is_consigned, lineage, lot_account, new_lot_account, role_map
-from celerp.services import doc_asset_lines
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.goods_cost import negative_cost_error
 from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
@@ -1801,7 +1800,6 @@ async def create_doc(
 
     data["amount_paid"] = 0.0
     data["amount_outstanding"] = float(data.get("total", 0))
-    await doc_asset_lines.check_write(session, company_id=company_id, user_id=user.id, doc_id=entity_id, doc=data)
 
     entry = await emit_event(
         session,
@@ -1984,10 +1982,6 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         # fallback) and applies the own finiteness gate, so a NaN/inf/bool quantity can no
         # longer be persisted onto a document.
         await _validate_document_line_quantities(new_line_items, session, company_id)
-    if is_draft and {"doc_type", "line_items", "original_doc_id"} & fields_changed.keys():
-        await doc_asset_lines.check_write(
-            session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-            doc={**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}})
 
 
     # Money fields are stored at currency precision. The client computes subtotal/tax/total as

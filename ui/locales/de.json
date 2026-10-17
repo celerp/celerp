@@ -5690,6 +5690,8 @@
   "documents.err_asset_line_quantity": "Zeile {line} verkauft ein Anlagegut, daher ist ihre Menge 1.",
   "documents.err_asset_line_source": "Zeile {line} schreibt ein Anlagegut gut, das nicht in derselben Rechnungszeile steht. Schreiben Sie die Rechnungszeile gut, die es verkauft hat.",
   "documents.err_asset_lines_unhandled": "Dieses Dokument verkauft ein Anlagegut oder schreibt es gut. Aktivieren Sie Anlagevermögen, um es abzuschließen.",
+  "documents.err_asset_line_id": "Zeile {line} enthält einen Anlagenverweis, der keine Anlagen-ID ist. Entfernen Sie ihn oder verkaufen Sie das Anlagegut auf seiner Seite.",
+  "documents.err_asset_lines_issued": "Dieses Dokument ist ausgestellt, daher können sich die Anlagegüter in seinen Zeilen nicht ändern. Verkaufen Sie ein Anlagegut auf seiner Seite; um die Anlagenzeile zu ändern, setzen Sie das Dokument zuerst auf Entwurf zurück.",
   "event.fa.taxbook.recorded": "Steuerbuch einer Anlage geändert",
   "event.fa.taxyear.recorded": "Steuerjahr abgeschlossen oder wieder geöffnet",
   "event.fa.yearend.recorded": "Jahresabschlusspunkt markiert",

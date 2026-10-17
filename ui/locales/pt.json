@@ -5690,6 +5690,8 @@
   "documents.err_asset_line_quantity": "A linha {line} vende um ativo imobilizado, por isso a quantidade é 1.",
   "documents.err_asset_line_source": "A linha {line} credita um ativo que não está na mesma linha da fatura. Credite a linha da fatura que o vendeu.",
   "documents.err_asset_lines_unhandled": "Este documento vende ou credita um ativo imobilizado. Ative Ativos imobilizados para o concluir.",
+  "documents.err_asset_line_id": "A linha {line} tem uma referência de ativo que não é um identificador de ativo. Remova-a, ou venda o ativo a partir da sua página.",
+  "documents.err_asset_lines_issued": "Este documento está emitido, por isso os ativos das suas linhas não podem mudar. Venda um ativo a partir da sua página; para mudar a sua linha, reverta primeiro o documento para rascunho.",
   "event.fa.taxbook.recorded": "Livro fiscal de um ativo alterado",
   "event.fa.taxyear.recorded": "Ano fiscal encerrado ou reaberto",
   "event.fa.yearend.recorded": "Item de fim de ano marcado",

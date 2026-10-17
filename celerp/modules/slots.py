@@ -63,7 +63,9 @@ background_loop    {"handler": "module.path:function"} naming `async def handler
 doc_asset_lines    {"handler": "module.path:function"} naming
                    `async def handler(*, session, company_id, user_id, doc_id, doc, change)
                    -> None`, called with exactly those keyword arguments when a document
-                   carrying asset lines is written ("write"), posts or reverses
+                   carrying asset lines is written ("write"), when a write takes asset
+                   lines off a draft ("unlink", with ``doc`` holding the lines taken
+                   off), and when it posts or reverses
                    ("finalize", "credit", "void", "revert", "unvoid"), inside the same
                    transaction; raising refuses the document action. Called whether or not the company uses the module, so
                    the module decides what it still allows. Filled by Celerp's own

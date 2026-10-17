@@ -5690,6 +5690,8 @@
   "documents.err_asset_line_quantity": "{line} 行目は固定資産を売却するため、数量は 1 です。",
   "documents.err_asset_line_source": "{line} 行目は、請求書の対応する行にない資産を減額しています。その資産を売却した請求書の行を減額してください。",
   "documents.err_asset_lines_unhandled": "この書類は固定資産を売却または減額します。完了するには固定資産を有効にしてください。",
+  "documents.err_asset_line_id": "{line} 行目の資産参照は資産 ID ではありません。削除するか、資産のページから売却してください。",
+  "documents.err_asset_lines_issued": "この書類は発行済みのため、行の資産は変更できません。資産はそのページから売却してください。資産の行を変更するには、先に書類を下書きに戻してください。",
   "event.fa.taxbook.recorded": "資産の税務台帳を変更",
   "event.fa.taxyear.recorded": "課税年度を締めまたは再開",
   "event.fa.yearend.recorded": "年度末項目をマーク",
