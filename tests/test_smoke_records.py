@@ -163,3 +163,31 @@ def test_restored_requires_the_backed_up_records_and_attachment(monkeypatch, clo
         with pytest.raises(SystemExit):
             _smoke.restored("http://api", str(tmp_path))
         assert "did not bring back" in capsys.readouterr().err
+
+
+def test_backup_restore_waits_for_module_pages_before_its_first_write(monkeypatch, clock, tmp_path):
+    """Module routes answer "still starting" for a while after /health/ready; the
+    contact the backup carries is only posted once they answer."""
+    reads = _api(starting_answers=0)
+    posted = []
+
+    def http(method, url, token=None, body=None, timeout=30):
+        if url.endswith("/crm/contacts") and clock[0] < 3:
+            return _STARTING
+        if method == "POST" and url.endswith("/crm/contacts"):
+            posted.append(body)
+            return 200, {"id": "c1"}
+        return reads(method, url, token, body, timeout)
+
+    class Stop(Exception):
+        pass
+
+    def upload(*a, **k):
+        raise Stop
+    monkeypatch.setattr(_smoke, "http", http)
+    monkeypatch.setattr(_smoke, "upload", upload)
+
+    with pytest.raises(Stop):
+        _smoke.backup_restore("http://api", str(tmp_path))
+
+    assert posted == [{"name": _smoke.CUSTOMER}]

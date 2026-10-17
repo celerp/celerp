@@ -164,6 +164,11 @@ def backup_restore(api: str, folder: str) -> None:
     out = Path(folder)
     out.mkdir(parents=True, exist_ok=True)
     token = login(api)
+    # Module routes answer only once they all do, so one read covers every write below.
+    try:
+        module_get(api, "/crm/contacts", token)
+    except RuntimeError as exc:
+        fail(str(exc))
     status, body = http("POST", api + "/crm/contacts", token, {"name": CUSTOMER})
     if status != 200:
         fail(f"POST /crm/contacts: {status} {body}")
