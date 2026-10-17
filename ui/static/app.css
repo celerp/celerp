@@ -645,6 +645,8 @@ a:hover { text-decoration: underline; }
 .detail-table td { padding: 8px 14px; border-bottom: 1px solid var(--c-border); }
 /* Headers share the cells' horizontal padding so labels aren't flush against the inputs below. */
 .detail-table th { padding: 8px 14px; }
+/* A row's label reads as a label, not as a column header. */
+.detail-table th[scope="row"] { text-align: left; text-transform: none; letter-spacing: normal; font-size: 12px; font-weight: 500; white-space: normal; }
 .detail-table tr:last-child td { border-bottom: none; }
 .detail-table .cell--number,
 .detail-table .cell-number,
@@ -1029,6 +1031,11 @@ a:hover { text-decoration: underline; }
 .row-menu-btn:hover { background: var(--c-bg3); color: var(--c-text); }
 .row-menu-dropdown { display: none; position: fixed; z-index: 9999; min-width: 120px; background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); box-shadow: 0 4px 12px rgba(26,29,46,0.08); padding: 4px 0; }
 .row-menu-dropdown.open { display: block; }
+/* A More button holding the actions used now and then, so the everyday ones stand out. */
+.actions-menu { position: relative; }
+.actions-menu > summary { list-style: none; }
+.actions-menu > summary::-webkit-details-marker { display: none; }
+.actions-menu-list { position: absolute; right: 0; top: calc(100% + 4px); z-index: 50; min-width: 160px; background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); box-shadow: 0 4px 12px rgba(26,29,46,0.08); padding: 4px 0; }
 .row-menu-item { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--c-text); padding: 6px 12px; font-size: 12px; cursor: pointer; text-decoration: none; }
 .row-menu-item:hover { background: var(--c-bg3); text-decoration: none; }
 .row-menu-item--danger { color: var(--c-red); }
@@ -1608,6 +1615,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .gap-lg { gap: var(--spacing-lg); }
 /* Layout */
 .flex-row { display: flex; align-items: center; }
+.items-end { align-items: flex-end; }
 .flex-col { display: flex; flex-direction: column; }
 .flex-end { display: flex; flex-direction: column; align-items: flex-end; }
 .flex-wrap { flex-wrap: wrap; }

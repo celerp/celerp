@@ -696,6 +696,7 @@
   "fixed_assets.move": "ย้าย",
   "fixed_assets.reclassify": "จัดประเภทใหม่",
   "fixed_assets.transfer": "โอน",
+  "fixed_assets.more": "เพิ่มเติม",
   "fixed_assets.unchanged": "ไม่เปลี่ยน",
   "fixed_assets.location": "สถานที่",
   "fixed_assets.custodian": "ผู้รับผิดชอบ",

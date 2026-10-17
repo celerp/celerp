@@ -120,8 +120,20 @@ def _money_th(label: str, **attrs):
 
 def _detail_table(rows: list[tuple[str, object]]) -> FT:
     """A label and value table; a value given as its own cell (money) keeps that cell."""
-    return Table(Tbody(*[Tr(Th(label), value if getattr(value, "tag", None) == "td" else Td(value))
+    return Table(Tbody(*[Tr(Th(label, scope="row"), value if getattr(value, "tag", None) == "td" else Td(value))
                          for label, value in rows]), cls="data-table detail-table")
+
+
+def _more_menu(*items: FT) -> FT:
+    """Actions used now and then, behind one More button so the everyday ones stand out; Esc closes it."""
+    return Details(Summary(t("fixed_assets.more"), cls="btn btn--secondary"), Div(*items, cls="actions-menu-list"),
+                   cls="actions-menu",
+                   onkeydown="if(event.key==='Escape'){this.open=false;this.querySelector('summary').focus();}")
+
+
+def _month_input(name: str, value="", **attrs) -> FT:
+    """A month typed as YYYY-MM, the same in every browser; the server checks it."""
+    return _input(name, value, placeholder="YYYY-MM", **attrs)
 
 
 def _postable(chart: list[dict]) -> list[dict]:
@@ -1227,10 +1239,10 @@ def _skips_card(asset: dict) -> FT:
             for month, reason in skips]
     table = Table(Thead(Tr(Th(t("fixed_assets.month")), Th(t("fixed_assets.reason")), Th(""))), Tbody(*rows),
                   cls="data-table") if rows else P(t("fixed_assets.no_skips"), cls="form-hint")
-    form = Form(_field(t("fixed_assets.month"), _input("month", type_="month", required=True)),
+    form = Form(_field(t("fixed_assets.month"), _month_input("month", required=True)),
                 _field(t("fixed_assets.reason"), _input("reason", required=True)),
-                Div(Button(t("fixed_assets.skip_month"), type="submit", cls="btn btn--secondary"), cls="form-actions"),
-                hx_post=f"/fixed-assets/assets/{asset_id}/skip", hx_swap="none", cls="flex-row")
+                Button(t("fixed_assets.skip_month"), type="submit", cls="btn btn--secondary"),
+                hx_post=f"/fixed-assets/assets/{asset_id}/skip", hx_swap="none", cls="flex-row flex-wrap gap-md items-end")
     return Div(H2(t("fixed_assets.skips_title"), cls="section-title"), P(t("fixed_assets.skips_hint"), cls="settings-hint"),
                table, form, cls="detail-card section-card")
 
@@ -1242,7 +1254,7 @@ def _readings_card(asset: dict) -> FT:
     table = Table(Thead(Tr(Th(t("fixed_assets.month")), Th(t("fixed_assets.units"), cls="cell--number"))),
                   Tbody(*[Tr(Td(p), Td(u, cls="cell--number")) for p, u in readings]),
                   cls="data-table") if readings else P(t("fixed_assets.no_readings"), cls="form-hint")
-    form = Form(_field(t("fixed_assets.month"), _input("period", type_="month", required=True)),
+    form = Form(_field(t("fixed_assets.month"), _month_input("period", required=True)),
                 _field(t("fixed_assets.units"), _input("units", type_="number", step="any", min="0", required=True)),
                 Div(Button(t("fixed_assets.record_reading"), type="submit", cls="btn btn--secondary"),
                     cls="form-actions"),
@@ -1658,7 +1670,7 @@ def _settings_fields(policy: dict, available: dict) -> list[FT]:
                                                              type_="number", step="0.01", min="0", max="100")),
             _field(t("fixed_assets.convention"), select("convention", "convention")),
             *_param_inputs(policy, available["methods"]),
-            _field(t("fixed_assets.effective_month"), _input("effective_month", type_="month"),
+            _field(t("fixed_assets.effective_month"), _month_input("effective_month"),
                    t("fixed_assets.effective_month_hint")),
             _field(t("fixed_assets.classification"),
                    Select(Option(t("fixed_assets.classification.estimate"), value="", selected=True),
@@ -2260,10 +2272,9 @@ def setup_ui_routes(app) -> None:
                        (A(t("fixed_assets.remeasure"), href=f"{base}/remeasure", cls="btn btn--secondary"),
                         A(t("fixed_assets.sell"), href=f"{base}/sell", cls="btn btn--secondary"),
                         A(t("fixed_assets.dispose"), href=f"{base}/dispose", cls="btn btn--secondary"))) + (
-                A(t("fixed_assets.add_to_asset"), href=f"{base}/add", cls="btn btn--secondary"),
-                A(t("fixed_assets.move"), href=f"{base}/move", cls="btn btn--secondary"),
-                A(t("fixed_assets.reclassify"), href=f"{base}/reclassify", cls="btn btn--secondary"),
-                A(t("fixed_assets.transfer"), href=f"{base}/transfer", cls="btn btn--secondary"))
+                _more_menu(*[A(t(f"fixed_assets.{key}"), href=f"{base}/{path}", cls="row-menu-item")
+                             for key, path in (("add_to_asset", "add"), ("move", "move"),
+                                               ("reclassify", "reclassify"), ("transfer", "transfer"))]),)
         parent = (P(t("fixed_assets.component_of"), " ",
                     A(f"{whole['number']} {whole.get('name') or ''}".strip(), href=f"/fixed-assets/assets/{whole['id']}"),
                     cls="settings-hint") if whole else "")
@@ -2456,8 +2467,8 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.runs_title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.runs_title"), None)])
         form = _op_form("run", _field(t("fixed_assets.run_through"),
-                                      _input("month", _last_month(date.fromisoformat(setup["today"])), type_="month",
-                                             required=True),
+                                      _month_input("month", _last_month(date.fromisoformat(setup["today"])),
+                                                   required=True),
                                       t("fixed_assets.run_through_hint")))
         body = _runs_table(items, currency) if items else empty_state_cta(t("fixed_assets.runs_empty"))
         mode = t(f"fixed_assets.run_mode.{setup['settings']['run_mode']}")
@@ -3252,7 +3263,7 @@ def setup_ui_routes(app) -> None:
                                title_key="fixed_assets.apply_to_assets")
         form = _op_form("apply-class", Input(type="hidden", name="class_id", value=class_id),
                         P(t("fixed_assets.apply_to_assets_hint", name=cls["name"]), cls="settings-hint"),
-                        _field(t("fixed_assets.effective_month"), _input("effective_month", type_="month"),
+                        _field(t("fixed_assets.effective_month"), _month_input("effective_month"),
                                t("fixed_assets.effective_month_hint")))
         return await _page(request, crumbs, page_header(t("fixed_assets.apply_to_assets_title", name=cls["name"])),
                            form, title_key="fixed_assets.apply_to_assets")

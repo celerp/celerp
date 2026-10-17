@@ -696,6 +696,7 @@
   "fixed_assets.move": "Move",
   "fixed_assets.reclassify": "Reclassify",
   "fixed_assets.transfer": "Transfer",
+  "fixed_assets.more": "More",
   "fixed_assets.unchanged": "Unchanged",
   "fixed_assets.location": "Location",
   "fixed_assets.custodian": "Custodian",

@@ -673,6 +673,11 @@ async def test_u10_u11_a_sale_that_cannot_complete_says_why_and_what_to_do(owner
     assert "fixed_assets." not in page.text
 
 
+def _row_label(label: str, html: str) -> bool:
+    """Whether a detail table has a row labelled exactly so."""
+    return re.search(rf"<th[^>]*>{re.escape(label)}</th>", html) is not None
+
+
 async def _class(ui, name: str) -> dict:
     return next(c for c in (await ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == name)
 
@@ -1047,10 +1052,10 @@ async def test_u22_the_buyer_is_a_contact_and_the_result_says_gain_or_loss(owner
     loss = await owner_ui.post("/fixed-assets/op/sell/review", data={**body, "price": "9000",
                                                                     "idempotency_key": str(uuid.uuid4())})
     for review, said in ((gain, "fixed_assets.gain"), (loss, "fixed_assets.loss")):
-        assert f"<th>{t(said)}</th>" in review.text and f"<th>{t('fixed_assets.gain_or_loss')}</th>" not in review.text
+        assert _row_label(t(said), review.text) and not _row_label(t("fixed_assets.gain_or_loss"), review.text)
         assert buyer["name"] in review.text
     href = await _review_and_confirm(owner_ui, "sell", {**body, "price": "9000"})
     invoice = (await owner_ui.api.get(f"/docs/{href.removeprefix('/docs/')}")).json()
     assert invoice["contact_id"] == buyer["id"] and invoice["contact_name"] == buyer["name"]
     page = await owner_ui.get(f"/fixed-assets/assets/{car}")
-    assert f"<th>{t('fixed_assets.loss')}</th>" in page.text
+    assert _row_label(t("fixed_assets.loss"), page.text)

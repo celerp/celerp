@@ -696,6 +696,7 @@
   "fixed_assets.move": "移動",
   "fixed_assets.reclassify": "再分類",
   "fixed_assets.transfer": "移転",
+  "fixed_assets.more": "その他",
   "fixed_assets.unchanged": "変更なし",
   "fixed_assets.location": "所在地",
   "fixed_assets.custodian": "管理者",

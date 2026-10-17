@@ -201,7 +201,7 @@ async def upkeep_card(token: str, asset: dict, members: dict[str, str], currency
     return Div(H2(t("fixed_assets.upkeep_title"), cls="section-title"),
                P(t("fixed_assets.upkeep_hint"), cls="settings-hint"),
                _reminders_table(upkeep["reminders"], members, today), _add_reminder_form(asset["id"], members),
-               H3(t("fixed_assets.maintenance_log")),
+               H4(t("fixed_assets.maintenance_log")),
                _maintenance_table(asset["id"], upkeep["maintenance"], currency), _add_entry_form(asset["id"], today),
                cls="detail-card section-card", id="fa-upkeep")
 

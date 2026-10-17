@@ -255,10 +255,11 @@ def test_j5_bad_import_rows_are_fixed_in_the_grid_and_imported(page: Page, fresh
     review = page.locator("#import-preview")
     expect(review).to_contain_text("Garages")
     # The clean row imports now; the three bad rows stay in the import to be fixed.
-    # Each tick is checked again before the next, so wait for the review to show it.
+    # Each tick is checked again before the next, so wait for the review to show it; the check re-reads
+    # the whole file on the server, which runs well past the default wait while other suites share the host.
     for done, n in enumerate((2, 3, 4), 1):
         review.locator(f"input[name=exclude][value='{n}']").check()
-        expect(review.locator("tr.import-row--excluded")).to_have_count(done)
+        expect(review.locator("tr.import-row--excluded")).to_have_count(done, timeout=20000)
     with page.expect_navigation(url="**/fixed-assets/imports/**"):
         review.get_by_role("button", name="Import All 1 Rows").click()
     expect(page.locator("#fa-import-imported tbody tr")).to_have_count(1)
@@ -320,6 +321,41 @@ def test_u31_form_fields_are_spaced_and_hints_read_quieter_than_labels(page: Pag
         above = inputs.nth(n - 1).bounding_box()
         below = labels.nth(n).bounding_box()
         assert below["y"] - (above["y"] + above["height"]) >= 12, n
+
+
+def test_u33_an_asset_page_reads_cleanly_with_its_rare_actions_grouped(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    page.goto(f"/fixed-assets/assets/{car}")
+    # Labels read as labels: left-aligned, in sentence case.
+    label = page.locator(".detail-grid .detail-table th").first
+    expect(label).to_be_visible()
+    assert label.evaluate("e => [getComputedStyle(e).textAlign, getComputedStyle(e).textTransform]") == ["left", "none"]
+    # The maintenance log is a part of its card, so it reads smaller than the card's heading.
+    size = "e => parseFloat(getComputedStyle(e).fontSize)"
+    upkeep = page.locator("#fa-upkeep")
+    log = upkeep.get_by_text("Maintenance log", exact=True)
+    assert log.evaluate(size) < upkeep.locator(".section-title").evaluate(size)
+    # The month to skip shows what to type, and sits level with its button.
+    month = page.locator("input[name=month]")
+    assert month.get_attribute("type") == "text" and month.get_attribute("placeholder") == "YYYY-MM"
+    skip = page.get_by_role("button", name="Skip month")
+    box, button = month.bounding_box(), skip.bounding_box()
+    assert abs((box["y"] + box["height"]) - (button["y"] + button["height"])) <= 1, (box, button)
+    # The everyday actions stand alone, and the rest open from one More button.
+    header = page.locator(".page-header")
+    assert header.locator("a.btn:visible").count() <= 3
+    for name in ("Add to asset", "Move", "Reclassify", "Transfer"):
+        expect(header.get_by_role("link", name=name)).to_be_hidden()
+    header.get_by_text("More", exact=True).click()
+    for name in ("Add to asset", "Move", "Reclassify", "Transfer"):
+        expect(header.get_by_role("link", name=name)).to_be_visible()
+    page.keyboard.press("Escape")
+    expect(header.get_by_role("link", name="Move")).to_be_hidden()
+    header.get_by_text("More", exact=True).click()
+    header.get_by_role("link", name="Move").click()
+    expect(page).to_have_url(re.compile(r"/move$"))
 
 
 def _details(page: Page, table: str, text: str):
