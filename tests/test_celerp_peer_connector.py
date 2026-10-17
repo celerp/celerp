@@ -365,3 +365,21 @@ async def test_accountant_downstream_stops_when_required_outbound_entity_failed(
     )
     assert seen == ["products_out", "contacts_out", "journals_out"]
     assert len(results) == 3 and not results[0].ok
+
+
+async def test_a_key_the_accountant_closed_says_so_on_the_journals_pull(monkeypatch):
+    from ui.routes.settings_connectors import sync_failure_reason
+
+    class Client:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def get(self, url, **kwargs):
+            return SimpleNamespace(status_code=401, json=lambda: {"detail": "Invalid key"})
+    monkeypatch.setattr(peer, "RateLimitedClient", Client)
+    with pytest.raises(ValueError) as closed:
+        await peer.CelerpConnector().sync_journals(ConnectorContext(
+            company_id=str(uuid.uuid4()), store_handle="https://firm.example", access_token=KEY))
+    reason = sync_failure_reason(str(closed.value), "Celerp Accountant")
+    assert "revoked or has expired" in reason and "new pairing link" in reason
+    assert "GitHub" not in reason and "Web Access" not in reason
