@@ -102,7 +102,8 @@ def verify_password(plain: str, hashed: str) -> bool:
 # Failed password checks slow the next try down, never shut anyone out: an account takes
 # FREE_ACCOUNT_FAILURES from every caller together and a caller FREE_CALLER_FAILURES across
 # every account, then each further failure doubles the wait from one second up to
-# MAX_WAIT_SECONDS. A key quiet for FORGET_AFTER_SECONDS starts again. A loopback caller
+# MAX_WAIT_SECONDS. A key quiet for FORGET_AFTER_SECONDS starts again, and so does an
+# account whose password has changed. A loopback caller
 # names no one visitor (the desktop user, Connect and any proxy on this machine all arrive
 # from it), so it has no budget of its own; the account's budget still holds.
 FREE_ACCOUNT_FAILURES = 5
@@ -115,6 +116,9 @@ _clock = time.monotonic
 @dataclass
 class _Tally:
     free: int
+    # The hash an account's failures were counted against: a new password, set by
+    # this process or any other, starts the count again.
+    auth_hash: str | None = None
     failures: int = 0
     last_failure: float = 0.0
 
@@ -141,21 +145,16 @@ class PasswordAttempts:
         with self._lock:
             self._tallies.clear()
 
-    def forget(self, email: str) -> None:
-        """Start the account's count again, as a new password does."""
-        with self._lock:
-            self._tallies.pop(_account(email), None)
-
     def check(self, email: str, password: str, auth_hash: str | None, caller: str | None) -> bool:
         """Whether *password* is the one *auth_hash* holds, as one attempt on the account
         *email* names from *caller*; no hash never matches. 429 with Retry-After, and the
         password left unread, while the account or the caller must wait."""
-        keys = [(_account(email), FREE_ACCOUNT_FAILURES)]
+        keys = [(_account(email), FREE_ACCOUNT_FAILURES, auth_hash)]
         if caller and not _is_loopback(caller):
-            keys.append((f"caller|{caller}", FREE_CALLER_FAILURES))
+            keys.append((f"caller|{caller}", FREE_CALLER_FAILURES, None))
         now = _clock()
         with self._lock:
-            tallies = [self._tally(key, free, now) for key, free in keys]
+            tallies = [self._tally(key, free, held, now) for key, free, held in keys]
             wait = max(tally.open_at() - now for tally in tallies)
             if wait > 0:
                 seconds = math.ceil(wait)
@@ -175,10 +174,15 @@ class PasswordAttempts:
                 tally.failures = max(tally.failures - 1, 0)
         return True
 
-    def _tally(self, key: str, free: int, now: float) -> _Tally:
+    def _tally(self, key: str, free: int, auth_hash: str | None, now: float) -> _Tally:
         tally = self._tallies.get(key)
-        if tally is None or now - tally.last_failure >= FORGET_AFTER_SECONDS:
-            tally = self._tallies[key] = _Tally(free)
+        # An attempt that names no user (the email typed another way) leaves the hash
+        # alone, so alternating spellings cannot restart the count.
+        changed = None not in (auth_hash, tally and tally.auth_hash) and tally.auth_hash != auth_hash
+        if tally is None or now - tally.last_failure >= FORGET_AFTER_SECONDS or changed:
+            tally = self._tallies[key] = _Tally(free, auth_hash)
+        elif auth_hash is not None:
+            tally.auth_hash = auth_hash
         return tally
 
     def _sweep(self, now: float) -> None:

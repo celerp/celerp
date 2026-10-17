@@ -4,11 +4,8 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
-import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -19,6 +16,7 @@ from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.services import bootstrap
+from celerp.services.password_reset import set_password, user_by_email
 from celerp.services.provisioning import provision_additional_company, provision_registered_company
 from celerp.services.auth import (
     AuthContext,
@@ -183,8 +181,8 @@ _PICK_ATTEMPTS = 3
 async def authenticate(session: AsyncSession, email: str, password: str, caller: str) -> User:
     """The active login these credentials belong to, offered by *caller*; a neutral 401
     otherwise, or 429 while the account or the caller must wait (password_attempts)."""
-    user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
-    auth_hash = user.auth_hash if user and user.is_active else None
+    user = await user_by_email(session, email)
+    auth_hash = user.auth_hash if user else None
     if not password_attempts.check(email, password, auth_hash, caller):
         raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
     # A legacy hash moves to the current scheme now; a legacy password shorter than
@@ -399,110 +397,6 @@ async def switch_company(
     return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=ctx.snonce)
 
 
-# ── Password Reset ────────────────────────────────────────────────────────────
-
-class PasswordResetRequestBody(BaseModel):
-    email: str
-
-
-class PasswordResetConfirmBody(BaseModel):
-    token: str
-    new_password: str
-
-
-_RESET_TOKEN_TTL_MINUTES = 15
-
-
-@router.post("/password-reset/request", dependencies=_PER_ACCOUNT)
-@limiter.limit("3/minute", key_func=_account_key)
-async def password_reset_request(
-    request: Request,
-    payload: PasswordResetRequestBody,
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Request a password reset link. Always returns 200 (prevents user enumeration)."""
-    user = (
-        await session.execute(select(User).where(User.email == payload.email))
-    ).scalar_one_or_none()
-    if user:
-        # Only the SHA-256 digest is stored, so a database read cannot recover the
-        # reset credential; the raw token lives only in the emailed link.
-        raw_token = secrets.token_urlsafe(32)
-        token_digest = hashlib.sha256(raw_token.encode()).hexdigest()
-        user.reset_token = token_digest
-        user.reset_token_expires = datetime.now(timezone.utc) + timedelta(minutes=_RESET_TOKEN_TTL_MINUTES)
-        await session.commit()
-
-        from celerp.config import settings
-        base = settings.celerp_public_url or ""
-        reset_link = f"{base}/reset-password?token={raw_token}"
-        body_html = (
-            f"<p>Hi {user.name},</p>"
-            f"<p>We received a request to reset the password for your Celerp account "
-            f"(<strong>{user.email}</strong>).</p>"
-            f"<p style='margin:24px 0;'>"
-            f"<a href='{reset_link}' style='background:#1a1a1a;color:#fff;padding:12px 24px;"
-            f"border-radius:6px;text-decoration:none;font-weight:600;'>Reset my password</a>"
-            f"</p>"
-            f"<p>This link expires in <strong>{_RESET_TOKEN_TTL_MINUTES} minutes</strong>.</p>"
-            f"<p style='color:#888;font-size:13px;'>If you didn't request this, you can safely ignore "
-            f"this email - your password won't change.</p>"
-        )
-        body_text = (
-            f"Hi {user.name},\n\n"
-            f"Reset your Celerp password:\n{reset_link}\n\n"
-            f"This link expires in {_RESET_TOKEN_TTL_MINUTES} minutes.\n\n"
-            f"If you didn't request this, ignore this email."
-        )
-        from celerp.services.background import spawn_background
-        from celerp.services.email import send_email
-        spawn_background(send_email(
-            user.email,
-            "Reset your Celerp password",
-            body_html,
-            body_text=body_text,
-            branded=False,  # security email: keep it minimal
-        ))
-
-    return {"detail": "If that email exists, you'll receive a reset link."}
-
-
-@router.post("/password-reset/confirm")
-async def password_reset_confirm(
-    payload: PasswordResetConfirmBody,
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Confirm password reset with token and new password."""
-    # The stored value is the SHA-256 digest, so match on the digest of the
-    # presented raw token rather than the raw token itself.
-    token_digest = hashlib.sha256(payload.token.encode()).hexdigest()
-    user = (
-        await session.execute(select(User).where(User.reset_token == token_digest))
-    ).scalar_one_or_none()
-    if not user or not user.reset_token_expires:
-        raise HTTPException(status_code=400, detail=t("auth.reset_link_invalid"))
-    expires = user.reset_token_expires
-    if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
-    if datetime.now(timezone.utc) > expires:
-        raise HTTPException(status_code=400, detail=t("auth.reset_link_invalid"))
-    try:
-        validate_password(payload.new_password)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=t("auth.password_too_short"))
-    user.auth_hash = hash_password(payload.new_password)
-    user.reset_token = None
-    # A new password starts the account's failed sign-ins again: resetting is the way back in.
-    password_attempts.forget(user.email)
-    user.reset_token_expires = None
-    # Rotate the user's nonce so every access and refresh token issued before the
-    # reset dies immediately (a reset is a security-sensitive credential change).
-    # invalidate_sessions commits the session, so no earlier independent commit.
-    from celerp.services.session_tracker import invalidate_sessions as _invalidate
-    await _invalidate(session, str(user.id))
-    return {"detail": "Password updated successfully."}
-
-
 class ChangePasswordBody(BaseModel):
     current_password: str
     new_password: str
@@ -518,16 +412,11 @@ async def change_password(
     """Change password for the currently authenticated user."""
     if not password_attempts.check(user.email, payload.current_password, user.auth_hash, request_caller(request)):
         raise HTTPException(status_code=400, detail=t("auth.current_password_wrong"))
+    # Every access and refresh token minted before the change dies, the caller's too.
     try:
-        validate_password(payload.new_password)
+        await set_password(session, user, payload.new_password)
     except ValueError:
         raise HTTPException(status_code=400, detail=t("auth.password_too_short"))
-    user.auth_hash = hash_password(payload.new_password)
-    # Rotate the user's nonce so every access and refresh token minted before the
-    # change dies immediately, including the caller's current session.
-    # invalidate_sessions commits the session, so no earlier independent commit.
-    from celerp.services.session_tracker import invalidate_sessions as _invalidate
-    await _invalidate(session, str(user.id))
     return {"detail": "Password changed successfully."}
 
 
