@@ -261,6 +261,9 @@ async def test_firm_template_complete_page_says_answers_are_saved(monkeypatch):
     assert t("migration.answers_saved", "en", source="Manager.io") in page
     assert 'hx-post="/migrations/templates/manager_io/forget"' in page
     assert t("migration.forget_answers", "en") in page
+    # Forgetting cannot be undone, so it asks first and says how the answers come back.
+    assert ('hx-confirm="Forget the posting accounts saved for Manager.io? This cannot be undone. '
+            'The next client you finish from Manager.io saves its answers again."') in page
 
     page = to_xml(await pages._complete_page(_request("/"), {**run, "saved_answers": False}))
     assert t("migration.forget_answers", "en") not in page
