@@ -749,9 +749,13 @@ def _mark_recovery_started(target: Path, connectors: list[dict]) -> None:
     """Durably record that the installation is being replaced, what *target* archive
     brings it back to a whole state if the replacement does not finish, and the
     *connectors* whose remote state must be revoked before it is replaced. The marker
-    records this copy's version: an older copy never finishes a newer copy's recovery."""
+    records this copy's version: an older copy never finishes a newer copy's recovery.
+    The outcome of an earlier recovery, success or failure, is dropped: what the owner
+    reads after signing in is this recovery's."""
     from celerp.migrations.compatibility import running_version
     _write_marker({"target": str(target), "connectors": connectors, "celerp_version": running_version()})
+    _failure_path().unlink(missing_ok=True)
+    _restore_notice_path().unlink(missing_ok=True)
 
 
 def _write_marker(state: dict) -> None:
@@ -973,7 +977,6 @@ async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | Non
             _keep_recovery_failure(message, detail)
             return _failed(message, safety_archive=safety, session_ended=True)
         _mark_recovery_finished()
-        _failure_path().unlink(missing_ok=True)
         # Celerp Cloud learns of the restore now; until it has, no company can be reset,
         # and the reconciliation at start and every few minutes keeps trying.
         from celerp.services.payments import reconcile_payments

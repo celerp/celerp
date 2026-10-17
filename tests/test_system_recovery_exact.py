@@ -1354,6 +1354,19 @@ async def test_successful_recovery_clears_an_earlier_failure(rec, tmp_path, monk
     assert backup_import.take_recovery_failure() is None
 
 
+async def test_failed_recovery_clears_an_earlier_success(rec, tmp_path, monkeypatch):
+    """A restore nobody signed in after, then a recovery that fails: the sign-in page
+    must say the last recovery did not complete, never "Backup restored"."""
+    from celerp.services import backup_import
+    rec.seed()
+    assert (await backup_import.run_recovery(_archive(tmp_path / "a.celerp-backup", SOURCE_FILES))).ok is True
+    _inject(monkeypatch, "schema")
+    failed = await backup_import.run_recovery(_archive(tmp_path / "b.celerp-backup", SOURCE_FILES))
+    assert failed.ok is False
+    assert backup_import.restore_notice_waiting() is False
+    assert backup_import.take_recovery_failure() == failed.error
+
+
 async def test_outcome_says_how_the_next_start_resolved_the_recovery(rec, tmp_path, monkeypatch):
     """A recovery that could not be undone keeps the installation closed until a start
     resolves it; the outcome then shown says what that start did, not to restart."""
