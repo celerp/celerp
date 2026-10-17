@@ -1884,6 +1884,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .doc-section .section-icon { font-size: 14px; }
 .doc-section .section-title { font-size: 13px; font-weight: 600; color: var(--c-text); margin: 0; text-transform: none; letter-spacing: 0; }
 .doc-section .form-group { padding: 8px 14px; display: flex; flex-direction: row; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* A read-only value starts where the text of an editable cell does (its padding plus border). */
+.doc-section .form-group > .meta-value { padding-inline: 7px; }
 .doc-section .form-label { font-size: 12px; color: var(--c-text2); min-width: 100px; }
 
 /* Two-column rows */
