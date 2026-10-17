@@ -36,6 +36,11 @@ async def _demo(ui) -> None:
     assert r.status_code == 200, r.text
 
 
+async def _buyer(ui) -> str:
+    """A demo contact to sell an asset to."""
+    return (await ui.api.get("/crm/contacts", params={"limit": 1})).json()["items"][0]["id"]
+
+
 async def _start(ui) -> None:
     """Start fixed assets and confirm the first managed period it suggests."""
     await ui.post("/fixed-assets/start")
@@ -432,7 +437,7 @@ async def test_dispose_from_the_asset_page_and_undo_it(owner_ui):
 
     review = await owner_ui.post("/fixed-assets/op/dispose/review", data={
         "asset_id": car, "date": "2026-10-05", "reason": "scrapped", "idempotency_key": str(uuid.uuid4())})
-    assert t("fixed_assets.gain_or_loss") in review.text and "fixed_assets." not in review.text
+    assert t("fixed_assets.loss") in review.text and "fixed_assets." not in review.text
     href = await _review_and_confirm(owner_ui, "dispose", {"asset_id": car, "date": "2026-10-05",
                                                            "reason": "scrapped"})
     assert href == f"/fixed-assets/assets/{car}"
@@ -477,13 +482,13 @@ async def test_sell_from_the_asset_page_then_credit_the_sale(owner_ui):
 
     form = await owner_ui.get(f"/fixed-assets/assets/{car}/sell")
     assert form.status_code == 200 and t("fixed_assets.sell_hint") in form.text
-    assert 'name="contact_name"' in form.text and "fixed_assets." not in form.text
+    assert "fixed_assets." not in form.text
     review = await owner_ui.post("/fixed-assets/op/sell/review", data={
-        "asset_id": car, "date": "2026-10-05", "price": "9000", "contact_name": "Buyer Co",
+        "asset_id": car, "date": "2026-10-05", "price": "9000", "contact_id": await _buyer(owner_ui),
         "idempotency_key": str(uuid.uuid4())})
-    assert t("fixed_assets.gain_or_loss") in review.text and "1160" in review.text
+    assert t("fixed_assets.loss") in review.text and "1160" in review.text
     href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",
-                                                       "contact_name": "Buyer Co"})
+                                                       "contact_id": await _buyer(owner_ui)})
     assert href.startswith("/docs/")
     invoice_id = href.removeprefix("/docs/")
     number = (await owner_ui.api.get(f"/docs/{invoice_id}")).json()["ref_id"]
@@ -522,7 +527,7 @@ async def test_sell_from_the_asset_page_then_credit_the_sale(owner_ui):
 async def test_u8_u9_the_sale_card_opens_the_draft_credit_note_and_folds_a_returned_sale(owner_ui):
     car = await _managed_car(owner_ui)
     href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",
-                                                       "contact_name": "Buyer Co"})
+                                                       "contact_id": await _buyer(owner_ui)})
     invoice_id = href.removeprefix("/docs/")
     assert (await owner_ui.api.post(f"/docs/{invoice_id}/finalize")).status_code == 200
     href = await _review_and_confirm(owner_ui, "sale-credit", {"asset_id": car, "kind": "adjust", "amount": "1000",
@@ -556,7 +561,7 @@ async def test_u8_u9_the_sale_card_opens_the_draft_credit_note_and_folds_a_retur
 async def test_a_deleted_sale_draft_is_reissued_or_cancelled_from_the_asset_page(owner_ui):
     car = await _managed_car(owner_ui)
     href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",
-                                                       "contact_name": "Buyer Co"})
+                                                       "contact_id": await _buyer(owner_ui)})
     assert (await owner_ui.api.delete(href)).status_code == 200
     page = await owner_ui.get(f"/fixed-assets/assets/{car}")
     assert t("fixed_assets.sale_draft_deleted") in page.text and t("fixed_assets.reissue") in page.text
@@ -574,7 +579,7 @@ async def test_a_deleted_sale_draft_is_reissued_or_cancelled_from_the_asset_page
 async def test_u10_u11_a_sale_that_cannot_complete_says_why_and_what_to_do(owner_ui):
     car = await _managed_car(owner_ui)
     href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",
-                                                       "contact_name": "Buyer Co"})
+                                                       "contact_id": await _buyer(owner_ui)})
     invoice_id = href.removeprefix("/docs/")
     number = (await owner_ui.api.get(href)).json()["ref_id"]
     # Dated before the car was available, the invoice cannot complete the sale: said as what
@@ -910,3 +915,25 @@ async def test_u21_transfer_says_what_it_needs_when_no_company_can_take_the_asse
     page = await owner_ui.get(f"/fixed-assets/assets/{car}/transfer")
     assert t("fixed_assets.transfer_other.not_using", company="Beta Co") in page.text
     assert f'href="/switch-company/{beta["id"]}"' in page.text, "the step is taken in the other company"
+
+
+async def test_u22_the_buyer_is_a_contact_and_the_result_says_gain_or_loss(owner_ui):
+    car = await _managed_car(owner_ui)
+    buyer = (await owner_ui.api.get(f"/crm/contacts/{await _buyer(owner_ui)}")).json()
+    form = await owner_ui.get(f"/fixed-assets/assets/{car}/sell")
+    assert '<input type="hidden" name="contact_id"' in form.text and "/contacts/search-options" in form.text
+    assert 'name="contact_name"' not in form.text
+
+    body = {"asset_id": car, "date": "2026-10-05", "contact_id": buyer["id"]}
+    gain = await owner_ui.post("/fixed-assets/op/sell/review", data={**body, "price": "13000",
+                                                                    "idempotency_key": str(uuid.uuid4())})
+    loss = await owner_ui.post("/fixed-assets/op/sell/review", data={**body, "price": "9000",
+                                                                    "idempotency_key": str(uuid.uuid4())})
+    for review, said in ((gain, "fixed_assets.gain"), (loss, "fixed_assets.loss")):
+        assert f"<th>{t(said)}</th>" in review.text and f"<th>{t('fixed_assets.gain_or_loss')}</th>" not in review.text
+        assert buyer["name"] in review.text
+    href = await _review_and_confirm(owner_ui, "sell", {**body, "price": "9000"})
+    invoice = (await owner_ui.api.get(f"/docs/{href.removeprefix('/docs/')}")).json()
+    assert invoice["contact_id"] == buyer["id"] and invoice["contact_name"] == buyer["name"]
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert f"<th>{t('fixed_assets.loss')}</th>" in page.text

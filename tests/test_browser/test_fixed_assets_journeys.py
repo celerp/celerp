@@ -61,6 +61,11 @@ def _bill(c, name: str, price: str, issue_date: str) -> str:
     return doc
 
 
+def _buyer(c) -> str:
+    """A customer contact to sell an asset to."""
+    return _ok(c.post("/crm/contacts", json={"name": "Buyer Co", "contact_type": "customer"}))["id"]
+
+
 def _line(c, description: str) -> dict:
     return next(i for i in _ok(c.get(f"{API}/intake"))["items"] if description in i["description"])
 
@@ -373,7 +378,7 @@ def test_j8_over_credit_is_refused_then_the_asset_is_returned_from_correct_sale(
     number = next(a["number"] for a in _ok(c.get(f"{API}/assets"))["items"] if a["id"] == car)
     _run(c, "2026-03")
     invoice = _operate(c, f"/assets/{car}/sell", {"date": "2026-05-20", "price": "10000",
-                                                 "contact_name": "Buyer Co"})["invoice_id"]
+                                                 "contact_id": _buyer(c)})["invoice_id"]
     _ok(c.post(f"/docs/{invoice}/finalize"))
     line = next(li for li in _ok(c.get(f"/docs/{invoice}"))["line_items"] if li.get("asset_id"))
 
@@ -593,7 +598,7 @@ def test_j15_sale_voided_while_off_waits_read_only_and_is_reissued_once_on(page:
     _started(c)
     car = _contributed(c, "Owner's car")
     invoice = _operate(c, f"/assets/{car}/sell", {"date": "2026-05-20", "price": "10000",
-                                                 "contact_name": "Buyer Co"})["invoice_id"]
+                                                 "contact_id": _buyer(c)})["invoice_id"]
     _ok(c.post(f"/docs/{invoice}/finalize"))
     # The company has chosen its modules, fixed assets and what it needs, then turns fixed assets off.
     _ok(c.post("/companies/me/modules/celerp-fixed-assets/enable"))

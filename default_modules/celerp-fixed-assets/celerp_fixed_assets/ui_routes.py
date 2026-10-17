@@ -54,7 +54,8 @@ from ui.api_client import APIError
 from ui.components.operation_key import FIELD as OP_KEY_FIELD, operation_key_input
 from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import (EMPTY, breadcrumbs, bulk_toolbar, display_cell, editable_cell, empty_mark, empty_state_cta,
-                                 fmt_money, pagination, row_menu, searchable_select)
+                                 fmt_money, pagination, party_options, row_menu, searchable_select,
+                                 PARTY_PRELOAD, PARTY_SEARCH_URL)
 from ui.config import get_role, get_token as _token
 from ui.i18n import refusal_text, t
 from ui.routes.csv_import import read_tabular_source
@@ -88,6 +89,14 @@ def _error_box(e: APIError):
 
 def _money(value, currency: str | None) -> FT | str:
     return empty_mark() if value in (None, "") else fmt_money(float(value), currency)
+
+
+def _result_row(value, currency: str | None) -> tuple[str, FT]:
+    """A disposal's result named as the gain or the loss it is, at its size. Unknown (hidden
+    or not yet worked out) or nil, it is named as either."""
+    amount = Decimal(str(value)) if value not in (None, "") else Decimal(0)
+    key = "fixed_assets.gain" if amount > 0 else "fixed_assets.loss" if amount < 0 else "fixed_assets.gain_or_loss"
+    return t(key), _money_td(abs(amount) if amount else value, currency)
 
 
 def _text(value) -> str:
@@ -213,8 +222,10 @@ def _preview(action: str, result: dict, currency: str) -> FT:
     if result.get("open_draft"):
         parts.append(P(t("fixed_assets.credit_open_draft", number=result["open_draft"]), cls="flash flash--info"))
     if "gain_or_loss" in result:
-        parts.append(_detail_table([(t(f"fixed_assets.{k}"), _money_td(result[k], currency))
-                                    for k in ("depreciation", "carrying_amount", "gain_or_loss")]))
+        parts.append(_detail_table([*([(t("fixed_assets.buyer"), result["contact_name"])] if "contact_name" in result else []),
+                                    *[(t(f"fixed_assets.{k}"), _money_td(result[k], currency))
+                                      for k in ("depreciation", "carrying_amount")],
+                                    _result_row(result["gain_or_loss"], currency)]))
     if "new_carrying_amount" in result:
         parts.append(_remeasure_figures(result, currency))
     if "remainder" in result:
@@ -364,8 +375,8 @@ def _addition_figures(result: dict, currency: str) -> FT:
         rows.insert(1, (t("fixed_assets.new_part"), f"{result['number_of_part']} {result['name']}"))
         gone = result["replaced"]
         rows += [(t("fixed_assets.replaced_part"), f"{gone['number']} {gone.get('name') or ''}".strip())]
-        rows += [(t(f"fixed_assets.replaced.{k}"), _money_td(gone[k], currency))
-                 for k in ("cost", "carrying_amount", "gain_or_loss")]
+        rows += [*[(t(f"fixed_assets.replaced.{k}"), _money_td(gone[k], currency)) for k in ("cost", "carrying_amount")],
+                 _result_row(gone["gain_or_loss"], currency)]
     return _detail_table(rows)
 
 
@@ -527,7 +538,7 @@ def _dispose_body(form) -> dict:
 
 def _sell_body(form) -> dict:
     return {"date": str(form.get("date") or ""), "price": _amount(form, "price"),
-            "contact_name": str(form.get("contact_name") or "").strip()}
+            "contact_id": str(form.get("contact_id") or "")}
 
 
 def _sale_credit_body(form) -> dict:
@@ -803,7 +814,7 @@ def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | st
     rows = [(t("fixed_assets.disposal_date"), _text(latest.get("effective_date"))),
             (t("fixed_assets.reason"), t(f"fixed_assets.disposal_reason.{latest.get('reason')}")),
             (t("fixed_assets.note"), _text(latest.get("note"))),
-            (t("fixed_assets.gain_or_loss"), _money_td(latest.get("gain_or_loss"), currency)),
+            _result_row(latest.get("gain_or_loss"), currency),
             (t("fixed_assets.journal"), A(t("fixed_assets.journal"),
                                           href=f"/accounting?{urlencode({'q': latest['journal_id']})}")
              if latest.get("journal_id") else empty_mark())]
@@ -839,7 +850,7 @@ def _sale_card(asset: dict, sale: dict, currency: str) -> FT | str:
     if sale["state"] != "returned":
         # A returned sale's result went back with the asset.
         rows += [(t("fixed_assets.sale_carrying_amount"), _money_td(sale.get("carrying_amount"), currency)),
-                 (t("fixed_assets.gain_or_loss"), _money_td(sale.get("gain_or_loss"), currency))]
+                 _result_row(sale.get("gain_or_loss"), currency)]
     parts: list[FT] = [H2(t("fixed_assets.sale_title"), cls="section-title")]
     if sale.get("draft_deleted"):
         parts.append(Div(Strong(t("fixed_assets.sale_draft_deleted")), " ", t("fixed_assets.sale_draft_deleted_hint"),
@@ -2512,6 +2523,11 @@ def setup_ui_routes(app) -> None:
             asset = await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}")
         except APIError as e:
             return await _refused(request, e, "fixed_assets.sell")
+        try:
+            # One page of contacts to open on; typing searches them all.
+            contacts = (await api.list_contacts(token, {"limit": PARTY_PRELOAD})).get("items") or []
+        except APIError:
+            contacts = []
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
                               (asset["number"], f"/fixed-assets/assets/{asset_id}"), (t("fixed_assets.sell"), None)])
         form = _op_form("sell", Input(type="hidden", name="asset_id", value=asset_id),
@@ -2520,7 +2536,11 @@ def setup_ui_routes(app) -> None:
                                                                    required=True)),
                         _field(t("fixed_assets.sale_price"), _input("price", type_="number", step="any", min="0",
                                                                     required=True), t("fixed_assets.sale_price_hint")),
-                        _field(t("fixed_assets.buyer"), _input("contact_name", required=True)))
+                        _field(t("fixed_assets.buyer"), searchable_select(
+                            "contact_id", party_options(contacts), placeholder=t("fixed_assets.choose_buyer"),
+                            search_url=PARTY_SEARCH_URL, aria_label=t("fixed_assets.buyer")),
+                               Span(t("fixed_assets.buyer_hint"), " ",
+                                    A(t("fixed_assets.add_contact"), href="/contacts/customers"))))
         return await _page(request, crumbs, page_header(t("fixed_assets.sell_title", number=asset["number"])),
                            form, title_key="fixed_assets.sell")
 

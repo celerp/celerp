@@ -36,9 +36,20 @@ MODULE_JE = "je:mod:celerp-fixed-assets:"
 
 async def _sell(fa: FA, asset_id: str, on: str = "2026-05-20", price: str = "10000", headers=None) -> str:
     """Sell through a new draft invoice; returns the invoice id."""
-    done = await fa.operate(f"/assets/{asset_id}/sell", {"date": on, "price": price, "contact_name": "Buyer Co"},
+    done = await fa.operate(f"/assets/{asset_id}/sell", {"date": on, "price": price, "contact_id": await fa.buyer()},
                             key=f"s-{uuid.uuid4().hex[:8]}", headers=headers)
     return done["invoice_id"]
+
+
+async def _race_buyer(factory, cid, uid) -> str:
+    """A contact in a company made for a race, which has no demo contacts."""
+    from celerp_fixed_assets.store import _emit
+
+    async with factory() as s:
+        await _emit(s, cid, uid, "contact:buyer", "contact", "crm.contact.created",
+                    {"name": "Buyer Co", "contact_type": "customer"})
+        await s.commit()
+    return "contact:buyer"
 
 
 async def _discard_refused(fa: FA, response):
@@ -627,7 +638,7 @@ async def test_s4_finalize_races_correct_dispose_and_disable(committed_engine):
                                                                         "celerp-accounting"})
         await s.commit()
     number = state["number"]
-    body = {"date": "2026-05-20", "price": "10000", "contact_name": "Buyer Co", "op_key": "sell"}
+    body = {"date": "2026-05-20", "price": "10000", "contact_id": await _race_buyer(factory, cid, uid), "op_key": "sell"}
     async with factory() as s:
         preview = await sales.sell(s, cid, uid, car, {**body, "preview": True})
         inv = (await sales.sell(s, cid, uid, car, {**body, "fingerprint": preview["fingerprint"]}))["invoice_id"]
@@ -676,7 +687,7 @@ async def test_s4_deleted_draft_and_double_sale_refused(fa):
     number = (await fa.asset(car))["number"]
     inv = await _sell(fa, car, on="2026-02-10")
     draft_number = await _number(fa, inv)
-    twice = await fa.post(f"/assets/{car}/sell", {"date": "2026-02-11", "price": "1", "contact_name": "X",
+    twice = await fa.post(f"/assets/{car}/sell", {"date": "2026-02-11", "price": "1", "contact_id": await fa.buyer(),
                                                   "preview": True, "op_key": "twice"})
     assert twice.status_code == 409 and f"{number} is on draft invoice {draft_number}" in twice.json()["detail"]
     scrap = await fa.post(f"/assets/{car}/dispose", {"date": "2026-02-11", "reason": "scrapped", "preview": True,
@@ -938,7 +949,8 @@ async def test_s4_concurrent_credits_take_what_is_left_once(committed_engine):
             await s.commit()
             return done
 
-    inv = (await operate(sales.sell, {"date": "2026-05-20", "price": "10000", "contact_name": "Buyer Co",
+    inv = (await operate(sales.sell, {"date": "2026-05-20", "price": "10000",
+                                      "contact_id": await _race_buyer(factory, cid, uid),
                                       "op_key": "sell"}))["invoice_id"]
     async with factory() as s:
         await finalize_document(inv, cid, SimpleNamespace(id=uid), s)

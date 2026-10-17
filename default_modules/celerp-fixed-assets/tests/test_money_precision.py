@@ -103,7 +103,7 @@ async def test_f01_jpy_run_and_sale_have_no_fraction(client, session):
     assert _places(preview["total"]) == 0
     await _run(fa, "2026-03")
     sell = await fa.ok(await fa.post(f"/assets/{car}/sell", {"date": "2026-05-20", "price": "500000",
-                                                            "contact_name": "Buyer", "preview": True,
+                                                            "contact_id": await fa.buyer(), "preview": True,
                                                             "op_key": "s-p"}))
     assert sell["price"] == "500000" and _places(sell["carrying_amount"]) == 0
     inv = await _sell(fa, car, price="500000")

@@ -106,6 +106,10 @@ class FA:
     async def asset(self, asset_id: str) -> dict:
         return await self.ok(await self.get(f"/assets/{asset_id}"))
 
+    async def buyer(self) -> str:
+        """A contact of the company to sell an asset to."""
+        return (await self.ok(await self.client.get("/crm/contacts", headers=self.h, params={"limit": 1})))["items"][0]["id"]
+
     async def state(self, entity_id: str) -> dict | None:
         from celerp.models.projections import Projection
 

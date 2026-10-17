@@ -280,6 +280,16 @@ def _pending(asset: dict) -> dict:
     return sale
 
 
+async def _buyer(session, company_id, contact_id) -> dict:
+    """The contact the asset is sold to, as the invoice names it."""
+    row = (await session.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "contact",
+        Projection.entity_id == str(contact_id or "")))).scalar_one_or_none()
+    if row is None or row.get("merged_into"):
+        raise setup.unprocessable("Choose the buyer from your contacts.")
+    return {"contact_id": str(contact_id), "contact_name": row.get("name") or ""}
+
+
 async def sell(session, company_id, user_id, asset_id: str, body: dict) -> dict:
     """Sell an asset: a draft invoice for it, which completes the sale when it is finalized."""
 
@@ -288,14 +298,12 @@ async def sell(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         books = await runs._books(session, company_id)
         currency = books.currency
         price = _money_in(body.get("price"), "The price", currency, positive=True)
-        buyer = str(body.get("contact_name") or "").strip()
-        if not buyer:
-            raise setup.unprocessable("Name the buyer.")
+        buyer = await _buyer(session, company_id, body.get("contact_id"))
         asset = await _asset(session, company_id, asset_id)
         await refuse_waiting(session, company_id, asset_id, asset)
         item = await _plan(session, company_id, books, asset_id, asset, day, price)
         shown = {"number": asset["number"], "name": asset["name"], "date": day, "price": money(price, currency),
-                 "contact_name": buyer,
+                 "contact_name": buyer["contact_name"],
                  **{k: item["shown"][k] for k in ("depreciation", "carrying_amount", "gain_or_loss")},
                  "journals": [_journal_view(item["lines"], currency)]}
         basis = [asset.get("version"), asset.get("movement_count"), await runs._ledger_basis(session, company_id, books)]
@@ -307,8 +315,7 @@ async def sell(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         invoice_id = await _draft_invoice(
             session, company_id, user_id, asset_id, asset, day=context["day"],
             line={"name": f"{asset['number']} {asset['name']}", "unit_price": float(context["price"])},
-            header={"contact_name": context["buyer"]},
-            sale={"price": money(context["price"], context["currency"]), "contact_name": context["buyer"]})
+            header=dict(context["buyer"]), sale={"price": money(context["price"], context["currency"]), **context["buyer"]})
         return {"invoice_id": invoice_id, "assets": [{"id": asset_id, "number": asset["number"]}]}, _effects()
 
     return await _run(session, company_id, user_id, body, op_type="sale", keys=_WRITE_KEYS, plan=plan, apply=apply)
@@ -336,7 +343,7 @@ async def reissue(session, company_id, user_id, asset_id: str, body: dict) -> di
                 {"name": f"{asset['number']} {asset['name']}", "unit_price": float(_dec(sale.get("price")))})
         header = {k: invoice[k] for k in ("currency", "conversion_rate", "contact_id", "contact_name")
                   if invoice.get(k) not in (None, "")}
-        header.setdefault("contact_name", sale.get("contact_name"))
+        header = {**{k: sale[k] for k in ("contact_id", "contact_name") if sale.get(k)}, **header}
         invoice_id = await _draft_invoice(session, company_id, user_id, asset_id, asset, day=context["day"],
                                           line=line, header=header, sale=sale)
         return {"invoice_id": invoice_id, "assets": [{"id": asset_id, "number": asset["number"]}]}, _effects()
