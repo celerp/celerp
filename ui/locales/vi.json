@@ -6024,6 +6024,7 @@
   "firm_view.move": "Chuyển một công ty",
   "firm_view.empty": "Chưa có công ty khách hàng nào.",
   "firm_view.no_match": "Không có công ty nào khớp với tìm kiếm này.",
+  "firm_view.no_sync_match": "Không có công ty nào có trạng thái đồng bộ này.",
   "firm_view.all_companies": "Tất cả công ty",
   "firm_view.kind_refused": "Chưa áp dụng",
   "firm_view.kind_key_expiring": "Khóa sắp hết hạn",

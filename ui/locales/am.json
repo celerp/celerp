@@ -6024,6 +6024,7 @@
   "firm_view.move": "ኩባንያ አዛውር",
   "firm_view.empty": "እስካሁን የደንበኛ ኩባንያ የለም።",
   "firm_view.no_match": "ከዚህ ፍለጋ ጋር የሚዛመድ ኩባንያ የለም።",
+  "firm_view.no_sync_match": "በዚህ የማመሳሰል ሁኔታ ያለ ኩባንያ የለም።",
   "firm_view.all_companies": "ሁሉም ኩባንያዎች",
   "firm_view.kind_refused": "አልተተገበረም",
   "firm_view.kind_key_expiring": "ቁልፉ ሊያበቃ ነው",

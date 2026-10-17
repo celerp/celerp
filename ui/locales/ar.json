@@ -6024,6 +6024,7 @@
   "firm_view.move": "نقل شركة",
   "firm_view.empty": "لا توجد شركات عميلة بعد.",
   "firm_view.no_match": "لا توجد شركات تطابق هذا البحث.",
+  "firm_view.no_sync_match": "لا توجد شركات بحالة المزامنة هذه.",
   "firm_view.all_companies": "كل الشركات",
   "firm_view.kind_refused": "لم يُطبَّق",
   "firm_view.kind_key_expiring": "المفتاح على وشك الانتهاء",

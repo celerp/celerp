@@ -6024,6 +6024,7 @@
   "firm_view.move": "Trasladar una empresa",
   "firm_view.empty": "Aún no hay empresas cliente.",
   "firm_view.no_match": "Ninguna empresa coincide con esta búsqueda.",
+  "firm_view.no_sync_match": "No hay empresas con este estado de sincronización.",
   "firm_view.all_companies": "Todas las empresas",
   "firm_view.kind_refused": "No aplicado",
   "firm_view.kind_key_expiring": "Clave por vencer",

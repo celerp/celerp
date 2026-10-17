@@ -6024,6 +6024,7 @@
   "firm_view.move": "Pindahkan perusahaan",
   "firm_view.empty": "Belum ada perusahaan klien.",
   "firm_view.no_match": "Tidak ada perusahaan yang cocok dengan pencarian ini.",
+  "firm_view.no_sync_match": "Tidak ada perusahaan dengan status sinkronisasi ini.",
   "firm_view.all_companies": "Semua perusahaan",
   "firm_view.kind_refused": "Tidak diterapkan",
   "firm_view.kind_key_expiring": "Kunci segera kedaluwarsa",

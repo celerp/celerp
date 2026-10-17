@@ -6024,6 +6024,7 @@
   "firm_view.move": "ย้ายบริษัท",
   "firm_view.empty": "ยังไม่มีบริษัทลูกค้า",
   "firm_view.no_match": "ไม่มีบริษัทที่ตรงกับการค้นหานี้",
+  "firm_view.no_sync_match": "ไม่มีบริษัทที่มีสถานะการซิงค์นี้",
   "firm_view.all_companies": "บริษัททั้งหมด",
   "firm_view.kind_refused": "ไม่ได้นำไปใช้",
   "firm_view.kind_key_expiring": "คีย์ใกล้หมดอายุ",

@@ -6024,6 +6024,7 @@
   "firm_view.move": "会社を移行する",
   "firm_view.empty": "顧客企業はまだありません。",
   "firm_view.no_match": "この検索に一致する会社はありません。",
+  "firm_view.no_sync_match": "この同期状態の会社はありません。",
   "firm_view.all_companies": "すべての会社",
   "firm_view.kind_refused": "未反映",
   "firm_view.kind_key_expiring": "キーの期限切れ間近",

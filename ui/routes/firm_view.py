@@ -76,12 +76,13 @@ def _sync(row: dict, lang: str) -> str:
     return t(f"firm_view.sync_{row['sync']}", lang) if row.get("sync") else "--"
 
 
-def _table(rows: list[dict], lang: str, filtered: bool, error: str | None = None) -> FT:
-    """The companies, newest activity first; replaced in place when the filters change."""
+def _table(rows: list[dict], lang: str, params: dict, error: str | None = None) -> FT:
+    """The companies, newest activity first; replaced in place when the filters change.
+    ``params`` are the filters applied: with none, an empty list invites the first move."""
     notice = [P(error, cls="flash flash--warning")] if error else []
     if not rows and not error:
-        if filtered:
-            body = [P(t("firm_view.no_match", lang))]
+        if params:
+            body = [P(t("firm_view.no_match" if params.get("q") else "firm_view.no_sync_match", lang))]
         else:
             body = [P(t("firm_view.empty", lang)),
                     A(t("firm_view.move", lang), href=MOVE_PAGE, cls="btn btn--primary btn--sm")]
@@ -144,7 +145,7 @@ def setup_routes(app):
             rows = (await api.firm_view(token, params)).get("items", [])
         except api.APIError as exc:
             error = str(exc.detail)
-        table = _table(rows, lang, bool(params), error)
+        table = _table(rows, lang, params, error)
         if request.headers.get("HX-Request"):
             return search_results(table, "/companies" + (f"?{urlencode(params)}" if params else ""))
         return await base_shell(

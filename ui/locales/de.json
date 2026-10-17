@@ -6024,6 +6024,7 @@
   "firm_view.move": "Unternehmen umziehen",
   "firm_view.empty": "Noch keine Kundenunternehmen.",
   "firm_view.no_match": "Keine Unternehmen entsprechen dieser Suche.",
+  "firm_view.no_sync_match": "Keine Unternehmen mit diesem Synchronisierungsstatus.",
   "firm_view.all_companies": "Alle Unternehmen",
   "firm_view.kind_refused": "Nicht übernommen",
   "firm_view.kind_key_expiring": "Schlüssel läuft ab",

@@ -6024,6 +6024,7 @@
   "firm_view.move": "Move a company",
   "firm_view.empty": "No client companies yet.",
   "firm_view.no_match": "No companies match this search.",
+  "firm_view.no_sync_match": "No companies with this sync status.",
   "firm_view.all_companies": "All companies",
   "firm_view.kind_refused": "Not applied",
   "firm_view.kind_key_expiring": "Key expiring",
