@@ -176,7 +176,9 @@ async def sync_accounts_body(token: str, lang: str, error: str | None = None) ->
         chart = (await api.get_chart(token)).get("items") or []
     except api.APIError as exc:
         return Div(*notice, flash(refusal_text(exc.detail)), id="sync-accounts")
-    holds = [i for i in held.get("items") or [] if (i.get("fix") or {}).get("kind") != "review"]
+    # A record waiting for a review is listed with the review, and again once it is fixed.
+    holds = [i for i in held.get("items") or []
+             if (i.get("fix") or {}).get("kind") != "review" or i["fix"].get("fixed")]
     added = held.get("added") or []
     if not (holds or added or review):
         return Div(*notice, P(t("sync_accounts.nothing", lang), cls="empty-state-msg"), id="sync-accounts")

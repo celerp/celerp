@@ -676,13 +676,13 @@ async def review(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
 async def answer_review(session: AsyncSession, company_id: uuid.UUID, source_company_id: uuid.UUID,
                         answers: list[dict], finish: bool) -> None:
     """Link or add each reviewed account; ``finish`` ends the review, after which the
-    client's accounts are placed as any connected company's are."""
+    client's accounts are placed as any connected company's are, and each record that
+    waited for it says it is fixed until the next sync places it."""
     pending = {row["id"]: row for c in await review(session, company_id)
                if c["source_company_id"] == str(source_company_id) for row in c["accounts"]}
-    others = {}
-    for item in await peer_attention.open_items(session, [company_id]):
-        if item.source_company_id == source_company_id and (item.fix or {}).get("kind") == "review":
-            others.update({a["id"]: a for a in item.fix.get("accounts") or []})
+    waited = [item for item in await peer_attention.open_items(session, [company_id])
+              if item.source_company_id == source_company_id and (item.fix or {}).get("kind") == "review"]
+    others = {a["id"]: a for item in waited for a in item.fix.get("accounts") or []}
     for answer in answers:
         other = others.get(answer.get("account"))
         if other is None or answer.get("account") not in pending:
@@ -698,3 +698,5 @@ async def answer_review(session: AsyncSession, company_id: uuid.UUID, source_com
         settings = dict(company.settings or {})
         settings[REVIEWED_KEY] = sorted(set(settings.get(REVIEWED_KEY) or []) | {str(source_company_id)})
         company.settings = settings
+        for item in waited:
+            item.fix, item.reason = {**item.fix, "fixed": True}, "Accounts reviewed. It posts on the next sync."

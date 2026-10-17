@@ -45,7 +45,7 @@ def _attention_item(a) -> dict:
     which the firm may post again from a new journal prefilled with it."""
     again = (f"/accounting/journal/new?from={a.source_entity_id}"
              if a.kind == peer_attention.REVERSAL else None)
-    fixed_there = a.kind == peer_attention.ADDED or a.fix
+    fixed_there = (a.kind == peer_attention.ADDED or a.fix) and not (a.fix or {}).get("fixed")
     return _item(a.kind, a.label, a.reason, ACCOUNTS_PAGE if fixed_there else None,
                  _instant(a.created_at), again)
 
