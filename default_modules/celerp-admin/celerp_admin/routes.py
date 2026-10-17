@@ -161,7 +161,7 @@ async def _check_missing_jes(
         select(Projection).where(
             Projection.company_id == company_id,
             Projection.entity_type == "doc",
-        )
+        ).order_by(Projection.entity_id)
     )).scalars().all()
 
     existing_keys = set((await session.execute(
