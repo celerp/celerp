@@ -215,6 +215,9 @@ def installed(build: Path, folder: Path) -> int:
 
 
 def main() -> int:
+    # Paths under a profile carry the account name, which a Windows console's code page
+    # may not hold; print those letters escaped rather than failing the check.
+    sys.stdout.reconfigure(errors="backslashreplace")
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("carve")

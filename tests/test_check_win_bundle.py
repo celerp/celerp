@@ -57,3 +57,19 @@ def test_an_installed_file_whose_bytes_differ_from_the_build_fails(tmp_path, cap
     out = capsys.readouterr().out
     assert "differs: resources/app.asar" in out
     assert "1 differ" in out
+
+
+def test_an_install_under_a_non_ascii_profile_reports_on_a_windows_console(tmp_path):
+    # A user install lives under the profile, so a Thai account name is in the path the
+    # verdict prints; a Windows console encodes stdout as cp1252, which has no Thai letters.
+    import os
+    import subprocess
+    import sys
+    build = _tree(tmp_path / "build", _BUILD)
+    folder = _tree(tmp_path / "ทดสอบ" / "Celerp", _BUILD + ["Uninstall Celerp.exe"])
+
+    run = subprocess.run([sys.executable, str(_SCRIPT), "installed", str(build), str(folder)],
+                         capture_output=True, env={**os.environ, "PYTHONIOENCODING": "cp1252"})
+
+    assert run.returncode == 0, run.stderr.decode("cp1252", "replace")
+    assert b"PASS" in run.stdout
