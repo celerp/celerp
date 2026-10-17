@@ -94,6 +94,13 @@ async def test_handoff_activity_and_revoke_are_company_scoped(real_engine, real_
     bad_body = await real_client.post(f"{url}/{first_copy}/new-link", json={"operation_id": "x"},
                                       headers=headers)
     assert bad_body.status_code == 422
+    # Without the key a new link would open nothing: refused here, never asked of the relay.
+    keyless = await real_client.post(f"{url}/{first_copy}/new-link",
+                                     json={"operation_id": str(uuid.uuid4())}, headers=headers)
+    assert keyless.status_code == 409 and "Resend" in keyless.json()["detail"]
+    assert not any(path.endswith("/new-link") for _, path, _ in calls)
+    company_handoff_sender.files.remember_sent_copy(first, first_copy, {
+        "key": company_handoff_sender.encode_key(bytes(32)), "recipient": "client@example.com"})
     gone = await real_client.post(f"{url}/{first_copy}/new-link",
                                   json={"operation_id": str(uuid.uuid4())}, headers=headers)
     assert gone.status_code == 410 and "Resend" in gone.json()["detail"]

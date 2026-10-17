@@ -4260,6 +4260,7 @@
   "company_backup.copies_revoked": "Link revocato. Puoi annullare per 30 secondi.",
   "company_backup.copies_restored": "Revoca annullata. Il link funziona di nuovo.",
   "company_backup.copies_new_link_done": "Nuovo link pronto. Il vecchio link non funziona più e i 14 giorni e i 3 download ripartono.",
+  "company_backup.copies_key_missing": "Questo computer non conserva più la chiave di questa copia, quindi un nuovo link non la aprirebbe. Usa Invia di nuovo per inviare una nuova copia.",
   "company_backup.copies_revoke_reason": "Dopo 30 secondi una revoca non si può annullare, perché la copia conservata viene eliminata. Usa Invia di nuovo per inviare una nuova copia.",
   "company_backup.handoffs_title": "Copie aziendali",
   "company_backup.handoffs_unavailable": "Attività delle copie non disponibile. Riprova.",

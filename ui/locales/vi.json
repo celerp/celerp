@@ -4260,6 +4260,7 @@
   "company_backup.copies_revoked": "Đã thu hồi liên kết. Bạn có thể hoàn tác trong 30 giây.",
   "company_backup.copies_restored": "Đã hoàn tác thu hồi. Liên kết hoạt động trở lại.",
   "company_backup.copies_new_link_done": "Liên kết mới đã sẵn sàng. Liên kết cũ không còn hoạt động, và 14 ngày cùng 3 lượt tải được tính lại từ đầu.",
+  "company_backup.copies_key_missing": "Máy tính này không còn giữ khóa của bản sao này, nên liên kết mới sẽ không mở được. Dùng Gửi lại để gửi bản sao mới.",
   "company_backup.copies_revoke_reason": "Sau 30 giây, không thể hoàn tác việc thu hồi vì bản sao đã lưu bị xóa. Dùng Gửi lại để gửi một bản sao mới.",
   "company_backup.handoffs_title": "Bản sao công ty",
   "company_backup.handoffs_unavailable": "Không thể xem trạng thái bản sao. Vui lòng thử lại.",

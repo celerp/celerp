@@ -4260,6 +4260,7 @@
   "company_backup.copies_revoked": "リンクを取り消しました。30秒間は元に戻せます。",
   "company_backup.copies_restored": "取り消しを元に戻しました。リンクは再び使えます。",
   "company_backup.copies_new_link_done": "新しいリンクの準備ができました。古いリンクは使えなくなり、14日間と3回のダウンロードがあらためて始まります。",
+  "company_backup.copies_key_missing": "このコンピューターにはこのコピーの鍵がもう保存されていないため、新しいリンクでは開けません。再送信で新しいコピーを送ってください。",
   "company_backup.copies_revoke_reason": "30秒を過ぎると、保存されたコピーが削除されるため取り消しは元に戻せません。新しいコピーを送るには再送信を使ってください。",
   "company_backup.handoffs_title": "会社のコピー",
   "company_backup.handoffs_unavailable": "会社コピーの状況を取得できません。もう一度お試しください。",

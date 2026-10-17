@@ -205,12 +205,20 @@ async def _send(company_id: uuid.UUID, copy_id: uuid.UUID, link_id: uuid.UUID,
                 operation_id: uuid.UUID, secret: bytes, *,
                 recipient: str, reply_to: str, note: str) -> dict:
     link = handoff_page_link(link_id, secret)
+    kept = await asyncio.to_thread(files.sent_copy, company_id, copy_id)
+    if kept.get("key") not in (None, encode_key(secret)):
+        raise HandoffSendError("This copy was sent with another key. Start a new company copy")
+    try:
+        # Kept before the email is sent: a link that reaches the client is always readable here.
+        await asyncio.to_thread(files.remember_sent_copy, company_id, copy_id, {
+            "key": encode_key(secret), "recipient": recipient})
+    except OSError:
+        raise HandoffSendError("Could not keep the copy's key on this computer. Nothing was sent. "
+                               "Retry the same operation") from None
     await _cloud("POST", f"/handoffs/{copy_id}/send", payload={
         "operation_id": str(operation_id), "recipient": recipient,
         "reply_to": reply_to, "note": note, "link": link,
     })
-    await asyncio.to_thread(files.remember_sent_copy, company_id, copy_id, {
-        "key": encode_key(secret), "recipient": recipient})
     return {"id": str(copy_id), "link": link}
 
 
@@ -276,6 +284,9 @@ async def send_company_backup(*, export: Callable[[Path], Awaitable[None]],
 
 _UNAVAILABLE = "Company copy activity is unavailable"
 _STATUSES = ("pending", "ready", "sent", "imported", "expired", "revoked")
+_RENEWABLE = ("sent", "imported", "expired")
+_KEY_MISSING = ("This computer no longer holds this copy's key, so a new link would not open it. "
+                "Use Resend to send a new copy")
 
 
 class CopyNotFound(HandoffRefused):
@@ -298,19 +309,25 @@ def _copy(company_id: uuid.UUID, row: object) -> dict:
     facts = files.sent_copy(company_id, copy_id)
     if not stored and not can_restore:
         files.forget_sent_copy(company_id, copy_id)  # its key opens nothing any more
-    link = None
-    if status in ("sent", "imported") and stored and facts.get("key"):
-        try:
-            link = handoff_page_link(link_id, decode_key(facts["key"]))
-        except ValueError:
-            link = None
+    key = _kept_key(facts)
+    link = handoff_page_link(link_id, key) if key and stored and status in ("sent", "imported") else None
+    renews = stored and status in _RENEWABLE
     return {"id": str(copy_id), "status": status,
             "sent_at": row.get("sent_at") or None, "expires_at": row.get("expires_at") or None,
             "opened": row.get("opened") is True, "downloaded": row.get("downloaded") is True,
             "company_opened": row.get("company_opened") is True,
             "stored": stored, "can_restore": can_restore,
+            "renewable": renews and key is not None, "key_missing": renews and key is None,
             "firm_name": row.get("firm_name") if isinstance(row.get("firm_name"), str) else None,
             "recipient": facts.get("recipient"), "link": link}
+
+
+def _kept_key(facts: dict) -> bytes | None:
+    """The link key this installation kept for a copy; None when it holds no readable one."""
+    try:
+        return decode_key(facts["key"])
+    except (KeyError, ValueError):
+        return None
 
 
 async def company_copies(company_id: uuid.UUID) -> list[dict]:
@@ -344,7 +361,10 @@ async def restore_copy(company_id: uuid.UUID, copy_id: uuid.UUID) -> dict:
 
 async def new_link(company_id: uuid.UUID, copy_id: uuid.UUID, operation_id: uuid.UUID) -> dict:
     """Replace the copy's link; the old one stops working. Retrying the same operation
-    returns the same new link."""
+    returns the same new link. Only a copy whose key is kept here gets one: without it the
+    new link would open nothing, and the old one would already have stopped working."""
     await _owned(company_id, copy_id)
+    if _kept_key(await asyncio.to_thread(files.sent_copy, company_id, copy_id)) is None:
+        raise HandoffRefused(_KEY_MISSING, 409)
     await _cloud("POST", f"/handoffs/{copy_id}/new-link", payload={"operation_id": str(operation_id)})
     return await _owned(company_id, copy_id)

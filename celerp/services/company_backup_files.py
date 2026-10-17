@@ -81,6 +81,8 @@ def _write_json(path: Path, facts: dict) -> None:
     partial.unlink(missing_ok=True)
     with private_file(partial) as out:
         out.write(json.dumps(facts).encode())
+        out.flush()
+        os.fsync(out.fileno())
     partial.replace(path)
 
 

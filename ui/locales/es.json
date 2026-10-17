@@ -4260,6 +4260,7 @@
   "company_backup.copies_revoked": "Enlace revocado. Puede deshacerlo durante 30 segundos.",
   "company_backup.copies_restored": "Revocación deshecha. El enlace vuelve a funcionar.",
   "company_backup.copies_new_link_done": "Nuevo enlace listo. El enlace anterior ya no funciona y los 14 días y las 3 descargas empiezan de nuevo.",
+  "company_backup.copies_key_missing": "Este equipo ya no guarda la clave de esta copia, así que un enlace nuevo no la abriría. Use Reenviar para enviar una copia nueva.",
   "company_backup.copies_revoke_reason": "Pasados 30 segundos, una revocación no se puede deshacer porque la copia guardada se elimina. Use Reenviar para enviar una copia nueva.",
   "company_backup.handoffs_title": "Copias de empresas",
   "company_backup.handoffs_unavailable": "La actividad de las copias no está disponible. Inténtelo de nuevo.",

@@ -1088,10 +1088,12 @@ def _copy_actions(item: dict) -> FT:
     if item.get("link"):
         actions.append(Button(t("company_backup.ready_copy_link"), type="button", cls="btn btn--secondary btn--sm",
                               **{"data-copy": "", "data-copy-text": item["link"]}))
-    if item.get("stored") and item["status"] in ("sent", "imported", "expired"):
+    if item.get("renewable"):
         actions.append(Button(t("company_backup.copies_new_link"), type="button", hx_post=f"{path}/new-link",
                               hx_vals=json.dumps({"operation_id": str(uuid.uuid4())}),
                               cls="btn btn--secondary btn--sm", **swap))
+    elif item.get("key_missing"):
+        actions.append(Span(t("company_backup.copies_key_missing"), cls="form-hint"))
     if item.get("can_restore"):
         actions.append(Button(t("company_backup.copies_undo"), type="button", hx_post=f"{path}/restore",
                               cls="btn btn--primary btn--sm", **swap))

@@ -4260,6 +4260,7 @@
   "company_backup.copies_revoked": "Lien révoqué. Vous pouvez annuler pendant 30 secondes.",
   "company_backup.copies_restored": "Révocation annulée. Le lien fonctionne à nouveau.",
   "company_backup.copies_new_link_done": "Nouveau lien prêt. L'ancien lien ne fonctionne plus, et les 14 jours et les 3 téléchargements recommencent.",
+  "company_backup.copies_key_missing": "Cet ordinateur ne conserve plus la clé de cette copie, un nouveau lien ne l'ouvrirait donc pas. Utilisez Renvoyer pour envoyer une nouvelle copie.",
   "company_backup.copies_revoke_reason": "Après 30 secondes, une révocation ne peut plus être annulée, car la copie stockée est supprimée. Utilisez Renvoyer pour envoyer une nouvelle copie.",
   "company_backup.handoffs_title": "Copies d’entreprise",
   "company_backup.handoffs_unavailable": "L’activité des copies est indisponible. Réessayez.",

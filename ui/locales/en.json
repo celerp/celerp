@@ -4260,6 +4260,7 @@
   "company_backup.copies_revoked": "Link revoked. You can undo this for 30 seconds.",
   "company_backup.copies_restored": "Revoke undone. The link works again.",
   "company_backup.copies_new_link_done": "New link ready. The old link no longer works, and the 14 days and 3 downloads start again.",
+  "company_backup.copies_key_missing": "This computer no longer holds this copy's key, so a new link would not open it. Use Resend to send a new copy.",
   "company_backup.copies_revoke_reason": "After 30 seconds a revoke cannot be undone, because the stored copy is deleted. Use Resend to send a new copy.",
   "company_backup.handoffs_title": "Company copies",
   "company_backup.handoffs_unavailable": "Company copy activity is unavailable. Try again.",

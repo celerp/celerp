@@ -4260,6 +4260,7 @@
   "company_backup.copies_revoked": "አገናኙ ተሰርዟል። ለ30 ሰከንድ መቀልበስ ይችላሉ።",
   "company_backup.copies_restored": "ስረዛው ተቀልብሷል። አገናኙ እንደገና ይሰራል።",
   "company_backup.copies_new_link_done": "አዲሱ አገናኝ ዝግጁ ነው። የድሮው አገናኝ ከእንግዲህ አይሰራም፣ 14ቱ ቀናት እና 3ቱ ማውረዶች እንደገና ይጀምራሉ።",
+  "company_backup.copies_key_missing": "ይህ ኮምፒውተር የዚህን ቅጂ ቁልፍ ከእንግዲህ አይዝም፣ ስለዚህ አዲስ አገናኝ አይከፍተውም። አዲስ ቅጂ ለመላክ እንደገና ላክን ይጠቀሙ።",
   "company_backup.copies_revoke_reason": "ከ30 ሰከንድ በኋላ ስረዛን መቀልበስ አይቻልም፣ ምክንያቱም የተቀመጠው ቅጂ ይሰረዛል። አዲስ ቅጂ ለመላክ እንደገና ላክን ይጠቀሙ።",
   "company_backup.handoffs_title": "የኩባንያ ቅጂዎች",
   "company_backup.handoffs_unavailable": "የቅጂዎች ሁኔታ አይገኝም። እንደገና ይሞክሩ።",

@@ -1097,7 +1097,7 @@ async def test_company_handoff_activity_revoke_and_navigation(ui, real_engine, m
 def _copy_row(**over) -> dict:
     row = {"id": str(uuid.uuid4()), "status": "sent", "sent_at": "2026-10-10T08:00:00+00:00",
            "expires_at": "2026-10-24T08:00:00+00:00", "opened": False, "downloaded": False,
-           "company_opened": False, "stored": True, "can_restore": False, "renewable": True,
+           "company_opened": False, "stored": True, "can_restore": False, "renewable": True, "key_missing": False,
            "firm_name": "Example Accounting", "recipient": "client@example.com", "link": None}
     return {**row, **over}
 
@@ -1111,7 +1111,8 @@ async def test_new_link_is_offered_only_for_a_copy_whose_key_is_kept(ui, real_en
     _, _, tok = await _setup(real_engine, name="Company copies keys")
     ui.cookies.set("celerp_token", tok)
     kept = _copy_row(link="https://relay.celerp.com/handoffs/a/open#" + "A" * 43)
-    lost = _copy_row(sent_at="2026-10-12T08:00:00+00:00", renewable=False, recipient="other@example.com")
+    lost = _copy_row(sent_at="2026-10-12T08:00:00+00:00", renewable=False, key_missing=True,
+                     recipient="other@example.com")
 
     async def listed(token):
         return {"items": [kept, lost]}

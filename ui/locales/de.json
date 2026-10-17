@@ -4260,6 +4260,7 @@
   "company_backup.copies_revoked": "Link widerrufen. Sie können dies 30 Sekunden lang rückgängig machen.",
   "company_backup.copies_restored": "Widerruf rückgängig gemacht. Der Link funktioniert wieder.",
   "company_backup.copies_new_link_done": "Neuer Link bereit. Der alte Link funktioniert nicht mehr, und die 14 Tage und 3 Downloads beginnen neu.",
+  "company_backup.copies_key_missing": "Dieser Computer hat den Schlüssel dieser Kopie nicht mehr, ein neuer Link würde sie also nicht öffnen. Mit Erneut senden eine neue Kopie senden.",
   "company_backup.copies_revoke_reason": "Nach 30 Sekunden kann ein Widerruf nicht mehr rückgängig gemacht werden, weil die gespeicherte Kopie gelöscht wird. Mit Erneut senden schicken Sie eine neue Kopie.",
   "company_backup.handoffs_title": "Unternehmenskopien",
   "company_backup.handoffs_unavailable": "Der Status der Unternehmenskopien ist nicht verfügbar. Bitte erneut versuchen.",
