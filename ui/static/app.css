@@ -172,6 +172,7 @@ a:hover { text-decoration: underline; }
    and their text wraps between words (a coverage note, a check label) instead of pushing
    the table past the card. Figures and dates never wrap. */
 .migration-wizard .data-table { margin-bottom: 16px; width: 100%; }
+.migration-wizard > p + :is(form, .table-scroll-wrap) { margin-top: 16px; }
 .migration-wizard .data-table td:not(.cell--number, .cell--money, .cell--date) { white-space: normal; overflow-wrap: break-word; }
 /* Client companies: reasons wrap in their cell; the filters keep their own width. */
 #firm-view .data-table { width: 100%; }
