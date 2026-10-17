@@ -178,6 +178,7 @@ a:hover { text-decoration: underline; }
 #firm-view .data-table td.firm-view-attention { white-space: normal; overflow-wrap: break-word; }
 .export-requests { display: flex; flex-direction: column; gap: 12px; margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--c-border); }
 .export-requests > * { margin: 0; }
+#copies-list { margin-bottom: 16px; }
 #accountant-access-grants .data-table { width: 100%; }
 #accountant-access-grants .data-table td.grant-scopes { white-space: normal; overflow-wrap: break-word; padding-block: 6px; }
 #sync-accounts .data-table { width: 100%; }
