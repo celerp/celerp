@@ -14,6 +14,7 @@ from decimal import Decimal
 import pytest
 
 from fa_fixtures import FA
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -50,6 +51,16 @@ def _errors(preview: dict) -> dict[tuple[int, str], str]:
 def _account(accounts: list[dict], code: str) -> dict:
     (found,) = [a for a in accounts if a["account"] == code]
     return found
+
+
+async def test_u34_an_imported_asset_names_the_import_and_row_it_came_from(fa):
+    cut = await _cutover(fa)
+    done = await _import(fa, [_building(cut)])
+    (asset,) = done["assets"]
+    page = (await fa.page(f"/fixed-assets/assets/{asset['id']}")).text
+    card = page.split(t("fixed_assets.sources"), 1)[1].split("</div>", 1)[0]
+    assert t("fixed_assets.origin.imported", row=1) in card and t("fixed_assets.no_sources") not in card
+    assert f'href="/fixed-assets/imports/{done["batch"]["id"]}"' in card
 
 
 # ── Imports never claim ──────────────────────────────────────────────────────

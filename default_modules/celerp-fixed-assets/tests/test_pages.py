@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import uuid
 from decimal import Decimal
+from urllib.parse import quote
 
 import pytest
 
@@ -140,7 +141,7 @@ async def test_add_an_opening_asset_by_hand(owner_ui):
         "cost": "120000", "accumulated_depreciation": "15000"})
     page = await owner_ui.get(href)
     assert page.status_code == 200 and "Warehouse" in page.text
-    assert t("fixed_assets.movement.opening") in page.text and t("fixed_assets.no_sources") in page.text
+    assert t("fixed_assets.movement.opening") in page.text and t("fixed_assets.origin.opening") in page.text
 
 
 async def test_a_review_whose_figures_changed_is_refused_on_confirm(owner_ui):
@@ -246,6 +247,37 @@ async def _managed_car(ui, on: str = "2026-08-10") -> str:
         "kind": "contributed", "name": "Delivery car", "class_id": vehicles["id"], "available_date": on,
         "cost": "12000", "credit_account": "3100"})
     return href.rsplit("/", 1)[1]
+
+
+async def test_u34_a_contributed_asset_says_how_it_came_in_and_links_its_journal(owner_ui):
+    car = await _managed_car(owner_ui)
+    page = (await owner_ui.get(f"/fixed-assets/assets/{car}")).text
+    (movement,) = [m for m in (await owner_ui.api.get(f"{API}/assets/{car}/movements")).json()["items"]
+                   if m["operation"] == "contributed"]
+    journal = movement["contributions"][0]["journal_id"]
+    card = page.split(t("fixed_assets.sources"), 1)[1].split("</div>", 1)[0]
+    assert t("fixed_assets.origin.contributed") in card and t("fixed_assets.no_sources") not in card
+    assert f'href="/accounting?q={quote(journal, safe="")}"' in card
+
+
+async def test_u34_the_origin_comes_from_the_first_movement_even_past_the_first_page(owner_ui, monkeypatch):
+    import ui.api_client as api
+
+    car = await _managed_car(owner_ui)
+    await _review_and_confirm(owner_ui, "run", {"month": "2026-09"})
+    assert (await owner_ui.api.get(f"{API}/assets/{car}/movements")).json()["total"] > 1
+    real = api.fixed_assets_get
+
+    async def one_per_page(token, path, params=None):
+        # A page holding only the newest movement, as a long-lived asset's first page holds only recent ones.
+        if path.endswith("/movements") and not params:
+            params = {"limit": 1}
+        return await real(token, path, params)
+
+    monkeypatch.setattr(api, "fixed_assets_get", one_per_page)
+    page = (await owner_ui.get(f"/fixed-assets/assets/{car}")).text
+    card = page.split(t("fixed_assets.sources"), 1)[1].split("</div>", 1)[0]
+    assert t("fixed_assets.origin.contributed") in card and 'href="/accounting?q=' in card
 
 
 async def test_u23_correct_shows_only_the_chosen_methods_settings_and_request_beside_review(owner_ui):

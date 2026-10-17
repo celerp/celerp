@@ -1197,10 +1197,27 @@ def _transfer_needs(others: list[dict]) -> FT:
                 for o in others], cls="form-hint")
 
 
-def _sources_card(asset: dict, currency: str) -> FT:
+def _origin(asset: dict, first: dict | None) -> FT:
+    """How an asset with no source lines came in: an import row, a contribution with its journal,
+    an opening balance entered by hand, or a record kept without figures."""
+    if asset.get("import_batch"):
+        return P(t("fixed_assets.origin.imported", row=asset.get("import_row")), " ",
+                 A(t("fixed_assets.origin.open_import"), href=f"/fixed-assets/imports/{quote(asset['import_batch'], safe=':')}"))
+    first = first or {}
+    if first.get("operation") == "contributed":
+        journal = (first.get("contributions") or [{}])[0].get("journal_id")
+        return P(t("fixed_assets.origin.contributed"), " ",
+                 *([A(t("fixed_assets.journal"), href=f"/accounting?{urlencode({'q': journal})}")] if journal else []))
+    if first.get("operation") == "opening":
+        return P(t("fixed_assets.origin.opening"))
+    return P(t("fixed_assets.no_sources"), cls="form-hint")
+
+
+def _sources_card(asset: dict, first: dict | None, currency: str) -> FT:
+    """Where an asset came from: its source lines, or else its first movement."""
     sources = asset.get("sources") or []
     if not sources:
-        body = P(t("fixed_assets.no_sources"), cls="form-hint")
+        body = _origin(asset, first)
     else:
         body = Ul(*[Li(A(_source_name(s["source"], s.get("ref")), href=_source_href(s["source"])), " ",
                        _money(s.get("amount"), currency) if s.get("amount") is not None else "")
@@ -2207,7 +2224,12 @@ def setup_ui_routes(app) -> None:
         try:
             setup, currency = await _context(token)
             asset = await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}")
-            movements = (await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}/movements"))["items"]
+            listed = await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}/movements")
+            movements = listed["items"]
+            # Movements come newest first; the first one, which says how the asset came in, may be past this page.
+            first = (movements[-1] if movements else None) if listed["total"] <= len(movements) else (
+                await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}/movements",
+                                           {"limit": 1, "offset": listed["total"] - 1}))["items"][0]
             classes = (await api.fixed_assets_get(token, "/classes", {"include_archived": "true"}))["items"]
             fixes = (await api.fixed_assets_get(token, "/corrections", {"asset_id": asset_id}))["items"]
             sale = (await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}/sale")
@@ -2286,7 +2308,7 @@ def setup_ui_routes(app) -> None:
                                _figures_card(asset, _class_names(classes).get(asset.get("class_id")), currency),
                                cls="detail-grid"),
                            _depreciation_card(asset, currency) if asset.get("status") not in ("physical", "undone") else "",
-                           "" if asset.get("transferred_from") else _sources_card(asset, currency), *physical, upkeep, *extra,
+                           "" if asset.get("transferred_from") else _sources_card(asset, first, currency), *physical, upkeep, *extra,
                            Div(H2(t("fixed_assets.movements"), cls="section-title"),
                                _movements_table(movements, currency), cls="detail-card section-card"),
                            Div(H2(t("fixed_assets.undo"), cls="section-title"), undo,
