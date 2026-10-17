@@ -656,7 +656,8 @@ function startApi(dbUrl, cfg) {
       stdoutLines(s);
       consumeRelayStateFromLog(s);  // C4: hold/release the sleep blocker on relay state changes
     });
-    proc.on("error", reject);
+    // a server that could not start has no exit to wait for; stop polling its port
+    proc.on("error", (e) => { exited = true; reject(e); });
     proc.on("exit", (code) => {
       exited = true;
       if (code !== 0 && code !== null) reject(new Error(`API process exited (code ${code}). Full log: ${logFile}\n${output.text()}`));
