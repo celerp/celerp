@@ -27,7 +27,7 @@ from fastapi import HTTPException
 from celerp.services.money import books_currency
 from celerp_fixed_assets import projections, setup
 from celerp_fixed_assets.calc import rules
-from celerp_fixed_assets.calc.tax import PoolInputs, TaxAssetInputs
+from celerp_fixed_assets.calc.tax import PoolInputs, TaxAssetInputs, TaxTransferResult
 from celerp_fixed_assets.projections import REMEASUREMENTS, _dec, live
 from celerp_fixed_assets.store import _emit, _entities, _state, movements_by_asset
 
@@ -261,26 +261,47 @@ def _pool_year(regime, year, moved, carried, counted, end, currency) -> dict:
 async def transfer_values(session, company_id, settings: dict, asset_id: str, day: date) -> dict[str, str]:
     """Per tax regime the company keeps, the written-down value ``asset_id`` carries to a
     related company on ``day``, as its regime's ``related_party_transfer`` works it out
-    from the asset's tax year so far. A regime that is unavailable, has the asset in a
-    closed year or no category, or fails gives none: the transfer price stands for it."""
+    from the asset's tax year so far. A regime whose result declares the transfer price
+    gives none, so the price stands for it, as it does for an asset outside the regime's
+    book. Anything that stops a value being worked out refuses the transfer (409), naming
+    the regime and what to do, so the price never stands in for a value by accident."""
+    from ui.i18n import t
+
+    def refuse(why: str) -> HTTPException:
+        return HTTPException(status_code=409, detail="The tax value this asset carries to the other company "
+                                                     f"cannot be worked out. {why}")
+
     out = {}
     end_setting = tax_year_end(settings)
+    currency = books_currency(settings)
     for key in setup.settings_of(settings).get("tax_regimes") or []:
-        if unavailable(settings, key):
-            continue
+        if (why := unavailable(settings, key)) is not None:
+            raise refuse(f"{why} Turn it on again, then transfer.")
         regime = rules.regime(key)
-        year = _year_of(regime, end_setting, day)
-        seen: dict = {}
-        _years(regime, end_setting, books_currency(settings), await _assets(session, company_id, regime),
-               await _frozen(session, company_id, key), year, seen)
-        inputs = seen.get((year, asset_id))
-        if inputs is None:
+        label = t(regime.label_key)
+        assets = await _assets(session, company_id, regime)
+        asset = next((a for a in assets if a.id == asset_id), None)
+        if asset is None:
             continue
+        year = _year_of(regime, end_setting, day)
+        frozen = await _frozen(session, company_id, key)
+        if (frozen.get(year) or {}).get("status") == "closed":
+            raise refuse(f"{label} tax year {year} is closed. Reopen it, or date the transfer after it.")
+        if asset.category is None:
+            raise refuse(f"{asset.number} has no {label} tax category. Set one on its class or its tax book, "
+                         "then transfer.")
+        seen: dict = {}
+        _years(regime, end_setting, currency, assets, frozen, year, seen)
+        inputs = seen[(year, asset_id)]
         try:
             result = regime.related_party_transfer(inputs)
-        except Exception:  # a module's own code: the transfer price stands instead
-            continue
-        out[key] = _figure(result.written_down_value, books_currency(settings))
+            if not isinstance(result, TaxTransferResult) or not (
+                    result.written_down_value is None or isinstance(result.written_down_value, Decimal)):
+                raise TypeError(type(result).__name__)
+        except Exception as exc:  # a module's own code: refused with its reason, never a silent price
+            raise refuse(f"{label}: {_failed(exc)} Check the regime's module, then transfer.") from exc
+        if result.written_down_value is not None:
+            out[key] = _figure(result.written_down_value, currency)
     return out
 
 

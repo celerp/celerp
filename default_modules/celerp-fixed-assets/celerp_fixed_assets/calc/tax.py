@@ -80,5 +80,6 @@ class DeferredTaxResult:
 
 @dataclass(frozen=True)
 class TaxTransferResult:
-    """The tax written-down value an asset carries to a related party."""
-    written_down_value: Decimal
+    """The tax written-down value an asset carries to a related party. None declares that
+    the regime carries it across at the transfer price instead."""
+    written_down_value: Decimal | None

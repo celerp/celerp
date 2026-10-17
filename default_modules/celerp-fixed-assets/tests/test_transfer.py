@@ -428,6 +428,105 @@ async def test_transfer_tax_value_from_the_related_party_rule(fa, zz):
     assert D(row["additions"]) == D("9600")
 
 
+async def _taxed_pair(fa: FA, *, mapped: bool = True) -> tuple[str, FA]:
+    """A car in the ZZ asset regime here, tax years to 30 June, and Beta Co keeping ZZ too."""
+    await _managed_from(fa, "2024-01-01")
+    await fa.ok(await fa.patch("/settings", {"tax_regimes": ["zz_asset"], "tax_year_end": "06-30"}))
+    if mapped:
+        await _map(fa, "Vehicles", {"zz_asset": "zz_plant"})
+    car = await _contributed(fa, on="2025-01-15")
+    await _run(fa, "2026-03")
+    b = await _second_company(fa, managed="2026-01-01")
+    await b.ok(await b.patch("/settings", {"tax_regimes": ["zz_asset"], "tax_year_end": "06-30"}))
+    await _map(b, "Vehicles", {"zz_asset": "zz_plant"})
+    return car, b
+
+
+async def _refused_untouched(fa: FA, b: FA, car: str, *needles: str) -> None:
+    """The transfer is refused naming the regime and each of ``needles``, and neither company changed."""
+    before = await _snapshot(fa, car)
+    their_journals = sorted(je["entity_id"] for je in await b.module_journals())
+    refused = await _refused_transfer(fa, b, car, price="9000")
+    assert refused.status_code == 409, refused.text
+    for needle in ("ZZ asset allowances", *needles):
+        assert needle in refused.json()["detail"], refused.text
+    done = await fa.post(f"/assets/{car}/transfer", {
+        **_transfer_body(b, price="9000", class_id=(await b.classes())["Vehicles"]["id"]), "op_key": "t-refused", "fingerprint": "stale"})
+    assert done.status_code == 409 and "ZZ asset allowances" in done.json()["detail"], done.text
+    assert await _snapshot(fa, car) == before
+    assert [a for a in await b.entities("fa_asset") if a.get("transferred_from")] == []
+    assert sorted(je["entity_id"] for je in await b.module_journals()) == their_journals
+
+
+async def test_f06_transfer_refused_while_the_carryover_cannot_be_worked_out(fa, zz, monkeypatch):
+    from celerp_l10n_zz.rules import AssetRegime
+    from test_l10n import _set_zz
+
+    car, b = await _taxed_pair(fa, mapped=False)
+    # No tax category: the price would silently become the tax value.
+    await _refused_untouched(fa, b, car, "tax category")
+    await _map(fa, "Vehicles", {"zz_asset": "zz_plant"})
+
+    # The regime's own code fails.
+    def broken(self, inputs):
+        raise ValueError("no table for this year")
+    monkeypatch.setattr(AssetRegime, "related_party_transfer", broken)
+    await _refused_untouched(fa, b, car, "could not work this out")
+    # Its result is not a value at all.
+    monkeypatch.setattr(AssetRegime, "related_party_transfer", lambda self, inputs: None)
+    await _refused_untouched(fa, b, car, "could not work this out")
+    monkeypatch.undo()
+
+    # The rule's module is turned off.
+    await _set_zz(fa, False)
+    await _refused_untouched(fa, b, car, "ZZ localization")
+    # Back on, the same transfer goes through at the value ZZ carries across.
+    await _set_zz(fa, True)
+    done = await _transfer(fa, b, car, price="9000")
+    (mine,) = [r for r in (await _tax_book(fa, "zz_asset", 2026))["rows"] if r["asset_id"] == car]
+    assert D(mine["disposals"]) == D("9600")
+    (row,) = [r for r in (await _tax_book(b, "zz_asset", 2026))["rows"]
+              if r["asset_id"] == done["target"]["asset_id"]]
+    assert D(row["additions"]) == D("9600")
+    await fa.fold_matches(car)
+
+
+async def test_f06_transfer_refused_into_a_closed_tax_year(fa, zz):
+    from test_year_end import _accept_all
+
+    car, b = await _taxed_pair(fa)
+    for year in (2025, 2026):
+        await _accept_all(fa, year)
+        await fa.ok(await fa.post(f"/tax-years/zz_asset/{year}/close", {}))
+    await _refused_untouched(fa, b, car, "2026", "closed")
+
+
+async def test_f06_regime_declaring_transfer_price_carries_the_price(fa, zz, monkeypatch):
+    from celerp_fixed_assets.calc.tax import TaxTransferResult
+    from celerp_l10n_zz.rules import AssetRegime
+
+    car, b = await _taxed_pair(fa)
+    monkeypatch.setattr(AssetRegime, "related_party_transfer",
+                        lambda self, inputs: TaxTransferResult(written_down_value=None))
+    done = await _transfer(fa, b, car, price="9000")
+    (mine,) = [r for r in (await _tax_book(fa, "zz_asset", 2026))["rows"] if r["asset_id"] == car]
+    assert D(mine["disposals"]) == D("9000")
+    (row,) = [r for r in (await _tax_book(b, "zz_asset", 2026))["rows"]
+              if r["asset_id"] == done["target"]["asset_id"]]
+    assert D(row["additions"]) == D("9000")
+
+
+async def test_f06_carryover_converted_into_the_receiving_currency(fa, zz):
+    car, b = await _taxed_pair(fa)
+    r = await b.client.patch("/companies/me/books", headers=b.h, json={"currency": "EUR"})
+    assert r.status_code == 200, r.text
+    done = await _transfer(fa, b, car, price="9000", rate="0.9")
+    (row,) = [r for r in (await _tax_book(b, "zz_asset", 2026))["rows"]
+              if r["asset_id"] == done["target"]["asset_id"]]
+    assert D(row["additions"]) == D("8640")
+    assert D((await b.asset(done["target"]["asset_id"]))["cost"]) == D("8100")
+
+
 async def test_s5_concurrent_transfers_one_wins(committed_engine):
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company

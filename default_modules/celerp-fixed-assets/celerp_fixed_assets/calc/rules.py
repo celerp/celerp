@@ -48,7 +48,10 @@ class TaxRegime(Protocol):
     ``asset_year``) or "pool" (assets pooled by ``pool_key``, ``pool_year``).
     ``deferred_tax`` is None when the regime reports none. ``elections_schema`` maps each
     election's name to "bool", "decimal" or "text"; its label is the key
-    ``<label_key>.<name>`` in the module's locales."""
+    ``<label_key>.<name>`` in the module's locales. ``related_party_transfer`` returns a
+    ``TaxTransferResult``: the written-down value the asset carries to a related company,
+    or None where the regime carries it at the transfer price. Raising, or returning
+    anything else, refuses the transfer."""
     key: str
     country: str
     label_key: str
