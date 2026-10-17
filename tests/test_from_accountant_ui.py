@@ -35,7 +35,7 @@ class Request:
     query_params: dict = {}
 
 
-def _endpoint(monkeypatch, *, items=ITEMS, refuse=None):
+def _endpoint(monkeypatch, *, items=ITEMS, refuse=None, already=False):
     posted = []
 
     async def journals_from_accountant(token):
@@ -45,7 +45,7 @@ def _endpoint(monkeypatch, *, items=ITEMS, refuse=None):
         posted.append(je_id)
         if refuse:
             raise api_client.APIError(409, refuse)
-        return {"je_id": "new", "ts": "2026-03-31"}
+        return {"je_id": "new", "ts": "2026-03-31", "already": already}
 
     monkeypatch.setattr(api_client, "journals_from_accountant", journals_from_accountant)
     monkeypatch.setattr(api_client, "reverse_from_accountant", reverse_from_accountant)
@@ -89,6 +89,14 @@ async def test_reverse_posts_and_names_the_date(monkeypatch):
     assert 'id="from-accountant"' in body
     toast = json.loads(response.headers["HX-Trigger"])["celerpToast"]
     assert toast == {"message": "Posted, dated 2026-03-31.", "type": "success"}
+
+
+async def test_a_repeat_from_a_stale_tab_says_nothing_new_was_posted(monkeypatch):
+    endpoint, _ = _endpoint(monkeypatch, already=True)
+    response = await endpoint(Request(), "je-1")
+    toast = json.loads(response.headers["HX-Trigger"])["celerpToast"]
+    assert toast == {"message": "This was already done, dated 2026-03-31. Nothing new was posted.",
+                     "type": "info"}
 
 
 async def test_refused_reverse_is_shown_in_the_section(monkeypatch):

@@ -204,6 +204,7 @@ async def test_reverse_dates_follow_both_locks(real_client, real_engine, monkeyp
     assert r.json()["ts"] == ADJUSTED
     again = await real_client.post(f"/accounting/journal-entries/{row['id']}/reverse", headers=auth(tok))
     assert again.json()["je_id"] == r.json()["je_id"]  # one reversal per journal
+    assert not r.json()["already"] and again.json()["already"]
 
     await _post_journal(real_client, firm_tok, ADJUSTED, 20.0, "Firm closed March")
     await _lock(real_client, firm_tok, "2026-06-30")
