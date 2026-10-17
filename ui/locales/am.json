@@ -3831,7 +3831,7 @@
   "migration.check_results": "ውጤቶቹን ይመልከቱ",
   "migration.discard": "ዝውውሩን ይተው",
   "migration.pause": "ማስመጣቱን ለአፍታ አቁም",
-  "migration.discard_confirm": "ወደ {company} ያለውን ዝውውር ይተዉ? የገባው ውሂብ እና የተሰቀለው ፋይል ይሰረዛሉ።",
+  "migration.discard_confirm": "ወደ {company} የሚደረገውን ፍልሰት ይሰርዙ? ኩባንያው፣ የገቡት መረጃዎች እና የተሰቀለው ፋይል ይሰረዛሉ። ይህ ሊቀለበስ አይችልም፤ እንደገና ለመጀመር ፋይሉን እንደገና ይስቀሉ።",
   "migration.phase.company_settings": "ኩባንያ እና ቅንብሮች",
   "migration.phase.currencies_taxes_accounts": "የሂሳብ ማዕከላዊ መረጃዎች",
   "migration.phase.contacts_locations": "ግንኙነቶች እና አካባቢዎች",

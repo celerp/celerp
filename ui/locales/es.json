@@ -3831,7 +3831,7 @@
   "migration.check_results": "Comprobar los resultados",
   "migration.discard": "Descartar migración",
   "migration.pause": "Pausar importación",
-  "migration.discard_confirm": "¿Descartar la migración hacia {company}? Se eliminarán los datos importados y el archivo subido.",
+  "migration.discard_confirm": "¿Descartar la migración a {company}? Se eliminan la empresa, sus datos importados y el archivo subido. Esto no se puede deshacer; para empezar de nuevo, vuelva a subir el archivo.",
   "migration.phase.company_settings": "Empresa y ajustes",
   "migration.phase.currencies_taxes_accounts": "Datos maestros contables",
   "migration.phase.contacts_locations": "Contactos y ubicaciones",

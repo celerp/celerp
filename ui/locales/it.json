@@ -3831,7 +3831,7 @@
   "migration.check_results": "Controlla i risultati",
   "migration.discard": "Annulla migrazione",
   "migration.pause": "Metti in pausa l'importazione",
-  "migration.discard_confirm": "Annullare la migrazione verso {company}? I dati importati e il file caricato verranno eliminati.",
+  "migration.discard_confirm": "Scartare la migrazione in {company}? L'azienda, i suoi dati importati e il file caricato vengono eliminati. Non è possibile annullare; per ricominciare, carica di nuovo il file.",
   "migration.phase.company_settings": "Azienda e impostazioni",
   "migration.phase.currencies_taxes_accounts": "Anagrafiche contabili",
   "migration.phase.contacts_locations": "Contatti e sedi",

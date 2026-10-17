@@ -3831,7 +3831,7 @@
   "migration.check_results": "مراجعة النتائج",
   "migration.discard": "التخلي عن الترحيل",
   "migration.pause": "إيقاف الاستيراد مؤقتًا",
-  "migration.discard_confirm": "هل تريد التخلي عن الترحيل إلى {company}؟ سيتم حذف البيانات المستوردة والملف الذي تم تحميله.",
+  "migration.discard_confirm": "تجاهل الترحيل إلى {company}؟ تُحذف الشركة وبياناتها المستوردة والملف المرفوع. لا يمكن التراجع عن ذلك؛ للبدء من جديد، ارفع الملف مرة أخرى.",
   "migration.phase.company_settings": "الشركة والإعدادات",
   "migration.phase.currencies_taxes_accounts": "البيانات المحاسبية الرئيسية",
   "migration.phase.contacts_locations": "جهات الاتصال والمواقع",

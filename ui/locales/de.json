@@ -3831,7 +3831,7 @@
   "migration.check_results": "Ergebnisse prüfen",
   "migration.discard": "Migration verwerfen",
   "migration.pause": "Import anhalten",
-  "migration.discard_confirm": "Die Migration nach {company} verwerfen? Die importierten Daten und die hochgeladene Datei werden gelöscht.",
+  "migration.discard_confirm": "Die Migration nach {company} verwerfen? Das Unternehmen, seine importierten Daten und die hochgeladene Datei werden gelöscht. Das kann nicht rückgängig gemacht werden; um neu zu beginnen, laden Sie die Datei erneut hoch.",
   "migration.phase.company_settings": "Firma und Einstellungen",
   "migration.phase.currencies_taxes_accounts": "Buchhaltungsstammdaten",
   "migration.phase.contacts_locations": "Kontakte und Standorte",
