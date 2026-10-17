@@ -1744,6 +1744,25 @@ class TestAccountingPage:
             assert 'min="0"' in tag and 'min="0.0001"' not in tag, tag
 
     @pytest.mark.asyncio
+    async def test_post_again_for_a_missing_entry_says_it_is_gone(self, ui_client):
+        """Post again for an entry no longer in the books says so and leads back to
+        Client companies, where Post again was chosen; there is no journal here to refresh."""
+        from ui.api_client import APIError
+        missing = AsyncMock(side_effect=APIError(404, t("acct.err_je_not_found")))
+        with patch("ui.api_client.journal_prefill", new=missing), \
+             patch("ui.api_client.get_chart",
+                   new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})), \
+             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})), \
+             patch("ui.api_client.list_contacts",
+                   new=AsyncMock(return_value={"items": [], "total": 0})):
+            r = await ui_client.get("/accounting/journal/new?from=je-gone", cookies=_authed())
+        assert r.status_code == 200
+        page = html.unescape(r.content.decode())
+        assert "The entry to post again is no longer in these books, so nothing was filled in." in page
+        assert "Refresh the journal" not in page
+        assert '<a href="/companies">Back to Client companies</a>' in page
+
+    @pytest.mark.asyncio
     async def test_pnl_shortcut_redirects_to_the_report(self, ui_client):
         r = await ui_client.get("/accounting/pnl", cookies=_authed())
         assert r.status_code == 302
