@@ -425,6 +425,18 @@ async def test_correct_an_asset_then_the_corrections_pages_and_report(owner_ui):
     assert "fixed_assets." not in apply.text
 
 
+async def test_u1_dispose_review_lists_what_leaves_the_books(owner_ui):
+    car = await _managed_car(owner_ui)
+    review = await owner_ui.post("/fixed-assets/op/dispose/review", data={
+        "asset_id": car, "date": "2026-10-05", "reason": "scrapped", "idempotency_key": str(uuid.uuid4())})
+    for key in ("cost", "accumulated_depreciation"):
+        assert t(f"fixed_assets.leaving.{key}") in review.text, key
+    assert "12,000.00" in review.text
+    # Nothing was impaired, so no impairment row.
+    assert t("fixed_assets.leaving.accumulated_impairment") not in review.text
+    assert "fixed_assets." not in review.text
+
+
 async def test_dispose_from_the_asset_page_and_undo_it(owner_ui):
     car = await _managed_car(owner_ui)
     page = await owner_ui.get(f"/fixed-assets/assets/{car}")

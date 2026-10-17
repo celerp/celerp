@@ -304,7 +304,7 @@ async def sell(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         item = await _plan(session, company_id, books, asset_id, asset, day, price)
         shown = {"number": asset["number"], "name": asset["name"], "date": day, "price": money(price, currency),
                  "contact_name": buyer["contact_name"],
-                 **{k: item["shown"][k] for k in ("depreciation", "carrying_amount", "gain_or_loss")},
+                 **{k: item["shown"][k] for k in disposal.LEAVING},
                  "journals": [_journal_view(item["lines"], currency)]}
         basis = [asset.get("version"), asset.get("movement_count"), await runs._ledger_basis(session, company_id, books)]
         return shown, {"asset": asset, "day": day, "price": price, "buyer": buyer, "currency": currency,

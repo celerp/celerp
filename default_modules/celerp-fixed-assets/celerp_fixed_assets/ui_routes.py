@@ -91,10 +91,15 @@ def _money(value, currency: str | None) -> FT | str:
     return empty_mark() if value in (None, "") else fmt_money(float(value), currency)
 
 
+def _known(value) -> Decimal | None:
+    """An amount, or None when it is hidden or not worked out."""
+    return None if value in (None, "") else Decimal(str(value))
+
+
 def _result_row(value, currency: str | None) -> tuple[str, FT]:
     """A disposal's result named as the gain or the loss it is, at its size. Unknown (hidden
     or not yet worked out) or nil, it is named as either."""
-    amount = Decimal(str(value)) if value not in (None, "") else Decimal(0)
+    amount = _known(value) or Decimal(0)
     key = "fixed_assets.gain" if amount > 0 else "fixed_assets.loss" if amount < 0 else "fixed_assets.gain_or_loss"
     return t(key), _money_td(abs(amount) if amount else value, currency)
 
@@ -223,8 +228,11 @@ def _preview(action: str, result: dict, currency: str) -> FT:
         parts.append(P(t("fixed_assets.credit_open_draft", number=result["open_draft"]), cls="flash flash--info"))
     if "gain_or_loss" in result:
         parts.append(_detail_table([*([(t("fixed_assets.buyer"), result["contact_name"])] if "contact_name" in result else []),
-                                    *[(t(f"fixed_assets.{k}"), _money_td(result[k], currency))
-                                      for k in ("depreciation", "carrying_amount")],
+                                    (t("fixed_assets.depreciation"), _money_td(result["depreciation"], currency)),
+                                    *[(t(f"fixed_assets.leaving.{k}"), _money_td(result[k], currency))
+                                      for k in ("cost", "accumulated_depreciation", "accumulated_impairment")
+                                      if k == "cost" or _known(result[k]) != 0],
+                                    (t("fixed_assets.carrying_amount"), _money_td(result["carrying_amount"], currency)),
                                     _result_row(result["gain_or_loss"], currency)]))
     if "new_carrying_amount" in result:
         parts.append(_remeasure_figures(result, currency))

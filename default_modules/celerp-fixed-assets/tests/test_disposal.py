@@ -114,6 +114,22 @@ async def test_partial_dispose_by_percentage_splits_pro_rata_and_depreciates_on(
     await fa.fold_matches(car)
 
 
+async def test_u1_review_names_what_leaves_cost_depreciation_and_impairment(fa):
+    """The same quarter disposed of after the June impairment: Review shows the 3,000 of cost,
+    300 of depreciation and 562.50 of impairment that leave, and the 2,137.50 carried out."""
+    from test_remeasure import _impair
+
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    await _run(fa, "2026-06")
+    await _impair(fa, car, "2026-06-30", "8550")
+    shown = await fa.ok(await fa.post(f"/assets/{car}/dispose", {
+        "date": "2026-07-10", "reason": "scrapped", "percent": "25", "preview": True, "op_key": "u1-review"}))
+    got = {k: D(shown[k]) for k in ("cost", "accumulated_depreciation", "accumulated_impairment", "carrying_amount")}
+    assert got == {"cost": D("3000"), "accumulated_depreciation": D("300"), "accumulated_impairment": D("562.50"),
+                   "carrying_amount": D("2137.50")}, got
+
+
 async def test_u1_partial_dispose_after_impairment_takes_its_share_of_both(fa):
     """Impaired at the end of June (carrying 10,800 down to 8,550), then a quarter disposed
     of on 10 July: the quarter takes 300 of the depreciation charged through June and 562.50

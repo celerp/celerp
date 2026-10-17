@@ -137,6 +137,11 @@ def owed(books: runs.Books, asset: dict, movements: list[dict], month: int, thro
     return {k: v for k, v in diff.items() if v}, planned
 
 
+# What a disposal or sale takes off the books, as its Review shows it.
+LEAVING = ("depreciation", "cost", "accumulated_depreciation", "accumulated_impairment", "carrying_amount",
+           "gain_or_loss")
+
+
 def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: list[dict], day: str,
                 share: Decimal, quantity: Decimal, accounts: dict, *, proceeds: Decimal = Decimal(0),
                 clearing: str | None = None, clearing_role: str | None = None) -> dict:
@@ -193,7 +198,8 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     elif gain < 0:
         lines.append(JournalLine(account=accounts["loss"](), debit=-gain, role="disposal_loss"))
     shown = {"number": asset["number"], "name": asset["name"], "share": str(share), "cost": money(gone_cost, currency),
-             "depreciation": money(depreciation, currency), "accumulated": money(gone_ad + gone_imp, currency),
+             "depreciation": money(depreciation, currency), "accumulated_depreciation": money(gone_ad, currency),
+             "accumulated_impairment": money(gone_imp, currency),
              "carrying_amount": money(carrying, currency), "gain_or_loss": money(gain, currency)}
     return {"asset_id": asset_id, "asset": asset, "shown": shown, "lines": lines, "full": share == 1,
             "quantity": quantity, "gain": gain,
@@ -266,8 +272,7 @@ async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str]
                                      await asset_movements(session, company_id, asset_id), day, share, quantity,
                                      accounts(books)))
         currency = books.currency
-        totals = {k: money(sum((_dec(i["shown"][k]) for i in items), Decimal(0)), currency)
-                  for k in ("depreciation", "carrying_amount", "gain_or_loss")}
+        totals = {k: money(sum((_dec(i["shown"][k]) for i in items), Decimal(0)), currency) for k in LEAVING}
         shown = {"date": day, "reason": reason, "note": note, **totals, "assets": [i["shown"] for i in items],
                  "journals": [_journal_view(i["lines"], currency) for i in items]}
         basis = [[(i["asset"].get("version"), i["asset"].get("movement_count")) for i in items],
