@@ -118,13 +118,13 @@ async def mark(session: AsyncSession, *, company_id: uuid.UUID, grant_id: uuid.U
 async def sent_marks(company_id: uuid.UUID, grant_id: uuid.UUID, entity: str,
                      entity_ids: list[str]) -> tuple[dict[str, tuple[int, str | None]], str | None]:
     """What became of each record's last delivery to the firm, (revision, refusal), and
-    the firm's lock date as last fetched."""
+    the lock date this key's firm last sent."""
     from celerp.db import get_session_ctx
     async with get_session_ctx() as session:
         marks = await delivery_marks(session, company_id, grant_id, entity, entity_ids)
         company = await session.get(Company, company_id)
-        held = (company.settings or {}).get("firm_lock") if company is not None else None
-    lock = held.get("date") if isinstance(held, dict) and isinstance(held.get("date"), str) else None
+        held = _firm_locks(company.settings or {} if company is not None else {}).get(str(grant_id), {})
+    lock = held.get("date") if isinstance(held.get("date"), str) else None
     return {eid: (int(m.revision), m.refused) for eid, m in marks.items()}, lock
 
 
@@ -208,12 +208,15 @@ async def journal_feed(session: AsyncSession, ctx, after: str = "") -> dict:
 
 
 async def lock_feed(session: AsyncSession, ctx) -> dict:
-    """The firm's lock date for the client its key belongs to."""
+    """The firm's lock date for the client its key belongs to, and until when that key
+    works, which is as long as the date binds the client."""
     grant = await _caller_grant(session, ctx)
     company = await session.get(Company, grant.company_id)
     lock = (company.settings or {}).get("lock_date")
+    expires = grant.expires_at if grant.expires_at.tzinfo else grant.expires_at.replace(tzinfo=timezone.utc)
     await session.commit()
-    return {"lock_date": lock if isinstance(lock, str) else None, "firm": firm_name(company)}
+    return {"lock_date": lock if isinstance(lock, str) else None, "firm": firm_name(company),
+            "expires_at": expires.isoformat()}
 
 
 # ---- the firm's side: what the client sends ---------------------------------------------
@@ -403,9 +406,38 @@ def _lock_of(settings: dict) -> date | None:
     return _day(settings.get("lock_date"))
 
 
+def _firm_locks(settings: dict) -> dict[str, dict]:
+    """Each accountant's lock date by the key it came through (apply_firm_lock)."""
+    held = settings.get("firm_locks")
+    return held if isinstance(held, dict) else {}
+
+
+def _instant(value) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def firm_lock(settings: dict, now: datetime | None = None) -> dict | None:
+    """The accountant's lock date that binds these books, {"date", "firm"}: the latest of
+    those sent through keys still in force, that is not expired, revoked or no longer
+    opening journals. None when no accountant holds a period closed."""
+    when = now or datetime.now(timezone.utc)
+    binding = None
+    for held in _firm_locks(settings).values():
+        day, expires = _day(held.get("date")), _instant(held.get("expires_at"))
+        if day is None or held.get("ended") or expires is None or expires <= when:
+            continue
+        if binding is None or day > _day(binding["date"]):
+            binding = {"date": held["date"], "firm": held.get("firm")}
+    return binding
+
+
 def _firm_lock_of(settings: dict) -> date | None:
-    held = settings.get("firm_lock")
-    return _day(held.get("date")) if isinstance(held, dict) else None
+    binding = firm_lock(settings)
+    return _day(binding["date"]) if binding else None
 
 
 @dataclass
@@ -549,37 +581,50 @@ async def answered(company_id: uuid.UUID, grant_id: uuid.UUID, item: dict, decli
         await session.commit()
 
 
-async def apply_firm_lock(company_id: uuid.UUID, grant_id: uuid.UUID, body: dict) -> bool:
-    """Keep the firm's lock date beside the client's own and move the client's forward to
-    it once, with a notice: never back, and the same date never again, so the client may
-    move its own back. A record the firm refused is sent once more when the firm's date
-    changes. Returns whether anything changed."""
+async def apply_firm_lock(company_id: uuid.UUID, grant_id: uuid.UUID, body: dict | None) -> bool:
+    """Keep the lock date the firm sent through this key beside the client's own, apart
+    from any other key's, and move the client's forward to it once, with a notice: never
+    back, and the same date from this key never again, so the client may move its own
+    back. ``body`` None means the key no longer works or no longer opens journals: its
+    date stops binding until the key answers again (firm_lock). A record the firm refused
+    is sent once more when its date changes. Returns whether anything changed."""
     from celerp.db import get_session_ctx
     from celerp.services.lot_origin import place_after_lock_change
 
-    lock, firm = body.get("lock_date"), body.get("firm")
-    if lock is not None and _day(lock) is None or not isinstance(firm, str) or not firm.strip():
-        raise ValueError("The accountant's lock date could not be read")
+    lock = firm = None
+    if body is not None:
+        lock, firm = body.get("lock_date"), body.get("firm")
+        if (lock is not None and _day(lock) is None or not isinstance(firm, str) or not firm.strip()
+                or _instant(body.get("expires_at")) is None):
+            raise ValueError("The accountant's lock date could not be read")
     async with get_session_ctx() as session:
         company = await locked_company(session, company_id)
         original = dict(company.settings or {})
         settings = dict(original)
-        before = _firm_lock_of(settings)
-        if lock is None:
-            settings.pop("firm_lock", None)
+        locks = dict(_firm_locks(settings))
+        held = dict(locks.get(str(grant_id)) or {})
+        before = _day(held.get("date"))
+        if body is None:
+            if held:
+                locks[str(grant_id)] = {**held, "ended": True}
         else:
-            settings["firm_lock"] = {"date": lock, "firm": firm}
+            held = {"firm": firm, "date": lock, "expires_at": body["expires_at"],
+                    "applied": held.get("applied")}
+            locks[str(grant_id)] = held
+        settings["firm_locks"] = locks
         moved = False
-        if lock is not None and settings.get("firm_lock_applied") != lock:
+        if lock is not None and held.get("applied") != lock:
             own = _lock_of(settings)
             if own is None or _day(lock) > own:
                 company.settings = settings
                 write_period_lock(company, lock, None)
                 settings = dict(company.settings)
                 moved = True
-            settings["firm_lock_applied"] = lock
+            held["applied"] = lock
+        if not locks:
+            settings.pop("firm_locks")
         company.settings = settings
-        if before != (_day(lock) if lock else None):
+        if body is not None and before != (_day(lock) if lock else None):
             await session.execute(delete(CompanyPeerDelivery).where(
                 CompanyPeerDelivery.company_id == company_id,
                 CompanyPeerDelivery.grant_id == grant_id,

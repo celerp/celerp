@@ -505,11 +505,13 @@ class CelerpConnector(ConnectorBase):
                     break
         return result
 
-    async def _fetch(self, client, ctx: ConnectorContext, entity: str, params: dict | None = None):
-        """The firm's answer to a fetch, or None when its key does not open journals."""
+    async def _fetch(self, client, ctx: ConnectorContext, entity: str, params: dict | None = None,
+                     closed: tuple[int, ...] = (403,)):
+        """The firm's answer to a fetch, or None when it answers with a ``closed`` status:
+        by default, when its key does not open journals."""
         response = await client.get(_target_url(ctx, entity), headers=peer_headers(ctx),
                                     params=params or {})
-        if response.status_code == 403:
+        if response.status_code in closed:
             return None
         if response.status_code != 200:
             raise ValueError("Receiving installation needs attention")
@@ -574,18 +576,18 @@ class CelerpConnector(ConnectorBase):
 
     async def sync_period_lock(self, ctx: ConnectorContext, since=None) -> SyncResult:
         """Keep the accountant's lock date beside these books' own, moving theirs forward
-        to it once."""
+        to it once. A key the firm no longer accepts (revoked or expired) or that no longer
+        opens journals ends its lock date until the key answers again."""
         from celerp.services import peer_journals
         from celerp.services.peer_access import key_ids
 
         result = SyncResult(entity=SyncEntity.PERIOD_LOCK, direction=SyncDirection.INBOUND,
                             errors=[], attention=[])
         async with RateLimitedClient(public_only=True) as client:
-            body = await self._fetch(client, ctx, "period_lock")
-        if body is not None:
-            changed = await peer_journals.apply_firm_lock(uuid.UUID(ctx.company_id),
-                                                          key_ids(ctx.access_token)[1], body)
-            result.record("updated" if changed else "noop")
+            body = await self._fetch(client, ctx, "period_lock", closed=(401, 403))
+        changed = await peer_journals.apply_firm_lock(uuid.UUID(ctx.company_id),
+                                                      key_ids(ctx.access_token)[1], body)
+        result.record("updated" if changed else "noop")
         return result
 
     async def sync_journals_out(self, ctx: ConnectorContext) -> SyncResult:

@@ -115,8 +115,7 @@ EXCLUDED_TABLES = {
 # Settings that describe this installation or its people, not the business.
 DROPPED_SETTINGS = frozenset({
     "ai_memory", "reorder_alert_email", "column_prefs",
-    "pay_tip_shown", "reorder_last_scan_at", "restored_backup", "lineage_id", "firm_lock",
-    "firm_lock_applied",
+    "pay_tip_shown", "reorder_last_scan_at", "restored_backup", "lineage_id", "firm_locks",
 }) | SET_BY_KEYS
 
 # The company a restored company descends from, carried in the manifest, never remapped.

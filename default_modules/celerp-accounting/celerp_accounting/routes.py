@@ -4619,8 +4619,8 @@ async def get_period_lock(
         "lock_date": settings.get("lock_date"),
         "lock_date_set_by": settings.get("lock_date_set_by"),
         "lock_date_set_at": settings.get("lock_date_set_at"),
-        # The accountant's own lock date, kept beside this company's (peer_journals).
-        "firm_lock": settings.get("firm_lock"),
+        # The accountant's lock date that binds these books, beside their own.
+        "firm_lock": peer_journals.firm_lock(settings),
     }
 
 
