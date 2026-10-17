@@ -3644,6 +3644,7 @@
   "connectors.fail_store_changed": "この会社の {service} レコードは別のストアから取得されています。取得元のストアを接続するか、このストア用に別の会社を使ってください。",
   "connectors.fail_credentials": "Celerp は {service} のサインイン情報を読み取れませんでした。上の「接続を解除」を使ってから、Web アクセスで {service} を再接続してください。",
   "connectors.fail_access": "{service} が Celerp のアクセスを拒否しました。上の「接続を解除」を使ってから、Web アクセスで {service} を再接続してください。",
+  "connectors.fail_key_closed": "これらの帳簿に対する会計士のキーが取り消されたか期限切れになったため、会計士の仕訳は届かなくなりました。会計士にキーの更新か新しいペアリングリンクの送付を依頼してください。新しいリンクの場合は、上の「接続を解除」を使ってから貼り付けてください。",
   "connectors.fail_rate_limited": "{service} が Celerp の同期速度を制限しています。数分待ってから「今すぐ同期」を使ってください。",
   "connectors.fail_unreachable": "Celerp から {service} に接続できませんでした。インターネット接続を確認してから「今すぐ同期」を使ってください。",
   "connectors.fail_remote": "{service} 側で問題が発生しました。しばらく待ってから「今すぐ同期」を使ってください。",

@@ -538,6 +538,8 @@ class CelerpConnector(ConnectorBase):
                                     params=params or {})
         if response.status_code in closed:
             return None
+        if response.status_code == 401:
+            raise ValueError("Accountant's key was revoked or has expired")
         if response.status_code != 200:
             raise ValueError("Receiving installation needs attention")
         body = response.json()

@@ -3644,6 +3644,7 @@
   "connectors.fail_store_changed": "Dữ liệu {service} của công ty này đến từ một cửa hàng khác. Hãy kết nối cửa hàng gốc, hoặc dùng một công ty riêng cho cửa hàng này.",
   "connectors.fail_credentials": "Celerp không đọc được thông tin đăng nhập {service}. Dùng Ngắt kết nối ở trên, sau đó kết nối lại {service} tại Truy cập qua web.",
   "connectors.fail_access": "{service} đã từ chối quyền truy cập của Celerp. Dùng Ngắt kết nối ở trên, sau đó kết nối lại {service} tại Truy cập qua web.",
+  "connectors.fail_key_closed": "Khóa của kế toán viên cho sổ sách này đã bị thu hồi hoặc đã hết hạn, nên các bút toán của họ không còn đến nữa. Hãy nhờ kế toán viên gia hạn khóa hoặc gửi liên kết ghép nối mới: dùng Ngắt kết nối ở trên, rồi dán liên kết mới.",
   "connectors.fail_rate_limited": "{service} đang giới hạn tốc độ đồng bộ của Celerp. Đợi vài phút rồi dùng Đồng bộ ngay.",
   "connectors.fail_unreachable": "Celerp không thể kết nối tới {service}. Hãy kiểm tra kết nối internet, sau đó dùng Đồng bộ ngay.",
   "connectors.fail_remote": "{service} gặp sự cố ở phía họ. Đợi một lúc rồi dùng Đồng bộ ngay.",

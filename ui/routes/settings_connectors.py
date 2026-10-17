@@ -111,6 +111,7 @@ _FAILURE_REASONS: tuple[tuple[re.Pattern, str], ...] = tuple(
         (r"does not have them", "connectors.fail_store_changed"),
         (r"credentials are temporarily unavailable", "connectors.fail_credentials"),
         (r"realm_id", "connectors.fail_credentials"),
+        (r"key was revoked or has expired", "connectors.fail_key_closed"),
         (r"\b40[13]\b|unauthori[sz]ed|forbidden|invalid.{0,20}(token|key|credential)", "connectors.fail_access"),
         (r"\b429\b|rate.?limit|too many requests", "connectors.fail_rate_limited"),
         (r"timed? ?out|timeout|connecterror|connection (refused|reset|error)|name or service|"
