@@ -275,6 +275,18 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _reason(exc: Exception) -> str:
+    """The failure as a person reads it: a file error names its folders as written,
+    not as Python quotes them (doubled backslashes on Windows)."""
+    if isinstance(exc, OSError) and exc.strerror:
+        if exc.filename is None:
+            return exc.strerror
+        if exc.filename2 is None:
+            return f"{exc.strerror}: {exc.filename}"
+        return f"{exc.strerror}: {exc.filename} -> {exc.filename2}"
+    return str(exc) or repr(exc)
+
+
 def _rename(src: Path, dst: Path) -> None:
     """Same-filesystem rename used for every root swap and roll-back."""
     os.rename(src, dst)
@@ -509,7 +521,7 @@ async def make_safety_archive() -> SafetyResult:
         if partial is not None:
             partial.unlink(missing_ok=True)
         log.warning("Safety archive failed: %s", exc)
-        return SafetyResult(ok=False, error=str(exc) or repr(exc))
+        return SafetyResult(ok=False, error=_reason(exc))
 
 
 async def _cloud_safety_snapshot() -> None:
@@ -938,7 +950,7 @@ async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | Non
                     restored = True
                 except Exception:
                     log.exception("The installation could not be put back from %s", safety_archive)
-            detail = (str(exc) or repr(exc)).rstrip(".")
+            detail = _reason(exc).rstrip(".")
             message = _commit_failure(detail, safety, restored)
             # Every session has ended, or the installation stays closed until a start
             # resolves the recovery: the page that started it may never show this.
@@ -962,7 +974,7 @@ def _start_failed(prepared: PreparedRecovery, exc: Exception):
     """The recovery locks could not be taken or the safety step broke: nothing was restored."""
     log.exception("System Recovery failed before the restore began")
     _remove_staging(prepared.root)
-    return _failed(f"System Recovery did not start: {str(exc) or repr(exc)}")
+    return _failed(f"System Recovery did not start: {_reason(exc)}")
 
 
 @asynccontextmanager
@@ -1012,7 +1024,7 @@ async def _prepare_or_fail(path: Path):
         return None, _failed(str(exc))
     except Exception as exc:
         log.exception("Recovery archive could not be staged")
-        return None, _failed(f"The backup could not be prepared for restoring: {str(exc) or repr(exc)}")
+        return None, _failed(f"The backup could not be prepared for restoring: {_reason(exc)}")
 
 
 async def run_recovery(path: Path):

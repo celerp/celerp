@@ -1300,6 +1300,25 @@ async def test_failed_recovery_outcome_waits_for_the_next_sign_in(rec, tmp_path,
     assert backup_import.take_recovery_failure() is None
 
 
+async def test_failed_recovery_outcome_names_folders_as_written(rec, tmp_path, monkeypatch):
+    """A file system failure reads as its reason and the folders involved, written as
+    the user sees them, not as a Python string with every backslash doubled."""
+    from celerp.services import backup_import
+    rec.seed()
+    src = r"C:\Users\Owner\AppData\Roaming\celerp\celerp-data\recovery-staging\a1\files\attachments"
+    dst = r"C:\Users\Owner\AppData\Roaming\celerp\celerp-data\static\attachments"
+
+    def _swap(*_a, **_k):
+        raise PermissionError(13, "Access is denied", src, None, dst)
+
+    monkeypatch.setattr(backup_import, "_swap_roots", _swap)
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is False and result.session_ended is True
+    assert f"Access is denied: {src} -> {dst}." in result.error
+    assert "\\\\" not in result.error
+    assert backup_import.take_recovery_failure() == result.error
+
+
 async def test_recovery_refused_before_any_change_keeps_no_outcome(rec, tmp_path):
     """A recovery refused before anything changed signs no one out: its page shows the
     answer, and nothing waits for a later sign-in."""
