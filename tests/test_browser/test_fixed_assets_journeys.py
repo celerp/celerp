@@ -1089,6 +1089,53 @@ def test_u42_figures_keep_one_typeface_on_screen_and_in_print(page: Page, fresh_
     assert _figure_font(page) == screen
 
 
+def _pdf_pages(pdf: bytes) -> list[tuple[float, float, list[tuple[float, float, str]]]]:
+    """Each page of a PDF: its width, height and each piece of text with where it starts.
+    pypdf reports some runs with no position of their own (an identity text matrix); only
+    the runs it places are kept, which include each page's first row and the footer."""
+    import io as _io
+
+    from pypdf import PdfReader
+
+    pages = []
+    for pg in PdfReader(_io.BytesIO(pdf)).pages:
+        found: list[tuple[float, float, str]] = []
+
+        def visit(text, cm, tm, _font, _size, found=found):
+            if text.strip() and list(tm) != [1, 0, 0, 1, 0, 0]:
+                x, y = tm[4], tm[5]
+                found.append((cm[0] * x + cm[2] * y + cm[4], cm[1] * x + cm[3] * y + cm[5], text.strip()))
+        pg.extract_text(visitor_text=visit)
+        pages.append((float(pg.mediabox.width), float(pg.mediabox.height), found))
+    return pages
+
+
+def test_u43_a_long_report_prints_on_a4_inside_its_margins_on_every_page(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    for n in range(24):
+        _contributed(c, f"Van {n:02d}")
+    _run(c, "2026-01")
+    url = "/fixed-assets/reports/schedule/print?date_from=2026-01-01&date_to=2026-01-31"
+    # The figures fit the printable width of A4 (210mm less its margins), with no table cut off.
+    page.emulate_media(media="print")
+    page.set_viewport_size({"width": 680, "height": 1000})
+    page.goto(url)
+    assert page.evaluate("document.documentElement.scrollWidth") <= 680
+    pages = _pdf_pages(page.pdf(format="A4", prefer_css_page_size=True))
+    assert len(pages) > 1, len(pages)
+    margin = 10 * 72 / 25.4  # at least 10mm clear on every side, every page
+    for number, (width, height, texts) in enumerate(pages, 1):
+        assert texts, number
+        for x, y, text in texts:
+            assert margin <= x <= width - margin and margin <= y <= height - margin, (number, x, y, text)
+        # The footer stands below the figures rather than printing over them.
+        footer = [y for _, y, text in texts if "Powered by" in text]
+        body = [y for _, y, text in texts if "Powered by" not in text and "celerp.com" not in text]
+        assert all(f < min(body) for f in footer), (number, footer, min(body))
+    page.emulate_media(media="screen")
+
+
 def test_j21_bill_line_account_is_kept_and_the_finalized_bill_leads_to_registering_it(page: Page, fresh_company):
     c = fresh_company
     _started(c)

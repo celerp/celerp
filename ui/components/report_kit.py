@@ -337,9 +337,12 @@ td.cell--mono { font-family: 'Courier New', monospace; font-size: 8.5pt; }
 
 .report-footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 2mm 20mm; border-top: 1px solid #ddd; font-size: 8pt; color: #aaa; text-align: center; background: white; }
 .report-footer a { color: #aaa; text-decoration: none; }
-@page { margin: 0; size: A4 portrait; }
+/* The margin is the page's own, so every printed page keeps it, and the body runs
+   the full printable width. The footer follows the content once, never over a row. */
+@page { margin: 15mm; size: A4 portrait; }
 @media print {
-  body { padding: 15mm; }
+  body { padding: 0; }
   .report-section { page-break-inside: avoid; }
+  .report-footer { position: static; margin-top: 6mm; padding: 2mm 0; }
 }
 """

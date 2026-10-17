@@ -337,7 +337,6 @@ class Report:
     fetch: Callable
     body: Callable[[dict, str], list[FT]]
     rows: Callable[[dict, str], list[list]]
-    # Too many columns for portrait paper: printed landscape, in a smaller type.
     # Read with a path parameter, such as the country form shown: ``fetch(token, params, value)``.
     path_param: str | None = None
 
