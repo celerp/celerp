@@ -27,8 +27,8 @@
 #                  with the app open (its processes and API checked alive first); it must
 #                  end exactly those processes, leave a whole install, and boot again.
 #
-# After every install the installed folder must hold exactly the build's files plus the
-# uninstaller (scripts/check_win_bundle.py installed). Install and start times go to the job summary; they are reported, never
+# After every install the installed folder must hold exactly the build's files, byte for
+# byte, plus the uninstaller (scripts/check_win_bundle.py installed). Install and start times go to the job summary; they are reported, never
 # compared against a limit.
 #
 # Run from the electron folder after the build, as the runner's administrator account.
@@ -199,8 +199,8 @@ function InstallSetup([string]$installer, [string]$what) {
   Split-Path $found
 }
 
-# The installed folder holds exactly the build's files plus the uninstaller: nothing left
-# from an earlier copy and nothing missing.
+# The installed folder holds exactly the build's files, byte for byte, plus the
+# uninstaller: nothing left from an earlier copy, nothing missing, nothing part written.
 function TreeMatches([string]$dir, [string]$what) {
   python scripts\check_win_bundle.py installed $build $dir
   if ($LASTEXITCODE -ne 0) { Fail "after $what the install folder differs from the build" }

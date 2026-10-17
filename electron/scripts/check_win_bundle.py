@@ -6,8 +6,9 @@
   carve <Celerp-Setup.exe> <out.7z>   copy the application archive out of an installer
   inventory <win-unpacked> [--json F] file count, bytes and per-root totals, app.asar included
   check <win-unpacked>                the packaged-tree assertions below; exit 1 on any failure
-  installed <win-unpacked> <folder>   an installed folder holds exactly the build's files and
-                                      the uninstaller; exit 1 otherwise
+  installed <win-unpacked> <folder>   an installed folder holds exactly the build's files, each
+                                      with the build's SHA-256, and the uninstaller; exit 1
+                                      otherwise
 
 `check` reads the final tree, including the app.asar index, and reports every
 assertion. Those marked "removed" are what the Windows build now leaves out;
@@ -18,6 +19,7 @@ holding an extracted installer.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import mmap
 import re
@@ -187,18 +189,28 @@ def files(root: Path) -> set[str]:
     return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
 
 
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def installed(build: Path, folder: Path) -> int:
     """The installer writes the build's files and its own uninstaller, so anything
-    else was left by an earlier copy, and anything short was never written."""
+    else was left by an earlier copy, anything short was never written, and a file
+    whose bytes differ from the build's was written partly or not by this build."""
     want, have = files(build), files(folder) - {UNINSTALLER}
     missing, extra = sorted(want - have), sorted(have - want)
-    for kind, names in (("missing", missing), ("extra", extra)):
+    differ = sorted(name for name in want & have if sha256(build / name) != sha256(folder / name))
+    for kind, names in (("missing", missing), ("extra", extra), ("differs", differ)):
         for name in names[:40]:
             print(f"{kind}: {name}")
-    if missing or extra:
-        print(f"FAIL {folder}: {len(missing)} missing, {len(extra)} extra against {build}")
+    if missing or extra or differ:
+        print(f"FAIL {folder}: {len(missing)} missing, {len(extra)} extra, {len(differ)} differ against {build}")
         return 1
-    print(f"PASS {folder}: the build's {len(want)} files and the uninstaller")
+    print(f"PASS {folder}: the build's {len(want)} files, byte for byte (SHA-256), and the uninstaller")
     return 0
 
 
