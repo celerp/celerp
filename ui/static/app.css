@@ -1438,6 +1438,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 
 /* ─── Inline form tweaks ───────────────────────────────────── */
 .form-input--xs { max-width: 80px; }
+.form-input--narrow { width: 8rem; flex: 0 0 auto; }
 .cell-input--xs { max-width: 80px; font-size: 12px; }
 .cell-input--xxs { max-width: 60px; font-size: 12px; }
 

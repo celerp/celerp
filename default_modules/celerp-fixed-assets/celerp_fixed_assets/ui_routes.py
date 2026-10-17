@@ -1721,9 +1721,21 @@ def _year_end_mark_form(year: int, item: dict) -> FT:
                 hx_post=f"/fixed-assets/year-end/{year}/marks", hx_swap="none", cls="flex-col")
 
 
+def _year_end_status(report: dict, *, printed: bool = False) -> list:
+    """Whether the year can close, or why the register has nothing to close for it."""
+    dates = t("fixed_assets.tax_year_dates", start=report["start"], end=report["end"])
+    if report["register"] == "unconfirmed":
+        how = [] if printed else [" ", A(t("fixed_assets.ye_set_up"), href="/fixed-assets")]
+        return [Strong(t("fixed_assets.ye_unconfirmed")), " ", dates, *how]
+    if report["register"] == "before":
+        return [Strong(t("fixed_assets.ye_before", cutover=report["cutover"])), " ", dates]
+    return [Strong(t("fixed_assets.ye_ready" if report["ready"] else "fixed_assets.ye_not_ready")), " ", dates]
+
+
 def _year_end_table(report: dict, currency: str, *, printed: bool = False) -> FT:
     if not report["items"]:
-        return P(t("fixed_assets.ye_nothing"), cls="form-hint", id="fa-ye-items")
+        nothing = [t("fixed_assets.ye_nothing")] if report["register"] == "kept" else []
+        return P(*nothing, cls="form-hint", id="fa-ye-items")
     rows = []
     for i in report["items"]:
         lapsed = [P(t("fixed_assets.ye_lapsed"), cls="form-hint")] if i["lapsed"] else []
@@ -3177,17 +3189,18 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, title)
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t(title), None)])
-        when = Form(_input("year", year, type_="number", step="1", min="1900", aria_label=t("fixed_assets.year")),
+        when = Form(Input(type="number", name="year", value=str(year), step="1", min="1900",
+                          cls="form-input form-input--narrow", aria_label=t("fixed_assets.year"),
+                          onkeydown="if(event.key==='Escape'){this.blur();}"),
                     Button(t("fixed_assets.show"), type="submit", cls="btn btn--secondary"),
-                    method="get", action="/fixed-assets/year-end", cls="flex-row")
-        ready = P(Strong(t("fixed_assets.ye_ready" if report["ready"] else "fixed_assets.ye_not_ready")), " ",
-                  t("fixed_assets.tax_year_dates", start=report["start"], end=report["end"]), id="fa-ye-status")
+                    method="get", action="/fixed-assets/year-end", cls="flex-row gap-sm")
+        ready = P(*_year_end_status(report), id="fa-ye-status")
         forms = (setup.get("rules") or {}).get("statutory_reports") or []
         then = Ul(*[Li(A(b["label"], href=f"/fixed-assets/tax-books?regime={b['regime']}&year={year}"), ": ",
                        t("fixed_assets.ye_close_in_book")) for b in books],
                   Li(A(t("fixed_assets.book_tax_title"), href=f"/fixed-assets/reports/book-tax?year={year}")),
                   *[Li(A(f["label"], href=f"/fixed-assets/reports/statutory/{f['key']}?year={year}")) for f in forms],
-                  Li(A(t("page.period_lock"), href="/settings/accounting?tab=period-lock")), id="fa-ye-next")
+                  Li(A(t("fixed_assets.ye_period_lock"), href="/settings/accounting?tab=period-lock")), id="fa-ye-next")
         return await _page(request, crumbs,
                            page_header(t(title), A(t("fixed_assets.print"), href=f"/fixed-assets/year-end/print?year={year}",
                                                    cls="btn btn--secondary", target="_blank")),
@@ -3210,8 +3223,7 @@ def setup_ui_routes(app) -> None:
             company = await api.get_company(token)
         except APIError as e:
             return plain_error_response(e)
-        ready = t("fixed_assets.ye_ready" if report["ready"] else "fixed_assets.ye_not_ready")
-        body = Div(P(Strong(ready), " ", t("fixed_assets.tax_year_dates", start=report["start"], end=report["end"])),
+        body = Div(P(*_year_end_status(report, printed=True)),
                    _year_end_table(report, currency, printed=True),
                    H3(t("fixed_assets.tax_books_title")),
                    _year_end_books(books) if _chosen_regimes(setup) else

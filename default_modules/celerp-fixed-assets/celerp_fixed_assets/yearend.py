@@ -5,7 +5,9 @@
 The items are the months of the year whose depreciation is not posted, the assets a run
 skipped, the reconciliation differences still open, the sales waiting on their invoice,
 the corrections still waiting for approval, the impairment reviews due by the year end,
-and every asset or pool a chosen tax regime cannot work out. Each
+and every asset or pool a chosen tax regime cannot work out. Only items dated on or before
+the year end belong to it: a later sale or difference waits on the year it falls in, and a
+correction with no effective date can restate any year, so it waits on every one. Each
 can be noted, with a reason, or accepted, with a reason and its effect on the figures,
 except a tax figure that is missing: it can only be noted, because closing keeps the
 year's figures for every later year to start from. An accepted item holds for the amount
@@ -57,14 +59,14 @@ async def _runs(session, company_id, start: date, end: date) -> list[dict]:
     for k in range(first, through + 1):
         amount = sum((c.owed.get(k, Decimal(0)) for c in charges), Decimal(0))
         if amount:
-            out.append({"key": f"run:{period_label(k)}", "kind": "run", "amount": money(amount, books.currency),
+            out.append({"key": f"run:{period_label(k)}", "kind": "run", "date": None, "amount": money(amount, books.currency),
                         "label": ("fixed_assets.ye_run", {"month": runs._long(k)}), "href": "/fixed-assets/runs"})
     return out
 
 
 async def _exceptions(session, company_id) -> list[dict]:
     currency = await setup.currency(session, company_id)
-    return [{"key": f"exception:{a['asset_id']}", "kind": "exception",
+    return [{"key": f"exception:{a['asset_id']}", "kind": "exception", "date": f"{a['exception']['first_month']}-01",
              "amount": None if a["exception"].get("amount") is None
              else money(Decimal(a["exception"]["amount"]), currency),
              "label": ("fixed_assets.ye_exception", {"asset": a["number"], "month": a["exception"]["first_month"]}),
@@ -80,7 +82,7 @@ async def open_differences(session, company_id) -> list[dict]:
         if exc.status_code != 409:
             raise
         return []
-    return [{"key": f"difference:{d['key']}", "kind": "difference", "amount": d["amount"],
+    return [{"key": f"difference:{d['key']}", "kind": "difference", "amount": d["amount"], "date": d["date"],
              "label": ("fixed_assets.ye_difference", {"account": a["name"], "cause": t(f"fixed_assets.recon_rule.{d['rule']}")}),
              "href": "/fixed-assets/reconciliation"}
             for a in found["accounts"] for d in a["differences"] if d["state"] != "accepted"]
@@ -89,13 +91,13 @@ async def open_differences(session, company_id) -> list[dict]:
 async def pending_sales(session, company_id) -> list[dict]:
     waiting = sorted(((i, s) for i, s in await _entities(session, company_id, "fa_asset")
                       if (s.get("sale") or {}).get("state") == "pending"), key=lambda r: r[1]["number"])
-    return [{"key": f"sale:{asset_id}", "kind": "sale", "amount": None,
+    return [{"key": f"sale:{asset_id}", "kind": "sale", "amount": None, "date": a["sale"].get("date"),
              "label": ("fixed_assets.ye_sale", {"asset": a["number"]}),
              "href": f"/fixed-assets/assets/{asset_id}"} for asset_id, a in waiting]
 
 
 async def _reviews(session, company_id, end: date) -> list[dict]:
-    return [{"key": f"review:{r['asset_id']}", "kind": "review", "amount": None,
+    return [{"key": f"review:{r['asset_id']}", "kind": "review", "amount": None, "date": None,
              "label": ("fixed_assets.ye_review", {"asset": r["number"], "due": r["due"]}),
              "href": f"/fixed-assets/assets/{r['asset_id']}"}
             for r in await remeasure.due_reviews(session, company_id, end) if r["due"] <= end.isoformat()]
@@ -108,6 +110,7 @@ async def waiting_corrections(session, company_id) -> list[dict]:
     for correction_id, c in waiting:
         asset = await _state(session, company_id, c.get("asset_id")) or {}
         out.append({"key": f"correction:{correction_id}", "kind": "correction", "amount": None,
+                    "date": c.get("effective_date") or None,
                     "label": ("fixed_assets.ye_correction", {"asset": asset.get("number") or ""}),
                     "href": f"/fixed-assets/corrections/{correction_id}"})
     return out
@@ -138,7 +141,7 @@ async def _tax(session, company_id, settings: dict, year: int) -> list[dict]:
         if book["status"] == "closed":
             continue
         for suffix, name, found in _unworked(book):
-            out.append({"key": f"tax:{key}:{suffix}", "kind": "tax", "amount": None,
+            out.append({"key": f"tax:{key}:{suffix}", "kind": "tax", "amount": None, "date": None,
                         "label": (f"fixed_assets.ye_tax_{found['status']}", {"asset": name, "regime": book["label"]}),
                         "remedy": _remedy(found), "href": f"/fixed-assets/tax-books?regime={key}&year={year}"})
     return out
@@ -151,6 +154,7 @@ async def report(session, company_id, year) -> dict:
     year = taxbooks.check_year(year)
     settings = await setup.company_settings(session, company_id)
     start, end = dates(settings, year)
+    cut = setup.cutover(setup.settings_of(settings))
     marks = (await _state(session, company_id, yearend_id(year)) or {}).get("marks") or {}
     items = []
     found = [*await _runs(session, company_id, start, end), *await _exceptions(session, company_id),
@@ -158,6 +162,9 @@ async def report(session, company_id, year) -> dict:
              *await waiting_corrections(session, company_id), *await _reviews(session, company_id, end),
              *await _tax(session, company_id, settings, year)]
     for item in found:
+        day = item.pop("date")
+        if day is not None and day > end.isoformat():
+            continue
         key, params = item.pop("label")
         mark = marks.get(item["key"])
         lapsed = mark is not None and mark["state"] != "open" and mark.get("amount") != item["amount"]
@@ -169,8 +176,10 @@ async def report(session, company_id, year) -> dict:
                       "accepted_amount": held.get("amount") if held and held["state"] == "accepted" else None,
                       "by": held.get("user") if held else None, "at": held.get("at") if held else None,
                       "lapsed": lapsed})
-    return {"year": year, "start": start.isoformat(), "end": end.isoformat(), "items": items,
-            "ready": all(i["state"] == "accepted" for i in items)}
+    # The register keeps a year once its cutover is confirmed and falls before the year end.
+    register = "unconfirmed" if cut is None else "before" if end.isoformat() <= cut else "kept"
+    return {"year": year, "start": start.isoformat(), "end": end.isoformat(), "items": items, "register": register,
+            "cutover": cut, "ready": register == "kept" and all(i["state"] == "accepted" for i in items)}
 
 
 async def mark(session, company_id, user_id, year, body: dict) -> dict:

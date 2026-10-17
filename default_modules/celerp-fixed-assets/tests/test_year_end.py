@@ -115,3 +115,44 @@ async def test_year_end_mark_lapses_when_amount_changes(fa, zz):
     await _contributed(fa, "Second car", on="2026-04-01")
     (item,) = [i for i in (await _year_end(fa, 2026))["items"] if i["key"] == "run:2026-06"]
     assert item["state"] == "open" and item["lapsed"] is True and D(item["amount"]) == D("400")
+
+
+
+async def test_u14_a_register_with_no_cutover_is_never_ready_to_close(client, session):
+    from ui.i18n import t
+    from fa_fixtures import demo_owner
+
+    fa = FA(client, session, await demo_owner(client))
+    await fa.ok(await client.post("/companies/me/demo/reseed", headers=fa.h))
+    await fa.ok(await fa.post("/start"))
+    unconfirmed = await _year_end(fa, 2025)
+    assert unconfirmed["ready"] is False, "a register with no confirmed cutover is never ready to close"
+    assert unconfirmed.get("register") == "unconfirmed"
+    page = await fa.page("/fixed-assets/year-end", year=2025)
+    assert t("fixed_assets.ye_unconfirmed") in page.text and t("fixed_assets.ye_ready") not in page.text
+    assert 'href="/fixed-assets"' in page.text, "the statement links to where the register is set up"
+
+
+async def test_u14_a_year_holds_only_its_own_items_and_none_before_the_cutover(fa, zz):
+    from ui.i18n import t
+    from test_sales import _sell
+
+    await fa.ok(await fa.patch("/settings", {"tax_year_end": "06-30"}))
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    await _run(fa, "2026-03")
+    await _sell(fa, car, on="2026-07-20")
+    before = await _year_end(fa, 2025)
+    assert (before["ready"], before["items"]) == (False, []), "a year ending before the cutover has nothing to close"
+    assert before.get("register") == "before"
+    page = await fa.page("/fixed-assets/year-end", year=2025)
+    assert t("fixed_assets.ye_before", cutover="2025-12-31") in page.text
+    assert t("fixed_assets.ye_nothing") not in page.text and t("fixed_assets.ye_ready") not in page.text
+
+    this_year = {i["key"] for i in (await _year_end(fa, 2026))["items"]}
+    assert f"sale:{car}" not in this_year, "a sale dated after the year end waits on its own year"
+    assert {"run:2026-04", "run:2026-05", "run:2026-06"} <= this_year, "the year's own months still block it"
+    next_year = await _year_end(fa, 2027)
+    assert next_year["register"] == "kept" and f"sale:{car}" in {i["key"] for i in next_year["items"]}
+    page = await fa.page("/fixed-assets/year-end", year=2027)
+    assert t("fixed_assets.ye_period_lock") in page.text and "form-input--narrow" in page.text
