@@ -739,7 +739,7 @@ def _soa_table(data: dict, currency: str | None = None,
         _bal_cell(data.get("opening_balance", 0)),
     )]
     for row in data.get("rows", []):
-        ref = row.get("doc_ref") or row.get("doc_id") or ""
+        ref = row.get("doc_ref") or row.get("doc_id") or "--"
         ref_cell = (A(ref, href=f"/docs/{row['doc_id']}", cls="drilldown-link")
                     if row.get("doc_id") else ref)
         rows.append(Tr(
@@ -762,7 +762,7 @@ def _soa_table(data: dict, currency: str | None = None,
         Thead(Tr(
             Th(t("th.date")),
             Th(t("th.ref")),
-            Th(t("th.type")),
+            Th(t("th.description")),
             Th(t("th.debit"), cls="cell--number"),
             Th(t("th.credit"), cls="cell--number"),
             Th(t("th.balance"), cls="cell--number"),
@@ -1617,7 +1617,7 @@ def setup_routes(app):
             rows.append([_subject_heading(s["kind"], data)])
             if s["merged"]:
                 rows.append([t("acct.soa_merged_notice")])
-            rows.append(["Date", "Ref", "Type", "Debit", "Credit", "Balance"])
+            rows.append(["Date", "Ref", "Description", "Debit", "Credit", "Balance"])
             rows.append([d_from, "", "Opening Balance", "", "",
                          csv_amount(data.get("opening_balance", 0), currency)])
             rows += [[r.get("date", ""), r.get("doc_ref", ""), r.get("kind", ""),
