@@ -29,7 +29,7 @@ from celerp.models.company import Company
 from celerp.models.company_peer import CompanyPeerDelivery, CompanyPeerIdentity
 from celerp.models.projections import Projection
 from celerp.schemas.numbers import FiniteFloat
-from celerp.services import peer_access, peer_accounts, peer_attention
+from celerp.services import journal_reversals, peer_access, peer_accounts, peer_attention
 from celerp.services.business_time import business_date_of
 from celerp.services.company_lock import locked_company
 from celerp.services.je_keys import je_void_data
@@ -471,12 +471,22 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
         state = dict(existing.state or {}) if existing is not None else None
         if item.get("status") == "void":
             if state is not None and state.get("status") == "posted":
+                # A reversal posted here before the firm's void arrived already cancels the
+                # entry; it is voided with it, so the entry is cancelled once.
+                reversed_here = await journal_reversals.standing_reversals(session, company_id, je_id)
+                for rid, reversal in reversed_here:
+                    await emit_event(
+                        session, company_id=company_id, entity_id=rid, entity_type="journal_entry",
+                        event_type="acc.journal_entry.voided",
+                        data=je_void_data(f"Voided by {firm}", reversal), actor_id=None,
+                        location_id=None, source="connector", idempotency_key=f"{rid}:void", metadata_={})
                 await emit_event(
                     session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
                     event_type="acc.journal_entry.voided",
                     data=je_void_data(f"Voided by {firm}", state), actor_id=None,
                     location_id=None, source="connector", idempotency_key=f"{je_id}:void", metadata_={})
-                await _notify(session, company_id, "notice.peer_journal_voided",
+                await _notify(session, company_id, "notice.peer_journal_voided_reversal" if reversed_here
+                              else "notice.peer_journal_voided",
                               memo=memo, date=str(state.get("ts"))[:10], firm=firm)
                 status = "updated"
             else:
@@ -602,7 +612,7 @@ async def from_accountant(session: AsyncSession, company_id: uuid.UUID) -> list[
         state = dict(state or {})
         rid = reversal_id(str(eid))
         reversal = reversals.get(rid)
-        live = reversal is not None and reversal_id(rid) not in undone
+        live = reversal is not None and reversal.get("status") == "posted" and reversal_id(rid) not in undone
         day, _lock = reverse_day(settings, state.get("ts"))
         items.append({
             "id": str(eid), "memo": state.get("memo") or "", "ts": str(state.get("ts") or "")[:10],

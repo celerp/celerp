@@ -185,7 +185,8 @@ async def test_a_voided_entry_cannot_be_reversed(real_client, real_engine):
                 "entries": [{"account": "6500", "debit": 0.0, "credit": 30.0},
                             {"account": "6200", "debit": 30.0, "credit": 0.0}]})
         await session.rollback()
-    assert getattr(refused.value, "status_code", None) == 409, refused.value
+    assert getattr(refused.value, "status_code", None) == 422, refused.value
+    assert "Voided first" in refused.value.detail and "Nothing was posted" in refused.value.detail
     assert await _ledger_rows(real_engine, firm_company) == rows
 
 

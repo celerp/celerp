@@ -544,6 +544,18 @@ async def emit_event(
         session, kwargs.get("company_id"), kwargs.get("location_id"), kwargs.get("data")
     )
 
+    # An entry's effect is cancelled at most once, by a void or by one reversal that
+    # stands: one rule for every void and every reversal, whichever path writes it.
+    restoring = bool((kwargs.get("metadata_") or {}).get("restores"))
+    if not restoring and (kwargs["event_type"] == "acc.journal_entry.voided" or (
+            kwargs["event_type"] == "acc.journal_entry.created" and kwargs["data"].get("reverses"))):
+        from celerp.services.journal_reversals import require_cancelled_once
+
+        await require_cancelled_once(
+            session, kwargs.get("company_id"), kwargs["entity_id"],
+            void=kwargs["event_type"] == "acc.journal_entry.voided",
+            reverses=kwargs["data"].get("reverses") if kwargs["event_type"] == "acc.journal_entry.created" else None)
+
     # A void of an entry in a locked period is dated to an open day instead of mutating
     # the period: one rule for every void path.
     if kwargs["event_type"] == "acc.journal_entry.voided":
@@ -558,8 +570,7 @@ async def emit_event(
     if kwargs["event_type"] == "acc.journal_entry.created":
         from celerp.services.journal_accounts import prepare_journal_entry
 
-        await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"],
-                                    restored=bool((kwargs.get("metadata_") or {}).get("restores")))
+        await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"], restored=restoring)
 
     # Enforce the line rules on every document and List write. Extract the post-change
     # line set by DATA SHAPE so every writer (create, patch, shared_import, update,
