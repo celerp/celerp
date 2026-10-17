@@ -99,14 +99,14 @@ def _table(rows: list[dict], lang: str, params: dict, error: str | None = None) 
                 Th(t("firm_view.sync", lang)),
                 Th(t("firm_view.last_sync", lang)),
                 Th(t("firm_view.attention", lang)),
-                Th(t("th.actions", lang)),
+                Th(t("th.actions", lang), cls="screen-only"),
             )),
             Tbody(*[Tr(
                 Td(row["company_name"]),
                 Td(_sync(row, lang)),
                 Td(relative_time(row["last_sync"]) if row.get("last_sync") else "--"),
                 Td(_attention(row, lang), cls="firm-view-attention"),
-                Td(_actions(row, lang)),
+                Td(_actions(row, lang), cls="screen-only"),
             ) for row in rows]),
             cls="data-table",
         ),
@@ -128,7 +128,7 @@ def _filters(q: str, sync: str, lang: str) -> FT:
         ),
         hx_get="/companies", hx_trigger="input changed delay:300ms from:#firm-view-q, change from:#firm-view-sync, submit",
         hx_target="#firm-view", hx_swap="outerHTML",
-        onsubmit="return false", cls="flex-row gap-sm firm-view-filters",
+        onsubmit="return false", cls="flex-row gap-sm firm-view-filters screen-only",
     )
 
 
