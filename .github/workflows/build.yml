@@ -1107,8 +1107,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $previous = Join-Path $env:RUNNER_TEMP "previous"
-          $tag = if ($env:CASE_PREVIOUS -eq "latest") { gh release view --repo $env:GITHUB_REPOSITORY --json tagName --jq .tagName } else { $env:CASE_PREVIOUS }
-          if ($LASTEXITCODE -ne 0 -or -not $tag) { Write-Host "::error::no release $env:CASE_PREVIOUS to upgrade from"; exit 1 }
+          # $LASTEXITCODE is unset until a native command runs, so it is read only after gh.
+          $tag = $env:CASE_PREVIOUS
+          if ($tag -eq "latest") { $tag = gh release view --repo $env:GITHUB_REPOSITORY --json tagName --jq .tagName; if ($LASTEXITCODE -ne 0) { $tag = $null } }
+          if (-not $tag) { Write-Host "::error::no release $env:CASE_PREVIOUS to upgrade from"; exit 1 }
           gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern Celerp-Setup.exe --dir $previous
           if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not download Celerp-Setup.exe from $tag"; exit 1 }
           Write-Host "upgrading from $tag"
