@@ -57,7 +57,7 @@ async def _firm_screen(real_client, firm_tok: str) -> tuple[dict, str]:
     r = await real_client.get("/auth/firm-view", headers=auth(firm_tok))
     assert r.status_code == 200, r.text
     [row] = [row for row in r.json()["items"] if row["company_name"] == "Demo Trading"]
-    return row, to_xml(_table([row], "en", filtered=False))
+    return row, to_xml(_table([row], "en", params={}))
 
 
 def _journals_row(view: str) -> str:
