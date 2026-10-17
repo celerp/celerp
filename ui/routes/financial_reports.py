@@ -1150,7 +1150,7 @@ def setup_routes(app):
                 _date_filter_bar(ledger_path(account_code), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
                                  extra_params=f"&src={origin}"),
-                A(f"← {t(back_key)}", href=href(back_path, back_qs), cls="btn btn--ghost btn--sm"),
+                A(t(back_key), href=href(back_path, back_qs), cls="btn btn--ghost btn--sm"),
                 cls="flex-row flex-between",
             ),
             elsewhere_note(data.get("elsewhere") or []),
