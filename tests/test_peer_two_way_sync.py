@@ -10,6 +10,7 @@ import uuid
 from datetime import timedelta
 
 import pytest
+from fasthtml.common import to_xml
 from sqlalchemy import select
 
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
@@ -17,10 +18,12 @@ from test_company_backup_lifecycle import _data_dir  # noqa: F401
 from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_firm_view import _locked_invoice, _today
 from test_peer_sync_end_to_end import FIRM, _company_of, _paired, _route_to_app
+from ui.routes.settings_connectors import _attention_list
 
 pytestmark = pytest.mark.asyncio
 
 ADJUSTED = "2026-03-31"
+PERIOD_LOCK = "/settings/accounting?tab=period-lock"
 
 
 async def _two_way(company_id: str, credential: str) -> dict:
@@ -162,11 +165,16 @@ async def test_firm_journal_in_client_locked_period_is_declined(real_client, rea
     await _post_journal(real_client, firm_tok, ADJUSTED, 80.0, "Year-end accrual")
     await _lock(real_client, tok, "2026-06-30")
     _route_to_app(monkeypatch, [])
-    await _two_way(client_company, credential)
+    results = await _two_way(client_company, credential)
 
     assert _from_firm(await _journals(real_engine, client_company)) == {}
     notices = [n for n in await _notices(real_engine, client_company) if "Year-end accrual" in n[1]]
     assert len(notices) == 1 and "2026-06-30" in notices[0][1], notices
+    assert notices[0][2] == PERIOD_LOCK  # the notice opens where the lock date moves
+    [entry] = results["journals"].attention
+    held = to_xml(_attention_list("celerp", [entry], "en"))
+    assert "Move the lock date back and it posts on the next sync:" in held
+    assert f'href="{PERIOD_LOCK}"' in held
     declined = [i for i in await _attention(real_client, firm_tok) if i["kind"] == "declined"]
     assert len(declined) == 1 and declined[0]["label"] == "Year-end accrual"
     assert "2026-06-30" in declined[0]["reason"]
@@ -270,8 +278,8 @@ async def test_firm_lock_applies_forward_once(real_client, real_engine, monkeypa
     lock = (await real_client.get("/accounting/period-lock", headers=auth(tok))).json()
     assert lock["lock_date"] == "2026-03-31"
     assert lock["firm_lock"] == {"date": "2026-03-31", "firm": "Firm Practice"}
-    assert len([n for n in await _notices(real_engine, client_company)
-                if "2026-03-31" in n[1] and "Firm Practice" in n[1]]) == 1
+    assert [n[2] for n in await _notices(real_engine, client_company)
+            if "2026-03-31" in n[1] and "Firm Practice" in n[1]] == [PERIOD_LOCK]
 
     await _lock(real_client, tok, "2026-01-31")  # the client moves it back
     await _two_way(client_company, credential)
