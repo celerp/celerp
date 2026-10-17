@@ -287,6 +287,9 @@ async def test_scopes_derived_from_entities(monkeypatch):
     html = to_xml(routes._grant_form("en"))
     for scope in SCOPES:
         assert f'value="{scope}"' in html
+    # A second click while the first is issuing would issue a second, unseen key.
+    form_tag = html[html.index("<form"):].split(">", 1)[0]
+    assert 'hx-disabled-elt="find button"' in form_tag
     assert "Stock counts" in html
 
     _authenticated(monkeypatch)
