@@ -634,6 +634,11 @@ function startApi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
     // apiPort and uiPort are pre-allocated by the caller before startApi/startUi
     // are invoked, so both values are already set here.
+    // Publish the API port so external tooling (the CI boot smoke, local debugging)
+    // can find it without dictating it, which matters when the app de-elevated into
+    // a fresh process that did not inherit our env. Every start writes it: a restart
+    // moves the API to a new port.
+    try { fs.writeFileSync(path.join(DATA_DIR, "api-port"), String(apiPort)); } catch { /* non-fatal */ }
     const env = {
       ...serverEnv(dbUrl, cfg),
       CELERP_INSTALL_CHANNEL: "electron",
@@ -1440,10 +1445,6 @@ app.whenReady().then(async () => {
         const _pinApi = parseInt(process.env.CELERP_API_PORT || "", 10);
         apiPort = Number.isInteger(_pinApi) && _pinApi > 0 ? _pinApi : await getFreePort();
         uiPort = await getFreePort();
-        // Publish the chosen API port so external tooling (the CI boot smoke,
-        // local debugging) can discover it without having to dictate it — needed when
-        // the app self-de-elevated into a fresh process that didn't inherit our env.
-        try { fs.writeFileSync(path.join(DATA_DIR, "api-port"), String(apiPort)); } catch { /* non-fatal */ }
         setLoadingStatus("Starting API server…");
         await startApi(dbConfig.url, cfg);
       },
