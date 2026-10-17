@@ -3917,6 +3917,7 @@
   "migration.err_not_found": "Celerp tidak dapat menemukan migrasi ini. Mungkin sudah dibuang, atau pengguna lain yang memulainya: hanya pengguna yang memulainya yang dapat membukanya.",
   "migration.answers_saved": "Akun posting yang Anda pilih telah disimpan. Klien berikutnya dari {source} akan menawarkannya sudah terpilih, untuk Anda periksa sebelum selesai.",
   "migration.forget_answers": "Lupakan jawaban ini",
+  "migration.forget_answers_confirm": "Lupakan akun posting yang disimpan untuk {source}? Ini tidak dapat dibatalkan. Klien berikutnya yang Anda selesaikan dari {source} menyimpan jawabannya lagi.",
   "migration.answers_forgotten": "Jawaban dilupakan. Klien berikutnya dimulai tanpa jawaban tersebut.",
   "migration.err_unknown_source": "Celerp tidak dapat membaca pembukuan dari sumber tersebut.",
   "migration.several_title": "Pindahkan beberapa perusahaan",

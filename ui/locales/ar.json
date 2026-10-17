@@ -3917,6 +3917,7 @@
   "migration.err_not_found": "تعذّر على Celerp العثور على هذا الترحيل. ربما تم تجاهله، أو بدأه مستخدم آخر: لا يمكن فتحه إلا للمستخدم الذي بدأه.",
   "migration.answers_saved": "تم حفظ حسابات الترحيل التي اخترتها. سيعرضها عميلك التالي من {source} محددة مسبقا لتراجعها قبل الإنهاء.",
   "migration.forget_answers": "انس هذه الإجابات",
+  "migration.forget_answers_confirm": "هل تريد نسيان حسابات الترحيل المحفوظة لـ {source}؟ لا يمكن التراجع عن ذلك. العميل التالي الذي تنهيه من {source} يحفظ إجاباته مرة أخرى.",
   "migration.answers_forgotten": "تم نسيان الإجابات. سيبدأ عميلك التالي بدونها.",
   "migration.err_unknown_source": "لا يستطيع Celerp قراءة الدفاتر من هذا المصدر.",
   "migration.several_title": "نقل عدة شركات",

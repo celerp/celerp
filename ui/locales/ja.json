@@ -3917,6 +3917,7 @@
   "migration.err_not_found": "この移行が見つかりませんでした。破棄されたか、別のユーザーが開始した可能性があります。移行を開けるのは開始したユーザーだけです。",
   "migration.answers_saved": "選択した転記勘定を保存しました。{source}からの次の顧客では、完了前に確認できるよう選択済みで表示されます。",
   "migration.forget_answers": "この回答を削除",
+  "migration.forget_answers_confirm": "{source} 用に保存した転記勘定を消去しますか？元に戻せません。次に {source} から完了するクライアントで回答が再び保存されます。",
   "migration.answers_forgotten": "回答を削除しました。次の顧客はこの回答なしで始まります。",
   "migration.err_unknown_source": "Celerpはその元システムの帳簿を読み込めません。",
   "migration.several_title": "複数の会社を移行",

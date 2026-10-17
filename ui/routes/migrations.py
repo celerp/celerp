@@ -1988,13 +1988,15 @@ async def _saved_answers(run: dict) -> FT | str:
 
 def _saved_answers_panel(source: str, name: str, *, forgotten: bool = False, error: str | None = None) -> FT:
     """Forgetting has no undo: it changes no records, only drops the suggestions, and the
-    next client finished from this source saves its answers again."""
+    next client finished from this source saves its answers again. The button asks first
+    and says so."""
     if forgotten:
         return Div(flash(t("migration.answers_forgotten"), "success"), id="saved-answers")
     return Div(
         flash(error) if error else "",
         Div(t("migration.answers_saved", source=name), cls="flash flash--success"),
         P(Button(t("migration.forget_answers"), type="button", hx_post=f"/migrations/templates/{source}/forget",
+                 hx_confirm=t("migration.forget_answers_confirm", source=name),
                  hx_target="#saved-answers", hx_swap="outerHTML", cls="btn btn--secondary btn--sm"), cls="mt-sm mb-md"),
         id="saved-answers", cls="mt-md",
     )

@@ -3917,6 +3917,7 @@
   "migration.err_not_found": "Celerp konnte diese Migration nicht finden. Sie wurde vielleicht verworfen, oder ein anderer Benutzer hat sie gestartet: Nur der Benutzer, der sie gestartet hat, kann sie öffnen.",
   "migration.answers_saved": "Die gewählten Buchungskonten sind gespeichert. Ihr nächster Mandant aus {source} bietet sie bereits ausgewählt an, damit Sie sie vor dem Abschluss prüfen.",
   "migration.forget_answers": "Diese Antworten vergessen",
+  "migration.forget_answers_confirm": "Die für {source} gespeicherten Buchungskonten vergessen? Das lässt sich nicht rückgängig machen. Der nächste Mandant, den Sie aus {source} abschließen, speichert seine Antworten erneut.",
   "migration.answers_forgotten": "Antworten vergessen. Ihr nächster Mandant beginnt ohne sie.",
   "migration.err_unknown_source": "Celerp kann keine Bücher aus dieser Quelle lesen.",
   "migration.several_title": "Mehrere Unternehmen übernehmen",

@@ -3917,6 +3917,7 @@
   "migration.err_not_found": "Celerp no encontró esta migración. Puede que se haya descartado, o la inició otro usuario: solo quien la inició puede abrirla.",
   "migration.answers_saved": "Las cuentas contables que eligió están guardadas. Su próximo cliente de {source} las ofrece ya seleccionadas para que las revise antes de terminar.",
   "migration.forget_answers": "Olvidar estas respuestas",
+  "migration.forget_answers_confirm": "¿Olvidar las cuentas contables guardadas para {source}? No se puede deshacer. El próximo cliente que termine desde {source} vuelve a guardar sus respuestas.",
   "migration.answers_forgotten": "Respuestas olvidadas. Su próximo cliente empieza sin ellas.",
   "migration.err_unknown_source": "Celerp no puede leer libros de ese origen.",
   "migration.several_title": "Migrar varias empresas",

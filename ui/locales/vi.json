@@ -3917,6 +3917,7 @@
   "migration.err_not_found": "Celerp không tìm thấy quá trình di chuyển này. Có thể nó đã bị hủy bỏ, hoặc người dùng khác đã bắt đầu nó: chỉ người đã bắt đầu mới mở được.",
   "migration.answers_saved": "Các tài khoản hạch toán bạn chọn đã được lưu. Khách hàng tiếp theo từ {source} sẽ hiển thị chúng đã được chọn sẵn để bạn kiểm tra trước khi hoàn tất.",
   "migration.forget_answers": "Quên các câu trả lời này",
+  "migration.forget_answers_confirm": "Xóa các tài khoản ghi sổ đã lưu cho {source}? Không thể hoàn tác. Khách hàng tiếp theo bạn hoàn tất từ {source} sẽ lưu lại câu trả lời.",
   "migration.answers_forgotten": "Đã quên các câu trả lời. Khách hàng tiếp theo sẽ bắt đầu mà không có chúng.",
   "migration.err_unknown_source": "Celerp không thể đọc sổ sách từ nguồn đó.",
   "migration.several_title": "Chuyển nhiều công ty",

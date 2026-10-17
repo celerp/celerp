@@ -3917,6 +3917,7 @@
   "migration.err_not_found": "O Celerp não encontrou esta migração. Ela pode ter sido descartada, ou outro usuário a iniciou: só quem a iniciou pode abri-la.",
   "migration.answers_saved": "As contas de lançamento escolhidas foram guardadas. O seu próximo cliente de {source} apresenta-as já selecionadas, para verificar antes de concluir.",
   "migration.forget_answers": "Esquecer estas respostas",
+  "migration.forget_answers_confirm": "Esquecer as contas de lançamento salvas para {source}? Isto não pode ser desfeito. O próximo cliente que você concluir a partir de {source} salva as respostas novamente.",
   "migration.answers_forgotten": "Respostas esquecidas. O seu próximo cliente começa sem elas.",
   "migration.err_unknown_source": "O Celerp não consegue ler livros dessa origem.",
   "migration.several_title": "Migrar várias empresas",

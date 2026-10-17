@@ -3917,6 +3917,7 @@
   "migration.err_not_found": "Celerp n'a pas trouvé cette migration. Elle a peut-être été abandonnée, ou un autre utilisateur l'a lancée : seul l'utilisateur qui l'a lancée peut l'ouvrir.",
   "migration.answers_saved": "Les comptes d'imputation choisis sont enregistrés. Votre prochain client venant de {source} les propose déjà sélectionnés, à vérifier avant de terminer.",
   "migration.forget_answers": "Oublier ces réponses",
+  "migration.forget_answers_confirm": "Oublier les comptes d'imputation enregistrés pour {source} ? Cette action est irréversible. Le prochain client que vous terminez depuis {source} enregistre à nouveau ses réponses.",
   "migration.answers_forgotten": "Réponses oubliées. Votre prochain client commence sans elles.",
   "migration.err_unknown_source": "Celerp ne peut pas lire les livres de cette source.",
   "migration.several_title": "Migrer plusieurs sociétés",

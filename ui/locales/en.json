@@ -3917,6 +3917,7 @@
   "migration.err_not_found": "Celerp couldn't find this migration. It may have been discarded, or another user started it: only the user who started it can open it.",
   "migration.answers_saved": "The posting accounts you chose are saved. Your next client from {source} offers them already selected, for you to check before you finish.",
   "migration.forget_answers": "Forget these answers",
+  "migration.forget_answers_confirm": "Forget the posting accounts saved for {source}? This cannot be undone. The next client you finish from {source} saves its answers again.",
   "migration.answers_forgotten": "Answers forgotten. Your next client starts without them.",
   "migration.err_unknown_source": "Celerp cannot read books from that source.",
   "migration.several_title": "Move several companies",

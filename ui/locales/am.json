@@ -3917,6 +3917,7 @@
   "migration.err_not_found": "Celerp ይህን ፍልሰት ማግኘት አልቻለም። ተሰርዞ ሊሆን ይችላል፣ ወይም ሌላ ተጠቃሚ ጀምሮታል፡ ሊከፍተው የሚችለው የጀመረው ተጠቃሚ ብቻ ነው።",
   "migration.answers_saved": "የመረጧቸው የሂሳብ መለያዎች ተቀምጠዋል። ከ{source} የሚመጣው ቀጣዩ ደንበኛዎ ቀድመው ተመርጠው ያቀርባቸዋል፣ ከመጨረስዎ በፊት እንዲያረጋግጡ።",
   "migration.forget_answers": "እነዚህን መልሶች እርሳ",
+  "migration.forget_answers_confirm": "ለ{source} የተቀመጡትን የመመዝገቢያ ሒሳቦች ይርሱ? ይህ ሊቀለበስ አይችልም። ከ{source} የሚያጠናቅቁት ቀጣይ ደንበኛ መልሶቹን እንደገና ያስቀምጣል።",
   "migration.answers_forgotten": "መልሶቹ ተረስተዋል። ቀጣዩ ደንበኛዎ ያለ እነሱ ይጀምራል።",
   "migration.err_unknown_source": "Celerp ከዚያ ምንጭ መዝገቦችን ማንበብ አይችልም።",
   "migration.several_title": "ብዙ ኩባንያዎችን አዛውር",
