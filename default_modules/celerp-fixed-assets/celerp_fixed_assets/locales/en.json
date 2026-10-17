@@ -233,6 +233,7 @@
   "fixed_assets.reverse_run": "Reverse this run",
   "fixed_assets.reverse_run_hint": "Reverses this month's journal and the depreciation it put on each asset. Only the latest run can be reversed, while its month is open.",
   "fixed_assets.action.fix_account": "Fix posting account",
+  "fixed_assets.action.open_users": "Open Users",
   "fixed_assets.action.review_source": "Review the source",
   "fixed_assets.action.enter_reading": "Enter the reading",
   "fixed_assets.action.skip": "Skipped",

@@ -233,6 +233,7 @@
   "fixed_assets.reverse_run": "Estornar esta execução",
   "fixed_assets.reverse_run_hint": "Estorna o lançamento deste mês e a depreciação aplicada a cada ativo. Só a última execução pode ser estornada, enquanto o seu mês estiver aberto.",
   "fixed_assets.action.fix_account": "Corrigir a conta de lançamento",
+  "fixed_assets.action.open_users": "Abrir Usuários",
   "fixed_assets.action.review_source": "Rever a origem",
   "fixed_assets.action.enter_reading": "Informar a leitura",
   "fixed_assets.action.skip": "Pulado",

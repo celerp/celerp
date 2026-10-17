@@ -233,6 +233,7 @@
   "fixed_assets.reverse_run": "Storna questa esecuzione",
   "fixed_assets.reverse_run_hint": "Storna la scrittura di questo mese e l'ammortamento applicato a ogni cespite. Si può stornare solo l'ultima esecuzione, finché il suo mese è aperto.",
   "fixed_assets.action.fix_account": "Correggi il conto di registrazione",
+  "fixed_assets.action.open_users": "Apri Utenti",
   "fixed_assets.action.review_source": "Verifica l'origine",
   "fixed_assets.action.enter_reading": "Inserisci la lettura",
   "fixed_assets.action.skip": "Saltato",

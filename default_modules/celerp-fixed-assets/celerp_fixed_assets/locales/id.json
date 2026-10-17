@@ -233,6 +233,7 @@
   "fixed_assets.reverse_run": "Batalkan proses ini",
   "fixed_assets.reverse_run_hint": "Membatalkan jurnal bulan ini dan penyusutan pada setiap aset. Hanya proses terakhir yang dapat dibatalkan, selama bulannya masih terbuka.",
   "fixed_assets.action.fix_account": "Perbaiki akun posting",
+  "fixed_assets.action.open_users": "Buka Pengguna",
   "fixed_assets.action.review_source": "Tinjau sumber",
   "fixed_assets.action.enter_reading": "Masukkan pembacaan",
   "fixed_assets.action.skip": "Dilewati",

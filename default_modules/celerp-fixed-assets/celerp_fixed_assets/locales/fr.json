@@ -233,6 +233,7 @@
   "fixed_assets.reverse_run": "Annuler cette exécution",
   "fixed_assets.reverse_run_hint": "Annule l'écriture de ce mois et l'amortissement porté sur chaque immobilisation. Seule la dernière exécution peut être annulée, tant que son mois est ouvert.",
   "fixed_assets.action.fix_account": "Corriger le compte de comptabilisation",
+  "fixed_assets.action.open_users": "Ouvrir Utilisateurs",
   "fixed_assets.action.review_source": "Vérifier la source",
   "fixed_assets.action.enter_reading": "Saisir le relevé",
   "fixed_assets.action.skip": "Sauté",

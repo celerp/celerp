@@ -81,9 +81,19 @@ def _error_text(e: APIError) -> str:
     return refusal_text((e.data or {}).get("detail")) or str(e.detail) or t("fixed_assets.error")
 
 
+def _missing_permission(e: APIError) -> bool:
+    """True when the API refused because the user's role lacks a permission."""
+    from celerp.services.permissions import PERMISSIONS, missing_permission_text
+
+    return e.status == 403 and any(e.detail == missing_permission_text(p.key) for p in PERMISSIONS)
+
+
 def _error_box(e: APIError):
-    """A refusal, with the way to fix it when it names one (its ``href`` and ``action`` label)."""
+    """A refusal, with the way to fix it when it names one (its ``href`` and ``action`` label).
+    A missing permission leads to Users, where the owner grants it."""
     params = (e.data or {}).get("params") or {}
+    if _missing_permission(e):
+        params = {"href": "/settings/general?tab=users", "action": "fixed_assets.action.open_users"}
     fix = [" ", A(t(params["action"]), href=params["href"])] if params.get("href") and params.get("action") else []
     return Div(_error_text(e), *fix, cls="flash flash--error")
 

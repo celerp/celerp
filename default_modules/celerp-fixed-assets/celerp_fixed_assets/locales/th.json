@@ -233,6 +233,7 @@
   "fixed_assets.reverse_run": "กลับรายการการคำนวณนี้",
   "fixed_assets.reverse_run_hint": "กลับรายการบัญชีของเดือนนี้และค่าเสื่อมราคาที่บันทึกในแต่ละสินทรัพย์ กลับรายการได้เฉพาะการคำนวณล่าสุดขณะที่เดือนยังเปิดอยู่",
   "fixed_assets.action.fix_account": "แก้ไขบัญชีที่ใช้บันทึก",
+  "fixed_assets.action.open_users": "เปิดหน้าผู้ใช้",
   "fixed_assets.action.review_source": "ตรวจสอบแหล่งที่มา",
   "fixed_assets.action.enter_reading": "ป้อนค่าที่อ่านได้",
   "fixed_assets.action.skip": "ข้ามแล้ว",

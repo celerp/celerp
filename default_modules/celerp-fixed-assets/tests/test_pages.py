@@ -3,6 +3,7 @@
 """The fixed assets pages, driven the way a user drives them, against the real API."""
 from __future__ import annotations
 
+import html
 import json
 import re
 import uuid
@@ -1169,3 +1170,15 @@ async def test_u44_settings_has_a_breadcrumb_one_heading_and_intangibles_on_the_
     brand = await owner_ui.api.post(f"{API}/classes", json={"name": "Brands", "kind": "intangible",
                                                                    "life_months": 120})
     assert brand.status_code == 200 and brand.json()["asset_account"] == "1230", brand.text
+
+
+async def test_u48_a_missing_permission_links_to_users(owner_ui):
+    from celerp.services.permissions import missing_permission_text
+
+    await _demo(owner_ui)
+    r = await owner_ui.api.patch("/companies/me/role-permissions", json={
+        "perm_key": "view_fixed_assets", "role_key": "owner", "granted": False})
+    assert r.status_code == 200, r.text
+    page = (await owner_ui.get("/fixed-assets")).text
+    assert missing_permission_text("view_fixed_assets") in html.unescape(page), page
+    assert 'href="/settings/general?tab=users"' in page, page
