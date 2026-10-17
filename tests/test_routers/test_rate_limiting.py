@@ -18,6 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from celerp.main import app
 from celerp.routers import auth as auth_router
 from celerp.services.auth import CALLER_HEADER
+from email_codes_support import relay  # noqa: F401 - fixture
 from migration_support import real_client, real_engine  # noqa: F401 - fixtures
 
 
@@ -75,11 +76,13 @@ async def test_rate_limit_exceeded_handler_returns_429(client):
 
 
 @pytest.mark.asyncio
-async def test_password_reset_requests_for_one_account_never_block_another(client, limits_on):
+async def test_recovery_send_rate_limited_per_account(client, limits_on, relay):
+    """Recovery codes for one account are limited without holding up another's."""
+    send = "/auth/password-recovery/send"
     for _ in range(3):
-        assert (await client.post("/auth/password-reset/request", json={"email": "a@test.example"})).status_code == 200
-    assert (await client.post("/auth/password-reset/request", json={"email": "a@test.example"})).status_code == 429
-    assert (await client.post("/auth/password-reset/request", json={"email": "b@test.example"})).status_code == 200
+        assert (await client.post(send, json={"email": "a@test.example"})).status_code == 200
+    assert (await client.post(send, json={"email": "a@test.example"})).status_code == 429
+    assert (await client.post(send, json={"email": "b@test.example"})).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -179,18 +182,26 @@ async def test_each_further_failure_doubles_the_wait_up_to_five_minutes(client, 
     assert time.monotonic() - started < 30
 
 
+@pytest.mark.parametrize("writer", ["reset", "another process"])
 @pytest.mark.asyncio
-async def test_a_password_reset_ends_the_wait(client, session, clock):
-    from test_password_reset import _request_reset
+async def test_attempts_restart_when_hash_changes(client, session, clock, writer):
+    """A new password lifts the account's wait, whichever way it was set: by the reset in
+    this server, or by the terminal command writing the database from its own process."""
+    from celerp.services.auth import hash_password
+    from celerp.services.password_reset import reset_password, user_by_email
 
     await _two_logins(client, session)
     tries = [(await _ask(client, "/auth/login", "v@test.example", "wrong-pw", f"198.51.100.{i}")).status_code
              for i in range(6)]
     assert tries == [401] * 5 + [429]
-    raw = await _request_reset(client, "v@test.example")
-    r = await client.post("/auth/password-reset/confirm", json={"token": raw, "new_password": "pwvalid2"})
-    assert r.status_code == 200, r.text
+    user = await user_by_email(session, "v@test.example")
+    if writer == "reset":
+        await reset_password(session, user, "pwvalid2", method="terminal")
+    else:
+        user.auth_hash = hash_password("pwvalid2")
+        await session.commit()
     assert (await _ask(client, "/auth/login", "v@test.example", "pwvalid2", "192.0.2.50")).status_code == 200
+    assert (await _ask(client, "/auth/login", "w@test.example", "wrong-pw", "192.0.2.51")).status_code == 401
 
 
 @pytest.mark.asyncio

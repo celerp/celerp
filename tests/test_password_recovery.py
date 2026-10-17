@@ -1,0 +1,565 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
+"""Password recovery: one reset function for every way a password is reset, the
+emailed code the Celerp relay sends and confirms, the terminal command for the
+person at this computer, an owner's reset of a staff password, and the notice the
+next sign-in shows.
+
+The relay only confirms a code. This install decides whose password changes, from
+its own users and exactly as sign-in matches them, and every answer from the relay
+other than a plain yes ends in no reset."""
+from __future__ import annotations
+
+import asyncio
+import shlex
+import time
+import uuid
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event, select
+
+from celerp.main import app
+from celerp.models.company import User
+from celerp.services.auth import CALLER_HEADER
+from email_codes_support import CODE, FAILURES, relay, settle, short_floor  # noqa: F401 - fixtures
+from test_helpers import invite_user
+from ui.i18n import t
+
+pytestmark = pytest.mark.asyncio
+
+OWNER = "owner@example.com"
+STAFF = "staff@example.com"
+OLD_PW = "old-password1"
+NEW_PW = "new-password1"
+
+
+def _bearer(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def _register(client, email: str = OWNER, password: str = OLD_PW) -> dict:
+    r = await client.post("/auth/register", json={"company_name": "Recovery Co", "email": email,
+                                                  "name": "Owner Person", "password": password})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _login(client, email: str, password: str):
+    return await client.post("/auth/login", json={"email": email, "password": password})
+
+
+async def _staff(client, session, owner_token: str, email: str = STAFF, role: str = "operator") -> str:
+    """A member of the owner's company, signed in: their access token. Password userpw123."""
+    return await invite_user(client, session, _bearer(owner_token), email, role)
+
+
+async def _user(session, email: str) -> User:
+    return (await session.execute(select(User).where(User.email == email))).scalar_one()
+
+
+async def _hash(session, email: str) -> str:
+    user = await _user(session, email)
+    await session.refresh(user)
+    return user.auth_hash
+
+
+async def _signed_in(client, token: str) -> bool:
+    return (await client.get("/companies/me", headers=_bearer(token))).status_code == 200
+
+
+async def _refreshes(client, refresh: str) -> bool:
+    return (await client.post("/auth/token/refresh", json={"refresh_token": refresh})).status_code == 200
+
+
+def _send(client, email: str, **kw):
+    return client.post("/auth/password-recovery/send", json={"email": email}, **kw)
+
+
+def _reset(client, email: str, code: str = CODE, password: str = NEW_PW, **kw):
+    return client.post("/auth/password-recovery/reset",
+                       json={"email": email, "code": code, "new_password": password}, **kw)
+
+
+async def _take(client, token: str) -> list[dict]:
+    r = await client.post("/auth/password-reset-notices/take", headers=_bearer(token))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+# --- The one reset function -------------------------------------------------------
+
+
+async def test_reset_password_sets_hash_ends_sessions_and_audits(client, session):
+    from celerp.models.auth import PasswordReset, PasswordResetNotice
+    from celerp.services.password_reset import reset_password, user_by_email
+
+    tokens = await _register(client)
+    user = await user_by_email(session, OWNER)
+    await reset_password(session, user, NEW_PW, method="terminal", os_user="สมชาย")
+
+    assert not await _signed_in(client, tokens["access_token"])
+    assert not await _refreshes(client, tokens["refresh_token"])
+    assert (await _login(client, OWNER, OLD_PW)).status_code == 401
+    assert (await _login(client, OWNER, NEW_PW)).status_code == 200
+    reset = (await session.execute(select(PasswordReset))).scalar_one()
+    assert (reset.user_id, reset.method, reset.os_user, reset.by_user_id) == (user.id, "terminal", "สมชาย", None)
+    notices = (await session.execute(select(PasswordResetNotice))).scalars().all()
+    assert [(n.reset_id, n.recipient_id) for n in notices] == [(reset.id, user.id)]
+
+
+async def test_reset_password_is_atomic(client, session):
+    """A notice that cannot be written leaves the password, the sessions and the
+    record exactly as they were: the reset happens whole or not at all."""
+    from celerp.models.auth import PasswordReset, PasswordResetNotice
+    from celerp.services.password_reset import reset_password, user_by_email
+
+    tokens = await _register(client)
+    before = await _hash(session, OWNER)
+    user = await user_by_email(session, OWNER)
+
+    def _to_no_one(**kw):
+        return PasswordResetNotice(**{**kw, "recipient_id": uuid.uuid4()})
+
+    with patch("celerp.services.password_reset.PasswordResetNotice", side_effect=_to_no_one), \
+         pytest.raises(Exception):
+        await reset_password(session, user, NEW_PW, method="terminal")
+    await session.rollback()
+
+    assert await _hash(session, OWNER) == before
+    assert await _signed_in(client, tokens["access_token"])
+    assert (await session.execute(select(PasswordReset))).scalars().all() == []
+
+
+# --- Recovery by emailed code -----------------------------------------------------
+
+
+async def _fail_closed_setup(client, relay):
+    """Before the first user: the setup email step fails closed too."""
+    send = await client.post("/auth/setup-email/send", json={"email": OWNER})
+    assert (send.status_code, send.json()) == (200, {"outcome": "unavailable"}), send.text
+    verify = await client.post("/auth/setup-email/verify", json={"email": OWNER, "code": CODE})
+    assert verify.status_code == 503, verify.text
+
+
+@pytest.mark.parametrize("failure", FAILURES)
+async def test_recovery_fails_closed(client, session, relay, short_floor, failure):
+    """Relay down, slow, without the endpoint, broken or talking nonsense: nothing is
+    reset and the answer says the code could not be sent or checked."""
+    relay.failure = failure
+    await _fail_closed_setup(client, relay)
+    await _register(client)
+    before = await _hash(session, OWNER)
+
+    send = await _send(client, OWNER)
+    assert (send.status_code, send.json()) == (200, {"outcome": "unavailable"}), send.text
+    reset = await _reset(client, OWNER)
+    assert reset.status_code == 503 and reset.json()["outcome"] == "unavailable", reset.text
+
+    # Up when the code was sent, failing when it is checked.
+    relay.failure = None
+    assert (await _send(client, OWNER)).json() == {"outcome": "sent"}
+    await settle()
+    relay.failure = failure
+    reset = await _reset(client, OWNER)
+    assert reset.status_code == 503 and reset.json()["outcome"] == "unavailable", reset.text
+
+    assert await _hash(session, OWNER) == before
+    assert (await _login(client, OWNER, OLD_PW)).status_code == 200
+
+
+async def test_recovery_send_is_enumeration_neutral(client, session, relay, short_floor):
+    """A user of this install and an email that is not get the same answer at the same
+    pace; only the first is sent a code, after the answer, and the second is never
+    named to the relay. The reset answers the same way for both."""
+    await _register(client)
+    relay.send_gate = asyncio.Event()
+
+    local = await asyncio.wait_for(_send(client, OWNER), 2)
+    stranger = await asyncio.wait_for(_send(client, "nobody@example.com"), 2)
+    empty = await asyncio.wait_for(_send(client, ""), 2)
+    assert local.status_code == stranger.status_code == empty.status_code == 200
+    assert local.json() == stranger.json() == empty.json() == {"outcome": "sent"}
+    relay.send_gate.set()
+    await settle()
+    assert relay.sent_to() == [OWNER]
+    assert relay.paths().count("/email-codes/status") == 3
+
+    relay.calls.clear()
+    started = time.monotonic()
+    wrong = await _reset(client, OWNER, code="000000")
+    local_took = time.monotonic() - started
+    started = time.monotonic()
+    foreign = await _reset(client, "nobody@example.com")
+    foreign_took = time.monotonic() - started
+    assert (wrong.status_code, wrong.json()) == (foreign.status_code, foreign.json())
+    assert min(local_took, foreign_took) >= short_floor
+    assert [b["email"] for p, b in relay.calls if p == "/email-codes/verify"] == [OWNER]
+
+
+async def test_recovery_matches_users_exactly_as_sign_in(client, session, relay, short_floor):
+    """Recovery finds a user exactly where sign-in does: another spelling of the email
+    or a deactivated login is not a user of this install for either."""
+    tokens = await _register(client)
+    await _staff(client, session, tokens["access_token"])
+    gone = await _user(session, STAFF)
+    gone.is_active = False
+    await session.commit()
+
+    for email in (OWNER.upper(), f" {OWNER}", f"{OWNER} ", STAFF):
+        assert (await _login(client, email, "userpw123" if email == STAFF else OLD_PW)).status_code == 401
+        relay.calls.clear()
+        assert (await _send(client, email)).json() == {"outcome": "sent"}
+        await settle()
+        assert relay.sent_to() == [], email
+        relay.issued[(email.strip().lower(), "recovery")] = CODE
+        assert (await _reset(client, email)).status_code == 400, email
+        assert "/email-codes/verify" not in relay.paths(), email
+
+    relay.calls.clear()
+    await _send(client, OWNER)
+    await settle()
+    assert relay.sent_to() == [OWNER]
+    assert (await _login(client, OWNER, OLD_PW)).status_code == 200
+
+
+async def test_recovery_reset_resets_only_the_matching_user(client, session, relay, short_floor):
+    tokens = await _register(client)
+    await _staff(client, session, tokens["access_token"])
+    owner_before = await _hash(session, OWNER)
+
+    assert (await _send(client, STAFF)).json() == {"outcome": "sent"}
+    await settle()
+    r = await _reset(client, STAFF)
+    assert (r.status_code, r.json()) == (200, {"ok": True}), r.text
+
+    assert (await _login(client, STAFF, NEW_PW)).status_code == 200
+    assert (await _login(client, STAFF, "userpw123")).status_code == 401
+    assert await _hash(session, OWNER) == owner_before
+    assert (await _login(client, OWNER, OLD_PW)).status_code == 200
+
+
+async def test_recovery_reset_wrong_code_is_generic(client, session, relay, short_floor):
+    """A wrong, malformed or used code and an email that is not a user here all get the
+    one message, which says what to do next; nothing is reset."""
+    await _register(client)
+    before = await _hash(session, OWNER)
+    generic = t("recovery.code_refused")
+    await _send(client, OWNER)
+    await settle()
+
+    answers = [await _reset(client, OWNER, code="000000"),
+               await _reset(client, "nobody@example.com"),
+               await _reset(client, OWNER, code="12ab56"),
+               await _reset(client, OWNER, code="")]
+    assert [(r.status_code, r.json()["detail"]) for r in answers] == [(400, generic)] * 4
+    assert await _hash(session, OWNER) == before
+
+    assert (await _reset(client, OWNER)).status_code == 200
+    used = await _reset(client, OWNER, password="another-password1")
+    assert (used.status_code, used.json()["detail"]) == (400, generic)
+    assert (await _login(client, OWNER, NEW_PW)).status_code == 200
+
+
+async def test_recovery_reset_never_touches_connect_state(client, session, relay, short_floor, monkeypatch):
+    """Only the password changes: the Connect settings, the config file, the user's
+    other fields and memberships stay as they were, and the relay is asked about the
+    code under this install's existing id and nothing else."""
+    import os
+
+    from celerp.config import settings
+    from celerp.gateway import state
+    from celerp.models.accounting import UserCompany
+
+    monkeypatch.setattr(settings, "gateway_instance_id", "inst-recovery-1")
+    monkeypatch.setattr(settings, "gateway_token", "connect-token")
+    monkeypatch.setattr(settings, "celerp_public_url", "https://recovery.example.com")
+    tokens = await _register(client)
+    config = os.environ.get("CELERP_CONFIG")
+    config_before = Path(config).read_bytes() if config and Path(config).exists() else None
+    connect_before = (settings.gateway_instance_id, settings.gateway_token, settings.celerp_public_url,
+                      state.get_instance_id(), state.get_session_token())
+    user = await _user(session, OWNER)
+    fields = ("id", "email", "name", "api_key", "is_active", "is_install_owner")
+    user_before = {f: getattr(user, f) for f in fields}
+    links_before = [(m.company_id, m.role, m.is_active) for m in (await session.execute(
+        select(UserCompany).where(UserCompany.user_id == user.id))).scalars()]
+
+    await _send(client, OWNER)
+    await settle()
+    assert (await _reset(client, OWNER)).status_code == 200
+
+    await session.refresh(user)
+    assert {f: getattr(user, f) for f in fields} == user_before
+    assert [(m.company_id, m.role, m.is_active) for m in (await session.execute(
+        select(UserCompany).where(UserCompany.user_id == user.id))).scalars()] == links_before
+    assert (settings.gateway_instance_id, settings.gateway_token, settings.celerp_public_url,
+            state.get_instance_id(), state.get_session_token()) == connect_before
+    assert (Path(config).read_bytes() if config and Path(config).exists() else None) == config_before
+    assert set(relay.paths()) == {"/email-codes/status", "/email-codes/send", "/email-codes/verify"}
+    assert {b["instance_id"] for p, b in relay.calls if p != "/email-codes/status"} == {"inst-recovery-1"}
+    assert not await _signed_in(client, tokens["access_token"])
+
+
+async def test_recovery_reset_validates_password_before_relay(client, session, relay, short_floor):
+    await _register(client)
+    before = await _hash(session, OWNER)
+    r = await _reset(client, OWNER, password="short")
+    assert r.status_code == 422, r.text
+    assert "8" in r.json()["detail"]
+    assert relay.calls == []
+    assert await _hash(session, OWNER) == before
+
+
+# --- The terminal command ---------------------------------------------------------
+
+
+async def _terminal(address: str = "127.0.0.1", headers: dict | None = None):
+    async with AsyncClient(transport=ASGITransport(app=app, client=(address, 4321)), base_url="http://test") as c:
+        r = await c.get("/auth/password-recovery/terminal", headers=headers or {})
+    assert r.status_code == 200, r.text
+    return r.json()["command"]
+
+
+async def test_recovery_terminal_command_only_for_loopback(client):
+    """The person at this computer is shown the command; a caller over the network,
+    whether it reaches the API itself or through the UI, is not shown this
+    computer's folders."""
+    from celerp.services.password_reset import terminal_command
+
+    assert await _terminal() == terminal_command()
+    assert await _terminal("::1") == terminal_command()
+    assert await _terminal("192.0.2.10") is None
+    assert await _terminal(headers={CALLER_HEADER: "192.0.2.10"}) is None
+
+
+async def test_recovery_terminal_command_not_for_connect_visitor(client):
+    """A visitor through Connect reaches this computer from the gateway on loopback, so
+    the gateway's mark is what tells them apart: marked, no command, at the API and
+    on the page."""
+    from celerp.services.auth import CONNECT_HEADER
+    from ui.app import app as ui_app
+
+    assert await _terminal(headers={CONNECT_HEADER: "1"}) is None
+    assert await _terminal("192.0.2.10", headers={CONNECT_HEADER: "1"}) is None
+
+    with patch("ui.api_client._get_transport", lambda: ASGITransport(app=app)):
+        async with AsyncClient(transport=ASGITransport(app=ui_app, client=("127.0.0.1", 5000)),
+                               base_url="http://ui") as ui:
+            local = await ui.get("/forgot-password/terminal")
+            marked = await ui.get("/forgot-password/terminal", headers={CONNECT_HEADER: "1"})
+    import sys
+    assert local.status_code == marked.status_code == 200
+    assert sys.executable in local.text
+    assert sys.executable not in marked.text
+    assert "celerp reset-password" in marked.text and 'href="/login"' in marked.text
+
+
+@pytest.mark.parametrize("config", [None, "/srv/celerp/celerp.toml"])
+async def test_terminal_command_renders_real_paths(monkeypatch, config):
+    """The command carries this process's own interpreter, app folder and data folder,
+    quoted for the shell it is pasted into, whatever characters they hold."""
+    import sys
+
+    import celerp
+    from celerp.config import settings
+    from celerp.services.password_reset import terminal_command
+
+    app_dir = str(Path(celerp.__file__).resolve().parent.parent)
+    monkeypatch.setattr(sys, "executable", "/opt/it's here/bin/python3")
+    monkeypatch.setattr(settings, "data_dir", Path("/data/O'Brien ข้อมูล"))
+    if config:
+        monkeypatch.setenv("CELERP_CONFIG", config)
+    else:
+        monkeypatch.delenv("CELERP_CONFIG", raising=False)
+
+    posix = terminal_command(windows=False)
+    words = shlex.split(posix)
+    assert words[:3] == ["cd", app_dir, "&&"]
+    assert "CELERP_DATA_DIR=/data/O'Brien ข้อมูล" in words
+    assert ((f"CELERP_CONFIG={config}" in words) if config else not any("CELERP_CONFIG" in w for w in words))
+    assert words[words.index("/opt/it's here/bin/python3"):] == [
+        "/opt/it's here/bin/python3", "-E", "-X", "utf8", "-m", "celerp", "reset-password"]
+
+    monkeypatch.setattr(sys, "executable", r"C:\Users\สมชาย O'Neil\AppData\Local\Celerp\python\python.exe")
+    monkeypatch.setattr(settings, "data_dir", Path(r"C:\Users\สมชาย O'Neil\AppData\Roaming\Celerp"))
+    windows = terminal_command(windows=True)
+    assert windows.startswith(f"Set-Location -LiteralPath '{app_dir.replace(chr(39), chr(39) * 2)}'; ")
+    assert "$env:CELERP_DATA_DIR='C:\\Users\\สมชาย O''Neil\\AppData\\Roaming\\Celerp'" in windows
+    assert ((f"$env:CELERP_CONFIG='{config}'" in windows) if config else "CELERP_CONFIG" not in windows)
+    assert windows.endswith(
+        "& 'C:\\Users\\สมชาย O''Neil\\AppData\\Local\\Celerp\\python\\python.exe' -E -X utf8 -m celerp reset-password")
+
+
+# --- The notice at the next sign-in ------------------------------------------------
+
+
+async def test_reset_notices_take_returns_once(client, session):
+    from celerp.services.password_reset import reset_password, user_by_email
+
+    await _register(client)
+    await reset_password(session, await user_by_email(session, OWNER), NEW_PW, method="terminal", os_user="tester")
+    token = (await _login(client, OWNER, NEW_PW)).json()["access_token"]
+
+    first = await _take(client, token)
+    assert [(n["user_email"], n["method"], n["os_user"], n["by_name"]) for n in first] == [
+        (OWNER, "terminal", "tester", None)]
+    assert first[0]["user_name"] == "Owner Person" and first[0]["created_at"]
+    assert await _take(client, token) == []
+    assert (await client.post("/auth/password-reset-notices/take")).status_code == 401
+
+
+async def test_reset_notice_reaches_other_owners(client, session):
+    """The installation owner and every owner of the user's companies hear of a reset;
+    other members do not, and an owner who did the reset is not told what they did."""
+    from celerp.services.password_reset import reset_password, user_by_email
+
+    owner = (await _register(client))["access_token"]
+    second = await _staff(client, session, owner, "second-owner@example.com", "owner")
+    viewer = await _staff(client, session, owner, "viewer@example.com", "viewer")
+    await _staff(client, session, owner)
+
+    staff = await user_by_email(session, STAFF)
+    await reset_password(session, staff, NEW_PW, method="terminal")
+    staff_token = (await _login(client, STAFF, NEW_PW)).json()["access_token"]
+    assert [n["user_email"] for n in await _take(client, staff_token)] == [STAFF]
+    assert [n["user_email"] for n in await _take(client, owner)] == [STAFF]
+    assert [n["user_email"] for n in await _take(client, second)] == [STAFF]
+    assert await _take(client, viewer) == []
+
+    by = await user_by_email(session, "second-owner@example.com")
+    await reset_password(session, await user_by_email(session, STAFF), "third-password1", method="owner", by_user=by)
+    staff_token = (await _login(client, STAFF, "third-password1")).json()["access_token"]
+    assert [(n["method"], n["by_name"]) for n in await _take(client, staff_token)] == [("owner", by.name)]
+    assert [n["user_email"] for n in await _take(client, owner)] == [STAFF]
+    assert await _take(client, second) == []
+
+
+# --- Setup email step (API) ---------------------------------------------------------
+
+
+async def test_setup_email_send_refused_after_bootstrap(client, relay):
+    send = await client.post("/auth/setup-email/send", json={"email": OWNER})
+    assert (send.status_code, send.json()) == (200, {"outcome": "sent"}), send.text
+    await settle()
+    assert [b["purpose"] for p, b in relay.calls if p == "/email-codes/send"] == ["setup"]
+    verify = await client.post("/auth/setup-email/verify", json={"email": OWNER, "code": CODE})
+    assert (verify.status_code, verify.json()) == (200, {"ok": True}), verify.text
+
+    await _register(client)
+    relay.calls.clear()
+    assert (await client.post("/auth/setup-email/send", json={"email": OWNER})).status_code == 409
+    assert (await client.post("/auth/setup-email/verify", json={"email": OWNER, "code": CODE})).status_code == 409
+    await settle()
+    assert relay.calls == []
+
+
+# --- An owner resets a staff password ------------------------------------------------
+
+
+def _staff_reset(client, token: str, user_id, password: str = NEW_PW):
+    return client.post(f"/companies/me/users/{user_id}/password", json={"new_password": password},
+                       headers=_bearer(token))
+
+
+async def test_owner_resets_staff_password(client, session):
+    """The installation owner, or any owner of the company, sets a staff member's new
+    password; the staff member's sessions end and they are told who did it."""
+    from celerp.models.auth import PasswordReset
+
+    owner = (await _register(client))["access_token"]
+    second = await _staff(client, session, owner, "second-owner@example.com", "owner")
+    staff_token = await _staff(client, session, owner)
+    staff = await _user(session, STAFF)
+
+    r = await _staff_reset(client, owner, staff.id)
+    assert (r.status_code, r.json()) == (200, {"ok": True}), r.text
+    assert not await _signed_in(client, staff_token)
+    assert (await _login(client, STAFF, NEW_PW)).status_code == 200
+
+    r = await _staff_reset(client, second, staff.id, "third-password1")
+    assert r.status_code == 200, r.text
+    resets = (await session.execute(select(PasswordReset).order_by(PasswordReset.created_at))).scalars().all()
+    assert [(x.user_id, x.method, x.by_user_id) for x in resets] == [
+        (staff.id, "owner", (await _user(session, OWNER)).id),
+        (staff.id, "owner", (await _user(session, "second-owner@example.com")).id)]
+    token = (await _login(client, STAFF, "third-password1")).json()["access_token"]
+    assert {n["by_name"] for n in await _take(client, token)} == {"Owner Person", "Owner"}
+
+
+async def test_staff_reset_refusals(client, session):
+    """Each refusal says why and changes nothing: an owner, the installation owner,
+    yourself, a member of a company the caller does not own, someone outside the
+    company, and a caller who is not an owner."""
+    owner = (await _register(client))["access_token"]
+    second = await _staff(client, session, owner, "second-owner@example.com", "owner")
+    admin = await _staff(client, session, owner, "admin@example.com", "admin")
+    await _staff(client, session, owner)
+    ids = {e: (await _user(session, e)).id for e in (OWNER, "second-owner@example.com", "admin@example.com", STAFF)}
+
+    # The staff member also works for a second company only the installation owner owns.
+    other = (await client.post("/companies", json={"name": "Other Co"}, headers=_bearer(owner))).json()
+    r = await client.post("/companies/me/users", headers=_bearer(other["access_token"]),
+                          json={"email": STAFF, "name": "Staff", "role": "operator", "password": "userpw123"})
+    assert r.status_code == 200, r.text
+    outsider = (await client.post("/companies/me/users", headers=_bearer(other["access_token"]),
+                                  json={"email": "outsider@example.com", "name": "Out", "role": "operator",
+                                        "password": "userpw123"})).json()["id"]
+
+    hashes = {e: await _hash(session, e) for e in ids}
+    cases = [
+        (second, ids[OWNER], 403),                      # the installation owner
+        (owner, ids["second-owner@example.com"], 403),  # an owner
+        (second, ids["second-owner@example.com"], 403),  # yourself
+        (second, ids[STAFF], 403),                      # also in a company the caller does not own
+        (admin, ids[STAFF], 403),                       # the caller is not an owner
+        (owner, outsider, 404),                         # not in this company
+        (owner, uuid.uuid4(), 404),                     # no such user
+    ]
+    for token, target, status in cases:
+        r = await _staff_reset(client, token, target)
+        assert r.status_code == status, (target, r.text)
+        assert isinstance(r.json()["detail"], str) and r.json()["detail"], r.text
+    r = await _staff_reset(client, owner, ids[STAFF], "short")
+    assert r.status_code == 422 and "8" in r.json()["detail"], r.text
+    assert {e: await _hash(session, e) for e in ids} == hashes
+
+    # The installation owner owns every company the staff member is in.
+    assert (await _staff_reset(client, owner, ids[STAFF])).status_code == 200
+
+
+async def test_staff_reset_locks_target(client, session):
+    """The staff member's login row is locked before their memberships and roles are
+    read, the order a role change keeps, so a promotion to owner made at the same
+    moment either waits for the reset or is seen by it."""
+    owner = (await _register(client))["access_token"]
+    await _staff(client, session, owner)
+    target = str((await _user(session, STAFF)).id)
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        if target in str(parameters) or target.replace("-", "") in str(parameters):
+            statements.append(" ".join(statement.split()))
+
+    sync_conn = (await session.connection()).sync_connection
+    event.listen(sync_conn, "before_cursor_execute", _record)
+    try:
+        r = await _staff_reset(client, owner, target)
+    finally:
+        event.remove(sync_conn, "before_cursor_execute", _record)
+    assert r.status_code == 200, r.text
+    first = statements[0]
+    assert "FROM users" in first and "FOR UPDATE" in first, statements
+
+
+# --- The reset link is gone ------------------------------------------------------------
+
+
+async def test_reset_link_routes_gone(client, owner_ui):
+    for path, body in (("/auth/password-reset/request", {"email": OWNER}),
+                       ("/auth/password-reset/confirm", {"token": "x", "new_password": NEW_PW})):
+        assert (await client.post(path, json=body)).status_code == 404, path
+    assert (await owner_ui.get("/reset-password?token=x")).status_code == 404
+    assert (await owner_ui.post("/reset-password", data={"token": "x"})).status_code in (404, 405)
