@@ -6059,6 +6059,7 @@
   "sync_accounts.from_previous": "Von Ihren bisherigen Mandanten",
   "sync_accounts.review_title": "Prüfen Sie die Konten von {client}, bevor deren Datensätze eintreffen.",
   "sync_accounts.review_count": "{n} Konten zu prüfen",
+  "sync_accounts.review_count_one": "1 Konto zu prüfen",
   "sync_accounts.their_account": "Deren Konto",
   "sync_accounts.your_account": "Ihr Konto",
   "sync_accounts.confirm": "Konten bestätigen",

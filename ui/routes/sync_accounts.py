@@ -146,7 +146,8 @@ def _review(company: dict, chart: list[dict], lang: str) -> FT:
     accounts = company.get("accounts") or []
     return Div(
         H3(t("sync_accounts.review_title", lang, client=company.get("client") or EMPTY)),
-        P(t("sync_accounts.review_count", lang, n=len(accounts)), cls="settings-hint"),
+        P(t("sync_accounts.review_count_one" if len(accounts) == 1 else "sync_accounts.review_count",
+            lang, n=len(accounts)), cls="settings-hint"),
         Form(
             Hidden(name="source_company_id", value=company["source_company_id"]),
             Table(

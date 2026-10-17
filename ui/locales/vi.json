@@ -6059,6 +6059,7 @@
   "sync_accounts.from_previous": "Từ các khách hàng trước của bạn",
   "sync_accounts.review_title": "Xem xét tài khoản của {client} trước khi bản ghi của họ đến.",
   "sync_accounts.review_count": "{n} tài khoản cần xem xét",
+  "sync_accounts.review_count_one": "1 tài khoản cần xem xét",
   "sync_accounts.their_account": "Tài khoản của họ",
   "sync_accounts.your_account": "Tài khoản của bạn",
   "sync_accounts.confirm": "Xác nhận tài khoản",

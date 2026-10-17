@@ -6059,6 +6059,7 @@
   "sync_accounts.from_previous": "Dari klien Anda sebelumnya",
   "sync_accounts.review_title": "Tinjau akun {client} sebelum catatannya masuk.",
   "sync_accounts.review_count": "{n} akun untuk ditinjau",
+  "sync_accounts.review_count_one": "1 akun untuk ditinjau",
   "sync_accounts.their_account": "Akun mereka",
   "sync_accounts.your_account": "Akun Anda",
   "sync_accounts.confirm": "Konfirmasi akun",

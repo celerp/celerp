@@ -6059,6 +6059,7 @@
   "sync_accounts.from_previous": "จากลูกค้าก่อนหน้าของคุณ",
   "sync_accounts.review_title": "ตรวจสอบบัญชีของ {client} ก่อนที่รายการจะเข้ามา",
   "sync_accounts.review_count": "{n} บัญชีที่ต้องตรวจสอบ",
+  "sync_accounts.review_count_one": "1 บัญชีที่ต้องตรวจสอบ",
   "sync_accounts.their_account": "บัญชีของเขา",
   "sync_accounts.your_account": "บัญชีของคุณ",
   "sync_accounts.confirm": "ยืนยันบัญชี",

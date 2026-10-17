@@ -6059,6 +6059,7 @@
   "sync_accounts.from_previous": "ከቀድሞ ደንበኞችዎ",
   "sync_accounts.review_title": "መዝገቦቻቸው ከመምጣታቸው በፊት የ{client} ሂሳቦችን ይገምግሙ።",
   "sync_accounts.review_count": "የሚገመገሙ {n} ሂሳቦች",
+  "sync_accounts.review_count_one": "የሚገመገም 1 ሂሳብ",
   "sync_accounts.their_account": "የእነሱ ሂሳብ",
   "sync_accounts.your_account": "የእርስዎ ሂሳብ",
   "sync_accounts.confirm": "ሂሳቦችን አረጋግጥ",

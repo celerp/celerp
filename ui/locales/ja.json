@@ -6059,6 +6059,7 @@
   "sync_accounts.from_previous": "以前の顧客から",
   "sync_accounts.review_title": "記録が届く前に {client} の勘定を確認してください。",
   "sync_accounts.review_count": "確認する勘定 {n} 件",
+  "sync_accounts.review_count_one": "確認する勘定 1 件",
   "sync_accounts.their_account": "相手の勘定",
   "sync_accounts.your_account": "自社の勘定",
   "sync_accounts.confirm": "勘定を確定",

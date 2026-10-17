@@ -6059,6 +6059,7 @@
   "sync_accounts.from_previous": "من عملائك السابقين",
   "sync_accounts.review_title": "راجع حسابات {client} قبل وصول سجلاتهم.",
   "sync_accounts.review_count": "{n} حسابات للمراجعة",
+  "sync_accounts.review_count_one": "حساب واحد للمراجعة",
   "sync_accounts.their_account": "حسابهم",
   "sync_accounts.your_account": "حسابك",
   "sync_accounts.confirm": "تأكيد الحسابات",

@@ -6059,6 +6059,7 @@
   "sync_accounts.from_previous": "Dai tuoi clienti precedenti",
   "sync_accounts.review_title": "Rivedi i conti di {client} prima che arrivino le loro registrazioni.",
   "sync_accounts.review_count": "{n} conti da rivedere",
+  "sync_accounts.review_count_one": "1 conto da rivedere",
   "sync_accounts.their_account": "Il loro conto",
   "sync_accounts.your_account": "Il tuo conto",
   "sync_accounts.confirm": "Conferma i conti",
