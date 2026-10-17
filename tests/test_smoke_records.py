@@ -124,3 +124,42 @@ def test_carried_fails_when_the_upgrade_lost_records_or_a_page(tmp_path, capsys,
 
     assert exc.value.code == 1
     assert why in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("disposition, name", [
+    ("attachment; filename*=utf-8''%E0%B9%83%E0%B8%9A.pdf", "ใบ.pdf"),
+    ('attachment; filename="celerp-backup-2026-10-17-1200.celerp-backup"', "celerp-backup-2026-10-17-1200.celerp-backup"),
+])
+def test_sent_name_reads_either_form(disposition, name):
+    assert _smoke.sent_name(disposition) == name
+
+
+def _restored_api(attachment_bytes: bytes, attachment_name: str):
+    """A fake API after a restore, serving the records and one attachment."""
+    def transfer(method, url, token=None, data=None, content_type="application/json", timeout=30):
+        from urllib.parse import quote
+        return 200, attachment_bytes, {"content-disposition": f"attachment; filename*=utf-8''{quote(attachment_name)}"}
+    return transfer
+
+
+@pytest.mark.parametrize("served_bytes, served_name, ok", [
+    (b"%PDF backed up", _smoke.ATTACHMENT, True),
+    (b"%PDF changed", _smoke.ATTACHMENT, False),
+    (b"%PDF backed up", "download", False),
+])
+def test_restored_requires_the_backed_up_records_and_attachment(monkeypatch, clock, tmp_path, capsys,
+                                                                 served_bytes, served_name, ok):
+    import hashlib
+    monkeypatch.setattr(_smoke, "http", _api(starting_answers=0))
+    monkeypatch.setattr(_smoke, "transfer", _restored_api(served_bytes, served_name))
+    before = {"records": _smoke.records("http://api", "t"), "contact_id": "contact:1", "file_id": "f1",
+              "attachment": {"name": _smoke.ATTACHMENT, "sha256": hashlib.sha256(b"%PDF backed up").hexdigest()}}
+    (tmp_path / "before.json").write_text(json.dumps(before, ensure_ascii=False), "utf-8")
+
+    if ok:
+        _smoke.restored("http://api", str(tmp_path))
+        assert "exactly" in capsys.readouterr().out
+    else:
+        with pytest.raises(SystemExit):
+            _smoke.restored("http://api", str(tmp_path))
+        assert "did not bring back" in capsys.readouterr().err

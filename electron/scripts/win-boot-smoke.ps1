@@ -26,6 +26,11 @@
 #   -OverRunning   once the app is ready, the account runs this build's installer again
 #                  with the app open (its processes and API checked alive first); it must
 #                  end exactly those processes, leave a whole install, and boot again.
+#   -BackupRestore once the app is ready, keeps records and an attachment named in
+#                  Thai, Arabic and Chinese, downloads a full backup, changes the data,
+#                  restores the backup through System Recovery and restarts; the app
+#                  must publish its new API port and serve exactly the backed-up records
+#                  and attachment (scripts/smoke_records.py backup-restore, restored).
 #
 # After every install the installed folder must hold exactly the build's files, byte for
 # byte, plus the uninstaller (scripts/check_win_bundle.py installed). Install and start times go to the job summary; they are reported, never
@@ -38,16 +43,18 @@ param(
   [ValidateSet("user", "machine")][string]$Install = "user",
   [string]$Previous = "",
   [switch]$NoShortNames,
-  [switch]$OverRunning
+  [switch]$OverRunning,
+  [switch]$BackupRestore
 )
 $ErrorActionPreference = "Stop"
 
 $smoke = "$Account account, $Install install"
 function Fail([string]$why) { Write-Host "::error::boot smoke ($smoke) FAILED on Windows - $why"; exit 1 }
-if ($Account -eq "admin" -and ($Install -ne "user" -or $Previous -or $OverRunning -or $NoShortNames -or $PSBoundParameters.ContainsKey("UserName"))) {
-  Fail "the administrator smoke runs the built-in Administrator on a fresh install for itself; -UserName, -Install machine, -Previous, -NoShortNames and -OverRunning are for a standard account"
+if ($Account -eq "admin" -and ($Install -ne "user" -or $Previous -or $OverRunning -or $NoShortNames -or $BackupRestore -or $PSBoundParameters.ContainsKey("UserName"))) {
+  Fail "the administrator smoke runs the built-in Administrator on a fresh install for itself; -UserName, -Install machine, -Previous, -NoShortNames, -OverRunning and -BackupRestore are for a standard account"
 }
 if ($Previous -and $Install -eq "machine") { Fail "-Previous upgrades an install for the account itself; it does not combine with -Install machine" }
+if ($Previous -and $BackupRestore) { Fail "-BackupRestore keeps its own records on fresh data; it does not combine with -Previous" }
 if ($Previous -and -not (Test-Path $Previous)) { Fail "no previous installer at $Previous" }
 
 function Timing([string]$what, [Diagnostics.Stopwatch]$watch) {
@@ -279,8 +286,8 @@ function ForceQuit([string]$dir, [string]$port, [string]$what) {
 }
 
 # Business records through the running copy's API, from the repository's scripts folder.
-function Records([string]$command, [string]$port, [string]$out) {
-  python ..\scripts\smoke_records.py $command "http://127.0.0.1:$port" > $out
+function Records([string]$command, [string]$port, [string]$out, [string]$folder) {
+  python ..\scripts\smoke_records.py $command "http://127.0.0.1:$port" @(if ($folder) { $folder }) > $out
   if ($LASTEXITCODE -ne 0) { Get-Content $out -EA SilentlyContinue | Write-Host; Fail "smoke_records.py $command against port $port exited $LASTEXITCODE" }
 }
 
@@ -325,6 +332,30 @@ if ($Previous) {
   Records snapshot $port (Join-Path $pub "celerp-candidate.snapshot")
   python ..\scripts\smoke_records.py carried (Join-Path $pub "celerp-previous.snapshot") (Join-Path $pub "celerp-candidate.snapshot")
   if ($LASTEXITCODE -ne 0) { Fail "the upgrade from the previous release did not keep its records" }
+}
+
+if ($BackupRestore) {
+  $work = Join-Path $env:RUNNER_TEMP "celerp-backup-restore"
+  Records seed $port (Join-Path $pub "celerp-recovery.seed")
+  $pf = Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
+  Records backup-restore $port (Join-Path $pub "celerp-recovery.out") $work
+  Get-Content (Join-Path $pub "celerp-recovery.out") | Write-Host
+  # The restart moves the API to a new port: the app must publish it, and serve there.
+  $watch = [Diagnostics.Stopwatch]::StartNew()
+  $deadline = (Get-Date).AddSeconds(240)
+  $restarted = $null
+  while (-not $restarted -and (Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 2
+    $now = (Get-Content $pf.FullName -Raw -EA SilentlyContinue)
+    if ($now -and $now.Trim() -ne $port) {
+      try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$($now.Trim())/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { $restarted = $now.Trim() } } catch { }
+    }
+  }
+  if (-not $restarted) { Fail "after the restore and restart, $($pf.FullName) still names port $port, or the new port does not answer db:ok" }
+  $watch.Stop(); Timing "restart after the restore, to db:ok" $watch
+  $port = $restarted
+  Records restored $port (Join-Path $pub "celerp-recovery.check") $work
+  Get-Content (Join-Path $pub "celerp-recovery.check") | Write-Host
 }
 
 if ($OverRunning) {

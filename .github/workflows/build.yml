@@ -811,12 +811,21 @@ jobs:
       # Accounts named in Thai and in Chinese, on a PC that makes no short (8.3) names:
       # Postgres cannot read their profile paths, and there is no short form to fall
       # back on. The database must be set up in the account's private folder.
-      - name: Boot smoke (Windows, Thai account name, no short names)
-        timeout-minutes: 20
+      # The Thai and Arabic accounts also back up, change, restore and restart: the
+      # records and an attachment named in those scripts must come back exactly.
+      - name: Boot smoke (Windows, Thai account name, no short names, backup and restore)
+        timeout-minutes: 25
         if: runner.os == 'Windows'
         shell: pwsh
         working-directory: electron
-        run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName "ทดสอบ เซเลิร์ป" -NoShortNames
+        run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName "ทดสอบ เซเลิร์ป" -NoShortNames -BackupRestore
+
+      - name: Boot smoke (Windows, Arabic account name, no short names, backup and restore)
+        timeout-minutes: 25
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: electron
+        run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName "محمد اختبار" -NoShortNames -BackupRestore
 
       - name: Boot smoke (Windows, Chinese account name, no short names)
         timeout-minutes: 20
