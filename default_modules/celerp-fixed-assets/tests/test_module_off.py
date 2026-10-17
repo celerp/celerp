@@ -60,7 +60,8 @@ async def test_s11_turn_off_refused_naming_a_pending_sale(fa):
     await _sell(fa, car)
     number = (await fa.asset(car))["number"]
     operator = await fa.role_headers("operator")
-    await fa.ok(await fa.post(f"/assets/{van}/corrections", {"changes": {"cost": "13000"}}, headers=operator))
+    await fa.ok(await fa.post(f"/assets/{van}/corrections", {"changes": {"cost": "13000"}, "op_key": "ask"},
+                                headers=operator))
     van_number = (await fa.asset(van))["number"]
 
     refused = await _turn_off(fa)

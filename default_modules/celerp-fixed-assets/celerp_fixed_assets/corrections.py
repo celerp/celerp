@@ -26,8 +26,8 @@ from fastapi import HTTPException
 from celerp_fixed_assets import notices, projections, reclassify, runs, setup, sources
 from celerp_fixed_assets.calc.periods import fiscal_year_start_index, month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
-    MODULE, _claim, _date, _dec, _journal_view, _lines, _money_in, _move, _open_line, _post, _reversed_lines,
-    _run, asset_movements, conflict)
+    MODULE, _claim, _date, _dec, _intent_hash, _journal_view, _lines, _money_in, _move, _op_key, _open_line, _post,
+    _reversed_lines, _run, _same_intent, asset_movements, conflict)
 from celerp_fixed_assets.store import _emit, _entities, _state
 from celerp_fixed_assets.projections import BUCKETS, money
 
@@ -673,17 +673,25 @@ async def _tell_waiting(session, company_id) -> None:
 
 
 async def request(session, company_id, user_id, asset_id: str, body: dict) -> dict:
-    """Save a correction for a user who may post journals to apply. Posts nothing."""
+    """Save a correction for a user who may post journals to apply. Posts nothing. The
+    request is named by its form's operation key, so sending it again (a lost response, a
+    double click) returns the same request as it stands now instead of asking twice."""
     from celerp.services.permissions import locked_authority, missing_permission, role_has_permission
 
+    op_key = _op_key(body)
     role, settings = await locked_authority(session, company_id, user_id, ("manage_fixed_assets",))
+    intent_hash = _intent_hash("correction_request", {**body, "asset_id": asset_id})
+    correction_id = f"fa:corr:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{op_key}')}"
+    saved = await _state(session, company_id, correction_id)
+    if saved is not None:
+        _same_intent(saved, intent_hash)
+        return {"id": correction_id, **saved}
     fa = await setup.require_started(session, company_id)
     if overrides(body) and not role_has_permission(settings, role, "manage_accounting"):
         raise missing_permission("manage_accounting")
     stored = {k: body.get(k) for k in _REQUEST_FIELDS}
     shown, _ = await plan(session, company_id, asset_id, stored, fa)
-    correction_id = f"fa:corr:{uuid.uuid4()}"
-    data = {**stored, "asset_id": asset_id, "number": shown["asset"]["number"],
+    data = {**stored, "asset_id": asset_id, "intent_hash": intent_hash, "number": shown["asset"]["number"],
             "classification": shown["classification"], "default_classification": shown["default_classification"],
             "reason": str(body.get("reason") or "").strip() or None, "requested_by": str(user_id),
             "requested_at": _now(), "need": NEED}

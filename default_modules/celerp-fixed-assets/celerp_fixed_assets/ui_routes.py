@@ -2884,7 +2884,8 @@ def setup_ui_routes(app) -> None:
         if not token:
             return Response(status_code=401)
         form = await request.form()
-        body = {**_correct_body(form), "reason": str(form.get("reason") or "").strip() or None}
+        body = {**_correct_body(form), "reason": str(form.get("reason") or "").strip() or None,
+                "op_key": str(form.get(OP_KEY_FIELD) or "")}
         try:
             saved = await api.fixed_assets_send(token, "POST", f"/assets/{quote(asset_id, safe=':')}/corrections",
                                                 body)

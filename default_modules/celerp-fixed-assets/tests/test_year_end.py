@@ -45,7 +45,7 @@ async def _setup(fa: FA) -> str:
 async def test_year_end_items_listed(fa, zz):
     car = await _setup(fa)
     operator = await fa.role_headers("operator")
-    request = await fa.ok(await fa.post(f"/assets/{car}/corrections", {"changes": {"cost": "13000"}},
+    request = await fa.ok(await fa.post(f"/assets/{car}/corrections", {"changes": {"cost": "13000"}, "op_key": "ask"},
                                         headers=operator))
     ye = await _year_end(fa, 2026)
     assert (ye["start"], ye["end"], ye["ready"]) == ("2025-07-01", "2026-06-30", False)

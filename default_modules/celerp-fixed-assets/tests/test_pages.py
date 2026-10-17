@@ -375,8 +375,14 @@ async def test_correct_an_asset_then_the_corrections_pages_and_report(owner_ui):
 
     # A request waits for someone to apply it; withdrawing discards it.
     asked = await owner_ui.post(f"/fixed-assets/assets/{second}/request-correction", data={
-        "field": "available_date", "available_date": "2025-07-01", "reason": "Delivered in July"})
+        "field": "available_date", "available_date": "2025-07-01", "reason": "Delivered in July",
+        "idempotency_key": (ask_key := str(uuid.uuid4()))})
     assert asked.headers.get("HX-Redirect", "").startswith("/fixed-assets/corrections/"), asked.text
+    # The same form sent again (a lost response, a double click) is the same request.
+    again = await owner_ui.post(f"/fixed-assets/assets/{second}/request-correction", data={
+        "field": "available_date", "available_date": "2025-07-01", "reason": "Delivered in July",
+        "idempotency_key": ask_key})
+    assert again.headers.get("HX-Redirect") == asked.headers["HX-Redirect"], again.text
     waiting = await owner_ui.get(asked.headers["HX-Redirect"])
     assert t("fixed_assets.apply_correction") in waiting.text and t("fixed_assets.withdraw_correction") in waiting.text
     assert "fixed_assets." not in waiting.text

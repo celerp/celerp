@@ -166,6 +166,17 @@ def _op_key(body: dict) -> str:
     return key
 
 
+def _intent_hash(op_type: str, body: dict) -> str:
+    """What an operation's form asked for, without how it was sent."""
+    return _hash({"type": op_type, **{k: v for k, v in body.items() if k not in _NOT_INTENT}})
+
+
+def _same_intent(done: dict, intent_hash: str) -> None:
+    """Refuse an operation key already used with other details."""
+    if done.get("intent_hash") != intent_hash:
+        raise conflict("This change was already made with different details. Reload and start again.")
+
+
 async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: tuple[str, ...], plan, apply,
                managed: bool = True):
     """Preview or confirm one operation. ``plan(fa)`` returns ``(shown, context)``: what
@@ -180,12 +191,11 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
     op_key = _op_key(body)
     await locked_authority(session, company_id, user_id, keys)
     fa = await (setup.require_managed if managed else setup.require_started)(session, company_id)
-    intent_hash = _hash({"type": op_type, **{k: v for k, v in body.items() if k not in _NOT_INTENT}})
+    intent_hash = _intent_hash(op_type, body)
     if not body.get("preview"):
         done = await _state(session, company_id, f"fa:op:{op_key}")
         if done is not None:
-            if done.get("intent_hash") != intent_hash:
-                raise conflict("This change was already made with different details. Reload and start again.")
+            _same_intent(done, intent_hash)
             return done["result"]
     shown, context = await plan(fa)
     generation = context.get("generation", 0)

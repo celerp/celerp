@@ -122,6 +122,7 @@ class CorrectionRequested(_Event):
     changes: dict
     classification: str
     requested_by: str
+    intent_hash: str
 
 
 class CorrectionApplied(_Event):

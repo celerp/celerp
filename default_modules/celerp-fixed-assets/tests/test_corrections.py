@@ -13,11 +13,14 @@ line, full month, charges 200 a month.
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from fa_fixtures import FA
 from test_runs import _contributed, _lines, _lock, _managed_from, _movements, _notices, _run, _run_journals
@@ -173,8 +176,8 @@ async def test_s3_classification_default_and_override_authority(fa):
 
     operator = await fa.role_headers("operator")
     refused = await fa.post(f"/assets/{car}/corrections", {
-        "changes": {"life_months": 48}, "classification": "error", "override_reason": "Life was keyed wrong"},
-        headers=operator)
+        "changes": {"life_months": 48}, "classification": "error", "override_reason": "Life was keyed wrong",
+        "op_key": "ask"}, headers=operator)
     assert refused.status_code == 403 and "Manage accounting" in refused.json()["detail"]
     blank = await fa.post(f"/assets/{car}/correct", {"changes": {"life_months": 48}, "classification": "error",
                                                      "preview": True, "op_key": "o"})
@@ -377,7 +380,7 @@ async def test_s9_request_without_posting_apply_needs_it(fa):
                            headers=operator)
     assert direct.status_code == 403
     request = await fa.ok(await fa.post(f"/assets/{car}/corrections", {
-        "changes": {"cost": "13000"}, "reason": "The invoice was 13,000"}, headers=operator))
+        "changes": {"cost": "13000"}, "reason": "The invoice was 13,000", "op_key": "ask"}, headers=operator))
     assert request["state"] == "requested" and request["need"] == "Needs Manage accounting"
     assert await _correction_journals(fa, car) == []
     assert D((await fa.asset(car))["cost"]) == D("12000")
@@ -400,14 +403,99 @@ async def test_request_withdrawn_by_requester_only(fa):
     car = await _contributed(fa)
     operator = await fa.role_headers("operator")
     other = await fa.role_headers("operator")
-    request = await fa.ok(await fa.post(f"/assets/{car}/corrections", {"changes": {"cost": "13000"}},
-                                        headers=operator))
+    request = await fa.ok(await fa.post(f"/assets/{car}/corrections", {"changes": {"cost": "13000"},
+                                                                     "op_key": "ask"}, headers=operator))
     refused = await fa.post(f"/corrections/{request['id']}/withdraw", {}, headers=other)
     assert refused.status_code == 403
     await fa.ok(await fa.post(f"/corrections/{request['id']}/withdraw", {}, headers=operator))
     assert (await fa.state(request["id"]))["state"] == "withdrawn"
     again = await fa.post(f"/corrections/{request['id']}/apply", {"preview": True, "op_key": "w"})
     assert again.status_code == 409
+
+
+async def _requests(fa: FA) -> list[dict]:
+    return await fa.entities("fa_correction")
+
+
+async def _ask(fa: FA, asset_id: str, headers, key: str = "ask-1", cost: str = "13000"):
+    return await fa.post(f"/assets/{asset_id}/corrections", {"changes": {"cost": cost}, "reason": "The invoice",
+                                                              "op_key": key}, headers=headers)
+
+
+async def test_f07_request_retried_under_its_key_is_the_same_request(fa):
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    operator_id, operator = await fa.member("operator")
+    first = await fa.ok(await _ask(fa, car, operator))
+    # A lost response sent again is the same request: one correction, one waiting notice.
+    again = await fa.ok(await _ask(fa, car, operator))
+    assert again["id"] == first["id"] and again["state"] == "requested"
+    assert len(await _requests(fa)) == 1
+    (notice,) = [n for n in await _notices(fa) if "/fixed-assets/corrections" in (n.action_url or "")]
+    assert notice.body.startswith("1 ")
+    # The same key with other details is refused, not a second request.
+    changed = await _ask(fa, car, operator, cost="14000")
+    assert changed.status_code == 409 and "different details" in changed.json()["detail"]
+    # Without a key from its form there is nothing to tell a retry from a new request.
+    keyless = await fa.post(f"/assets/{car}/corrections", {"changes": {"cost": "13000"}}, headers=operator)
+    assert keyless.status_code == 422
+    # A new key is a new request.
+    other = await fa.ok(await _ask(fa, car, operator, key="ask-2"))
+    assert other["id"] != first["id"] and len(await _requests(fa)) == 2
+    await fa.ok(await fa.post(f"/corrections/{other['id']}/withdraw", {}, headers=operator))
+
+    # Applied, a retry returns the applied request and asks nobody for anything.
+    await fa.operate(f"/corrections/{first['id']}/apply", {"posting_date": "2026-04-20"}, key="apply")
+    after = await fa.ok(await _ask(fa, car, operator))
+    assert after["id"] == first["id"] and after["state"] == "applied"
+    assert len(await _requests(fa)) == 2
+    assert not [n for n in await _notices(fa) if "/fixed-assets/corrections" in (n.action_url or "")]
+    assert len(await _correction_journals(fa, car)) == 1
+
+    # Withdrawn, a retry stays withdrawn.
+    withdrawn = await fa.ok(await _ask(fa, car, operator, key="ask-2"))
+    assert withdrawn["id"] == other["id"] and withdrawn["state"] == "withdrawn"
+
+    # A requester who lost the role cannot retry it either.
+    r = await fa.client.patch(f"/companies/me/users/{operator_id}", headers=fa.h, json={"role": "viewer"})
+    assert r.status_code == 200, r.text
+    assert (await _ask(fa, car, operator)).status_code == 401
+    # Even a token still claiming the old role is refused where the request is saved.
+    from test_helpers import make_authed_token
+    stale = await make_authed_token(fa.session, str(operator_id), str(fa.auth["company_id"]), "operator")
+    assert (await _ask(fa, car, {"Authorization": f"Bearer {stale}"})).status_code == 403
+    assert len(await _requests(fa)) == 2
+
+
+async def test_f07_same_key_sent_at_once_makes_one_request(committed_engine):
+    from celerp.models.projections import Projection
+    from celerp_fixed_assets import corrections
+    from test_runs import _race_company
+    from test_transfer import _assets
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    cid, uid = await _race_company(factory)
+    async with factory() as s:
+        (car,) = [a["id"] for a in await _assets(s, cid)]
+    body = {"changes": {"cost": "13000"}, "reason": "The invoice", "op_key": "ask-once"}
+
+    async def attempt():
+        async with factory() as s:
+            try:
+                done = await corrections.request(s, cid, uid, car, dict(body))
+                await s.commit()
+                return done
+            except HTTPException as e:
+                await s.rollback()
+                return e
+
+    outcomes = await asyncio.gather(attempt(), attempt(), attempt())
+    assert all(isinstance(o, dict) for o in outcomes), outcomes
+    assert len({o["id"] for o in outcomes}) == 1
+    async with factory() as s:
+        rows = (await s.execute(select(Projection).where(
+            Projection.company_id == cid, Projection.entity_type == "fa_correction"))).scalars().all()
+        assert len(rows) == 1
 
 
 async def test_s9_accounting_fields_need_manage_accounting(fa):

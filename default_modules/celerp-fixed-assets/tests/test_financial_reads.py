@@ -57,7 +57,7 @@ async def _company(fa: FA) -> dict:
     maint = await fa.ok(await fa.post(f"/assets/{van}/maintenance", {"date": "2026-03-10", "work": "Oil change"}))
     operator = await fa.role_headers("operator")
     asked = await fa.ok(await fa.post(f"/assets/{car}/corrections", {
-        "changes": {"cost": ASKED}, "reason": "The invoice was higher"}, headers=operator))
+        "changes": {"cost": ASKED}, "reason": "The invoice was higher", "op_key": "ask"}, headers=operator))
     invoice = await _sell(fa, car, price=PRICE)
     await _finalize(fa, invoice)
     await _tick(fa, date(2026, 5, 2))
