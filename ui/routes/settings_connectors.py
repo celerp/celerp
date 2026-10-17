@@ -123,6 +123,7 @@ _FAILURE_REASONS: tuple[tuple[re.Pattern, str], ...] = tuple(
 # product 12: ..."); the record stays in front of the reason.
 _RECORD_PREFIX = re.compile(r"^((?:[A-Za-z]+ )?(?:SKU|Invoice|Customer|Contact|Item|Product)\b[^:]*): (.*)$", re.DOTALL)
 _SYNC_REASONS_ID = "connector-sync-reasons"
+_ATTENTION_ID = "connector-attention"
 
 
 def sync_failure_reason(raw: str, service: str, lang: str | None = None) -> str:
@@ -179,6 +180,12 @@ def _last_sync_info(run, attention: int = 0, href: str = "") -> FT:
     status = _sync_status_label(run.status)
     if href and run.status in ("failed", "partial") and getattr(run, "errors", None):
         status = A(status, href=f"{href}#{_SYNC_REASONS_ID}")
+    elif run.status == "success" and attention:
+        # The sync finished, but records it processed are still waiting on a person.
+        status_cls = "connector-sync-info--warn"
+        status = t("connectors.needs_attention")
+        if href:
+            status = A(status, href=f"{href}#{_ATTENTION_ID}")
     parts = [relative_time(finished.isoformat()), status, counts]
     if attention:
         parts.append(t("connectors.attention_count", n=attention))
@@ -289,6 +296,15 @@ async def _attention(company_id: str, platform: str) -> list[dict]:
 def _open_attention_count(entries: list[dict]) -> int:
     """Entries not yet marked reconciled."""
     return sum(1 for e in entries if not e.get("reconciled"))
+
+
+def _open_attention_by_entity(entries: list[dict]) -> dict[str, int]:
+    """Entries not yet marked reconciled, counted per entity."""
+    counts: dict[str, int] = {}
+    for e in entries:
+        if not e.get("reconciled"):
+            counts[e.get("entity", "")] = counts.get(e.get("entity", ""), 0) + 1
+    return counts
 
 
 def _request_company_id(request: Request) -> str:
@@ -483,8 +499,25 @@ def _overall_status(runs: dict) -> str:
     return "success"
 
 
-def _status_badge_for(status: str, lang: str = "en", has_reasons: bool = False) -> FT:
-    """Status badge; a Failed or Issues badge with reasons links to them below the table."""
+def _sync_complete_toast(runs: dict, attention: list[dict], service: str,
+                         lang: str = "en") -> tuple[str, str]:
+    """The toast for a finished sync, and its kind: a sync that finished with records
+    still waiting on a person says how many, so it never reads as all done."""
+    if _overall_status(runs) == "failed":
+        return t("connectors.sync_failed", lang, service=service), "error"
+    if (waiting := _open_attention_count(attention)):
+        return t("connectors.sync_complete_attention", lang, n=waiting), "warning"
+    return t("connectors.sync_complete", lang), "success"
+
+
+def _status_badge_for(status: str, lang: str = "en", has_reasons: bool = False,
+                      attention: int = 0) -> FT:
+    """Status badge; a Failed or Issues badge with reasons links to them below the table.
+    A sync that finished with ``attention`` records waiting on a person says Needs
+    attention with the count, linked to the list."""
+    if status == "success" and attention:
+        return A(t("connectors.status_needs_attention", lang, n=attention),
+                 href=f"#{_ATTENTION_ID}", cls="badge badge--draft")
     cls = {"success": "badge--active", "partial": "badge--draft",
            "failed": "badge--overdue", "running": "badge--inactive"}.get(status, "badge--inactive")
     label = {"success": t("connectors.status_ok", lang), "partial": t("connectors.status_partial", lang),
@@ -495,8 +528,10 @@ def _status_badge_for(status: str, lang: str = "en", has_reasons: bool = False) 
     return Span(label, cls=f"badge {cls}")
 
 
-def _entity_status_table(runs: dict, lang: str = "en") -> FT:
-    """Per-entity sync status table. Shared by the detail view and the polling fragment."""
+def _entity_status_table(runs: dict, lang: str = "en", attention: dict[str, int] | None = None) -> FT:
+    """Per-entity sync status table. Shared by the detail view and the polling fragment.
+    ``attention`` counts each entity's records still waiting on a person."""
+    attention = attention or {}
     present = [e for e in _ENTITY_ORDER if e in runs]
     if not present:
         return P(t("connectors.never_synced", lang), cls="empty-state-msg")
@@ -510,7 +545,8 @@ def _entity_status_table(runs: dict, lang: str = "en") -> FT:
         rows.append(Tr(
             Td(_entity_label(e, lang)),
             Td(when),
-            Td(_status_badge_for("running" if running else r.status, lang, has_reasons=bool(errs))),
+            Td(_status_badge_for("running" if running else r.status, lang, has_reasons=bool(errs),
+                                 attention=attention.get(e, 0))),
             Td(counts, cls="cell--number"),
             Td(str(len(errs)) if errs else "--", cls="cell--number"),
             cls="data-row",
@@ -575,6 +611,7 @@ def _attention_list(platform: str, entries: list[dict], lang: str = "en") -> FT:
                     cls="text-muted mt-md"),
             Ul(*[_attention_item(platform, e, lang) for e in reconciled]),
         ) if reconciled else Span(),
+        id=_ATTENTION_ID,
         cls="connector-attention",
     )
 
@@ -597,7 +634,7 @@ def _connector_status_view(
         attrs = {"hx_get": f"/settings/connectors/{platform}/status?polling=1",
                  "hx_trigger": "load delay:2s", "hx_swap": "outerHTML"}
     return Div(
-        _entity_status_table(runs, lang),
+        _entity_status_table(runs, lang, _open_attention_by_entity(attention)),
         _sync_reasons(runs, service_name(platform), lang),
         _attention_list(platform, list(attention), lang),
         id=f"connector-status-{platform}",
@@ -1697,17 +1734,13 @@ def setup_routes(app):
         company_id = _request_company_id(request)
         lang = get_lang(request)
         runs = await _entity_runs(company_id, platform)
-        view = _connector_status_view(platform, runs, lang,
-                                      attention=await _attention(company_id, platform))
+        attention = await _attention(company_id, platform)
+        view = _connector_status_view(platform, runs, lang, attention=attention)
         polling = request.query_params.get("polling") == "1"
         if polling and runs and not _any_in_progress(runs):
-            ok = _overall_status(runs) != "failed"
-            msg = t("connectors.sync_complete", lang) if ok else t("connectors.sync_failed", lang, service=service_name(platform))
+            msg, kind = _sync_complete_toast(runs, attention, service_name(platform), lang)
             from ui.components.shell import toast_header
-            return HTMLResponse(
-                to_xml(view),
-                headers=toast_header(msg, "success" if ok else "error"),
-            )
+            return HTMLResponse(to_xml(view), headers=toast_header(msg, kind))
         return view
 
     @app.post("/settings/connectors/{platform}/deposit-account")

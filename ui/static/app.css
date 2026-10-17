@@ -3345,6 +3345,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .toast__msg { white-space: pre-line; min-width: 0; overflow-wrap: anywhere; }
 .toast--error { background: #fef2f2; border: 1px solid rgba(239,68,68,0.4); color: #b91c1c; }
 .toast--success { background: #f0fdf4; border: 1px solid rgba(34,197,94,0.4); color: #15803d; }
+.toast--warning { background: #fefce8; border: 1px solid rgba(234,179,8,0.4); color: #92710a; }
 .toast--info { background: var(--c-bg-alt, #f8f9fa); border: 1px solid var(--c-border); color: var(--c-text); }
 .toast__action { color: inherit; font-weight: 600; text-decoration: underline; flex-shrink: 0; }
 .toast__close { margin-left: auto; background: none; border: none; cursor: pointer; font-size: 1.1rem; line-height: 1; padding: 0; opacity: 0.6; flex-shrink: 0; }

@@ -168,8 +168,9 @@ async def attention_entries(
     company_id: str, connector: str, entity: str | None = None
 ) -> list[dict]:
     """Records still waiting on a person, for one entity or (entity None) the
-    whole connector. Read errors propagate: a sync that cannot read the list
-    must fail rather than start an empty one."""
+    whole connector, where each entry also names its ``entity``. Read errors
+    propagate: a sync that cannot read the list must fail rather than start an
+    empty one."""
     import sqlalchemy as sa
 
     from celerp.db import get_session_ctx
@@ -185,7 +186,8 @@ async def attention_entries(
         for name in entities:
             run = await _attention_run(session, company_id, connector, name)
             if run is not None:
-                entries.extend(run.attention)
+                entries.extend(run.attention if entity is not None
+                               else [{**e, "entity": name} for e in run.attention])
         return entries
 
 

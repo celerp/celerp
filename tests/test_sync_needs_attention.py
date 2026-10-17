@@ -129,4 +129,5 @@ async def test_a_failed_sync_still_says_failed(real_client, real_engine, monkeyp
     table = to_xml(page._entity_status_table(runs, attention={"journals": 1}))
     assert t("connectors.status_failed") in table and t("connectors.needs_attention") not in table
     card = to_xml(page._last_sync_info(run("partial", ["x"]), 1))
-    assert "connector-sync-info--warn" in card and t("connectors.status_partial") in card
+    assert "connector-sync-info--warn" in card and page._sync_status_label("partial") in card
+    assert t("connectors.needs_attention") not in card
