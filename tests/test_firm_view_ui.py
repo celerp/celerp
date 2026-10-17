@@ -87,6 +87,7 @@ async def test_filters_round_trip_through_the_url(monkeypatch):
     # A sync filter alone searched nothing, so it says so instead.
     html = (await endpoint(Request({"sync": "failing"}))).body.decode()
     assert "No companies with this sync status." in html and "match this search" not in html
+    assert '<a href="/companies"' in html and "Clear filters" in html
 
     form = to_xml(routes._filters("demo", "off", "en"))
     assert 'value="demo"' in form and '<option value="off" selected>' in form
@@ -102,6 +103,8 @@ async def test_empty_state_and_refused_filter(monkeypatch):
     html = (await endpoint(Request({"sync": "sometimes"}))).body.decode()
     assert "flash--warning" in html and "On, Off, Failing or Key expiring" in html
     assert "No client companies yet." not in html
+    # Nothing was listed, so there is no empty table under the notice, only the way back.
+    assert "<table" not in html and '<a href="/companies"' in html
 
 
 async def test_switch_lands_on_the_accountant_key_page(monkeypatch):
