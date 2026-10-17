@@ -5300,7 +5300,7 @@
   "migration.discard_outside_reference": "Migrasi ini tidak dapat dibatalkan karena tabel {table}, yang ditambahkan di luar Celerp (oleh modul yang dipasang atau perubahan langsung pada basis data), merujuk ke catatan Celerp. Tidak ada yang dihapus. Minta orang yang memasang modul itu atau mengubah basis data untuk menghapus rujukan tersebut.",
   "migration.discard_unsafe_data": "Migrasi ini tidak dapat dibatalkan karena tabel {table} berisi catatan perusahaan ini yang bukan bagian dari migrasi, sehingga pembatalan tidak dapat menghapusnya dengan aman. Catatan itu biasanya berasal dari modul yang dipasang atau perubahan langsung pada basis data. Tidak ada yang dihapus. Minta orang yang memasang modul itu atau mengubah basis data untuk menghapus catatan tersebut, lalu batalkan migrasi lagi.",
   "posting.section_title": "Akun posting",
-  "posting.section_hint": "Pilih akun tempat setiap jenis entri diposting. Jika bagan akun Anda tidak memiliki akun yang sesuai, tambahkan akun yang ditampilkan.",
+  "posting.section_hint": "Pilih akun tempat setiap jenis entri diposting. Jika bagan akun Anda tidak memiliki akun yang sesuai, pilih Tambah akun di daftarnya.",
   "posting.col_role": "Digunakan untuk",
   "posting.col_account": "Akun",
   "posting.choose": "Pilih akun",

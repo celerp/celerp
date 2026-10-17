@@ -1548,7 +1548,8 @@ def _run_actions(run: dict) -> FT:
     if status == "completed":
         buttons.append(A(t("btn.continue"), href=f"/migrations/{run_id}/complete", cls="btn btn--primary"))
     else:
-        buttons.append(A(t("migration.discard"), href=f"/migrations/{run_id}/discard", cls="btn btn--secondary"))
+        buttons.append(A(t("migration.discard"), href=f"/migrations/{run_id}/discard",
+                         cls="btn btn--outline btn--danger"))
     return Div(*buttons, cls="form-actions")
 
 
@@ -1917,7 +1918,7 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None,
              method="post", action=f"/migrations/{run_id}/finalize", cls="auth-form mt-md"),
         _xero_attachments_slot(run),
         P(A(t("migration.download_pack"), href=f"/migrations/{run_id}/pack", cls="auth-link")),
-        P(A(t("migration.discard"), href=f"/migrations/{run_id}/discard", cls="auth-link")),
+        A(t("migration.discard"), href=f"/migrations/{run_id}/discard", cls="btn btn--outline btn--danger mt-lg"),
         back_link(f"/migrations/{run_id}"),
     )
 

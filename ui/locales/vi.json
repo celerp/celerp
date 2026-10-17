@@ -5300,7 +5300,7 @@
   "migration.discard_outside_reference": "Không thể hủy quá trình di chuyển này vì bảng {table}, được thêm bên ngoài Celerp (bởi một mô-đun đã cài đặt hoặc một thay đổi trực tiếp trong cơ sở dữ liệu), tham chiếu đến bản ghi của Celerp. Không có gì bị xóa. Hãy nhờ người đã cài mô-đun đó hoặc đã thay đổi cơ sở dữ liệu gỡ bỏ tham chiếu này.",
   "migration.discard_unsafe_data": "Không thể hủy quá trình di chuyển này vì bảng {table} chứa bản ghi của công ty này không thuộc quá trình di chuyển, nên việc hủy không thể xóa chúng một cách an toàn. Chúng thường đến từ một mô-đun đã cài đặt hoặc một thay đổi trực tiếp trong cơ sở dữ liệu. Không có gì bị xóa. Hãy nhờ người đã cài mô-đun đó hoặc đã thay đổi cơ sở dữ liệu xóa các bản ghi này, rồi hủy lại quá trình di chuyển.",
   "posting.section_title": "Tài khoản ghi sổ",
-  "posting.section_hint": "Chọn tài khoản mà mỗi loại bút toán được ghi vào. Nếu hệ thống tài khoản của bạn không có tài khoản phù hợp, hãy thêm tài khoản được hiển thị.",
+  "posting.section_hint": "Chọn tài khoản mà mỗi loại bút toán được ghi vào. Nếu hệ thống tài khoản của bạn không có tài khoản phù hợp, hãy chọn Thêm tài khoản trong danh sách.",
   "posting.col_role": "Dùng cho",
   "posting.col_account": "Tài khoản",
   "posting.choose": "Chọn tài khoản",

@@ -5300,7 +5300,7 @@
   "migration.discard_outside_reference": "Esta migração não pode ser descartada porque a tabela {table}, criada fora do Celerp (por um módulo instalado ou uma alteração direta no banco de dados), faz referência a registros do Celerp. Nada foi excluído. Peça a quem instalou esse módulo ou alterou o banco de dados que remova essa referência.",
   "migration.discard_unsafe_data": "Esta migração não pode ser descartada porque a tabela {table} contém registros desta empresa que não fazem parte da migração, então o descarte não consegue removê-los com segurança. Eles costumam vir de um módulo instalado ou de uma alteração direta no banco de dados. Nada foi excluído. Peça a quem instalou esse módulo ou alterou o banco de dados que remova esses registros e descarte a migração novamente.",
   "posting.section_title": "Contas de lançamento",
-  "posting.section_hint": "Escolha a conta em que cada tipo de lançamento é registrado. Se o seu plano de contas não tiver uma conta adequada, adicione a indicada.",
+  "posting.section_hint": "Escolha a conta em que cada tipo de lançamento é registrado. Se o seu plano de contas não tiver uma conta adequada, escolha Adicionar conta na lista.",
   "posting.col_role": "Usada para",
   "posting.col_account": "Conta",
   "posting.choose": "Escolha uma conta",

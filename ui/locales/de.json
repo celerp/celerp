@@ -5300,7 +5300,7 @@
   "migration.discard_outside_reference": "Diese Migration kann nicht verworfen werden, weil die Tabelle {table}, die außerhalb von Celerp angelegt wurde (durch ein installiertes Modul oder eine direkte Änderung an der Datenbank), auf Datensätze von Celerp verweist. Es wurde nichts gelöscht. Bitten Sie die Person, die das Modul installiert oder die Datenbank geändert hat, diesen Verweis zu entfernen.",
   "migration.discard_unsafe_data": "Diese Migration kann nicht verworfen werden, weil die Tabelle {table} Datensätze dieser Firma enthält, die nicht zur Migration gehören, sodass das Verwerfen sie nicht sicher entfernen kann. Sie stammen meist von einem installierten Modul oder einer direkten Änderung an der Datenbank. Es wurde nichts gelöscht. Bitten Sie die Person, die das Modul installiert oder die Datenbank geändert hat, diese Datensätze zu entfernen, und verwerfen Sie die Migration dann erneut.",
   "posting.section_title": "Buchungskonten",
-  "posting.section_hint": "Wählen Sie das Konto, auf das jede Art von Eintrag gebucht wird. Hat Ihr Kontenplan kein passendes Konto, fügen Sie das angezeigte hinzu.",
+  "posting.section_hint": "Wählen Sie das Konto, auf das jede Art von Eintrag gebucht wird. Hat Ihr Kontenplan kein passendes Konto, wählen Sie in der Liste Konto hinzufügen.",
   "posting.col_role": "Verwendet für",
   "posting.col_account": "Konto",
   "posting.choose": "Konto wählen",

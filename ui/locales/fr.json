@@ -5300,7 +5300,7 @@
   "migration.discard_outside_reference": "Cette migration ne peut pas être abandonnée, car la table {table}, ajoutée en dehors de Celerp (par un module installé ou une modification directe de la base de données), fait référence à des enregistrements de Celerp. Rien n'a été supprimé. Demandez à la personne qui a installé ce module ou modifié la base de données de retirer cette référence.",
   "migration.discard_unsafe_data": "Cette migration ne peut pas être abandonnée, car la table {table} contient des enregistrements de cette entreprise qui ne font pas partie de la migration, et l'abandon ne peut pas les supprimer sans risque. Ils proviennent généralement d'un module installé ou d'une modification directe de la base de données. Rien n'a été supprimé. Demandez à la personne qui a installé ce module ou modifié la base de données de supprimer ces enregistrements, puis abandonnez à nouveau la migration.",
   "posting.section_title": "Comptes d'imputation",
-  "posting.section_hint": "Choisissez le compte sur lequel chaque type d'écriture est imputé. Si votre plan comptable n'a pas de compte adapté, ajoutez celui indiqué.",
+  "posting.section_hint": "Choisissez le compte sur lequel chaque type d'écriture est imputé. Si votre plan comptable n'a pas de compte adapté, choisissez Ajouter le compte dans sa liste.",
   "posting.col_role": "Utilisé pour",
   "posting.col_account": "Compte",
   "posting.choose": "Choisir un compte",
