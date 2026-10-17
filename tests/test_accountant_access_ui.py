@@ -295,6 +295,8 @@ async def test_scopes_derived_from_entities(monkeypatch):
     form_tag = html[html.index("<form"):].split(">", 1)[0]
     assert 'hx-disabled-elt="find button"' in form_tag
     assert "Stock counts" in html
+    # the address field says what to enter, with an example
+    assert "https://books.example.com" in html.split("Your Celerp address", 1)[1].split("<label", 1)[0]
 
     _authenticated(monkeypatch)
     seen = []
