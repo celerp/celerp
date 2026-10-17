@@ -5980,6 +5980,7 @@
   "company_backup.replace_last_changed": "መጨረሻ የተቀየረው",
   "company_backup.replace_older": "ይህ ቅጂ እዚህ ካለው {company} የቆየ ነው። መተካት ከ{date} ጀምሮ የገባውን ያጠፋል፤ ልዩነቱ ከላይ ባለው ሰንጠረዥ ውስጥ ነው።",
   "company_backup.replace_changed_after": "ይህ ቅጂ ከተዘጋጀ በኋላ በ{company} ውስጥ {count} መዝገቦች ተቀይረዋል። መተካት እነዚያን ለውጦች ያጠፋል።",
+  "company_backup.replace_changed_after_one": "ይህ ቅጂ ከተዘጋጀ በኋላ በ{company} ውስጥ 1 መዝገብ ተቀይሯል። መተካት ያንን ለውጥ ያጠፋል።",
   "company_backup.replace_type_name": "ለመተካት {company} ብለው ይተይቡ",
   "company_backup.replace_saved_first": "Celerp ከመተካቱ በፊት የ{company}ን የአሁኑን ቅጂ ያስቀምጣል። በአጠቃላይ ቅንብሮች፣ ምትኬ ውስጥ ካሉት የተቀመጡ ቅጂዎች መመለስ ይችላሉ።",
   "company_backup.replace_button": "{company}ን ተካ",

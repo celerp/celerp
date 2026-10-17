@@ -5980,6 +5980,7 @@
   "company_backup.replace_last_changed": "Última alteração",
   "company_backup.replace_older": "Esta cópia é mais antiga que {company} aqui. Ao substituir, perde-se o que foi lançado desde {date}; a tabela acima mostra a diferença.",
   "company_backup.replace_changed_after": "{count} registros de {company} mudaram depois que esta cópia foi feita. Ao substituir, essas alterações se perdem.",
+  "company_backup.replace_changed_after_one": "1 registro de {company} mudou depois que esta cópia foi feita. Ao substituir, essa alteração se perde.",
   "company_backup.replace_type_name": "Digite {company} para substituí-la",
   "company_backup.replace_saved_first": "O Celerp salva uma cópia de {company} como está agora antes de substituí-la. Você pode devolvê-la em Cópias salvas, em Configuração global, Backup.",
   "company_backup.replace_button": "Substituir {company}",

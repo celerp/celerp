@@ -5980,6 +5980,7 @@
   "company_backup.replace_last_changed": "Zuletzt geändert",
   "company_backup.replace_older": "Diese Kopie ist älter als {company} hier. Beim Ersetzen geht verloren, was seit dem {date} erfasst wurde; die Tabelle oben zeigt den Unterschied.",
   "company_backup.replace_changed_after": "{count} Datensätze in {company} wurden nach dem Erstellen dieser Kopie geändert. Beim Ersetzen gehen diese Änderungen verloren.",
+  "company_backup.replace_changed_after_one": "1 Datensatz in {company} wurde nach dem Erstellen dieser Kopie geändert. Beim Ersetzen geht diese Änderung verloren.",
   "company_backup.replace_type_name": "Geben Sie {company} ein, um es zu ersetzen",
   "company_backup.replace_saved_first": "Celerp speichert vor dem Ersetzen eine Kopie von {company} im aktuellen Zustand. Sie können sie unter Gespeicherte Kopien in Globale Konfiguration, Sicherung zurückholen.",
   "company_backup.replace_button": "{company} ersetzen",

@@ -5980,6 +5980,7 @@
   "company_backup.replace_last_changed": "Terakhir diubah",
   "company_backup.replace_older": "Salinan ini lebih lama daripada {company} di sini. Mengganti akan menghilangkan yang dimasukkan sejak {date}; tabel di atas menunjukkan perbedaannya.",
   "company_backup.replace_changed_after": "{count} catatan di {company} berubah setelah salinan ini dibuat. Mengganti akan menghilangkan perubahan itu.",
+  "company_backup.replace_changed_after_one": "1 catatan di {company} berubah setelah salinan ini dibuat. Mengganti akan menghilangkan perubahan itu.",
   "company_backup.replace_type_name": "Ketik {company} untuk menggantinya",
   "company_backup.replace_saved_first": "Celerp menyimpan salinan {company} seperti sekarang sebelum menggantinya. Anda dapat mengembalikannya dari Salinan tersimpan di Konfigurasi Global, Cadangan.",
   "company_backup.replace_button": "Ganti {company}",

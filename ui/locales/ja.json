@@ -5980,6 +5980,7 @@
   "company_backup.replace_last_changed": "最終変更",
   "company_backup.replace_older": "このコピーはここにある{company}より古いものです。置き換えると、{date}以降に入力した内容が失われます。違いは上の表のとおりです。",
   "company_backup.replace_changed_after": "このコピーの作成後に{company}の{count}件のレコードが変更されました。置き換えるとそれらの変更は失われます。",
+  "company_backup.replace_changed_after_one": "このコピーの作成後に{company}の1件のレコードが変更されました。置き換えるとその変更は失われます。",
   "company_backup.replace_type_name": "置き換えるには{company}と入力してください",
   "company_backup.replace_saved_first": "置き換える前に、Celerpは現在の{company}のコピーを保存します。グローバル設定 の「バックアップ」にある保存済みコピーから元に戻せます。",
   "company_backup.replace_button": "{company}を置き換える",

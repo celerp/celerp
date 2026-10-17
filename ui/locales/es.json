@@ -5980,6 +5980,7 @@
   "company_backup.replace_last_changed": "Último cambio",
   "company_backup.replace_older": "Esta copia es más antigua que {company} aquí. Al reemplazar se pierde lo introducido desde el {date}; la tabla de arriba muestra la diferencia.",
   "company_backup.replace_changed_after": "{count} registros de {company} cambiaron después de hacer esta copia. Al reemplazar se pierden esos cambios.",
+  "company_backup.replace_changed_after_one": "1 registro de {company} cambió después de hacer esta copia. Al reemplazar se pierde ese cambio.",
   "company_backup.replace_type_name": "Escriba {company} para reemplazarla",
   "company_backup.replace_saved_first": "Celerp guarda una copia de {company} tal como está ahora antes de reemplazarla. Puede devolverla desde Copias guardadas en Configuración global, Copia de seguridad.",
   "company_backup.replace_button": "Reemplazar {company}",

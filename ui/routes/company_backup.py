@@ -432,8 +432,13 @@ def _version_rows(replace: dict) -> FT:
     def number(facts: dict, key: str) -> FT:
         return Td(str(facts.get(key, 0)), cls="cell--number")
 
+    # On the same day only the time tells which is older.
+    same_day = len({format_value(f.get("last_changed"), "date") for f in (here, copy)}) == 1
+
     def when(facts: dict) -> FT:
-        return Td(format_value(facts["last_changed"], "date") if facts.get("last_changed") else "--", cls="cell--number")
+        v = facts.get("last_changed")
+        shown = f"{v[:10]} {v[11:16]} UTC" if same_day and v else format_value(v, "date")
+        return Td(shown if v else "--", cls="cell--number")
     return wizard_table(
         Thead(Tr(Th(""), Th(t("company_backup.replace_here_now"), cls="cell--number"),
                  Th(t("company_backup.replace_this_copy"), cls="cell--number"))),
@@ -459,9 +464,9 @@ def _replace_section(mode: WizardMode, preview: dict, replace: dict) -> list:
         lines.append(P(t("company_backup.replace_older", company=company,
                          date=format_value(older["since"], "date")),
                        cls="flash flash--warning"))
-    if _count(replace.get("changed_after_copy")):
-        lines.append(P(t("company_backup.replace_changed_after", company=company,
-                         count=_count(replace["changed_after_copy"])), cls="flash flash--warning"))
+    if changed := _count(replace.get("changed_after_copy")):
+        key = "company_backup.replace_changed_after_one" if changed == 1 else "company_backup.replace_changed_after"
+        lines.append(P(t(key, company=company, count=changed), cls="flash flash--warning"))
     if replace.get("can_replace"):
         lines.append(Form(
             Input(type="hidden", name="plan_fingerprint", value=str(preview.get("plan_fingerprint") or "")),

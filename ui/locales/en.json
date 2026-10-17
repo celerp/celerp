@@ -5980,6 +5980,7 @@
   "company_backup.replace_last_changed": "Last changed",
   "company_backup.replace_older": "This copy is older than {company} here. Replacing loses what was entered since {date}; the table above shows the difference.",
   "company_backup.replace_changed_after": "{count} records in {company} changed after this copy was made. Replacing loses those changes.",
+  "company_backup.replace_changed_after_one": "1 record in {company} changed after this copy was made. Replacing loses that change.",
   "company_backup.replace_type_name": "Type {company} to replace it",
   "company_backup.replace_saved_first": "Celerp saves a copy of {company} as it is now before replacing it. You can put it back from Saved copies in Global Config, Backup.",
   "company_backup.replace_button": "Replace {company}",

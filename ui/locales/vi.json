@@ -5980,6 +5980,7 @@
   "company_backup.replace_last_changed": "Thay đổi lần cuối",
   "company_backup.replace_older": "Bản sao này cũ hơn {company} ở đây. Thay thế sẽ mất những gì đã nhập từ {date}; bảng ở trên cho thấy sự khác biệt.",
   "company_backup.replace_changed_after": "{count} bản ghi trong {company} đã thay đổi sau khi tạo bản sao này. Thay thế sẽ mất những thay đổi đó.",
+  "company_backup.replace_changed_after_one": "1 bản ghi trong {company} đã thay đổi sau khi tạo bản sao này. Thay thế sẽ mất thay đổi đó.",
   "company_backup.replace_type_name": "Nhập {company} để thay thế",
   "company_backup.replace_saved_first": "Celerp lưu một bản sao của {company} như hiện tại trước khi thay thế. Bạn có thể khôi phục lại từ Bản sao đã lưu trong Cấu hình chung, Sao lưu.",
   "company_backup.replace_button": "Thay thế {company}",

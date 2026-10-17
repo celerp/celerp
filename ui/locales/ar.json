@@ -5980,6 +5980,7 @@
   "company_backup.replace_last_changed": "آخر تغيير",
   "company_backup.replace_older": "هذه النسخة أقدم من {company} هنا. الاستبدال يفقد ما أُدخل منذ {date}، والفرق مبيَّن في الجدول أعلاه.",
   "company_backup.replace_changed_after": "تغير {count} من سجلات {company} بعد إنشاء هذه النسخة. الاستبدال يفقد هذه التغييرات.",
+  "company_backup.replace_changed_after_one": "تغير سجل واحد من سجلات {company} بعد إنشاء هذه النسخة. الاستبدال يفقد هذا التغيير.",
   "company_backup.replace_type_name": "اكتب {company} لاستبدالها",
   "company_backup.replace_saved_first": "يحفظ Celerp نسخة من {company} كما هي الآن قبل استبدالها. يمكنك إعادتها من النسخ المحفوظة في التكوين العالمي، النسخ الاحتياطي.",
   "company_backup.replace_button": "استبدال {company}",

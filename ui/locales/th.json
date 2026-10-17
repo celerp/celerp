@@ -5980,6 +5980,7 @@
   "company_backup.replace_last_changed": "แก้ไขล่าสุด",
   "company_backup.replace_older": "สำเนานี้เก่ากว่า {company} ที่นี่ การแทนที่จะทำให้ข้อมูลที่ป้อนตั้งแต่ {date} หายไป ตารางด้านบนแสดงความแตกต่าง",
   "company_backup.replace_changed_after": "มีระเบียน {count} รายการใน {company} ที่เปลี่ยนหลังจากทำสำเนานี้ การแทนที่จะทำให้การเปลี่ยนแปลงเหล่านั้นหายไป",
+  "company_backup.replace_changed_after_one": "มีระเบียน 1 รายการใน {company} ที่เปลี่ยนหลังจากทำสำเนานี้ การแทนที่จะทำให้การเปลี่ยนแปลงนั้นหายไป",
   "company_backup.replace_type_name": "พิมพ์ {company} เพื่อแทนที่",
   "company_backup.replace_saved_first": "ก่อนแทนที่ Celerp จะบันทึกสำเนาของ {company} ตามสภาพปัจจุบัน คุณนำกลับมาได้จากสำเนาที่บันทึกไว้ใน การกำหนดค่าทั่วโลก, การสำรองข้อมูล",
   "company_backup.replace_button": "แทนที่ {company}",
