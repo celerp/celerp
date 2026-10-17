@@ -425,32 +425,32 @@ def test_u46_the_first_use_card_keeps_its_list_inside_and_its_closing_line_apart
     assert closing["y"] - (listed["y"] + listed["height"]) >= 8, (listed, closing)
 
 
-_FADE = "t => { const s = getComputedStyle(document.querySelector(t).parentElement); return s.maskImage || s.webkitMaskImage || 'none'; }"
+_SHADE = "t => getComputedStyle(document.querySelector(t).parentElement).boxShadow"
 
 
-def test_u50_a_table_wider_than_a_phone_fades_where_more_columns_wait(page: Page, fresh_company):
+def test_u50_a_table_wider_than_a_phone_shades_where_more_columns_wait(page: Page, fresh_company):
     c = fresh_company
     _started(c)
     _contributed(c, "Delivery van")
     table = "main table.data-table"
-    # Wide enough for every column, the register is unfaded.
+    # Wide enough for every column, the register is unshaded.
     page.set_viewport_size({"width": 1600, "height": 900})
     page.goto("/fixed-assets")
-    assert page.evaluate(f"({_FADE})", table) == "none"
+    assert page.evaluate(f"({_SHADE})", table) == "none"
     # Narrower, it scrolls in its own box and the page itself never scrolls sideways.
     page.set_viewport_size({"width": 1280, "height": 900})
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     page.set_viewport_size({"width": 390, "height": 844})
     box = page.locator(table).evaluate_handle("t => t.parentElement")
     assert box.evaluate("b => b.scrollWidth > b.clientWidth")
-    # More columns wait to the right: the right edge fades.
-    page.wait_for_function(f"t => ({_FADE})(t).includes('gradient')", arg=table, timeout=5000)
-    start = page.evaluate(f"({_FADE})", table)
-    # Scrolled to the end, the fade moves to the left edge, where the first columns now wait.
+    # More columns wait to the right: the right edge is shaded.
+    page.wait_for_function(f"t => ({_SHADE})(t).includes('inset')", arg=table, timeout=5000)
+    start = page.evaluate(f"({_SHADE})", table)
+    # Scrolled to the end, the shade moves to the left edge, where the first columns now wait.
     box.evaluate("b => { b.scrollLeft = b.scrollWidth; }")
-    page.wait_for_function(f"([t, s]) => ({_FADE})(t) !== s", arg=[table, start], timeout=5000)
-    end = page.evaluate(f"({_FADE})", table)
-    assert "gradient" in end, (start, end)
+    page.wait_for_function(f"([t, s]) => ({_SHADE})(t) !== s", arg=[table, start], timeout=5000)
+    end = page.evaluate(f"({_SHADE})", table)
+    assert "inset" in end, (start, end)
 
 
 def test_u35_enter_a_bill_stands_below_its_hint_and_clear_of_the_kind_buttons(page: Page, fresh_company):

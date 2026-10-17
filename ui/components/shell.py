@@ -1842,8 +1842,8 @@ _STICKY_HEADER_JS = """
 })();
 
 (function(){
-  // Scroll cue: a data table's box that scrolls sideways fades the edge it can still scroll
-  // toward (a box that does not scroll is never faded) (app.css .scroll-more-left/right), so hidden columns read as there.
+  // Scroll cue: a data table's box that scrolls sideways shades the edge it can still scroll
+  // toward (a box that does not scroll is never shaded) (app.css .scroll-more-left/right), so hidden columns read as there.
   function update(box){
     var max = /auto|scroll/.test(getComputedStyle(box).overflowX) ? box.scrollWidth - box.clientWidth : 0;
     box.classList.toggle('scroll-more-right', max > 1 && box.scrollLeft < max - 1);
