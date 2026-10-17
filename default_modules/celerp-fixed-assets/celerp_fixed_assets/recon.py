@@ -39,8 +39,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from celerp_fixed_assets import fixaccount, runs, setup, sources
-from celerp_fixed_assets.operations import MODULE, _cents, _dec, conflict
-from celerp_fixed_assets.projections import fold_movements
+from celerp_fixed_assets.operations import MODULE, _dec, conflict
+from celerp_fixed_assets.projections import fold_movements, money
 from celerp_fixed_assets.store import _emit, _entities
 
 RECON_STATES = ("open", "noted", "accepted")
@@ -212,6 +212,7 @@ async def _acknowledged(session, company_id) -> dict[str, dict]:
 
 async def report(session, company_id, at: str | None = None) -> dict:
     """The reconciliation at ``at`` (today when not given), per class account."""
+    from celerp.services.money import books_currency
     from celerp.services.posting_readiness import account_names
 
     fa = await setup.require_managed(session, company_id)
@@ -228,10 +229,12 @@ async def report(session, company_id, at: str | None = None) -> dict:
     units = await classify(session, company_id, at)
     opening, standing = await _register(session, company_id, classes, surplus, cut, at)
     marks = await _acknowledged(session, company_id)
-    lock = (await setup.company_settings(session, company_id)).get("lock_date")
+    settings = await setup.company_settings(session, company_id)
+    lock, currency = settings.get("lock_date"), books_currency(settings)
     owners = {s["source"]: asset_id for asset_id, a in await _entities(session, company_id, "fa_asset")
               for s in a.get("sources") or [] if isinstance(s, dict) and s.get("source")}
-    fixing = {"marks": marks, "owners": owners, "lock": date.fromisoformat(lock) if lock else None}
+    fixing = {"marks": marks, "owners": owners, "lock": date.fromisoformat(lock) if lock else None,
+              "currency": currency}
     names = await account_names(session, company_id, accounts)
     out, errors = [], []
     for account in accounts:
@@ -250,10 +253,10 @@ async def report(session, company_id, at: str | None = None) -> dict:
             amount = -u["amount"] if u.get("synthetic") else u["amount"]
             differences.append(_difference(u["key"], u["rule"], _CAUSES[u["rule"]], amount, u["date"], [u], fixing))
         if account != clearing and registered != standing.get(account, Decimal(0)):
-            errors.append(f"{account}: the register holds {_cents(standing.get(account, 0))} and its journals "
-                          f"{_cents(registered)} at {at}.")
-        out.append({"account": account, "name": names.get(account) or account, "ledger": _cents(ledger),
-                    "registered": _cents(registered), "status": _status(ledger, registered, differences),
+            errors.append(f"{account}: the register holds {money(standing.get(account, 0), currency)} and its journals "
+                          f"{money(registered, currency)} at {at}.")
+        out.append({"account": account, "name": names.get(account) or account, "ledger": money(ledger, currency),
+                    "registered": money(registered, currency), "status": _status(ledger, registered, differences),
                     "differences": differences})
     statuses = {a["status"] for a in out}
     status = next(s for s in reversed(STATUSES) if s in statuses) if statuses else STATUSES[0]
@@ -285,12 +288,13 @@ def _difference(key: str, rule, cause: str, amount: Decimal, day: str, units: li
         state, reason, effect = mark["state"], mark.get("reason"), mark.get("effect")
     else:
         state, reason, effect = "open", None, None
-    return {"key": key, "rule": rule, "cause": cause, "amount": _cents(amount), "date": day, "state": state,
+    currency = fixing["currency"]
+    return {"key": key, "rule": rule, "cause": cause, "amount": money(amount, currency), "date": day, "state": state,
             "reason": reason, "effect": effect, "action": _action(rule), "permission": FIX_PERMISSION,
             "asset_id": fixing["owners"].get(units[0].get("source")) if rule == 3 else None,
             "fix_from": _fix_from(fixing["lock"], day),
             "lines": [{"journal_id": u["journal_id"], "source": u.get("source"), "description": u["description"],
-                       "date": u["date"], "amount": _cents(u["amount"])} for u in units]}
+                       "date": u["date"], "amount": money(u["amount"], currency)} for u in units]}
 
 
 def _action(rule) -> str | None:

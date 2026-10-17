@@ -105,7 +105,7 @@ async def _field(session, company_id, field: str, value, kind: str):
             raise setup.unprocessable("Enter the insured value as an amount, such as 25000.") from None
         if amount < 0:
             raise setup.unprocessable("Enter the insured value as an amount, such as 25000.")
-        return str(round_money(amount, books_currency(await setup.company_settings(session, company_id))))
+        return str(round_money(amount, await setup.currency(session, company_id)))
     text = _text(value)
     if field == KINDS[kind] and not text:
         raise setup.unprocessable(_DETAIL_REFUSAL[field])
@@ -352,7 +352,7 @@ async def of_asset(session, company_id, asset_id: str, *, money: bool) -> dict:
     asset = await _state(session, company_id, asset_id)
     if asset is None or not asset.get("number"):
         raise HTTPException(status_code=404, detail="No such asset.")
-    currency = books_currency(await setup.company_settings(session, company_id)) if money else None
+    currency = await setup.currency(session, company_id) if money else None
     reminders = [reminder_out(r, s) for r, s in await _entities(session, company_id, REMINDER)
                  if s["asset_id"] == asset_id]
     log = [entry_out(m, s, asset, currency=currency) for m, s in await _entities(session, company_id, MAINT)

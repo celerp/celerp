@@ -17,12 +17,11 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from celerp.services.money import books_currency
 from celerp_fixed_assets import projections, runs, setup
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
+from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
     MODULE,
-    _cents,
     _date,
     _dec,
     _effects,
@@ -137,7 +136,7 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
                 clearing: str | None = None) -> dict:
     """What disposing of ``share`` of one asset on ``day`` posts and moves. A sale brings
     ``proceeds`` in from its ``clearing`` account, and they count toward the gain."""
-    currency = books_currency(books.settings)
+    currency = books.currency
     if asset.get("status") in ("disposed", "sold"):
         raise conflict(f"{asset['number']}: Disposed on {asset['disposal']['date']}.")
     if asset.get("status") != "active":
@@ -181,13 +180,14 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
         lines.append(JournalLine(account=accounts["gain"](), credit=gain))
     elif gain < 0:
         lines.append(JournalLine(account=accounts["loss"](), debit=-gain))
-    shown = {"number": asset["number"], "name": asset["name"], "share": str(share), "cost": _cents(gone_cost),
-             "depreciation": _cents(depreciation), "accumulated": _cents(gone_ad + gone_imp),
-             "carrying_amount": _cents(carrying), "gain_or_loss": _cents(gain)}
+    shown = {"number": asset["number"], "name": asset["name"], "share": str(share), "cost": money(gone_cost, currency),
+             "depreciation": money(depreciation, currency), "accumulated": money(gone_ad + gone_imp, currency),
+             "carrying_amount": money(carrying, currency), "gain_or_loss": money(gain, currency)}
     return {"asset_id": asset_id, "asset": asset, "shown": shown, "lines": lines, "full": share == 1,
             "quantity": quantity, "gain": gain,
             "amounts": {"cost": -gone_cost, _AD: depreciation - gone_ad, _IMP: -gone_imp, _SURPLUS: -gone_surplus},
-            "periods": {period_label(k): str(v) for k, v in diff.items()}, "share": share}
+            "periods": {period_label(k): str(v) for k, v in diff.items()}, "share": share,
+            "currency": books.currency}
 
 
 async def record(session, company_id, user_id, item: dict, day: str, reason: str, note: str | None,
@@ -207,12 +207,12 @@ async def record(session, company_id, user_id, item: dict, day: str, reason: str
                               effective=day, posting=day, amounts=item["amounts"], op_key=op_key,
                               quantity=str(-item["quantity"]), periods=item["periods"],
                               share=str(item["share"]), reason=reason, note=note, journal_id=je_id,
-                              gain_or_loss=_cents(item["gain"]), **extra)
+                              gain_or_loss=money(item["gain"], item["currency"]), **extra)
     if item["full"]:
         await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.status", {
             "status": "disposed", "exception": None,
             "disposal": {"date": day, "reason": reason, "note": note, "op_key": op_key,
-                         "movement_id": movement_id, "journal_id": je_id, "gain_or_loss": _cents(item["gain"]),
+                         "movement_id": movement_id, "journal_id": je_id, "gain_or_loss": money(item["gain"], item["currency"]),
                          **extra}})
     return je_id, movement_id
 
@@ -253,10 +253,11 @@ async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str]
             items.append(_plan_asset(books, asset_id, row.state, cls,
                                      await asset_movements(session, company_id, asset_id), day, share, quantity,
                                      accounts(books)))
-        totals = {k: _cents(sum((_dec(i["shown"][k]) for i in items), Decimal(0)))
+        currency = books.currency
+        totals = {k: money(sum((_dec(i["shown"][k]) for i in items), Decimal(0)), currency)
                   for k in ("depreciation", "carrying_amount", "gain_or_loss")}
         shown = {"date": day, "reason": reason, "note": note, **totals, "assets": [i["shown"] for i in items],
-                 "journals": [_journal_view(i["lines"]) for i in items]}
+                 "journals": [_journal_view(i["lines"], currency) for i in items]}
         basis = [[(i["asset"].get("version"), i["asset"].get("movement_count")) for i in items],
                  await runs._ledger_basis(session, company_id, books)]
         return shown, {"items": items, "day": day, "reason": reason, "note": note, "basis": basis}
@@ -310,7 +311,7 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
             raise conflict(f"{day} is locked, so this disposal can no longer be undone.")
         je = await _state(session, company_id, latest["journal_id"])
         shown = {"number": asset["number"], "date": day,
-                 "journals": [_reversed_lines(je)] if je and je.get("status") == "posted" else []}
+                 "journals": [_reversed_lines(je, books.currency)] if je and je.get("status") == "posted" else []}
         return shown, {"asset": asset, "movement": latest,
                        "basis": [asset.get("version"), asset.get("movement_count"),
                                  await runs._ledger_basis(session, company_id, books)]}

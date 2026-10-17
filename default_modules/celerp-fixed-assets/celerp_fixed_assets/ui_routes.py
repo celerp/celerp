@@ -908,7 +908,7 @@ def _settings_form(settings: dict, available: dict) -> FT:
                                             settings.get("convention")).items()],
             name="convention", cls="form-input")),
         _field(t("fixed_assets.threshold"), _input("threshold", settings.get("threshold"), type_="number",
-                                                   step="0.01", min="0"), t("fixed_assets.threshold_hint")),
+                                                   step="any", min="0"), t("fixed_assets.threshold_hint")),
         _field(t("fixed_assets.first_managed_period"),
                _input("first_managed_period", settings.get("first_managed_period"), type_="date"),
                t("fixed_assets.first_managed_period_hint")),
@@ -1138,7 +1138,7 @@ def _reviews_card(asset: dict, reviews: list[dict], currency: str) -> FT:
                        Select(*[Option(t(f"fixed_assets.review_outcome.{o}"), value=o) for o in REVIEW_OUTCOMES],
                               name="outcome", cls="form-input")),
                 _field(t("fixed_assets.recoverable_amount"),
-                       _input("recoverable_amount", type_="number", step="0.01", min="0"),
+                       _input("recoverable_amount", type_="number", step="any", min="0"),
                        t("fixed_assets.recoverable_amount_hint")),
                 _field(t("fixed_assets.basis"), _input("basis", required=True)),
                 Div(Button(t("fixed_assets.record_review"), type="submit", cls="btn btn--secondary"),
@@ -1362,12 +1362,12 @@ def _asset_fields(kind: str, classes: list[dict], chart: list[dict], *, with_nam
     fields.append(_field(t("fixed_assets.class"), _class_select(classes)))
     if kind != "physical":
         fields += [_field(t("fixed_assets.available_date"), _input("available_date", type_="date")),
-                   _field(t("fixed_assets.cost"), _input("cost", type_="number", step="0.01", min="0"))]
+                   _field(t("fixed_assets.cost"), _input("cost", type_="number", step="any", min="0"))]
     if kind == "opening":
         fields += [_field(t("fixed_assets.accumulated_depreciation"),
-                          _input("accumulated_depreciation", "0", type_="number", step="0.01", min="0")),
+                          _input("accumulated_depreciation", "0", type_="number", step="any", min="0")),
                    _field(t("fixed_assets.accumulated_impairment"),
-                          _input("accumulated_impairment", "0", type_="number", step="0.01", min="0"))]
+                          _input("accumulated_impairment", "0", type_="number", step="any", min="0"))]
     if kind == "contributed":
         fields.append(_field(t("fixed_assets.credit_account"),
                              _picker("credit_account", _account_options(chart), label=t("fixed_assets.credit_account")),
@@ -1501,7 +1501,7 @@ def _error_fields(field: str, asset: dict, offer: dict, classes: list[dict], cha
                   intake: list[dict], currency: str) -> list[FT]:
     held = asset.get("sources") or []
     if field == "cost":
-        controls = [_field(t("fixed_assets.cost"), _input("cost", asset.get("cost"), type_="number", step="0.01",
+        controls = [_field(t("fixed_assets.cost"), _input("cost", asset.get("cost"), type_="number", step="any",
                                                           min="0"))]
     elif field == "available_date":
         controls = [_field(t("fixed_assets.available_date"), _input("available_date", asset.get("available_date"),
@@ -1509,7 +1509,7 @@ def _error_fields(field: str, asset: dict, offer: dict, classes: list[dict], cha
     elif field == "class_id":
         controls = [_field(t("fixed_assets.class"), _class_select(classes, asset.get("class_id") or ""))]
     elif field == "opening_values":
-        controls = [_field(t(f"fixed_assets.{k}"), _input(k, asset.get(k), type_="number", step="0.01", min="0"))
+        controls = [_field(t(f"fixed_assets.{k}"), _input(k, asset.get(k), type_="number", step="any", min="0"))
                     for k in ("cost", "accumulated_depreciation", "accumulated_impairment")]
     elif field == "maintenance":
         controls = [P(t("fixed_assets.maintenance_hint"), cls="settings-hint"),
@@ -1874,7 +1874,7 @@ def setup_ui_routes(app) -> None:
             else:
                 active = [a for a in assets if a.get("status") == "active"]
                 shares = [_field(f"{a['number']} {a.get('name') or ''}",
-                                 _input(f"share:{a['id']}", type_="number", step="0.01", min="0")) for a in active]
+                                 _input(f"share:{a['id']}", type_="number", step="any", min="0")) for a in active]
                 form = _op_form("link-depreciation", hidden, P(t("fixed_assets.link_hint"), cls="settings-hint"),
                                 *(shares or [P(t("fixed_assets.no_active_assets"), cls="form-hint")]))
             return await _page(request, crumbs, page_header(t("fixed_assets.line_title")), summary,
@@ -2469,7 +2469,7 @@ def setup_ui_routes(app) -> None:
                   _field(t("fixed_assets.transfer_date"),
                          _input("date", date.today().isoformat(), type_="date", required=True)),
                   _field(t("fixed_assets.transfer_price"),
-                         _input("price", type_="number", step="0.01", min="0", required=True),
+                         _input("price", type_="number", step="any", min="0", required=True),
                          t("fixed_assets.transfer_price_hint", currency=currency))]
         if target["currency"] != currency:
             fields.append(_field(t("fixed_assets.exchange_rate"),
@@ -2517,7 +2517,7 @@ def setup_ui_routes(app) -> None:
                                _input("date", request.query_params.get("date") or date.today().isoformat(), type_="date",
                                       required=True),
                                t("fixed_assets.measurement_date_hint")),
-                        _field(t(f"fixed_assets.{field}"), _input(field, value, type_="number", step="0.01", min="0",
+                        _field(t(f"fixed_assets.{field}"), _input(field, value, type_="number", step="any", min="0",
                                                                   required=True)),
                         _field(t("fixed_assets.basis"), _input("basis", basis, required=True),
                                t("fixed_assets.basis_hint")))
@@ -2558,7 +2558,7 @@ def setup_ui_routes(app) -> None:
                                                                  label=t("fixed_assets.source_line"),
                                                                  empty="fixed_assets.enter_by_hand"),
                           t("fixed_assets.source_line_hint")),
-                   _field(t("fixed_assets.amount"), _input("amount", type_="number", step="0.01", min="0")),
+                   _field(t("fixed_assets.amount"), _input("amount", type_="number", step="any", min="0")),
                    _field(t("fixed_assets.credit_account"),
                           _picker("credit_account", _account_options(chart), label=t("fixed_assets.credit_account")),
                           t("fixed_assets.credit_account_hint")),
@@ -2572,7 +2572,7 @@ def setup_ui_routes(app) -> None:
                                                    for c in parts if c.get("status") == "active"],
                                       label=t("fixed_assets.replaced_component"), empty="fixed_assets.not_separate"),
                               t("fixed_assets.replaced_component_hint")),
-                       _field(t("fixed_assets.old_part_estimate"), _input("estimate", type_="number", step="0.01",
+                       _field(t("fixed_assets.old_part_estimate"), _input("estimate", type_="number", step="any",
                                                                           min="0"),
                               t("fixed_assets.old_part_estimate_hint"))]
         return await _page(request, crumbs, title, tabs, _op_form("add-to-asset", *fields),
@@ -2582,7 +2582,7 @@ def setup_ui_routes(app) -> None:
         return Tr(Td(_input(f"row:{n}:name", aria_label=t("fixed_assets.name"))),
                   Td(_picker(f"row:{n}:class_id", [(c["id"], c["name"]) for c in classes],
                              label=t("fixed_assets.class"))),
-                  Td(_input(f"row:{n}:amount", type_="number", step="0.01", min="0", aria_label=t("fixed_assets.amount"))),
+                  Td(_input(f"row:{n}:amount", type_="number", step="any", min="0", aria_label=t("fixed_assets.amount"))),
                   Td(_input(f"row:{n}:life_months", type_="number", step="1", min="1",
                             aria_label=t("fixed_assets.life_months"))))
 
@@ -2760,7 +2760,7 @@ def setup_ui_routes(app) -> None:
         rows = [Tr(Td(A(a["number"], href=f"/fixed-assets/assets/{a['id']}")), Td(_text(a.get("name"))),
                    _money_td(a.get("nbv"), currency),
                    Td(_input(f"fair_value:{a['id']}", filled.get(a["id"], {}).get("fair_value"), type_="number",
-                             step="0.01", min="0", aria_label=t("fixed_assets.fair_value"))),
+                             step="any", min="0", aria_label=t("fixed_assets.fair_value"))),
                    Td(_input(f"basis:{a['id']}", filled.get(a["id"], {}).get("basis"),
                              aria_label=t("fixed_assets.basis"))))
                 for a in assets]

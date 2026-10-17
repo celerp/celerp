@@ -23,7 +23,8 @@ from fastapi import HTTPException
 
 from celerp_fixed_assets import recon, remeasure, runs, setup, taxbooks
 from celerp_fixed_assets.calc.periods import month_index, period_label
-from celerp_fixed_assets.operations import _cents, conflict
+from celerp_fixed_assets.projections import money
+from celerp_fixed_assets.operations import conflict
 from celerp_fixed_assets.store import _emit, _entities, _state
 
 MARK_STATES = ("open", "noted", "accepted")
@@ -54,14 +55,16 @@ async def _runs(session, company_id, start: date, end: date) -> list[dict]:
     for k in range(first, through + 1):
         amount = sum((c.owed.get(k, Decimal(0)) for c in charges), Decimal(0))
         if amount:
-            out.append({"key": f"run:{period_label(k)}", "kind": "run", "amount": _cents(amount),
+            out.append({"key": f"run:{period_label(k)}", "kind": "run", "amount": money(amount, books.currency),
                         "label": ("fixed_assets.ye_run", {"month": runs._long(k)}), "href": "/fixed-assets/runs"})
     return out
 
 
 async def _exceptions(session, company_id) -> list[dict]:
+    currency = await setup.currency(session, company_id)
     return [{"key": f"exception:{a['asset_id']}", "kind": "exception",
-             "amount": None if a["exception"].get("amount") is None else _cents(Decimal(a["exception"]["amount"])),
+             "amount": None if a["exception"].get("amount") is None
+             else money(Decimal(a["exception"]["amount"]), currency),
              "label": ("fixed_assets.ye_exception", {"asset": a["number"], "month": a["exception"]["first_month"]}),
              "href": f"/fixed-assets/assets/{a['asset_id']}"} for a in await runs.attention(session, company_id)]
 

@@ -26,10 +26,10 @@ from fastapi import HTTPException
 from celerp_fixed_assets import notices, projections, reclassify, runs, setup, sources
 from celerp_fixed_assets.calc.periods import fiscal_year_start_index, month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
-    MODULE, _amount, _cents, _claim, _date, _dec, _journal_view, _lines, _move, _open_line, _post, _reversed_lines,
+    MODULE, _claim, _date, _dec, _journal_view, _lines, _money_in, _move, _open_line, _post, _reversed_lines,
     _run, asset_movements, conflict)
 from celerp_fixed_assets.store import _emit, _entities, _state
-from celerp_fixed_assets.projections import BUCKETS
+from celerp_fixed_assets.projections import BUCKETS, money
 
 ESTIMATE_FIELDS = setup.POLICY_FIELDS
 ERROR_FIELDS = ("cost", "available_date", "class_id", "opening_values", "maintenance")
@@ -174,10 +174,10 @@ async def _cost(d: Draft, value, fa: dict) -> None:
         raise setup.unprocessable("This cost comes from its source lines. Use Replace source to change it.")
     if d.opening():
         raise setup.unprocessable("This asset came in at the cutover. Correct its opening values instead.")
-    new = _amount(value, "Cost", positive=True)
+    new = _money_in(value, "Cost", d.books.currency, positive=True)
     diff = new - _dec(d.asset.get("cost"))
     if not diff:
-        raise setup.unprocessable(f"The cost is already {_cents(new)}.")
+        raise setup.unprocessable(f"The cost is already {money(new, d.books.currency)}.")
     credit = await _acquisition_credit(d)
     n = d.journal(_lines(d.cls["asset_account"], credit, diff), f"{d.asset['number']} cost corrected")
     d.move("cost", d.asset["available_date"], {"cost": diff},
@@ -242,7 +242,7 @@ async def _opening_values(d: Draft, value, fa: dict) -> None:
     current = {k: _sum((m.get("amounts") or {}).get(k) for m in held) for k in _OPENING_KEYS}
     labels = {"cost": "Cost", "accumulated_depreciation": "Accumulated depreciation",
               "accumulated_impairment": "Accumulated impairment"}
-    new = {k: _amount(value[k], labels[k], positive=k == "cost") if k in value else current[k] for k in _OPENING_KEYS}
+    new = {k: _money_in(value[k], labels[k], d.books.currency, positive=k == "cost") if k in value else current[k] for k in _OPENING_KEYS}
     if new["accumulated_depreciation"] + new["accumulated_impairment"] > new["cost"]:
         raise setup.unprocessable("Accumulated depreciation and impairment cannot be more than the cost.")
     diff = {k: new[k] - current[k] for k in _OPENING_KEYS if new[k] != current[k]}
@@ -407,8 +407,8 @@ def _depreciation(d: Draft, treatment: str) -> None:
     prior = sorted({y for y in years.values() if y < current})
     for year in prior:
         in_year = [k for k in months if _fiscal_year(books.settings, k) == year]
-        d.prior_detail.append({"year": year, "reported": _cents(_sum(reported.get(k) for k in in_year)),
-                               "restated": _cents(_sum(restated.get(k) for k in in_year))})
+        d.prior_detail.append({"year": year, "reported": money(_sum(reported.get(k) for k in in_year), books.currency),
+                               "restated": money(_sum(restated.get(k) for k in in_year), books.currency)})
     d.prior_years.update(prior)
     groups: dict[bool, dict[int, Decimal]] = {}
     for k, amount in diff.items():
@@ -433,7 +433,7 @@ def _future(d: Draft, start: int, months: int = 12) -> list[dict]:
     if hyp.get("status") != "active" or hyp["policy"]["method"] == "none":
         return []
     periods = runs.asset_schedule(hyp, moves, d.books.settings, start + months - 1)
-    return [{"month": p.period, "amount": _cents(p.amount)} for p in periods if parse_period(p.period) >= start]
+    return [{"month": p.period, "amount": money(p.amount, d.books.currency)} for p in periods if parse_period(p.period) >= start]
 
 
 # ── Planning ─────────────────────────────────────────────────────────────────
@@ -531,7 +531,7 @@ async def plan(session, company_id, asset_id: str, body: dict, fa: dict) -> tupl
             treatment, immaterial = None, None
         shown.update(effective_date=None, posting_date=d.posting)
     shown.update(
-        journals=[{**_journal_view(j["lines"]), "posting_date": d.posting, "memo": j["memo"], "tags": j["tags"]}
+        journals=[{**_journal_view(j["lines"], books.currency), "posting_date": d.posting, "memo": j["memo"], "tags": j["tags"]}
                   for j in d.journals],
         movements=[{k: m[k] for k in ("operation", "effective_date", "posting_date", "amounts")} for m in d.moves],
         prior_years=d.prior_detail, treatment=treatment, immaterial_reason=immaterial,
@@ -761,7 +761,7 @@ async def undo(session, company_id, user_id, correction_id: str, body: dict) -> 
             raise conflict(f"{day} is locked, so this correction can no longer be undone. Correct the asset again.")
         journals = [await _state(session, company_id, j) for j in saved.get("journals") or []]
         shown = {"correction": correction_id, "number": asset["number"],
-                 "journals": [_reversed_lines(je) for je in journals if je and je.get("status") == "posted"]}
+                 "journals": [_reversed_lines(je, books.currency) for je in journals if je and je.get("status") == "posted"]}
         return shown, {"record": saved, "basis": [asset.get("version"), asset.get("movement_count"),
                                                    await runs._ledger_basis(session, company_id, books)]}
 
@@ -849,10 +849,11 @@ async def prior_period_report(session, company_id, year: int) -> dict:
         per_asset.setdefault(r["asset_id"], []).extend(y for y in r.get("prior_detail") or [] if y["year"] == year)
     reported = _sum(rows[0]["reported"] for rows in per_asset.values() if rows)
     restated = _sum(rows[-1]["restated"] for rows in per_asset.values() if rows)
+    currency = await setup.currency(session, company_id)
     keep = ("id", "asset_id", "number", "prior_years", "posting_date", "journals", "applied_at")
     return {"year": year,
             "items": [{**{k: r.get(k) for k in keep}, "years": r.get("prior_years")} for r in items],
-            "years": [{"year": year, "reported": _cents(reported), "restated": _cents(restated)}] if items else [],
+            "years": [{"year": year, "reported": money(reported, currency), "restated": money(restated, currency)}] if items else [],
             "immaterial": [{**{k: r.get(k) for k in keep}, "years": r.get("prior_years"),
                             "reason": r.get("immaterial_reason")}
                            for r in applied if r.get("treatment") == "profit_and_loss"]}

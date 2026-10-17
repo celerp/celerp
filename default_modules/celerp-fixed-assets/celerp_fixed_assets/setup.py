@@ -145,6 +145,13 @@ async def company_settings(session, company_id) -> dict:
                 or {})
 
 
+async def currency(session, company_id) -> str:
+    """The currency the company keeps its books in."""
+    from celerp.services.money import books_currency
+
+    return books_currency(await company_settings(session, company_id))
+
+
 async def first_period(session, company_id, fa: dict) -> dict | None:
     """While the first managed period is unconfirmed: the period suggested and what it was
     read from. The suggestion is the month after the latest depreciation already booked by

@@ -21,16 +21,16 @@ from decimal import Decimal
 from celerp.services.money import books_currency
 from celerp_fixed_assets import disposal, projections, runs, setup, taxbooks
 from celerp_fixed_assets.calc.periods import month_index
+from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
     MODULE,
-    _amount,
-    _cents,
     _create_asset,
     _date,
     _dec,
     _effects,
     _journal_view,
     _lines,
+    _money_in,
     _move,
     _next_numbers,
     _post,
@@ -165,7 +165,6 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
 
     async def plan(fa):
         day = _date(body.get("date"), "The transfer date")
-        price = _amount(body.get("price"), "The transfer price")
         _, their_settings = await locked_authority(session, theirs, user_id, KEYS)
         our_name, their_name = await _name(session, company_id), await _name(session, theirs)
         if not _uses(their_settings):
@@ -189,8 +188,9 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         await _related_account(session, company_id, our_name, receivable, AccountRole.RECEIVABLE)
         await _related_account(session, theirs, their_name, payable, AccountRole.PAYABLE)
         books = await runs._books(session, company_id)
-        ours_in = books_currency(books.settings)
+        ours_in = books.currency
         theirs_in = books_currency(their_settings)
+        price = _money_in(body.get("price"), "The transfer price", ours_in)
         rate = _rate(body, ours_in, theirs_in, our_name, their_name)
         cls = await setup.get_class(session, company_id, asset.get("class_id"))
         their_cls = await setup.get_class(session, theirs, body.get("class_id"))
@@ -205,15 +205,15 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         (number,) = await _next_numbers(session, theirs, 1)
         values = await taxbooks.transfer_values(session, company_id, books.settings, asset_id,
                                                 date.fromisoformat(day))
-        shown = {**item["shown"], "date": day, "company": their_name, "price": _cents(price),
-                 "rate": str(rate) if rate != 1 else None, "their_number": number, "their_cost": _cents(cost),
-                 "their_class": their_cls["name"], "their_currency": theirs_in,
-                 "journals": [_journal_view(item["lines"]), _journal_view(their_lines)]}
+        shown = {**item["shown"], "date": day, "company": their_name, "price": money(price, ours_in),
+                 "rate": str(rate) if rate != 1 else None, "their_number": number,
+                 "their_cost": money(cost, theirs_in), "their_class": their_cls["name"], "their_currency": theirs_in,
+                 "journals": [_journal_view(item["lines"], ours_in), _journal_view(their_lines, theirs_in)]}
         return shown, {
             "item": item, "day": day, "price": price, "cost": cost, "their_cls": their_cls,
             "their_lines": their_lines, "number": number, "currency": ours_in, "our_name": our_name, "their_name": their_name,
             "policy": _life_left(asset, setup.policy_of(their_cls, their_fa), day),
-            "tax_values": values, "their_tax_values": {k: _cents(round_money(_dec(v) * rate, theirs_in))
+            "tax_values": values, "their_tax_values": {k: money(_dec(v) * rate, theirs_in)
                                                        for k, v in values.items()},
             "history": [{k: m.get(k) for k in _HISTORY} for m in projections.live(movements)],
             "basis": [asset.get("version"), asset.get("movement_count"),
@@ -237,7 +237,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         je_id, movement_id = await disposal.record(
             session, company_id, user_id, item, day, "transferred", None, op_key, key="ict",
             operation="transfer_out", memo=f"transferred to {context['their_name']}", target=target,
-            price=_cents(context["price"]), tax_values=context["tax_values"])
+            price=money(context["price"], context["currency"]), tax_values=context["tax_values"])
         their_journals, contributions = [], []
         if context["their_lines"]:
             their_journals.append(await _post(
@@ -296,9 +296,11 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
             raise conflict(f"{day} is locked in {name}, so this transfer can no longer be undone.")
         (their_movement,) = await asset_movements(session, theirs, target["asset_id"])
         journals = [(company_id, latest["journal_id"]), (theirs, their_movement.get("journal_id"))]
-        states = [await _state(session, c, j) for c, j in journals if j]
+        held_in = {company_id: books.currency, theirs: their_books.currency}
+        states = [(await _state(session, c, j), held_in[c]) for c, j in journals if j]
         shown = {"number": asset["number"], "date": day, "company": name,
-                 "journals": [_reversed_lines(je) for je in states if je and je.get("status") == "posted"]}
+                 "journals": [_reversed_lines(je, currency) for je, currency in states
+                              if je and je.get("status") == "posted"]}
         return shown, {"asset": asset, "their_movement": their_movement, "journals": journals,
                        "basis": [asset.get("version"), asset.get("movement_count"), their.get("version"),
                                  await runs._ledger_basis(session, company_id, books),

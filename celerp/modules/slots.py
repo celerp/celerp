@@ -51,8 +51,9 @@ item_lineage_guard {"handler": "module.path:function"} naming
 demo_records       {"handler": "module.path:function"} naming
                    `async def handler(*, session, company_id, user_id) -> None`, called
                    with exactly those keyword arguments whenever a company's demo data
-                   is seeded or seeded again: the module adds its own sample records, once, and
-                   only while the company keeps no books of its own. Filled by Celerp's
+                   is seeded or seeded again, or its books' currency changes: the module adds
+                   its own sample records, once, and only while the company keeps no books of
+                   its own, and keeps them in the books' currency. Filled by Celerp's
                    own modules only (FIRST_PARTY_SLOTS)
 background_loop    {"handler": "module.path:function"} naming `async def handler() -> None`,
                    started once as a background task after every start that brings the

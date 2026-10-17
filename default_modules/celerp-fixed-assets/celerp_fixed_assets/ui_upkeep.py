@@ -141,7 +141,7 @@ def _add_reminder_form(asset_id: str, members: dict[str, str]) -> FT:
                                                               label=t(f"fixed_assets.{RESPONSIBLE}")),
                     t("fixed_assets.reminder_responsible_hint")),
              _field(t("fixed_assets.policy"), _input("policy"), t("fixed_assets.insurance_only_hint")),
-             _field(t("fixed_assets.insured_value"), _input("insured_value", type_="number", step="0.01", min="0"),
+             _field(t("fixed_assets.insured_value"), _input("insured_value", type_="number", step="any", min="0"),
                     t("fixed_assets.insurance_only_hint")),
              Div(Button(t("fixed_assets.add_reminder"), type="submit", cls="btn btn--primary"), cls="form-actions"),
              hx_post=f"/fixed-assets/assets/{_rid(asset_id)}/reminders", hx_swap="none"),

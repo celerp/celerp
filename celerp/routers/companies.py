@@ -421,12 +421,19 @@ async def patch_books(
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     sent = payload.model_dump(exclude_unset=True)
     settings = dict(company.settings or {})
+    changed = set()
     for key in sorted(BOOKS_KEYS & set(sent)):
         value = await _check_books_change(session, company_id, settings, key, sent[key])
         if settings.get(key) != value:
             settings[key] = value
             record_change(settings, key, user.id)
+            changed.add(key)
     company.settings = settings
+    if "currency" in changed:
+        # Sample records follow the books' currency while the company keeps no books of its own.
+        from celerp.modules.slots import fire_lifecycle
+        await session.flush()
+        await fire_lifecycle("demo_records", session=session, company_id=company_id, user_id=user.id)
     await session.commit()
     return {key: settings.get(key) for key in sorted(BOOKS_KEYS)}
 

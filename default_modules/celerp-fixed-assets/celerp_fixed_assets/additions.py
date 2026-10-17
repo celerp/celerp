@@ -22,10 +22,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from celerp.services.money import books_currency
 from celerp_fixed_assets import disposal, operations, projections, runs, setup, transfer
+from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
-    _cents,
     _claim,
     _create_asset,
     _date,
@@ -75,7 +74,6 @@ async def _locked_asset(session, company_id, asset_id: str) -> dict:
 async def _funding(session, company_id, body: dict, asset_account: str, currency: str) -> dict:
     """What pays for the addition: a source line, or an amount against a credit account."""
     from celerp.services.module_journals import JournalLine
-    from celerp.services.money import round_money
 
     if body.get("source"):
         line = await _open_line(session, company_id, body["source"])
@@ -86,7 +84,7 @@ async def _funding(session, company_id, body: dict, asset_account: str, currency
         contributions = [{"journal_id": line["journal_id"], "line_index": line["line_index"], "amount": str(amount)}]
         return {"line": line, "amount": amount, "lines": lines, "contributions": contributions,
                 "day": body.get("date") or line["date"], "generation": line["generation"]}
-    amount = round_money(operations._amount(body.get("amount"), "The amount", positive=True), currency)
+    amount = operations._money_in(body.get("amount"), "The amount", currency, positive=True)
     account = str(body.get("credit_account") or "")
     if not account:
         raise setup.unprocessable("Choose the account the addition is paid from, or pick its bill line.")
@@ -106,19 +104,19 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
             raise conflict(f"{asset['number']} is not in use, so nothing can be added to it.")
         cls = await setup.get_class(session, company_id, asset.get("class_id"))
         books = await runs._books(session, company_id)
-        currency = books_currency(books.settings)
+        currency = books.currency
         funding = await _funding(session, company_id, body, cls["asset_account"], currency)
         day = _date(funding["day"], "The date")
         movements = await asset_movements(session, company_id, asset_id)
         disposal.check_date(books, asset, projections.live(movements), day, what="addition", verb="Add")
         life = _life(body.get("life_months"))
-        shown = {"kind": kind, "date": day, "number": asset["number"], "amount": _cents(funding["amount"]),
+        shown = {"kind": kind, "date": day, "number": asset["number"], "amount": money(funding["amount"], currency),
                  "life_months": life}
         context = {"kind": kind, "asset": asset, "cls": cls, "day": day, "funding": funding, "life": life,
                    "generation": funding["generation"],
                    "basis": [asset.get("version"), asset.get("movement_count"),
                              await runs._ledger_basis(session, company_id, books)]}
-        journals = [_journal_view(funding["lines"])] if funding["lines"] else []
+        journals = [_journal_view(funding["lines"], currency)] if funding["lines"] else []
         if kind == "replacement":
             name = str(body.get("name") or "").strip()
             if not name:
@@ -127,7 +125,7 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
                 raise setup.unprocessable("Enter the replacement part's life in months.")
             item = await _replaced(session, company_id, books, asset_id, asset, cls, movements, day,
                                    body.get("replaced"))
-            journals.append(_journal_view(item["lines"]))
+            journals.append(_journal_view(item["lines"], currency))
             context.update(name=name, item=item, number=(await _next_numbers(session, company_id, 1))[0])
             shown.update(name=name, number_of_part=context["number"], replaced=item["shown"])
         return {**shown, "journals": journals}, context
@@ -201,11 +199,13 @@ async def _replaced(session, company_id, books, asset_id: str, asset: dict, cls:
         return disposal._plan_asset(books, part_id, part, part_cls,
                                     await asset_movements(session, company_id, part_id), day, Decimal(1),
                                     _dec(part.get("quantity")), roles)
-    estimate = setup.number(replaced["estimate"], "The estimated cost of the old part")
+    from celerp.services.money import round_money
+
+    estimate = round_money(setup.number(replaced["estimate"], "The estimated cost of the old part"), books.currency)
     cost = _dec(asset.get("cost"))
     if estimate <= 0 or estimate >= cost:
         raise setup.unprocessable(f"The estimated cost of the old part is more than 0 and less than "
-                                  f"{asset['number']}'s cost of {_cents(cost)}.")
+                                  f"{asset['number']}'s cost of {money(cost, books.currency)}.")
     return disposal._plan_asset(books, asset_id, asset, cls, movements, day, estimate / cost, _ZERO, roles)
 
 
@@ -223,7 +223,6 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
     """Move construction cost to the assets it built, on their available-for-use date.
     What is not allocated stays under construction."""
     from celerp.services.module_journals import JournalLine
-    from celerp.services.money import round_money
 
     async def plan(fa):
         site = await _locked_asset(session, company_id, asset_id)
@@ -236,7 +235,7 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
             raise conflict(f"{site['number']} is not in use, so it cannot be placed in service.")
         day = _date(body.get("date"), "The available-for-use date")
         books = await runs._books(session, company_id)
-        currency = books_currency(books.settings)
+        currency = books.currency
         disposal.check_date(books, site, projections.live(await asset_movements(session, company_id, asset_id)), day,
                             what="available-for-use", verb="Place in service")
         rows = body.get("allocations")
@@ -251,15 +250,14 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
             name = str(row.get("name") or "").strip()
             if not name:
                 raise setup.unprocessable("Name each asset placed in service.")
-            amount = round_money(operations._amount(row.get("amount"), f"The amount for {name}", positive=True),
-                                 currency)
+            amount = operations._money_in(row.get("amount"), f"The amount for {name}", currency, positive=True)
             life = _life(row.get("life_months"))
             policy = setup.policy_of(target, fa)
             allocations.append({"cls": target, "name": name, "amount": amount,
                                 "policy": {**policy, "life_months": life} if life else policy})
         total = sum((a["amount"] for a in allocations), _ZERO)
         if total > balance:
-            raise setup.unprocessable(f"The allocations total {_cents(total)}, more than the {_cents(balance)} "
+            raise setup.unprocessable(f"The allocations total {money(total, currency)}, more than the {money(balance, currency)} "
                                       f"{site['number']} holds.")
         debits: dict[str, Decimal] = {}
         for a in allocations:
@@ -267,9 +265,9 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
         lines = [JournalLine(account=k, debit=v) for k, v in debits.items()]
         lines.append(JournalLine(account=cls["asset_account"], credit=total))
         numbers = await _next_numbers(session, company_id, len(allocations))
-        shown = {"date": day, "number": site["number"], "balance": _cents(balance),
-                 "remainder": _cents(balance - total), "journals": [_journal_view(lines)],
-                 "assets": [{"number": n, "name": a["name"], "class": a["cls"]["name"], "cost": _cents(a["amount"])}
+        shown = {"date": day, "number": site["number"], "balance": money(balance, currency),
+                 "remainder": money(balance - total, currency), "journals": [_journal_view(lines, currency)],
+                 "assets": [{"number": n, "name": a["name"], "class": a["cls"]["name"], "cost": money(a["amount"], currency)}
                             for n, a in zip(numbers, allocations)]}
         return shown, {"site": site, "day": day, "allocations": allocations, "numbers": numbers, "lines": lines,
                        "total": total, "full": total == balance,

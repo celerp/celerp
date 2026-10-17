@@ -18,8 +18,11 @@ def _dec(value) -> Decimal:
     return Decimal(str(value or 0))
 
 
-def _cents(value) -> str:
-    return f"{_dec(value):.2f}"
+def money(value, currency: str) -> str:
+    """An amount as stored and shown: rounded once to ``currency``'s precision."""
+    from celerp.services.money import round_money
+
+    return str(round_money(_dec(value), currency))
 
 
 def live(movements: list[dict]) -> list[dict]:

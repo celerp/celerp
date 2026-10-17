@@ -18,7 +18,8 @@ from decimal import Decimal
 from celerp.services.money import books_currency
 from celerp_fixed_assets import projections, recon, runs, setup, taxbooks
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
-from celerp_fixed_assets.operations import _cents, _dec
+from celerp_fixed_assets.projections import money
+from celerp_fixed_assets.operations import _dec
 from celerp_fixed_assets.sales import _credited, doc_number
 from celerp_fixed_assets.store import _entities, _state, movements_by_asset
 
@@ -125,13 +126,14 @@ def _planned(scheduled: dict[int, Decimal], charged: dict[int, Decimal], months:
     return sum((max(scheduled.get(k, _ZERO) - charged.get(k, _ZERO), _ZERO) for k in months), _ZERO)
 
 
-def _shown(figures: dict[str, Decimal]) -> dict[str, str]:
-    return {k: _cents(v) for k, v in figures.items()}
+def _shown(figures: dict[str, Decimal], currency: str) -> dict[str, str]:
+    return {k: money(v, currency) for k, v in figures.items()}
 
 
 async def schedule(session, company_id, date_from, date_to) -> dict:
     _, start, end = await _range(session, company_id, date_from, date_to)
     settings = await setup.company_settings(session, company_id)
+    currency = books_currency(settings)
     assets, movements, classes = await _register(session, company_id)
     months = range(month_index(start), month_index(end) + 1)
     groups: dict[str | None, dict] = {}
@@ -152,13 +154,13 @@ async def schedule(session, company_id, date_from, date_to) -> dict:
             for k in FIGURES:
                 group["figures"][k] += figures[k]
             group["assets"].append({"id": asset_id, "number": asset.get("number"), "name": asset.get("name"),
-                                    **_shown(figures)})
+                                    **_shown(figures, currency)})
     totals = {k: sum((g["figures"][k] for g in groups.values()), _ZERO) for k in FIGURES}
     rows = sorted(groups.values(), key=lambda g: g["name"] or "")
-    return {"date_from": start.isoformat(), "date_to": end.isoformat(), "currency": books_currency(settings),
-            "classes": [{"id": g["id"], "name": g["name"], **_shown(g["figures"]), "assets": g["assets"]}
+    return {"date_from": start.isoformat(), "date_to": end.isoformat(), "currency": currency,
+            "classes": [{"id": g["id"], "name": g["name"], **_shown(g["figures"], currency), "assets": g["assets"]}
                         for g in rows],
-            "totals": _shown(totals)}
+            "totals": _shown(totals, currency)}
 
 
 async def depreciation(session, company_id, date_from, date_to) -> dict:
@@ -166,6 +168,7 @@ async def depreciation(session, company_id, date_from, date_to) -> dict:
     what the schedule charges that is not posted yet. Newest month first."""
     _, start, end = await _range(session, company_id, date_from, date_to)
     settings = await setup.company_settings(session, company_id)
+    currency = books_currency(settings)
     assets, movements, _ = await _register(session, company_id)
     months = range(month_index(start), month_index(end) + 1)
     out = {k: {"month": period_label(k), "posted": _ZERO, "forecast": _ZERO, "assets": [], "skipped": []}
@@ -186,12 +189,13 @@ async def depreciation(session, company_id, date_from, date_to) -> dict:
                 out[k]["posted"] += posted
                 out[k]["forecast"] += forecast
                 out[k]["assets"].append({"id": asset_id, "number": asset.get("number"), "name": asset.get("name"),
-                                         "posted": _cents(posted), "forecast": _cents(forecast)})
+                                         "posted": money(posted, currency), "forecast": money(forecast, currency)})
     rows = [out[k] for k in reversed(months)]
     return {"date_from": start.isoformat(), "date_to": end.isoformat(),
-            "months": [{**m, "posted": _cents(m["posted"]), "forecast": _cents(m["forecast"])} for m in rows],
-            "totals": {"posted": _cents(sum((m["posted"] for m in rows), _ZERO)),
-                       "forecast": _cents(sum((m["forecast"] for m in rows), _ZERO))}}
+            "months": [{**m, "posted": money(m["posted"], currency), "forecast": money(m["forecast"], currency)}
+                       for m in rows],
+            "totals": {"posted": money(sum((m["posted"] for m in rows), _ZERO), currency),
+                       "forecast": money(sum((m["forecast"] for m in rows), _ZERO), currency)}}
 
 
 def _carrying(mv: dict) -> Decimal:
@@ -205,6 +209,7 @@ def _carrying(mv: dict) -> Decimal:
 async def disposals(session, company_id, date_from, date_to) -> dict:
     """The assets that left the books in the period, newest first."""
     _, start, end = await _range(session, company_id, date_from, date_to)
+    currency = await setup.currency(session, company_id)
     assets, movements, _ = await _register(session, company_id)
     states = dict(assets)
     items = []
@@ -219,8 +224,9 @@ async def disposals(session, company_id, date_from, date_to) -> dict:
             items.append({
                 "date": mv["effective_date"], "asset_id": asset_id, "number": asset.get("number"),
                 "name": asset.get("name"), "share": mv.get("share") or "1", "reason": mv.get("reason"),
-                "proceeds": _cents(carrying + gain), "credited": _cents(_credited(sale) if sale else _ZERO),
-                "carrying_amount": _cents(carrying), "gain_or_loss": _cents(gain),
+                "proceeds": money(carrying + gain, currency),
+                "credited": money(_credited(sale) if sale else _ZERO, currency),
+                "carrying_amount": money(carrying, currency), "gain_or_loss": money(gain, currency),
                 "invoice_id": mv.get("invoice_id"),
                 "invoice_number": doc_number(await _state(session, company_id, mv["invoice_id"]), mv["invoice_id"])
                 if mv.get("invoice_id") else None,
@@ -229,7 +235,7 @@ async def disposals(session, company_id, date_from, date_to) -> dict:
                 "journal_id": mv.get("journal_id")})
     items.sort(key=lambda r: (r["date"], r["number"] or ""), reverse=True)
     return {"date_from": start.isoformat(), "date_to": end.isoformat(), "items": items,
-            "totals": {k: _cents(sum((_dec(r[k]) for r in items), _ZERO))
+            "totals": {k: money(sum((_dec(r[k]) for r in items), _ZERO), currency)
                        for k in ("proceeds", "credited", "carrying_amount", "gain_or_loss")}}
 
 
@@ -251,6 +257,7 @@ async def book_tax(session, company_id, regime_key: str, year) -> dict:
     settings = await setup.company_settings(session, company_id)
     book = await taxbooks.book(session, company_id, regime_key, year, settings)
     regime = taxbooks.regime_for(settings, regime_key)
+    currency = books_currency(settings)
     _, movements, _ = await _register(session, company_id)
     carrying = {asset_id: _roll(moved, "0000", book["end"])["nbv_closing"] for asset_id, moved in movements.items()}
     rows = []
@@ -259,18 +266,19 @@ async def book_tax(session, company_id, regime_key: str, year) -> dict:
         book_value = sum((carrying.get(a, _ZERO) for a in assets), _ZERO)
         tax_value = _dec(line["closing"])
         row = {"key": line.get("number") or line["key"], "name": line.get("name"),
-               "category_label": line.get("category_label"), "book_carrying": _cents(book_value),
-               "tax_written_down_value": _cents(tax_value), "difference": _cents(book_value - tax_value)}
+               "category_label": line.get("category_label"), "book_carrying": money(book_value, currency),
+               "tax_written_down_value": money(tax_value, currency),
+               "difference": money(book_value - tax_value, currency)}
         if regime.deferred_tax is not None:
-            row["deferred_tax"] = _cents(regime.deferred_tax(DeferredTaxInputs(
-                year=book["year"], book_carrying=book_value, tax_written_down_value=tax_value)).amount)
+            row["deferred_tax"] = money(regime.deferred_tax(DeferredTaxInputs(
+                year=book["year"], book_carrying=book_value, tax_written_down_value=tax_value)).amount, currency)
         rows.append(row)
-    totals = {k: _cents(sum((_dec(r[k]) for r in rows), _ZERO))
+    totals = {k: money(sum((_dec(r[k]) for r in rows), _ZERO), currency)
               for k in ("book_carrying", "tax_written_down_value", "difference", "deferred_tax")
               if book["deferred_tax"] or k != "deferred_tax"}
     return {**{k: book[k] for k in ("regime", "label", "basis", "year", "start", "end", "status", "read_only",
                                     "read_only_reason", "deferred_tax")},
-            "currency": books_currency(settings), "rows": rows, "totals": totals}
+            "currency": currency, "rows": rows, "totals": totals}
 
 
 async def statutory(session, company_id, report_key: str, year) -> dict:

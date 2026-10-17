@@ -185,10 +185,13 @@ async def demo_owner(client) -> dict:
     return {"headers": headers, "company_id": uuid.UUID(me["id"])}
 
 
-async def start_demo(client, session) -> FA:
+async def start_demo(client, session, currency: str | None = None) -> FA:
     """A demo company carrying its asset bills, started and managed
-    from the first period the setup suggests."""
+    from the first period the setup suggests. ``currency`` is the books' currency, set
+    before the demo records are imported (it is fixed once the company has postings)."""
     fa = FA(client, session, await demo_owner(client))
+    if currency is not None:
+        await fa.ok(await client.patch("/companies/me/books", headers=fa.h, json={"currency": currency}))
     r = await client.post("/companies/me/demo/reseed", headers=fa.h)
     assert r.status_code == 200, r.text
     await fa.ok(await fa.post("/start"))

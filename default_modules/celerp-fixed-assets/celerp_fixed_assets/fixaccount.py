@@ -24,7 +24,8 @@ from decimal import Decimal
 from fastapi import HTTPException
 
 from celerp_fixed_assets import runs, setup
-from celerp_fixed_assets.operations import MODULE, _cents, _dec, _effects, _journal_view, _post, _run, _undo, conflict
+from celerp_fixed_assets.projections import money
+from celerp_fixed_assets.operations import MODULE, _dec, _effects, _journal_view, _post, _run, _undo, conflict
 from celerp_fixed_assets.store import _emit, _entities, _state
 
 FIELDS = {"asset_account": "asset", "accumulated_depreciation_account": "accumulated depreciation",
@@ -97,7 +98,7 @@ async def _sources(session, company_id, assets: list[tuple[str, dict]], account:
 
 
 async def _split(session, company_id, account: str, amount: Decimal, keys: list[str | None],
-                 debit: bool) -> list:
+                 debit: bool, currency: str) -> list:
     """Lines taking ``amount`` off ``account``, each within what one source recognized there."""
     from celerp.services.module_journals import JournalLine, recognized_balances
 
@@ -111,8 +112,8 @@ async def _split(session, company_id, account: str, amount: Decimal, keys: list[
                                      credit=Decimal(0) if debit else take, moves_recognized=True, recognized_in=key))
             left -= take
     if left:
-        raise conflict(f"The ledger holds {_cents(amount - left)} on account {account} for these assets and the "
-                       f"register {_cents(amount)}. Open the reconciliation to see the difference.")
+        raise conflict(f"The ledger holds {money(amount - left, currency)} on account {account} for these assets and the "
+                       f"register {money(amount, currency)}. Open the reconciliation to see the difference.")
     return lines
 
 
@@ -155,12 +156,12 @@ async def fix_account(session, company_id, user_id, class_id: str, body: dict) -
             debit = held < 0
             amount = abs(held)
             keys = await _sources(session, company_id, assets, old, setup.cutover(fa))
-            taken = await _split(session, company_id, old, amount, keys, debit)
+            taken = await _split(session, company_id, old, amount, keys, debit, books.currency)
             new_side = JournalLine(account=account, debit=Decimal(0) if debit else amount,
                                    credit=amount if debit else Decimal(0))
             lines = [new_side, *taken]
         shown = {"class": cls["name"], "field": field, "old_account": old, "new_account": account, "date": day,
-                 "journals": [_journal_view(lines)] if lines else []}
+                 "journals": [_journal_view(lines, books.currency)] if lines else []}
         return shown, {"cls": cls, "old": old, "day": day, "lines": lines, "assets": assets,
                        "basis": [cls.get("version"), [(a, s.get("movement_count")) for a, s in assets],
                                  await runs._ledger_basis(session, company_id, books)]}

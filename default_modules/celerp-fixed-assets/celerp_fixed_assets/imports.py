@@ -20,9 +20,10 @@ from decimal import Decimal
 from fastapi import HTTPException
 
 from celerp_fixed_assets import opening, recon, setup
+from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
-    WRITTEN_OFF_OVER_COST, _amount, _cents, _create_asset, _date, _dec, _effects, _move, _next_numbers, _run,
-    _undo, after_cutover, conflict, tag_taken)
+    WRITTEN_OFF_OVER_COST, _create_asset, _date, _dec, _effects, _money_in, _move, _next_numbers,
+    _run, _undo, after_cutover, conflict, tag_taken)
 from celerp_fixed_assets.store import _emit, _entities, _state
 
 KEYS = ("manage_accounting",)
@@ -93,6 +94,7 @@ class _Books:
     locations: list
     members: list
     surplus: str | None
+    currency: str
 
 
 def _named(candidates: list[dict], value: str, *keys: str) -> list[dict]:
@@ -107,6 +109,7 @@ async def _books(session, company_id, fa: dict) -> _Books:
 
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Location, User
+    from celerp.services.money import books_currency
 
     classes, _, surplus, _ = await recon._accounts(session, company_id)
     assets = await _entities(session, company_id, "fa_asset")
@@ -115,13 +118,14 @@ async def _books(session, company_id, fa: dict) -> _Books:
     members = (await session.execute(select(User.id, User.name, User.email).join(
         UserCompany, UserCompany.user_id == User.id).where(
         UserCompany.company_id == company_id, UserCompany.is_active.is_(True)))).all()
+    settings = await setup.company_settings(session, company_id)
     return _Books(
-        fa=fa, settings=await setup.company_settings(session, company_id), cut=setup.cutover(fa),
+        fa=fa, settings=settings, cut=setup.cutover(fa),
         classes={c["name"].casefold(): c for c in classes.values() if not c.get("archived")},
         assets=assets, numbers={str(s.get("number") or "").casefold(): (eid, s) for eid, s in assets},
         locations=[{"id": str(lid), "name": name} for lid, name in locations],
         members=[{"user_id": str(uid), "name": name, "email": email} for uid, name, email in members],
-        surplus=surplus)
+        surplus=surplus, currency=books_currency(settings))
 
 
 # ── Checking rows ────────────────────────────────────────────────────────────
@@ -180,14 +184,15 @@ def _check(books: _Books, numbered: list[tuple[int, RegisterRow]], excluded: set
                 bad("disposed_date", f"Disposed after the cutover {books.cut}. Import the asset as held at the "
                                      "cutover, then record its disposal.")
             if v.get("disposal_proceeds"):
-                read("disposal_proceeds", lambda: _amount(v["disposal_proceeds"], "Disposal proceeds"))
+                read("disposal_proceeds", lambda: _money_in(v["disposal_proceeds"], "Disposal proceeds", books.currency))
             continue
         cls = books.classes.get(v.get("class", "").casefold())
         if cls is None:
             bad("class", f"No asset class is named {v['class']}. Use one of: {_class_names(books)}." if v.get("class")
                 else f"Every asset needs a class. Use one of: {_class_names(books)}.")
         _check_dates(books, v, bad, read)
-        figures = {k: read(k, lambda k=k, label=label: _amount(v.get(k), label, positive=k == "cost"))
+        figures = {k: read(k, lambda k=k, label=label: _money_in(v.get(k), label, books.currency,
+                                                                            positive=k == "cost"))
                    for k, label in _AMOUNTS}
         if None not in (figures["cost"], figures["accumulated_depreciation"], figures["accumulated_impairment"]) and (
                 figures["accumulated_depreciation"] + figures["accumulated_impairment"] > figures["cost"]):
@@ -341,8 +346,9 @@ async def _plan(session, company_id, books: _Books, numbered, excluded: set[int]
         raise setup.unprocessable("Fix or leave out the rows with problems first: rows "
                                   + ", ".join(str(n) for n in rows) + ".")
     importing = _balances(books, creating)
-    accounts = [{**a, "importing": _cents(importing.get(a["account"])),
-                 "difference": _cents(_dec(a["ledger"]) - _dec(a["registered"]) - importing.get(a["account"], 0))}
+    accounts = [{**a, "importing": money(importing.get(a["account"]), books.currency),
+                 "difference": money(_dec(a["ledger"]) - _dec(a["registered"]) - importing.get(a["account"], 0),
+                                     books.currency)}
                 for a in (await opening.view(session, company_id))["accounts"]]
     shown = {
         "as_at": books.cut,
@@ -351,7 +357,7 @@ async def _plan(session, company_id, books: _Books, numbered, excluded: set[int]
                    "history": sum(1 for r in checked if r.history and not r.errors and not r.excluded)},
         "errors": errors,
         "duplicates": _duplicates(books, checked),
-        "assets": [{"row": r.row, "number": r.number, "name": r.values["name"], "cost": _cents(r.figures["cost"])}
+        "assets": [{"row": r.row, "number": r.number, "name": r.values["name"], "cost": money(r.figures["cost"], books.currency)}
                    for r in creating],
         "accounts": accounts,
     }

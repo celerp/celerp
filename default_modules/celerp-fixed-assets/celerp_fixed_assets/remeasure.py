@@ -31,8 +31,8 @@ from decimal import Decimal
 from celerp.services.money import books_currency
 from celerp_fixed_assets import disposal, notices, projections, runs, setup
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
+from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
-    _cents,
     _date,
     _dec,
     _effects,
@@ -123,6 +123,7 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
     if asset.get("status") != "active":
         raise HTTPException(status_code=409, detail=f"{asset['number']} is not in use, so it cannot be remeasured.")
     disposal.check_date(books, asset, projections.live(movements), day, what="measurement", verb="Measure")
+    currency = books.currency
     at = _position(books, asset, movements, day)
     carrying, impairment, surplus = at["carrying"], _dec(asset.get(_IMP)), _dec(asset.get(_SURPLUS))
     roles = disposal.accounts(books)
@@ -153,8 +154,8 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
         accumulated_after = -at["accumulated"]
     elif operation == "impairment":
         if value >= carrying:
-            raise setup.unprocessable(f"The recoverable amount {_cents(value)} is not below the carrying amount "
-                                      f"{_cents(carrying)} of {asset['number']}, so it is not impaired.")
+            raise setup.unprocessable(f"The recoverable amount {money(value, currency)} is not below the "
+                                      f"carrying amount {money(carrying, currency)} of {asset['number']}, so it is not impaired.")
         loss = carrying - value
         to_surplus = -min(loss, surplus) if revalues else _ZERO
         to_pnl = loss + to_surplus
@@ -167,22 +168,22 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
         if not impairment:
             raise setup.unprocessable(f"{asset['number']} has no impairment to reverse.")
         if value <= carrying:
-            raise setup.unprocessable(f"The recoverable amount {_cents(value)} is not above the carrying amount "
-                                      f"{_cents(carrying)} of {asset['number']}, so there is nothing to reverse.")
+            raise setup.unprocessable(f"The recoverable amount {money(value, currency)} is not above the "
+                                      f"carrying amount {money(carrying, currency)} of {asset['number']}, so there is nothing to reverse.")
         reversal = min(value - carrying, impairment)
         to_pnl = -min(reversal, at["losses"], max(at["shadow"] - carrying, _ZERO))
         if not revalues:
             reversal = -to_pnl
         if not reversal:
             raise setup.unprocessable(f"{asset['number']} already carries what it would have without the "
-                                      f"impairment ({_cents(at['shadow'])}), so there is nothing to reverse.")
+                                      f"impairment ({money(at['shadow'], currency)}), so there is nothing to reverse.")
         to_surplus = reversal + to_pnl
         lines.append(JournalLine(account=accumulated_account, debit=reversal))
         lines += _surplus_and_pnl(roles, to_surplus, to_pnl)
         amounts = {"cost": _ZERO, _IMP: -reversal, _SURPLUS: to_surplus}
         new_carrying = carrying + reversal
         accumulated_after = _ZERO
-        extra = {"reversal": _cents(reversal), "limit": _cents(at["shadow"])}
+        extra = {"reversal": money(reversal, currency), "limit": money(at["shadow"], currency)}
     to_pnl, to_surplus = to_pnl + 0, to_surplus + 0  # no negative zero
     diff = _depreciation(books, asset, movements, day, operation, new_carrying, at["month"], at["charged"])
     depreciation = sum(diff.values(), _ZERO)
@@ -190,9 +191,10 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
         expense = asset.get("depreciation_account") or cls["depreciation_account"]
         lines = _lines(expense, accumulated_account, depreciation) + lines
     amounts[_AD] = depreciation + accumulated_after
-    shown = {"number": asset["number"], "name": asset["name"], "depreciation": _cents(depreciation),
-             "carrying_amount": _cents(carrying), "measured": _cents(value), "new_carrying_amount": _cents(new_carrying),
-             "surplus": _cents(to_surplus), "profit_or_loss": _cents(-to_pnl), **extra}
+    shown = {"number": asset["number"], "name": asset["name"], "depreciation": money(depreciation, currency),
+             "carrying_amount": money(carrying, currency), "measured": money(value, currency),
+             "new_carrying_amount": money(new_carrying, currency), "surplus": money(to_surplus, currency),
+             "profit_or_loss": money(-to_pnl, currency), **extra}
     return {"asset_id": asset_id, "asset": asset, "shown": shown, "lines": lines, "amounts": amounts,
             "periods": {period_label(k): str(v) for k, v in diff.items()}, "pnl": to_pnl,
             "carrying_amount": new_carrying, "value": value, "basis": basis}
@@ -268,11 +270,11 @@ async def remeasure(session, company_id, user_id, asset_id: str, body: dict, ope
                                           f"{count} assets in it on one date.")
             _needs_market(cls)
         books = await runs._books(session, company_id)
-        currency = books_currency(books.settings)
+        currency = books.currency
         value = _money(body.get(field), field.replace("_", " "), currency)
         item = _plan(books, asset_id, asset, cls, await asset_movements(session, company_id, asset_id), day,
                      operation, value, _basis(body))
-        shown = {"date": day, **item["shown"], "journals": [_journal_view(item["lines"])]}
+        shown = {"date": day, **item["shown"], "journals": [_journal_view(item["lines"], currency)]}
         basis = [asset.get("version"), asset.get("movement_count"), await runs._ledger_basis(session, company_id, books)]
         return shown, {"item": item, "day": day, "basis": basis}
 
@@ -311,7 +313,7 @@ async def revalue_class(session, company_id, user_id, class_id: str, body: dict)
                                       f"for {', '.join(missing)}.")
         locked = await lock_projections(session, company_id, ids)
         books = await runs._books(session, company_id)
-        currency = books_currency(books.settings)
+        currency = books.currency
         items = []
         for row in rows:
             asset_id = row["asset_id"]
@@ -319,11 +321,11 @@ async def revalue_class(session, company_id, user_id, class_id: str, body: dict)
             items.append(_plan(books, asset_id, locked[asset_id].state, cls,
                                await asset_movements(session, company_id, asset_id), day, "revaluation", value,
                                _basis(row)))
-        totals = {k: _cents(sum((_dec(i["shown"][field]) for i in items), _ZERO))
+        totals = {k: money(sum((_dec(i["shown"][field]) for i in items), _ZERO), currency)
                   for k, field in (("carrying_amount", "carrying_amount"), ("fair_value", "measured"),
                                    ("surplus", "surplus"), ("profit_or_loss", "profit_or_loss"))}
         shown = {"date": day, "class": cls["name"], "missing": missing, "totals": totals,
-                 "assets": [i["shown"] for i in items], "journals": [_journal_view(i["lines"]) for i in items]}
+                 "assets": [i["shown"] for i in items], "journals": [_journal_view(i["lines"], currency) for i in items]}
         basis = [[(i["asset"].get("version"), i["asset"].get("movement_count")) for i in items],
                  cls.get("version"), await runs._ledger_basis(session, company_id, books)]
         return shown, {"items": items, "day": day, "cls": cls, "totals": totals, "basis": basis}
@@ -464,7 +466,7 @@ async def record_review(session, company_id, user_id, asset_id: str, body: dict)
     await _emit(session, company_id, user_id, review_id, "fa_review", "fa.review.recorded", data)
     await session.flush()
     carrying = _dec(asset.get("cost")) - _dec(asset.get(_AD)) - _dec(asset.get(_IMP))
-    impairment = ({"date": day, "recoverable_amount": _cents(recoverable), "basis": basis}
+    impairment = ({"date": day, "recoverable_amount": money(recoverable, currency), "basis": basis}
                   if recoverable is not None and recoverable < carrying else None)
     found = await reviews(session, company_id, asset_id)
     return {"id": review_id, **data, "review_due": _due(asset, found), "impairment": impairment}

@@ -24,9 +24,9 @@ from datetime import date
 from decimal import Decimal
 
 from celerp.models.projections import Projection
-from celerp.services.money import books_currency
+from celerp.services.money import books_currency, round_money
 from celerp_fixed_assets import setup, sources
-from celerp_fixed_assets.projections import BUCKETS, _cents, _dec
+from celerp_fixed_assets.projections import BUCKETS, _dec, money
 from celerp_fixed_assets.store import _emit, _entities, _state, recorded
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -51,6 +51,14 @@ def _amount(value, field: str, *, positive: bool = False) -> Decimal:
     amount = setup.number(value if value not in (None, "") else "0", field)
     if amount < 0 or (positive and amount == 0):
         raise setup.unprocessable(f"{field} must be more than zero." if positive else f"{field} must be zero or more.")
+    return amount
+
+
+def _money_in(value, field: str, currency: str, *, positive: bool = False) -> Decimal:
+    """A money amount the user entered, rounded once to the precision of ``currency``."""
+    amount = round_money(_amount(value, field), currency)
+    if positive and amount == 0:
+        raise setup.unprocessable(f"{field} must be more than zero.")
     return amount
 
 
@@ -93,8 +101,8 @@ def _lines(debit_account: str, credit_account: str, amount: Decimal):
     return [JournalLine(account=debit_account, debit=amount), JournalLine(account=credit_account, credit=amount)]
 
 
-def _journal_view(lines) -> dict:
-    return {"lines": [{"account": ln.account, "debit": _cents(ln.debit), "credit": _cents(ln.credit)}
+def _journal_view(lines, currency: str) -> dict:
+    return {"lines": [{"account": ln.account, "debit": money(ln.debit, currency), "credit": money(ln.credit, currency)}
                       for ln in lines]}
 
 
@@ -239,6 +247,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
         mode = body.get("mode") or "separate"
         if mode not in REGISTER_MODES:
             raise setup.unprocessable("Choose how to register the line.")
+        currency = await setup.currency(session, company_id)
         amount = _dec(line["amount"])
         context = {"line": line, "mode": mode, "generation": line["generation"]}
         if mode in ("expense", "maintenance"):
@@ -253,7 +262,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
                 context["asset"] = (asset_id, asset)
             journal = _reclass(line, account, amount)
             context["journal"] = journal
-            return {"journals": [_journal_view(journal)], "assets": []}, context
+            return {"journals": [_journal_view(journal, currency)], "assets": []}, context
         cls = await setup.get_class(session, company_id, body.get("class_id"))
         name = str(body.get("name") or line["description"]).strip()
         if not name:
@@ -266,7 +275,6 @@ async def register(session, company_id, user_id, body: dict) -> dict:
             from celerp.services.money import allocate_pro_rata
 
             count = int(quantity)
-            currency = books_currency(await setup.company_settings(session, company_id))
             costs = allocate_pro_rata(amount, [Decimal(1)] * count, currency)
             each = [(cost, 1) for cost in costs]
         else:
@@ -276,8 +284,8 @@ async def register(session, company_id, user_id, body: dict) -> dict:
                     if cls["asset_account"] != line["account"] else [])
         context.update(cls=cls, name=name, available=available, each=each, numbers=numbers, journals=journals,
                        policy=setup.policy_of(cls, fa))
-        return {"journals": [_journal_view(j) for j in journals],
-                "assets": [{"number": n, "name": name, "cost": _cents(c)} for n, (c, _) in zip(numbers, each)]}, context
+        return {"journals": [_journal_view(j, currency) for j in journals],
+                "assets": [{"number": n, "name": name, "cost": money(c, currency)} for n, (c, _) in zip(numbers, each)]}, context
 
     async def apply(context, op_key):
         line, mode = context["line"], context["mode"]
@@ -378,17 +386,18 @@ async def link_depreciation(session, company_id, user_id, body: dict) -> dict:
         allocations = body.get("allocations")
         if not isinstance(allocations, list) or not allocations:
             raise setup.unprocessable("Choose the assets this depreciation belongs to.")
+        currency = await setup.currency(session, company_id)
         shares = []
         for a in allocations:
             asset_id = str((a or {}).get("asset_id") or "")
             asset = await _state(session, company_id, asset_id)
             if asset is None or not asset_id.startswith("fa:asset:") or asset.get("status") != "active":
                 raise setup.unprocessable("Choose active assets to link the depreciation to.")
-            shares.append((asset_id, asset["number"], _amount(a.get("amount"), "Each amount", positive=True)))
+            shares.append((asset_id, asset["number"], _money_in(a.get("amount"), "Each amount", currency, positive=True)))
         total = sum((s for _, _, s in shares), Decimal(0))
-        if total != _dec(line["amount"]):
-            raise setup.unprocessable(f"The amounts add up to {_cents(total)}, not {_cents(line['amount'])}.")
-        return ({"journals": [], "assets": [{"number": n, "accumulated_depreciation": _cents(s)} for _, n, s in shares]},
+        if total != round_money(_dec(line["amount"]), currency):
+            raise setup.unprocessable(f"The amounts add up to {money(total, currency)}, not {money(line['amount'], currency)}.")
+        return ({"journals": [], "assets": [{"number": n, "accumulated_depreciation": money(s, currency)} for _, n, s in shares]},
                 {"line": line, "shares": shares, "generation": line["generation"]})
 
     async def apply(context, op_key):
@@ -426,14 +435,16 @@ async def _financials(session, company_id, fa: dict, body: dict) -> dict:
     kind = body.get("kind")
     cls = await setup.get_class(session, company_id, body.get("class_id"))
     available = _date(body.get("available_date"), "The available-for-use date")
-    cost = _amount(body.get("cost"), "Cost", positive=True)
-    out = {"kind": kind, "cls": cls, "available": available, "cost": cost, "policy": setup.policy_of(cls, fa)}
+    currency = await setup.currency(session, company_id)
+    cost = _money_in(body.get("cost"), "Cost", currency, positive=True)
+    out = {"kind": kind, "cls": cls, "available": available, "cost": cost, "currency": currency,
+           "policy": setup.policy_of(cls, fa)}
     cut = setup.cutover(fa)
     if kind == "opening":
         if cut and available > cut:
             raise setup.unprocessable(after_cutover(cut))
-        dep = _amount(body.get("accumulated_depreciation"), "Accumulated depreciation")
-        imp = _amount(body.get("accumulated_impairment"), "Accumulated impairment")
+        dep = _money_in(body.get("accumulated_depreciation"), "Accumulated depreciation", currency)
+        imp = _money_in(body.get("accumulated_impairment"), "Accumulated impairment", currency)
         if dep + imp > cost:
             raise setup.unprocessable(WRITTEN_OFF_OVER_COST)
         out.update(dep=dep, imp=imp, posting=cut or available)
@@ -458,7 +469,7 @@ def _financials_shown(details: dict) -> tuple[list, list]:
         return [], []
     lines = [JournalLine(account=details["cls"]["asset_account"], debit=details["cost"]),
              JournalLine(account=details["credit"], credit=details["cost"])]
-    return [lines], [_journal_view(lines)]
+    return [lines], [_journal_view(lines, details["currency"])]
 
 
 async def _book_financials(session, company_id, user_id, asset_id: str, number: str, name: str, details: dict,
@@ -499,7 +510,7 @@ async def create_asset(session, company_id, user_id, body: dict) -> dict:
                 "name": name, "number": number}
         details = await _financials(session, company_id, fa, body)
         _, shown = _financials_shown(details)
-        return ({"journals": shown, "assets": [{"number": number, "name": name, "cost": _cents(details["cost"])}]},
+        return ({"journals": shown, "assets": [{"number": number, "name": name, "cost": money(details["cost"], details["currency"])}]},
                 {"name": name, "number": number, "details": details})
 
     async def apply(context, op_key):
@@ -535,7 +546,7 @@ async def add_financial_details(session, company_id, user_id, asset_id: str, bod
         details = await _financials(session, company_id, fa, body)
         _, shown = _financials_shown(details)
         return ({"journals": shown, "assets": [{"number": row.state["number"], "name": row.state["name"],
-                                                "cost": _cents(details["cost"])}]},
+                                                "cost": money(details["cost"], details["currency"])}]},
                 {"asset": row.state, "details": details})
 
     async def apply(context, op_key):
@@ -629,8 +640,8 @@ async def update_asset(session, company_id, user_id, asset_id: str, body: dict) 
 # ── Undo ─────────────────────────────────────────────────────────────────────
 
 
-def _reversed_lines(je: dict) -> dict:
-    return {"lines": [{"account": e.get("account"), "debit": _cents(e.get("credit")), "credit": _cents(e.get("debit"))}
+def _reversed_lines(je: dict, currency: str) -> dict:
+    return {"lines": [{"account": e.get("account"), "debit": money(e.get("credit"), currency), "credit": money(e.get("debit"), currency)}
                       for e in je.get("entries") or []]}
 
 
@@ -690,13 +701,14 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
             now = await _state(session, company_id, entity_id) or {}
             if any(int(now.get(k) or 0) > v for k, v in fields.items()):
                 raise conflict("This has changed since, so it can no longer be undone.")
-        lock = (await setup.company_settings(session, company_id)).get("lock_date")
+        settings = await setup.company_settings(session, company_id)
+        lock = settings.get("lock_date")
         locked = sorted(s["posting_date"] for s in movements.values() if s and lock and s["posting_date"] <= lock)
         if locked:
             raise conflict(f"{locked[0]} is in a locked period, so this can no longer be undone. Use Correct instead.")
         journals = {j: await _state(session, company_id, j) for j in effects.get("journals", [])}
         shown = {"assets": [{"number": a["number"]} for a in assets],
-                 "journals": [_reversed_lines(je) for je in journals.values() if je and je.get("status") == "posted"]}
+                 "journals": [_reversed_lines(je, books_currency(settings)) for je in journals.values() if je and je.get("status") == "posted"]}
         return shown, {"effects": effects, "movements": movements, "claims": claims}
 
     async def apply(context, op_key):

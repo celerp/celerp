@@ -24,6 +24,7 @@ from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException
 
+from celerp.services.money import books_currency
 from celerp_fixed_assets import projections, setup
 from celerp_fixed_assets.calc import rules
 from celerp_fixed_assets.calc.tax import PoolInputs, TaxAssetInputs
@@ -47,9 +48,9 @@ def taxyear_id(regime_key: str, year: int) -> str:
     return f"fa:taxyear:{regime_key}:{year}"
 
 
-def _cents(value) -> str | None:
+def _figure(value, currency: str) -> str | None:
     """A tax figure, or None where the regime has none."""
-    return None if value is None else projections._cents(value)
+    return None if value is None else projections.money(value, currency)
 
 
 def tax_year_end(settings: dict | None) -> str:
@@ -155,17 +156,17 @@ def _failed(exc: Exception) -> str:
     return f"The tax regime could not work this out ({type(exc).__name__})."
 
 
-def _row(a: _Asset, status: str, **figures) -> dict:
+def _row(a: _Asset, status: str, currency: str, **figures) -> dict:
     return {"asset_id": a.id, "number": a.number, "name": a.name, "key": a.number, "category": a.category,
-            "status": status, "elections": a.elections, **{k: _cents(figures.get(k)) for k in FIGURES},
+            "status": status, "elections": a.elections, **{k: _figure(figures.get(k), currency) for k in FIGURES},
             "reason": figures.get("reason")}
 
 
-def _years(regime, end_setting: str, assets: list[_Asset], frozen: dict[int, dict], through: int,
+def _years(regime, end_setting: str, currency: str, assets: list[_Asset], frozen: dict[int, dict], through: int,
            seen: dict | None = None) -> dict[int, dict]:
-    """Every tax year of the book through ``through``: its asset rows, and its pools on a
-    pool basis. A closed year is taken as it was closed. ``seen``, when given, collects
-    each open year's inputs by (year, asset)."""
+    """Every tax year of the book through ``through``, its figures in ``currency``: its asset
+    rows, and its pools on a pool basis. A closed year is taken as it was closed. ``seen``,
+    when given, collects each open year's inputs by (year, asset)."""
     if not assets:
         return {}
     first = min(_year_of(regime, end_setting, a.available) for a in assets)
@@ -199,43 +200,44 @@ def _years(regime, end_setting: str, assets: list[_Asset], frozen: dict[int, dic
             if seen is not None and inputs is not None:
                 seen[(year, a.id)] = inputs
             moved.append((a, inputs))
-        out[year] = (_asset_year if regime.basis == "asset" else _pool_year)(regime, year, moved, carried, counted, end)
+        out[year] = (_asset_year if regime.basis == "asset" else _pool_year)(regime, year, moved, carried, counted,
+                                                                             end, currency)
     return out
 
 
-def _asset_year(regime, year, moved, carried, counted, end) -> dict:
+def _asset_year(regime, year, moved, carried, counted, end, currency) -> dict:
     rows = []
     for a, inputs in moved:
         if inputs is None:
-            rows.append(_row(a, "no_category"))
+            rows.append(_row(a, "no_category", currency))
             continue
         try:
             result = regime.asset_year(inputs)
         except Exception as exc:  # a module's own code: named on the row, never fatal
-            rows.append(_row(a, "error", reason=_failed(exc)))
+            rows.append(_row(a, "error", currency, reason=_failed(exc)))
             continue
         carried[a.id], counted[a.id] = result.closing, end
-        rows.append(_row(a, "ok", **{k: getattr(result, k) for k in FIGURES}))
+        rows.append(_row(a, "ok", currency, **{k: getattr(result, k) for k in FIGURES}))
     return {"rows": rows, "pools": []}
 
 
-def _pool_year(regime, year, moved, carried, counted, end) -> dict:
+def _pool_year(regime, year, moved, carried, counted, end, currency) -> dict:
     rows, pools = [], {}
     for a, inputs in moved:
         if inputs is None:
-            rows.append(_row(a, "no_category"))
+            rows.append(_row(a, "no_category", currency))
             continue
         try:
             key = str(regime.pool_key(inputs))
         except Exception as exc:  # a module's own code: named on the row, never fatal
-            rows.append(_row(a, "error", reason=_failed(exc)))
+            rows.append(_row(a, "error", currency, reason=_failed(exc)))
             continue
         counted[a.id] = end
         pool = pools.setdefault(key, {"category": a.category, "additions": _ZERO, "disposals": _ZERO, "assets": []})
         pool["additions"] += inputs.additions
         pool["disposals"] += inputs.disposals
         pool["assets"].append(a.id)
-        rows.append({**_row(a, "ok", additions=inputs.additions, disposals=inputs.disposals), "pool": key})
+        rows.append({**_row(a, "ok", currency, additions=inputs.additions, disposals=inputs.disposals), "pool": key})
     out = []
     for key in sorted(set(pools) | {k.removeprefix("pool:") for k in carried if k.startswith("pool:")}):
         pool = pools.get(key) or {"category": None, "additions": _ZERO, "disposals": _ZERO, "assets": []}
@@ -252,7 +254,7 @@ def _pool_year(regime, year, moved, carried, counted, end) -> dict:
             continue
         carried[f"pool:{key}"] = result.closing
         out.append({"key": key, "category": pool["category"], "status": "ok", "reason": None,
-                    "assets": pool["assets"], **{k: _cents(getattr(result, k)) for k in FIGURES}})
+                    "assets": pool["assets"], **{k: _figure(getattr(result, k), currency) for k in FIGURES}})
     return {"rows": rows, "pools": out}
 
 
@@ -269,7 +271,7 @@ async def transfer_values(session, company_id, settings: dict, asset_id: str, da
         regime = rules.regime(key)
         year = _year_of(regime, end_setting, day)
         seen: dict = {}
-        _years(regime, end_setting, await _assets(session, company_id, regime),
+        _years(regime, end_setting, books_currency(settings), await _assets(session, company_id, regime),
                await _frozen(session, company_id, key), year, seen)
         inputs = seen.get((year, asset_id))
         if inputs is None:
@@ -278,7 +280,7 @@ async def transfer_values(session, company_id, settings: dict, asset_id: str, da
             result = regime.related_party_transfer(inputs)
         except Exception:  # a module's own code: the transfer price stands instead
             continue
-        out[key] = _cents(result.written_down_value)
+        out[key] = _figure(result.written_down_value, books_currency(settings))
     return out
 
 
@@ -287,7 +289,7 @@ async def transfer_values(session, company_id, settings: dict, asset_id: str, da
 
 async def years(session, company_id, settings: dict, regime, through: int) -> dict[int, dict]:
     """Every year of the company's book under ``regime`` through ``through``."""
-    return _years(regime, tax_year_end(settings), await _assets(session, company_id, regime),
+    return _years(regime, tax_year_end(settings), books_currency(settings), await _assets(session, company_id, regime),
                   await _frozen(session, company_id, regime.key), through)
 
 
