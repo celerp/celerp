@@ -1048,7 +1048,9 @@ async def _done(request: Request, mode: WizardMode):
               cls="flash flash--success") if restored.get("created_at") else "",
             P(t("company_backup.team_given_access", count=done["team"]), cls="flash flash--success")
             if created and done["team"] else "",
-            P(t("company_backup.integrations_disconnected"), cls="flash flash--warning") if created else "",
+            P(t("company_backup.integrations_disconnected"), " ",
+              A(t("doc.send_relay_error_link"), href="/settings/cloud", cls="auth-link"),
+              cls="flash flash--warning") if created else "",
             P(t("company_backup.roles_reset_done"), " ",
               A(t("company_backup.review_roles"), href=USERS_AND_ROLES, cls="auth-link"), cls="form-hint")
             if created and done["policy"] == "destination" else "",
