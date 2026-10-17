@@ -222,13 +222,14 @@ function portOpen(port) {
   });
 }
 
-/** Poll until a TCP port accepts connections (max `attempts` × `intervalMs`). */
-function waitForPort(port, attempts = 60, intervalMs = 500) {
+/** Poll until a TCP port accepts connections (max `attempts` × `intervalMs`), or until
+ *  `hasExited` says the server that should open it is gone. */
+function waitForPort(port, { attempts = 60, intervalMs = 500, hasExited = () => false } = {}) {
   return new Promise((resolve, reject) => {
     let tries = 0;
     const check = async () => {
       if (await portOpen(port)) resolve();
-      else if (++tries >= attempts) reject(new Error(`Port ${port} never opened`));
+      else if (hasExited() || ++tries >= attempts) reject(new Error(`Port ${port} never opened`));
       else setTimeout(check, intervalMs);
     };
     check();
@@ -707,11 +708,14 @@ function startUi(dbUrl, cfg) {
     const output = outputTail();
     uiProcess.stderr.on("data", (d) => { output.add(d.toString()); uiLog?.write(d); });
     uiProcess.stdout.on("data", (d) => { output.add(d.toString()); uiLog?.write(d); });
-    uiProcess.on("error", reject);
+    let exited = false;
+    // a server that could not start has no exit to wait for; stop polling its port
+    uiProcess.on("error", (e) => { exited = true; reject(e); });
     uiProcess.on("exit", (code) => {
+      exited = true;
       if (code !== 0 && code !== null) reject(new Error(`UI process exited (code ${code}). Full log: ${logFile}\n${output.text()}`));
     });
-    waitForPort(uiPort).then(resolve).catch(() =>
+    waitForPort(uiPort, { hasExited: () => exited }).then(resolve).catch(() =>
       reject(new Error(`UI port ${uiPort} never opened. Full log: ${logFile}\n${output.text()}`))
     );
   });
@@ -1332,10 +1336,10 @@ app.whenReady().then(async () => {
       console.log(`[DEV_MODE] Connecting to existing services — API :${DEV_API_PORT}, UI :${DEV_UI_PORT}`);
       apiPort = DEV_API_PORT;
       uiPort = DEV_UI_PORT;
-      await waitForPort(apiPort, 5, 500).catch(() => {
+      await waitForPort(apiPort, { attempts: 5 }).catch(() => {
         throw new Error(`DEV_MODE: FastAPI not found on port ${apiPort}. Start it first with:\n  uvicorn celerp.main:app --port ${apiPort}`);
       });
-      await waitForPort(uiPort, 5, 500).catch(() => {
+      await waitForPort(uiPort, { attempts: 5 }).catch(() => {
         throw new Error(`DEV_MODE: UI not found on port ${uiPort}. Start it first with:\n  uvicorn ui.app:app --port ${uiPort}`);
       });
       createWindow();

@@ -38,3 +38,34 @@ test("the UI server is given the same data folder as the API server",
     expect(envs.api.CELERP_DATA_DIR).toBe(dataDir);
     expect(envs.ui.CELERP_DATA_DIR).toBe(dataDir);
   });
+
+test("a UI server that could not start stops the wait for its port",
+  async function test_a_ui_server_that_could_not_start_stops_the_wait_for_its_port() {
+    let probes = 0;
+    const net = {
+      ...require("net"),
+      createConnection: () => {
+        probes += 1;
+        const sock = Object.assign(new EventEmitter(), { destroy: () => {} });
+        setImmediate(() => sock.emit("error", new Error("refused")));
+        return sock;
+      },
+    };
+    const childProcess = {
+      execFileSync: () => "",
+      spawn: () => {
+        const server = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+        setImmediate(() => server.emit("error", new Error("could not start")));
+        return server;
+      },
+    };
+    const { startServer } = loadAppMain({
+      app: { getPath: () => fs.mkdtempSync(path.join(os.tmpdir(), "celerp-env-")) },
+      extraFakes: { child_process: childProcess, net },
+    });
+
+    await expect(startServer("ui", "postgresql://db", {})).rejects.toThrow("could not start");
+    const afterFailure = probes;
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    expect(probes).toBeLessThanOrEqual(afterFailure + 1);
+  });
