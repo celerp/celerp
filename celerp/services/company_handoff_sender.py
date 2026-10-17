@@ -67,8 +67,9 @@ async def cloud_json(method: str, path: str, *, payload: dict | None = None, par
         raise HandoffAccountNeeded(account_needed)
     if response.status_code != expected:
         # A refusal the relay explains (a limit and its way out, a reply-to
-        # mismatch) is shown as is; anything else is unconfirmed.
-        detail = _detail(response) if 400 <= response.status_code < 500 else None
+        # mismatch, a service it does not offer) is shown as is; anything else
+        # is unconfirmed.
+        detail = _detail(response) if 400 <= response.status_code < 500 or response.status_code == 503 else None
         if detail:
             raise HandoffRefused(detail, response.status_code)
         raise HandoffSendError(unconfirmed)
