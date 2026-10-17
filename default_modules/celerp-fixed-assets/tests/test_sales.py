@@ -887,3 +887,93 @@ async def test_d1_foreign_currency_credit_splits_in_the_books_currency(fa):
                             key="fx-adj")
     await _finalize(fa, made["credit_note_id"])
     await _assert_result(fa, car, "0", "50", "11150", fixed)
+
+
+async def test_credit_replayed_or_voided_twice_restates_once(fa):
+    from celerp_fixed_assets import sales
+
+    car, inv = await _sold_split(fa, "11250")
+    cn = await _credit(fa, inv, "100")
+    fixed = await _assert_result(fa, car, "0", "50", "11150")
+    uid = uuid.UUID(await _owner_id(fa))
+
+    async def replay(change: str) -> None:
+        await sales.on_asset_lines(session=fa.session, company_id=fa.auth["company_id"], user_id=uid, doc_id=cn,
+                                   doc=await fa.state(cn), change=change)
+
+    await replay("finalize")
+    await _assert_result(fa, car, "0", "50", "11150", fixed)
+    await fa.ok(await _doc(fa, cn, "void"))
+    assert (await _doc(fa, cn, "void")).status_code < 500
+    await replay("void")
+    await replay("revert")
+    await _assert_result(fa, car, "50", "0", "11250", fixed)
+    await fa.fold_matches(car)
+
+
+async def test_s4_concurrent_credits_take_what_is_left_once(committed_engine):
+    from celerp.models.projections import Projection
+    from celerp.modules.registry import get_enabled, set_enabled
+    from celerp.services.company_lock import locked_company
+    from celerp_docs.routes import finalize_document
+    from celerp_fixed_assets import sales
+    from test_runs import _race_company
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    cid, uid = await _race_company(factory)
+    async with factory() as s:
+        company = await locked_company(s, cid)
+        company.settings = set_enabled(dict(company.settings or {}),
+                                       get_enabled(company.settings) | {"celerp-fixed-assets", "celerp-docs",
+                                                                        "celerp-accounting"})
+        car = (await s.execute(select(Projection.entity_id).where(
+            Projection.company_id == cid, Projection.entity_type == "fa_asset"))).scalar_one()
+        await s.commit()
+
+    async def operate(fn, body: dict) -> dict:
+        async with factory() as s:
+            preview = await fn(s, cid, uid, car, {**body, "preview": True})
+            done = await fn(s, cid, uid, car, {**body, "fingerprint": preview["fingerprint"]})
+            await s.commit()
+            return done
+
+    inv = (await operate(sales.sell, {"date": "2026-05-20", "price": "10000", "contact_name": "Buyer Co",
+                                      "op_key": "sell"}))["invoice_id"]
+    async with factory() as s:
+        await finalize_document(inv, cid, SimpleNamespace(id=uid), s)
+    drafts = [(await operate(sales.credit, {"kind": "adjust", "amount": "6000", "date": "2026-06-10",
+                                            "op_key": key}))["credit_note_id"] for key in ("one", "two")]
+    async with factory() as s:
+        before = (await s.get(Projection, {"company_id": cid, "entity_id": car})).state["disposal"]["gain_or_loss"]
+
+    async def attempt(cn: str):
+        async with factory() as s:
+            try:
+                result = await finalize_document(cn, cid, SimpleNamespace(id=uid), s, commit=False)
+                await s.commit()
+                return result
+            except HTTPException as exc:
+                await s.rollback()
+                return exc
+
+    outcomes = await asyncio.wait_for(asyncio.gather(*(attempt(cn) for cn in drafts)), timeout=25)
+    refused = [o for o in outcomes if isinstance(o, HTTPException)]
+    assert len(refused) == 1 and refused[0].status_code == 409, outcomes
+    assert "left to credit" in str(refused[0].detail), refused[0].detail
+    async with factory() as s:
+        asset = (await s.get(Projection, {"company_id": cid, "entity_id": car})).state
+        journals = (await s.execute(select(Projection.state).where(
+            Projection.company_id == cid, Projection.entity_type == "journal_entry"))).scalars().all()
+    assert D(asset["disposal"]["gain_or_loss"]) == D(before) - D("6000")
+    assert [c["live"] for c in asset["sale"]["credits"].values()] == [True]
+    from celerp_fixed_assets import disposal, runs
+
+    async with factory() as s:
+        accounts = disposal.accounts(await runs._books(s, cid))
+    held = {a: D(0) for a in {accounts["gain"](), accounts["loss"]()}}
+    for je in journals:
+        if je.get("status") == "posted":
+            for e in je.get("entries") or []:
+                if e.get("account") in held:
+                    held[e["account"]] += D(str(e.get("credit") or 0)) - D(str(e.get("debit") or 0))
+    assert sum(held.values(), D(0)) == D(asset["disposal"]["gain_or_loss"]), held

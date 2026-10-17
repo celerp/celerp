@@ -27,7 +27,7 @@ from fastapi import HTTPException
 from celerp.services.money import books_currency
 from celerp_fixed_assets import projections, setup
 from celerp_fixed_assets.calc import rules
-from celerp_fixed_assets.calc.tax import PoolInputs, TaxAssetInputs, TaxTransferResult
+from celerp_fixed_assets.calc.tax import PoolInputs, TaxAssetInputs, TaxTransferResult, TaxYearResult
 from celerp_fixed_assets.projections import REMEASUREMENTS, _dec, live
 from celerp_fixed_assets.store import _emit, _entities, _state, movements_by_asset
 
@@ -156,6 +156,13 @@ def _failed(exc: Exception) -> str:
     return f"The tax regime could not work this out ({type(exc).__name__})."
 
 
+def _worked(result) -> TaxYearResult:
+    """A regime's year result, refused (TypeError) unless it carries every figure."""
+    if not isinstance(result, TaxYearResult) or not all(isinstance(getattr(result, k), Decimal) for k in FIGURES):
+        raise TypeError(type(result).__name__)
+    return result
+
+
 def _no_basis(year: int) -> str:
     return (f"Tax year {year} has no figure for this, so there is nothing to start from. "
             f"Set tax year {year} right first, reopening it if it is closed.")
@@ -230,7 +237,7 @@ def _asset_year(regime, year, moved, carried, counted, missing, end, currency) -
             rows.append(_row(a, "no_basis", currency, reason=_no_basis(missing[a.id])))
             continue
         try:
-            result = regime.asset_year(inputs)
+            result = _worked(regime.asset_year(inputs))
         except Exception as exc:  # a module's own code: named on the row, never fatal
             rows.append(_row(a, "error", currency, reason=_failed(exc)))
             missing[a.id] = year
@@ -276,7 +283,7 @@ def _pool_year(regime, year, moved, carried, counted, missing, end, currency) ->
         inputs = PoolInputs(key=key, category=pool["category"] or key, year=year, opening=opening,
                             additions=pool["additions"], disposals=pool["disposals"], assets=tuple(pool["assets"]))
         try:
-            result = regime.pool_year(inputs)
+            result = _worked(regime.pool_year(inputs))
         except Exception as exc:  # a module's own code: named on the pool, never fatal
             out.append({"key": key, "category": pool["category"], "status": "error", "reason": _failed(exc),
                         "assets": pool["assets"], **dict.fromkeys(FIGURES)})

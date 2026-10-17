@@ -162,6 +162,22 @@ async def test_tax_figure_missing_cannot_be_accepted_or_closed(fa, zz):
     await fa.ok(await fa.post("/tax-years/zz_asset/2025/close", {}))
 
 
+async def test_tax_close_refusal_in_thai_names_the_asset(fa, zz):
+    await fa.ok(await fa.patch("/settings", {"tax_regimes": ["zz_asset"], "tax_year_end": "06-30"}))
+    await _managed_from(fa, "2024-01-01")
+    car = await _contributed(fa, name="รถยนต์ของเจ้าของ", on="2025-01-15")
+    await _run(fa, "2026-06")
+    number = (await fa.asset(car))["number"]
+    th = {**fa.h, "Accept-Language": "th"}
+    refused = await _mark(fa, 2025, f"tax:zz_asset:{car}", "accepted", headers=th, reason="ตรวจแล้ว", effect="ไม่มี")
+    assert refused.status_code == 409 and f"{number} ไม่มีหมวดภาษี" in refused.json()["detail"], refused.text
+    await _accept_books(fa, 2025)
+    close = await fa.post("/tax-years/zz_asset/2025/close", {}, headers=th)
+    assert close.status_code == 409 and number in close.json()["detail"], close.text
+    page = await fa.page("/fixed-assets/tax-books", regime="zz_asset", year=2025)
+    assert page.status_code == 200 and "รถยนต์ของเจ้าของ" in page.text
+
+
 async def test_tax_calculation_failure_blocks_close(fa, zz, monkeypatch):
     from celerp_l10n_zz.rules import AssetRegime
 
@@ -188,6 +204,37 @@ async def test_tax_pool_failure_blocks_close(fa, zz, monkeypatch):
     assert pool["status"] == "error"
     assert "tax:zz_pool:pool:zz_cars" in {i["key"] for i in (await _year_end(fa, 2025))["items"]}
     await _accept_books(fa, 2025)
+    close = await fa.post("/tax-years/zz_pool/2025/close", {})
+    assert close.status_code == 409 and "zz_cars" in close.json()["detail"], close.text
+
+
+def _empty(*_args, **_kwargs):
+    return None
+
+
+def _no_closing(_regime, inputs):
+    from celerp_fixed_assets.calc.tax import TaxYearResult
+
+    return TaxYearResult(opening=inputs.opening, additions=inputs.additions, disposals=inputs.disposals,
+                         allowance=Decimal(0), closing=None)
+
+
+@pytest.mark.parametrize("result", [_empty, _no_closing])
+async def test_tax_result_without_figures_blocks_close(fa, zz, monkeypatch, result):
+    from celerp_l10n_zz.rules import AssetRegime, PoolRegime
+
+    car = await _setup(fa)
+    number = (await fa.asset(car))["number"]
+    monkeypatch.setattr(AssetRegime, "asset_year", result)
+    assert _row(await _tax_book(fa, "zz_asset", 2025), car)["status"] == "error"
+    await _accept_books(fa, 2025)
+    close = await fa.post("/tax-years/zz_asset/2025/close", {})
+    assert close.status_code == 409 and number in close.json()["detail"], close.text
+    await fa.ok(await fa.patch("/settings", {"tax_regimes": ["zz_pool"]}))
+    await _map(fa, "Vehicles", {"zz_pool": "zz_cars"})
+    monkeypatch.setattr(PoolRegime, "pool_year", result)
+    (pool,) = [p for p in (await _tax_book(fa, "zz_pool", 2025))["pools"] if p["key"] == "zz_cars"]
+    assert pool["status"] == "error"
     close = await fa.post("/tax-years/zz_pool/2025/close", {})
     assert close.status_code == 409 and "zz_cars" in close.json()["detail"], close.text
 
