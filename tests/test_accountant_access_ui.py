@@ -215,13 +215,17 @@ async def test_accountant_grant_rejects_unapproved_or_empty_scope(monkeypatch):
     monkeypatch.setattr(api_client, "issue_accountant_peer_grant", forbidden)
     issue = _endpoints()["/settings/accountant-access/grants"]
     source = str(uuid.uuid4())
-    for scopes in ([], ["attachments"], ["contacts", "manage_users"]):
+    from fasthtml.common import to_xml
+    for scopes in (["attachments"], ["contacts", "manage_users"]):
         response = await issue(Request({
             "pairing_code": _code(source), "label": "Test",
             "scopes": scopes,
         }))
-        from fasthtml.common import to_xml
         assert "Check the pairing code" in to_xml(response)
+    # No record type ticked: the code is fine, so the message names what is missing.
+    response = to_xml(await issue(Request({"pairing_code": _code(source), "label": "Test", "scopes": []})))
+    assert "Choose at least one kind of record for this client to send." in response
+    assert "Check the pairing code" not in response
 
 
 @pytest.mark.asyncio
