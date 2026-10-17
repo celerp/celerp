@@ -1255,6 +1255,7 @@ async def test_verify_page_names_records_and_formats_figures(ui, router, fake_ap
                 "-1,875.40", "0E-3", "12.000"):
         assert raw not in page, raw
 
+    fake_api.runs[run_id]["status"] = "completed"
     r = await ui.get(f"/migrations/{run_id}/complete")
     assert r.status_code == 200
     assert _AP_KEY not in _visible(r)
