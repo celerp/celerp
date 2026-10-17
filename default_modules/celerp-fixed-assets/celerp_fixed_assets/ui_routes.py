@@ -905,6 +905,23 @@ def doc_sale_actions(doc: dict) -> FT | None:
     return Span(*links) if links else None
 
 
+def doc_register_actions(doc: dict) -> FT | None:
+    """The doc_detail_actions slot: each asset line of a finalized bill leads to registering
+    it, or to the asset it became."""
+    from celerp_fixed_assets.sources import BILL_TYPES
+
+    if doc.get("doc_type") not in BILL_TYPES or doc.get("status") in ("draft", "void"):
+        return None
+    doc_id = doc.get("entity_id") or doc.get("id") or ""
+    links = []
+    for i, li in enumerate(doc.get("line_items") or []):
+        if isinstance(li, dict) and (li.get("receive_as") or "").strip().lower() == "asset":
+            source = f"{doc_id}:{li.get('line_id') or i}"
+            links.append(A(t("fixed_assets.register_as_asset"), cls="btn btn--secondary btn--sm",
+                           title=_text(li.get("name")), href=f"/fixed-assets/intake/line?{urlencode({'source': source})}"))
+    return Span(*links) if links else None
+
+
 def _filters(q: str, class_id: str, classes: list[dict]) -> FT:
     return Form(
         _input("q", q, type_="search", placeholder=t("fixed_assets.search"), aria_label=t("fixed_assets.search")),
@@ -1937,6 +1954,17 @@ def setup_ui_routes(app) -> None:
                               (t("fixed_assets.line_title"), None)])
         line = next((ln for ln in items if ln["source"] == source), None)
         if line is None:
+            try:
+                claim = (await api.fixed_assets_get(token, "/source-line", {"source": source})).get("claim") or {}
+            except APIError:
+                claim = {}
+            registered = list(zip(claim.get("asset_ids") or [], claim.get("numbers") or []))
+            if registered:
+                links = [A(number, href=f"/fixed-assets/assets/{quote(asset_id, safe=':')}") for asset_id, number in registered]
+                return await _page(request, crumbs, page_header(t("fixed_assets.line_title")), Div(
+                    P(t("fixed_assets.line_registered", description=_text(claim.get("description"))), " ",
+                      *[x for i, link in enumerate(links) for x in ((", ", link) if i else (link,))]),
+                    cls="detail-card section-card"), title_key="fixed_assets.line_title")
             return await _page(request, crumbs, page_header(t("fixed_assets.line_title")),
                                empty_state_cta(t("fixed_assets.line_gone"), t("fixed_assets.intake_title"),
                                                "/fixed-assets/intake"),

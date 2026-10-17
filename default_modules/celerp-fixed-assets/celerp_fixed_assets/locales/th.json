@@ -121,6 +121,8 @@
   "fixed_assets.deal_with_line": "ลงทะเบียน",
   "fixed_assets.line_title": "ลงทะเบียนรายการ",
   "fixed_assets.line_gone": "รายการนี้ไม่ได้รออยู่แล้ว อาจลงทะเบียนไปแล้ว",
+  "fixed_assets.line_registered": "{description} ลงทะเบียนเป็น",
+  "fixed_assets.register_as_asset": "ลงทะเบียนเป็นสินทรัพย์",
   "fixed_assets.link_hint": "แบ่งค่าเสื่อมราคานี้ให้สินทรัพย์ที่เกี่ยวข้อง ยอดรวมต้องเท่ากับรายการ",
   "fixed_assets.no_active_assets": "ไม่มีสินทรัพย์ที่ใช้งานอยู่ให้เชื่อม",
   "fixed_assets.line_action.register": "สินทรัพย์ใหม่",

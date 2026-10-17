@@ -886,3 +886,36 @@ def test_visual_esc_empty_marks_newest_first_and_alignment_on_screen_and_in_prin
         expect(page.locator("body")).to_contain_text("Owner's car")
         _aligned(page, "table")
     page.emulate_media(media="screen")
+
+
+def test_j21_bill_line_account_is_kept_and_the_finalized_bill_leads_to_registering_it(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    doc = _ok(c.post("/docs", json={
+        "doc_type": "bill", "contact_name": "City Motors", "issue_date": "2026-03-10", "total": 12000.0,
+        "line_items": [{"name": "Coffee roaster", "quantity": 1, "unit_price": 12000.0, "receive_as": "asset"}]}))["id"]
+
+    page.goto(f"/docs/{doc}")
+    picker = page.locator("td.col-account .combobox-input").first
+    picker.click()
+    picker.fill("1210")
+    with page.expect_response(lambda r: doc in r.url and r.request.method in ("PATCH", "POST", "PUT")):
+        page.locator("td.col-account .combobox-option[data-value='1210']").first.click()
+    line = _ok(c.get(f"/docs/{doc}"))["line_items"][0]
+    assert line.get("account_code") == "1210", "the account picked on the line is kept"
+
+    _ok(c.post(f"/docs/{doc}/finalize"))
+    page.goto(f"/docs/{doc}")
+    page.get_by_role("link", name="Register as asset").click()
+    page.wait_for_url("**/fixed-assets/intake/line**")
+    page.locator("input[name=name]").fill("Coffee roaster")
+    page.locator("select[name=class_id]").select_option(
+        label=next(k for k in _classes(c).values() if k["asset_account"] == "1210")["name"])
+    _review_and_confirm(page)
+    (roaster,) = [a for a in _ok(c.get(f"{API}/assets"))["items"] if a["name"] == "Coffee roaster"]
+
+    page.goto(f"/docs/{doc}")
+    page.get_by_role("link", name="Register as asset").click()
+    expect(page.locator("main")).to_contain_text(f"registered as {roaster['number']}")
+    expect(page.get_by_role("link", name=roaster["number"])).to_have_attribute(
+        "href", f"/fixed-assets/assets/{roaster['id']}")

@@ -123,6 +123,13 @@ async def intake(company_id=Depends(get_current_company_id), session: AsyncSessi
     return {"items": await sources.intake(session, company_id)}
 
 
+@router.get("/source-line", dependencies=_ACCOUNTING)
+async def source_line(source: str = "", company_id=Depends(get_current_company_id),
+                      session: AsyncSession = Depends(get_session)) -> dict:
+    """One source line, waiting or not, with what became of it."""
+    return await sources.line(session, company_id, source)
+
+
 async def _write(session, call, *args) -> dict:
     result = await call(session, *args)
     await session.commit()

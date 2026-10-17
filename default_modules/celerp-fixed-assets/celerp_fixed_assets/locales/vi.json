@@ -121,6 +121,8 @@
   "fixed_assets.deal_with_line": "Ghi nhận",
   "fixed_assets.line_title": "Ghi nhận một dòng",
   "fixed_assets.line_gone": "Dòng này không còn chờ nữa. Có thể đã được ghi nhận.",
+  "fixed_assets.line_registered": "{description} đã được ghi nhận là",
+  "fixed_assets.register_as_asset": "Ghi nhận là tài sản",
   "fixed_assets.link_hint": "Phân bổ khoản khấu hao này cho các tài sản liên quan. Tổng số tiền phải bằng dòng.",
   "fixed_assets.no_active_assets": "Không có tài sản đang dùng để gắn vào.",
   "fixed_assets.line_action.register": "Tài sản mới",

@@ -121,6 +121,8 @@
   "fixed_assets.deal_with_line": "登録",
   "fixed_assets.line_title": "明細を登録",
   "fixed_assets.line_gone": "この明細はもう登録待ちではありません。すでに登録されている可能性があります。",
+  "fixed_assets.line_registered": "{description} は次の資産として登録済みです:",
+  "fixed_assets.register_as_asset": "資産として登録",
   "fixed_assets.link_hint": "この減価償却を該当する資産に配分します。金額の合計は明細と一致する必要があります。",
   "fixed_assets.no_active_assets": "紐付けできる使用中の資産がありません。",
   "fixed_assets.line_action.register": "新しい資産",

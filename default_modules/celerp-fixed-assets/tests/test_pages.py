@@ -790,3 +790,33 @@ async def test_u15_u30_intake_names_journals_and_line_kinds_and_every_account_re
 
     recon = await owner_ui.get("/fixed-assets/reconciliation")
     assert f"1210 {chart['1210']}" in recon.text and "<td>1220</td>" not in recon.text
+
+
+async def test_u16_a_finalized_bill_leads_to_registering_its_asset_line_then_to_the_asset(owner_ui):
+    await _managed_car(owner_ui)
+    r = await owner_ui.api.post("/docs", json={
+        "doc_type": "bill", "contact_name": "City Motors", "issue_date": "2026-09-05", "total": 4000.0,
+        "line_items": [{"name": "Coffee roaster", "quantity": 1, "unit_price": 4000.0, "receive_as": "asset"}]})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    assert t("fixed_assets.register_as_asset") not in (await owner_ui.get(f"/docs/{doc}")).text, \
+        "a draft bill has nothing to register yet"
+    assert (await owner_ui.api.post(f"/docs/{doc}/finalize")).status_code == 200
+
+    page = await owner_ui.get(f"/docs/{doc}")
+    href = re.search(r'href="(/fixed-assets/intake/line\?source=[^"]+)"[^>]*>' + re.escape(t("fixed_assets.register_as_asset")),
+                     page.text)
+    assert href, "a finalized asset bill says what comes next"
+    line = await owner_ui.get(href.group(1).replace("&amp;", "&"))
+    assert "Coffee roaster" in line.text and 'name="class_id"' in line.text
+    source = re.search(r'name="source" value="([^"]+)"', line.text).group(1)
+
+    vehicles = await _class(owner_ui, "Vehicles")
+    asset = await _review_and_confirm(owner_ui, "register", {
+        "source": source, "mode": "separate", "class_id": vehicles["id"], "name": "Coffee roaster",
+        "available_date": "2026-09-05"})
+    asset_id = asset.rsplit("/", 1)[1]
+    number = (await owner_ui.api.get(f"{API}/assets/{asset_id}")).json()["number"]
+    again = await owner_ui.get(href.group(1).replace("&amp;", "&"))
+    assert t("fixed_assets.line_registered", description="Coffee roaster") in again.text
+    assert f'href="/fixed-assets/assets/{asset_id}">{number}</a>' in again.text

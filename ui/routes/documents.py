@@ -6493,6 +6493,20 @@ def _line_tax_rate(li: dict) -> float:
     return float(li.get("tax_rate", 0) or 0)
 
 
+def _line_account_picker(chart_accounts: list | None, value: str) -> FT:
+    """A purchase line's account, saved as soon as one is picked. Blank posts the line to
+    the company's account for its kind (stock or expense)."""
+    return searchable_select(
+        name="account_code",
+        options=[(a.get("code", ""), account_label(a)) for a in (chart_accounts or []) if a.get("code")],
+        value=value,
+        placeholder=t("documents.line_account_default"),
+        cls_extra="cell-input cell-input--xs",
+        allow_custom=True,
+        onchange="celerpAutoSave()",
+    )
+
+
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
                 connected_connectors: set[str] | None = None, note_targets: list | None = None) -> FT:
     def _pick(*keys: str):
@@ -7381,20 +7395,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             li_allow_splitting = "1" if _allow_split else ""
             account_cell = None
             if doc_type in ("purchase_order", "bill"):
-                _acct_list = chart_accounts or []
-                _acct_opts = [(a.get("code", ""), account_label(a)) for a in _acct_list if a.get("code")]
-                # Blank posts the line to the company's account for its kind (stock or expense).
-                account_cell = Td(
-                    searchable_select(
-                        name="account_code",
-                        options=_acct_opts,
-                        value=li.get("account_code") or "",
-                        placeholder=t("documents.line_account_default"),
-                        cls_extra="cell-input cell-input--xs",
-                        allow_custom=True,
-                    ),
-                    cls="col-account",
-                )
+                account_cell = Td(_line_account_picker(chart_accounts, li.get("account_code") or ""), cls="col-account")
 
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
             _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
@@ -7639,12 +7640,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(_tax_select(), cls="col-tax"),
             ])
             if doc_type in ("purchase_order", "bill"):
-                _acct_opts = [(a.get("code", ""), account_label(a)) for a in (chart_accounts or []) if a.get("code")]
-                cells.append(Td(
-                    searchable_select(name="account_code", options=_acct_opts, value="",
-                                      placeholder=t("documents.line_account_default"), cls_extra="cell-input cell-input--xs", allow_custom=True),
-                    cls="col-account",
-                ))
+                cells.append(Td(_line_account_picker(chart_accounts, ""), cls="col-account"))
             cells.extend([
                 Td(Input(type="number", value="0", step="0.01",
                          cls="cell-input line-total",

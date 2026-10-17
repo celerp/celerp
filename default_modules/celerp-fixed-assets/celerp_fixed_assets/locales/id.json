@@ -121,6 +121,8 @@
   "fixed_assets.deal_with_line": "Daftarkan",
   "fixed_assets.line_title": "Daftarkan baris",
   "fixed_assets.line_gone": "Baris ini tidak lagi menunggu. Mungkin sudah didaftarkan.",
+  "fixed_assets.line_registered": "{description} terdaftar sebagai",
+  "fixed_assets.register_as_asset": "Daftarkan sebagai aset",
   "fixed_assets.link_hint": "Bagi penyusutan ini ke aset-aset pemiliknya. Jumlahnya harus sama dengan baris.",
   "fixed_assets.no_active_assets": "Tidak ada aset aktif untuk ditautkan.",
   "fixed_assets.line_action.register": "Aset baru",

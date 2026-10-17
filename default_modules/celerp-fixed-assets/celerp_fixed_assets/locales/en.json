@@ -121,6 +121,8 @@
   "fixed_assets.deal_with_line": "Register",
   "fixed_assets.line_title": "Register a line",
   "fixed_assets.line_gone": "This line is no longer waiting. It may already be registered.",
+  "fixed_assets.line_registered": "{description} is registered as",
+  "fixed_assets.register_as_asset": "Register as asset",
   "fixed_assets.link_hint": "Split this depreciation between the assets it belongs to. The amounts must add up to the line.",
   "fixed_assets.no_active_assets": "There are no active assets to link this to.",
   "fixed_assets.line_action.register": "New asset",

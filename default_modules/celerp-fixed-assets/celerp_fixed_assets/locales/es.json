@@ -121,6 +121,8 @@
   "fixed_assets.deal_with_line": "Registrar",
   "fixed_assets.line_title": "Registrar una línea",
   "fixed_assets.line_gone": "Esta línea ya no está pendiente. Puede que ya se haya registrado.",
+  "fixed_assets.line_registered": "{description} está registrado como",
+  "fixed_assets.register_as_asset": "Registrar como activo",
   "fixed_assets.link_hint": "Reparta esta depreciación entre los activos a los que corresponde. Los importes deben sumar la línea.",
   "fixed_assets.no_active_assets": "No hay activos activos a los que vincularla.",
   "fixed_assets.line_action.register": "Activo nuevo",
