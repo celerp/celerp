@@ -271,7 +271,6 @@
   "fixed_assets.request_correction": "Yêu cầu",
   "fixed_assets.request_hint": "Chưa sẵn sàng ghi sổ? Lưu thay đổi thành yêu cầu để người có quyền ghi bút toán xem xét và áp dụng.",
   "fixed_assets.request_note": "Ghi chú",
-  "fixed_assets.request_title": "Yêu cầu thay vào đó",
   "fixed_assets.requested": "Đã yêu cầu điều chỉnh",
   "fixed_assets.show": "Hiển thị",
   "fixed_assets.source_line": "Dòng bút toán",

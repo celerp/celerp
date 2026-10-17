@@ -271,7 +271,6 @@
   "fixed_assets.request_correction": "Request",
   "fixed_assets.request_hint": "Not ready to post? Save the change as a request so someone who can post journals reviews and applies it.",
   "fixed_assets.request_note": "Note",
-  "fixed_assets.request_title": "Request instead",
   "fixed_assets.requested": "Correction requested",
   "fixed_assets.show": "Show",
   "fixed_assets.source_line": "Journal line",

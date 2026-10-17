@@ -271,7 +271,6 @@
   "fixed_assets.request_correction": "ส่งคำขอ",
   "fixed_assets.request_hint": "ยังไม่พร้อมลงบัญชี? บันทึกการเปลี่ยนแปลงเป็นคำขอ เพื่อให้ผู้ที่ลงรายการบัญชีได้ตรวจสอบและนำไปใช้",
   "fixed_assets.request_note": "หมายเหตุ",
-  "fixed_assets.request_title": "ส่งคำขอแทน",
   "fixed_assets.requested": "ส่งคำขอแก้ไขแล้ว",
   "fixed_assets.show": "แสดง",
   "fixed_assets.source_line": "รายการบัญชี",

@@ -271,7 +271,6 @@
   "fixed_assets.request_correction": "طلب",
   "fixed_assets.request_hint": "لست مستعدًا للترحيل بعد؟ احفظ التغيير كطلب ليراجعه ويطبقه شخص يملك صلاحية ترحيل القيود.",
   "fixed_assets.request_note": "ملاحظة",
-  "fixed_assets.request_title": "الطلب بدلًا من ذلك",
   "fixed_assets.requested": "تم طلب التصحيح",
   "fixed_assets.show": "عرض",
   "fixed_assets.source_line": "سطر القيد",

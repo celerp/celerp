@@ -271,7 +271,6 @@
   "fixed_assets.request_correction": "Demander",
   "fixed_assets.request_hint": "Pas encore prêt à comptabiliser ? Enregistrez la modification comme demande pour qu'une personne autorisée à passer des écritures la vérifie et l'applique.",
   "fixed_assets.request_note": "Remarque",
-  "fixed_assets.request_title": "Demander plutôt",
   "fixed_assets.requested": "Correction demandée",
   "fixed_assets.show": "Afficher",
   "fixed_assets.source_line": "Ligne d'écriture",

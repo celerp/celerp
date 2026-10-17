@@ -224,6 +224,20 @@ async def _managed_car(ui, on: str = "2026-08-10") -> str:
     return href.rsplit("/", 1)[1]
 
 
+async def test_u23_correct_shows_only_the_chosen_methods_settings_and_request_beside_review(owner_ui):
+    car = await _managed_car(owner_ui)
+    page = (await owner_ui.get(f"/fixed-assets/assets/{car}/correct")).text
+    assert "<fieldset" not in page and "<legend" not in page
+    groups = dict(re.findall(r'<div data-method="([a-z_]+)"([^>]*)>', page))
+    assert groups, "each method with settings has its own group"
+    # The car is on straight line, which has no settings, so every group starts hidden.
+    assert all("hidden" in attrs for attrs in groups.values()), groups
+    assert 'onchange=' in page.split('name="method"', 1)[1].split(">", 1)[0]
+    actions = page.split('class="form-actions"', 1)[1].split("</div>", 1)[0]
+    assert t("fixed_assets.review") in actions and t("fixed_assets.request_correction") in actions
+    assert "fixed_assets." not in page
+
+
 async def test_forms_open_on_the_companys_today_not_the_servers(owner_ui):
     """A form's date starts on the company's today in its business timezone. Fourteen hours
     ahead of UTC and twelve behind are never on the same day, so at least one of them is not
@@ -356,7 +370,7 @@ async def test_correct_an_asset_then_the_corrections_pages_and_report(owner_ui):
 
     for field in ("settings", "cost", "available_date", "opening_values", "maintenance", "link_source"):
         form = await owner_ui.get(f"/fixed-assets/assets/{car}/correct", params={"field": field})
-        assert form.status_code == 200 and t("fixed_assets.request_title") in form.text, field
+        assert form.status_code == 200 and t("fixed_assets.request_correction") in form.text, field
         assert "fixed_assets." not in form.text, field
 
     # An error: restates 2025 and posts the difference on the chosen day.

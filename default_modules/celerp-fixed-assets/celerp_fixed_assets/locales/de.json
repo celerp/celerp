@@ -271,7 +271,6 @@
   "fixed_assets.request_correction": "Anfordern",
   "fixed_assets.request_hint": "Noch nicht bereit zum Buchen? Speichern Sie die Änderung als Anforderung, damit jemand mit Buchungsrecht sie prüft und anwendet.",
   "fixed_assets.request_note": "Notiz",
-  "fixed_assets.request_title": "Stattdessen anfordern",
   "fixed_assets.requested": "Korrektur angefordert",
   "fixed_assets.show": "Anzeigen",
   "fixed_assets.source_line": "Buchungszeile",

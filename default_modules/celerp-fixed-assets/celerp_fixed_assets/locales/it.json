@@ -271,7 +271,6 @@
   "fixed_assets.request_correction": "Richiedi",
   "fixed_assets.request_hint": "Non è pronto a registrare? Salvi la modifica come richiesta, così chi può registrare scritture la verifica e la applica.",
   "fixed_assets.request_note": "Nota",
-  "fixed_assets.request_title": "Richiedi invece",
   "fixed_assets.requested": "Rettifica richiesta",
   "fixed_assets.show": "Mostra",
   "fixed_assets.source_line": "Riga di scrittura",

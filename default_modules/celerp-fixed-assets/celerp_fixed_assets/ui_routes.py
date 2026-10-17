@@ -420,14 +420,15 @@ def _run_assets_table(assets: list[dict], currency: str) -> FT:
                  Tbody(*rows), cls="data-table")
 
 
-def _op_form(action: str, *fields: FT, review_label: str | None = None) -> FT:
+def _op_form(action: str, *fields: FT, review_label: str | None = None, actions: tuple = ()) -> FT:
     """A two-step operation form: Review fills the form's own #fa-preview, Confirm (inside it)
-    does it. Targets are relative, so a page can carry several of these forms."""
+    does it. Targets are relative, so a page can carry several of these forms. ``actions`` sit
+    beside Review."""
     return Form(*fields, operation_key_input(),
                 Div(Button(review_label or t("fixed_assets.review"), type="button", cls="btn btn--secondary",
                            hx_post=f"/fixed-assets/op/{action}/review", hx_include="closest form",
                            hx_target="next #fa-preview", hx_swap="outerHTML"),
-                    cls="form-actions"),
+                    *actions, cls="form-actions"),
                 Div(id="fa-preview"),
                 onsubmit="return false;", cls="settings-card")
 
@@ -1571,7 +1572,8 @@ def _corrections_card(asset: dict, items: list[dict]) -> FT:
 
 
 def _param_inputs(policy: dict, methods: list[dict]) -> list[FT]:
-    """Each method's settings, filled from the asset's own where its method is that one."""
+    """Each method's settings, filled from the asset's own where its method is that one, and
+    shown only while that method is chosen."""
     groups = []
     for method in methods:
         key = method["key"]
@@ -1588,8 +1590,9 @@ def _param_inputs(policy: dict, methods: list[dict]) -> list[FT]:
             else:
                 inputs.append(_field(t(f"fixed_assets.param.{name}"),
                                      _input(field, current.get(name), type_="number", step="any", min="0")))
-        groups.append(Fieldset(Legend(t("fixed_assets.params_for", method=_rule_label("method", key))),
-                               *inputs, cls="form-fieldset"))
+        # The plain wrapper carries `hidden`, which the form group's own display would override.
+        groups.append(Div(Div(H4(t("fixed_assets.params_for", method=_rule_label("method", key)), cls="form-subtitle"),
+                              *inputs, cls="form-group"), data_method=key, hidden=policy.get("method") != key))
     return groups
 
 
@@ -1597,7 +1600,9 @@ def _settings_fields(policy: dict, available: dict) -> list[FT]:
     def select(name: str, kind: str) -> FT:
         options = _rule_options(available[f"{kind}s"], kind, policy.get(name))
         return Select(*[Option(label, value=v, selected=v == policy.get(name)) for v, label in options.items()],
-                      name=name, cls="form-input", aria_label=t(f"fixed_assets.{name}"))
+                      name=name, cls="form-input", aria_label=t(f"fixed_assets.{name}"),
+                      **({"onchange": "this.form.querySelectorAll('[data-method]')"
+                                      ".forEach(g=>{g.hidden=g.dataset.method!==this.value;})"} if name == "method" else {}))
 
     was = [Input(type="hidden", name=f"was:{k}", value=_blank(policy.get(k)))
            for k in ("method", "life_months", "residual_percent", "convention")]
@@ -2500,13 +2505,13 @@ def setup_ui_routes(app) -> None:
         else:
             fields = [P(t("fixed_assets.correct_hint.error"), cls="settings-hint"),
                       *_error_fields(field, asset, offer, classes, chart, intake, currency)]
-        ask = Fieldset(Legend(t("fixed_assets.request_title")), P(t("fixed_assets.request_hint"), cls="form-hint"),
-                       _field(t("fixed_assets.request_note"), _input("reason")),
-                       Button(t("fixed_assets.request_correction"), type="button", cls="btn btn--secondary",
-                              hx_post=f"/fixed-assets/assets/{asset_id}/request-correction",
-                              hx_include="closest form", hx_swap="none"), cls="form-fieldset")
+        request_button = Button(t("fixed_assets.request_correction"), type="button", cls="btn btn--secondary",
+                                hx_post=f"/fixed-assets/assets/{asset_id}/request-correction",
+                                hx_include="closest form", hx_swap="none")
         form = _op_form("correct", Input(type="hidden", name="asset_id", value=asset_id),
-                        Input(type="hidden", name="field", value=field), *fields, ask)
+                        Input(type="hidden", name="field", value=field), *fields,
+                        _field(t("fixed_assets.request_note"), _input("reason"), t("fixed_assets.request_hint")),
+                        actions=(request_button,))
         title = t("fixed_assets.correct_title", number=asset["number"])
         return await _page(request, crumbs, page_header(title), tabs, form, title_key="fixed_assets.correct")
 

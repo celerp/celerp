@@ -271,7 +271,6 @@
   "fixed_assets.request_correction": "依頼",
   "fixed_assets.request_hint": "まだ計上の準備ができていませんか。変更を依頼として保存すると、仕訳を計上できる人が確認して適用します。",
   "fixed_assets.request_note": "メモ",
-  "fixed_assets.request_title": "代わりに依頼",
   "fixed_assets.requested": "修正を依頼しました",
   "fixed_assets.show": "表示",
   "fixed_assets.source_line": "仕訳行",

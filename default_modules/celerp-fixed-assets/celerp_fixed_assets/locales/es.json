@@ -271,7 +271,6 @@
   "fixed_assets.request_correction": "Solicitar",
   "fixed_assets.request_hint": "¿Aún no está listo para registrar? Guarde el cambio como solicitud para que alguien que pueda registrar asientos lo revise y lo aplique.",
   "fixed_assets.request_note": "Nota",
-  "fixed_assets.request_title": "Solicitar en su lugar",
   "fixed_assets.requested": "Corrección solicitada",
   "fixed_assets.show": "Mostrar",
   "fixed_assets.source_line": "Línea de asiento",

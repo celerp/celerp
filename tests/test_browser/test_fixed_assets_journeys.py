@@ -807,6 +807,12 @@ def test_j20_prior_year_cost_error_requested_by_an_operator_is_applied_by_a_mana
     _as_member(page, c, api_server, "operator")
     page.goto(f"/fixed-assets/assets/{car}")
     page.get_by_role("link", name="Correct", exact=True).click()
+    # Only the chosen method's own settings show.
+    declining = page.locator("[data-method=declining_balance]")
+    expect(declining).to_be_hidden()
+    page.locator("select[name=method]").select_option(label="Declining balance")
+    expect(declining).to_be_visible()
+    expect(page.locator("[data-method=units_of_use]")).to_be_hidden()
     page.get_by_role("link", name="Cost", exact=True).click()
     page.wait_for_url("**field=cost**")
     page.locator("input[name=cost]").fill("15000")

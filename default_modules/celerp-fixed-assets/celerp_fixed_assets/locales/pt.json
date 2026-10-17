@@ -271,7 +271,6 @@
   "fixed_assets.request_correction": "Solicitar",
   "fixed_assets.request_hint": "Ainda não está pronto para lançar? Salve a alteração como solicitação para que alguém que possa lançar a revise e aplique.",
   "fixed_assets.request_note": "Observação",
-  "fixed_assets.request_title": "Solicitar em vez disso",
   "fixed_assets.requested": "Correção solicitada",
   "fixed_assets.show": "Mostrar",
   "fixed_assets.source_line": "Linha de lançamento",

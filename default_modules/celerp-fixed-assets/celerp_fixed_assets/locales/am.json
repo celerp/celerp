@@ -271,7 +271,6 @@
   "fixed_assets.request_correction": "ጠይቅ",
   "fixed_assets.request_hint": "ለመመዝገብ ገና ዝግጁ አይደሉም? ጆርናል መመዝገብ የሚችል ሰው እንዲገመግመውና ተግባራዊ እንዲያደርገው ለውጡን እንደ ጥያቄ ያስቀምጡ።",
   "fixed_assets.request_note": "ማስታወሻ",
-  "fixed_assets.request_title": "በምትኩ ጠይቅ",
   "fixed_assets.requested": "እርማት ተጠይቋል",
   "fixed_assets.show": "አሳይ",
   "fixed_assets.source_line": "የጆርናል መስመር",
