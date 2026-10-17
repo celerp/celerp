@@ -183,9 +183,8 @@ def _choose_posting_accounts(page) -> None:
     from celerp.accounting_roles import INVENTORY_VALUE_ROLES
 
     stock_roles = {f"role.{r.value}" for r in INVENTORY_VALUE_ROLES}
-    selects = page.locator('select[name^="role."]').all()
     pickers = page.locator('.combobox-wrap:has(input[type="hidden"][name^="role."])').all()
-    fields = selects + [p.locator('input[type="hidden"]') for p in pickers]
+    fields = [p.locator('input[type="hidden"]') for p in pickers]
     stock = {f.input_value() for f in fields if f.get_attribute("name") in stock_roles and f.input_value()}
 
     def choice(name: str, values: list[str]) -> str:
@@ -193,10 +192,6 @@ def _choose_posting_accounts(page) -> None:
             return next((v for v in values if v in stock), values[0])
         return next(v for v in values if v not in stock)
 
-    for select in selects:
-        if not select.input_value():
-            values = [v for v in select.locator("option").evaluate_all("els => els.map(e => e.value)") if v]
-            select.select_option(choice(select.get_attribute("name"), values))
     for picker in pickers:
         field = picker.locator('input[type="hidden"]')
         if not field.input_value():
@@ -308,7 +303,7 @@ def test_finishing_with_posting_accounts_unchosen_is_refused_in_german(page, ui_
     try:
         page.goto(f"/migrations/{run_id}/verify")
         unchosen = [s.get_attribute("name").removeprefix("role.")
-                    for s in page.locator('select[name^="role."], input[type="hidden"][name^="role."]').all()
+                    for s in page.locator('input[type="hidden"][name^="role."]').all()
                     if not s.input_value()]
         assert unchosen, "every posting account was preselected"
         page.locator(f"form[action='/migrations/{run_id}/finalize'] button[type='submit']").click()
@@ -389,7 +384,7 @@ def test_an_added_posting_account_the_chart_refuses_is_refused_in_german(page, u
     try:
         page.goto(f"/migrations/{run_id}/verify")
         added = page.evaluate("""() => [...document.querySelectorAll(
-                'select[name^="role."], input[type="hidden"][name^="role."]')]
+                'input[type="hidden"][name^="role."]')]
             .filter(f => !f.value).map(f => { f.value = "__new__"; return f.name; })""")
         assert added, "every posting account was preselected"
         page.locator(f"form[action='/migrations/{run_id}/finalize'] button[type='submit']").click()

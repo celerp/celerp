@@ -1353,9 +1353,9 @@ async def test_finishing_names_accounts_the_source_gave_no_code_by_their_name(ui
     verify = _visible(await ui.get(f"/migrations/{run_id}/verify"))
 
     assert re.search(r"<td>Debtors</td>", verify)
-    assert re.search(r'<option value="M0a1b2c3d-1" selected>Creditors</option>', verify)
-    assert re.search(r'<option value="211">211 Other creditors</option>', verify)
-    assert re.search(r'<option value="Mdeadbeef">Mdeadbeef Bank charges</option>', verify)
+    assert re.search(r'value="Creditors"[^>]*>\s*<input type="hidden"[^>]*value="M0a1b2c3d-1"', verify)
+    assert re.search(r'data-value="211"[^>]*>211 Other creditors</div>', verify)
+    assert re.search(r'data-value="Mdeadbeef"[^>]*>Mdeadbeef Bank charges</div>', verify)
     shown = re.sub(r"<[^>]*>", " ", verify)
     assert "M73d6d4fc" not in shown and "M0a1b2c3d" not in shown
 

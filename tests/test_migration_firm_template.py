@@ -237,12 +237,12 @@ async def test_firm_template_verify_page_marks_previous_answers(real_client, rea
     marked = t("sync_accounts.from_previous", "en")
     # The finish step lists the roles the company needs; each with an earlier answer is marked.
     assert page.count(marked) == len([r for r in roles if r.get("previous") and r["required"]]) > 0
-    sales = page[page.index('name="role.sales_revenue"'):]
-    sales = sales[:sales.index("</select>")]
-    assert '<option value="4010" selected>' in sales and '<option value="4000">' in sales
-    cogs = page[page.index('name="role.cogs"'):]
-    cogs = cogs[:cogs.index("</select>")]
-    assert f'<option value="{NEW_ACCOUNT}" selected>' in cogs and "5100" in cogs
+    def picker(role: str) -> str:
+        found = page[page.index(f'name="role.{role}"'):]
+        return found[:found.index("combobox-option--empty")]
+    sales, cogs = picker("sales_revenue"), picker("cogs")
+    assert 'value="4010"' in sales.split(">", 1)[0] and 'data-value="4000"' in sales
+    assert f'value="{NEW_ACCOUNT}"' in cogs.split(">", 1)[0] and "5100" in cogs
 
 
 async def test_firm_template_complete_page_says_answers_are_saved(monkeypatch):
