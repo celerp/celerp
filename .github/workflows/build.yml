@@ -1120,6 +1120,12 @@ jobs:
                       Installer = (Join-Path $env:RUNNER_TEMP "candidate\Celerp-Setup.exe"); Demo = $true
                       PreviousFails = ($env:CASE_FAILS -eq "true"); NoShortNames = ($env:CASE_USER -notmatch '^[\x20-\x7e]+$') }
           ./scripts/win-boot-smoke.ps1 @smoke
+      - name: Celerp logs of ${{ matrix.user }}
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ChildItem C:\Users\*\AppData\Roaming\celerp\celerp-data -Recurse -Include *.log -File -EA SilentlyContinue |
+            ForEach-Object { "== $($_.FullName)"; Get-Content -LiteralPath $_.FullName -Tail 120 -Encoding utf8 }
 
   # One job for the release to wait on: every account in win-names passed.
   account-names:
