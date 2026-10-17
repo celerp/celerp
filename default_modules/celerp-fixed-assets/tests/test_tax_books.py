@@ -12,7 +12,7 @@ import pytest
 from fa_fixtures import FA
 from test_l10n import _map, _tax_book
 from test_runs import _contributed, _managed_from, _run
-from test_year_end import _accept_all
+from test_year_end import _accept_all, _mark, _year_end
 
 pytestmark = pytest.mark.asyncio
 
@@ -126,3 +126,108 @@ async def test_tax_year_close_order_and_timing(fa, zz):
     assert early.status_code == 409 and "2027-06-30" in early.json()["detail"]
     operator = await fa.role_headers("operator")
     assert (await fa.post("/tax-years/zz_asset/2026/reopen", {"reason": "x"}, headers=operator)).status_code == 403
+
+
+# ── A tax year closes only on figures the regime worked out ──────────────────
+
+_REMEDY_CATEGORY = "Set its tax category"
+
+
+async def _accept_books(fa: FA, year: int) -> None:
+    """Accept every year-end item that is not a tax figure, as an accountant would."""
+    for item in (await _year_end(fa, year))["items"]:
+        if item["kind"] != "tax" and item["state"] != "accepted":
+            await fa.ok(await _mark(fa, year, item["key"], "accepted", reason="Reviewed at year end",
+                                    effect="None on the figures"))
+
+
+def _fail(*_args, **_kwargs):
+    raise ArithmeticError("no rate")
+
+
+async def test_tax_figure_missing_cannot_be_accepted_or_closed(fa, zz):
+    car = await _setup(fa, mapped=False)
+    number = (await fa.asset(car))["number"]
+    key = f"tax:zz_asset:{car}"
+    refused = await _mark(fa, 2025, key, "accepted", reason="Reviewed", effect="None")
+    assert refused.status_code == 409 and _REMEDY_CATEGORY in refused.json()["detail"]
+    # Noting it, with the reason it waits, is still allowed.
+    await fa.ok(await _mark(fa, 2025, key, "noted", reason="Category to be agreed"))
+    await _accept_books(fa, 2025)
+    close = await fa.post("/tax-years/zz_asset/2025/close", {})
+    assert close.status_code == 409, close.text
+    assert number in close.json()["detail"] and _REMEDY_CATEGORY in close.json()["detail"]
+    assert (await _tax_book(fa, "zz_asset", 2025))["status"] == "open"
+    await fa.ok(await fa.patch(f"/tax-books/{car}/zz_asset", {"category": "zz_plant"}))
+    await fa.ok(await fa.post("/tax-years/zz_asset/2025/close", {}))
+
+
+async def test_tax_calculation_failure_blocks_close(fa, zz, monkeypatch):
+    from celerp_l10n_zz.rules import AssetRegime
+
+    car = await _setup(fa)
+    number = (await fa.asset(car))["number"]
+    monkeypatch.setattr(AssetRegime, "asset_year", _fail)
+    assert _row(await _tax_book(fa, "zz_asset", 2025), car)["status"] == "error"
+    accepted = await _mark(fa, 2025, f"tax:zz_asset:{car}", "accepted", reason="Reviewed", effect="None")
+    assert accepted.status_code == 409
+    await _accept_books(fa, 2025)
+    close = await fa.post("/tax-years/zz_asset/2025/close", {})
+    assert close.status_code == 409 and number in close.json()["detail"], close.text
+    assert (await _tax_book(fa, "zz_asset", 2025))["status"] == "open"
+
+
+async def test_tax_pool_failure_blocks_close(fa, zz, monkeypatch):
+    from celerp_l10n_zz.rules import PoolRegime
+
+    await _setup(fa)
+    await fa.ok(await fa.patch("/settings", {"tax_regimes": ["zz_pool"]}))
+    await _map(fa, "Vehicles", {"zz_pool": "zz_cars"})
+    monkeypatch.setattr(PoolRegime, "pool_year", _fail)
+    (pool,) = [p for p in (await _tax_book(fa, "zz_pool", 2025))["pools"] if p["key"] == "zz_cars"]
+    assert pool["status"] == "error"
+    assert "tax:zz_pool:pool:zz_cars" in {i["key"] for i in (await _year_end(fa, 2025))["items"]}
+    await _accept_books(fa, 2025)
+    close = await fa.post("/tax-years/zz_pool/2025/close", {})
+    assert close.status_code == 409 and "zz_cars" in close.json()["detail"], close.text
+
+
+async def test_tax_year_closed_without_a_figure_is_not_carried(fa, zz):
+    from celerp_fixed_assets import taxbooks
+    from celerp_fixed_assets.store import _emit
+
+    car = await _setup(fa, mapped=False)
+    number = (await fa.asset(car))["number"]
+    # Tax year 2025 closed, as it could before, with no figure for the car.
+    open_2025 = await _tax_book(fa, "zz_asset", 2025)
+    assert _row(open_2025, car)["status"] == "no_category"
+    await _emit(fa.session, fa.auth["company_id"], None, taxbooks.taxyear_id("zz_asset", 2025), "fa_taxyear",
+                "fa.taxyear.recorded", {"regime": "zz_asset", "year": 2025, "status": "closed",
+                                        "start": open_2025["start"], "end": open_2025["end"],
+                                        "rows": open_2025["rows"], "pools": [], "history": []})
+    await fa.session.commit()
+    await fa.ok(await fa.patch(f"/tax-books/{car}/zz_asset", {"category": "zz_plant"}))
+    later = _row(await _tax_book(fa, "zz_asset", 2026), car)
+    assert later["status"] == "no_basis" and later["opening"] is None and later["closing"] is None
+    assert "2025" in later["reason"]
+    items = {i["key"]: i for i in (await _year_end(fa, 2026))["items"]}
+    assert number in items[f"tax:zz_asset:{car}"]["label"]
+    await _accept_books(fa, 2026)
+    close = await fa.post("/tax-years/zz_asset/2026/close", {})
+    assert close.status_code == 409 and number in close.json()["detail"] and "2025" in close.json()["detail"]
+    # Reopened, 2025 works the car out and 2026 starts from it.
+    await fa.ok(await fa.post("/tax-years/zz_asset/2025/reopen", {"reason": "Category set"}))
+    assert _figures(_row(await _tax_book(fa, "zz_asset", 2026), car)) == (
+        D("9600"), D(0), D(0), D("1920"), D("7680"))
+
+
+async def test_tax_pool_additions_counted_once_across_a_closed_year(fa, zz):
+    await _setup(fa)
+    await fa.ok(await fa.patch("/settings", {"tax_regimes": ["zz_pool"]}))
+    await _map(fa, "Vehicles", {"zz_pool": "zz_cars"})
+    (before,) = [p for p in (await _tax_book(fa, "zz_pool", 2026))["pools"] if p["key"] == "zz_cars"]
+    await _accept_books(fa, 2025)
+    await fa.ok(await fa.post("/tax-years/zz_pool/2025/close", {}))
+    (after,) = [p for p in (await _tax_book(fa, "zz_pool", 2026))["pools"] if p["key"] == "zz_cars"]
+    assert (after["opening"], after["additions"], after["closing"]) == (
+        before["opening"], before["additions"], before["closing"])

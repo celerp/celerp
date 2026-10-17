@@ -5,11 +5,13 @@
 The items are the months of the year whose depreciation is not posted, the assets a run
 skipped, the reconciliation differences still open, the sales waiting on their invoice,
 the corrections still waiting for approval, the impairment reviews due by the year end,
-and every asset a chosen tax regime cannot work out. Each
-can be noted, with a reason, or accepted, with a reason and its effect on the figures.
-An accepted item holds for the amount it was accepted at: when the amount changes, the
-item is open again. A tax year closes once every item is accepted, and closing keeps
-its tax figures as they stand (celerp_fixed_assets.taxbooks). A closed year reopens
+and every asset or pool a chosen tax regime cannot work out. Each
+can be noted, with a reason, or accepted, with a reason and its effect on the figures,
+except a tax figure that is missing: it can only be noted, because closing keeps the
+year's figures for every later year to start from. An accepted item holds for the amount
+it was accepted at: when the amount changes, the item is open again. A tax year closes
+once every other item is accepted and the regime worked out every asset and pool for it,
+and closing keeps its tax figures as they stand (celerp_fixed_assets.taxbooks). A closed year reopens
 only with a reason, and every close and reopen stays in the year's history.
 
 Nothing here reads or writes the ledger.
@@ -111,6 +113,22 @@ async def waiting_corrections(session, company_id) -> list[dict]:
     return out
 
 
+def _remedy(found: dict) -> str:
+    """What sets a missing tax figure right."""
+    if found["status"] == "no_category":
+        return "Set its tax category on its class or its tax book."
+    if found["status"] == "error":
+        return f"{found.get('reason') or ''} Check the regime's module, then work the year out again.".strip()
+    return found.get("reason") or ""
+
+
+def _unworked(figures: dict) -> list[tuple[str, str, dict]]:
+    """The year's assets and pools with no tax figure: (item key suffix, name, row)."""
+    return [*((r["asset_id"], r["number"], r) for r in figures.get("rows") or [] if r.get("status") != "ok"),
+            *((f"pool:{p['key']}", f"pool {p['key']}", p) for p in figures.get("pools") or []
+              if p.get("status") != "ok")]
+
+
 async def _tax(session, company_id, settings: dict, year: int) -> list[dict]:
     out = []
     for key in setup.settings_of(settings).get("tax_regimes") or []:
@@ -119,12 +137,10 @@ async def _tax(session, company_id, settings: dict, year: int) -> list[dict]:
         book = await taxbooks.book(session, company_id, key, year, settings)
         if book["status"] == "closed":
             continue
-        for row in book["rows"]:
-            if row["status"] != "ok":
-                out.append({"key": f"tax:{key}:{row['asset_id']}", "kind": "tax", "amount": None,
-                            "label": (f"fixed_assets.ye_tax_{row['status']}",
-                                      {"asset": row["number"], "regime": book["label"]}),
-                            "href": f"/fixed-assets/tax-books?regime={key}&year={year}"})
+        for suffix, name, found in _unworked(book):
+            out.append({"key": f"tax:{key}:{suffix}", "kind": "tax", "amount": None,
+                        "label": (f"fixed_assets.ye_tax_{found['status']}", {"asset": name, "regime": book["label"]}),
+                        "remedy": _remedy(found), "href": f"/fixed-assets/tax-books?regime={key}&year={year}"})
     return out
 
 
@@ -146,6 +162,8 @@ async def report(session, company_id, year) -> dict:
         mark = marks.get(item["key"])
         lapsed = mark is not None and mark["state"] != "open" and mark.get("amount") != item["amount"]
         held = mark if mark is not None and not lapsed else None
+        if held is not None and item["kind"] == "tax" and held["state"] == "accepted":
+            held = None  # accepted before a missing tax figure could only be noted
         items.append({**item, "label": t(key, **params), "state": held["state"] if held else "open",
                       "reason": held.get("reason") if held else None, "effect": held.get("effect") if held else None,
                       "accepted_amount": held.get("amount") if held and held["state"] == "accepted" else None,
@@ -174,6 +192,9 @@ async def mark(session, company_id, user_id, year, body: dict) -> dict:
     found = next((i for i in (await report(session, company_id, year))["items"] if i["key"] == key), None)
     if found is None:
         raise HTTPException(status_code=404, detail="There is no such year-end item. Reload the year end.")
+    if state == "accepted" and found["kind"] == "tax":
+        raise conflict(f"{found['label']}. A tax year keeps its figures for the years after it, so a missing "
+                       f"figure cannot be accepted. {found['remedy']} Note it while it waits.")
     saved = await _state(session, company_id, yearend_id(year)) or {}
     marks = dict(saved.get("marks") or {})
     if state == "open":
@@ -222,10 +243,16 @@ async def close(session, company_id, user_id, regime_key: str, year) -> dict:
                and (f.get("rows") or f.get("pools"))]
     if earlier:
         raise conflict(f"Close tax year {earlier[0]} first.")
-    waiting = [i["key"] for i in (await report(session, company_id, year))["items"] if i["state"] != "accepted"]
-    if waiting:
-        raise conflict(f"These year-end items are not accepted: {', '.join(waiting)}.")
     figures = years.get(year) or {"rows": [], "pools": []}
+    unworked = _unworked(figures)
+    # Another regime's missing figures wait on that regime's own close.
+    waiting = [i["key"] for i in (await report(session, company_id, year))["items"]
+               if i["state"] != "accepted" and i["kind"] != "tax"]
+    refusals = [*([f"Tax year {year} cannot close while it has no tax figure for "
+                   + "; ".join(f"{name} ({_remedy(found)})" for _, name, found in unworked)] if unworked else []),
+                *([f"These year-end items are not accepted: {', '.join(waiting)}."] if waiting else [])]
+    if refusals:
+        raise conflict(" ".join(refusals))
     data = {"regime": regime_key, "year": year, "status": "closed", "start": start.isoformat(),
             "end": end.isoformat(), "rows": figures["rows"], "pools": figures["pools"],
             "history": _history(saved, settings, "closed", user_id)}

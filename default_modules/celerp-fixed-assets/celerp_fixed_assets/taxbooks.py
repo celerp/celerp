@@ -156,6 +156,11 @@ def _failed(exc: Exception) -> str:
     return f"The tax regime could not work this out ({type(exc).__name__})."
 
 
+def _no_basis(year: int) -> str:
+    return (f"Tax year {year} has no figure for this, so there is nothing to start from. "
+            f"Set tax year {year} right first, reopening it if it is closed.")
+
+
 def _row(a: _Asset, status: str, currency: str, **figures) -> dict:
     return {"asset_id": a.id, "number": a.number, "name": a.name, "key": a.number, "category": a.category,
             "status": status, "elections": a.elections, **{k: _figure(figures.get(k), currency) for k in FIGURES},
@@ -165,24 +170,33 @@ def _row(a: _Asset, status: str, currency: str, **figures) -> dict:
 def _years(regime, end_setting: str, currency: str, assets: list[_Asset], frozen: dict[int, dict], through: int,
            seen: dict | None = None) -> dict[int, dict]:
     """Every tax year of the book through ``through``, its figures in ``currency``: its asset
-    rows, and its pools on a pool basis. A closed year is taken as it was closed. ``seen``,
-    when given, collects each open year's inputs by (year, asset)."""
+    rows, and its pools on a pool basis. A closed year is taken as it was closed. An asset or
+    pool a year has no figure for has none in the years after it either ("no_basis"), never
+    a written-down value started again from nothing. ``seen``, when given, collects each
+    open year's inputs by (year, asset) for the assets with something to start from."""
     if not assets:
         return {}
     first = min(_year_of(regime, end_setting, a.available) for a in assets)
     carried: dict[str, Decimal] = {}  # asset or pool -> closing written-down value
     counted: dict[str, date] = {}     # asset -> the last day its additions were counted through
+    missing: dict[str, int] = {}      # asset or pool -> the year it has no figure for
     out: dict[int, dict] = {}
     for year in range(first, through + 1):
         start, end = regime.tax_year(end_setting, year)
         closed = frozen.get(year) if (frozen.get(year) or {}).get("status") == "closed" else None
         if closed is not None:
             for row in closed["rows"]:
+                if row.get("status") != "ok":
+                    missing.setdefault(row["asset_id"], year)
+                    continue
+                counted[row["asset_id"]] = end
                 if row.get("closing") is not None:
                     carried[row["asset_id"]] = _dec(row["closing"])
-                    counted[row["asset_id"]] = end
             for pool in closed.get("pools") or []:
-                carried[f"pool:{pool['key']}"] = _dec(pool["closing"])
+                if pool.get("status") == "ok" and pool.get("closing") is not None:
+                    carried[f"pool:{pool['key']}"] = _dec(pool["closing"])
+                else:
+                    missing.setdefault(f"pool:{pool['key']}", year)
             out[year] = closed
             continue
         moved = []
@@ -197,40 +211,50 @@ def _years(regime, end_setting: str, currency: str, assets: list[_Asset], frozen
                 asset_id=a.id, category=a.category, elections=a.elections, year=year, start=start, end=end,
                 available_date=a.available, opening=carried.get(a.id, _ZERO), additions=additions,
                 disposals=disposals, disposed=a.gone is not None and a.gone <= end)
-            if seen is not None and inputs is not None:
+            if seen is not None and inputs is not None and a.id not in missing:
                 seen[(year, a.id)] = inputs
             moved.append((a, inputs))
         out[year] = (_asset_year if regime.basis == "asset" else _pool_year)(regime, year, moved, carried, counted,
-                                                                             end, currency)
+                                                                             missing, end, currency)
     return out
 
 
-def _asset_year(regime, year, moved, carried, counted, end, currency) -> dict:
+def _asset_year(regime, year, moved, carried, counted, missing, end, currency) -> dict:
     rows = []
     for a, inputs in moved:
         if inputs is None:
             rows.append(_row(a, "no_category", currency))
+            missing.setdefault(a.id, year)
+            continue
+        if a.id in missing:
+            rows.append(_row(a, "no_basis", currency, reason=_no_basis(missing[a.id])))
             continue
         try:
             result = regime.asset_year(inputs)
         except Exception as exc:  # a module's own code: named on the row, never fatal
             rows.append(_row(a, "error", currency, reason=_failed(exc)))
+            missing[a.id] = year
             continue
         carried[a.id], counted[a.id] = result.closing, end
         rows.append(_row(a, "ok", currency, **{k: getattr(result, k) for k in FIGURES}))
     return {"rows": rows, "pools": []}
 
 
-def _pool_year(regime, year, moved, carried, counted, end, currency) -> dict:
+def _pool_year(regime, year, moved, carried, counted, missing, end, currency) -> dict:
     rows, pools = [], {}
     for a, inputs in moved:
         if inputs is None:
             rows.append(_row(a, "no_category", currency))
+            missing.setdefault(a.id, year)
+            continue
+        if a.id in missing:
+            rows.append(_row(a, "no_basis", currency, reason=_no_basis(missing[a.id])))
             continue
         try:
             key = str(regime.pool_key(inputs))
         except Exception as exc:  # a module's own code: named on the row, never fatal
             rows.append(_row(a, "error", currency, reason=_failed(exc)))
+            missing[a.id] = year
             continue
         counted[a.id] = end
         pool = pools.setdefault(key, {"category": a.category, "additions": _ZERO, "disposals": _ZERO, "assets": []})
@@ -239,8 +263,13 @@ def _pool_year(regime, year, moved, carried, counted, end, currency) -> dict:
         pool["assets"].append(a.id)
         rows.append({**_row(a, "ok", currency, additions=inputs.additions, disposals=inputs.disposals), "pool": key})
     out = []
-    for key in sorted(set(pools) | {k.removeprefix("pool:") for k in carried if k.startswith("pool:")}):
+    for key in sorted(set(pools) | {k.removeprefix("pool:") for k in (*carried, *missing) if k.startswith("pool:")}):
         pool = pools.get(key) or {"category": None, "additions": _ZERO, "disposals": _ZERO, "assets": []}
+        if f"pool:{key}" in missing:
+            out.append({"key": key, "category": pool["category"], "status": "no_basis",
+                        "reason": _no_basis(missing[f"pool:{key}"]), "assets": pool["assets"],
+                        **dict.fromkeys(FIGURES)})
+            continue
         opening = carried.get(f"pool:{key}", _ZERO)
         if not (opening or pool["assets"]):
             continue
@@ -251,6 +280,7 @@ def _pool_year(regime, year, moved, carried, counted, end, currency) -> dict:
         except Exception as exc:  # a module's own code: named on the pool, never fatal
             out.append({"key": key, "category": pool["category"], "status": "error", "reason": _failed(exc),
                         "assets": pool["assets"], **dict.fromkeys(FIGURES)})
+            missing[f"pool:{key}"] = year
             continue
         carried[f"pool:{key}"] = result.closing
         out.append({"key": key, "category": pool["category"], "status": "ok", "reason": None,
@@ -291,8 +321,11 @@ async def transfer_values(session, company_id, settings: dict, asset_id: str, da
             raise refuse(f"{asset.number} has no {label} tax category. Set one on its class or its tax book, "
                          "then transfer.")
         seen: dict = {}
-        _years(regime, end_setting, currency, assets, frozen, year, seen)
-        inputs = seen[(year, asset_id)]
+        worked = _years(regime, end_setting, currency, assets, frozen, year, seen)
+        inputs = seen.get((year, asset_id))
+        if inputs is None:
+            row = next((r for r in worked[year]["rows"] if r["asset_id"] == asset_id), {})
+            raise refuse(f"{label}: {row.get('reason') or f'{asset.number} has no tax figure for tax year {year}.'}")
         try:
             result = regime.related_party_transfer(inputs)
             if not isinstance(result, TaxTransferResult) or not (
