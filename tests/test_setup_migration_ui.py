@@ -1539,6 +1539,9 @@ async def test_review_shows_company_currency_scope_and_plain_outcomes(ui, fake_a
     assert "sales_invoices" not in _page(r) and "sales invoices" not in text
 
 
+_HTMX = {"HX-Request": "true"}
+
+
 async def test_the_files_attached_in_xero_are_fetched_from_the_check_results_page(ui, router, fake_api, monkeypatch):
     _export_set_sources(monkeypatch)
     _owner(ui)
@@ -1556,7 +1559,7 @@ async def test_the_files_attached_in_xero_are_fetched_from_the_check_results_pag
     sample = fake_api.add_run("completed", source="xero", is_sample=True)
     assert 'id="xero-attachments"' not in _page(await ui.get(f"/migrations/{sample}/complete"))
 
-    panel = _page(await ui.get(base))
+    panel = _page(await ui.get(base, headers=_HTMX))
     assert panel.startswith('<div id="xero-attachments"')
     assert "Attachments in Xero" in panel and "only reads" in panel
     form = re.search(r'<form[^>]*id="xero-attachments-form"[^>]*>', panel).group(0)
@@ -1578,36 +1581,51 @@ async def test_the_files_attached_in_xero_are_fetched_from_the_check_results_pag
     assert _attr(re.search(r'<div[^>]*id="xero-attachments"[^>]*>', signing).group(0), "hx-trigger") == "every 5s"
 
     fake_api.xero_fetches[run_id] = _xero_fetch("fetching", organisation="Demo Trading Ltd", attached=3, total=10)
-    fetching = _page(await ui.get(base))
+    fetching = _page(await ui.get(base, headers=_HTMX))
     assert "Demo Trading Ltd" in fetching and "3 of 10 files attached so far" in fetching
     assert "every 5s" in fetching and f'hx-post="{base}/stop"' in fetching
 
     fake_api.xero_fetches[run_id] = _xero_fetch(
         "waiting", organisation="Demo Trading Ltd", attached=3, total=10, resume_at="2026-10-17T10:00:00+00:00",
         error="Xero's daily limit was reached. Fetching continues when it resets.")
-    waiting = _page(await ui.get(base))
+    waiting = _page(await ui.get(base, headers=_HTMX))
     assert "daily limit was reached" in waiting and "every 5s" in waiting
 
     fake_api.xero_fetches[run_id] = _xero_fetch(
         "done", organisation="Demo Trading Ltd", attached=4, total=5, unmatched=[
             {"document": "INV-9999", "contact": "Gone Customer", "files": 1,
              "reason": "This document was not imported into Celerp."}])
-    done = _visible(await ui.get(base))
+    done = _visible(await ui.get(base, headers=_HTMX))
     assert "4 of 5 files from Demo Trading Ltd were attached" in done
     assert "INV-9999" in done and "Gone Customer" in done and "This document was not imported into Celerp." in done
-    done_page = _page(await ui.get(base))
+    done_page = _page(await ui.get(base, headers=_HTMX))
     assert "every 5s" not in done_page and "Fetch again" in done_page
     files_header = re.search(r'<th[^>]*>Files</th>', done_page).group(0)
     assert "cell--number" in files_header                    # a count sits right, under its header
 
     fake_api.xero_fetches[run_id] = _xero_fetch("failed", error="Choose exactly one organisation when you sign in to Xero.")
-    failed = _page(await ui.get(base))
+    failed = _page(await ui.get(base, headers=_HTMX))
     assert "exactly one organisation" in failed and "Try again" in failed
 
     fake_api.xero_fetches[run_id] = _xero_fetch("fetching", attached=1, total=2)
     stopped = _page(await ui.post(f"{base}/stop"))
     assert stopped.startswith('<div id="xero-attachments"') and "Fetching stopped" in stopped
     assert "Fetch again" in stopped
+
+
+async def test_the_xero_attachments_address_opened_directly_goes_to_its_run(ui, fake_api, monkeypatch):
+    _export_set_sources(monkeypatch)
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize", source="xero")
+    r = await ui.get(f"/migrations/{run_id}/xero-attachments")
+    assert r.status_code == 303 and r.headers["location"] == f"/migrations/{run_id}"
+
+
+async def test_the_finished_page_of_an_unfinished_run_goes_to_the_run(ui, fake_api):
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    r = await ui.get(f"/migrations/{run_id}/complete")
+    assert r.status_code == 303 and r.headers["location"] == f"/migrations/{run_id}"
 
 
 async def test_a_xero_import_says_attachments_are_fetched_after_it(ui, fake_api, monkeypatch):
