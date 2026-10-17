@@ -4147,6 +4147,7 @@
   "company_backup.restored_notice": "Đã khôi phục từ bản sao công ty ngày {date}.",
   "company_backup.prepared_for_you": "Do {firm} chuẩn bị cho bạn.",
   "company_backup.owed_to_you": "Khoản người khác nợ bạn",
+  "company_backup.tb_total_debits": "Tổng nợ trên bảng cân đối thử",
   "company_backup.you_owe": "Khoản bạn nợ",
   "company_backup.free_locally": "Dùng miễn phí trên máy, không giới hạn thời gian.",
   "company_backup.already_restored": "Bản sao công ty này đã được khôi phục tại đây thành {name}.",

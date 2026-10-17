@@ -4147,6 +4147,7 @@
   "company_backup.restored_notice": "Restaurada a partir da cópia da empresa de {date}.",
   "company_backup.prepared_for_you": "Preparado para você por {firm}.",
   "company_backup.owed_to_you": "Valores a receber",
+  "company_backup.tb_total_debits": "Total de débitos do balancete",
   "company_backup.you_owe": "Valores a pagar",
   "company_backup.free_locally": "Uso local gratuito, sem limite de tempo.",
   "company_backup.already_restored": "Esta cópia da empresa já foi restaurada aqui como {name}.",

@@ -4147,6 +4147,7 @@
   "company_backup.restored_notice": "กู้คืนจากไฟล์สำเนาวันที่ {date}",
   "company_backup.prepared_for_you": "{firm} จัดเตรียมให้คุณ",
   "company_backup.owed_to_you": "เงินที่ผู้อื่นค้างชำระคุณ",
+  "company_backup.tb_total_debits": "ยอดรวมเดบิตในงบทดลอง",
   "company_backup.you_owe": "เงินที่คุณค้างชำระ",
   "company_backup.free_locally": "ใช้งานบนเครื่องได้ฟรีโดยไม่จำกัดเวลา",
   "company_backup.already_restored": "ไฟล์สำเนานี้ถูกกู้คืนที่นี่แล้วเป็น {name}",

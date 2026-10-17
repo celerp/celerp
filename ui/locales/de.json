@@ -4147,6 +4147,7 @@
   "company_backup.restored_notice": "Wiederhergestellt aus der Unternehmenskopie vom {date}.",
   "company_backup.prepared_for_you": "Für Sie vorbereitet von {firm}.",
   "company_backup.owed_to_you": "Forderungen an andere",
+  "company_backup.tb_total_debits": "Summe der Soll-Beträge in der Saldenliste",
   "company_backup.you_owe": "Ihre Verbindlichkeiten",
   "company_backup.free_locally": "Lokal kostenlos nutzbar, ohne zeitliche Begrenzung.",
   "company_backup.already_restored": "Diese Unternehmenskopie wurde hier bereits als {name} wiederhergestellt.",

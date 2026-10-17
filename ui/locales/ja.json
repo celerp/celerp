@@ -4147,6 +4147,7 @@
   "company_backup.restored_notice": "{date}の会社コピーから復元しました。",
   "company_backup.prepared_for_you": "{firm} があなたのために準備しました。",
   "company_backup.owed_to_you": "受け取る予定の金額",
+  "company_backup.tb_total_debits": "試算表の借方合計",
   "company_backup.you_owe": "支払う予定の金額",
   "company_backup.free_locally": "ローカルでは期限なく無料で使えます。",
   "company_backup.already_restored": "この会社コピーはすでにここで{name}として復元されています。",

@@ -4147,6 +4147,7 @@
   "company_backup.restored_notice": "Dipulihkan dari salinan perusahaan tanggal {date}.",
   "company_backup.prepared_for_you": "Disiapkan untuk Anda oleh {firm}.",
   "company_backup.owed_to_you": "Piutang Anda",
+  "company_backup.tb_total_debits": "Total debit pada neraca saldo",
   "company_backup.you_owe": "Utang Anda",
   "company_backup.free_locally": "Gratis digunakan secara lokal tanpa batas waktu.",
   "company_backup.already_restored": "Salinan perusahaan ini sudah dipulihkan di sini sebagai {name}.",

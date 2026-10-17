@@ -4147,6 +4147,7 @@
   "company_backup.restored_notice": "Ripristinata dalla copia aziendale del {date}.",
   "company_backup.prepared_for_you": "Preparato per lei da {firm}.",
   "company_backup.owed_to_you": "Crediti verso altri",
+  "company_backup.tb_total_debits": "Totale dare del bilancio di verifica",
   "company_backup.you_owe": "Debiti verso altri",
   "company_backup.free_locally": "Uso locale gratuito, senza limiti di tempo.",
   "company_backup.already_restored": "Questa copia aziendale è già stata ripristinata qui come {name}.",

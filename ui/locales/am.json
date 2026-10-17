@@ -4147,6 +4147,7 @@
   "company_backup.restored_notice": "ከ{date} የኩባንያ ቅጂ ተመልሷል።",
   "company_backup.prepared_for_you": "በ{firm} ለእርስዎ የተዘጋጀ።",
   "company_backup.owed_to_you": "ለእርስዎ የሚከፈል",
+  "company_backup.tb_total_debits": "በሙከራ ሚዛኑ ላይ ያለው ጠቅላላ ዴቢት",
   "company_backup.you_owe": "እርስዎ የሚከፍሉት",
   "company_backup.free_locally": "በኮምፒውተርዎ ላይ ያለ ጊዜ ገደብ በነጻ ይጠቀሙ።",
   "company_backup.already_restored": "ይህ የኩባንያ ቅጂ እዚህ እንደ {name} አስቀድሞ ተመልሷል።",

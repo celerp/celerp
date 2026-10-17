@@ -4147,6 +4147,7 @@
   "company_backup.restored_notice": "Restored from the company copy made on {date}.",
   "company_backup.prepared_for_you": "Prepared for you by {firm}.",
   "company_backup.owed_to_you": "Owed to you",
+  "company_backup.tb_total_debits": "Total debits on the trial balance",
   "company_backup.you_owe": "You owe",
   "company_backup.free_locally": "Free to use locally with no time limit.",
   "company_backup.already_restored": "This company copy was already restored here as {name}.",

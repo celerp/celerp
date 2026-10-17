@@ -974,7 +974,7 @@ async def _key_balances(token: str, currency: str | None) -> FT | str:
     compute them. A report the company cannot show (its module is off) is left out."""
     rows = []
     for label, read, figure in (
-        ("migration.check.trial_balance", api.get_trial_balance, lambda body: body["total_debit"]),
+        ("company_backup.tb_total_debits", api.get_trial_balance, lambda body: body["total_debit"]),
         ("company_backup.owed_to_you", api.get_ar_aging, lambda body: sum(body["buckets"].values())),
         ("company_backup.you_owe", api.get_ap_aging, lambda body: sum(body["buckets"].values())),
     ):

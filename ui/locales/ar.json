@@ -4147,6 +4147,7 @@
   "company_backup.restored_notice": "تمت الاستعادة من نسخة الشركة بتاريخ {date}.",
   "company_backup.prepared_for_you": "أعدّها لك {firm}.",
   "company_backup.owed_to_you": "المستحق لك",
+  "company_backup.tb_total_debits": "إجمالي المدين في ميزان المراجعة",
   "company_backup.you_owe": "المستحق عليك",
   "company_backup.free_locally": "مجاني للاستخدام على جهازك دون حد زمني.",
   "company_backup.already_restored": "سبقت استعادة نسخة الشركة هذه هنا باسم {name}.",
