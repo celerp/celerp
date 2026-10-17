@@ -415,7 +415,9 @@ a:hover { text-decoration: underline; }
 .data-table th.col-dragging { opacity: 0.5; }
 .data-table th.col-drag-over { border-left: 2px solid var(--c-accent); }
 .data-table td { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A header over figures sits right, over them, but reads as a label in the headers' face. */
 .data-table td.cell--money, .data-table td.cell--number, .cell--number { text-align: right; font-family: var(--font-mono); }
+th.cell--number { font-family: inherit; }
 .data-table td { padding: 0 10px; height: var(--c-row-h); border-bottom: 1px solid var(--c-border); vertical-align: middle; }
 .data-row:last-child td { border-bottom: none; }
 .data-row:hover { background: var(--c-bg3); }

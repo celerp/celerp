@@ -1158,6 +1158,15 @@ def test_u42_figures_keep_one_typeface_on_screen_and_in_print(page: Page, fresh_
     assert _figure_font(page) == screen
 
 
+def test_column_headers_share_one_typeface_over_text_and_figures(page: Page, fresh_company):
+    _started(fresh_company)
+    _contributed(fresh_company, "Owner's car")
+    page.goto("/fixed-assets")
+    fonts = page.eval_on_selector_all("main table.data-table thead th",
+                                      "ths => ths.map(th => getComputedStyle(th).fontFamily)")
+    assert len(fonts) > 5 and len(set(fonts)) == 1, fonts
+
+
 def _pdf_pages(pdf: bytes) -> list[tuple[float, float, list[tuple[float, float, str]]]]:
     """Each page of a PDF: its width, height and each piece of text with where it starts.
     pypdf reports some runs with no position of their own (an identity text matrix); only
