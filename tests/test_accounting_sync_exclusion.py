@@ -88,3 +88,15 @@ def test_document_list_accounting_filter_and_bulk_control():
     assert "doc-bulk-operation" in html
     assert "Excluded" in html
     assert "/docs/bulk-accounting-sync" in html
+
+
+def test_an_unknown_accounting_filter_says_every_record_is_shown():
+    """A sync filter Celerp does not know is named as such, the way Client companies names a
+    bad filter, instead of silently showing every record with no choice lit."""
+    from fasthtml.common import to_xml
+    from ui.routes.documents import _accounting_sync_filter
+
+    controls = to_xml(_accounting_sync_filter({"accounting_sync": "bogus"}))
+    assert "flash flash--warning" in controls
+    assert "This sync filter is not one Celerp knows, so every record is shown." in controls
+    assert "flash" not in to_xml(_accounting_sync_filter({"accounting_sync": "included"}))
