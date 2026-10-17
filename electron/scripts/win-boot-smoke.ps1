@@ -245,15 +245,18 @@ function Launch([string]$exe, [string]$what) {
   Fail "$what`: db:ok not reached (port=$port)"
 }
 
-function Ours([string]$dir) { @(Get-Process Celerp, postgres, python -EA SilentlyContinue | Where-Object { $_.Path -like "$dir\*" }) }
+# The app's processes: run from the install folder, or for the database of an account
+# whose profile path has letters outside ASCII, through the account's private folder.
+$private = Join-Path $env:ProgramData "Celerp-$sid"
+function Ours([string]$dir) { @(Get-Process Celerp, postgres, python -EA SilentlyContinue | Where-Object { $_.Path -like "$dir\*" -or $_.Path -like "$private\*" }) }
 
-# The app is open: its window, API and database processes run from the install folder and
-# the API answers with db:ok. Returns those processes, so a later check can tell that
+# The app is open: its window, API and database processes run from the install folder (or
+# the private folder) and the API answers with db:ok. Returns those processes, so a later check can tell that
 # exactly these ended.
 function RunningApp([string]$dir, [string]$port, [string]$what) {
   $procs = @(Ours $dir)
   foreach ($name in "Celerp", "python", "postgres") {
-    if (-not ($procs | Where-Object { $_.Name -eq $name })) { Fail "$what`: no $name process is running from $dir" }
+    if (-not ($procs | Where-Object { $_.Name -eq $name })) { Fail "$what`: no $name process is running from $dir or $private" }
   }
   $ready = try { (Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri "http://127.0.0.1:$port/health/ready").Content } catch { "" }
   if ($ready -notmatch '"db"\s*:\s*"ok"') { Fail "$what`: the API on port $port does not answer db:ok" }
@@ -311,7 +314,6 @@ Write-Host "boot smoke OK on Windows ($smoke, account $u, port $port)"
 # A new database under a profile path with letters outside ASCII is set up in the
 # account's private folder, which only the account, SYSTEM and administrators can open.
 if (-not $Previous -and $profileDir -notmatch '^[\x20-\x7e]+$') {
-  $private = Join-Path $env:ProgramData "Celerp-$sid"
   if (-not (Test-Path (Join-Path $private "postgres\PG_VERSION"))) { Fail "no database in the private folder $private" }
   $acl = Get-Acl $private
   $others = @($acl.Access | Where-Object { $_.IsInherited -or $_.IdentityReference.Value -notin @("$env:COMPUTERNAME\$u", "NT AUTHORITY\SYSTEM", "BUILTIN\Administrators") })
