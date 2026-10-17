@@ -51,6 +51,9 @@ async def test_preview_shows_both_versions_and_what_would_be_lost(ui, real_engin
     assert 'name="company_name"' in form and f"Type {NAME} to replace it" in form
     assert f"Replace {NAME}" in form and "btn--danger" in form
     assert "Or open it as a separate company" in page and f'action="{BASE}/restore"' in page
+    # That a restore never overwrites is said only under the choice it is true of.
+    separate = page.index("restores this as a separate company")
+    assert page.index("Or open it as a separate company") < separate < page.index(f'action="{BASE}/restore"')
 
 
 async def test_replace_needs_the_typed_name_then_offers_the_saved_version_and_undo(ui, real_engine, real_client):
