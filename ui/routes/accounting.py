@@ -197,6 +197,12 @@ def setup_routes(app):
             if error is None:
                 error = (t("acct.not_authorized") if e.status == 403
                          else e.detail or t("acct.error_loading_data"))
+        # Copied amounts arrive as numbers and show at the currency's precision;
+        # typed amounts stay as they were typed.
+        dp = currency_dp(base_currency)
+        lines = [{**line, **{k: f"{line[k]:.{dp}f}" for k in ("debit", "credit")
+                             if isinstance(line.get(k), float)}}
+                 for line in lines]
         return await base_shell(
             page_header(t("acct.new_journal_entry", get_lang(request))),
             _journal_entry_form(accounts, ts, memo, lines, idem_token, error,
@@ -220,8 +226,8 @@ def setup_routes(app):
                 copied = await api.journal_prefill(token, source)
                 ts, memo = copied["ts"], copied["memo"]
                 lines = [{"account": l.get("account") or "", "contact": l.get("contact") or "",
-                          "debit": str(l["debit"]) if l.get("debit") else "",
-                          "credit": str(l["credit"]) if l.get("credit") else ""}
+                          "debit": float(l["debit"]) if l.get("debit") else "",
+                          "credit": float(l["credit"]) if l.get("credit") else ""}
                          for l in copied.get("entries") or []]
             except APIError as e:
                 # Post again is chosen on Client companies, so a missing entry leads back there.
