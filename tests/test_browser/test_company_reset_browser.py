@@ -113,7 +113,7 @@ def test_resetting_lands_on_the_owners_company_still_being_moved_in(playwright, 
         page.wait_for_url(re.compile(rf"/migrations/{run_id}$"), timeout=_WAIT_MS)
         assert _db("SELECT count(*) FROM companies WHERE id = %s", source["id"])[0][0] == 0
         assert _session_company(ctx) == str(staged)
-        assert page.locator('button:has-text("Cancel")').count() == 1
+        assert page.locator('button:has-text("Pause import")').count() == 1
         _shot(page, "6-reset-lands-on-the-move-in-progress")
         # Coming back later returns to the same move.
         page.goto("/")
