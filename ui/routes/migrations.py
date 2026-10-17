@@ -41,6 +41,7 @@ from ui.api_client import APIError
 from ui.components.posting_accounts import NEW_ACCOUNT, account_picker
 from ui.components.shell import auth_shell, client_scripts, flash, page_title
 from ui.components.activity import fmt_qty
+from ui.components.files import fmt_size
 from ui.components.table import EMPTY, display_enum, fmt_money, format_value, searchable_select
 from ui.config import (
     clear_session_cookies,
@@ -1182,7 +1183,7 @@ def _decisions(scan: dict) -> dict:
 def _summary(scan: dict) -> FT:
     period = f"{scan.get('period_start') or '--'} - {scan.get('period_end') or '--'}"
     rows = [
-        (t("migration.file"), f"{scan.get('file_name', '')} ({scan.get('sha256_short', '')})"),
+        (t("migration.file"), f"{scan.get('file_name', '')} ({fmt_size(scan.get('size_bytes') or 0)})"),
         (t("label.company_name"), scan.get("company_name") or "--"),
         (t("migration.base_currency"), scan.get("base_currency") or "--"),
         (t("migration.period"), period),

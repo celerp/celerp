@@ -348,7 +348,6 @@ def scan_view(scan: store.ScanSession) -> dict:
         "display_name": adapter.display_name if adapter else s.source_system,
         "file_name": ", ".join(a.original_name for a in scan.artifacts),
         "size_bytes": sum(a.size_bytes for a in scan.artifacts),
-        "sha256_short": scan.artifacts[0].sha256[:12],
         "source_schema_version": s.source_schema_version,
         "company_name": s.company_name,
         "base_currency": s.base_currency,
