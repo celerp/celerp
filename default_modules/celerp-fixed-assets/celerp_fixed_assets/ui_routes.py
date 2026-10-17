@@ -808,13 +808,13 @@ def _register_table(items: list[dict], classes: dict[str, str], currency: str) -
                *[_money_td(a.get(k), currency) for k in _REGISTER_MONEY],
                Td(t(f"fixed_assets.status.{a.get('status')}")), cls="data-row")
             for a in items]
-    return Table(Thead(Tr(Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")),
-                             cls="col-checkbox"),
-                          Th(t("fixed_assets.number")), Th(t("fixed_assets.name")), Th(t("fixed_assets.class")),
-                          Th(t("fixed_assets.available_date")),
-                          *[_money_th(t(f"fixed_assets.{k}")) for k in _REGISTER_MONEY],
-                          Th(t("fixed_assets.status")))),
-                 Tbody(*rows), cls="data-table", id="fa-register")
+    return Div(Table(Thead(Tr(Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")),
+                                 cls="col-checkbox"),
+                              Th(t("fixed_assets.number")), Th(t("fixed_assets.name")), Th(t("fixed_assets.class")),
+                              Th(t("fixed_assets.available_date")),
+                              *[_money_th(t(f"fixed_assets.{k}")) for k in _REGISTER_MONEY],
+                              Th(t("fixed_assets.status")))),
+                     Tbody(*rows), cls="data-table", id="fa-register"), cls="table-scroll-wrap")
 
 
 def _register_toolbar() -> FT:

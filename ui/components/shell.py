@@ -1840,6 +1840,32 @@ _STICKY_HEADER_JS = """
   function observe(){ if(mo && document.body) mo.observe(document.body, {childList:true, subtree:true, attributes:true}); }
   if(document.body) observe(); else document.addEventListener('DOMContentLoaded', observe);
 })();
+
+(function(){
+  // Scroll cue: a data table's box that scrolls sideways fades the edge it can still scroll
+  // toward (a box that does not scroll is never faded) (app.css .scroll-more-left/right), so hidden columns read as there.
+  function update(box){
+    var max = /auto|scroll/.test(getComputedStyle(box).overflowX) ? box.scrollWidth - box.clientWidth : 0;
+    box.classList.toggle('scroll-more-right', max > 1 && box.scrollLeft < max - 1);
+    box.classList.toggle('scroll-more-left', max > 1 && box.scrollLeft > 1);
+  }
+  // The box changes width with the window; the table changes width with its rows.
+  var sizes = new ResizeObserver(function(entries){
+    entries.forEach(function(e){ update(e.target.matches('table') ? e.target.parentElement : e.target); });
+  });
+  function watch(){
+    document.querySelectorAll('table.data-table').forEach(function(t){
+      var box = t.parentElement;
+      if(!box || box.dataset.scrollCue) return;
+      box.dataset.scrollCue = '1';
+      box.addEventListener('scroll', function(){ update(box); }, {passive: true});
+      sizes.observe(box); sizes.observe(t);
+      update(box);
+    });
+  }
+  document.addEventListener('DOMContentLoaded', watch);
+  document.addEventListener('htmx:afterSwap', watch);
+})();
 """
 
 

@@ -341,6 +341,12 @@ a:hover { text-decoration: underline; }
 /* Scroll wrapper enables horizontal scroll when many columns are visible.
    The inner table keeps overflow:visible so autocomplete dropdowns can escape. */
 .table-scroll-wrap { overflow-x: auto; width: 100%; }
+/* A table's box scrolled short of either end fades that edge, so columns out of view on a
+   narrow screen are not mistaken for none. The shell's scroll-cue script sets the classes. */
+.scroll-more-right { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+.scroll-more-left { -webkit-mask-image: linear-gradient(to right, transparent, #000 32px); mask-image: linear-gradient(to right, transparent, #000 32px); }
+.scroll-more-left.scroll-more-right { -webkit-mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent); }
+@media print { .scroll-more-left, .scroll-more-right { -webkit-mask-image: none; mask-image: none; } }
 /* An empty table's message wraps within the width its scroll box shows, and stays in view,
    rather than running on under the columns scrolled out of sight on a narrow screen. Only an
    empty table's box measures itself (a filled table's box sizes from its rows as before). */
