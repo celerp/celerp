@@ -4267,7 +4267,7 @@
   "company_backup.copies_revoke_confirm": "Revogar este link? Ele deixa de funcionar imediatamente.",
   "company_backup.copies_revoked": "Link revogado. Você pode desfazer isso por 30 segundos.",
   "company_backup.copies_restored": "Revogação desfeita. O link funciona novamente.",
-  "company_backup.copies_new_link_done": "Novo link pronto. O link antigo não funciona mais, e os 14 dias e os 3 downloads recomeçam.",
+  "company_backup.copies_new_link_done": "Novo link pronto. O link antigo não funciona mais, e os 14 dias e os 3 downloads recomeçam. O Celerp não o enviou por e-mail. Use Copiar link para enviá-lo.",
   "company_backup.copies_key_missing": "Este computador não guarda mais a chave desta cópia, então um novo link não a abriria. Use Reenviar para enviar uma nova cópia.",
   "company_backup.copies_revoke_reason": "Após 30 segundos, uma revogação não pode ser desfeita, porque a cópia armazenada é excluída. Use Reenviar para enviar uma nova cópia.",
   "company_backup.handoffs_title": "Cópias de empresas",

@@ -4267,7 +4267,7 @@
   "company_backup.copies_revoke_confirm": "Cabut tautan ini? Tautan langsung berhenti berfungsi.",
   "company_backup.copies_revoked": "Tautan dicabut. Anda dapat mengurungkannya selama 30 detik.",
   "company_backup.copies_restored": "Pencabutan diurungkan. Tautan berfungsi lagi.",
-  "company_backup.copies_new_link_done": "Tautan baru siap. Tautan lama tidak berfungsi lagi, dan 14 hari serta 3 unduhan dimulai ulang.",
+  "company_backup.copies_new_link_done": "Tautan baru siap. Tautan lama tidak berfungsi lagi, dan 14 hari serta 3 unduhan dimulai ulang. Celerp tidak mengirimkannya lewat email. Gunakan Salin tautan untuk mengirimkannya kepada mereka.",
   "company_backup.copies_key_missing": "Komputer ini tidak lagi menyimpan kunci salinan ini, jadi tautan baru tidak akan membukanya. Gunakan Kirim ulang untuk mengirim salinan baru.",
   "company_backup.copies_revoke_reason": "Setelah 30 detik, pencabutan tidak dapat diurungkan karena salinan yang disimpan dihapus. Gunakan Kirim ulang untuk mengirim salinan baru.",
   "company_backup.handoffs_title": "Salinan perusahaan",
