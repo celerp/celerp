@@ -9,7 +9,8 @@ clearing with the same amount, so clearing nets to zero per sale. Voiding the in
 reverting it to draft reverses the disposal and the asset waits again; unvoiding or
 finalizing again completes it from what the restored entry posted.
 
-A credit note on the invoice either credits part of the price (the loss grows) or, with
+A credit note on the invoice either credits part of the price (the gain or loss is worked
+out again from what is left of the price, each on its own account) or, with
 the line marked returned, takes the asset back at what is left of the sale: the asset
 returns to the books as it stood on the sale date, with the depreciation brought up to
 then kept. Voiding a credit note undoes what it did.
@@ -91,6 +92,35 @@ async def _posted_clearing(session, company_id, prefix: str, account: str, asset
     return sum((_dec(e.get("debit")) - _dec(e.get("credit")) for state in rows if state.get("status") == "posted"
                 for e in state.get("entries") or []
                 if e.get("account") == account and (asset_id is None or e.get("asset_id") == asset_id)), Decimal(0))
+
+
+def _split(result: Decimal) -> tuple[Decimal, Decimal]:
+    """A disposal result as the gain account holds it (credited) and the loss account (debited)."""
+    return max(result, Decimal(0)), max(-result, Decimal(0))
+
+
+def _held_in(journal: dict | None, accounts: dict) -> tuple[Decimal, Decimal]:
+    """The gain (credited) and loss (debited) a posted journal holds."""
+    gain, loss = accounts["gain"](), accounts["loss"]()
+    held = {gain: Decimal(0), loss: Decimal(0)}
+    for e in (journal or {}).get("entries") or []:
+        if e.get("account") in held:
+            held[e["account"]] += _dec(e.get("credit")) - _dec(e.get("debit"))
+    return (held[gain], Decimal(0)) if gain == loss else (held[gain], -held[loss])
+
+
+def _restate(accounts: dict, held: tuple[Decimal, Decimal], result: Decimal) -> list:
+    """Lines taking the gain and loss ``held`` for a sale to ``result``: a gain on the gain
+    account, a loss on the loss account, the difference through clearing."""
+    from celerp.services.module_journals import JournalLine
+
+    gain, loss = _split(result)
+    credit = {accounts["gain"](): Decimal(0), accounts["loss"](): Decimal(0), accounts["clearing"](): Decimal(0)}
+    credit[accounts["gain"]()] += gain - held[0]
+    credit[accounts["loss"]()] -= loss - held[1]
+    credit[accounts["clearing"]()] -= (gain - held[0]) - (loss - held[1])
+    return [JournalLine(account=a, credit=c) if c > 0 else JournalLine(account=a, debit=-c)
+            for a, c in credit.items() if c]
 
 
 async def _locked(session, company_id, asset_ids: list[str]) -> dict:
@@ -428,22 +458,24 @@ async def _unsell(session, company_id, user_id, asset_id: str, asset: dict, sale
     if live is not None:
         number = doc_number(await _state(session, company_id, live), live)
         raise conflict(f"{asset['number']} has credit note {number} on this invoice. Void that credit note first.")
+    books = await runs._books(session, company_id)
+    accounts = disposal.accounts(books)
+    reversed_ = _held_in(await _state(session, company_id, sale["journal_id"]), accounts)
     await _reverse(session, company_id, user_id, sale["journal_id"], "sale_reverse", "Sale invoice reversed")
     mv = await _state(session, company_id, sale["movement_id"])
     await _move(session, company_id, user_id, asset_id, kind="reversal", operation="sale_reverse",
                 effective=mv["effective_date"], posting=mv["posting_date"],
                 amounts={k: -_dec(v) for k, v in (mv.get("amounts") or {}).items()}, op_key=op_key,
                 quantity=str(-_dec(mv.get("quantity"))), reverses=sale["movement_id"])
-    # A return voided since leaves its entry standing; what it left on clearing settles to the loss.
-    books = await runs._books(session, company_id)
-    accounts = disposal.accounts(books)
-    short = asset_id.removeprefix("fa:asset:")
-    residual = await _posted_clearing(session, company_id, f"je:mod:{MODULE}:asset:{short}:", accounts["clearing"]())
-    if residual:
+    # A return or credit voided since leaves the gain and loss other journals hold; they
+    # settle back to nothing, through clearing.
+    held = _split(_dec((asset.get("disposal") or {}).get("gain_or_loss")))
+    settle = _restate(accounts, (held[0] - reversed_[0], held[1] - reversed_[1]), Decimal(0))
+    if settle:
+        short = asset_id.removeprefix("fa:asset:")
         await _post(session, company_id, user_id, key=f"asset:{short}:settle:{uuid.uuid4().hex}",
                     operation="sale_reverse", day=mv["effective_date"],
-                    memo=f"{asset['number']} sale reversed: clearing settled",
-                    lines=_lines(accounts["loss"](), accounts["clearing"](), residual), source_id=asset_id,
+                    memo=f"{asset['number']} sale reversed: clearing settled", lines=settle, source_id=asset_id,
                     href=_href(asset_id), label=asset["number"], op_key=op_key)
     await _set(session, company_id, user_id, asset_id, "active", disposal=None,
                sale={**sale, "state": "pending", "journal_id": None, "movement_id": None})
@@ -472,8 +504,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
         gain = _dec(disposed.get("gain_or_loss"))
         je_id = await _post(session, company_id, user_id, key=f"asset:{short}:credit:{uuid.uuid4().hex}",
                             operation="sale_adjust", day=day, memo=f"{number} sale credited: {doc_number(doc, doc_id)}",
-                            lines=_lines(accounts["gain"]() if gain > 0 else accounts["loss"](),
-                                         accounts["clearing"](), amount),
+                            lines=_restate(accounts, _split(gain), gain - amount),
                             source_id=asset_id, href=_href(asset_id), label=number, op_key=op_key)
         credits = {**(sale.get("credits") or {}), doc_id: {
             "kind": "adjust", "amount": money(amount, books.currency), "journal_id": je_id, "live": True, "date": day}}
@@ -538,12 +569,23 @@ async def _credit_reversed(session, company_id, user_id, asset_id: str, asset: d
         raise conflict(f"{asset['number']} was returned with credit note "
                        f"{doc_number(await _state(session, company_id, returned), returned)}. Void that credit "
                        "note first.")
+    books = await runs._books(session, company_id)
+    accounts = disposal.accounts(books)
+    reversed_ = _held_in(await _state(session, company_id, entry["journal_id"]), accounts)
     await _reverse(session, company_id, user_id, entry["journal_id"], "sale_adjust", "Sale credit note reversed")
     disposed = asset.get("disposal") or {}
-    currency = await setup.currency(session, company_id)
+    gain = _dec(disposed.get("gain_or_loss"))
+    held = _split(gain)
+    # Credits voided out of order leave the split the later ones made; it is restated to the result.
+    restated = _restate(accounts, (held[0] - reversed_[0], held[1] - reversed_[1]), gain + _dec(entry["amount"]))
+    if restated:
+        short = asset_id.removeprefix("fa:asset:")
+        await _post(session, company_id, user_id, key=f"asset:{short}:restate:{uuid.uuid4().hex}",
+                    operation="sale_adjust", day=entry.get("date") or sale["date"],
+                    memo=f"{asset['number']} sale credit reversed: gain and loss restated", lines=restated,
+                    source_id=asset_id, href=_href(asset_id), label=asset["number"], op_key=op_key)
     await _set(session, company_id, user_id, asset_id, asset["status"],
-               disposal={**disposed,
-                         "gain_or_loss": money(_dec(disposed.get("gain_or_loss")) + _dec(entry["amount"]), currency)},
+               disposal={**disposed, "gain_or_loss": money(gain + _dec(entry["amount"]), books.currency)},
                sale={**sale, "credits": credits})
 
 

@@ -774,3 +774,116 @@ async def test_invariant_document_totals_unchanged_by_asset_lines(fa):
     plain = await _sell(fa, van, price="5000")
     await _finalize(fa, plain)
     await _assert_totals(fa, plain)
+
+
+# ── The disposal result follows the net proceeds ─────────────────────────────
+#
+# Gain and loss on separate accounts (the seeded chart shares one), so each account must
+# hold the true figure, not just their net. The car carries 11,200 on 20 May.
+
+GAIN, LOSS = "4980", "6980"
+
+
+async def _split_result_accounts(fa: FA) -> None:
+    r = await fa.client.post("/accounting/accounts", headers=fa.h, json={
+        "code": GAIN, "name": "Gain on disposal of assets", "account_type": "revenue"})
+    assert r.status_code in (200, 201), r.text
+    r = await fa.client.put("/accounting/posting-accounts/disposal_gain", headers=fa.h, json={"code": GAIN})
+    assert r.status_code == 200, r.text
+
+
+async def _sold_split(fa: FA, price: str) -> tuple[str, str]:
+    await _split_result_accounts(fa)
+    return await _sold_car(fa, price=price)
+
+
+async def _fixed(fa: FA) -> tuple[D, D]:
+    """Cost and accumulated depreciation across the books (the demo company holds other assets)."""
+    return await fa.balance("1210"), await fa.balance("1220")
+
+
+async def _assert_result(fa: FA, asset_id: str, gain: str, loss: str, remaining: str, fixed=None) -> tuple[D, D]:
+    """The gain account holds ``gain`` (credit), the loss account ``loss`` (debit), the asset
+    records their difference, clearing nets to zero, and cost and depreciation stand at
+    ``fixed`` (as at the sale). Returns cost and depreciation."""
+    assert (-await fa.balance(GAIN), await fa.balance(LOSS)) == (D(gain), D(loss))
+    assert D((await fa.asset(asset_id))["disposal"]["gain_or_loss"]) == D(gain) - D(loss)
+    assert D((await _sale(fa, asset_id))["remaining"]) == D(remaining)
+    await _assert_clearing(fa, asset_id, remaining)
+    now = await _fixed(fa)
+    assert fixed is None or now == fixed, (now, fixed)
+    return now
+
+
+async def test_d1_credit_shrinks_a_gain(fa):
+    car, inv = await _sold_split(fa, "11300")
+    fixed = await _assert_result(fa, car, "100", "0", "11300")
+    await _credit(fa, inv, "30")
+    assert _lines((await _sale_journals(fa, car))[-1]) == {GAIN: (D("30"), D(0)), CLEARING: (D(0), D("30"))}
+    await _assert_result(fa, car, "70", "0", "11270", fixed)
+
+
+async def test_d1_credit_turns_a_gain_into_a_loss_and_back(fa):
+    car, inv = await _sold_split(fa, "11250")
+    fixed = await _assert_result(fa, car, "50", "0", "11250")
+    cn = await _credit(fa, inv, "100")
+    assert _lines((await _sale_journals(fa, car))[-1]) == {
+        GAIN: (D("50"), D(0)), LOSS: (D("50"), D(0)), CLEARING: (D(0), D("100"))}
+    await _assert_result(fa, car, "0", "50", "11150", fixed)
+    await fa.ok(await _doc(fa, cn, "void"))
+    await _assert_result(fa, car, "50", "0", "11250", fixed)
+    await fa.ok(await _doc(fa, cn, "unvoid"))
+    await _assert_result(fa, car, "0", "50", "11150", fixed)
+    await fa.fold_matches(car)
+
+
+async def test_d1_credit_grows_a_loss(fa):
+    car, inv = await _sold_split(fa, "10000")
+    fixed = await _assert_result(fa, car, "0", "1200", "10000")
+    await _credit(fa, inv, "2000")
+    await _assert_result(fa, car, "0", "3200", "8000", fixed)
+
+
+async def test_d1_credits_voided_out_of_order(fa):
+    car, inv = await _sold_split(fa, "11300")
+    first = await _credit(fa, inv, "60")
+    fixed = await _assert_result(fa, car, "40", "0", "11240")
+    second = await _credit(fa, inv, "90", on="2026-06-20")
+    await _assert_result(fa, car, "0", "50", "11150", fixed)
+    await fa.ok(await _doc(fa, first, "void"))
+    await _assert_result(fa, car, "10", "0", "11210", fixed)
+    await fa.ok(await _doc(fa, second, "void"))
+    await _assert_result(fa, car, "100", "0", "11300", fixed)
+    await fa.fold_matches(car)
+
+
+async def test_d1_return_then_reversals_leave_both_accounts_empty(fa):
+    car, inv = await _sold_split(fa, "11250")
+    adjust = await _credit(fa, inv, "100")
+    ret = await _credit(fa, inv, "11150", on="2026-07-01", returned=True)
+    assert (-await fa.balance(GAIN), await fa.balance(LOSS)) == (D(0), D(0))
+    await fa.ok(await _doc(fa, ret, "void"))
+    fixed = await _assert_result(fa, car, "0", "50", "11150")
+    await fa.ok(await _doc(fa, adjust, "void"))
+    await _assert_result(fa, car, "50", "0", "11250", fixed)
+    await fa.ok(await _doc(fa, inv, "void"))
+    assert (await fa.balance(GAIN), await fa.balance(LOSS)) == (D(0), D(0))
+    await _assert_clearing(fa, car, "0")
+    await fa.ok(await _doc(fa, inv, "unvoid"))
+    await _assert_result(fa, car, "50", "0", "11250", fixed)
+    await fa.fold_matches(car)
+
+
+async def test_d1_foreign_currency_credit_splits_in_the_books_currency(fa):
+    await _split_result_accounts(fa)
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    await _run(fa, "2026-03")
+    inv = await _sell(fa, car, price="9000")
+    await _patch_lines(fa, inv, [await _asset_line(fa, inv)], currency="EUR", conversion_rate=1.25)
+    await _finalize(fa, inv)
+    fixed = await _assert_result(fa, car, "50", "0", "11250")
+    made = await fa.operate(f"/assets/{car}/sale/credit", {"kind": "adjust", "amount": "80", "date": "2026-06-10"},
+                            key="fx-adj")
+    await _finalize(fa, made["credit_note_id"])
+    await _assert_result(fa, car, "0", "50", "11150", fixed)
