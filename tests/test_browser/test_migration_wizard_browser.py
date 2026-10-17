@@ -461,3 +461,13 @@ def test_escape_leaves_wizard_fields(page):
     assert page.evaluate("document.activeElement.id") == "prepared_by"
     page.keyboard.press("Escape")
     assert page.evaluate("document.activeElement.id") != "prepared_by"
+
+
+def test_an_error_box_keeps_a_gap_above_what_follows(page):
+    """A refusal box does not sit flush against the field or button after it."""
+    page.goto("/setup/new-company/migrate")
+    page.click('button[type="submit"]:has-text("Analyze")')  # nothing chosen
+    box = page.locator(".flash--error")
+    box.wait_for()
+    gap = box.evaluate("b => b.nextElementSibling.getBoundingClientRect().top - b.getBoundingClientRect().bottom")
+    assert gap >= 8
