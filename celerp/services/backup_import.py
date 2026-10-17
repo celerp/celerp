@@ -791,12 +791,22 @@ def recovery_failure_waiting() -> bool:
 
 
 def _take(path: Path) -> dict | None:
-    """Read and remove the one-shot JSON notice at *path*; None when there is none."""
+    """Read and remove the one-shot JSON notice at *path*; None when there is none.
+
+    The file is claimed by an atomic rename before it is read, so of two pages
+    loading at once exactly one shows it.
+    """
+    claimed = path.with_name(f"{path.name}.{uuid.uuid4().hex}.taken")
     try:
-        notice = json.loads(path.read_text())
-        path.unlink(missing_ok=True)
+        os.replace(path, claimed)
+    except OSError:
+        return None
+    try:
+        notice = json.loads(claimed.read_text())
     except (OSError, ValueError):
         return None
+    finally:
+        claimed.unlink(missing_ok=True)
     return notice if isinstance(notice, dict) else None
 
 

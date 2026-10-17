@@ -682,6 +682,29 @@ class TestRestoreNotice:
         assert not restore_notice_waiting()  # one-shot
         assert take_restore_notice() is None
 
+    def test_two_pages_taking_the_notice_at_once_show_it_once(self, monkeypatch, tmp_path):
+        """Two of the owner's tabs loading at the same moment: the second take, made
+        while the first is still reading the notice, finds nothing to show."""
+        from celerp.config import settings
+        from celerp.services import backup_import
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        backup_import._write_restore_notice([], None, True)
+        real_loads = json.loads
+        second: list = []
+
+        def loads_racing_a_second_page(raw, *a, **kw):
+            if not second:
+                second.append("racing")
+                second[0] = backup_import.take_restore_notice()
+            return real_loads(raw, *a, **kw)
+
+        monkeypatch.setattr(backup_import.json, "loads", loads_racing_a_second_page)
+        first = backup_import.take_restore_notice()
+        assert first is not None
+        assert second == [None]
+        assert not backup_import.restore_notice_waiting()
+
     def test_outcome_parts_compose_all_parts(self):
         from ui.components.shell import restore_outcome_parts
 
