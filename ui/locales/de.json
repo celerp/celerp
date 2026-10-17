@@ -45,7 +45,7 @@
   "accountant_access.from_reverse_confirm": "{memo} umkehren? Die Umkehrung wird am {date} gebucht.",
   "accountant_access.from_reversed_on": "Umgekehrt am {date}",
   "accountant_access.from_undo_confirm": "Umkehrung von {memo} rückgängig machen? Das wird am {date} gebucht.",
-  "accountant_access.from_no_open_date": "Bis heute gesperrt, daher gibt es kein offenes Datum für eine Umkehrung.",
+  "accountant_access.from_no_open_date": "Die Bücher sind bis {date} gesperrt, daher ist kein Datum für die Umkehrung offen. Verschieben Sie das Sperrdatum, um sie umzukehren:",
   "accountant_access.from_voided": "Von Ihrem Steuerberater storniert",
   "accountant_access.from_posted": "Gebucht mit Datum {date}.",
   "accountant_access.give_code": "Kopieren Sie diesen Code und senden Sie ihn an Ihren Buchhalter. Er fügt ihn ein, um einen Schlüssel für dieses Unternehmen auszustellen, sodass niemand eine Unternehmens-ID eintippen muss.",

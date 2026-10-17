@@ -658,7 +658,8 @@ async def apply_firm_lock(company_id: uuid.UUID, grant_id: uuid.UUID, body: dict
 
 async def from_accountant(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
     """The journals the firm posted in these books, newest first, each with the date its
-    reversal would post on (None when no open date is left) and its reversal, if any."""
+    reversal would post on (None when no open date is left, with the lock date that
+    closes today) and its reversal, if any."""
     company = await session.get(Company, company_id)
     settings = company.settings or {}
     rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
@@ -677,14 +678,14 @@ async def from_accountant(session: AsyncSession, company_id: uuid.UUID) -> list[
         rid = reversal_id(str(eid))
         reversal = reversals.get(rid)
         live = reversal is not None and reversal.get("status") == "posted" and reversal_id(rid) not in undone
-        day, _lock = reverse_day(settings, state.get("ts"))
+        day, lock = reverse_day(settings, state.get("ts"))
         items.append({
             "id": str(eid), "memo": state.get("memo") or "", "ts": str(state.get("ts") or "")[:10],
             "status": state.get("status"), "firm": (state.get("peer_origin") or {}).get("firm"),
             "entries": state.get("entries") or [],
             "lines": _lines_text(state.get("entries") or []),
             "total": float(sum(Decimal(str(l.get("debit") or 0)) for l in state.get("entries") or [])),
-            "reverse_on": day,
+            "reverse_on": day, "locked_through": lock,
             "reversal": ({"id": rid, "ts": str(reversal.get("ts"))[:10],
                           "undo_on": reverse_day(settings, reversal.get("ts"))[0]} if live else None),
         })

@@ -45,7 +45,7 @@
   "accountant_access.from_reverse_confirm": "¿Revertir {memo}? La reversión se registra el {date}.",
   "accountant_access.from_reversed_on": "Revertido el {date}",
   "accountant_access.from_undo_confirm": "¿Deshacer la reversión de {memo}? Se registra el {date}.",
-  "accountant_access.from_no_open_date": "Cerrado hasta hoy, así que no hay fecha abierta para revertirlo.",
+  "accountant_access.from_no_open_date": "Los libros están cerrados hasta el {date}, así que no hay ninguna fecha abierta para la reversión. Mueva la fecha de cierre para revertirlo:",
   "accountant_access.from_voided": "Anulado por su contador",
   "accountant_access.from_posted": "Registrado con fecha {date}.",
   "accountant_access.give_code": "Copie este código y envíelo a su contable. Lo pega para emitir una clave para esta empresa, así nadie tiene que escribir un ID de empresa.",

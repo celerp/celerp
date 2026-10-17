@@ -45,7 +45,7 @@
   "accountant_access.from_reverse_confirm": "Stornare {memo}? Lo storno viene registrato il {date}.",
   "accountant_access.from_reversed_on": "Stornata il {date}",
   "accountant_access.from_undo_confirm": "Annullare lo storno di {memo}? L'annullamento viene registrato il {date}.",
-  "accountant_access.from_no_open_date": "Bloccato fino a oggi, quindi non c'è una data aperta per stornarla.",
+  "accountant_access.from_no_open_date": "I libri sono bloccati fino al {date}, quindi nessuna data è aperta per lo storno. Sposta la data di blocco per stornarlo:",
   "accountant_access.from_voided": "Annullata dal commercialista",
   "accountant_access.from_posted": "Registrata in data {date}.",
   "accountant_access.give_code": "Copia questo codice e invialo al tuo commercialista. Lo incolla per emettere una chiave per questa azienda, senza digitare un ID azienda.",

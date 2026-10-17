@@ -45,7 +45,7 @@
   "accountant_access.from_reverse_confirm": "عكس {memo}؟ يُرحَّل القيد العكسي بتاريخ {date}.",
   "accountant_access.from_reversed_on": "عُكس بتاريخ {date}",
   "accountant_access.from_undo_confirm": "التراجع عن عكس {memo}؟ يُرحَّل التراجع بتاريخ {date}.",
-  "accountant_access.from_no_open_date": "مقفل حتى اليوم، فلا يوجد تاريخ مفتوح لعكسه.",
+  "accountant_access.from_no_open_date": "الدفاتر مقفلة حتى {date}، فلا يوجد تاريخ مفتوح للعكس. انقل تاريخ القفل لعكسه:",
   "accountant_access.from_voided": "ألغاه محاسبك",
   "accountant_access.from_posted": "تم الترحيل بتاريخ {date}.",
   "accountant_access.give_code": "انسخ هذا الرمز وأرسله إلى محاسبك. يلصقه لإصدار مفتاح لهذه الشركة، فلا يحتاج أحد إلى كتابة معرّف الشركة.",

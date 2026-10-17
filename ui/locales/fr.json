@@ -45,7 +45,7 @@
   "accountant_access.from_reverse_confirm": "Contrepasser {memo} ? La contrepassation est passée le {date}.",
   "accountant_access.from_reversed_on": "Contrepassée le {date}",
   "accountant_access.from_undo_confirm": "Annuler la contrepassation de {memo} ? L'annulation est passée le {date}.",
-  "accountant_access.from_no_open_date": "Clôturé jusqu'à aujourd'hui : aucune date ouverte pour la contrepasser.",
+  "accountant_access.from_no_open_date": "Les livres sont clôturés jusqu'au {date} : aucune date n'est ouverte pour la contrepassation. Déplacez la date de clôture pour la contrepasser :",
   "accountant_access.from_voided": "Annulée par votre comptable",
   "accountant_access.from_posted": "Passée à la date du {date}.",
   "accountant_access.give_code": "Copiez ce code et envoyez-le à votre comptable. Il le colle pour créer une clé pour cette entreprise, sans saisir d’ID d’entreprise.",

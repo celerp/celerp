@@ -45,7 +45,7 @@
   "accountant_access.from_reverse_confirm": "Estornar {memo}? O estorno é registrado em {date}.",
   "accountant_access.from_reversed_on": "Estornado em {date}",
   "accountant_access.from_undo_confirm": "Desfazer o estorno de {memo}? Isso é registrado em {date}.",
-  "accountant_access.from_no_open_date": "Bloqueado até hoje, então não há data aberta para estorná-lo.",
+  "accountant_access.from_no_open_date": "Os livros estão bloqueados até {date}, então nenhuma data está aberta para o estorno. Mova a data de bloqueio para estorná-lo:",
   "accountant_access.from_voided": "Anulado pelo seu contador",
   "accountant_access.from_posted": "Registrado com data de {date}.",
   "accountant_access.give_code": "Copie este código e envie-o ao seu contador. Ele o cola para emitir uma chave para esta empresa, sem precisar digitar um ID de empresa.",

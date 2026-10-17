@@ -1157,7 +1157,8 @@ def _from_accountant_action(item: dict, lang: str) -> FT:
     reversal = item.get("reversal")
     target, day = (reversal["id"], reversal.get("undo_on")) if reversal else (item["id"], item.get("reverse_on"))
     if day is None:
-        return Span(t("accountant_access.from_no_open_date", lang))
+        return Span(t("accountant_access.from_no_open_date", lang, date=item.get("locked_through") or "--"),
+                    " ", A(t("page.period_lock", lang), href="/settings/accounting?tab=period-lock"))
     url = f"/settings/connectors/celerp/from-accountant/{quote(target, safe='')}/reverse"
     if reversal:
         return Span(
