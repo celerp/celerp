@@ -71,3 +71,18 @@ def test_the_sign_in_box_stands_off_the_fetch_button(browser):
     finally:
         page.close()
     assert gap >= 12, f"the fetch button sits {gap}px under the sign-in box"
+
+
+def test_the_revoke_note_stands_off_send_company_copy(browser):
+    from ui.routes.company_backup import _copies_table
+
+    row = {"id": "c1", "recipient": "client@example.test", "firm_name": "Harbor Bookkeeping",
+           "status": "sent", "opened": True, "downloaded": False, "company_opened": False,
+           "sent_at": "2026-10-17", "expires_at": "2026-10-31T00:00:00+00:00"}
+    page = _render(browser, to_xml(_copies_table([row])) + "<a class='btn btn--primary' id='send'>Send</a>")
+    try:
+        gap = page.evaluate("""() => document.querySelector('#send').getBoundingClientRect().top
+            - document.querySelector('#copies-list').getBoundingClientRect().bottom""")
+    finally:
+        page.close()
+    assert gap >= 12, f"Send company copy sits {gap}px under the revoke note"
