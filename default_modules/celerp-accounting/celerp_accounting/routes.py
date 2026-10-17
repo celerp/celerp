@@ -4785,7 +4785,7 @@ async def fix_peer_hold(
     else:
         await peer_accounts.fix_hold(session, company_id, item, action=body.action,
                                      account=body.account, code=body.code)
-    item.fix = {**item.fix, "fixed": True}
+    item.fix, item.reason = {**item.fix, "fixed": True}, "Fixed. It posts on the next sync."
     await session.commit()
     return {"ok": True}
 
