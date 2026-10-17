@@ -322,6 +322,66 @@ async def test_direction_set_on_the_detail_page_returns_its_toggle(monkeypatch):
     assert "btn--primary" in outbound
 
 
+def _ui_owner_patches():
+    return patch(
+        "ui.api_client.get_company",
+        AsyncMock(return_value={
+            "id": "00000000-0000-0000-0000-000000000002",
+            "settings": {},
+            "current_role": "owner",
+        }),
+    )
+
+
+@pytest.mark.asyncio
+async def test_celerp_connector_returns_to_the_accounting_tab():
+    """The accountant connector is not in the relay's catalog; its way back, and
+    where a finished disconnect lands, is its own Accounting Sync tab."""
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui.app import app as ui_app
+    from ui.routes import settings_connectors as routes
+
+    token = make_test_token(role="owner")
+    with _ui_owner_patches(), \
+            patch("ui.api_client.delete_connector_credentials", AsyncMock(return_value={"ok": True})), \
+            patch.object(routes, "_fetch_catalog", AsyncMock(return_value=([], "", False))), \
+            patch.object(routes, "_get_connector_config", AsyncMock(return_value=None)), \
+            patch.object(routes, "_entity_runs", AsyncMock(return_value={})), \
+            patch.object(routes, "_attention", AsyncMock(return_value=[])), \
+            patch.object(routes, "_from_accountant_section", AsyncMock(return_value="")):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
+            page = await client.get("/settings/connectors/celerp", cookies={"celerp_token": token})
+            gone = await client.delete("/settings/connectors/celerp/disconnect?redirect=1",
+                                       cookies={"celerp_token": token})
+
+    assert 'href="/settings/cloud?tab=accounting"' in page.text
+    assert "tab=website" not in page.text
+    assert gone.headers["HX-Redirect"] == "/settings/cloud?tab=accounting"
+
+
+@pytest.mark.asyncio
+async def test_connector_refusals_show_the_reason_without_the_status_code():
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui.api_client import APIError
+    from ui.app import app as ui_app
+
+    token = make_test_token(role="owner")
+    refused = AsyncMock(side_effect=APIError(401, "No active Celerp Connect session."))
+    with _ui_owner_patches(), patch("ui.api_client.delete_connector_credentials", refused), \
+            patch("ui.api_client.start_connector_sync", refused):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
+            gone = await client.delete("/settings/connectors/celerp/disconnect?redirect=1",
+                                       cookies={"celerp_token": token})
+            sync = await client.post("/settings/connectors/celerp/sync",
+                                     cookies={"celerp_token": token})
+
+    for html in (gone.text, sync.text):
+        assert "No active Celerp Connect session." in html
+        assert "API 401" not in html
+
+
 def _card_html(catalog: list[dict], config=None, awaiting=None, category="accounting"):
     from fasthtml.common import to_xml
     from ui.routes.settings_connectors import connectors_tab_content
