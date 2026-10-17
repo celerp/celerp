@@ -90,7 +90,7 @@ test("an interactive install names each stage before it starts",
     before(extract, "Preparing application files...", "!insertmacro compute_files_for_current_arch");
     before(extract, "Extracting application files...", 'Nsis7z::Extract "${FILE}"');
     before(extract, "Installing application files...", "CopyFiles /SILENT");
-    before(section, "Finishing installation...", "!insertmacro registryAddInstallInfo");
+    before(section, "Finishing installation...", "!insertmacro celerpSwapIn");
   });
 
 // When the app files cannot be copied into place (a full disk, a file still in
@@ -104,8 +104,8 @@ test("setup stops with an error when the app files cannot be copied",
     const macro = extract.split("!macro extractUsing7za FILE")[1].split("!macroend")[0];
     const failed = macro.split("IfErrors 0 DoneExtract7za")[1].split("RetryExtract7za:")[0];
     expect(failed).toContain("/SD IDCANCEL IDRETRY RetryExtract7za");
-    expect(failed).toContain("could not copy its files to $OUTDIR. Make sure the disk has enough free space");
-    expect(failed.trim().split(/\s*\n\s*/).slice(-2)).toEqual(["SetErrorLevel 2", "Quit"]);
+    expect(failed).toContain("could not copy its files to $INSTDIR. Make sure the disk has enough free space");
+    expect(failed.trim().split(/\s*\n\s*/).slice(-3)).toEqual(["!insertmacro celerpAbandonCopy", "SetErrorLevel 2", "Quit"]);
     expect(macro.split('Nsis7z::Extract "${FILE}"').length).toBe(2);
   });
 
@@ -124,4 +124,131 @@ test("an install folder given with /D keeps its spaces",
     expect(reader).toContain('${If} $0 S== " /D="');
     expect(reader).toContain('StrCpy $INSTDIR $3 "" $1');
     expect(multiUser.split("!insertmacro installDirFromCommandLine").length).toBe(3);
+  });
+
+// An install over an existing one copies the new version in full into a folder
+// next to the install folder, and only then swaps it in, so a copy that fails
+// (a full disk, a stopped setup) leaves the installed version as it was. The old
+// version is uninstalled after the swap, from where it moved to. Free space on
+// every volume setup writes to is checked before anything is changed. A folder
+// that holds something other than Celerp is installed into the stock way
+// (build/installer.nsh, patches/app-builder-lib@25.1.8.patch).
+function macro(text, name) {
+  const parts = text.split(`!macro ${name}`);
+  expect(parts.length).toBe(2);
+  return parts[1].split("!macroend")[0];
+}
+
+test("setup checks the disk and copies the new version aside before replacing anything",
+  function test_nsis_replace_order() {
+    const section = fs.readFileSync(path.join(templatesDir(), "installSection.nsh"), "utf8");
+    const steps = [
+      "InitPluginsDir\n!insertmacro celerpCleanStoppedSetups",
+      "!insertmacro celerpPrepareReplace",
+      "!insertmacro celerpCheckDiskSpace",
+      '${if} $celerpMode == "direct"\n  !insertmacro celerpUninstallOldVersions\n${endIf}',
+      "!insertmacro celerpBeginCopy",
+      "!insertmacro installApplicationFiles",
+      "!insertmacro celerpSwapIn",
+      '${if} $celerpMode != "direct"\n  !insertmacro celerpUninstallOldVersions\n${endIf}',
+      "!insertmacro celerpFinishReplace",
+      "!insertmacro registryAddInstallInfo",
+    ];
+    const at = steps.map((step) => section.indexOf(step));
+    expect(at.every((i) => i > -1)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(section).not.toContain("SetOutPath $INSTDIR");
+    expect(section).not.toContain("!insertmacro uninstallOldVersion ");
+    const uninstall = macro(include(), "celerpUninstallOldVersions");
+    expect(uninstall).toContain("!insertmacro uninstallOldVersion SHELL_CONTEXT");
+    expect(uninstall).toContain("!insertmacro uninstallOldVersion HKEY_CURRENT_USER");
+  });
+
+test("the new version is copied next to the install folder under names of the same length",
+  function test_nsis_sibling_names() {
+    const prepare = macro(include(), "celerpPrepareReplace");
+    expect(prepare).toContain('StrCpy $celerpName $celerpName "" 2');
+    expect(prepare).toContain('StrCpy $celerpStage "$celerpParent\\~N$celerpName"');
+    expect(prepare).toContain('StrCpy $celerpOld "$celerpParent\\~O$celerpName"');
+    expect(prepare).toContain('StrCpy $celerpMarker "$celerpParent\\~S$celerpName"');
+    // only a swap this setup can prove it started is finished or undone
+    expect(prepare.indexOf('${If} ${FileExists} "$celerpMarker"')).toBeLessThan(prepare.indexOf('Rename "$celerpOld" "$INSTDIR"'));
+    expect(prepare).toContain('StrCpy $celerpMode "swap"');
+    expect(prepare).toContain('StrCpy $celerpMode "fresh"');
+    const begin = macro(include(), "celerpBeginCopy");
+    expect(begin).toContain("SetOutPath $celerpStage");
+  });
+
+test("setup stops before changing anything when a volume is short of space",
+  function test_nsis_disk_space_check() {
+    const nsh = include();
+    const check = macro(nsh, "celerpCheckDiskSpace");
+    for (const where of ['"$LOCALAPPDATA"', '"$PLUGINSDIR"', '"$INSTDIR"']) {
+      expect(check).toContain(`!insertmacro celerpFreeSpace ${where}`);
+    }
+    expect(check).toContain("${APP_64_UNPACKED_SIZE}");
+    const require = macro(nsh, "celerpRequireSpace");
+    expect(require).toContain("Nothing has been changed.");
+    expect(require).toMatch(/Nothing has been changed\." \/SD IDOK\s*\n\s*SetErrorLevel 2\s*\n\s*Quit/);
+  });
+
+test("a failed swap puts the installed version back and a stopped one is undone next time",
+  function test_nsis_swap_recovers() {
+    const nsh = include();
+    const swap = macro(nsh, "celerpSwapIn");
+    expect(swap).toContain('Rename "$INSTDIR" "$celerpOld"');
+    expect(swap).toContain('Rename "$celerpStage" "$INSTDIR"');
+    const failed = swap.split('Rename "$celerpStage" "$INSTDIR"')[1].split("SetOutPath $INSTDIR")[0];
+    expect(failed).toContain('Rename "$celerpOld" "$INSTDIR"');
+    expect(failed).toContain("!insertmacro celerpAbandonCopy");
+    expect(failed).toContain("SetErrorLevel 2");
+    // a process cannot move or delete its working folder
+    expect(swap.trim().split(/\s*\n\s*/)[1]).toBe("SetOutPath $PLUGINSDIR");
+    expect(macro(nsh, "celerpAbandonCopy")).toContain('RMDir /r "$celerpStage"');
+    expect(macro(nsh, "celerpFinishReplace")).toContain('RMDir /r "$celerpOld"');
+  });
+
+test("the replaced version is uninstalled from where it moved to",
+  function test_nsis_old_version_location() {
+    const util = fs.readFileSync(path.join(templatesDir(), "include/installUtil.nsh"), "utf8");
+    const fn = util.split("Function uninstallOldVersion")[1].split("FunctionEnd")[0];
+    const hook = fn.indexOf("!insertmacro celerpOldVersionLocation");
+    expect(hook).toBeGreaterThan(fn.indexOf("!insertmacro readReg $installationDir"));
+    expect(hook).toBeLessThan(fn.indexOf("!insertmacro copyFile"));
+    const loc = macro(include(), "celerpOldVersionLocation");
+    expect(loc).toContain('StrCpy $uninstallerFileName "$celerpOld$celerpFile"');
+    expect(loc).toContain("StrCpy $installationDir $celerpOld");
+  });
+
+// A setup that was stopped cannot delete its temporary folder, which holds the
+// unpacked app. The next setup removes such folders: only ones marked as Celerp
+// setup folders whose setup process is no longer running.
+test("setup removes the temporary folders of Celerp setups that were stopped",
+  function test_nsis_cleans_stopped_setups() {
+    const clean = macro(include(), "celerpCleanStoppedSetups");
+    expect(clean).toContain('FileOpen $celerpFile "$PLUGINSDIR\\celerp-setup.pid" w');
+    expect(clean).toContain('FindFirst $celerpFind $celerpName "$celerpParent\\ns*.tmp"');
+    expect(clean).toContain('${AndIf} ${FileExists} "$celerpParent\\$celerpName\\celerp-setup.pid"');
+    expect(clean).toContain("kernel32::OpenProcess(i 0x1000, i 0, i $celerpPid)");
+    expect(clean.split('RMDir /r "$celerpParent\\$celerpName"').length).toBe(3);
+  });
+
+// The 7-Zip plugin reports no error when the disk fills while it unpacks. The
+// unpacked files are counted against the size electron-builder recorded before
+// anything is copied, and a short unpack stops setup with the installed version
+// as it was. Every file is in the archive, so the two sizes are comparable.
+test("setup stops before copying when the app did not unpack completely",
+  function test_nsis_unpack_checked() {
+    const extract = fs.readFileSync(path.join(templatesDir(), "include/extractAppPackage.nsh"), "utf8");
+    const unpack = extract.split("!macro extractUsing7za FILE")[1].split("!macroend")[0];
+    const check = unpack.indexOf("!insertmacro celerpCheckUnpacked");
+    expect(check).toBeGreaterThan(unpack.indexOf('Nsis7z::Extract "${FILE}"'));
+    expect(check).toBeLessThan(unpack.indexOf("CopyFiles /SILENT"));
+    const body = macro(include(), "celerpCheckUnpacked");
+    expect(body).toContain('${GetSize} "$PLUGINSDIR\\7z-out" "/S=0B" $celerpBytes');
+    expect(body).toContain("System::Int64Op $celerpBytes + 1023");
+    expect(body).toContain("System::Int64Op $celerpKb / 1024");
+    expect(body).toContain("${If} $celerpKb != ${APP_64_UNPACKED_SIZE}");
+    expect(body).toMatch(/\/SD IDOK\s*\n\s*!insertmacro celerpAbandonCopy\s*\n\s*SetErrorLevel 2\s*\n\s*Quit/);
+    expect(pkg.build.nsis.preCompressedFileExtensions).toEqual([]);
   });

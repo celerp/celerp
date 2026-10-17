@@ -832,10 +832,15 @@ jobs:
       # compared byte for byte); installed older -> updates; the in-app updater
       # (--updated) -> is never stopped or prompted.
       # Before any of that: a disk without room for the app must stop the installer
-      # with a non-zero exit and register nothing; an installer stopped part way
-      # registers nothing, and the next run installs the complete app over what it
-      # left (the stopped run's temporary files are reported). The first full install
-      # is timed into the job summary, reported and never compared against a limit.
+      # with a non-zero exit and register nothing; an installer stopped while it
+      # unpacks, and one stopped while it copies, register nothing, and the next run
+      # installs the complete app and removes what they left (their temporary
+      # folders and the half-copied folder). The first full install is timed into the
+      # job summary, reported and never compared against a limit.
+      # After them, an update on a nearly full disk (setup's temporary folder on the
+      # same disk) is refused before anything changes, and one where the disk fills
+      # while it unpacks or while it copies leaves the installed version byte for byte
+      # as it was.
       - name: Installer version check (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -871,38 +876,57 @@ jobs:
             } | ConvertTo-Json -Compress
           }
 
-          # A full disk: a 300 MB volume cannot hold the app.
-          $letter = [char[]](70..90) | Where-Object { -not (Test-Path "${_}:\") } | Select-Object -Last 1
-          $vhd = Join-Path $env:RUNNER_TEMP "lowdisk.vhdx"
-          $dp = Join-Path $env:RUNNER_TEMP "lowdisk.txt"
-          Set-Content -Encoding Ascii $dp "create vdisk file=`"$vhd`" maximum=300 type=expandable`r`nselect vdisk file=`"$vhd`"`r`nattach vdisk`r`ncreate partition primary`r`nformat fs=ntfs quick label=lowdisk`r`nassign letter=$letter"
-          diskpart /s $dp | Out-Null
-          if (-not (Test-Path "${letter}:\")) { Fail "could not attach the low-disk volume" }
-          $p = Start-Process -FilePath $setup -ArgumentList "/S /currentuser /D=${letter}:\Celerp" -PassThru
-          if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; Fail "installer on a full disk was still running after 600 s" }
-          if ($p.ExitCode -eq 0) { Fail "installer on a full disk exited 0" }
-          if (Entry) { Fail "installer on a full disk registered an install" }
-          Write-Host "full disk: stopped with exit $($p.ExitCode), nothing registered"
-          Set-Content -Encoding Ascii $dp "select vdisk file=`"$vhd`"`r`ndetach vdisk"
-          diskpart /s $dp | Out-Null
-
-          # Stopped part way: the installer is ended once it has copied part of the app.
-          $target = Join-Path $env:LOCALAPPDATA "Programs\celerp"
-          $tempBefore = @(Get-ChildItem $env:TEMP -Directory -Filter "ns*.tmp" -EA SilentlyContinue | ForEach-Object Name)
-          $p = Start-Process -FilePath $setup -ArgumentList "/S /currentuser" -PassThru
-          $copied = 0
-          while (-not $p.HasExited) {
-            $copied = @(Get-ChildItem $target -Recurse -File -EA SilentlyContinue).Count
-            if ($copied -ge 1000) { Stop-Process -Id $p.Id -Force; $p.WaitForExit(); break }
-            Start-Sleep -Milliseconds 200
+          function NewTemp { @(Get-ChildItem $env:TEMP -Directory -Filter "ns*.tmp" -EA SilentlyContinue | Where-Object { $tempBefore -notcontains $_.Name }) }
+          function Siblings([string]$parent) { @(Get-ChildItem $parent -Force -EA SilentlyContinue | Where-Object { $_.Name -like "~*" } | ForEach-Object FullName) }
+          $diskpart = Join-Path $env:RUNNER_TEMP "lowdisk.txt"
+          function Volume([string]$vhd, [int]$mb) {
+            $letter = [char[]](70..90) | Where-Object { -not (Test-Path "${_}:\") } | Select-Object -Last 1
+            Set-Content -Encoding Ascii $diskpart "create vdisk file=`"$vhd`" maximum=$mb type=expandable`r`nselect vdisk file=`"$vhd`"`r`nattach vdisk`r`ncreate partition primary`r`nformat fs=ntfs quick label=lowdisk`r`nassign letter=$letter"
+            diskpart /s $diskpart | Out-Null
+            if (-not (Test-Path "${letter}:\")) { Fail "could not attach the low-disk volume $vhd" }
+            "${letter}:"
           }
-          if ($copied -lt 1000) { Fail "the installer finished (exit $($p.ExitCode)) before it could be stopped part way" }
-          if (Entry) { Fail "an installer stopped part way registered an install" }
-          $stale = @(Get-ChildItem $env:TEMP -Directory -Filter "ns*.tmp" -EA SilentlyContinue | Where-Object { $tempBefore -notcontains $_.Name })
-          $staleMB = [math]::Round((($stale | ForEach-Object { Get-ChildItem $_.FullName -Recurse -File -EA SilentlyContinue } | Measure-Object Length -Sum).Sum) / 1MB)
-          Write-Host "stopped part way: $copied files copied, nothing registered; it left $($stale.Count) temporary folders ($staleMB MB)"
+          function Detach([string]$vhd) {
+            Set-Content -Encoding Ascii $diskpart "select vdisk file=`"$vhd`"`r`ndetach vdisk"
+            diskpart /s $diskpart | Out-Null
+          }
+          $tempBefore = @(Get-ChildItem $env:TEMP -Directory -Filter "ns*.tmp" -EA SilentlyContinue | ForEach-Object Name)
 
-          # none: a full install, over what the stopped run left.
+          # A full disk: a 300 MB volume cannot hold the app. Setup says so before it
+          # writes anything.
+          $vhd = Join-Path $env:RUNNER_TEMP "lowdisk.vhdx"
+          $vol = Volume $vhd 300
+          $p = Start-Process -FilePath $setup -ArgumentList "/S /currentuser /D=$vol\Celerp" -PassThru
+          if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; Fail "installer on a full disk was still running after 600 s" }
+          if ($p.ExitCode -ne 2) { Fail "installer on a full disk exited $($p.ExitCode) (want 2)" }
+          if (Entry) { Fail "installer on a full disk registered an install" }
+          if ((NewTemp).Count) { Fail "installer on a full disk left $((NewTemp).FullName -join ', ')" }
+          if ((Siblings $vol).Count) { Fail "installer on a full disk left $((Siblings $vol) -join ', ')" }
+          Write-Host "full disk: stopped with exit 2 before writing, nothing registered or left behind"
+          Detach $vhd
+
+          # Stopped part way: the installer is ended once while it unpacks the app into
+          # its temporary folder, and once while it copies the app next to the install
+          # folder.
+          $target = Join-Path $env:LOCALAPPDATA "Programs\celerp"
+          function StopWhen([string]$what, [scriptblock]$count) {
+            $p = Start-Process -FilePath $setup -ArgumentList "/S /currentuser" -PassThru
+            $n = 0
+            while (-not $p.HasExited) {
+              $n = & $count
+              if ($n -ge 1000) { Stop-Process -Id $p.Id -Force; $p.WaitForExit(); break }
+              Start-Sleep -Milliseconds 100
+            }
+            if ($n -lt 1000) { Fail "the installer finished (exit $($p.ExitCode)) before it could be stopped $what" }
+            if (Entry) { Fail "an installer stopped $what registered an install" }
+            $mb = [math]::Round((((NewTemp) | ForEach-Object { Get-ChildItem $_.FullName -Recurse -File -EA SilentlyContinue }) | Measure-Object Length -Sum).Sum / 1MB)
+            Write-Host "stopped $what`: $n files, nothing registered; left $((NewTemp).Count) temporary folders ($mb MB) and [$((Siblings (Split-Path $target)) -join ', ')]"
+          }
+          StopWhen "while unpacking" { @((NewTemp) | ForEach-Object { Get-ChildItem (Join-Path $_.FullName "7z-out") -Recurse -File -EA SilentlyContinue }).Count }
+          StopWhen "while copying" { @(Get-ChildItem (Join-Path (Split-Path $target) "~Nlerp") -Recurse -File -EA SilentlyContinue).Count }
+          if (-not (Siblings (Split-Path $target)).Count) { Fail "the run stopped while copying left no copy folder to clean up; the check did not stop it where intended" }
+
+          # none: a full install, after the stopped runs.
           $watch = [Diagnostics.Stopwatch]::StartNew()
           $code = Install @("/S", "/currentuser")
           $watch.Stop()
@@ -910,7 +934,10 @@ jobs:
           if (-not (Entry)) { Fail "no Celerp uninstall entry after install" }
           $built = Installed
           python electron/scripts/check_win_bundle.py installed electron/dist/win-unpacked (InstallDir)
-          if ($LASTEXITCODE -ne 0) { Fail "the install over a stopped run differs from the build" }
+          if ($LASTEXITCODE -ne 0) { Fail "the install after the stopped runs differs from the build" }
+          if ((NewTemp).Count) { Fail "the stopped runs' temporary folders are still there: $((NewTemp).FullName -join ', ')" }
+          if ((Siblings (Split-Path $target)).Count) { Fail "the stopped run's copy is still there: $((Siblings (Split-Path $target)) -join ', ')" }
+          Write-Host "none: removed what the stopped runs left"
           $line = "- Windows runner account, per-user silent install: {0:N1} s" -f $watch.Elapsed.TotalSeconds
           Write-Host "timing: $line"
           Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY $line
@@ -944,6 +971,73 @@ jobs:
           $code = Install @("/S", "/currentuser")
           if ($code -ne 0 -or (Installed) -ne $built) { Fail "newer installer over 0.0.1: exit $code, entry $(Installed) (want exit 0, $built)" }
           Write-Host "installed older: updated 0.0.1 to $built"
+
+          # An update on a nearly full disk. The app is installed on a volume with room
+          # for it, the installed copy is marked as an older version, and setup's
+          # temporary folder is put on the same volume.
+          $appMB = [math]::Ceiling(((Get-ChildItem electron/dist/win-unpacked -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB)
+          $setupMB = [math]::Ceiling((Get-Item $setup).Length / 1MB)
+          $vhd = Join-Path $env:RUNNER_TEMP "update.vhdx"
+          $vol = Volume $vhd (4 * $appMB + $setupMB + 1024)
+          $code = Install @("/S", "/currentuser", "/D=$vol\Celerp")
+          if ($code -ne 0 -or (InstallDir) -ne "$vol\Celerp") { Fail "install on the update volume: exit $code, folder $(InstallDir)" }
+          Set-ItemProperty (Entry).PSPath -Name DisplayVersion -Value "0.0.1"
+          $dir = InstallDir
+          Set-Content -Encoding Ascii (Join-Path $dir "celerp-ci-sentinel.txt") "installed copy"
+          $before = State
+          $tmp = "$vol\tmp"
+          New-Item -ItemType Directory $tmp | Out-Null
+          function Unchanged([string]$what) {
+            $after = State
+            if ($after -ne $before) { Fail "$what changed the install:`n before $before`n after  $after" }
+            Remove-Item (Join-Path $dir "celerp-ci-sentinel.txt")
+            python electron/scripts/check_win_bundle.py installed electron/dist/win-unpacked $dir
+            if ($LASTEXITCODE -ne 0) { Fail "$what`: the installed copy no longer matches the build" }
+            Set-Content -Encoding Ascii (Join-Path $dir "celerp-ci-sentinel.txt") "installed copy"
+            if ((Siblings $vol).Count) { Fail "$what left $((Siblings $vol) -join ', ')" }
+            $left = @(Get-ChildItem $tmp -Force)
+            if ($left.Count) { Fail "$what left $($left.FullName -join ', ') in its temporary folder" }
+          }
+          function Fill([string]$file, [long]$leave) {
+            $free = (Get-PSDrive $vol.TrimEnd(":")).Free
+            if ($free -gt $leave) { fsutil file createnew $file ($free - $leave) | Out-Null }
+          }
+          function Update {
+            $env:TEMP = $tmp; $env:TMP = $tmp
+            try { Start-Process -FilePath $setup -ArgumentList "/S /currentuser /D=$vol\Celerp" -PassThru } finally { $env:TEMP = $tempHome; $env:TMP = $tempHome }
+          }
+          $tempHome = $env:TEMP
+
+          # Too little room for the update: setup stops before changing anything.
+          Fill "$vol\filler-1.bin" 150MB
+          $p = Update
+          if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; Fail "update on a full disk was still running after 600 s" }
+          if ($p.ExitCode -ne 2) { Fail "update on a full disk exited $($p.ExitCode) (want 2)" }
+          Unchanged "an update on a full disk"
+          Write-Host "update on a full disk: stopped with exit 2, the installed version unchanged byte for byte"
+          Remove-Item "$vol\filler-1.bin"
+
+          # The disk fills up while the update unpacks, then while it copies: setup
+          # removes what it made and stops. The unpack case proves setup notices a short
+          # unpack, which the 7-Zip plugin does not report.
+          function FillDuring([string]$phase, [scriptblock]$count) {
+            $p = Update
+            while (-not $p.HasExited -and (& $count) -lt 50) { Start-Sleep -Milliseconds 50 }
+            if ($p.HasExited) { Fail "the update finished (exit $($p.ExitCode)) before the disk could fill $phase" }
+            for ($i = 0; $i -lt 5; $i++) { try { Fill "$vol\filler-$i.bin" 1MB } catch { } }
+            if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; Fail "update with the disk full $phase was still running after 600 s" }
+            if ($p.ExitCode -ne 2) { Fail "update with the disk full $phase exited $($p.ExitCode) (want 2)" }
+            Unchanged "an update with the disk full $phase"
+            Write-Host "update with the disk full $phase`: stopped with exit 2, the installed version unchanged byte for byte"
+            Get-ChildItem $vol -Filter "filler-*.bin" | Remove-Item
+          }
+          FillDuring "while unpacking" { @(Get-ChildItem $tmp -Directory -Filter "ns*.tmp" -EA SilentlyContinue | ForEach-Object { Get-ChildItem (Join-Path $_.FullName "7z-out") -Recurse -File -EA SilentlyContinue }).Count }
+          FillDuring "while copying" { @(Get-ChildItem "$vol\~Nlerp" -Recurse -File -EA SilentlyContinue).Count }
+
+          Remove-Item (Join-Path $dir "celerp-ci-sentinel.txt")
+          $p = Start-Process -FilePath (Join-Path $dir "Uninstall Celerp.exe") -ArgumentList "/S /currentuser _?=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Fail "uninstall from the update volume exited $($p.ExitCode)" }
+          Detach $vhd
           Write-Host "installer version check OK on Windows"
 
       # An administrator on a PC with UAC off has no standard token to relaunch into,

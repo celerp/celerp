@@ -91,7 +91,7 @@ index 3de631b..3f62ce1 100644
    !macroend
  !endif
 diff --git a/templates/nsis/include/extractAppPackage.nsh b/templates/nsis/include/extractAppPackage.nsh
-index f5470bf..71e20b2 100644
+index f5470bf..769407c 100644
 --- a/templates/nsis/include/extractAppPackage.nsh
 +++ b/templates/nsis/include/extractAppPackage.nsh
 @@ -1,3 +1,14 @@
@@ -117,7 +117,7 @@ index f5470bf..71e20b2 100644
    !insertmacro compute_files_for_current_arch
  
    !ifdef COMPRESS
-@@ -94,6 +106,7 @@
+@@ -94,9 +106,11 @@
    CreateDirectory "$PLUGINSDIR\7z-out"
    ClearErrors
    SetOutPath "$PLUGINSDIR\7z-out"
@@ -125,7 +125,11 @@ index f5470bf..71e20b2 100644
    Nsis7z::Extract "${FILE}"
    Pop $R0
    SetOutPath $R0
-@@ -105,6 +118,7 @@
++  !insertmacro celerpCheckUnpacked
+ 
+   # Retry counter
+   StrCpy $R1 0
+@@ -105,6 +119,7 @@
      IntOp $R1 $R1 + 1
  
      # Attempt to copy files in atomic way
@@ -133,12 +137,12 @@ index f5470bf..71e20b2 100644
      CopyFiles /SILENT "$PLUGINSDIR\7z-out\*" $OUTDIR
      IfErrors 0 DoneExtract7za
  
-@@ -113,21 +127,12 @@
+@@ -113,21 +128,13 @@
        # Try copying a few times before asking for a user action.
        Goto RetryExtract7za
      ${else}
 -      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDRETRY IDCANCEL AbortExtract7za
-+      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${PRODUCT_NAME} could not copy its files to $OUTDIR. Make sure the disk has enough free space and that ${PRODUCT_NAME} is closed, then click Retry." /SD IDCANCEL IDRETRY RetryExtract7za
++      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${PRODUCT_NAME} could not copy its files to $INSTDIR. Make sure the disk has enough free space and that ${PRODUCT_NAME} is closed, then click Retry." /SD IDCANCEL IDRETRY RetryExtract7za
      ${endIf}
  
 -    # As an absolutely last resort after a few automatic attempts and user
@@ -155,19 +159,66 @@ index f5470bf..71e20b2 100644
 -  AbortExtract7za:
 +    # Stop rather than extract over the top while ignoring errors: that reports
 +    # success with files missing, for example on a full disk.
++    !insertmacro celerpAbandonCopy
 +    SetErrorLevel 2
      Quit
  
    RetryExtract7za:
 diff --git a/templates/nsis/installSection.nsh b/templates/nsis/installSection.nsh
-index 053772f..223a5c6 100644
+index 053772f..240b9f8 100644
 --- a/templates/nsis/installSection.nsh
 +++ b/templates/nsis/installSection.nsh
-@@ -64,6 +64,7 @@ SetOutPath $INSTDIR
+@@ -1,6 +1,7 @@
+ !include installer.nsh
+ 
+ InitPluginsDir
++!insertmacro celerpCleanStoppedSetups
+ 
+ ${IfNot} ${Silent}
+   SetDetailsPrint none
+@@ -49,21 +50,25 @@ ${if} $isTryToKeepShortcuts == "true"
+   ${endIf}
+ ${endif}
+ 
+-!insertmacro uninstallOldVersion SHELL_CONTEXT
+-!insertmacro handleUninstallResult SHELL_CONTEXT
+-
+-${if} $installMode == "all"
+-  !insertmacro uninstallOldVersion HKEY_CURRENT_USER
+-  !insertmacro handleUninstallResult HKEY_CURRENT_USER
++!insertmacro celerpPrepareReplace
++!insertmacro celerpCheckDiskSpace
++${if} $celerpMode == "direct"
++  !insertmacro celerpUninstallOldVersions
+ ${endIf}
+ 
+-SetOutPath $INSTDIR
++!insertmacro celerpBeginCopy
+ 
+ !ifdef UNINSTALLER_ICON
+   File /oname=uninstallerIcon.ico "${UNINSTALLER_ICON}"
  !endif
  
  !insertmacro installApplicationFiles
 +!insertmacro installStage "Finishing installation..."
++!insertmacro celerpSwapIn
++${if} $celerpMode != "direct"
++  !insertmacro celerpUninstallOldVersions
++${endIf}
++!insertmacro celerpFinishReplace
  !insertmacro registryAddInstallInfo
  !insertmacro addStartMenuLink $keepShortcuts
  !insertmacro addDesktopLink $keepShortcuts
+diff --git a/templates/nsis/include/installUtil.nsh b/templates/nsis/include/installUtil.nsh
+index 4736774..85f0c7f 100644
+--- a/templates/nsis/include/installUtil.nsh
++++ b/templates/nsis/include/installUtil.nsh
+@@ -181,6 +181,8 @@ Function uninstallOldVersion
+     Return
+   ${endif}
+ 
++  !insertmacro celerpOldVersionLocation
++
+   ${if} $installMode == "CurrentUser"
+   ${orIf} $rootKey == "HKEY_CURRENT_USER"
+     StrCpy $0 "/currentuser"

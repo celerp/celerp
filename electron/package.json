@@ -211,6 +211,7 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
+      "preCompressedFileExtensions": [],
       "include": "build/installer.nsh"
     },
     "appImage": {
