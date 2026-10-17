@@ -64,20 +64,20 @@ def normalize(cell: str) -> str:
     return " ".join(cell.strip().lstrip("*").lower().split())
 
 
-def _text(data: bytes) -> str:
+def _text(name: str, data: bytes) -> str:
     for encoding in ("utf-8-sig", "cp1252"):
         try:
             return data.decode(encoding)
         except UnicodeDecodeError:
             continue
-    raise ScanError(t("migration.err_export_unreadable", name="?"))
+    raise ScanError(t("migration.err_export_unreadable", name=name))
 
 
 def _lines(name: str, data: bytes) -> list[list[str]]:
     try:
         if data[:2] == b"PK":
             return tabular.workbook_lines(data, LIMITS)
-        text = _text(data)
+        text = _text(name, data)
         first = text.split("\n", 1)[0]
         return tabular.delimited_lines(text, "\t" if first.count("\t") > first.count(",") else ",", LIMITS)
     except tabular.TabularError as exc:
@@ -217,6 +217,8 @@ def check_set(tables: list[Table], strangers: list[Stranger], layouts: tuple[Lay
     """The checklist for an upload. A file the source needs only when the ledger posts to
     it is pending until the *decider* arrives."""
     have = {tb.layout.kind for tb in tables}
+    # A file named for a layout that could not be read is reported once, as unreadable.
+    unreadable = {_letters(s.name.split(": ")[-1].rsplit(".", 1)[0]) for s in strangers if s.reason}
     items: list[Item] = []
     problems: list[str] = []
     for layout in layouts:
@@ -225,7 +227,8 @@ def check_set(tables: list[Table], strangers: list[Stranger], layouts: tuple[Lay
             status = RECEIVED
         elif layout in required:
             status = MISSING
-            problems.append(t("migration.err_export_missing_from", label=layout.label, menu=layout.menu))
+            if _letters(layout.label) not in unreadable:
+                problems.append(t("migration.err_export_missing_from", label=layout.label, menu=layout.menu))
         elif layout.optional:
             status = OPTIONAL
         else:
@@ -237,6 +240,12 @@ def check_set(tables: list[Table], strangers: list[Stranger], layouts: tuple[Lay
     problems += _joins(tables, layouts)
     recognised = ", ".join(f"{tb.name} ({tb.layout.label})" for tb in tables) or "--"
     return SetCheck(source, t(warning_key), tuple(items), tuple(problems), recognised)
+
+
+def _letters(name: str) -> str:
+    """A file or layout name reduced to its letters: "Trial Balance 2024" and
+    "TrialBalance" read the same."""
+    return "".join(c for c in name.lower() if c.isalpha())
 
 
 def _stranger_problem(stranger: Stranger, layouts: tuple[Layout, ...], source: str, company: str) -> str:
