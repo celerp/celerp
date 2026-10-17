@@ -592,6 +592,7 @@
   "doc.receiver": "Receptor:",
   "doc.ref_draft_tooltip": "Se asigna un nuevo número de documento al finalizar el documento (para que los números de factura sean correlativos). Puede sobreescribir ese número manualmente una vez finalizado.",
   "doc.reference": "Referencia:",
+  "doc.original_label": "{doc_type}:",
   "doc.revert_to_draft": "Volver al borrador",
   "doc.send_multiple_hint": "Separa varias direcciones con una coma (,)",
   "doc.sent": "Enviado",

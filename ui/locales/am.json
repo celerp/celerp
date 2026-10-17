@@ -626,6 +626,7 @@
   "doc.receiver": "ተቀባይ፦",
   "doc.ref_draft_tooltip": "ሰነዱ የመጨረሻ ሆኖ ሲመዘገብ አዲስ የሰነድ ቁጥር ይሰጣል (የመጨረሻ የሽያጭ ደረሰኝ ቁጥሮች ተከታታይ እንዲሆኑ)። ያንን ቁጥር በእጅ መቀየር ከፈለጉ፣ ሰነዱ የመጨረሻ ከሆነ በኋላ ማድረግ ይችላሉ።",
   "doc.reference": "ማጣቀሻ፦",
+  "doc.original_label": "{doc_type}፦",
   "doc.revert_to_draft": "ወደ ረቂቅ መልስ",
   "doc.send_appends_hint": "መጠኑ እና የመመልከቻ ማስፈንጠሪያ (ለ30 ቀናት ንቁ) በራስ-ሰር ይታከላሉ።",
   "doc.send_appends_hint_offline": "የሰነዱ መጠን በራስ-ሰር ይታከላል።",

@@ -592,6 +592,7 @@
   "doc.receiver": "Destinatario:",
   "doc.ref_draft_tooltip": "Un nuovo numero di documento viene assegnato alla finalizzazione (per garantire la consecutività dei numeri di fattura). È possibile sovrascriverlo manualmente dopo la finalizzazione.",
   "doc.reference": "Riferimento:",
+  "doc.original_label": "{doc_type}:",
   "doc.revert_to_draft": "Ripristina a bozza",
   "doc.send_multiple_hint": "Separare più indirizzi con una virgola (,)",
   "doc.sent": "Inviato",

@@ -592,6 +592,7 @@
   "doc.receiver": "Người nhận:",
   "doc.ref_draft_tooltip": "Số chứng từ mới được cấp khi chứng từ được xác nhận hoàn tất (để số hóa đơn cuối liên tục). Bạn có thể ghi đè thủ công sau khi xác nhận.",
   "doc.reference": "Thẩm quyền giải quyết:",
+  "doc.original_label": "{doc_type}:",
   "doc.revert_to_draft": "Hoàn nguyên về bản nháp",
   "doc.send_multiple_hint": "Phân tách nhiều địa chỉ bằng dấu phẩy (,)",
   "doc.sent": "Đã gửi",

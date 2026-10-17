@@ -651,6 +651,7 @@
   "doc.receiver": "Receiver:",
   "doc.ref_draft_tooltip": "A new document number is issued when the document is marked finalized (so that final invoice numbers are contiguous). If you want to manually override that number, you can once the document is finalized.",
   "doc.reference": "Reference:",
+  "doc.original_label": "{doc_type}:",
   "doc.revert_to_draft": "Revert to Draft",
   "doc.send_appends_hint": "The amount and a view link (active for 30 days) are added automatically.",
   "doc.send_appends_hint_offline": "The document amount is added automatically.",

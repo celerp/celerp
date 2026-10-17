@@ -2450,6 +2450,13 @@ celerpUpdateBulkAlloc();
                 note_targets = await _credit_target_options(token, doc)
             except APIError:
                 note_targets = []
+        # The invoice or bill a credit or debit note was raised against, named and linked in its header.
+        original: dict | None = None
+        if doc.get("original_doc_id"):
+            try:
+                original = await api.get_doc(token, doc["original_doc_id"])
+            except APIError:
+                original = None
         # Fetch notes for doc (first-class entities)
         doc_notes: list[dict] = []
         try:
@@ -2559,7 +2566,7 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets, original=original),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -6510,7 +6517,7 @@ def _line_account_picker(chart_accounts: list | None, value: str) -> FT:
 
 
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
-                connected_connectors: set[str] | None = None, note_targets: list | None = None) -> FT:
+                connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -10125,7 +10132,7 @@ async function celerpCsvImport(input, entityId) {{
             id="pay-setup-hint",
         ) if (share_enabled and not payments_on and not suppress_doc_actions
               and doc_type in ("invoice", "proforma") and not is_draft and _pay_due > 0) else "",
-        # Metadata bar: Doc ID | Reference | Issue date | Due date
+        # Metadata bar: Doc ID | Reference | Original (credit and debit notes) | Issue date | Due date
         # For subscription templates: show Frequency + Next Issue Date instead of Issue/Due date
         Div(
             Div(Div(t("doc.doc"), cls="meta-label"),
@@ -10138,6 +10145,10 @@ async function celerpCsvImport(input, entityId) {{
                 else _cell("ref_id", ref),
                 cls="meta-cell"),
             Div(Div(t("doc.reference"), cls="meta-label"), _cell("reference", doc.get("reference")), cls="meta-cell"),
+            (Div(Div(t("doc.original_label", doc_type=doc_type_label(original.get("doc_type", ""))), cls="meta-label"),
+                 A(original.get("ref_id") or original.get("doc_number") or doc["original_doc_id"],
+                   href=doc_href(doc["original_doc_id"])),
+                 cls="meta-cell") if original else ""),
             Div(Div(t("th.frequency") if _is_sub_template else t("doc.issue_date"), cls="meta-label"),
                 _cell("frequency", doc.get("frequency", "").capitalize()) if _is_sub_template else _cell("issue_date", issue_date_value),
                 cls="meta-cell"),

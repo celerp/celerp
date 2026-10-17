@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import doc_type_label, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -641,6 +641,22 @@ async def test_u36_a_sale_invoice_line_shows_its_price_and_total_as_money(owner_
     # The blank add-a-line row holds "0"; the sale's own line is the only other one.
     assert [v for v in _line_inputs(page, 'data-name="unit_price"') if v != "0"] == ["9000.00"]
     assert [v for v in _line_inputs(page, 'data-name="line_total"') if v != "0"] == ["9000.00"]
+
+
+async def test_u38_a_sale_credit_note_names_and_links_the_invoice_it_credits(owner_ui):
+    car = await _managed_car(owner_ui)
+    href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",
+                                                       "contact_id": await _buyer(owner_ui),
+                                                       "contact_name": "Brightwater Retail"})
+    invoice_id = href.removeprefix("/docs/")
+    assert (await owner_ui.api.post(f"/docs/{invoice_id}/finalize")).status_code == 200
+    number = (await owner_ui.api.get(f"/docs/{invoice_id}")).json()["ref_id"]
+    href = await _review_and_confirm(owner_ui, "sale-credit", {"asset_id": car, "kind": "adjust", "amount": "1000",
+                                                              "date": "2026-10-20"})
+    page = (await owner_ui.get(href)).text
+    bar = page[page.index('class="doc-meta-bar"'):page.index('class="doc-row"')]
+    assert doc_type_label("invoice") in bar
+    assert re.search(rf'<a href="/docs/{re.escape(invoice_id)}"[^>]*>\s*{re.escape(number)}\s*</a>', bar), bar
 
 
 async def test_u8_u9_the_sale_card_opens_the_draft_credit_note_and_folds_a_returned_sale(owner_ui):

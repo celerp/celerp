@@ -592,6 +592,7 @@
   "doc.receiver": "Penerima:",
   "doc.ref_draft_tooltip": "Nomor dokumen baru diterbitkan saat dokumen difinalisasi (agar nomor faktur akhir berurutan). Nomor tersebut dapat diganti secara manual setelah dokumen difinalisasi.",
   "doc.reference": "Referensi:",
+  "doc.original_label": "{doc_type}:",
   "doc.revert_to_draft": "Kembalikan ke Draf",
   "doc.send_multiple_hint": "Pisahkan beberapa alamat dengan koma (,)",
   "doc.sent": "Terkirim",

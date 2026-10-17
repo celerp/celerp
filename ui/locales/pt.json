@@ -592,6 +592,7 @@
   "doc.receiver": "Receptor:",
   "doc.ref_draft_tooltip": "Um novo número de documento é emitido ao finalizar o documento (para que os números de fatura finais sejam consecutivos). É possível substituir esse número manualmente após a finalização.",
   "doc.reference": "Referência:",
+  "doc.original_label": "{doc_type}:",
   "doc.revert_to_draft": "Reverter para rascunho",
   "doc.send_multiple_hint": "Separe vários endereços por vírgula (,)",
   "doc.sent": "Enviado",

@@ -592,6 +592,7 @@
   "doc.receiver": "Empfänger:",
   "doc.ref_draft_tooltip": "Eine neue Belegnummer wird vergeben, wenn der Beleg finalisiert wird (damit endgültige Rechnungsnummern fortlaufend sind). Danach kann die Nummer manuell überschrieben werden.",
   "doc.reference": "Referenz:",
+  "doc.original_label": "{doc_type}:",
   "doc.revert_to_draft": "In Entwurf zurücksetzen",
   "doc.send_multiple_hint": "Mehrere Adressen mit Komma (,) trennen",
   "doc.sent": "Gesendet",

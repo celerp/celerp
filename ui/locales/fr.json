@@ -592,6 +592,7 @@
   "doc.receiver": "Récepteur :",
   "doc.ref_draft_tooltip": "Un nouveau numéro de document est attribué lors de la finalisation (pour que les numéros de facture soient continus). Vous pouvez le remplacer manuellement une fois le document finalisé.",
   "doc.reference": "Référence :",
+  "doc.original_label": "{doc_type} :",
   "doc.revert_to_draft": "Revenir au brouillon",
   "doc.send_multiple_hint": "Séparer plusieurs adresses par une virgule (,)",
   "doc.sent": "Envoyé",

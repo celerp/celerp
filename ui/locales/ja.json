@@ -592,6 +592,7 @@
   "doc.receiver": "受信機:",
   "doc.ref_draft_tooltip": "文書を確定すると新しい文書番号が発番されます（最終請求書番号を連番にするため）。確定後に番号を手動で上書きすることができます。",
   "doc.reference": "参照：",
+  "doc.original_label": "{doc_type}：",
   "doc.revert_to_draft": "ドラフトに戻す",
   "doc.send_multiple_hint": "複数のアドレスはカンマ（,）で区切ってください",
   "doc.sent": "送信済み",
