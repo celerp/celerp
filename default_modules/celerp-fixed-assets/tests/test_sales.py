@@ -977,3 +977,191 @@ async def test_s4_concurrent_credits_take_what_is_left_once(committed_engine):
                 if e.get("account") in held:
                     held[e["account"]] += D(str(e.get("credit") or 0)) - D(str(e.get("debit") or 0))
     assert sum(held.values(), D(0)) == D(asset["disposal"]["gain_or_loss"]), held
+
+
+# ── D4: a sale's history stays on the accounts it was posted to ──────────────
+#
+# Moving a posting account to another one changes where new recognition goes; a sale
+# already made keeps its gain, loss, clearing and surplus where they were posted, so a
+# later credit, return or void moves them there, and an account the sale never needs is
+# never asked for.
+
+NEW_GAIN, NEW_LOSS, NEW_CLEARING, NEW_SURPLUS = "4981", "6981", "1161", "3401"
+_KIND = {"disposal_gain": "revenue", "disposal_loss": "expense", "asset_disposal_clearing": "asset",
+         "revaluation_surplus": "equity"}
+
+
+async def _move_role(fa: FA, role: str, code: str) -> None:
+    """Point ``role`` at a new account ``code`` for new postings."""
+    r = await fa.client.post("/accounting/accounts", headers=fa.h, json={
+        "code": code, "name": f"New {role.replace('_', ' ')}", "account_type": _KIND[role]})
+    assert r.status_code in (200, 201), r.text
+    r = await fa.client.put(f"/accounting/posting-accounts/{role}", headers=fa.h, json={"code": code})
+    assert r.status_code == 200, r.text
+
+
+async def _unset_role(fa: FA, role: str) -> None:
+    """Leave ``role`` without an account, as a company that never chose one."""
+    from celerp.accounting_roles import ROLES_KEY
+    from celerp.services.company_lock import locked_company
+
+    company = await locked_company(fa.session, fa.auth["company_id"])
+    settings = dict(company.settings or {})
+    settings[ROLES_KEY] = {k: v for k, v in (settings.get(ROLES_KEY) or {}).items() if k != role}
+    company.settings = settings
+    await fa.session.flush()
+
+
+async def _clearing_by_account(fa: FA, asset_id: str) -> dict[str, D]:
+    """Every clearing account's net (debit less credit) over the asset's sale: the
+    documents' entries tagged with it and the asset's own journals."""
+    short = asset_id.removeprefix("fa:asset:")
+    out: dict[str, D] = {}
+    for je in await fa.entities("journal_entry"):
+        if je.get("status") != "posted":
+            continue
+        ours = je["entity_id"].startswith(f"{MODULE_JE}asset:{short}:")
+        for e in je.get("entries") or []:
+            if e.get("account") in (CLEARING, NEW_CLEARING) and (ours or e.get("asset_id") == asset_id):
+                out[e["account"]] = out.get(e["account"], D(0)) + D(str(e.get("debit") or 0)) - D(str(e.get("credit") or 0))
+    return out
+
+
+async def _balances(fa: FA, *codes: str) -> tuple[D, ...]:
+    return tuple([await fa.balance(c) for c in codes])
+
+
+async def test_d4_invoice_voided_after_the_gain_account_moved(fa):
+    car, inv = await _sold_split(fa, "11300")
+    await _move_role(fa, "disposal_gain", NEW_GAIN)
+    await fa.ok(await _doc(fa, inv, "void"))
+    assert await _balances(fa, GAIN, NEW_GAIN, LOSS) == (D(0), D(0), D(0))
+    assert set((await _clearing_by_account(fa, car)).values()) <= {D(0)}
+    # Selling again recognizes a new gain, on today's account.
+    await fa.ok(await _doc(fa, inv, "unvoid"))
+    assert await _balances(fa, GAIN, NEW_GAIN, LOSS) == (D(0), D(-100), D(0))
+    assert set((await _clearing_by_account(fa, car)).values()) <= {D(0)}
+    await fa.fold_matches(car)
+
+
+async def test_d4_credit_after_the_gain_account_moved_stays_where_the_gain_is(fa):
+    car, inv = await _sold_split(fa, "11300")
+    await _move_role(fa, "disposal_gain", NEW_GAIN)
+    cn = await _credit(fa, inv, "30")
+    assert await _balances(fa, GAIN, NEW_GAIN, LOSS) == (D(-70), D(0), D(0))
+    assert D((await fa.asset(car))["disposal"]["gain_or_loss"]) == D(70)
+    await fa.ok(await _doc(fa, cn, "void"))
+    assert await _balances(fa, GAIN, NEW_GAIN, LOSS) == (D(-100), D(0), D(0))
+    await fa.ok(await _doc(fa, inv, "void"))
+    assert await _balances(fa, GAIN, NEW_GAIN, LOSS) == (D(0), D(0), D(0))
+    assert set((await _clearing_by_account(fa, car)).values()) <= {D(0)}
+    await fa.fold_matches(car)
+
+
+@pytest.mark.parametrize("unset, price, credit, before, after", [
+    ("disposal_loss", "11300", "30", (D(-100), D(0)), (D(-70), D(0))),
+    ("disposal_gain", "10000", "500", (D(0), D(1200)), (D(0), D(1700))),
+])
+async def test_d4_an_account_the_sale_never_needs_is_never_asked_for(fa, unset, price, credit, before, after):
+    car, inv = await _sold_split(fa, price)
+    await _unset_role(fa, unset)
+    assert await _balances(fa, GAIN, LOSS) == before
+    cn = await _credit(fa, inv, credit)
+    assert await _balances(fa, GAIN, LOSS) == after
+    await fa.ok(await _doc(fa, cn, "void"))
+    assert await _balances(fa, GAIN, LOSS) == before
+    await fa.ok(await _doc(fa, inv, "void"))
+    assert await _balances(fa, GAIN, LOSS) == (D(0), D(0))
+    assert set((await _clearing_by_account(fa, car)).values()) <= {D(0)}
+    await fa.fold_matches(car)
+
+
+async def test_d4_credits_voided_out_of_order_after_both_accounts_moved(fa):
+    car, inv = await _sold_split(fa, "11300")
+    first = await _credit(fa, inv, "60")
+    second = await _credit(fa, inv, "90", on="2026-06-20")
+    assert await _balances(fa, GAIN, LOSS) == (D(0), D(50))
+    await _move_role(fa, "disposal_gain", NEW_GAIN)
+    await _move_role(fa, "disposal_loss", NEW_LOSS)
+    await fa.ok(await _doc(fa, first, "void"))
+    assert await _balances(fa, GAIN, LOSS, NEW_GAIN, NEW_LOSS) == (D(-10), D(0), D(0), D(0))
+    await fa.ok(await _doc(fa, second, "void"))
+    assert await _balances(fa, GAIN, LOSS, NEW_GAIN, NEW_LOSS) == (D(-100), D(0), D(0), D(0))
+    await fa.ok(await _doc(fa, inv, "void"))
+    assert await _balances(fa, GAIN, LOSS, NEW_GAIN, NEW_LOSS) == (D(0), D(0), D(0), D(0))
+    assert set((await _clearing_by_account(fa, car)).values()) <= {D(0)}
+    await fa.fold_matches(car)
+
+
+async def test_d4_return_and_its_void_after_the_accounts_moved(fa):
+    car, inv = await _sold_split(fa, "11250")
+    adjust = await _credit(fa, inv, "100")
+    fixed = await _assert_result(fa, car, "0", "50", "11150")
+    await _move_role(fa, "disposal_gain", NEW_GAIN)
+    await _move_role(fa, "disposal_loss", NEW_LOSS)
+    ret = await _credit(fa, inv, "11150", on="2026-07-01", returned=True)
+    assert await _balances(fa, GAIN, LOSS, NEW_GAIN, NEW_LOSS) == (D(0), D(0), D(0), D(0))
+    # The asset comes back while the clearing account moves; voiding the return clears
+    # through the account the return used.
+    await _move_role(fa, "asset_disposal_clearing", NEW_CLEARING)
+    await fa.ok(await _doc(fa, ret, "void"))
+    assert await _balances(fa, GAIN, LOSS, NEW_GAIN, NEW_LOSS) == (D(0), D(50), D(0), D(0))
+    assert set((await _clearing_by_account(fa, car)).values()) <= {D(0)}
+    assert await _fixed(fa) == fixed
+    await fa.ok(await _doc(fa, adjust, "void"))
+    assert await _balances(fa, GAIN, LOSS, NEW_GAIN, NEW_LOSS) == (D(-50), D(0), D(0), D(0))
+    await fa.ok(await _doc(fa, inv, "void"))
+    assert await _balances(fa, GAIN, LOSS, NEW_GAIN, NEW_LOSS) == (D(0), D(0), D(0), D(0))
+    assert set((await _clearing_by_account(fa, car)).values()) <= {D(0)}
+    await fa.fold_matches(car)
+
+
+async def test_d4_invoice_restored_after_the_clearing_account_moved(fa):
+    car, inv = await _sold_car(fa)
+    await fa.ok(await _doc(fa, inv, "void"))
+    await _move_role(fa, "asset_disposal_clearing", NEW_CLEARING)
+    await fa.ok(await _doc(fa, inv, "unvoid"))
+    assert D((await fa.asset(car))["disposal"]["gain_or_loss"]) == D(-1200)
+    assert D((await _sale(fa, car))["remaining"]) == D(10000)
+    assert set((await _clearing_by_account(fa, car)).values()) <= {D(0)}
+    # A credit note issued now clears through today's account, and the asset's journal with it.
+    await _credit(fa, inv, "200")
+    assert set((await _clearing_by_account(fa, car)).values()) <= {D(0)}
+    assert D((await fa.asset(car))["disposal"]["gain_or_loss"]) == D(-1400)
+    await fa.fold_matches(car)
+
+
+async def test_d4_surplus_leaves_from_the_account_it_was_recognized_on(fa):
+    from test_remeasure import _revalue_class
+
+    await _managed_from(fa)
+    land = await _contributed(fa, "Plot", cls="Land", cost="600")
+    await _revalue_class(fa, "Land", "2026-03-31", {land: "650"})
+    assert await fa.balance("3400") == D(-50)
+    await _move_role(fa, "revaluation_surplus", NEW_SURPLUS)
+    inv = await _sell(fa, land, price="700")
+    await _finalize(fa, inv)
+    assert await _balances(fa, "3400", NEW_SURPLUS) == (D(0), D(0))
+    ret = await _credit(fa, inv, "700", on="2026-07-01", returned=True)
+    assert await _balances(fa, "3400", NEW_SURPLUS) == (D(-50), D(0))
+    await fa.ok(await _doc(fa, ret, "void"))
+    assert await _balances(fa, "3400", NEW_SURPLUS) == (D(0), D(0))
+    await fa.fold_matches(land)
+
+
+async def test_d4_reconciliation_follows_the_accounts_the_sale_used(fa):
+    from test_remeasure import _revalue_class
+
+    await _managed_from(fa)
+    land = await _contributed(fa, "Plot", cls="Land", cost="600")
+    await _revalue_class(fa, "Land", "2026-03-31", {land: "650"})
+    car = await _contributed(fa)
+    await _run(fa, "2026-03")
+    await _finalize(fa, await _sell(fa, car))
+    await _move_role(fa, "revaluation_surplus", NEW_SURPLUS)
+    await _move_role(fa, "asset_disposal_clearing", NEW_CLEARING)
+    recon = await fa.ok(await fa.get("/reconciliation", at="2026-06-30"))
+    assert recon["errors"] == []
+    by_account = {a["account"]: a for a in recon["accounts"]}
+    assert by_account["3400"]["ledger"] == "-50.00" and by_account["3400"]["status"] == "Reconciled"
+    assert by_account[CLEARING]["status"] == "Reconciled", by_account[CLEARING]

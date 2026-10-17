@@ -560,7 +560,16 @@ async def continue_role(session: AsyncSession, company_id, role, code: str) -> s
     accounts = await lock_accounts(session, company_id, {code})
     if accounts is None:
         return code
-    problem = target_problem(role, {role: code}, accounts.get(code))
+    # A gain and loss pair's net account served both at once, so it takes either type.
+    # Scopes only grow, so reading them without the company lock is safe.
+    trial = {role: code}
+    pair = pair_of(role)
+    if pair:
+        company = await session.get(Company, company_id)
+        settings = company.settings if company is not None else None
+        if all(code in scope_codes(settings, r.value) | {role_map(settings).get(r.value)} for r in pair):
+            trial = {r.value: code for r in pair}
+    problem = target_problem(role, trial, accounts.get(code))
     if problem:
         raise HTTPException(status_code=409, detail=refusal(
             "posting.continued_account_unusable",

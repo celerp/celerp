@@ -49,14 +49,13 @@ async def _posted_journals(session, company_id, ids: list[str] | None = None, pr
 
 
 async def _bill_lines(session, company_id, company_settings: dict, asset_accounts: set[str]) -> list[dict]:
-    from celerp.services.account_roles import role_map
+    from celerp.services.account_roles import line_has_role
     from celerp.services.auto_je import bill_line_base
 
     docs = (await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "doc",
         Projection.state["doc_type"].as_string().in_(BILL_TYPES)))).all()
     journals = await _posted_journals(session, company_id, ids=[f"je:auto:{d}:bill" for d, _ in docs])
-    fixed = role_map(company_settings).get("fixed_assets")
     base = books_currency(company_settings)
     out = []
     for doc_id, doc in docs:
@@ -64,6 +63,9 @@ async def _bill_lines(session, company_id, company_settings: dict, asset_account
         if je is None:
             continue
         amounts = None
+        # A line received as an asset posted to the account then serving fixed assets.
+        fixed = next((e.get("account") for e in je.get("entries") or []
+                      if line_has_role(company_settings, e, "fixed_assets")), None)
         for idx, li in enumerate(doc.get("line_items") or []):
             account = li.get("account_code") or (
                 fixed if (li.get("receive_as") or "").strip().lower() == "asset" else None)

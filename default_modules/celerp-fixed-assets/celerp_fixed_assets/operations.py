@@ -92,13 +92,17 @@ async def _next_numbers(session, company_id, count: int, taken=()) -> list[str]:
     return [f"FA-{n:04d}" for n in range(start, start + count)]
 
 
-def _lines(debit_account: str, credit_account: str, amount: Decimal):
-    """Two lines moving ``amount`` from ``credit_account`` to ``debit_account``, flipped when negative."""
+def _lines(debit_account: str, credit_account: str, amount: Decimal, roles: tuple = (None, None)):
+    """Two lines moving ``amount`` from ``credit_account`` to ``debit_account``, flipped when
+    negative. ``roles`` are the posting roles the two accounts serve, in the same order."""
     from celerp.services.module_journals import JournalLine
 
+    debit_role, credit_role = roles
     if amount < 0:
         debit_account, credit_account, amount = credit_account, debit_account, -amount
-    return [JournalLine(account=debit_account, debit=amount), JournalLine(account=credit_account, credit=amount)]
+        debit_role, credit_role = credit_role, debit_role
+    return [JournalLine(account=debit_account, debit=amount, role=debit_role),
+            JournalLine(account=credit_account, credit=amount, role=credit_role)]
 
 
 def _journal_view(lines, currency: str) -> dict:
@@ -121,8 +125,10 @@ async def _post(session, company_id, user_id, *, key: str, operation: str, day: 
 
 
 async def _move(session, company_id, user_id, asset_id: str, *, kind: str, operation: str, effective: str,
-                posting: str, amounts: dict, op_key: str, contributions=(), quantity=0, **extra) -> str:
-    """Record one movement on an asset and mirror it onto the asset."""
+                posting: str, amounts: dict, op_key: str, contributions=(), quantity=0,
+                surplus_account: str | None = None, **extra) -> str:
+    """Record one movement on an asset and mirror it onto the asset. ``surplus_account`` is
+    where a movement recognizing revaluation surplus posted it; the asset keeps it there."""
     asset = await _state(session, company_id, asset_id)
     movement_id = f"fa:mv:{asset_id.removeprefix('fa:asset:')}:{int(asset.get('movement_count') or 0) + 1}"
     amounts = {k: str(v) for k, v in amounts.items() if k in BUCKETS}
@@ -130,9 +136,23 @@ async def _move(session, company_id, user_id, asset_id: str, *, kind: str, opera
         "asset_id": asset_id, "kind": kind, "operation": operation, "effective_date": effective,
         "posting_date": posting, "amounts": amounts, "contributions": list(contributions),
         "quantity": quantity, "op_key": op_key, **extra}, key=f"{movement_id}:rec")
-    await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.moved", {
-        "movement_id": movement_id, "amounts": amounts, "quantity": quantity}, key=f"{movement_id}:mv")
+    moved = {"movement_id": movement_id, "amounts": amounts, "quantity": quantity}
+    if surplus_account:
+        moved["surplus_account"] = surplus_account
+    await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.moved", moved, key=f"{movement_id}:mv")
     return movement_id
+
+
+async def _continued(session, company_id, lines: list) -> list:
+    """``lines``, each account posted for a role checked it can still take that role's
+    postings: a balance keeps moving on the account it was recognized on, so one that no
+    longer can is refused rather than split onto another."""
+    from celerp.services.account_roles import continue_role
+
+    for line in lines:
+        if line.role:
+            await continue_role(session, company_id, line.role, line.account)
+    return lines
 
 
 async def _create_asset(session, company_id, user_id, *, number: str, name: str, class_id, status: str,

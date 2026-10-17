@@ -483,3 +483,20 @@ async def test_asset_list_filters_and_pagination(fa):
     assert len(page["items"]) == 2 and page["total"] == 4
     found = await fa.ok(await fa.get("/assets", q="van"))
     assert [a["name"] for a in found["items"]] == ["Delivery van"]
+
+
+async def test_d4_bill_line_keeps_the_account_it_was_booked_on(fa):
+    """A bill line received as an asset is found on the account its bill debited, after the
+    fixed assets posting account moves to another one."""
+    from test_corrections import _bill
+    from test_runs import _managed_from
+
+    await _managed_from(fa, "2025-01-01")
+    await _bill(fa, "Pickup truck", "12000", "2026-01-10")
+    r = await fa.client.post("/accounting/accounts", headers=fa.h, json={
+        "code": "1211", "name": "Plant and equipment", "account_type": "asset"})
+    assert r.status_code in (200, 201), r.text
+    r = await fa.client.put("/accounting/posting-accounts/fixed_assets", headers=fa.h, json={"code": "1211"})
+    assert r.status_code == 200, r.text
+    line = await fa.line("Pickup truck")
+    assert line["account"] == "1210" and Decimal(line["amount"]) == Decimal("12000")

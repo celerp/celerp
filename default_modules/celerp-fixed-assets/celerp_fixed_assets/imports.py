@@ -111,7 +111,7 @@ async def _books(session, company_id, fa: dict) -> _Books:
     from celerp.models.company import Location, User
     from celerp.services.money import books_currency
 
-    classes, _, surplus, _ = await recon._accounts(session, company_id)
+    classes, surplus, _, _ = await recon._accounts(session, company_id)
     assets = await _entities(session, company_id, "fa_asset")
     locations = (await session.execute(select(Location.id, Location.name).where(
         Location.company_id == company_id))).all()
@@ -384,7 +384,8 @@ async def _create(session, company_id, user_id, books: _Books, batch_id: str, ch
         movements.append(await _move(
             session, company_id, user_id, asset_id, kind="opening", operation="opening",
             effective=_date(v["available_date"], "available_date"), posting=books.cut,
-            amounts={k: x for k, x in row.figures.items() if x}, op_key=op_key, quantity=1, provenance=batch_id))
+            amounts={k: x for k, x in row.figures.items() if x}, op_key=op_key, quantity=1, provenance=batch_id,
+            surplus_account=books.surplus if row.figures.get("revaluation_surplus") else None))
         assets.append({"id": asset_id, "number": row.number, "row": row.row})
     return assets, movements
 

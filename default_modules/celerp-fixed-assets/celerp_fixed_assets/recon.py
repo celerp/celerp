@@ -60,20 +60,26 @@ def recon_id(key: str) -> str:
     return f"fa:recon:{key}"
 
 
-async def _accounts(session, company_id) -> tuple[dict, dict, str | None, str | None]:
-    """The class accounts by role: each class, the surplus and the clearing account."""
-    from celerp.services.account_roles import role_map
+async def _accounts(session, company_id) -> tuple[dict, str | None, set[str], set[str]]:
+    """Each class; today's surplus account; and every account that has served as the
+    surplus and as the sale clearing account, where the balances posted then still stand."""
+    from celerp.services.account_roles import role_map, scope_codes
 
     classes = {c["id"]: c for c in await setup.classes(session, company_id, include_archived=True)}
-    roles = role_map(await setup.company_settings(session, company_id))
-    return classes, roles, roles.get("revaluation_surplus"), roles.get("asset_disposal_clearing")
+    settings = await setup.company_settings(session, company_id)
+    roles = role_map(settings)
+
+    def served(role):
+        return scope_codes(settings, role) | ({roles[role]} if roles.get(role) else set())
+
+    return classes, roles.get("revaluation_surplus"), served("revaluation_surplus"), served("asset_disposal_clearing")
 
 
-def _class_accounts(classes: dict, surplus: str | None, clearing: str | None) -> set[str]:
+def _class_accounts(classes: dict, surpluses: set[str], clearings: set[str]) -> set[str]:
     """Every account a class posts its balances to, or did before Fix posting account."""
     out = {c[k] for c in classes.values() for k in ("asset_account", "accumulated_depreciation_account") if c.get(k)}
     out |= {a for c in classes.values() for a in fixaccount.past_accounts(c)}
-    return out | {a for a in (surplus, clearing) if a}
+    return out | surpluses | clearings
 
 
 def _signed(entry: dict) -> Decimal:
@@ -86,8 +92,8 @@ async def classify(session, company_id, at: str) -> list[dict]:
     place. Each carries a key unique across the company's books."""
     from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
 
-    classes, _, surplus, clearing = await _accounts(session, company_id)
-    accounts = _class_accounts(classes, surplus, clearing)
+    classes, _, surpluses, clearings = await _accounts(session, company_id)
+    accounts = _class_accounts(classes, surpluses, clearings)
     asset_ids = {eid for eid, _ in await _entities(session, company_id, "fa_asset")}
     claims = [s for _, s in await _entities(session, company_id, "fa_src") if s.get("status") == "claimed"]
     by_journal: dict[str, dict[str, dict]] = {}
@@ -122,7 +128,7 @@ async def classify(session, company_id, at: str) -> list[dict]:
             continue
         rest: dict[str, Decimal] = {}
         for i, e in entries:
-            if e["account"] == clearing and e.get("asset_id") in asset_ids:
+            if e["account"] in clearings and e.get("asset_id") in asset_ids:
                 out.append(_unit(f"line:{je_id}:{i}", 1, e["account"], _signed(e), day, je_id, memo))
             else:
                 rest[e["account"]] = rest.get(e["account"], Decimal(0)) + _signed(e)
@@ -201,7 +207,8 @@ async def _register(session, company_id, classes: dict, surplus: str | None, cut
             if cls is None or not chosen:
                 continue
             figures = {k: Decimal(v) for k, v in fold_movements(chosen).items() if k != "quantity"}
-            for account, amount in _balances(fixaccount.accounts_at(cls, day), figures, surplus).items():
+            kept = asset.get("surplus_account") or surplus
+            for account, amount in _balances(fixaccount.accounts_at(cls, day), figures, kept).items():
                 target[account] = target.get(account, Decimal(0)) + amount
     return opening, standing
 
@@ -224,8 +231,8 @@ async def report(session, company_id, at: str | None = None) -> dict:
         raise setup.unprocessable("The reconciliation date is a date.") from None
     if at < cut:
         raise setup.unprocessable(f"The reconciliation starts at the cutover {cut}.")
-    classes, _, surplus, clearing = await _accounts(session, company_id)
-    accounts = sorted(_class_accounts(classes, surplus, clearing))
+    classes, surplus, surpluses, clearings = await _accounts(session, company_id)
+    accounts = sorted(_class_accounts(classes, surpluses, clearings))
     units = await classify(session, company_id, at)
     opening, standing = await _register(session, company_id, classes, surplus, cut, at)
     marks = await _acknowledged(session, company_id)
@@ -252,7 +259,7 @@ async def report(session, company_id, at: str | None = None) -> dict:
         for u in _unpaired([u for u in later if u["rule"] not in REGISTERED_RULES]):
             amount = -u["amount"] if u.get("synthetic") else u["amount"]
             differences.append(_difference(u["key"], u["rule"], _CAUSES[u["rule"]], amount, u["date"], [u], fixing))
-        if account != clearing and registered != standing.get(account, Decimal(0)):
+        if account not in clearings and registered != standing.get(account, Decimal(0)):
             errors.append(f"{account}: the register holds {money(standing.get(account, 0), currency)} and its journals "
                           f"{money(registered, currency)} at {at}.")
         out.append({"account": account, "name": names.get(account) or account, "ledger": money(ledger, currency),

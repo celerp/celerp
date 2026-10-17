@@ -87,6 +87,14 @@ def accounts(books: runs.Books) -> dict:
             "clearing": lambda: _role(books, "asset_disposal_clearing", "asset sale clearing")}
 
 
+def surplus_account(accounts: dict, asset: dict) -> str:
+    """The account an asset's revaluation surplus is kept on: the one it was recognized
+    on while the asset holds any, else today's (``accounts``)."""
+    if _dec(asset.get("revaluation_surplus")) and asset.get("surplus_account"):
+        return asset["surplus_account"]
+    return accounts["surplus"]()
+
+
 def _split(amount: Decimal, share: Decimal, currency: str) -> Decimal:
     """The part of ``amount`` that leaves with ``share``."""
     from celerp.services.money import allocate_pro_rata
@@ -131,9 +139,10 @@ def owed(books: runs.Books, asset: dict, movements: list[dict], month: int, thro
 
 def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: list[dict], day: str,
                 share: Decimal, quantity: Decimal, accounts: dict, *, proceeds: Decimal = Decimal(0),
-                clearing: str | None = None) -> dict:
+                clearing: str | None = None, clearing_role: str | None = None) -> dict:
     """What disposing of ``share`` of one asset on ``day`` posts and moves. A sale brings
-    ``proceeds`` in from its ``clearing`` account, and they count toward the gain."""
+    ``proceeds`` in from its ``clearing`` account (posted for ``clearing_role``, when it
+    serves one), and they count toward the gain."""
     currency = books.currency
     if asset.get("status") in ("disposed", "sold"):
         raise conflict(f"{asset['number']}: Disposed on {asset['disposal']['date']}.")
@@ -170,14 +179,15 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     if gone_ad + gone_imp:
         lines.append(JournalLine(account=accumulated, debit=gone_ad + gone_imp))
     if proceeds:
-        lines.append(JournalLine(account=clearing, debit=proceeds))
+        lines.append(JournalLine(account=clearing, debit=proceeds, role=clearing_role))
     lines.append(JournalLine(account=cls["asset_account"], credit=gone_cost))
     if gone_surplus:
-        lines += _lines(accounts["surplus"](), accounts["retained"](), gone_surplus)
+        lines += _lines(surplus_account(accounts, asset), accounts["retained"](), gone_surplus,
+                        roles=("revaluation_surplus", "retained_earnings"))
     if gain > 0:
-        lines.append(JournalLine(account=accounts["gain"](), credit=gain))
+        lines.append(JournalLine(account=accounts["gain"](), credit=gain, role="disposal_gain"))
     elif gain < 0:
-        lines.append(JournalLine(account=accounts["loss"](), debit=-gain))
+        lines.append(JournalLine(account=accounts["loss"](), debit=-gain, role="disposal_loss"))
     shown = {"number": asset["number"], "name": asset["name"], "share": str(share), "cost": money(gone_cost, currency),
              "depreciation": money(depreciation, currency), "accumulated": money(gone_ad + gone_imp, currency),
              "carrying_amount": money(carrying, currency), "gain_or_loss": money(gain, currency)}

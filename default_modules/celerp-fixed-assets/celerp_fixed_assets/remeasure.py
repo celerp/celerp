@@ -33,6 +33,7 @@ from celerp_fixed_assets import disposal, notices, projections, runs, setup
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
+    _continued,
     _date,
     _dec,
     _effects,
@@ -146,7 +147,7 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
             lines += _lines(accumulated_account, cls["asset_account"], eliminated)
         if delta > 0:
             lines.append(JournalLine(account=cls["asset_account"], debit=delta))
-        lines += _surplus_and_pnl(roles, to_surplus, to_pnl)
+        lines += _surplus_and_pnl(roles, asset, to_surplus, to_pnl)
         if delta < 0:
             lines.append(JournalLine(account=cls["asset_account"], credit=-delta))
         amounts = {"cost": delta - eliminated, _IMP: -impairment, _SURPLUS: to_surplus}
@@ -159,7 +160,7 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
         loss = carrying - value
         to_surplus = -min(loss, surplus) if revalues else _ZERO
         to_pnl = loss + to_surplus
-        lines += _surplus_and_pnl(roles, to_surplus, to_pnl)
+        lines += _surplus_and_pnl(roles, asset, to_surplus, to_pnl)
         lines.append(JournalLine(account=accumulated_account, credit=loss))
         amounts = {"cost": _ZERO, _IMP: loss, _SURPLUS: to_surplus}
         new_carrying = value
@@ -179,7 +180,7 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
                                       f"impairment ({money(at['shadow'], currency)}), so there is nothing to reverse.")
         to_surplus = reversal + to_pnl
         lines.append(JournalLine(account=accumulated_account, debit=reversal))
-        lines += _surplus_and_pnl(roles, to_surplus, to_pnl)
+        lines += _surplus_and_pnl(roles, asset, to_surplus, to_pnl)
         amounts = {"cost": _ZERO, _IMP: -reversal, _SURPLUS: to_surplus}
         new_carrying = carrying + reversal
         accumulated_after = _ZERO
@@ -200,20 +201,21 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
             "carrying_amount": new_carrying, "value": value, "basis": basis}
 
 
-def _surplus_and_pnl(roles: dict, to_surplus: Decimal, to_pnl: Decimal) -> list:
-    """The surplus and profit-or-loss lines: a positive ``to_surplus`` credits the surplus,
-    a positive ``to_pnl`` is a loss (a debit)."""
+def _surplus_and_pnl(roles: dict, asset: dict, to_surplus: Decimal, to_pnl: Decimal) -> list:
+    """The surplus and profit-or-loss lines: a positive ``to_surplus`` credits the surplus
+    (on the account the asset keeps it on), a positive ``to_pnl`` is a loss (a debit)."""
     from celerp.services.module_journals import JournalLine
 
     out = []
+    surplus = disposal.surplus_account(roles, asset) if to_surplus else None
     if to_surplus < 0:
-        out.append(JournalLine(account=roles["surplus"](), debit=-to_surplus))
+        out.append(JournalLine(account=surplus, debit=-to_surplus, role=_SURPLUS))
     if to_pnl > 0:
-        out.append(JournalLine(account=roles["impairment"](), debit=to_pnl))
+        out.append(JournalLine(account=roles["impairment"](), debit=to_pnl, role="impairment_loss"))
     elif to_pnl < 0:
-        out.append(JournalLine(account=roles["impairment"](), credit=-to_pnl))
+        out.append(JournalLine(account=roles["impairment"](), credit=-to_pnl, role="impairment_loss"))
     if to_surplus > 0:
-        out.append(JournalLine(account=roles["surplus"](), credit=to_surplus))
+        out.append(JournalLine(account=surplus, credit=to_surplus, role=_SURPLUS))
     return out
 
 
@@ -224,10 +226,12 @@ async def _record(session, company_id, user_id, item: dict, day: str, operation:
     je_id = await _post(session, company_id, user_id,
                         key=f"asset:{short}:{operation}:{int(asset.get('movement_count') or 0) + 1}",
                         operation=operation, day=day, memo=f"{asset['number']} {asset['name']} {memo[operation]}",
-                        lines=item["lines"], source_id=asset_id, href=f"/fixed-assets/assets/{asset_id}",
-                        label=asset["number"], op_key=op_key)
+                        lines=await _continued(session, company_id, item["lines"]), source_id=asset_id,
+                        href=f"/fixed-assets/assets/{asset_id}", label=asset["number"], op_key=op_key)
+    surplus = next((ln.account for ln in item["lines"] if ln.role == _SURPLUS), None)
     movement_id = await _move(session, company_id, user_id, asset_id, kind="posted", operation=operation,
                               effective=day, posting=day, amounts=item["amounts"], op_key=op_key,
+                              surplus_account=surplus,
                               periods=item["periods"], pnl=str(item["pnl"]),
                               carrying_amount=str(item["carrying_amount"]), measured=str(item["value"]),
                               basis=item["basis"], journal_id=je_id)

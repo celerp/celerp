@@ -51,6 +51,8 @@ def _moved(state: dict, data: dict) -> dict:
         state[k] = str(_dec(state.get(k)) + _dec((data.get("amounts") or {}).get(k)))
     state["quantity"] = _whole(_dec(state.get("quantity")) + _dec(data.get("quantity")))
     state["movement_count"] = int(state.get("movement_count") or 0) + 1
+    if data.get("surplus_account"):
+        state["surplus_account"] = data["surplus_account"]
     return state
 
 
