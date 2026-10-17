@@ -1694,10 +1694,15 @@ def migrations_routes(app) -> None:
         run, failure = await _load_run(request, run_id)
         if failure is not None:
             return failure
+        if run.get("status") != "completed":
+            return RedirectResponse(f"/migrations/{run_id}", status_code=303)
         return await _complete_page(request, run)
 
     @app.get("/migrations/{run_id}/xero-attachments")
     async def migration_xero_attachments(request: Request, run_id: str):
+        # The panel is a fragment of the run's pages; opened on its own it goes to the run.
+        if not request.headers.get("HX-Request"):
+            return RedirectResponse(f"/migrations/{run_id}", status_code=303)
         return await _xero_attachments(request, run_id)
 
     @app.post("/migrations/{run_id}/xero-attachments")
