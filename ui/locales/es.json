@@ -2996,6 +2996,7 @@
   "auth.session_expired_signin": "Su sesión ha caducado. Vuelva a iniciar sesión.",
   "auth.signed_out_idle": "Se ha cerrado su sesión tras un periodo de inactividad. Inicie sesión de nuevo.",
   "auth.backup_restored_signin": "Copia de seguridad restaurada. Inicie sesión con las credenciales de la copia de seguridad.",
+  "auth.recovery_failed_signin": "La recuperación del sistema no se completó. La instalación se dejó como estaba antes. Inicie sesión para ver qué ocurrió.",
   "auth.email_password_required": "Introduzca su correo y su contraseña.",
   "auth.server_error": "Algo salió mal en Celerp: {e}. Inténtelo de nuevo; si sigue pasando, pregunte en GitHub Issues o Discussions.",
   "auth.setup_code_required": "Introduzca el código de configuración. Quien instaló Celerp lo encuentra en el archivo setup-code guardado junto a la configuración de Celerp.",

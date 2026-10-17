@@ -2996,6 +2996,7 @@
   "auth.session_expired_signin": "Sua sessão expirou. Faça login novamente.",
   "auth.signed_out_idle": "Você foi desconectado após um período de inatividade. Faça login novamente.",
   "auth.backup_restored_signin": "Backup restaurado. Faça login com as credenciais do backup.",
+  "auth.recovery_failed_signin": "A recuperação do sistema não foi concluída. A instalação foi restaurada ao estado anterior. Faça login para ver o que aconteceu.",
   "auth.email_password_required": "Digite seu e-mail e sua senha.",
   "auth.server_error": "Algo deu errado no Celerp: {e}. Tente novamente; se continuar acontecendo, pergunte em GitHub Issues or Discussions.",
   "auth.setup_code_required": "Digite o código de configuração. Quem instalou o Celerp encontra-o no arquivo setup-code salvo junto às configurações do Celerp.",

@@ -502,6 +502,28 @@ class TestRestoreJourneyNotice:
             r2 = await ui_client.get("/login?reason=evicted")
             assert "a new session was started" in r2.text  # an ordinary eviction is unchanged
 
+    @pytest.mark.asyncio
+    async def test_failed_recovery_is_the_reason_given_at_sign_in(self, ui_client, monkeypatch, tmp_path):
+        """A failed recovery also ends every session. The sign-in page says the recovery
+        did not complete, never "a new session was started"; its details (server paths)
+        stay for the owner's first signed-in page, so the record is not consumed here."""
+        import json as _json
+        from celerp.config import settings
+        from celerp.services.backup_import import RECOVERY_FAILURE_FILE
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        (tmp_path / RECOVERY_FAILURE_FILE).write_text(_json.dumps({
+            "message": "System Recovery did not complete: Access is denied: /data/staging",
+            "detail": "Access is denied: /data/staging",
+        }))
+        with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
+            r = await ui_client.get("/login?reason=evicted&next=%2Fsettings%2Fsystem-recovery")
+            assert r.status_code == 200
+            assert "System Recovery did not complete. The installation was put back as it was before." in r.text
+            assert "a new session was started" not in r.text
+            assert "/data/staging" not in r.text
+            assert (tmp_path / RECOVERY_FAILURE_FILE).exists()
+
 
 @pytest.mark.asyncio
 async def test_sales_tab_connectors_falls_back_to_taxes(ui_client):

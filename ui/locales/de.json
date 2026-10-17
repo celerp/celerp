@@ -2997,6 +2997,7 @@
   "auth.session_expired_signin": "Ihre Sitzung ist abgelaufen. Bitte melden Sie sich erneut an.",
   "auth.signed_out_idle": "Sie wurden nach einer Zeit der Inaktivität abgemeldet. Bitte melden Sie sich erneut an.",
   "auth.backup_restored_signin": "Sicherung wiederhergestellt. Melden Sie sich mit den Anmeldedaten aus der Sicherung an.",
+  "auth.recovery_failed_signin": "Die Systemwiederherstellung wurde nicht abgeschlossen. Die Installation wurde in den vorherigen Zustand zurückversetzt. Melden Sie sich an, um die Details zu sehen.",
   "auth.email_password_required": "Geben Sie Ihre E-Mail und Ihr Passwort ein.",
   "auth.server_error": "In Celerp ist etwas schiefgelaufen: {e}. Versuchen Sie es erneut; wenn es weiter passiert, fragen Sie in GitHub Issues or Discussions.",
   "auth.setup_code_required": "Geben Sie den Einrichtungscode ein. Wer Celerp installiert hat, findet ihn in der Datei setup-code neben den Celerp-Einstellungen.",

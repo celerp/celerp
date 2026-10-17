@@ -2996,6 +2996,7 @@
   "auth.session_expired_signin": "セッションが期限切れになりました。再度ログインしてください。",
   "auth.signed_out_idle": "一定時間操作が行われなかったため、ログアウトされました。再度ログインしてください。",
   "auth.backup_restored_signin": "バックアップが復元されました。バックアップの認証情報を使用してサインインしてください。",
+  "auth.recovery_failed_signin": "システム復旧は完了しませんでした。インストールは以前の状態に戻されました。サインインして詳細を確認してください。",
   "auth.email_password_required": "メールアドレスとパスワードを入力してください。",
   "auth.server_error": "Celerp で問題が発生しました: {e}。もう一度お試しください。繰り返し起きる場合は GitHub Issues or Discussions で質問してください。",
   "auth.setup_code_required": "セットアップコードを入力してください。Celerp をインストールした人は、Celerp の設定と同じ場所に保存された setup-code ファイルで確認できます。",

@@ -63,6 +63,11 @@ def _consume_restore_notice() -> dict | None:
     return take_restore_notice()
 
 
+def _recovery_failure_waiting() -> bool:
+    from celerp.services.backup_import import recovery_failure_waiting
+    return recovery_failure_waiting()
+
+
 def _restore_notice_message(notice: dict) -> str:
     """One readable sentence block for the post-restore login banner."""
     parts = [t("auth.backup_restored_signin")]
@@ -121,10 +126,13 @@ def setup_routes(app):
         except ValueError:
             by_ip = ""
         # A recovery ends every session, so the page that ran it arrives here as
-        # an eviction; its outcome is the true reason and is shown first.
+        # an eviction; its outcome is the true reason and is shown first. A failure's
+        # details name server paths, so they wait for the owner's first signed-in page.
         if (restore_notice := _consume_restore_notice()) is not None:
             notice = flash(_restore_notice_message(restore_notice),
                            kind="warning" if restore_notice.get("warnings") else "success")
+        elif _recovery_failure_waiting():
+            notice = flash(t("auth.recovery_failed_signin"))
         elif deactivated:
             notice = flash(t("auth.company_deactivated"))
         elif reason == "evicted":

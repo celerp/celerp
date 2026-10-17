@@ -3210,6 +3210,7 @@
   "auth.session_expired_signin": "ክፍለ ጊዜዎ ጊዜው አልፎበታል። እባክዎ እንደገና ይግቡ።",
   "auth.signed_out_idle": "ከእንቅስቃሴ-አልባነት ጊዜ በኋላ ዘግተው ወጥተዋል። እባክዎ እንደገና ይግቡ።",
   "auth.backup_restored_signin": "ምትኬ ወደነበረበት ተመልሷል። ከመጠባበቂያው ምስክርነቶች ጋር ይግቡ።",
+  "auth.recovery_failed_signin": "የስርዓት መልሶ ማግኛ አልተጠናቀቀም። ጭነቱ ወደ ቀድሞው ሁኔታ ተመልሷል። የሆነውን ለማየት ይግቡ።",
   "auth.email_password_required": "ኢሜይልዎን እና የይለፍ ቃልዎን ያስገቡ።",
   "auth.server_error": "በCelerp ውስጥ ችግር ተፈጥሯል፦ {e}። እንደገና ይሞክሩ፤ መከሰቱን ከቀጠለ በGitHub Issues or Discussions ላይ ይጠይቁ።",
   "auth.setup_code_required": "የማዋቀሪያ ኮዱን ያስገቡ። Celerpን የጫነው ሰው ከCelerp ቅንብሮች አጠገብ በተቀመጠው setup-code ፋይል ውስጥ ሊያገኘው ይችላል።",

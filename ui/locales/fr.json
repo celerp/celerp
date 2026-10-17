@@ -2997,6 +2997,7 @@
   "auth.session_expired_signin": "Votre session a expiré. Veuillez vous reconnecter.",
   "auth.signed_out_idle": "Vous avez été déconnecté(e) après une période d’inactivité. Veuillez vous reconnecter.",
   "auth.backup_restored_signin": "Sauvegarde restaurée. Connectez-vous avec les identifiants de la sauvegarde.",
+  "auth.recovery_failed_signin": "La récupération du système n'a pas abouti. L'installation a été remise dans son état précédent. Connectez-vous pour voir ce qui s'est passé.",
   "auth.email_password_required": "Saisissez votre e-mail et votre mot de passe.",
   "auth.server_error": "Un problème est survenu dans Celerp : {e}. Réessayez ; si cela se reproduit, posez la question dans GitHub Issues or Discussions.",
   "auth.setup_code_required": "Saisissez le code de configuration. La personne qui a installé Celerp le trouve dans le fichier setup-code enregistré à côté des paramètres de Celerp.",

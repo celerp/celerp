@@ -3229,6 +3229,7 @@
   "auth.session_expired_signin": "Your session expired. Please sign in again.",
   "auth.signed_out_idle": "You were signed out after a period of inactivity. Please sign in again.",
   "auth.backup_restored_signin": "Backup restored. Sign in with the credentials from the backup.",
+  "auth.recovery_failed_signin": "System Recovery did not complete. The installation was put back as it was before. Sign in to see what happened.",
   "auth.email_password_required": "Enter your email and password.",
   "auth.server_error": "Something went wrong in Celerp: {e}. Try again; if it keeps happening, ask on GitHub Issues or Discussions.",
   "auth.setup_code_required": "Enter the setup code. Whoever installed Celerp can find it in the setup-code file saved next to Celerp's settings.",

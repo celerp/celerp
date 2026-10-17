@@ -2996,6 +2996,7 @@
   "auth.session_expired_signin": "Sesi Anda telah kedaluwarsa. Silakan masuk kembali.",
   "auth.signed_out_idle": "Anda telah keluar setelah tidak aktif selama beberapa waktu. Silakan masuk kembali.",
   "auth.backup_restored_signin": "Cadangan telah dipulihkan. Silakan masuk menggunakan kredensial dari cadangan tersebut.",
+  "auth.recovery_failed_signin": "Pemulihan Sistem tidak selesai. Instalasi dikembalikan seperti semula. Masuk untuk melihat apa yang terjadi.",
   "auth.email_password_required": "Masukkan email dan kata sandi Anda.",
   "auth.server_error": "Terjadi masalah di Celerp: {e}. Coba lagi; jika terus terjadi, tanyakan di GitHub Issues or Discussions.",
   "auth.setup_code_required": "Masukkan kode penyiapan. Orang yang memasang Celerp dapat menemukannya di file setup-code yang disimpan di samping pengaturan Celerp.",

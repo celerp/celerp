@@ -2996,6 +2996,7 @@
   "auth.session_expired_signin": "Phiên làm việc của bạn đã hết hạn. Vui lòng đăng nhập lại.",
   "auth.signed_out_idle": "Bạn đã bị đăng xuất sau một khoảng thời gian không hoạt động. Vui lòng đăng nhập lại.",
   "auth.backup_restored_signin": "Bản sao lưu đã được khôi phục. Vui lòng đăng nhập bằng thông tin đăng nhập từ bản sao lưu.",
+  "auth.recovery_failed_signin": "Khôi phục hệ thống chưa hoàn tất. Bản cài đặt đã được đưa về trạng thái trước đó. Đăng nhập để xem chi tiết.",
   "auth.email_password_required": "Hãy nhập email và mật khẩu của bạn.",
   "auth.server_error": "Đã xảy ra lỗi trong Celerp: {e}. Hãy thử lại; nếu vẫn tiếp diễn, hãy hỏi trên GitHub Issues or Discussions.",
   "auth.setup_code_required": "Hãy nhập mã thiết lập. Người đã cài Celerp có thể tìm mã trong tệp setup-code được lưu cạnh phần cài đặt của Celerp.",

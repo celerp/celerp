@@ -2996,6 +2996,7 @@
   "auth.session_expired_signin": "انتهت صلاحية جلستك. يرجى تسجيل الدخول مرة أخرى.",
   "auth.signed_out_idle": "تم تسجيل خروجك بعد فترة من عدم النشاط. يرجى تسجيل الدخول مرة أخرى.",
   "auth.backup_restored_signin": "تم استعادة النسخة الاحتياطية. قم بتسجيل الدخول باستخدام بيانات اعتماد النسخة الاحتياطية.",
+  "auth.recovery_failed_signin": "لم تكتمل استعادة النظام. أُعيد التثبيت إلى ما كان عليه من قبل. سجّل الدخول لمعرفة ما حدث.",
   "auth.email_password_required": "أدخل بريدك الإلكتروني وكلمة المرور.",
   "auth.server_error": "حدث خطأ في Celerp: {e}. حاول مرة أخرى؛ وإذا استمر ذلك، اسأل في GitHub Issues or Discussions.",
   "auth.setup_code_required": "أدخل رمز الإعداد. يجده من ثبّت Celerp في ملف setup-code المحفوظ بجانب إعدادات Celerp.",
