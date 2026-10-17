@@ -73,7 +73,7 @@ async def get_setup(company_settings: dict = Depends(get_current_company_setting
     fa = setup.settings_of(company_settings)
     first = await setup.first_period(session, company_id, fa) if fa.get("started") else None
     return {"started": bool(fa.get("started")), "settings": setup.view(fa), "first_period": first,
-            "rules": setup.rules_view(company_settings)}
+            "rules": setup.rules_view(company_settings), "today": setup.today_in(company_settings).isoformat()}
 
 
 @router.post("/start", dependencies=_ACCOUNTING)

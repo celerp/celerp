@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import sys
 import uuid
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -105,6 +106,10 @@ class FA:
 
     async def asset(self, asset_id: str) -> dict:
         return await self.ok(await self.get(f"/assets/{asset_id}"))
+
+    async def today(self) -> date:
+        """Today for the company, in its business timezone."""
+        return date.fromisoformat((await self.ok(await self.get("/setup")))["today"])
 
     async def buyer(self) -> str:
         """A contact of the company to sell an asset to."""

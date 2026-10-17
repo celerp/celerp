@@ -6,7 +6,6 @@ the maintenance log with its files; and the list of reminders due across the com
 from __future__ import annotations
 
 import json
-from datetime import date
 from urllib.parse import quote
 
 from fasthtml.common import *
@@ -73,7 +72,7 @@ def _history(reminder: dict, members: dict[str, str]) -> FT:
     return Details(Summary(t("fixed_assets.history_title")), Ul(*rows), cls="fa-history")
 
 
-def _reminder_actions(reminder: dict) -> FT:
+def _reminder_actions(reminder: dict, today: str) -> FT:
     base = f"/fixed-assets/reminders/{_rid(reminder['id'])}"
     undoable = any(h["action"] not in ("created", "undone") and not h.get("undone")
                    for h in reminder.get("history") or [])
@@ -81,7 +80,6 @@ def _reminder_actions(reminder: dict) -> FT:
                    hx_post=f"{base}/undo", hx_swap="none") if undoable else "")
     if reminder["status"] != "open":
         return Div(undo, cls="form-actions")
-    today = date.today().isoformat()
     return Div(
         Div(Button(t("fixed_assets.mark_done"), type="button", cls="btn btn--sm btn--primary", hx_post=f"{base}/done",
                    hx_vals=json.dumps({"date": today}), hx_swap="none"),
@@ -98,7 +96,7 @@ def _reminder_actions(reminder: dict) -> FT:
                      hx_post=f"{base}/postpone", hx_swap="none", cls="inline-form")))
 
 
-def _reminders_table(reminders: list[dict], members: dict[str, str]) -> FT:
+def _reminders_table(reminders: list[dict], members: dict[str, str], today: str) -> FT:
     if not reminders:
         return P(t("fixed_assets.no_reminders"), cls="form-hint")
     insured = any(r["kind"] == "insurance" for r in reminders)
@@ -121,7 +119,7 @@ def _reminders_table(reminders: list[dict], members: dict[str, str]) -> FT:
                        _reminder_cell(r, "due", members), _reminder_cell(r, "every_months", members),
                        _reminder_cell(r, "lead_days", members), _reminder_cell(r, RESPONSIBLE, members),
                        *insurance_cells(r), Td(t(f"fixed_assets.reminder_status.{r['status']}")),
-                       Td(_reminder_actions(r), _history(r, members))))
+                       Td(_reminder_actions(r, today), _history(r, members))))
     return Div(Table(Thead(Tr(*head)), Tbody(*rows), cls="data-table", id="fa-reminders"), cls="table-scroll-wrap")
 
 
@@ -182,10 +180,10 @@ def _maintenance_table(asset_id: str, log: list[dict], currency: str) -> FT:
                      Tbody(*rows), cls="data-table", id="fa-maintenance"), cls="table-scroll-wrap")
 
 
-def _add_entry_form(asset_id: str) -> FT:
+def _add_entry_form(asset_id: str, today: str) -> FT:
     return Details(
         Summary(t("fixed_assets.add_entry")),
-        Form(_field(t("fixed_assets.date"), _input("date", date.today().isoformat(), type_="date", required=True)),
+        Form(_field(t("fixed_assets.date"), _input("date", today, type_="date", required=True)),
              _field(t("fixed_assets.work"), _input("work", required=True)),
              _field(t("fixed_assets.by"), _input("by")),
              _field(t("fixed_assets.next_due"), _input("next_due", type_="date"), t("fixed_assets.next_due_hint")),
@@ -196,14 +194,14 @@ def _add_entry_form(asset_id: str) -> FT:
         cls="fa-add write-only")
 
 
-async def upkeep_card(token: str, asset: dict, members: dict[str, str], currency: str) -> FT:
+async def upkeep_card(token: str, asset: dict, members: dict[str, str], currency: str, today: str) -> FT:
     """The reminders and the maintenance log on an asset's page."""
     upkeep = await api.fixed_assets_get(token, f"/assets/{_rid(asset['id'])}/upkeep")
     return Div(H2(t("fixed_assets.upkeep_title"), cls="section-title"),
                P(t("fixed_assets.upkeep_hint"), cls="settings-hint"),
-               _reminders_table(upkeep["reminders"], members), _add_reminder_form(asset["id"], members),
+               _reminders_table(upkeep["reminders"], members, today), _add_reminder_form(asset["id"], members),
                H3(t("fixed_assets.maintenance_log")),
-               _maintenance_table(asset["id"], upkeep["maintenance"], currency), _add_entry_form(asset["id"]),
+               _maintenance_table(asset["id"], upkeep["maintenance"], currency), _add_entry_form(asset["id"], today),
                cls="detail-card section-card", id="fa-upkeep")
 
 

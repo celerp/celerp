@@ -679,7 +679,7 @@ def test_j17_unknown_tag_is_named_and_the_correct_tag_scan_is_recorded(page: Pag
     expect(page.locator("#fa-checks")).to_contain_text(number)
     expect(tag).to_have_value("")
     checks = _ok(c.get(f"{API}/checks"))["items"]
-    assert [(k["asset_id"], k["date"]) for k in checks] == [(car, date.today().isoformat())]
+    assert [(k["asset_id"], k["date"]) for k in checks] == [(car, _ok(c.get(f"{API}/setup"))["today"])]
 
 
 def test_j18_cutover_difference_kept_open_carries_the_banner_until_acknowledged(page: Page, fresh_company):
@@ -757,7 +757,7 @@ def test_j19_reminder_due_is_told_once_postponed_with_a_reason_and_kept_in_histo
     _started(c)
     car = _contributed(c, "Owner's car")
     number = _ok(c.get(f"{API}/assets/{car}"))["number"]
-    today = date.today()
+    today = date.fromisoformat(_ok(c.get(f"{API}/setup"))["today"])
     due, later = (today + timedelta(days=10)).isoformat(), (today + timedelta(days=40)).isoformat()
     _ok(c.post(f"{API}/assets/{car}/reminders", json={"kind": "maintenance", "work": "Oil change", "due": due}))
     _ok(c.post(f"{API}/assets/{car}/reminders", json={"kind": "warranty", "provider": "Dealer", "due": due}))

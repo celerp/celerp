@@ -144,7 +144,7 @@ async def test_s7_opening_initializes_without_journal(fa):
     assert D(diff["amount"]) == D("-250000") and diff["state"] == "open"
     assert assets["status"] == "Differences open"
     # Later dates carry the opening register too.
-    today = await _recon(fa, date.today().isoformat())
+    today = await _recon(fa, (await fa.today()).isoformat())
     assert D(_account(today, "1210")["registered"]) >= D("250000")
 
 
@@ -188,7 +188,7 @@ async def test_s7_difference_open_until_acknowledged(fa):
     assert kept["state"] == "kept_open"
     (diff,) = [d for d in _account(await _recon(fa, cutover), "1210")["differences"] if d["rule"] == "opening"]
     assert diff["state"] == "open"
-    today = await _recon(fa, date.today().isoformat())
+    today = await _recon(fa, (await fa.today()).isoformat())
     assert _account(today, "1210")["status"] == "Differences open" and today["status"] != "Reconciled"
 
     assert (await _acknowledge(fa, diff, state="noted")).status_code == 422
@@ -315,13 +315,14 @@ async def test_invariant_reconciliation_identity(fa):
     await _check_identity(fa, cutover.isoformat())
     van, forklift = await fa.line("Delivery van"), await fa.line("Forklift")
     laptops, fitout = await fa.line("Laptop"), await fa.line("Office fit-out")
-    await _check_identity(fa, date.today().isoformat())  # unregistered lines are differences
+    today = await fa.today()
+    await _check_identity(fa, today.isoformat())  # unregistered lines are differences
 
     (truck,) = (await fa.register(forklift["source"], mode="separate", key="fork"))["assets"]
     (car,) = (await fa.register(van["source"], mode="separate", key="van"))["assets"]
     done = await fa.register(laptops["source"], class_name="Computer equipment", mode="separate", key="lap")
     await fa.register(fitout["source"], class_name="Assets under construction", mode="separate", key="fit")
-    last = (date.today().replace(day=1) - timedelta(days=1))
+    last = today.replace(day=1) - timedelta(days=1)
     await _run(fa, last.strftime("%Y-%m"))
     # A class change moves balances between accounts; an impairment adds its own bucket.
     software = (await fa.classes())["Software"]["id"]
@@ -331,7 +332,7 @@ async def test_invariant_reconciliation_identity(fa):
                      key="imp")
 
     month = cutover + timedelta(days=1)
-    while month <= date.today():
+    while month <= today:
         report = await _check_identity(fa, _month_end(month).isoformat())
         month = _month_end(month) + timedelta(days=1)
     assert _account(report, "1210")["status"] == "Reconciled", report
@@ -339,7 +340,7 @@ async def test_invariant_reconciliation_identity(fa):
     # A voided source is a difference until it is replaced; the register still holds the van.
     r = await fa.client.post(f"/docs/{van['document']}/void", headers=fa.h, json={"reason": "Wrong supplier"})
     assert r.status_code == 200, r.text
-    report = await _check_identity(fa, date.today().isoformat())
+    report = await _check_identity(fa, today.isoformat())
     voided = [d for d in _account(report, "1210")["differences"] if d["rule"] == 3]
     assert voided and D(car and voided[0]["amount"]) == D("-32000")
     assert voided[0]["action"] == "replace_source" and voided[0]["asset_id"] == car["id"]
@@ -354,12 +355,12 @@ async def test_s7_each_difference_names_its_fix_and_when(fa):
         (found,) = [d for d in _account(report, "1210")["differences"] if d["lines"][0]["journal_id"] == je]
         return found
 
-    found = manual(await _recon(fa, date.today().isoformat()))
+    found = manual(await _recon(fa, (await fa.today()).isoformat()))
     assert (found["rule"], found["action"], found["permission"]) == (5, "intake", "manage_accounting")
     assert found["fix_from"] is None and found["asset_id"] is None
     r = await fa.client.post("/accounting/period-lock", headers=fa.h, json={"lock_date": booked.isoformat()})
     assert r.status_code == 200, r.text
-    locked = manual(await _recon(fa, date.today().isoformat()))
+    locked = manual(await _recon(fa, (await fa.today()).isoformat()))
     assert locked["fix_from"] == (booked + timedelta(days=1)).isoformat()
 
 
@@ -377,7 +378,7 @@ async def test_u2_asset_added_before_the_cutover_is_in_the_opening_register(fa):
     assert D(_account(opened, "1210")["registered"]) - D(_account(at_cut, "1210")["registered"]) == D("32000")
     assert [d["amount"] for d in _account(opened, "1210")["differences"]] == \
         [d["amount"] for d in _account(at_cut, "1210")["differences"]]
-    today = date.today().isoformat()
+    today = (await fa.today()).isoformat()
     await fa.operate(f"/assets/{van}/dispose", {"date": today, "reason": "scrapped"}, key="u2-dispose")
     after = await _check_identity(fa, today)
     assert D(_account(after, "1210")["registered"]) >= 0
@@ -422,7 +423,7 @@ async def test_u3_a_register_that_does_not_add_up_names_both_figures_as_the_tabl
         return opening, {**standing, "1210": standing.get("1210", D(0)) + D("1234.5")}
 
     monkeypatch.setattr(recon, "_register", off_by)
-    today = date.today().isoformat()
+    today = (await fa.today()).isoformat()
     report = await _recon(fa, today)
     registered = _account(report, "1210")["registered"]
     assert report["errors"] == [{"account": "1210", "name": _account(report, "1210")["name"],

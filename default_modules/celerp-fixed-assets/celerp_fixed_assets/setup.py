@@ -197,7 +197,7 @@ async def first_period(session, company_id, fa: dict) -> dict | None:
         if suggested.day != 1:
             suggested = (suggested.replace(day=28) + timedelta(days=4)).replace(day=1)
     else:
-        suggested = (date.fromisoformat(earliest) if earliest else date.today()).replace(day=1)
+        suggested = (date.fromisoformat(earliest) if earliest else await business_today(session, company_id)).replace(day=1)
     return {"suggested": suggested.isoformat(),
             "evidence": {"depreciation": booked, "earliest_journal": earliest}}
 

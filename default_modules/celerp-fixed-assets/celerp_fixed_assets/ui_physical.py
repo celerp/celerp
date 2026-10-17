@@ -4,7 +4,6 @@
 as custodian, and physical checks by tag with the report of assets not seen since a date."""
 from __future__ import annotations
 
-from datetime import date
 from urllib.parse import quote, urlencode
 
 from fasthtml.common import *
@@ -21,6 +20,7 @@ from ui.config import get_token as _token
 from ui.i18n import t
 
 from celerp_fixed_assets.files import ASSET_FILE_TAGS
+from celerp_fixed_assets.setup import today_in
 from celerp_fixed_assets.ui_routes import _error_text, _field, _hx_write, _input, _page, _refused, _text
 
 _CHECKS = "/fixed-assets/checks"
@@ -262,6 +262,7 @@ def setup_physical_routes(app) -> None:
         try:
             checks = (await api.fixed_assets_get(token, "/checks"))["items"]
             report = await _not_seen(token, since) if since else None
+            today = today_in(await api.get_company(token))
         except APIError as e:
             return await _refused(request, e, title)
         scan = Form(_field(t("fixed_assets.scan_tag"), _input("tag", required=True, autofocus=True, autocomplete="off")),
@@ -271,7 +272,7 @@ def setup_physical_routes(app) -> None:
                     hx_on__after_request="if(event.detail.xhr.status===200){this.reset();}"
                                          "this.tag.focus();this.tag.select();", cls="flex-row")
         since_form = Form(_field(t("fixed_assets.not_seen_since"),
-                                 _input("since", since or date.today().replace(day=1).isoformat(), type_="date", required=True)),
+                                 _input("since", since or today.replace(day=1).isoformat(), type_="date", required=True)),
                           Div(Button(t("fixed_assets.show"), type="submit", cls="btn btn--secondary"), cls="form-actions"),
                           method="get", action=_CHECKS, cls="flex-row")
         found: list = []

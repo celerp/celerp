@@ -788,11 +788,11 @@ def _register_toolbar() -> FT:
          "url": "/fixed-assets/dispose/selected", "swap": "none"}])
 
 
-def _disposal_fields(asset: dict | None) -> list[FT]:
+def _disposal_fields(asset: dict | None, today: str) -> list[FT]:
     """When and why an asset leaves; for one asset, the share of it that does (blank for all)."""
     from celerp_fixed_assets.disposal import REASONS
 
-    fields = [_field(t("fixed_assets.disposal_date"), _input("date", date.today().isoformat(), type_="date",
+    fields = [_field(t("fixed_assets.disposal_date"), _input("date", today, type_="date",
                                                              required=True)),
               _field(t("fixed_assets.reason"),
                      Select(*[Option(t(f"fixed_assets.disposal_reason.{r}"), value=r) for r in REASONS],
@@ -838,7 +838,7 @@ def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | st
                _detail_table(rows), undo, cls="detail-card section-card", id=f"fa-disposal-{asset_id}")
 
 
-def _sale_card(asset: dict, sale: dict, currency: str) -> FT | str:
+def _sale_card(asset: dict, sale: dict, currency: str, today: str) -> FT | str:
     """Where the asset's sale stands: its invoice, what completing it posts or posted, its
     credit notes, and what can be done next."""
     if not sale.get("state"):
@@ -904,7 +904,7 @@ def _sale_card(asset: dict, sale: dict, currency: str) -> FT | str:
             _field(t("fixed_assets.credit_kind"),
                    Select(*[Option(t(f"fixed_assets.credit_kind.{k}"), value=k) for k in ("adjust", "returned")],
                           name="kind", cls="form-input")),
-            _field(t("fixed_assets.date"), _input("date", date.today().isoformat(), type_="date", required=True)),
+            _field(t("fixed_assets.date"), _input("date", today, type_="date", required=True)),
             _field(t("fixed_assets.amount"), _input("amount", type_="number", step="any", min="0"),
                    t("fixed_assets.credit_amount_hint")),
             review_label=t("fixed_assets.credit_sale")))
@@ -1244,7 +1244,7 @@ def _components_card(asset: dict, components: list[dict], currency: str) -> FT:
                      Tbody(*rows), cls="data-table"), cls="detail-card section-card")
 
 
-def _reviews_card(asset: dict, reviews: list[dict], currency: str) -> FT:
+def _reviews_card(asset: dict, reviews: list[dict], currency: str, today: str) -> FT:
     """An indefinite-life intangible's annual impairment reviews, newest first, the latest
     withdrawable, and the form that records the next."""
     from celerp_fixed_assets.remeasure import REVIEW_OUTCOMES
@@ -1259,7 +1259,7 @@ def _reviews_card(asset: dict, reviews: list[dict], currency: str) -> FT:
     table = Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.review_found")),
                            _money_th(t("fixed_assets.recoverable_amount")), Th(t("fixed_assets.basis")), Th(""))),
                   Tbody(*rows), cls="data-table") if rows else P(t("fixed_assets.no_reviews"), cls="form-hint")
-    form = Form(_field(t("fixed_assets.date"), _input("date", date.today().isoformat(), type_="date", required=True)),
+    form = Form(_field(t("fixed_assets.date"), _input("date", today, type_="date", required=True)),
                 _field(t("fixed_assets.review_found"),
                        Select(*[Option(t(f"fixed_assets.review_outcome.{o}"), value=o) for o in REVIEW_OUTCOMES],
                               name="outcome", cls="form-input")),
@@ -1470,6 +1470,11 @@ def _opening_actions(state: str | None, cutover: str) -> FT:
                             button(t("fixed_assets.opening_keep_open"), keep_open="1"),
                             A(t("fixed_assets.record_opening_journal"), href=f"/accounting/journal/new?ts={cutover}",
                               cls="btn btn--secondary"), cls="form-actions"))
+
+
+def _last_year(setup: dict) -> int:
+    """The year before the company's today, the one a year end is usually about."""
+    return date.fromisoformat(setup["today"]).year - 1
 
 
 def _last_month(today: date) -> str:
@@ -2153,7 +2158,7 @@ def setup_ui_routes(app) -> None:
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            _, currency = await _context(token)
+            setup, currency = await _context(token)
             asset = await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}")
             movements = (await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}/movements"))["items"]
             classes = (await api.fixed_assets_get(token, "/classes", {"include_archived": "true"}))["items"]
@@ -2169,7 +2174,7 @@ def setup_ui_routes(app) -> None:
                          if asset.get("placements") else {})
             members = await _members(token)
             physical = await physical_cards(request, token, asset)
-            upkeep = await upkeep_card(token, asset, members, currency)
+            upkeep = await upkeep_card(token, asset, members, currency, setup["today"])
         except APIError as e:
             return await _refused(request, e, "fixed_assets.title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (asset["number"], None)])
@@ -2200,7 +2205,7 @@ def setup_ui_routes(app) -> None:
                 extra.append(_readings_card(asset))
             extra.append(_skips_card(asset))
         if asset.get("review_due"):
-            extra.append(_reviews_card(asset, reviews, currency))
+            extra.append(_reviews_card(asset, reviews, currency, setup["today"]))
         if components:
             extra.append(_components_card(asset, components, currency))
         if asset.get("status") == "active" or fixes:
@@ -2229,7 +2234,7 @@ def setup_ui_routes(app) -> None:
                     cls="settings-hint") if whole else "")
         return await _page(request, crumbs, page_header(title, *actions), parent,
                            _exception_card(asset, currency) if asset.get("exception") else "",
-                           _sale_card(asset, sale, currency),
+                           _sale_card(asset, sale, currency, setup["today"]),
                            _disposal_card(asset, movements, currency),
                            Div(_details_card(asset, members),
                                _figures_card(asset, _class_names(classes).get(asset.get("class_id")), currency),
@@ -2416,7 +2421,8 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.runs_title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.runs_title"), None)])
         form = _op_form("run", _field(t("fixed_assets.run_through"),
-                                      _input("month", _last_month(date.today()), type_="month", required=True),
+                                      _input("month", _last_month(date.fromisoformat(setup["today"])), type_="month",
+                                             required=True),
                                       t("fixed_assets.run_through_hint")))
         body = _runs_table(items, currency) if items else empty_state_cta(t("fixed_assets.runs_empty"))
         mode = t(f"fixed_assets.run_mode.{setup['settings']['run_mode']}")
@@ -2510,14 +2516,14 @@ def setup_ui_routes(app) -> None:
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            await _context(token)
+            setup, _ = await _context(token)
             asset = await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}")
         except APIError as e:
             return await _refused(request, e, "fixed_assets.dispose")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
                               (asset["number"], f"/fixed-assets/assets/{asset_id}"), (t("fixed_assets.dispose"), None)])
         form = _op_form("dispose", Input(type="hidden", name="asset_id", value=asset_id),
-                        P(t("fixed_assets.dispose_hint"), cls="settings-hint"), *_disposal_fields(asset))
+                        P(t("fixed_assets.dispose_hint"), cls="settings-hint"), *_disposal_fields(asset, setup["today"]))
         return await _page(request, crumbs, page_header(t("fixed_assets.dispose_title", number=asset["number"])),
                            form, title_key="fixed_assets.dispose")
 
@@ -2527,7 +2533,7 @@ def setup_ui_routes(app) -> None:
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            await _context(token)
+            setup, _ = await _context(token)
             asset = await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}")
         except APIError as e:
             return await _refused(request, e, "fixed_assets.sell")
@@ -2540,7 +2546,7 @@ def setup_ui_routes(app) -> None:
                               (asset["number"], f"/fixed-assets/assets/{asset_id}"), (t("fixed_assets.sell"), None)])
         form = _op_form("sell", Input(type="hidden", name="asset_id", value=asset_id),
                         P(t("fixed_assets.sell_hint"), cls="settings-hint"),
-                        _field(t("fixed_assets.sale_date"), _input("date", date.today().isoformat(), type_="date",
+                        _field(t("fixed_assets.sale_date"), _input("date", setup["today"], type_="date",
                                                                    required=True)),
                         _field(t("fixed_assets.sale_price"), _input("price", type_="number", step="any", min="0",
                                                                     required=True), t("fixed_assets.sale_price_hint")),
@@ -2557,11 +2563,11 @@ def setup_ui_routes(app) -> None:
         return asset, breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
                                    (asset["number"], f"/fixed-assets/assets/{asset_id}"), (t(label_key), None)])
 
-    async def _move_fields(token: str) -> list[FT]:
+    async def _move_fields(token: str, today: str) -> list[FT]:
         """When, to which location, and to whom: a member of the company or a person named here."""
         locations = (await api.get_locations(token))["items"]
         members = [u for u in (await api.get_users(token))["items"] if u.get("is_active")]
-        return [_field(t("fixed_assets.move_date"), _input("date", date.today().isoformat(), type_="date",
+        return [_field(t("fixed_assets.move_date"), _input("date", today, type_="date",
                                                            required=True)),
                 _field(t("fixed_assets.location"),
                        _picker("location_id", [(loc["id"], loc["name"]) for loc in locations],
@@ -2578,9 +2584,9 @@ def setup_ui_routes(app) -> None:
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            await _context(token)
+            setup, _ = await _context(token)
             asset, crumbs = await _asset_crumbs(token, asset_id, "fixed_assets.move")
-            fields = await _move_fields(token)
+            fields = await _move_fields(token, setup["today"])
         except APIError as e:
             return await _refused(request, e, "fixed_assets.move")
         form = _op_form("move", Input(type="hidden", name="asset_id", value=asset_id),
@@ -2601,9 +2607,9 @@ def setup_ui_routes(app) -> None:
             return RedirectResponse("/login", status_code=302)
         chosen = [i for i in ids.split(",") if i]
         try:
-            await _context(token)
+            setup, _ = await _context(token)
             assets = [await api.fixed_assets_get(token, f"/assets/{quote(i, safe=':')}") for i in chosen]
-            fields = await _move_fields(token)
+            fields = await _move_fields(token, setup["today"])
         except APIError as e:
             return await _refused(request, e, "fixed_assets.move")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.move"), None)])
@@ -2622,7 +2628,7 @@ def setup_ui_routes(app) -> None:
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            await _context(token)
+            setup, _ = await _context(token)
             asset, crumbs = await _asset_crumbs(token, asset_id, "fixed_assets.reclassify")
             classes = (await api.fixed_assets_get(token, "/classes"))["items"]
         except APIError as e:
@@ -2631,7 +2637,7 @@ def setup_ui_routes(app) -> None:
         form = _op_form("reclassify", Input(type="hidden", name="asset_id", value=asset_id),
                         P(t("fixed_assets.reclassify_hint"), cls="settings-hint"),
                         _field(t("fixed_assets.reclassify_date"),
-                               _input("date", date.today().isoformat(), type_="date", required=True)),
+                               _input("date", setup["today"], type_="date", required=True)),
                         _field(t("fixed_assets.to_class"), _picker("class_id", options, label=t("fixed_assets.to_class"))))
         return await _page(request, crumbs, page_header(t("fixed_assets.reclassify_title", number=asset["number"])),
                            form, title_key="fixed_assets.reclassify")
@@ -2643,7 +2649,7 @@ def setup_ui_routes(app) -> None:
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            _, currency = await _context(token)
+            setup, currency = await _context(token)
             asset, crumbs = await _asset_crumbs(token, asset_id, "fixed_assets.transfer")
             reachable = await api.fixed_assets_get(token, "/transfer-targets")
             targets = reachable["items"]
@@ -2666,7 +2672,7 @@ def setup_ui_routes(app) -> None:
                   Input(type="hidden", name="target_company_id", value=target["company_id"]),
                   P(t("fixed_assets.transfer_hint"), cls="settings-hint"), hint,
                   _field(t("fixed_assets.transfer_date"),
-                         _input("date", date.today().isoformat(), type_="date", required=True)),
+                         _input("date", setup["today"], type_="date", required=True)),
                   _field(t("fixed_assets.transfer_price"),
                          _input("price", type_="number", step="any", min="0", required=True),
                          t("fixed_assets.transfer_price_hint", currency=currency))]
@@ -2698,7 +2704,7 @@ def setup_ui_routes(app) -> None:
         ops = {"revaluation": "revalue", "impairment": "impair", "impairment_reversal": "reverse-impairment"}
         op = op if op in ops else "revaluation"
         try:
-            await _context(token)
+            setup, _ = await _context(token)
             asset, crumbs = await _asset_crumbs(token, asset_id, "fixed_assets.remeasure")
             classes = (await api.fixed_assets_get(token, "/classes", {"include_archived": "true"}))["items"]
         except APIError as e:
@@ -2713,7 +2719,7 @@ def setup_ui_routes(app) -> None:
                                cls="btn btn--sm btn--secondary"), cls="flash flash--warning"))
         form = _op_form(ops[op], Input(type="hidden", name="asset_id", value=asset_id), *notes,
                         _field(t("fixed_assets.measurement_date"),
-                               _input("date", request.query_params.get("date") or date.today().isoformat(), type_="date",
+                               _input("date", request.query_params.get("date") or setup["today"], type_="date",
                                       required=True),
                                t("fixed_assets.measurement_date_hint")),
                         _field(t(f"fixed_assets.{field}"), _input(field, value, type_="number", step="any", min="0",
@@ -2794,7 +2800,7 @@ def setup_ui_routes(app) -> None:
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            _, currency = await _context(token)
+            setup, currency = await _context(token)
             asset, crumbs = await _asset_crumbs(token, asset_id, "fixed_assets.place_in_service")
             classes = await _in_service_classes(token)
         except APIError as e:
@@ -2809,7 +2815,7 @@ def setup_ui_routes(app) -> None:
         form = _op_form("place-in-service", Input(type="hidden", name="asset_id", value=asset_id),
                         P(t("fixed_assets.place_hint", balance=_money(asset.get("cost"), currency)), cls="settings-hint"),
                         _field(t("fixed_assets.available_date"),
-                               _input("date", date.today().isoformat(), type_="date", required=True)),
+                               _input("date", setup["today"], type_="date", required=True)),
                         rows, add_row, P(t("fixed_assets.allocation_hint"), cls="form-hint"))
         return await _page(request, crumbs, page_header(t("fixed_assets.place_title", number=asset["number"])),
                            form, title_key="fixed_assets.place_in_service")
@@ -2942,7 +2948,7 @@ def setup_ui_routes(app) -> None:
         on the assets, which becomes the shared basis."""
         filled = filled or {}
         try:
-            _, currency = await _context(token)
+            setup, currency = await _context(token)
             classes = (await api.fixed_assets_get(token, "/classes", {"include_archived": "true"}))["items"]
             assets = await _class_assets_in_use(token, class_id)
         except APIError as e:
@@ -2971,7 +2977,7 @@ def setup_ui_routes(app) -> None:
                         P(t(f"fixed_assets.revalue_class_hint.{policy}", name=cls["name"], count=len(assets)),
                           cls="settings-hint"),
                         _field(t("fixed_assets.measurement_date"),
-                               _input("date", date.today().isoformat(), type_="date", required=True),
+                               _input("date", setup["today"], type_="date", required=True),
                                t("fixed_assets.measurement_date_hint")),
                         _field(t("fixed_assets.basis"),
                                _input("basis", t("fixed_assets.valuer_report_basis", name=report["filename"])
@@ -3061,7 +3067,7 @@ def setup_ui_routes(app) -> None:
             return RedirectResponse("/login", status_code=302)
         chosen = [i for i in ids.split(",") if i]
         try:
-            _, currency = await _context(token)
+            setup, currency = await _context(token)
             assets = [await api.fixed_assets_get(token, f"/assets/{quote(i, safe=':')}") for i in chosen]
         except APIError as e:
             return await _refused(request, e, "fixed_assets.dispose")
@@ -3072,7 +3078,7 @@ def setup_ui_routes(app) -> None:
                                   _money_td(a.get("nbv"), currency)) for a in assets]), cls="data-table")
         form = _op_form("dispose", *[Input(type="hidden", name="asset_ids", value=a["id"]) for a in assets],
                         P(t("fixed_assets.dispose_several_hint"), cls="settings-hint"), listed,
-                        *_disposal_fields(None))
+                        *_disposal_fields(None, setup["today"]))
         return await _page(request, crumbs, page_header(t("fixed_assets.dispose_several_title", n=len(assets))),
                            form if assets else P(t("label.select_rows_first"), cls="form-hint"),
                            title_key="fixed_assets.dispose")
@@ -3223,9 +3229,9 @@ def setup_ui_routes(app) -> None:
             return RedirectResponse("/login", status_code=302)
         title = "fixed_assets.tax_books_title"
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t(title), None)])
-        year = year or date.today().year - 1
         try:
             setup, currency = await _context(token)
+            year = year or _last_year(setup)
             regimes = _chosen_regimes(setup)
             if not regimes:
                 return await _page(request, crumbs, page_header(t(title)), _no_tax_regime(setup), title_key=title)
@@ -3278,8 +3284,10 @@ def setup_ui_routes(app) -> None:
         return await _hx_write(token, "POST", f"/tax-years/{regime}/{year}/{action}", body,
                                f"/fixed-assets/tax-books?{urlencode({'regime': regime, 'year': year})}")
 
-    async def _year_end(token: str, year: int) -> tuple[dict, list[dict], str, dict]:
+    async def _year_end(token: str, year: int) -> tuple[dict, list[dict], str, dict, int]:
+        """The year end of ``year``, or of last year when none is asked for, with the year it is."""
         setup, currency = await _context(token)
+        year = year or _last_year(setup)
         report = await api.fixed_assets_get(token, "/year-end", {"year": year})
         books = []
         for r in _chosen_regimes(setup):
@@ -3288,7 +3296,7 @@ def setup_ui_routes(app) -> None:
             except APIError as e:
                 if e.status != 403:
                     raise
-        return report, books, currency, setup
+        return report, books, currency, setup, year
 
     @app.get("/fixed-assets/year-end")
     async def year_end_page(request: Request, year: int = 0):
@@ -3296,9 +3304,8 @@ def setup_ui_routes(app) -> None:
         if not token:
             return RedirectResponse("/login", status_code=302)
         title = "fixed_assets.year_end_title"
-        year = year or date.today().year - 1
         try:
-            report, books, currency, setup = await _year_end(token, year)
+            report, books, currency, setup, year = await _year_end(token, year)
         except APIError as e:
             return await _refused(request, e, title)
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t(title), None)])
@@ -3330,9 +3337,8 @@ def setup_ui_routes(app) -> None:
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        year = year or date.today().year - 1
         try:
-            report, books, currency, setup = await _year_end(token, year)
+            report, books, currency, setup, year = await _year_end(token, year)
             company = await api.get_company(token)
         except APIError as e:
             return plain_error_response(e)

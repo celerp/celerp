@@ -26,6 +26,7 @@ from ui.i18n import t
 from celerp_fixed_assets.ui_routes import (
     _chosen_regimes,
     _context,
+    _last_year,
     _doc_href,
     _error_box,
     _input,
@@ -374,14 +375,14 @@ def _params(report: Report, request: Request, setup: dict) -> dict:
     period when that is later) or, for the prior-period adjustments, last year."""
     q = request.query_params
     if report.period == "year":
-        return {"year": q.get("year") or str(date.today().year - 1)}
+        return {"year": q.get("year") or str(_last_year(setup))}
     if report.period == "tax":
         regimes = [r["key"] for r in _chosen_regimes(setup)]
         regime = q.get("regime") if q.get("regime") in regimes else (regimes[0] if regimes else "")
-        return {"regime": regime, "year": q.get("year") or str(date.today().year - 1)}
+        return {"regime": regime, "year": q.get("year") or str(_last_year(setup))}
     if report.period == "register":
         return {k: q[k] for k in ("class_id", "q") if q.get(k)}
-    today = date.today()
+    today = date.fromisoformat(setup["today"])
     first = (setup.get("settings") or {}).get("first_managed_period") or ""
     start = max(today.replace(month=1, day=1).isoformat(), first)
     return {"date_from": q.get("date_from") or start, "date_to": q.get("date_to") or max(today.isoformat(), start)}
@@ -419,8 +420,8 @@ def _subtitle(params: dict) -> str:
     return ""
 
 
-def _filename(name: str, params: dict) -> str:
-    suffix = fname_date(params.get("date_to") or params.get("year") or date.today().isoformat())
+def _filename(name: str, params: dict, today: str) -> str:
+    suffix = fname_date(params.get("date_to") or params.get("year") or today)
     return f"fixed-asset-{name}-{suffix}.csv"
 
 
@@ -452,7 +453,7 @@ def _register_routes(app, report: Report) -> None:
             data = await fetch(token, params, request)
         except APIError as e:
             return plain_error_response(e)
-        return csv_response(report.rows(data, currency), _filename(name(request), params))
+        return csv_response(report.rows(data, currency), _filename(name(request), params, setup["today"]))
 
     @app.get(f"{path}/print", name=f"fa_report_{report.key}_print")
     async def printed(request: Request):
