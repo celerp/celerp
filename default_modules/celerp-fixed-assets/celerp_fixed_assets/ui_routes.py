@@ -242,6 +242,8 @@ def _preview(action: str, result: dict, currency: str) -> FT:
         parts.append(H4(f"{month['month']}: {_money(month['total'], currency)}"))
         parts.append(_lines_table(month["lines"], currency) if month["lines"]
                      else P(t("fixed_assets.month_posts_nothing"), cls="form-hint"))
+        if month["assets"]:
+            parts.append(_run_assets_table(month["assets"], currency))
         if month["exceptions"]:
             parts.append(_held_table(month["exceptions"], currency))
     if result.get("empty"):
@@ -382,6 +384,15 @@ def _held_table(held: list[dict], currency: str) -> FT:
                Td(t(f"fixed_assets.action.{h['action']}"))) for h in held]
     return Table(Thead(Tr(Th(t("fixed_assets.held_asset")), Th(t("fixed_assets.name")), _money_th(t("fixed_assets.held_amount")),
                           Th(t("fixed_assets.held_action")))), Tbody(*rows), cls="data-table")
+
+
+def _run_assets_table(assets: list[dict], currency: str) -> FT:
+    """A run month asset by asset: the months each figure covers, months caught up from earlier included."""
+    rows = [Tr(Td(A(a["number"], href=f"/fixed-assets/assets/{a['asset_id']}")), Td(_text(a.get("name"))),
+               Td(", ".join(a["months"])), _money_td(a["amount"], currency)) for a in assets]
+    return Table(Thead(Tr(Th(t("fixed_assets.held_asset")), Th(t("fixed_assets.name")),
+                          Th(t("fixed_assets.run_months_covered")), _money_th(t("fixed_assets.amount")))),
+                 Tbody(*rows), cls="data-table")
 
 
 def _op_form(action: str, *fields: FT, review_label: str | None = None) -> FT:
@@ -1377,10 +1388,8 @@ def _last_month(today: date) -> str:
 
 def _runs_table(items: list[dict], currency: str) -> FT:
     rows = [Tr(Td(A(r["month"], href=f"/fixed-assets/runs/{r['month']}")),
-               Td(t(f"fixed_assets.run_status.{r['status']}")), _money_td(r.get("total"), currency),
-               Td(str(len(r.get("exceptions") or [])), cls="cell--number")) for r in items]
-    return Table(Thead(Tr(Th(t("fixed_assets.month")), Th(t("fixed_assets.status")), _money_th(t("label.total")),
-                          Th(t("fixed_assets.held_count"), cls="cell--number"))),
+               Td(t(f"fixed_assets.run_status.{r['status']}")), _money_td(r.get("total"), currency)) for r in items]
+    return Table(Thead(Tr(Th(t("fixed_assets.month")), Th(t("fixed_assets.status")), _money_th(t("label.total")))),
                  Tbody(*rows), cls="data-table", id="fa-runs")
 
 
@@ -2321,6 +2330,9 @@ def setup_ui_routes(app) -> None:
              Td(*[A(f"{t('fixed_assets.movement.run')} {month}", href=f"/accounting?{urlencode({'q': j})}")
                   for j in record.get("journal_ids") or []] or [empty_mark()]))])
         parts: list[FT] = [Div(summary, cls="detail-card section-card")]
+        if record.get("assets"):
+            parts.append(Div(H2(t("fixed_assets.run_assets_title"), cls="section-title"),
+                             _run_assets_table(record["assets"], currency), cls="detail-card section-card"))
         if record.get("exceptions"):
             parts.append(Div(H2(t("fixed_assets.held_title"), cls="section-title"),
                              _held_table(record["exceptions"], currency), cls="detail-card section-card"))

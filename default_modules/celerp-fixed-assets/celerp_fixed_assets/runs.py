@@ -426,8 +426,8 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
     for c in charges:
         for k, amount in c.postable():
             t = target.get(k, month)
-            items[t].append({"asset_id": c.asset_id, "number": c.asset["number"], "month": k, "amount": amount,
-                             "expense": c.expense, "accumulated": c.accumulated, "catch_up": t != k})
+            items[t].append({"asset_id": c.asset_id, "number": c.asset["number"], "name": c.asset.get("name"),
+                             "month": k, "amount": amount, "expense": c.expense, "accumulated": c.accumulated, "catch_up": t != k})
         by_month: dict[int, list[int]] = {}
         for k in c.held(month):
             by_month.setdefault(target.get(k, month), []).append(k)
@@ -443,7 +443,8 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
         month_total = sum((it["amount"] for it in items[k]), Decimal(0))
         total += month_total
         months.append({"month": period_label(k), "total": money(month_total, currency),
-                       "lines": operations._journal_view(lines, currency)["lines"], "exceptions": list(held[k].values())})
+                       "lines": operations._journal_view(lines, currency)["lines"], "assets": _by_asset(items[k], currency),
+                       "exceptions": list(held[k].values())})
     attention = sum(1 for _, new in exceptions.values() if new)
     shown = {"empty": not charges, "months": months, "total": money(total, currency),
              "ready": len(charges) - attention, "attention": attention}
@@ -455,9 +456,21 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
 # ── Posting and preparing ────────────────────────────────────────────────────
 
 
-def _record(k: int, status: str, total: Decimal, held: dict, currency: str, **extra) -> dict:
-    return {"month": period_label(k), "status": status, "total": money(total, currency), "exceptions": list(held.values()),
-            **extra}
+def _by_asset(items: list[dict], currency: str) -> list[dict]:
+    """A month's posting asset by asset, with every month it covers, caught-up months included."""
+    rows: dict[str, dict] = {}
+    for it in items:
+        row = rows.setdefault(it["asset_id"], {"asset_id": it["asset_id"], "number": it["number"], "name": it["name"],
+                                               "months": [], "amount": Decimal(0)})
+        row["months"].append(period_label(it["month"]))
+        row["amount"] += it["amount"]
+    return [{**row, "months": sorted(row["months"]), "amount": money(row["amount"], currency)} for row in rows.values()]
+
+
+def _record(k: int, status: str, items: list[dict], held: dict, currency: str, **extra) -> dict:
+    total = sum((it["amount"] for it in items), Decimal(0))
+    return {"month": period_label(k), "status": status, "total": money(total, currency),
+            "assets": _by_asset(items, currency), "exceptions": list(held.values()), **extra}
 
 
 async def _post(session, company_id, user_id, context: dict, op_key: str, *, manual: bool) -> dict:
@@ -480,18 +493,17 @@ async def _post(session, company_id, user_id, context: dict, op_key: str, *, man
                 amounts={"accumulated_depreciation": it["amount"]}, op_key=op_key,
                 contributions=[{"journal_id": je_id, "line_index": it["line_index"], "amount": str(it["amount"])}],
                 catch_up=it["catch_up"], run=label))
-        total = sum((it["amount"] for it in items), Decimal(0))
         record_id = f"fa:run:{label}"
-        await _emit(session, company_id, user_id, record_id, "fa_run", "fa.run.posted", _record(
-            k, "posted_with_exceptions" if held else "posted", total, held, books.currency, cycle=cycle,
-            journal_ids=[je_id] if je_id else [], movements=moved, op_key=op_key),
-            key=f"{record_id}:{cycle}:posted")
+        record = _record(k, "posted_with_exceptions" if held else "posted", items, held, currency, cycle=cycle,
+                         journal_ids=[je_id] if je_id else [], movements=moved, op_key=op_key)
+        await _emit(session, company_id, user_id, record_id, "fa_run", "fa.run.posted", record,
+                    key=f"{record_id}:{cycle}:posted")
         if lines:
             await operations._post(session, company_id, user_id, key=key, operation="run", day=_end(k).isoformat(),
                                    memo=f"Depreciation {label}", lines=lines, source_id=record_id,
                                    href=f"/fixed-assets/runs/{label}", label=f"Depreciation {label}",
                                    op_key=op_key, intent={"run": label, "cycle": cycle})
-        runs.append({"month": label, "journal_id": je_id, "total": money(total, currency)})
+        runs.append({"month": label, "journal_id": je_id, "total": record["total"]})
     for asset_id, (before, after) in context["exceptions"].items():
         if before != after:
             await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.asset.exception", {"exception": after})
@@ -506,11 +518,9 @@ async def _post(session, company_id, user_id, context: dict, op_key: str, *, man
 async def _prepare(session, company_id, context: dict) -> None:
     books: Books = context["books"]
     for k in context["months"]:
-        items, held = context["items"][k], context["held"][k]
-        month_total = sum((it["amount"] for it in items), Decimal(0))
-        record = _record(k, "prepared", month_total, held, books.currency)
+        record = _record(k, "prepared", context["items"][k], context["held"][k], books.currency)
         current = books.records.get(k)
-        if current is None or any(current.get(f) != record[f] for f in ("status", "total", "exceptions")):
+        if current is None or any(current.get(f) != record[f] for f in ("status", "total", "assets", "exceptions")):
             await _emit(session, company_id, None, f"fa:run:{record['month']}", "fa_run", "fa.run.prepared", record)
     await notices.tell(session, company_id, notices.READY,
                        f"Depreciation for {_long(context['month'])} is ready to post.",
@@ -689,11 +699,15 @@ async def _restore(session, company_id, books: Books) -> bool:
         if found is None or (record.get("status") in _POSTED and record.get("cycle") == found[0]):
             continue
         cycle, je = found
-        moved = sorted(eid for eid, s in await _entities(session, company_id, "fa_movement")
+        moves = sorted((eid, s) for eid, s in await _entities(session, company_id, "fa_movement")
                        if any(c.get("journal_id") == je["id"] for c in s.get("contributions") or []))
-        total = sum((_dec(e.get("debit")) for e in je.get("entries") or []), Decimal(0))
+        assets = dict(await _entities(session, company_id, "fa_asset"))
+        items = [{"asset_id": s["asset_id"], "number": assets[s["asset_id"]]["number"],
+                  "name": assets[s["asset_id"]].get("name"), "month": month_index(date.fromisoformat(s["effective_date"])),
+                  "amount": _dec(s["amounts"]["accumulated_depreciation"])} for _, s in moves]
         await _emit(session, company_id, None, f"fa:run:{period_label(k)}", "fa_run", "fa.run.posted", _record(
-            k, "posted", total, {}, books.currency, cycle=cycle, journal_ids=[je["id"]], movements=moved))
+            k, "posted", items, {}, books.currency, cycle=cycle, journal_ids=[je["id"]],
+            movements=[eid for eid, _ in moves]))
         restored = True
     return restored
 

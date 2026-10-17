@@ -230,13 +230,16 @@ async def test_runs_page_reviews_posts_and_reverses_a_run(owner_ui):
     review = await owner_ui.post("/fixed-assets/op/run/review",
                                  data={"month": "2026-09", "idempotency_key": str(uuid.uuid4())})
     assert "2026-08" in review.text and "2026-09" in review.text and "6400" in review.text
+    assert "Delivery car" in review.text, "the Review says which asset each month's figure comes from"
     assert await _review_and_confirm(owner_ui, "run", {"month": "2026-09"}) == "/fixed-assets/runs"
 
     page = await owner_ui.get("/fixed-assets/runs")
     assert t("fixed_assets.run_status.posted") in page.text
     assert page.text.index(">2026-09<") < page.text.index(">2026-08<"), "newest month first"
+    assert "Assets held" not in page.text, "a count of held assets beside the total reads as the assets in it"
     detail = await owner_ui.get("/fixed-assets/runs/2026-09")
     assert detail.status_code == 200 and t("fixed_assets.reverse_run") in detail.text
+    assert t("fixed_assets.run_assets_title") in detail.text and "Delivery car" in detail.text
     assert "fixed_assets." not in detail.text
 
     assert await _review_and_confirm(owner_ui, "reverse-run", {"month": "2026-09"}) == "/fixed-assets/runs/2026-09"

@@ -145,6 +145,23 @@ async def test_run_posts_one_journal_per_month_at_month_end(fa):
     assert future.status_code == 422
 
 
+async def test_u13_a_run_lists_each_asset_and_the_months_it_catches_up(fa):
+    await _managed_from(fa, "2026-03-01")
+    car = await _contributed(fa, on="2026-01-15")
+    van = await _contributed(fa, name="Van", cost="6000", on="2026-04-02")
+    preview = await fa.ok(await fa.post("/runs", {"month": "2026-04", "preview": True, "op_key": "p"}))
+    march, april = preview["months"]
+    # January and February come before the first managed period, so they are caught up in the last month run.
+    assert [(a["asset_id"], a["name"], a["months"], D(a["amount"])) for a in march["assets"]] == [
+        (car, "Owner's car", ["2026-03"], D("200"))]
+    assert sorted((a["name"], a["months"], D(a["amount"])) for a in april["assets"]) == [
+        ("Owner's car", ["2026-01", "2026-02", "2026-04"], D("600")), ("Van", ["2026-04"], D("100"))]
+    await _run(fa, "2026-04")
+    posted = {r["month"]: r for r in await _runs(fa)}
+    assert {a["asset_id"]: a["months"] for a in posted["2026-04"]["assets"]} == {
+        car: ["2026-01", "2026-02", "2026-04"], van: ["2026-04"]}
+
+
 async def test_s2_depreciation_destination_per_class_and_asset(fa):
     await _managed_from(fa)
     site = await fa.ok(await fa.post("/classes", {"name": "Site equipment", "kind": "tangible",
