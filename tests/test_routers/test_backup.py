@@ -480,3 +480,26 @@ async def test_export_cloud_returns_422_when_reassembly_fails(auth_client, monke
     r = await auth_client.get("/backup/export/abc-123")
     assert r.status_code == 422
     assert "pg_dump" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url,target,want", [
+    ("/backup/export", "celerp.services.backup_export.export_full", r"celerp-backup-\d{4}-\d{2}-\d{2}-\d{4}\.celerp-backup"),
+    ("/backup/export/snap-1", "celerp.services.backup_repo.reassemble_snapshot", r"celerp-backup-snap-1\.celerp-backup"),
+])
+async def test_export_names_the_download_as_a_backup(auth_client, monkeypatch, tmp_path, url, target, want):
+    """The saved file is named as a Celerp backup, not after the server's temp file
+    (which read like "tmp7yuwpdhh.celerp-backup" in the Save dialog)."""
+    import re
+
+    archive = tmp_path / "tmp7yuwpdhh.celerp-backup"
+    archive.write_bytes(b"archive")
+
+    async def fake(*_a):
+        return archive
+
+    monkeypatch.setattr(target, fake)
+    r = await auth_client.get(url)
+    assert r.status_code == 200
+    name = r.headers["content-disposition"].split('filename="', 1)[1].rstrip('"')
+    assert re.fullmatch(want, name), name

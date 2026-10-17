@@ -264,9 +264,14 @@ async def export_local() -> FileResponse:
         path = await export_full()
     except RuntimeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    # export_full writes a temp archive (delete=False); remove it once the response is
-    # sent so multi-GB exports don't pile up in the temp dir.
-    return FileResponse(path=str(path), filename=path.name, media_type="application/gzip",
+    return _archive_download(path, f"{datetime.now():%Y-%m-%d-%H%M}")
+
+
+def _archive_download(path: Path, label: str) -> FileResponse:
+    """Serve a temp backup archive under a backup's name (never the temp file's) and
+    remove it once sent, so multi-GB exports don't pile up in the temp dir."""
+    return FileResponse(path=str(path), filename=f"celerp-backup-{label}.celerp-backup",
+                        media_type="application/gzip",
                         background=BackgroundTask(path.unlink, missing_ok=True))
 
 
@@ -278,8 +283,7 @@ async def export_cloud(backup_id: str) -> FileResponse:
         path = await reassemble_snapshot(backup_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return FileResponse(path=str(path), filename=path.name, media_type="application/gzip",
-                        background=BackgroundTask(path.unlink, missing_ok=True))
+    return _archive_download(path, backup_id)
 
 
 @router.post("/import")
