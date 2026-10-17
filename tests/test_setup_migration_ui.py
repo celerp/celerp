@@ -1061,7 +1061,6 @@ async def test_migration_progress_survives_process_restart(ui, router, fake_api)
     assert all(p >= 0 for p in positions), dict(zip(_PHASE_LABELS, positions))
     assert positions == sorted(positions)
     assert "1203" in page  # inventory phase created counter
-    assert "0 attachments" in page
     assert 'hx-trigger="every 2s"' in _page(r)
     # Once started, the footnote no longer counts down to a start, and stopping reads as a pause.
     assert "if you do not start" not in page and "the migration finishes or is discarded" in page

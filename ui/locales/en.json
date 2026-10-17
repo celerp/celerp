@@ -3828,7 +3828,6 @@
   "migration.created": "Created",
   "migration.skipped": "Skipped",
   "migration.errors": "Errors",
-  "migration.n_attachments": "{n} attachments",
   "migration.interrupted_resume": "Interrupted - Resume",
   "migration.resume": "Resume",
   "migration.start": "Start migration",

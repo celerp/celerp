@@ -1527,13 +1527,6 @@ def _phase_label(phase: dict) -> str:
     return t(f"migration.phase.{key}") if key in _PHASES else phase.get("label", key)
 
 
-def _created_cell(phase: dict) -> str:
-    created = phase.get("created", 0) or 0
-    if phase.get("phase") == "attachments":
-        return t("migration.n_attachments", n=created)
-    return str(created)
-
-
 def _run_actions(run: dict) -> FT:
     run_id = run["id"]
     status = run.get("status")
@@ -1573,10 +1566,12 @@ def _error_block(error: dict | None) -> FT | str:
 def _progress_fragment(run: dict, error: str | None = None) -> FT:
     status = run.get("status", "")
     phases = run.get("phases") or []
+    active = status in _ACTIVE_STATUSES or run.get("preparing")
     polling = {"hx_get": f"/migrations/{run['id']}", "hx_trigger": "every 2s", "hx_swap": "outerHTML"} \
-        if status in _ACTIVE_STATUSES or run.get("preparing") else {}
+        if active else {}
     return Div(
         flash(error) if error else "",
+        P(t("migration.progress_subtitle"), cls="form-hint") if active else "",
         P(_badge(t(f"migration.status.{status}"), _PHASE_BADGE.get(
             {"completed": "done", "failed": "failed", "running": "running"}.get(status, ""), "badge--inactive"))),
         wizard_table(
@@ -1589,7 +1584,7 @@ def _progress_fragment(run: dict, error: str | None = None) -> FT:
                     Td(_phase_label(p)),
                     Td(_badge(t(f"migration.phase_status.{p.get('status', 'pending')}"),
                               _PHASE_BADGE.get(p.get("status"), "badge--inactive"))),
-                    Td(_created_cell(p), cls="cell--number"),
+                    Td(str(p.get("created", 0) or 0), cls="cell--number"),
                     Td(str(p.get("skipped", 0) or 0), cls="cell--number"),
                     Td(str(p.get("errors", 0) or 0), cls="cell--number"),
                 )
@@ -1615,9 +1610,7 @@ def _progress_page(request: Request, run: dict, error: str | None = None):
     return wizard_page(
         request,
         _steps(5),
-        auth_header(t("migration.progress_title", company=run.get("company_name", "")),
-                t("migration.progress_subtitle") if run.get("status") in _ACTIVE_STATUSES or run.get("preparing")
-                else ""),
+        auth_header(t("migration.progress_title", company=run.get("company_name", ""))),
         _progress_fragment(run, error),
         P(t("migration.retention" if run.get("status") == "ready" else "migration.retention_started"),
           cls="form-hint"),

@@ -3828,7 +3828,6 @@
   "migration.created": "ተፈጥሯል",
   "migration.skipped": "ታልፏል",
   "migration.errors": "ስህተቶች",
-  "migration.n_attachments": "{n} አባሪዎች",
   "migration.interrupted_resume": "ተቋርጧል - ይቀጥሉ",
   "migration.resume": "ይቀጥሉ",
   "migration.start": "ዝውውር ይጀምሩ",

@@ -3828,7 +3828,6 @@
   "migration.created": "作成済み",
   "migration.skipped": "スキップ済み",
   "migration.errors": "エラー",
-  "migration.n_attachments": "添付{n}件",
   "migration.interrupted_resume": "中断 - 再開",
   "migration.resume": "再開する",
   "migration.start": "移行を開始する",

@@ -3828,7 +3828,6 @@
   "migration.created": "تم الإنشاء",
   "migration.skipped": "تم التجاوز",
   "migration.errors": "الأخطاء",
-  "migration.n_attachments": "{n} مرفقات",
   "migration.interrupted_resume": "متوقف - استئناف",
   "migration.resume": "استئناف",
   "migration.start": "بدء الترحيل",
