@@ -19,7 +19,8 @@
 #                  keeps records in it, then this build installs over it and must serve the
 #                  same records (scripts/smoke_records.py).
 #   -OverRunning   once the app is ready, the account runs this build's installer again
-#                  with the app open; it must close the app, install, and boot again.
+#                  with the app open (its processes and API checked alive first); it must
+#                  end exactly those processes, leave a whole install, and boot again.
 #
 # After every install the installed folder must hold exactly the build's files plus the
 # uninstaller (scripts/check_win_bundle.py installed). Install and start times go to the job summary; they are reported, never
@@ -229,6 +230,20 @@ function Launch([string]$exe, [string]$what) {
 
 function Ours([string]$dir) { @(Get-Process Celerp, postgres, python -EA SilentlyContinue | Where-Object { $_.Path -like "$dir\*" }) }
 
+# The app is open: its window, API and database processes run from the install folder and
+# the API answers with db:ok. Returns those processes, so a later check can tell that
+# exactly these ended.
+function RunningApp([string]$dir, [string]$port, [string]$what) {
+  $procs = @(Ours $dir)
+  foreach ($name in "Celerp", "python", "postgres") {
+    if (-not ($procs | Where-Object { $_.Name -eq $name })) { Fail "$what`: no $name process is running from $dir" }
+  }
+  $ready = try { (Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri "http://127.0.0.1:$port/health/ready").Content } catch { "" }
+  if ($ready -notmatch '"db"\s*:\s*"ok"') { Fail "$what`: the API on port $port does not answer db:ok" }
+  Write-Host "smoke: $what, app running: $(($procs | ForEach-Object { "$($_.Name) $($_.Id)" }) -join ', ')"
+  $procs
+}
+
 # Force-quits the app: no API or database may stay running (the app's job object ends them).
 function ForceQuit([string]$dir, [string]$port, [string]$what) {
   $before = @(Ours $dir | Where-Object { $_.Name -ne "Celerp" }).Count
@@ -283,9 +298,9 @@ if ($Previous) {
 }
 
 if ($OverRunning) {
-  $running = @(Ours $installDir).Count
-  $installDir = InstallSetup $setup "install over the running app ($running app processes)"
-  $left = @(Ours $installDir)
+  $before = RunningApp $installDir $port "before installing over the running app"
+  $installDir = InstallSetup $setup "install over the running app ($($before.Count) app processes)"
+  $left = @($before | Where-Object { $p = Get-Process -Id $_.Id -EA SilentlyContinue; $p -and $p.StartTime -eq $_.StartTime })
   if ($left.Count) { $left | Format-Table Id, Name, Path | Out-String | Write-Host; Fail "the installer left the app running" }
   TreeMatches $installDir "install over the running app"
   $port = Launch $exe "launch after installing over the running app"

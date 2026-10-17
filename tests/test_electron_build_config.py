@@ -504,6 +504,22 @@ def _win_boot_smoke():
     return (Path(__file__).parent.parent / "electron" / "scripts" / "win-boot-smoke.ps1").read_text()
 
 
+def test_windows_install_over_the_running_app_requires_the_app_running_first():
+    """-OverRunning proves the installer closes an open app only if the app is open: its
+    window, API and database processes and a db:ok API are required before the install,
+    and afterwards exactly those processes (by id and start time) must be gone, the
+    install whole, and the app must boot again."""
+    smoke = _win_boot_smoke()
+    over = smoke.split("if ($OverRunning) {", 1)[1].split("\n}\n", 1)[0]
+    running_app = smoke.split("function RunningApp(", 1)[1].split("\n}\n", 1)[0]
+    for name in ('"Celerp"', '"python"', '"postgres"'):
+        assert name in running_app
+    assert "/health/ready" in running_app and "Fail " in running_app
+    assert over.index("$before = RunningApp $installDir $port") < over.index("InstallSetup $setup")
+    assert "Get-Process -Id $_.Id" in over and "$p.StartTime -eq $_.StartTime" in over
+    assert over.index("InstallSetup $setup") < over.index("TreeMatches $installDir") < over.index("Launch $exe")
+
+
 def test_windows_boot_smoke_runs_as_an_administrator_with_uac_off():
     """A second Windows boot smoke installs and launches the app as the built-in
     Administrator, whose full token has no standard token linked to it (what UAC off
