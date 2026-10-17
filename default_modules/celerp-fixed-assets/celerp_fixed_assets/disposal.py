@@ -164,9 +164,13 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     else:
         from celerp.services.money import round_money
 
-        opening = sum((_dec((m.get("amounts") or {}).get(_AD)) for m in live
-                       if m.get("operation") in runs.OPENING_OPERATIONS), Decimal(0))
-        gone_ad = round_money(parted + opening * share, currency)
+        # The share of everything charged before the disposal month (opening values, runs,
+        # catch-up, and layers an impairment or revaluation replaced), and what the share
+        # itself was charged in the month it left.
+        before = _dec(asset.get(_AD)) + depreciation - sum(
+            (p.amount for p in planned.periods if parse_period(p.period) >= month), Decimal(0)) \
+            if planned is not None else _dec(asset.get(_AD))
+        gone_ad = _split(before, share, currency) + round_money(parted, currency)
     gone_imp = _split(_dec(asset.get(_IMP)), share, currency)
     gone_surplus = _split(_dec(asset.get(_SURPLUS)), share, currency)
     carrying = gone_cost - gone_ad - gone_imp

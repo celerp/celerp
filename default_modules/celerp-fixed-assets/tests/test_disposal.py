@@ -114,6 +114,58 @@ async def test_partial_dispose_by_percentage_splits_pro_rata_and_depreciates_on(
     await fa.fold_matches(car)
 
 
+async def test_u1_partial_dispose_after_impairment_takes_its_share_of_both(fa):
+    """Impaired at the end of June (carrying 10,800 down to 8,550), then a quarter disposed
+    of on 10 July: the quarter takes 300 of the depreciation charged through June and 562.50
+    of the impairment, the same share as of cost, and charges nothing in July; the kept three
+    quarters charge 118.75 (8,550 over 54 months, times 0.75). The register, the schedule, the
+    disposals report and each account move by the same figures."""
+    from test_remeasure import _impair
+
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    await _run(fa, "2026-06")
+    await _impair(fa, car, "2026-06-30", "8550")
+    before = {code: await fa.balance(code) for code in ("1210", "1220", "6400", "6980")}
+    await _dispose(fa, car, "2026-07-10", percent="25")
+    got = await fa.asset(car)
+    assert D(got["cost"]) == D("9000")
+    assert D(got["accumulated_depreciation"]) == D("1018.75")
+    assert D(got["accumulated_impairment"]) == D("1687.50")
+    moved = {code: await fa.balance(code) - before[code] for code in before}
+    assert moved == {"1210": D("-3000"), "1220": D("862.50") - D("118.75"), "6400": D("118.75"),
+                     "6980": D("2137.50")}, moved
+    (row,) = (await fa.ok(await fa.get("/reports/disposals", date_from="2026-07-01", date_to="2026-07-31")))["items"]
+    assert D(row["carrying_amount"]) == D("2137.50") and D(row["gain_or_loss"]) == D("-2137.50")
+    vehicles = [c for c in (await fa.ok(await fa.get("/reports/schedule", date_from="2026-07-01",
+                                                     date_to="2026-07-31")))["classes"] if c["name"] == "Vehicles"][0]
+    (asset_row,) = [a for a in vehicles["assets"] if a["id"] == car]
+    assert D(asset_row["depreciation_disposals"]) == D("-300")
+    assert D(asset_row["impairment_disposals"]) == D("-562.50")
+    assert D(asset_row["depreciation_closing"]) == D("1018.75")
+    assert D(asset_row["impairment_closing"]) == D("1687.50")
+    await fa.fold_matches(car)
+
+
+async def test_u1_partial_dispose_in_the_month_bought_keeps_the_month_on_what_stays(fa):
+    """Bought on 5 July and 40% disposed of on 20 July under the full-month convention: the
+    month is charged on what stays (120, 60% of 200) and the share that left was never
+    depreciated, so none of the accumulated depreciation goes with it. The kept 7,200 then
+    charges 120 a month, ending at nil."""
+    await _managed_from(fa)
+    car = await _contributed(fa, on="2026-07-05")
+    await _dispose(fa, car, "2026-07-20", percent="40")
+    je = await _disposal_journal(fa, car)
+    assert _lines(je) == {"6400": (D("120"), D(0)), "1220": (D(0), D("120")), "1210": (D(0), D("4800")),
+                          "6980": (D("4800"), D(0))}
+    got = await fa.asset(car)
+    assert D(got["cost"]) == D("7200") and D(got["accumulated_depreciation"]) == D("120")
+    await _run(fa, "2026-08")
+    run_moves = [m for m in await _movements(fa, car) if m["operation"] == "run"]
+    assert D(run_moves[-1]["amounts"]["accumulated_depreciation"]) == D("120")
+    await fa.fold_matches(car)
+
+
 async def test_partial_dispose_of_a_quantity_record_by_quantity(fa):
     laptops = await fa.line("Laptop")
     done = await fa.register(laptops["source"], key="reg-q", class_name="Computer equipment", mode="quantity")

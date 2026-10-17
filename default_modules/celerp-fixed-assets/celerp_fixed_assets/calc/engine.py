@@ -172,7 +172,8 @@ class Layer:
 
 @dataclass(frozen=True)
 class Schedule:
-    """``parted`` is what each partial disposal's share was charged, in date order."""
+    """``parted`` is what each partial disposal's share was charged in the month it left,
+    in date order."""
     periods: list[PeriodAmount]
     layers: list[Layer]
     parted: list[Decimal] = field(default_factory=list)
@@ -267,7 +268,7 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
     if not starts:
         return Schedule([], [])
     layers: list[Layer] = []
-    shares: list[list[Layer]] = []
+    shares: list[tuple[int, list[Layer]]] = []
     retired: list[Layer] = []
     months: list[tuple[int, MissingReading | None]] = []
     with localcontext() as ctx:
@@ -309,7 +310,7 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
                     layers = _restated(layers, m.carrying, index, method, params)
                 elif m.share < _ONE:
                     gone = [ly.split(m.share) for ly in layers]
-                    shares.append(gone)
+                    shares.append((index, gone))
                     leaving.extend((ly, m.on) for ly in gone)
                 else:
                     disposal = m.on
@@ -339,5 +340,6 @@ def schedule(movements: list[Movement], policy: Policy, *, through: str, currenc
             rounded = round_money(cumulative, currency)
             periods.append(PeriodAmount(period_label(index), rounded - posted, cumulative, exception))
             posted = rounded
-        parted_charges = [sum((sum(_charges(ly), _ZERO) for ly in gone), _ZERO) for gone in shares]
+        parted_charges = [sum((sum(_charges(ly)[at - ly.start:], _ZERO) for ly in gone), _ZERO)
+                          for at, gone in shares]
     return Schedule(periods, layers, parted_charges)
