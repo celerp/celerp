@@ -301,6 +301,16 @@ def test_u25_the_import_review_grid_scrolls_in_its_own_box_with_whole_problems_a
         assert box.evaluate("e => e.scrollWidth <= e.clientWidth"), box.input_value()
 
 
+def _details(page: Page, table: str, text: str):
+    """Open a row's details with its labelled button and return the row it opens."""
+    button = page.locator(f"{table} tbody tr", has_text=text).first.get_by_role("button", name="Details")
+    button.click()
+    expect(button).to_have_attribute("aria-expanded", "true")
+    detail = page.locator(f"#{button.get_attribute('aria-controls')}")
+    expect(detail).to_be_visible()
+    return detail
+
+
 def _as_member(page: Page, c, api_server: str, role: str) -> None:
     """Sign the browser in as a new member with ``role``."""
     import psycopg2
@@ -533,10 +543,11 @@ def test_j12_unexplained_journal_names_its_fix_and_is_registered(page: Page, fre
 
     page.goto("/fixed-assets/reconciliation")
     expect(page.locator("main")).to_contain_text("Differences open")
-    row = page.locator("#fa-recon-differences tr", has_text="Generator paid in cash")
-    expect(row).to_contain_text("Not yet registered")
-    expect(row).to_contain_text("Needs Manage accounting. Fixed in the current period")
-    row.get_by_role("link", name="Register it").click()
+    expect(page.locator("#fa-recon-differences tbody tr", has_text="2026-02-10").first).to_contain_text(
+        "Not yet registered")
+    detail = _details(page, "#fa-recon-differences", "2026-02-10")
+    expect(detail).to_contain_text("Generator paid in cash")
+    detail.get_by_role("link", name="Register it").click()
     page.wait_for_url("**/fixed-assets/intake")
     page.locator("tr", has_text="Generator paid in cash").get_by_role("link").last.click()
     page.wait_for_url("**/fixed-assets/intake/line**")
@@ -575,17 +586,19 @@ def test_j13_noted_keeps_the_year_open_and_accepted_lets_it_close(page: Page, fr
     page.goto("/fixed-assets/year-end?year=2026")
     status = page.locator("#fa-ye-status")
     expect(status).to_contain_text("Not ready to close.")
-    row = page.locator("#fa-ye-items tr", has_text="Reconciliation difference")
-    row.locator("select[name=state]").select_option("noted")
-    row.locator("input[name=reason]").fill("Generator invoice requested from the supplier")
+    row = _details(page, "#fa-ye-items", "Reconciliation difference")
+    row.get_by_label("Status", exact=True).select_option("noted")
+    row.get_by_label("Reason", exact=True).fill("Generator invoice requested from the supplier")
     with page.expect_navigation():
         row.get_by_role("button", name="Save").click()
     expect(status).to_contain_text("Not ready to close.")
 
-    row = page.locator("#fa-ye-items tr", has_text="Reconciliation difference")
-    expect(row.locator("select[name=state]")).to_have_value("noted")
-    row.locator("select[name=state]").select_option("accepted")
-    row.locator("input[name=effect]").fill("Cost of 900.00 registered next year")
+    expect(page.locator("#fa-ye-items tbody tr", has_text="Reconciliation difference")).to_contain_text(
+        "Generator invoice requested from the supplier")
+    row = _details(page, "#fa-ye-items", "Reconciliation difference")
+    expect(row.get_by_label("Status", exact=True)).to_have_value("noted")
+    row.get_by_label("Status", exact=True).select_option("accepted")
+    row.get_by_label("Accounting effect", exact=True).fill("Cost of 900.00 registered next year")
     with page.expect_navigation():
         row.get_by_role("button", name="Save").click()
     expect(status).to_contain_text("Ready to close.")
@@ -733,18 +746,47 @@ def test_j18_cutover_difference_kept_open_carries_the_banner_until_acknowledged(
     page.wait_for_url("**/fixed-assets/reconciliation")
     expect(page.locator("main")).to_contain_text("Differences open")
     for account in ("1210", "1220"):
-        row = page.locator("#fa-recon-differences tbody tr", has_text=account)
-        row.locator("select[name=state]").select_option("noted")
-        row.locator("input[name=reason]").fill("Valuer's report due")
+        row = _details(page, "#fa-recon-differences", account)
+        row.get_by_label("Status", exact=True).select_option("noted")
+        row.get_by_label("Reason", exact=True).fill("Valuer's report due")
         with page.expect_navigation():
             row.get_by_role("button", name="Save").click()
-        row = page.locator("#fa-recon-differences tbody tr", has_text=account)
-        expect(row.locator("input[name=reason]")).to_have_value("Valuer's report due")
+        expect(page.locator("#fa-recon-differences tbody tr", has_text=account).first).to_contain_text(
+            "Valuer's report due")
+        row = _details(page, "#fa-recon-differences", account)
+        expect(row.get_by_label("Reason", exact=True)).to_have_value("Valuer's report due")
         expect(page.locator("#fa-recon-accounts tr", has_text=account)).to_contain_text("Differences acknowledged")
     assert _ok(c.get(f"{API}/reconciliation"))["status"] == "Differences acknowledged"
 
     page.goto("/fixed-assets")
     expect(page.locator("#fa-recon-banner")).to_have_count(0)
+
+
+def test_u26_u28_a_difference_opens_below_its_row_with_labelled_fields_on_a_phone(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _operate(c, "/assets", {"kind": "opening", "class_id": _classes(c)["Buildings"]["id"], "name": "Warehouse",
+                            "available_date": "2020-01-01", "cost": "250000", "accumulated_depreciation": "40000"})
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto("/fixed-assets/reconciliation")
+    expect(page.locator("#fa-recon-differences")).to_contain_text("Opening balance not in the register")
+    assert page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth") <= 0
+    main = page.locator("main")
+    expect(main).not_to_contain_text("Needs Manage accounting")
+    expect(main).not_to_contain_text("Fixed in the current period")
+
+    detail = _details(page, "#fa-recon-differences", "1210")
+    expect(detail).to_contain_text("Opening balances")
+    for label in ("Status", "Reason", "Accounting effect"):
+        field = detail.get_by_label(label, exact=True)
+        expect(field).to_be_visible()
+        box = field.bounding_box()
+        assert box and box["x"] >= 0 and box["x"] + box["width"] <= 390, label
+    save = detail.get_by_role("button", name="Save")
+    expect(save).to_be_visible()
+    box = save.bounding_box()
+    assert box and box["x"] + box["width"] <= 390
+    assert page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth") <= 0
 
 
 def _daily_check(context, today: date) -> None:

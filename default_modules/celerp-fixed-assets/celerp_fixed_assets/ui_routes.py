@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date
 from decimal import Decimal
 from urllib.parse import quote, urlencode
@@ -1374,15 +1375,55 @@ def _class_accounts_banner(classes: list[dict]) -> FT | str:
                cls="flash flash--error", id="fa-class-accounts")
 
 
+def _expandable(key: str, cells: list[FT], detail: FT) -> list[FT]:
+    """A row with a labelled Details button that opens the row below it, which holds the
+    row's detail and its form, so every control stays in view on a narrow screen."""
+    detail_id = _slug("fa-detail", key)
+    toggle = Button(t("fixed_assets.details"), type="button", cls="btn btn--sm btn--secondary",
+                    aria_expanded="false", aria_controls=detail_id,
+                    onclick="const r=document.getElementById(this.getAttribute('aria-controls'));"
+                            "r.hidden=!r.hidden;this.setAttribute('aria-expanded',String(!r.hidden));")
+    return [Tr(*cells, Td(toggle)),
+            Tr(Td(Div(detail, cls="row-detail"), colspan=str(len(cells) + 1)), id=detail_id, hidden=True)]
+
+
+def _slug(*parts: str) -> str:
+    """An element id made from parts that may hold any character."""
+    return re.sub(r"[^A-Za-z0-9_-]", "-", "-".join(parts))
+
+
+def _state_cell(item: dict) -> FT:
+    """An item's status, with the reason it was noted or accepted."""
+    reason = [P(item["reason"], cls="form-hint")] if item.get("reason") else []
+    return Td(t(f"fixed_assets.recon_state.{item['state']}"), *reason)
+
+
+def _mark_form(action: str, item: dict, *hidden: FT) -> FT:
+    """Note an item or accept it with its reason and accounting effect, or open it again, on the page."""
+    def field(label: str, name: str, control: FT) -> FT:
+        return Div(Label(label, cls="form-label", fr=_slug(action, item["key"], name)), control, cls="form-group")
+
+    state = Select(*[Option(t(f"fixed_assets.recon_state.{s}"), value=s, selected=s == item["state"])
+                     for s in ("open", "noted", "accepted")], name="state", cls="form-input",
+                   id=_slug(action, item["key"], "state"))
+    return Form(*hidden, Input(type="hidden", name="key", value=item["key"]),
+                field(t("fixed_assets.status"), "state", state),
+                *[field(label, name, _input(name, item.get(name), id=_slug(action, item["key"], name)))
+                  for label, name in ((t("fixed_assets.reason"), "reason"), (t("fixed_assets.recon_effect"), "effect"))],
+                Div(Button(t("fixed_assets.save"), type="submit", cls="btn btn--primary btn--sm"), cls="form-actions"),
+                hx_post=action, hx_swap="none")
+
+
 def _recon_accounts_table(accounts: list[dict], currency: str) -> FT:
     rows = [Tr(Td(a["label"]), _money_td(a["ledger"], currency),
                _money_td(a["registered"], currency),
                _money_td(str(Decimal(a["ledger"]) - Decimal(a["registered"])), currency),
                Td(t(f"fixed_assets.recon_status.{_RECON_STATUS[a['status']]}"))) for a in accounts]
-    return Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.recon_ledger")),
-                          _money_th(t("fixed_assets.recon_registered")), _money_th(t("fixed_assets.difference")),
-                          Th(t("fixed_assets.status")))),
+    table = Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.recon_ledger")),
+                           _money_th(t("fixed_assets.recon_registered")), _money_th(t("fixed_assets.difference")),
+                           Th(t("fixed_assets.status")))),
                  Tbody(*rows), cls="data-table", id="fa-recon-accounts")
+    return Div(table, cls="table-scroll-wrap")
 
 
 _RECON_STATUS = {"Reconciled": "reconciled", "Differences acknowledged": "acknowledged",
@@ -1398,48 +1439,34 @@ def _recon_cause(d: dict) -> str:
 
 
 def _recon_next(a: dict, d: dict) -> FT | str:
-    """The page that clears the difference, the permission it needs, and when it takes effect."""
+    """The page that clears the difference, and the date the fix takes when its own is locked."""
     route = _RECON_ACTIONS.get(d.get("action") or "")
     href = route(a, d) if route else None
     if not href:
         return EMPTY
-    when = (t("fixed_assets.recon_fix_from", day=d["fix_from"]) if d.get("fix_from")
-            else t("fixed_assets.recon_fix_now"))
-    needs = t(f"fixed_assets.permission.{d['permission']}")
-    return Div(A(t(f"fixed_assets.recon_action.{d['action']}"), href=href),
-               Span(f"{needs}. {when}", cls="form-hint"),
-               cls="flex-col")
+    when = [P(t("fixed_assets.recon_fix_from", day=d["fix_from"]), cls="form-hint")] if d.get("fix_from") else []
+    return Div(A(t(f"fixed_assets.recon_action.{d['action']}"), href=href), *when)
 
 
-def _acknowledge_form(d: dict) -> FT:
-    """Note or accept a difference with its reason, or open it again, on the page."""
-    state = Select(*[Option(t(f"fixed_assets.recon_state.{s}"), value=s, selected=s == d["state"])
-                     for s in ("open", "noted", "accepted")], name="state", cls="form-input",
-                   aria_label=t("fixed_assets.status"))
-    return Form(Input(type="hidden", name="key", value=d["key"]), Input(type="hidden", name="amount", value=d["amount"]),
-                Div(state, Button(t("fixed_assets.save"), type="submit", cls="btn btn--sm btn--secondary"),
-                    cls="flex-row"),
-                _input("reason", d.get("reason"), placeholder=t("fixed_assets.reason"),
-                       aria_label=t("fixed_assets.reason")),
-                _input("effect", d.get("effect"), placeholder=t("fixed_assets.recon_effect"),
-                       aria_label=t("fixed_assets.recon_effect")),
-                hx_post="/fixed-assets/reconciliation/acknowledge", hx_swap="none", cls="flex-col")
+def _difference_detail(a: dict, d: dict) -> FT:
+    lines = "; ".join(_text(li.get("description")) for li in d["lines"]) or EMPTY
+    form = "" if d["rule"] == 4 else _mark_form("/fixed-assets/reconciliation/acknowledge", d,
+                                                 Input(type="hidden", name="amount", value=d["amount"]))
+    return Div(_detail_table([(t("fixed_assets.recon_lines"), lines), (t("fixed_assets.recon_next"), _recon_next(a, d))]),
+               form)
 
 
 def _differences_table(accounts: list[dict], currency: str) -> FT:
     found = sorted(((a, d) for a in accounts for d in a["differences"]), key=lambda x: x[1]["date"], reverse=True)
     if not found:
         return P(t("fixed_assets.recon_no_differences"), cls="form-hint")
-    rows = []
-    for a, d in found:
-        lines = "; ".join(_text(li.get("description")) for li in d["lines"]) or EMPTY
-        rows.append(Tr(Td(d["date"]), Td(a["label"]), Td(_recon_cause(d)), Td(lines),
-                       _money_td(d["amount"], currency), Td(_recon_next(a, d)),
-                       Td(_text(d.get("reason")) if d["rule"] == 4 else _acknowledge_form(d))))
-    return Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.account")), Th(t("fixed_assets.recon_cause")),
-                          Th(t("fixed_assets.recon_lines")), _money_th(t("fixed_assets.amount")),
-                          Th(t("fixed_assets.recon_next")), Th(t("fixed_assets.status")))),
-                 Tbody(*rows), cls="data-table", id="fa-recon-differences")
+    rows = [row for a, d in found for row in _expandable(
+        d["key"], [Td(d["date"]), Td(a["label"]), Td(_recon_cause(d)), _money_td(d["amount"], currency), _state_cell(d)],
+        _difference_detail(a, d))]
+    table = Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.account")), Th(t("fixed_assets.recon_cause")),
+                           _money_th(t("fixed_assets.amount")), Th(t("fixed_assets.status")), Th(""))),
+                  Tbody(*rows), cls="data-table", id="fa-recon-differences")
+    return Div(table, cls="table-scroll-wrap")
 
 
 def _opening_table(accounts: list[dict], currency: str) -> FT:
@@ -1800,21 +1827,6 @@ def _tax_book_body(form, schema: dict) -> dict:
     return {"category": str(form.get("category") or "") or None, "elections": elections}
 
 
-def _year_end_mark_form(year: int, item: dict) -> FT:
-    """Note an item or accept it for close, with its reason and effect, on the page."""
-    state = Select(*[Option(t(f"fixed_assets.recon_state.{s}"), value=s, selected=s == item["state"])
-                     for s in ("open", "noted", "accepted")], name="state", cls="form-input",
-                   aria_label=t("fixed_assets.status"))
-    return Form(Input(type="hidden", name="key", value=item["key"]),
-                Div(state, Button(t("fixed_assets.save"), type="submit", cls="btn btn--sm btn--secondary"),
-                    cls="flex-row"),
-                _input("reason", item.get("reason"), placeholder=t("fixed_assets.reason"),
-                       aria_label=t("fixed_assets.reason")),
-                _input("effect", item.get("effect"), placeholder=t("fixed_assets.recon_effect"),
-                       aria_label=t("fixed_assets.recon_effect")),
-                hx_post=f"/fixed-assets/year-end/{year}/marks", hx_swap="none", cls="flex-col")
-
-
 def _year_end_status(report: dict, *, printed: bool = False) -> list:
     """Whether the year can close, or why the register has nothing to close for it."""
     dates = t("fixed_assets.tax_year_dates", start=report["start"], end=report["end"])
@@ -1838,11 +1850,12 @@ def _year_end_table(report: dict, currency: str, *, printed: bool = False) -> FT
             rows.append(Tr(Td(i["label"]), _money_td(i.get("amount"), currency), status, Td(_text(i.get("reason"))),
                            Td(_text(i.get("effect")))))
         else:
-            rows.append(Tr(Td(A(i["label"], href=i["href"]), *lapsed), _money_td(i.get("amount"), currency),
-                           Td(_year_end_mark_form(report["year"], i))))
+            rows += _expandable(i["key"], [Td(A(i["label"], href=i["href"]), *lapsed),
+                                           _money_td(i.get("amount"), currency), _state_cell(i)],
+                                _mark_form(f"/fixed-assets/year-end/{report['year']}/marks", i))
     head = [Th(t("fixed_assets.ye_item")), _money_th(t("fixed_assets.amount")), Th(t("fixed_assets.status")),
-            *([Th(t("fixed_assets.reason")), Th(t("fixed_assets.recon_effect"))] if printed else [])]
-    return Table(Thead(Tr(*head)), Tbody(*rows), cls="data-table", id="fa-ye-items")
+            *([Th(t("fixed_assets.reason")), Th(t("fixed_assets.recon_effect"))] if printed else [Th("")])]
+    return Div(Table(Thead(Tr(*head)), Tbody(*rows), cls="data-table", id="fa-ye-items"), cls="table-scroll-wrap")
 
 
 def _year_end_books(books: list[dict]) -> FT:

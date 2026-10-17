@@ -356,7 +356,7 @@ async def test_s7_each_difference_names_its_fix_and_when(fa):
         return found
 
     found = manual(await _recon(fa, (await fa.today()).isoformat()))
-    assert (found["rule"], found["action"], found["permission"]) == (5, "intake", "manage_accounting")
+    assert (found["rule"], found["action"]) == (5, "intake")
     assert found["fix_from"] is None and found["asset_id"] is None
     r = await fa.client.post("/accounting/period-lock", headers=fa.h, json={"lock_date": booked.isoformat()})
     assert r.status_code == 200, r.text

@@ -49,8 +49,6 @@ REGISTERED_RULES = (1, 2)
 NOTED_ALLOCATIONS = ("not_acquisition", "keep")
 STATUSES = ("Reconciled", "Differences acknowledged", "Differences open")
 _MODULE_JOURNAL = f"je:mod:{MODULE}:"
-# Every fix the reconciliation offers, and acknowledging a difference, is accounting work.
-FIX_PERMISSION = "manage_accounting"
 _SIGN = {"acquisition": 1, "depreciation": -1, "reduction": -1}
 _CAUSES = {1: "Fixed asset journal", 2: "Registered", 3: "Source voided", 4: "Noted", 5: "Not yet registered",
            6: "Unclassified"}
@@ -300,7 +298,7 @@ def _difference(key: str, rule, cause: str, amount: Decimal, day: str, units: li
         state, reason, effect = "open", None, None
     currency = fixing["currency"]
     return {"key": key, "rule": rule, "cause": cause, "amount": money(amount, currency), "date": day, "state": state,
-            "reason": reason, "effect": effect, "action": _action(rule), "permission": FIX_PERMISSION,
+            "reason": reason, "effect": effect, "action": _action(rule),
             "asset_id": fixing["owners"].get(units[0].get("source")) if rule == 3 else None,
             "fix_from": _fix_from(fixing["lock"], day),
             "lines": [{"journal_id": u["journal_id"], "source": u.get("source"), "description": u["description"],
