@@ -1009,7 +1009,7 @@ async def _unset_role(fa: FA, role: str) -> None:
     settings = dict(company.settings or {})
     settings[ROLES_KEY] = {k: v for k, v in (settings.get(ROLES_KEY) or {}).items() if k != role}
     company.settings = settings
-    await fa.session.flush()
+    await fa.session.commit()
 
 
 async def _clearing_by_account(fa: FA, asset_id: str) -> dict[str, D]:
