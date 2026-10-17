@@ -84,6 +84,16 @@ def fmt_money(value: str | float, currency: str | None = None) -> str:
     return _signed(v, f"{abs(v):,.{_cdp(currency or 'USD')}f}", currency)
 
 
+def input_money(value: str | float, currency: str | None = None) -> str:
+    """A money AMOUNT as an editable number input holds it: currency precision, no symbol
+    or grouping (9000.00, never 9000.0)."""
+    from celerp.services.money import currency_dp as _cdp
+    try:
+        return f"{float(value):.{_cdp(currency or 'USD')}f}"
+    except (ValueError, TypeError):
+        return ""
+
+
 def _signed(value: float, digits: str, currency: str | None) -> str:
     """``digits`` after the currency symbol, with the minus sign in front of both
     (-$50.00, not $-50.00); a figure that shows as zero carries no sign."""
@@ -94,20 +104,36 @@ def _signed(value: float, digits: str, currency: str | None) -> str:
 def fmt_rate(value: str | float, currency: str | None = None) -> str:
     """Format a unit price (a RATE): currency symbol + at least currency_dp decimals, up to rate_dp,
     with trailing zeros beyond currency precision trimmed (15.28, 15.285, 15.30 - never 15.2850)."""
-    from celerp.services.money import currency_dp as _cdp, rate_dp as _rdp
     try:
         v = float(value)
     except (ValueError, TypeError):
         return EMPTY
+    return _signed(v, _rate_digits(abs(v), currency, ","), currency)
+
+
+def input_rate(value: str | float, currency: str | None = None) -> str:
+    """A unit price as an editable number input holds it: the digits of :func:`fmt_rate`
+    without symbol or grouping (9000.00, 15.285)."""
+    try:
+        v = float(value)
+    except (ValueError, TypeError):
+        return ""
+    return ("-" if v < 0 else "") + _rate_digits(abs(v), currency, "")
+
+
+def _rate_digits(v: float, currency: str | None, grouping: str) -> str:
+    """At least currency_dp decimals and up to rate_dp, trailing zeros beyond currency
+    precision trimmed; ``grouping`` is the thousands separator ("," or "")."""
+    from celerp.services.money import currency_dp as _cdp, rate_dp as _rdp
     lo, hi = _cdp(currency or "USD"), _rdp(currency or "USD")
-    s = f"{abs(v):,.{hi}f}"
+    s = f"{v:{grouping}.{hi}f}"
     if "." in s:
         intp, frac = s.split(".")
         frac = frac.rstrip("0")
         if len(frac) < lo:
             frac = frac.ljust(lo, "0")
         s = f"{intp}.{frac}" if frac else intp
-    return _signed(v, s, currency)
+    return s
 
 
 def unwrap_address(raw) -> str:

@@ -47,6 +47,8 @@ from ui.components.operation_key import (
 
 from celerp.output.doc_print import (
     INVOICE_LAYOUT_DOC_TYPES as _INVOICE_LAYOUT_DOC_TYPES,
+    input_money,
+    input_rate,
     render_doc_print_html,
 )
 
@@ -7519,7 +7521,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     cells.append(Td(_qty_input, cls="col-qty"))
                     cells.append(Td(_unit_span, cls="col-unit"))
             cells.extend([
-                Td(Input(type="number", value=str(price), step="any",
+                Td(Input(type="number", value=input_rate(price, currency), step="any",
                          data_name="unit_price", oninput="celerpFieldEdited(this)",
                          onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-unit-price"),
@@ -7532,7 +7534,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if account_cell:
                 cells.append(account_cell)
             cells.extend([
-                Td(Input(type="number", value=str(round(line_tot, 2)), step="0.01",
+                Td(Input(type="number", value=input_money(line_tot, currency), step="0.01",
                          cls="cell-input line-total",
                          oninput="celerpLineTotalInput(this)",
                          onblur="celerpUpdateTotals(); celerpAutoSave()",
@@ -8663,7 +8665,7 @@ function celerpUpdateTotals() {{
             lineTot = gross - discAmt;
             grossSub += gross;
             totalDiscount += discAmt;
-            if (totalEl && totalEl !== document.activeElement) totalEl.value = lineTot.toFixed(2);
+            if (totalEl && totalEl !== document.activeElement) totalEl.value = lineTot.toFixed(_CELERP_CDP);
         }}
         sub += lineTot;
         const rate = _celerpTaxRate(row);

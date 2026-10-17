@@ -626,6 +626,23 @@ async def test_sell_from_the_asset_page_then_credit_the_sale(owner_ui):
         assert t("fixed_assets.correct_sale") in doc_page.text
 
 
+def _line_inputs(html: str, marker: str) -> list[str]:
+    """The values of a draft's line inputs carrying ``marker`` (an attribute)."""
+    return [re.search(r'value="([^"]*)"', tag).group(1) for tag in re.findall(r"<input[^>]*>", html) if marker in tag]
+
+
+async def test_u36_a_sale_invoice_line_shows_its_price_and_total_as_money(owner_ui):
+    car = await _managed_car(owner_ui)
+    # The buyer's name as well as the contact, so the same sale also runs on the earlier form.
+    href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",
+                                                       "contact_id": await _buyer(owner_ui),
+                                                       "contact_name": "Brightwater Retail"})
+    page = (await owner_ui.get(href)).text
+    # The blank add-a-line row holds "0"; the sale's own line is the only other one.
+    assert [v for v in _line_inputs(page, 'data-name="unit_price"') if v != "0"] == ["9000.00"]
+    assert [v for v in _line_inputs(page, 'data-name="line_total"') if v != "0"] == ["9000.00"]
+
+
 async def test_u8_u9_the_sale_card_opens_the_draft_credit_note_and_folds_a_returned_sale(owner_ui):
     car = await _managed_car(owner_ui)
     href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",
