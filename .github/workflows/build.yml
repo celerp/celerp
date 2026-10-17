@@ -116,7 +116,7 @@ jobs:
   build:
     needs: [prepare-release, setup-matrix]
     # prepare-release is skipped on non-tag builds; treat skipped as success.
-    if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped') && needs.setup-matrix.result == 'success'
+    if: false
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup-matrix.outputs.matrix) }}
@@ -1072,8 +1072,8 @@ jobs:
   # exports, company and full backups, restores and a reopen, all named in the
   # account's script (win-boot-smoke.ps1 -Demo).
   win-names:
-    needs: [setup-matrix, build]
-    if: success() && contains(needs.setup-matrix.outputs.matrix, 'windows-latest')
+    needs: [setup-matrix]
+    if: contains(needs.setup-matrix.outputs.matrix, 'windows-latest')
     runs-on: windows-latest
     timeout-minutes: 45
     strategy:
@@ -1092,10 +1092,11 @@ jobs:
     name: win-names (${{ matrix.case }})
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: binaries-windows-latest
-          path: ${{ runner.temp }}/candidate
+      - name: The candidate is 2.5.6 itself (the pre-fix base)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download v2.5.6 --repo $env:GITHUB_REPOSITORY --pattern Celerp-Setup.exe --dir (Join-Path $env:RUNNER_TEMP candidate)
       - name: Account ${{ matrix.user }}, from ${{ matrix.previous }}
         shell: pwsh
         working-directory: electron
