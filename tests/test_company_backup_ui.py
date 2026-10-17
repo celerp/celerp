@@ -1344,7 +1344,9 @@ async def test_restore_success_shows_reconciled_totals(ui, real_engine, real_cli
         restored_tok = _cookie(r, "celerp_token")
         page = _page(await _follow(ui, r))
         assert "Free to use locally with no time limit." in page
-        for label, figure in zip(("Trial balance", "Owed to you", "You owe"), await _key_totals(real_client, restored_tok)):
+        # A trial balance is not one amount: the row names the figure it shows.
+        for label, figure in zip(("Total debits on the trial balance", "Owed to you", "You owe"),
+                                 await _key_totals(real_client, restored_tok)):
             assert re.search(rf"<td>{label}</td>\s*<td[^>]*>{re.escape(figure)}</td>", page), (label, figure)
         assert await _key_totals(real_client, restored_tok) == expected
         assert ("Your company is ready." in page and "Prepared for you by North Ledger." in page) is firm
