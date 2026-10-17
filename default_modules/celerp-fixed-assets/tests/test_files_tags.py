@@ -407,6 +407,27 @@ async def test_checks_disposed_removal_and_not_seen_report(fa):
     assert printed.status_code == 200 and (await fa.asset(car))["number"] in printed.text
 
 
+async def test_u40_a_repeat_scan_the_same_day_keeps_one_check_each_with_the_asset_name(fa):
+    await _managed_from(fa, "2026-01-01")
+    car = await _contributed(fa)
+    await _tag(fa, car, "TAG-1")
+    first = await fa.ok(await fa.client.post("/fixed-assets/api/checks", headers=fa.h, json={"tag": "TAG-1"}))
+    again = await fa.ok(await fa.client.post("/fixed-assets/api/checks", headers=fa.h, json={"tag": "TAG-1"}))
+    by_number = await fa.ok(await fa.client.post("/fixed-assets/api/checks", headers=fa.h,
+                                                 json={"tag": (await fa.asset(car))["number"]}))
+    assert again["id"] == by_number["id"] == first["id"] and again["already"] is True and "already" not in first
+    # Someone else who sees it the same day records their own check.
+    other = await fa.role_headers("operator")
+    theirs = await fa.ok(await fa.client.post("/fixed-assets/api/checks", headers=other, json={"tag": "TAG-1"}))
+    assert theirs["id"] != first["id"]
+    listed = (await fa.ok(await fa.client.get("/fixed-assets/api/checks", headers=fa.h)))["items"]
+    assert len(listed) == 2 and {c["name"] for c in listed} == {(await fa.asset(car))["name"]}
+    # A removed check no longer counts: scanning again records a new one.
+    await fa.ok(await fa.client.delete(f"/fixed-assets/api/checks/{first['id']}", headers=fa.h))
+    anew = await fa.ok(await fa.client.post("/fixed-assets/api/checks", headers=fa.h, json={"tag": "TAG-1"}))
+    assert anew["id"] != first["id"] and "already" not in anew
+
+
 async def test_f09_check_waits_for_a_tag_being_moved(committed_engine):
     """A scan while the tag is being moved to another asset records the asset that carries
     the tag once the move commits, never the one it is leaving."""

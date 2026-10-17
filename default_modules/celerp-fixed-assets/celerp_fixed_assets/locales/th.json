@@ -846,6 +846,7 @@
   "fixed_assets.scan_tag": "ป้ายหรือเลขที่",
   "fixed_assets.record_check": "บันทึก",
   "fixed_assets.check_recorded": "ตรวจนับ {number} แล้ว",
+  "fixed_assets.check_already": "ตรวจนับ {number} ไปแล้ววันนี้",
   "fixed_assets.remove_check": "นำออก",
   "fixed_assets.no_checks": "ยังไม่มีการบันทึกการตรวจนับ",
   "fixed_assets.not_seen_title": "สินทรัพย์ที่ไม่พบ",

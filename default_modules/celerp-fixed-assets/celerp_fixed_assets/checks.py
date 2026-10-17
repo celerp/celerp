@@ -4,7 +4,8 @@
 and on which day, and list the assets not seen since a date.
 
 A check is its own entity (``fa:check:<asset>:<uuid>``), never held on the asset, and is
-removed only by its author on the day it was recorded.
+removed only by its author on the day it was recorded. A person sees an asset once a day:
+scanning it again that day returns the check already standing.
 """
 from __future__ import annotations
 
@@ -32,7 +33,8 @@ _LEFT = {"disposed": "Disposed on {date}.", "sold": "Sold on {date}."}
 
 
 async def record_check(session, company_id, user_id, tag: str) -> dict:
-    """Record that the asset carrying ``tag`` (or numbered ``tag``) was seen today."""
+    """Record that the asset carrying ``tag`` (or numbered ``tag``) was seen today, once per person a day;
+    a repeat returns the standing check marked ``already``."""
     tag = str(tag or "").strip()
     if not tag:
         raise setup.unprocessable("Scan or type an asset tag.")
@@ -44,9 +46,13 @@ async def record_check(session, company_id, user_id, tag: str) -> dict:
     asset_id, asset = found
     if asset.get("status") in _LEFT:
         raise setup.unprocessable(_LEFT[asset["status"]].format(date=(asset.get("disposal") or {}).get("date")))
+    today = (await setup.business_today(session, company_id)).isoformat()
+    for check in await live_checks(session, company_id):
+        if (check["asset_id"], check["user_id"], check["date"]) == (asset_id, str(user_id), today):
+            return {**check, "already": True}
     check_id = f"fa:check:{asset_id.removeprefix('fa:asset:')}:{uuid.uuid4()}"
     data = {"asset_id": asset_id, "number": asset["number"], "user_id": str(user_id),
-            "date": (await setup.business_today(session, company_id)).isoformat(), "at": datetime.now(timezone.utc).isoformat()}
+            "date": today, "at": datetime.now(timezone.utc).isoformat()}
     await _emit(session, company_id, user_id, check_id, ENTITY_TYPE, "fa.check.recorded", data)
     await session.commit()
     return {"id": check_id, **data}
@@ -87,7 +93,9 @@ async def create_check(body: dict = Body(...), company_id=Depends(get_current_co
 
 @router.get("/checks", dependencies=_CHECK)
 async def list_checks(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    return {"items": await live_checks(session, company_id)}
+    """The standing checks, each with the asset's name as it reads now."""
+    names = {a: s.get("name") for a, s in await _entities(session, company_id, "fa_asset")}
+    return {"items": [{**c, "name": names.get(c["asset_id"])} for c in await live_checks(session, company_id)]}
 
 
 @router.get("/checks/not-seen", dependencies=_CHECK)

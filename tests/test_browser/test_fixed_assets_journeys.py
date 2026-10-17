@@ -358,6 +358,31 @@ def test_u33_an_asset_page_reads_cleanly_with_its_rare_actions_grouped(page: Pag
     expect(page).to_have_url(re.compile(r"/move$"))
 
 
+def _level(field, button) -> None:
+    """A field and its button stand the same height on the same line."""
+    box, btn = field.bounding_box(), button.bounding_box()
+    assert abs(box["y"] - btn["y"]) <= 1 and abs(box["height"] - btn["height"]) <= 1, (box, btn)
+
+
+def test_u40_a_repeat_scan_keeps_one_row_named_with_controls_level(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    number = _ok(c.get(f"{API}/assets/{car}"))["number"]
+    page.goto("/fixed-assets/checks")
+    rows = page.locator("#fa-checks tbody tr")
+    for said in (f"{number} checked.", f"{number} was already checked today."):
+        page.locator("input[name=tag]").fill(number)
+        page.get_by_role("button", name="Record").click()
+        expect(page.get_by_text(said)).to_be_visible()
+        expect(rows).to_have_count(1)
+    row = rows.first
+    expect(row).to_contain_text("Owner's car")
+    expect(page.locator("#fa-checks thead")).to_contain_text("Name")
+    _level(page.locator("input[name=tag]"), page.get_by_role("button", name="Record"))
+    _level(page.locator("input[name=since]"), page.get_by_role("button", name="Show"))
+
+
 def test_u35_enter_a_bill_stands_below_its_hint_and_clear_of_the_kind_buttons(page: Page, fresh_company):
     _started(fresh_company)
     page.goto("/fixed-assets/assets/new?kind=contributed")

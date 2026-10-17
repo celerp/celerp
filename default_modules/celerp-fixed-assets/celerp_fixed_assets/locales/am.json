@@ -846,6 +846,7 @@
   "fixed_assets.scan_tag": "መለያ ወይም ቁጥር",
   "fixed_assets.record_check": "መዝግብ",
   "fixed_assets.check_recorded": "{number} ተረጋግጧል።",
+  "fixed_assets.check_already": "{number} ዛሬ አስቀድሞ ተረጋግጧል።",
   "fixed_assets.remove_check": "አስወግድ",
   "fixed_assets.no_checks": "እስካሁን የተመዘገበ ቆጠራ የለም።",
   "fixed_assets.not_seen_title": "ያልታዩ ንብረቶች",

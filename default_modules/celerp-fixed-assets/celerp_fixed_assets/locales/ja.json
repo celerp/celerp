@@ -846,6 +846,7 @@
   "fixed_assets.scan_tag": "タグまたは番号",
   "fixed_assets.record_check": "記録",
   "fixed_assets.check_recorded": "{number} を確認しました。",
+  "fixed_assets.check_already": "{number} は本日すでに確認済みです。",
   "fixed_assets.remove_check": "削除",
   "fixed_assets.no_checks": "記録された実査はまだありません。",
   "fixed_assets.not_seen_title": "未確認の資産",

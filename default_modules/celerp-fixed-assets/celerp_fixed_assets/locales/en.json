@@ -846,6 +846,7 @@
   "fixed_assets.scan_tag": "Tag or number",
   "fixed_assets.record_check": "Record",
   "fixed_assets.check_recorded": "{number} checked.",
+  "fixed_assets.check_already": "{number} was already checked today.",
   "fixed_assets.remove_check": "Remove",
   "fixed_assets.no_checks": "No checks recorded yet.",
   "fixed_assets.not_seen_title": "Assets not seen",

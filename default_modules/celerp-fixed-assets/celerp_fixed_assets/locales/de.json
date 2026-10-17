@@ -846,6 +846,7 @@
   "fixed_assets.scan_tag": "Etikett oder Nummer",
   "fixed_assets.record_check": "Erfassen",
   "fixed_assets.check_recorded": "{number} geprüft.",
+  "fixed_assets.check_already": "{number} wurde heute bereits geprüft.",
   "fixed_assets.remove_check": "Entfernen",
   "fixed_assets.no_checks": "Noch keine Prüfungen erfasst.",
   "fixed_assets.not_seen_title": "Nicht gesehene Anlagen",

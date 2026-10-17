@@ -846,6 +846,7 @@
   "fixed_assets.scan_tag": "Étiquette ou numéro",
   "fixed_assets.record_check": "Enregistrer",
   "fixed_assets.check_recorded": "{number} contrôlé.",
+  "fixed_assets.check_already": "{number} a déjà été contrôlé aujourd'hui.",
   "fixed_assets.remove_check": "Retirer",
   "fixed_assets.no_checks": "Aucun contrôle enregistré pour l'instant.",
   "fixed_assets.not_seen_title": "Actifs non vus",

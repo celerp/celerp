@@ -103,12 +103,13 @@ def _checks_list(checks: list[dict], me: str) -> FT:
     """Recorded checks, newest first; the person who recorded one may remove it the same day."""
     if not checks:
         return Div(P(t("fixed_assets.no_checks"), cls="form-hint"), id="fa-checks")
-    rows = [Tr(Td(c["date"]), Td(A(c["number"], href=f"/fixed-assets/assets/{c['asset_id']}")),
+    rows = [Tr(Td(c["date"]), Td(A(c["number"], href=f"/fixed-assets/assets/{c['asset_id']}")), Td(_text(c.get("name"))),
                Td(Button(t("fixed_assets.remove_check"), type="button", cls="btn btn--sm btn--secondary",
                          hx_delete=f"{_CHECKS}/{quote(c['id'], safe=':')}", hx_swap="none")
                   if c["user_id"] == me else ""))
             for c in checks]
-    return Div(Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.number")), Th(""))), Tbody(*rows),
+    return Div(Table(Thead(Tr(Th(t("fixed_assets.date")), Th(t("fixed_assets.number")), Th(t("fixed_assets.name")), Th(""))),
+                     Tbody(*rows),
                      cls="data-table"), id="fa-checks")
 
 
@@ -268,15 +269,15 @@ def setup_physical_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, title)
         scan = Form(_field(t("fixed_assets.scan_tag"), _input("tag", required=True, autofocus=True, autocomplete="off")),
-                    Div(Button(t("fixed_assets.record_check"), type="submit", cls="btn btn--primary"), cls="form-actions"),
+                    Button(t("fixed_assets.record_check"), type="submit", cls="btn btn--primary"),
                     hx_post=_CHECKS, hx_target="#fa-checks", hx_swap="outerHTML",
                     # A refused scan answers 204 with its reason; the tag stays, selected, to correct.
                     hx_on__after_request="if(event.detail.xhr.status===200){this.reset();}"
-                                         "this.tag.focus();this.tag.select();", cls="flex-row")
+                                         "this.tag.focus();this.tag.select();", cls="flex-row flex-wrap gap-md items-end")
         since_form = Form(_field(t("fixed_assets.not_seen_since"),
                                  _input("since", since or today.replace(day=1).isoformat(), type_="date", required=True)),
-                          Div(Button(t("fixed_assets.show"), type="submit", cls="btn btn--secondary"), cls="form-actions"),
-                          method="get", action=_CHECKS, cls="flex-row")
+                          Button(t("fixed_assets.show"), type="submit", cls="btn btn--secondary"),
+                          method="get", action=_CHECKS, cls="flex-row flex-wrap gap-md items-end")
         found: list = []
         if report is not None:
             from ui.components.report_kit import action_bar
@@ -302,7 +303,8 @@ def setup_physical_routes(app) -> None:
         except APIError as e:
             return Response(status_code=204, headers=toast_header(_error_text(e), "error", persist=True))
         return Response(to_xml(_checks_list(checks, str(get_claims(request).get("sub", "")))),
-                        headers=toast_header(t("fixed_assets.check_recorded", number=check["number"])))
+                        headers=toast_header(t("fixed_assets.check_already" if check.get("already")
+                                               else "fixed_assets.check_recorded", number=check["number"])))
 
     @app.delete(f"{_CHECKS}/{{check_id}}")
     async def remove_check(request: Request, check_id: str):

@@ -846,6 +846,7 @@
   "fixed_assets.scan_tag": "Label atau nomor",
   "fixed_assets.record_check": "Catat",
   "fixed_assets.check_recorded": "{number} diperiksa.",
+  "fixed_assets.check_already": "{number} sudah diperiksa hari ini.",
   "fixed_assets.remove_check": "Hapus",
   "fixed_assets.no_checks": "Belum ada pemeriksaan yang dicatat.",
   "fixed_assets.not_seen_title": "Aset yang tidak terlihat",

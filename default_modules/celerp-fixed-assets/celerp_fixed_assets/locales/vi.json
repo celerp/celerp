@@ -846,6 +846,7 @@
   "fixed_assets.scan_tag": "Nhãn hoặc số",
   "fixed_assets.record_check": "Ghi nhận",
   "fixed_assets.check_recorded": "Đã kiểm kê {number}.",
+  "fixed_assets.check_already": "{number} đã được kiểm kê hôm nay.",
   "fixed_assets.remove_check": "Xóa",
   "fixed_assets.no_checks": "Chưa có lần kiểm kê nào.",
   "fixed_assets.not_seen_title": "Tài sản chưa thấy",

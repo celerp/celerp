@@ -846,6 +846,7 @@
   "fixed_assets.scan_tag": "Etiqueta ou número",
   "fixed_assets.record_check": "Registar",
   "fixed_assets.check_recorded": "{number} verificado.",
+  "fixed_assets.check_already": "{number} já foi verificado hoje.",
   "fixed_assets.remove_check": "Remover",
   "fixed_assets.no_checks": "Ainda não há verificações registadas.",
   "fixed_assets.not_seen_title": "Ativos não vistos",

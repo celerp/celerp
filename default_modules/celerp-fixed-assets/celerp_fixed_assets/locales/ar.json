@@ -846,6 +846,7 @@
   "fixed_assets.scan_tag": "الملصق أو الرقم",
   "fixed_assets.record_check": "تسجيل",
   "fixed_assets.check_recorded": "تم جرد {number}.",
+  "fixed_assets.check_already": "تم جرد {number} اليوم مسبقًا.",
   "fixed_assets.remove_check": "إزالة",
   "fixed_assets.no_checks": "لم تُسجَّل أي عمليات جرد بعد.",
   "fixed_assets.not_seen_title": "الأصول غير المشاهدة",
