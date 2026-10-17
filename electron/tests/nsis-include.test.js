@@ -218,6 +218,17 @@ test("the replaced version is uninstalled from where it moved to",
     const loc = macro(include(), "celerpOldVersionLocation");
     expect(loc).toContain('StrCpy $uninstallerFileName "$celerpOld$celerpFile"');
     expect(loc).toContain("StrCpy $installationDir $celerpOld");
+    // the old uninstaller reads its folder from InstallLocation, in either registry root
+    expect(loc).toContain('WriteRegStr HKEY_CURRENT_USER "${INSTALL_REGISTRY_KEY}" InstallLocation "$celerpOld"');
+    expect(loc).toContain('WriteRegStr SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation "$celerpOld"');
+    const multiUser = fs.readFileSync(path.join(templatesDir(), "multiUser.nsh"), "utf8");
+    expect(multiUser).toContain('ReadRegStr $perUserInstallationFolder HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation');
+    // and InstallLocation names $INSTDIR again once the old uninstaller is done
+    const section = fs.readFileSync(path.join(templatesDir(), "installSection.nsh"), "utf8");
+    expect(section.indexOf("!insertmacro registryAddInstallInfo"))
+      .toBeGreaterThan(section.lastIndexOf("!insertmacro celerpUninstallOldVersions"));
+    const installer = fs.readFileSync(path.join(templatesDir(), "include/installer.nsh"), "utf8");
+    expect(installer).toContain('WriteRegStr SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation "$INSTDIR"');
   });
 
 // A setup that was stopped cannot delete its temporary folder, which holds the

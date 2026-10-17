@@ -390,7 +390,10 @@
   ${EndIf}
 !macroend
 
-; The version being replaced has moved aside: its uninstaller runs there.
+; The version being replaced has moved aside: its uninstaller runs there. That
+; uninstaller takes its folder from InstallLocation, not from the folder it is given,
+; so InstallLocation names the moved folder while it runs; registryAddInstallInfo
+; then sets it back to $INSTDIR.
 !macro celerpOldVersionLocation
   ${If} $celerpMode == "swap"
   ${AndIf} $installationDir == $INSTDIR
@@ -400,6 +403,11 @@
       StrCpy $celerpFile $uninstallerFileName "" $celerpTry
       StrCpy $uninstallerFileName "$celerpOld$celerpFile"
       StrCpy $installationDir $celerpOld
+      ${If} $rootKey == "HKEY_CURRENT_USER"
+        WriteRegStr HKEY_CURRENT_USER "${INSTALL_REGISTRY_KEY}" InstallLocation "$celerpOld"
+      ${Else}
+        WriteRegStr SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation "$celerpOld"
+      ${EndIf}
     ${EndIf}
   ${EndIf}
 !macroend
