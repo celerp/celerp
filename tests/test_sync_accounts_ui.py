@@ -224,6 +224,11 @@ async def test_added_account_actions(monkeypatch):
     response = await endpoint(Request({"action": "remove"}), "n-1")
     assert calls == [("added", "n-1", "remove")]
     assert json.loads(response.headers["HX-Trigger"])["celerpToast"]["message"] == "Removed 6160 Audit adjustments."
+    # An archived account leaves the list, so the notice says where it is made active again.
+    response = await endpoint(Request({"action": "archive"}), "n-2")
+    toast = json.loads(response.headers["HX-Trigger"])["celerpToast"]["message"]
+    assert toast.startswith("Archived 6150 Courier.")
+    assert "Settings > Accounting > Chart of Accounts" in toast and "Active" in toast
 
 
 async def test_review_answers_are_sent(monkeypatch):
