@@ -146,7 +146,7 @@ def test_setup_cloud_form_partner_mode_routes_to_partner_support():
 
 def test_direct_connection_gate_uses_public_acquisition_no_instance_id():
     from ui.routes.auth import _direct_connection_gate
-    html = to_xml(_direct_connection_gate("user@example.com", "pw"))
+    html = to_xml(_direct_connection_gate("user@example.com", "pw", "/"))
     assert "celerp.com/subscribe" in html
     assert "instance_id=" not in html
 
@@ -154,7 +154,7 @@ def test_direct_connection_gate_uses_public_acquisition_no_instance_id():
 def test_direct_connection_gate_partner_uses_support_url():
     from ui.routes.auth import _direct_connection_gate
     _partner(support_url="https://partner.example.com/support")
-    html = to_xml(_direct_connection_gate("user@example.com", "pw"))
+    html = to_xml(_direct_connection_gate("user@example.com", "pw", "/"))
     assert "https://partner.example.com/support" in html
     assert "celerp.com/subscribe" not in html
 
@@ -162,7 +162,7 @@ def test_direct_connection_gate_partner_uses_support_url():
 def test_direct_connection_gate_unknown_mode_fails_closed_to_enterprise():
     from ui.routes.auth import _direct_connection_gate
     gw_state._commercial_context = {"commercial_mode": "something_unexpected"}
-    html = to_xml(_direct_connection_gate("user@example.com", "pw"))
+    html = to_xml(_direct_connection_gate("user@example.com", "pw", "/"))
     assert "/enterprise" in html
     assert "celerp.com/subscribe" not in html
 
@@ -277,7 +277,7 @@ def test_direct_connection_gate_partner_label_is_support_not_direct():
     from ui.routes.auth import _direct_connection_gate
     from ui.i18n import t
     _partner(support_url="https://partner.example.com/support")
-    tag = _anchor(to_xml(_direct_connection_gate("user@example.com", "pw")))
+    tag = _anchor(to_xml(_direct_connection_gate("user@example.com", "pw", "/")))
     assert 'href="https://partner.example.com/support"' in tag
     assert t("cloud.partner_support", "en") in tag
     assert t("btn.get_connect", "en") not in tag
@@ -287,7 +287,7 @@ def test_direct_connection_gate_unknown_label_is_contact_celerp():
     from ui.routes.auth import _direct_connection_gate
     from ui.i18n import t
     gw_state._commercial_context = {"commercial_mode": "something_unexpected"}
-    tag = _anchor(to_xml(_direct_connection_gate("user@example.com", "pw")))
+    tag = _anchor(to_xml(_direct_connection_gate("user@example.com", "pw", "/")))
     assert "/enterprise" in tag
     assert t("cloud.contact_celerp", "en") in tag
     assert t("btn.get_connect", "en") not in tag

@@ -174,7 +174,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 409 and e.detail == "direct_connection_limit":
                 return auth_shell(
-                    _direct_connection_gate(email, password),
+                    _direct_connection_gate(email, password, nxt),
                     title=page_title("btn.sign_in"),
                 )
             if e.status == 401 and e.detail == NO_COMPANY:
@@ -888,8 +888,9 @@ document.querySelector('#restore-btn').closest('form').addEventListener('submit'
     )
 
 
-def _direct_connection_gate(email: str, password: str) -> FT:
-    """Shown when a second user tries to log in without relay connected."""
+def _direct_connection_gate(email: str, password: str, next_url: str) -> FT:
+    """Shown when a second user tries to log in without relay connected. Signing
+    the other user out lands on next_url, where the sign-in itself would have."""
     from celerp.gateway.state import (
         build_public_acquisition_url,
         get_commercial_mode,
@@ -940,6 +941,7 @@ def _direct_connection_gate(email: str, password: str) -> FT:
                 Form(
                     Input(type="hidden", name="email", value=email),
                     Input(type="hidden", name="password", value=password),
+                    Input(type="hidden", name="next", value=next_url),
                     Button(t("btn.continue_sign_out_the_other_user"),
                            type="submit",
                            cls="btn btn--secondary"),

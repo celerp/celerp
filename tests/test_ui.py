@@ -20319,7 +20319,7 @@ class TestCommercialRoutingRender:
         from fasthtml.common import to_xml
         from ui.routes.auth import _direct_connection_gate
         self._set_partner()
-        html = to_xml(_direct_connection_gate("a@example.com", "pw"))
+        html = to_xml(_direct_connection_gate("a@example.com", "pw", "/"))
         assert "$29" not in html
         assert "celerp.com/subscribe" not in html
 
@@ -20332,7 +20332,7 @@ class TestCommercialRoutingRender:
         from fasthtml.common import to_xml
         from ui.routes import auth as auth_mod
         gw_state._commercial_context = {"commercial_mode": "something_unexpected"}
-        html = to_xml(auth_mod._direct_connection_gate("a@example.com", "pw"))
+        html = to_xml(auth_mod._direct_connection_gate("a@example.com", "pw", "/"))
         assert "celerp.com/subscribe" not in html
         assert "/enterprise" in html
 
@@ -20410,7 +20410,7 @@ class TestCommercialPartnerManagedInvariant:
         from fasthtml.common import to_xml
         from ui.routes.auth import _direct_connection_gate
         self._assert_clean(
-            to_xml(_direct_connection_gate("a@example.com", "pw")), "auth sign-in gate")
+            to_xml(_direct_connection_gate("a@example.com", "pw", "/")), "auth sign-in gate")
 
     def test_upgrade_banner_partner_clean(self):
         from fasthtml.common import to_xml

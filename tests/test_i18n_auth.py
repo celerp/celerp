@@ -76,5 +76,5 @@ def test_restore_notice_message_interpolates():
 
 
 def test_direct_connection_gate_body_translates():
-    html = to_xml(_direct_connection_gate("user@example.com", "pw"))
+    html = to_xml(_direct_connection_gate("user@example.com", "pw", "/"))
     assert "XX_GATE_BODY" in html
