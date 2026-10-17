@@ -1007,7 +1007,6 @@ def _settings_form(settings: dict, available: dict) -> FT:
     regimes = [r["key"] for r in available["tax_regimes"]] + sorted(chosen - {r["key"] for r in available["tax_regimes"]})
 
     return Form(
-        H2(t("fixed_assets.settings_title"), cls="section-title"),
         _field(t("fixed_assets.run_mode"), Select(
             *[Option(t(f"fixed_assets.run_mode.{m}"), value=m, selected=m == settings.get("run_mode"))
               for m in RUN_MODES], name="run_mode", cls="form-input"), t("fixed_assets.run_mode_hint")),
@@ -3443,7 +3442,8 @@ def setup_ui_routes(app) -> None:
             chart = (await api.get_chart(token)).get("items") or []
         except APIError as e:
             return await _refused(request, e, "fixed_assets.settings_title")
-        return await _page(request, page_header(t("fixed_assets.settings_title")), _class_accounts_banner(classes),
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.settings_title"), None)])
+        return await _page(request, crumbs, page_header(t("fixed_assets.settings_title")), _class_accounts_banner(classes),
                            _settings_form(setup["settings"], setup["rules"]), _classes_card(classes, chart),
                            _rule_problems_card(setup["rules"]["problems"]), title_key="fixed_assets.settings_title")
 

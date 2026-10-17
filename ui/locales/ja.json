@@ -5094,6 +5094,7 @@
   "posting.role.tax_input": "仮払消費税",
   "posting.role.tax_output": "仮受消費税",
   "posting.role.fixed_assets": "固定資産",
+  "posting.role.intangible_assets": "無形資産",
   "posting.role.retained_earnings": "繰越利益剰余金",
   "posting.role.sales_revenue": "売上高",
   "posting.role.stock_gain": "棚卸差益",

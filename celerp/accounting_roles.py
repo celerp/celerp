@@ -80,6 +80,7 @@ class AccountRole(StrEnum):
     TAX_INPUT = "tax_input"
     TAX_OUTPUT = "tax_output"
     FIXED_ASSETS = "fixed_assets"
+    INTANGIBLE_ASSETS = "intangible_assets"
     RETAINED_EARNINGS = "retained_earnings"
     SALES_REVENUE = "sales_revenue"
     STOCK_GAIN = "stock_gain"
@@ -117,6 +118,7 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.TAX_INPUT: "Input tax",
     R.TAX_OUTPUT: "Output tax",
     R.FIXED_ASSETS: "Fixed assets",
+    R.INTANGIBLE_ASSETS: "Intangible assets",
     R.RETAINED_EARNINGS: "Retained earnings",
     R.SALES_REVENUE: "Sales revenue",
     R.STOCK_GAIN: "Stock gains",
@@ -156,6 +158,7 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.TAX_INPUT: _ASSET,
     R.TAX_OUTPUT: frozenset({"liability"}),
     R.FIXED_ASSETS: _ASSET,
+    R.INTANGIBLE_ASSETS: _ASSET,
     R.RETAINED_EARNINGS: frozenset({"equity"}),
     R.SALES_REVENUE: _REVENUE,
     R.STOCK_GAIN: _REVENUE,
@@ -200,6 +203,7 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.TAX_INPUT: "1150",
     R.TAX_OUTPUT: "2120",
     R.FIXED_ASSETS: "1210",
+    R.INTANGIBLE_ASSETS: "1230",
     R.RETAINED_EARNINGS: "3200",
     R.SALES_REVENUE: "4100",
     R.STOCK_GAIN: "4300",
@@ -250,7 +254,7 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
                   R.STOCK_GAIN, R.STOCK_SHRINKAGE),
     "landed_cost": (R.LANDED_FREIGHT, R.LANDED_INSURANCE, R.LANDED_DUTY, R.LANDED_IMPORT_VAT),
     "fx": (R.FX_GAIN, R.FX_LOSS),
-    "fixed_assets": (R.FIXED_ASSETS, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE,
+    "fixed_assets": (R.FIXED_ASSETS, R.INTANGIBLE_ASSETS, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE,
                      R.ASSETS_UNDER_CONSTRUCTION, R.ASSET_DISPOSAL_CLEARING, R.DISPOSAL_GAIN,
                      R.DISPOSAL_LOSS, R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS),
     "manufacturing": (R.WORK_IN_PROGRESS,),
@@ -261,7 +265,7 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
 # never has mapped by default code: its chart predates the role, so an account that
 # happens to carry the default number proves nothing about what it holds.
 UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({
-    R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE,
+    R.INTANGIBLE_ASSETS, R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE,
     R.ASSETS_UNDER_CONSTRUCTION, R.ASSET_DISPOSAL_CLEARING, R.DISPOSAL_GAIN, R.DISPOSAL_LOSS,
     R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS})
 

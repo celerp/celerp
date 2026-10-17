@@ -1151,3 +1151,21 @@ async def test_u22_the_buyer_is_a_contact_and_the_result_says_gain_or_loss(owner
     assert invoice["contact_id"] == buyer["id"] and invoice["contact_name"] == buyer["name"]
     page = await owner_ui.get(f"/fixed-assets/assets/{car}")
     assert _row_label(t("fixed_assets.loss"), page.text)
+
+
+async def test_u44_settings_has_a_breadcrumb_one_heading_and_intangibles_on_the_intangible_account(owner_ui):
+    await _demo(owner_ui)
+    await owner_ui.post("/fixed-assets/start")
+    page = (await owner_ui.get("/settings/fixed-assets")).text
+    crumbs = page[page.index('class="breadcrumbs"'):].split("</div>", 1)[0]
+    assert 'href="/fixed-assets"' in crumbs and t("fixed_assets.settings_title") in crumbs, crumbs
+    title = re.escape(t("fixed_assets.settings_title"))
+    assert len(re.findall(rf"<h[1-3][^>]*>\s*{title}\s*</h[1-3]>", page)) == 1
+
+    classes = (await owner_ui.api.get(f"{API}/classes")).json()["items"]
+    accounts = {c["name"]: (c["kind"], c["asset_account"]) for c in classes}
+    assert accounts["Software"] == accounts["Other intangibles"] == ("intangible", "1230"), accounts
+    assert accounts["Vehicles"] == ("tangible", "1210"), accounts
+    brand = await owner_ui.api.post(f"{API}/classes", json={"name": "Brands", "kind": "intangible",
+                                                                   "life_months": 120})
+    assert brand.status_code == 200 and brand.json()["asset_account"] == "1230", brand.text

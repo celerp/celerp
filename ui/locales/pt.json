@@ -5096,6 +5096,7 @@
   "posting.role.tax_input": "Imposto a recuperar",
   "posting.role.tax_output": "Imposto a recolher",
   "posting.role.fixed_assets": "Ativo imobilizado",
+  "posting.role.intangible_assets": "Ativos intangíveis",
   "posting.role.retained_earnings": "Lucros acumulados",
   "posting.role.sales_revenue": "Receita de vendas",
   "posting.role.stock_gain": "Ganhos de estoque",

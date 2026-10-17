@@ -5094,6 +5094,7 @@
   "posting.role.tax_input": "Input tax",
   "posting.role.tax_output": "Output tax",
   "posting.role.fixed_assets": "Fixed assets",
+  "posting.role.intangible_assets": "Intangible assets",
   "posting.role.retained_earnings": "Retained earnings",
   "posting.role.sales_revenue": "Sales revenue",
   "posting.role.stock_gain": "Stock gains",

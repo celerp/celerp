@@ -261,6 +261,7 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
 _SEEDED_ANCHORS: dict[AccountRole, tuple[str, ...]] = {
     AccountRole.WORK_IN_PROGRESS: ("1130", "1130-P", "1130-OB"),
     AccountRole.CONSIGNOR_PAYABLE: ("2100", "2110"),
+    AccountRole.INTANGIBLE_ASSETS: ("1200", "1210"),
     AccountRole.ACCUMULATED_DEPRECIATION: ("1200", "1210"),
     AccountRole.DEPRECIATION_EXPENSE: ("6000", "6950"),
     AccountRole.ASSETS_UNDER_CONSTRUCTION: ("1200", "1210"),
@@ -274,7 +275,8 @@ _SEEDED_ANCHORS: dict[AccountRole, tuple[str, ...]] = {
 # Roles whose seeded account every seeded chart has always held, so the account found
 # there exactly as seeded is the one to map. Any other role's code already in the chart
 # belongs to the company.
-_ALWAYS_SEEDED = frozenset({AccountRole.ACCUMULATED_DEPRECIATION, AccountRole.DEPRECIATION_EXPENSE})
+_ALWAYS_SEEDED = frozenset({AccountRole.INTANGIBLE_ASSETS, AccountRole.ACCUMULATED_DEPRECIATION,
+                            AccountRole.DEPRECIATION_EXPENSE})
 
 
 async def _add_seeded_accounts(session: AsyncSession, company_id: uuid.UUID) -> frozenset:

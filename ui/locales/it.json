@@ -5096,6 +5096,7 @@
   "posting.role.tax_input": "IVA a credito",
   "posting.role.tax_output": "IVA a debito",
   "posting.role.fixed_assets": "Immobilizzazioni",
+  "posting.role.intangible_assets": "Immobilizzazioni immateriali",
   "posting.role.retained_earnings": "Utili portati a nuovo",
   "posting.role.sales_revenue": "Ricavi delle vendite",
   "posting.role.stock_gain": "Plusvalenze di magazzino",

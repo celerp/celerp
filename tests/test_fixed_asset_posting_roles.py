@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """The fixed asset posting roles are added like work in progress: without guessing.
 
-A new company's chart maps all eight. A chart an older release seeded gets the missing
-accounts added and mapped on the next start, only while its anchor accounts are still
-as seeded, and the shared gain or loss on disposal account is added once for both
+A new company's chart maps all nine. A chart an older release seeded gets the missing
+accounts added (intangible assets, 1230, every seeded chart already holds) and mapped on
+the next start, only while its anchor accounts are still as seeded, and the shared gain or loss on disposal account is added once for both
 roles. Gain and loss on disposal may share one account of either type, as exchange
 gain and loss do.
 """
@@ -32,7 +32,7 @@ from test_posting_roles_rollout import _startup
 pytestmark = pytest.mark.asyncio
 
 R = AccountRole
-FA_ROLES = (R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE, R.ASSETS_UNDER_CONSTRUCTION,
+FA_ROLES = (R.INTANGIBLE_ASSETS, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE, R.ASSETS_UNDER_CONSTRUCTION,
             R.ASSET_DISPOSAL_CLEARING, R.DISPOSAL_GAIN, R.DISPOSAL_LOSS, R.IMPAIRMENT_LOSS,
             R.REVALUATION_SURPLUS)
 ADDED_CODES = ("1160", "1240", "3400", "6410", "6980")
@@ -114,6 +114,7 @@ async def test_a_changed_anchor_leaves_its_roles_to_posting_accounts(session, au
     roles = (await _settings(session, cid))[ROLES_KEY]
     assert R.ACCUMULATED_DEPRECIATION.value not in roles
     assert R.ASSETS_UNDER_CONSTRUCTION.value not in roles
+    assert R.INTANGIBLE_ASSETS.value not in roles
     assert await _codes(session, cid, "1240") == []
     assert roles[R.DEPRECIATION_EXPENSE.value] == "6400"
 

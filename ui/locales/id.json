@@ -5096,6 +5096,7 @@
   "posting.role.tax_input": "Pajak masukan",
   "posting.role.tax_output": "Pajak keluaran",
   "posting.role.fixed_assets": "Aset tetap",
+  "posting.role.intangible_assets": "Aset takberwujud",
   "posting.role.retained_earnings": "Laba ditahan",
   "posting.role.sales_revenue": "Pendapatan penjualan",
   "posting.role.stock_gain": "Keuntungan persediaan",

@@ -5094,6 +5094,7 @@
   "posting.role.tax_input": "ภาษีซื้อ",
   "posting.role.tax_output": "ภาษีขาย",
   "posting.role.fixed_assets": "สินทรัพย์ถาวร",
+  "posting.role.intangible_assets": "สินทรัพย์ไม่มีตัวตน",
   "posting.role.retained_earnings": "กำไรสะสม",
   "posting.role.sales_revenue": "รายได้จากการขาย",
   "posting.role.stock_gain": "กำไรจากสินค้าคงเหลือ",

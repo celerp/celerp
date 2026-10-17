@@ -20,6 +20,8 @@ from celerp_fixed_assets.calc import rules
 SETTINGS_KEY = "fixed_assets"
 RUN_MODES = ("prepare", "post", "manual")
 KINDS = ("tangible", "intangible")
+# The account role a new class of each kind holds its assets on.
+_ASSET_ROLE = {"tangible": "fixed_assets", "intangible": "intangible_assets"}
 
 # Starter classes: name, kind, asset role, method, suggested life in months.
 STARTER_CLASSES = (
@@ -29,8 +31,8 @@ STARTER_CLASSES = (
     ("Vehicles", "tangible", "fixed_assets", "straight_line", 60),
     ("Furniture and fittings", "tangible", "fixed_assets", "straight_line", 84),
     ("Computer equipment", "tangible", "fixed_assets", "straight_line", 36),
-    ("Software", "intangible", "fixed_assets", "straight_line", 36),
-    ("Other intangibles", "intangible", "fixed_assets", "straight_line", 60),
+    ("Software", "intangible", "intangible_assets", "straight_line", 36),
+    ("Other intangibles", "intangible", "intangible_assets", "straight_line", 60),
     ("Assets under construction", "tangible", "assets_under_construction", "none", None),
 )
 
@@ -483,8 +485,9 @@ def new_class(body: dict, company_settings: dict | None, seq: int) -> dict:
     roles = role_map(company_settings)
     if body.get("measurement_policy") not in (None, "cost"):
         raise unprocessable("A new class uses the cost model. Change class to revaluation once its assets are in.")
-    return {"name": str(body.get("name") or "").strip(), "kind": body.get("kind") or "tangible",
-            "asset_account": body.get("asset_account") or roles.get("fixed_assets") or "",
+    kind = body.get("kind") or "tangible"
+    return {"name": str(body.get("name") or "").strip(), "kind": kind,
+            "asset_account": body.get("asset_account") or roles.get(_ASSET_ROLE.get(kind, "fixed_assets")) or "",
             "accumulated_depreciation_account": (body.get("accumulated_depreciation_account")
                                                  or roles.get("accumulated_depreciation") or ""),
             "depreciation_account": body.get("depreciation_account") or roles.get("depreciation_expense") or "",

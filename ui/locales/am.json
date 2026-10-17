@@ -5094,6 +5094,7 @@
   "posting.role.tax_input": "የግብዓት ታክስ",
   "posting.role.tax_output": "የውጤት ታክስ",
   "posting.role.fixed_assets": "ቋሚ ንብረቶች",
+  "posting.role.intangible_assets": "የማይዳሰሱ ንብረቶች",
   "posting.role.retained_earnings": "የተያዘ ትርፍ",
   "posting.role.sales_revenue": "የሽያጭ ገቢ",
   "posting.role.stock_gain": "የክምችት ትርፍ",

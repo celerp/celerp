@@ -5096,6 +5096,7 @@
   "posting.role.tax_input": "Thuế GTGT đầu vào",
   "posting.role.tax_output": "Thuế GTGT đầu ra",
   "posting.role.fixed_assets": "Tài sản cố định",
+  "posting.role.intangible_assets": "Tài sản vô hình",
   "posting.role.retained_earnings": "Lợi nhuận chưa phân phối",
   "posting.role.sales_revenue": "Doanh thu bán hàng",
   "posting.role.stock_gain": "Lãi kiểm kê hàng tồn kho",

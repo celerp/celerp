@@ -5096,6 +5096,7 @@
   "posting.role.tax_input": "Impuesto soportado",
   "posting.role.tax_output": "Impuesto repercutido",
   "posting.role.fixed_assets": "Activos fijos",
+  "posting.role.intangible_assets": "Activos intangibles",
   "posting.role.retained_earnings": "Resultados acumulados",
   "posting.role.sales_revenue": "Ingresos por ventas",
   "posting.role.stock_gain": "Ganancias de existencias",

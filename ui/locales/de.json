@@ -5096,6 +5096,7 @@
   "posting.role.tax_input": "Vorsteuer",
   "posting.role.tax_output": "Umsatzsteuer",
   "posting.role.fixed_assets": "Anlagevermögen",
+  "posting.role.intangible_assets": "Immaterielle Vermögenswerte",
   "posting.role.retained_earnings": "Gewinnvortrag",
   "posting.role.sales_revenue": "Umsatzerlöse",
   "posting.role.stock_gain": "Bestandsgewinne",

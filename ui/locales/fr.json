@@ -5096,6 +5096,7 @@
   "posting.role.tax_input": "TVA déductible",
   "posting.role.tax_output": "TVA collectée",
   "posting.role.fixed_assets": "Immobilisations",
+  "posting.role.intangible_assets": "Immobilisations incorporelles",
   "posting.role.retained_earnings": "Report à nouveau",
   "posting.role.sales_revenue": "Chiffre d'affaires",
   "posting.role.stock_gain": "Gains sur stocks",
