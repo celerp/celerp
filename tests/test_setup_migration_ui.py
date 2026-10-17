@@ -1237,6 +1237,19 @@ _LABELLED_ROWS = [
 
 
 @pytest.mark.asyncio
+async def test_verify_page_says_where_to_add_an_account_and_sets_discard_apart(ui, fake_api):
+    """The hint names the choice that adds an account, and Discard reads as the
+    destructive action it is, not as a link like the download."""
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    fake_api.posting[run_id] = [_posting_row("general_expense", "General expenses", proposal=_EXPENSE_PROPOSAL)]
+    html = _page(await ui.get(f"/migrations/{run_id}/verify"))
+    assert "Posting accounts" in html and "add the one shown" not in html
+    assert "choose Add account in its list" in html
+    assert re.search(rf'href="/migrations/{run_id}/discard" class="btn btn--outline btn--danger', html)
+
+
+@pytest.mark.asyncio
 async def test_verify_page_names_records_and_formats_figures(ui, router, fake_api):
     """RED before the change: rows showed the source key, raw enums and raw decimals."""
     _owner(ui)
