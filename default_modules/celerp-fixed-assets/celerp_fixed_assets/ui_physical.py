@@ -21,7 +21,7 @@ from ui.i18n import t
 
 from celerp_fixed_assets.files import ASSET_FILE_TAGS
 from celerp_fixed_assets.setup import today_in
-from celerp_fixed_assets.ui_routes import _error_text, _field, _hx_write, _input, _page, _refused, _text
+from celerp_fixed_assets.ui_routes import _STACK, _error_text, _field, _hx_write, _input, _page, _refused, _text
 
 _CHECKS = "/fixed-assets/checks"
 
@@ -91,7 +91,8 @@ def _mine_card(asset: dict) -> FT:
         Form(_field(t("fixed_assets.problem"), _input("text", required=True)),
              _field(t("fixed_assets.problem_photo"), Input(type="file", name="photo", accept="image/*", cls="form-input")),
              Div(Button(t("fixed_assets.report_problem"), type="submit", cls="btn btn--secondary"), cls="form-actions"),
-             hx_post=f"/fixed-assets/mine/{asset_id}/problems", hx_encoding="multipart/form-data", hx_swap="none"),
+             hx_post=f"/fixed-assets/mine/{asset_id}/problems", hx_encoding="multipart/form-data", hx_swap="none",
+             cls=_STACK),
         cls="detail-card section-card")
 
 

@@ -145,6 +145,10 @@ def _account_options(chart: list[dict], keep: str = "") -> list[tuple[str, str]]
     return [(a["code"], f"{a['code']} {a['name']}") for a in chart if a["code"] in postable or a["code"] == keep]
 
 
+# A form whose fields stand one above another, each label clear of the field above it.
+_STACK = "flex-col gap-md"
+
+
 def _field(label: str, control: FT, hint: str | None = None) -> FT:
     return Div(Label(label, cls="form-label"), control, *( [P(hint, cls="form-hint")] if hint else []),
                cls="form-group")
@@ -431,7 +435,7 @@ def _op_form(action: str, *fields: FT, review_label: str | None = None, actions:
                            hx_target="next #fa-preview", hx_swap="outerHTML"),
                     *actions, cls="form-actions"),
                 Div(id="fa-preview"),
-                onsubmit="return false;", cls="settings-card")
+                onsubmit="return false;", cls=f"settings-card {_STACK}")
 
 
 def _amount(form, name: str):
@@ -1014,7 +1018,7 @@ def _settings_form(settings: dict, available: dict) -> FT:
                   A(t("fixed_assets.open_modules"), href="/modules"), cls="form-hint")], id="fa-tax-regimes"),
                # With none offered, the statement above already says where a regime comes from.
                t("fixed_assets.tax_regimes_hint") if regimes else None),
-        hx_post="/settings/fixed-assets", hx_trigger="change", hx_swap="none", cls="settings-card",
+        hx_post="/settings/fixed-assets", hx_trigger="change", hx_swap="none", cls=f"settings-card {_STACK}",
     )
 
 
@@ -1415,7 +1419,7 @@ def _mark_form(action: str, item: dict, *hidden: FT) -> FT:
                 *[field(label, name, _input(name, item.get(name), id=_slug(action, item["key"], name)))
                   for label, name in ((t("fixed_assets.reason"), "reason"), (t("fixed_assets.recon_effect"), "effect"))],
                 Div(Button(t("fixed_assets.save"), type="submit", cls="btn btn--primary btn--sm"), cls="form-actions"),
-                hx_post=action, hx_swap="none")
+                hx_post=action, hx_swap="none", cls=_STACK)
 
 
 def _recon_accounts_table(accounts: list[dict], currency: str) -> FT:
@@ -1916,13 +1920,13 @@ def _revalue_files_card(class_id: str, report: dict | None) -> FT:
                               Input(type="file", name="file", cls="form-input", aria_label=t("fixed_assets.valuer_report")),
                               t("fixed_assets.valuer_report_hint")),
                        Button(t("fixed_assets.valuer_report_upload"), type="submit", cls="btn btn--secondary"),
-                       method="post", action=f"{base}/report", enctype="multipart/form-data")
+                       method="post", action=f"{base}/report", enctype="multipart/form-data", cls=_STACK)
     values_form = Form(_field(t("fixed_assets.fair_values_file"),
                               Input(type="file", name="csv_file", accept=".csv,.xlsx", cls="form-input",
                                     aria_label=t("fixed_assets.fair_values_file")),
                               t("fixed_assets.fair_values_file_hint")),
                        Button(t("fixed_assets.fair_values_upload"), type="submit", cls="btn btn--secondary"),
-                       method="post", action=f"{base}/fair-values", enctype="multipart/form-data")
+                       method="post", action=f"{base}/fair-values", enctype="multipart/form-data", cls=_STACK)
     return Div(kept, report_form, Hr(), values_form, cls="settings-card", id="fa-revalue-files")
 
 

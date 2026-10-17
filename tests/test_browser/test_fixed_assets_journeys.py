@@ -301,6 +301,27 @@ def test_u25_the_import_review_grid_scrolls_in_its_own_box_with_whole_problems_a
         assert box.evaluate("e => e.scrollWidth <= e.clientWidth"), box.input_value()
 
 
+def test_u31_form_fields_are_spaced_and_hints_read_quieter_than_labels(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    page.goto(f"/fixed-assets/assets/{car}/dispose")
+    form = page.locator("main form").filter(has=page.locator("select[name=reason]"))
+    labels = form.locator(".form-label")
+    hint = form.locator(".form-hint").first
+    expect(hint).to_be_visible()
+    style = "e => { const s = getComputedStyle(e); return [s.color, parseFloat(s.fontSize)]; }"
+    label_color, label_size = labels.first.evaluate(style)
+    hint_color, hint_size = hint.evaluate(style)
+    assert hint_color == label_color and hint_size <= label_size, (hint_color, hint_size, label_color, label_size)
+    # Each label sits clear of the field above it.
+    inputs = form.locator(".form-group .form-input")
+    for n in range(1, labels.count()):
+        above = inputs.nth(n - 1).bounding_box()
+        below = labels.nth(n).bounding_box()
+        assert below["y"] - (above["y"] + above["height"]) >= 12, n
+
+
 def _details(page: Page, table: str, text: str):
     """Open a row's details with its labelled button and return the row it opens."""
     button = page.locator(f"{table} tbody tr", has_text=text).first.get_by_role("button", name="Details")

@@ -22,7 +22,8 @@ from ui.i18n import t
 from celerp_fixed_assets.operations import RESPONSIBLE
 from celerp_fixed_assets.upkeep import KINDS, MAINT_EDITABLE, REMINDERS_URL
 from celerp_fixed_assets.ui_routes import (
-    _context, _error_text, _field, _hx_write, _input, _members, _money_td, _money_th, _page, _picker, _refused, _text)
+    _STACK, _context, _error_text, _field, _hx_write, _input, _members, _money_td, _money_th, _page, _picker, _refused,
+    _text)
 
 # The reminder fields edited in place, with the editor each one uses.
 _CELLS = {"due": "date", "every_months": "number", "lead_days": "number", RESPONSIBLE: "select", "policy": "text",
@@ -143,7 +144,7 @@ def _add_reminder_form(asset_id: str, members: dict[str, str]) -> FT:
              _field(t("fixed_assets.insured_value"), _input("insured_value", type_="number", step="any", min="0"),
                     t("fixed_assets.insurance_only_hint")),
              Div(Button(t("fixed_assets.add_reminder"), type="submit", cls="btn btn--primary"), cls="form-actions"),
-             hx_post=f"/fixed-assets/assets/{_rid(asset_id)}/reminders", hx_swap="none"),
+             hx_post=f"/fixed-assets/assets/{_rid(asset_id)}/reminders", hx_swap="none", cls=_STACK),
         cls="fa-add write-only")
 
 
@@ -190,7 +191,7 @@ def _add_entry_form(asset_id: str, today: str) -> FT:
              _field(t("fixed_assets.every_months"), _input("every_months", type_="number", min="1", step="1"),
                     t("fixed_assets.every_months_hint")),
              Div(Button(t("fixed_assets.add_entry"), type="submit", cls="btn btn--primary"), cls="form-actions"),
-             hx_post=f"/fixed-assets/assets/{_rid(asset_id)}/maintenance", hx_swap="none"),
+             hx_post=f"/fixed-assets/assets/{_rid(asset_id)}/maintenance", hx_swap="none", cls=_STACK),
         cls="fa-add write-only")
 
 
