@@ -149,7 +149,6 @@ _FA_DISPOSAL = "default_modules/celerp-fixed-assets/celerp_fixed_assets/disposal
 _FA_OPS = "default_modules/celerp-fixed-assets/celerp_fixed_assets/operations.py"
 _FA_ENGINE = "default_modules/celerp-fixed-assets/celerp_fixed_assets/calc/engine.py"
 _FA_SETUP = "default_modules/celerp-fixed-assets/celerp_fixed_assets/setup.py"
-_FA_SALES = "default_modules/celerp-fixed-assets/celerp_fixed_assets/sales.py"
 
 # Every function that spreads an amount over parts through the allocator.
 _SPREADERS = {
@@ -186,7 +185,6 @@ _RESIDUALS = {
     (_FA_ENGINE, "_merged"): "an asset's residual value, not a rounding unit",
     (_FA_ENGINE, "_restated"): "an asset's residual value, not a rounding unit",
     (_FA_SETUP, "check_policy"): "a class's residual percent, not a rounding unit",
-    (_FA_SALES, "_unsell"): "what is left on sale clearing after an undone sale, written off whole",
 }
 
 

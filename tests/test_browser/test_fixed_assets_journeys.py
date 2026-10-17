@@ -531,6 +531,8 @@ def test_j13_noted_keeps_the_year_open_and_accepted_lets_it_close(page: Page, fr
     c = fresh_company
     _started(c, "2025-07-01")
     _ok(c.patch(f"{API}/settings", json={"tax_regimes": ["zz_asset"], "tax_year_end": "06-30"}))
+    # A missing tax figure cannot be accepted, so the car's class carries its tax category.
+    _ok(c.patch(f"{API}/classes/{_classes(c)['Vehicles']['id']}", json={"tax_categories": {"zz_asset": "zz_plant"}}))
     _contributed(c, "Owner's car", on="2025-07-15")
     _run(c, "2026-06")
     _journal(c, "2026-03-10", "Generator paid in cash", [{"account": "1210", "debit": 900},
