@@ -203,7 +203,7 @@ test("a failed swap puts the installed version back and a stopped one is undone 
     expect(failed).toContain("!insertmacro celerpAbandonCopy");
     expect(failed).toContain("SetErrorLevel 2");
     // a process cannot move or delete its working folder
-    expect(swap.trim().split(/\s*\n\s*/)[1]).toBe("SetOutPath $PLUGINSDIR");
+    expect(swap.trim().split(/\s*\n\s*/)[1]).toBe("SetOutPath $TEMP");
     expect(macro(nsh, "celerpAbandonCopy")).toContain('RMDir /r "$celerpStage"');
     expect(macro(nsh, "celerpFinishReplace")).toContain('RMDir /r "$celerpOld"');
   });
@@ -229,6 +229,21 @@ test("the replaced version is uninstalled from where it moved to",
       .toBeGreaterThan(section.lastIndexOf("!insertmacro celerpUninstallOldVersions"));
     const installer = fs.readFileSync(path.join(templatesDir(), "include/installer.nsh"), "utf8");
     expect(installer).toContain('WriteRegStr SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation "$INSTDIR"');
+  });
+
+// Setup deletes its temporary folder as it exits, which it cannot do while that folder
+// is its working folder. Where setup moves its working folder out of the install
+// folder, it goes to the folder that holds the temporary folder, so a setup that stops
+// (not enough space, a short unpack, a failed swap) leaves nothing behind.
+test("setup never works from its own temporary folder",
+  function test_nsis_working_folder_outside_temp() {
+    const nsh = include();
+    expect(nsh).not.toMatch(/SetOutPath\s+"?\$PLUGINSDIR"?\s*$/m);
+    for (const name of ["celerpPrepareReplace", "celerpAbandonCopy", "celerpSwapIn"]) {
+      expect(macro(nsh, name)).toContain("SetOutPath $TEMP");
+    }
+    const prepare = macro(nsh, "celerpPrepareReplace");
+    expect(prepare.indexOf("SetOutPath $TEMP")).toBeLessThan(prepare.indexOf("${GetParent}"));
   });
 
 // A setup that was stopped cannot delete its temporary folder, which holds the

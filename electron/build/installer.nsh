@@ -159,8 +159,10 @@
 ; swap an earlier setup started and did not end.
 !macro celerpPrepareReplace
   StrCpy $celerpMode "direct"
-  ; setup starts in $INSTDIR, and a process cannot move or delete its working folder
-  SetOutPath $PLUGINSDIR
+  ; Setup starts in $INSTDIR, and a process cannot move or delete its working folder.
+  ; It works from the folder that holds its temporary folder, so that it can still
+  ; delete that temporary folder when it stops.
+  SetOutPath $TEMP
   ${GetParent} "$INSTDIR" $celerpParent
   StrLen $celerpTry $celerpParent
   IntOp $celerpTry $celerpTry + 1
@@ -314,7 +316,7 @@
 !macro celerpAbandonCopy
   ${If} $celerpMode != "direct"
     ; a process cannot delete its own working folder
-    SetOutPath $PLUGINSDIR
+    SetOutPath $TEMP
     RMDir /r "$celerpStage"
     ${IfNot} ${FileExists} "$celerpOld\*.*"
       Delete "$celerpMarker"
@@ -348,7 +350,7 @@
 ; Every new file is in place in the sibling folder: swap it in.
 !macro celerpSwapIn
   ${If} $celerpMode != "direct"
-    SetOutPath $PLUGINSDIR
+    SetOutPath $TEMP
     ${If} $celerpMode == "swap"
       StrCpy $celerpTry 0
       ${Do}
