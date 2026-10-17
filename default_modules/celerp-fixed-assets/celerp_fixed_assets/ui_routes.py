@@ -746,7 +746,8 @@ def _start_panel(currency: str) -> FT:
     return Div(
         H2(t("fixed_assets.start_title"), cls="section-title"),
         P(t("fixed_assets.start_hint"), cls="settings-hint"),
-        Ul(*[Li(t(f"fixed_assets.starter.{name.lower().replace(' ', '_')}")) for name, *_ in STARTER_CLASSES]),
+        Ul(*[Li(t(f"fixed_assets.starter.{name.lower().replace(' ', '_')}")) for name, *_ in STARTER_CLASSES],
+           cls="list-disc mb-md"),
         P(t("fixed_assets.start_defaults"), cls="settings-hint"),
         Button(t("fixed_assets.start"), type="button", cls="btn btn--primary",
                hx_post="/fixed-assets/start", hx_swap="none"),

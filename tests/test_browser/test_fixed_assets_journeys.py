@@ -412,6 +412,19 @@ def test_u45_the_register_header_keeps_everyday_actions_and_its_banner_reads_in_
     assert search["y"] - (below["y"] + below["height"]) >= 12, (below, search)
 
 
+def test_u46_the_first_use_card_keeps_its_list_inside_and_its_closing_line_apart(page: Page, fresh_company):
+    _books(fresh_company)
+    page.goto("/fixed-assets")
+    card = page.locator("#fa-start")
+    inner = card.evaluate("e => e.getBoundingClientRect().left + parseFloat(getComputedStyle(e).paddingLeft)")
+    # The bullets sit in the list's own indent, inside the card's padding.
+    for item in card.locator("li").all():
+        assert item.bounding_box()["x"] - inner >= 16, (inner, item.bounding_box())
+    listed = card.locator("ul").bounding_box()
+    closing = card.locator("p").last.bounding_box()
+    assert closing["y"] - (listed["y"] + listed["height"]) >= 8, (listed, closing)
+
+
 def test_u35_enter_a_bill_stands_below_its_hint_and_clear_of_the_kind_buttons(page: Page, fresh_company):
     _started(fresh_company)
     page.goto("/fixed-assets/assets/new?kind=contributed")
