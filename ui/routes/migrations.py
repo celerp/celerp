@@ -1539,7 +1539,7 @@ def _run_actions(run: dict) -> FT:
     status = run.get("status")
     buttons = []
     if status == "running":  # a run that is reconciling cannot be cancelled
-        buttons.append(Form(Button(t("btn.cancel"), type="submit", cls="btn btn--secondary"),
+        buttons.append(Form(Button(t("migration.pause"), type="submit", cls="btn btn--secondary"),
                             method="post", action=f"/migrations/{run_id}/cancel"))
     if status == "interrupted":
         buttons.append(Form(Button(t("migration.interrupted_resume"), type="submit", cls="btn btn--primary"),
@@ -1619,7 +1619,8 @@ def _progress_page(request: Request, run: dict, error: str | None = None):
                 t("migration.progress_subtitle") if run.get("status") in _ACTIVE_STATUSES or run.get("preparing")
                 else ""),
         _progress_fragment(run, error),
-        P(t("migration.retention"), cls="form-hint"),
+        P(t("migration.retention" if run.get("status") == "ready" else "migration.retention_started"),
+          cls="form-hint"),
     )
 
 
