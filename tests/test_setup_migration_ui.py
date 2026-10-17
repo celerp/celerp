@@ -1299,13 +1299,16 @@ async def test_finishing_asks_for_each_posting_account_the_company_needs(ui, rou
     # An account already set is shown, not asked for again.
     assert re.search(r"<td>Accounts receivable</td>\s*<td>120</td>", verify)
     assert 'name="role.receivable"' not in verify
+    # Every posting account picker is searchable, however short the chart is today.
+    for role in ("payable", "general_expense", "sales_revenue"):
+        assert re.search(rf'class="combobox-wrap">\s*<input[^>]*>\s*<input type="hidden" name="role.{role}"',
+                         verify), role
+    assert "<select" not in verify
     # The source's single control account is offered already chosen.
-    assert re.search(r'<select[^>]*name="role.payable"[^>]*>.*?<option value="210" selected>210 Creditors</option>',
-                     verify, re.S)
+    assert re.search(r'value="210 Creditors"[^>]*>\s*<input type="hidden" name="role.payable"[^>]*value="210"',
+                     verify)
     # Where the chart has nothing suitable, adding the proposed account is offered.
-    assert re.search(r'<option value="__new__">Add account 6950 General expenses \(Expense\)</option>', verify)
-    # More than ten options become a searchable picker.
-    assert re.search(r'class="combobox-wrap".*?name="role.sales_revenue"', verify, re.S)
+    assert re.search(r'data-value="__new__"[^>]*>Add account 6950 General expenses \(Expense\)</div>', verify)
     # A role no workflow needs yet is not asked for.
     assert "Exchange gain" not in verify
 
@@ -1315,7 +1318,7 @@ async def test_finishing_asks_for_each_posting_account_the_company_needs(ui, rou
     assert r.status_code == 200
     page = _visible(r)
     assert "Choose the posting account for: Sales revenue." in page
-    assert re.search(r'<option value="211" selected>', page)
+    assert re.search(r'name="role.payable"[^>]*value="211"', page)
     assert fake_api.runs[run_id]["status"] == "ready_to_finalize"
 
     fake_api.refuse_finalize = ""
