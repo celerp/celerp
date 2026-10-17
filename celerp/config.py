@@ -750,6 +750,22 @@ def resolve_install_order(names: list[str], module_dir: Path) -> list[str]:
     return ordered
 
 
+def pinned_modules() -> list[str] | None:
+    """The module list a set ENABLED_MODULES pins (a server deployment), or None when the
+    config file's list governs: the desktop supervisor rebuilds ENABLED_MODULES from that
+    list on every restart."""
+    pinned = os.environ.get("ENABLED_MODULES", "")
+    if not pinned or os.environ.get("CELERP_SUPERVISED") == "1":
+        return None
+    return [n.strip() for n in pinned.split(",") if n.strip()]
+
+
+def installation_modules() -> list[str]:
+    """The modules this installation loads on its next start."""
+    pinned = pinned_modules()
+    return pinned if pinned is not None else list(read_config().get("modules", {}).get("enabled") or [])
+
+
 def replace_enabled_modules(names: list[str]) -> bool:
     """Make the config file's enabled list exactly *names* plus their dependencies.
 

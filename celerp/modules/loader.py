@@ -1148,10 +1148,9 @@ def restart_would_load(pkg_name: str) -> bool:
     ENABLED_MODULES pins the list and only the names it holds can load."""
     if not _module_candidates(pkg_name):
         return False
-    pinned = os.environ.get("ENABLED_MODULES", "")
-    if not pinned or os.environ.get("CELERP_SUPERVISED") == "1":
-        return True
-    return pkg_name in {n.strip() for n in pinned.split(",")}
+    from celerp.config import pinned_modules
+    pinned = pinned_modules()
+    return pinned is None or pkg_name in pinned
 
 
 def module_label(pkg_name: str) -> str:
