@@ -119,3 +119,18 @@ async def test_switch_lands_on_the_accountant_key_page(monkeypatch):
     request.cookies = {auth.COOKIE_NAME: "token"}
     response = await endpoint(request, COPY)
     assert response.headers["location"] == "/settings/accountant-access"
+
+
+async def test_the_page_says_where_it_lives(monkeypatch):
+    """Global Config is lit in the menu, and a breadcrumb leads back to Your companies
+    there, which is where the page is opened from."""
+    from ui.components import shell
+    endpoint, _ = _page(monkeypatch)
+    async def base_shell(*content, **kw):
+        return shell.Div(*content, data_nav=kw.get("nav_active"))
+    monkeypatch.setattr(shell, "base_shell", base_shell)
+    html = to_xml(await endpoint(Request(hx=False)))
+    assert 'data-nav="settings"' in html
+    assert ('<a href="/settings/general?tab=company" class="breadcrumb-link">Your companies</a>'
+            in html) and '<span class="breadcrumb-current">Client companies</span>' in html
+
