@@ -2778,16 +2778,18 @@ async def test_celerp_module_restored_from_a_backup_needs_a_licence(tmp_path, mo
     from celerp.config import settings
     from celerp.services import backup_import
     from celerp.services.backup import dump_database
+    from test_helpers import released_migration_history
 
     modules = tmp_path / "modules"
     monkeypatch.setenv("MODULE_DIR", str(modules))
     _relay_identity(monkeypatch, tmp_path, _PAID)
     name = f"celerp-{_uid()}"
     meta = json.dumps({"celerp_version": __version__, "pg_version": "16",
-                       "created_at": "2026-10-06T00:00:00Z", "company_name": "T"}).encode()
+                       "created_at": "2026-10-06T00:00:00Z"}).encode()
     init = f"PLUGIN_MANIFEST = {{'name': {name!r}, 'version': '1.0.0'}}\n".encode()
     archive = tmp_path / "backup.celerp-backup"
-    dump_database(settings.database_url, tmp_path / "database.dump")
+    with released_migration_history(settings.database_url):
+        dump_database(settings.database_url, tmp_path / "database.dump")
     with tarfile.open(archive, mode="w:gz") as tar:
         for member, body in [("database.dump", (tmp_path / "database.dump").read_bytes()), ("meta.json", meta),
                              (f"modules/{name}/__init__.py", init)]:

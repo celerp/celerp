@@ -1271,11 +1271,14 @@ def _start(cfg: dict) -> None:
     Before that, an update a previous supervisor did not live to finish is
     finished or undone. The update lock is held for the supervisor's lifetime.
     """
-    # Installed first, so a stop at any point before the servers exist (taking the
-    # lock, starting the database, finishing an update, migrating) exits normally:
-    # the lock is released below and the database this process started is stopped
-    # at exit. `_supervise` replaces it once there are servers to end as well.
+    # Installed first, so a stop at any point (taking the lock, starting the
+    # database, finishing an update, migrating, serving) exits normally: the exit
+    # unwinds through `_supervise`, which stops its servers, the lock is released
+    # below and the database this process started is stopped at exit. The handler
+    # only raises: waiting on a server from inside it could wait on the lock of a
+    # Popen.poll it interrupted, which is never released.
     def _stop(sig, frame):
+        click.echo("\nShutting down...")
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _stop)
@@ -1308,75 +1311,72 @@ def _supervise(cfg: dict, release_lock) -> None:
     ui_port = cfg["server"]["ui_port"]
 
     api_proc = ui_proc = None
+    # Every exit, a stop included (`_start`'s handler raises SystemExit wherever it
+    # lands), stops the servers on the way out. A second stop meanwhile is ignored
+    # so it cannot cut that short and leave a server running.
+    try:
+        click.echo("Starting Celerp...")
+        click.echo(f"  API starting on port {api_port} ...")
+        click.echo(f"  UI  starting on port {ui_port} ...")
 
-    # Replaces `_start`'s handler before the servers start, so a stop while they
-    # are still starting also ends them.
-    def _shutdown(sig, frame):
-        click.echo("\nShutting down...")
+        api_proc = spawn_api(env, api_port)
+        ui_proc = spawn_ui(env, ui_port)
+
+        # Readiness prints in dependency order (API first, then the single
+        # user-facing URL) so the link never points at a UI whose API is still
+        # importing modules.
+        _wait_ready((api_proc, api_port), (ui_proc, ui_port))
+        click.echo("Press Ctrl+C to stop.\n")
+
+        while True:
+            if api_proc.poll() is not None:
+                sentinel = _sentinel()
+                if sentinel.exists():
+                    request = sentinel.read_text(encoding="utf-8")
+                    sentinel.unlink()
+                    try:
+                        target = update.requested_target(request)
+                    except update.UpdateError as exc:
+                        click.echo(f"Ignoring update request: {exc}", err=True)
+                        target = None
+                    update.stop_process(ui_proc)
+                    if target:
+                        click.echo(f"Updating Celerp to {target}...")
+                        steps = _update_steps(cfg)
+                        result, children = update.run_update(target, steps)
+                        if children:
+                            api_proc, ui_proc = children
+                            steps.stop_children(children)
+                            _hand_over(steps, release_lock)
+                        _exit_if_rollback_failed(result)
+                        click.echo(f"Update not installed ({update.reason_text(result['reason'])}); "
+                                   "starting the current version.", err=True)
+                    else:
+                        click.echo("Restarting API server (config changed)...")
+                    # Re-read config so newly enabled modules are picked up; keep the
+                    # database URL this supervisor is using (the embedded cluster's
+                    # may have been refreshed by an update attempt).
+                    fresh_cfg = _read_config() or cfg
+                    fresh_cfg["database"]["url"] = cfg["database"]["url"]
+                    env = _config_to_env(fresh_cfg)
+                    api_proc = spawn_api(env, api_port)
+                    # Restart UI too so its module nav slots reflect the new config
+                    ui_proc = spawn_ui(env, ui_port)
+                else:
+                    click.echo(f"API server exited with code {api_proc.returncode}", err=True)
+                    update.stop_process(ui_proc)
+                    sys.exit(api_proc.returncode)
+            if ui_proc.poll() is not None:
+                click.echo(f"UI server exited with code {ui_proc.returncode}", err=True)
+                update.stop_process(api_proc)
+                sys.exit(ui_proc.returncode)
+            time.sleep(0.5)
+    finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         for proc in (api_proc, ui_proc):
             if proc is not None:
                 update.stop_process(proc)
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
-
-    click.echo("Starting Celerp...")
-    click.echo(f"  API starting on port {api_port} ...")
-    click.echo(f"  UI  starting on port {ui_port} ...")
-
-    api_proc = spawn_api(env, api_port)
-    ui_proc = spawn_ui(env, ui_port)
-
-    # Readiness prints in dependency order (API first, then the single
-    # user-facing URL) so the link never points at a UI whose API is still
-    # importing modules.
-    _wait_ready((api_proc, api_port), (ui_proc, ui_port))
-    click.echo("Press Ctrl+C to stop.\n")
-
-    while True:
-        if api_proc.poll() is not None:
-            sentinel = _sentinel()
-            if sentinel.exists():
-                request = sentinel.read_text(encoding="utf-8")
-                sentinel.unlink()
-                try:
-                    target = update.requested_target(request)
-                except update.UpdateError as exc:
-                    click.echo(f"Ignoring update request: {exc}", err=True)
-                    target = None
-                update.stop_process(ui_proc)
-                if target:
-                    click.echo(f"Updating Celerp to {target}...")
-                    steps = _update_steps(cfg)
-                    result, children = update.run_update(target, steps)
-                    if children:
-                        api_proc, ui_proc = children
-                        steps.stop_children(children)
-                        _hand_over(steps, release_lock)
-                    _exit_if_rollback_failed(result)
-                    click.echo(f"Update not installed ({update.reason_text(result['reason'])}); "
-                               "starting the current version.", err=True)
-                else:
-                    click.echo("Restarting API server (config changed)...")
-                # Re-read config so newly enabled modules are picked up; keep the
-                # database URL this supervisor is using (the embedded cluster's
-                # may have been refreshed by an update attempt).
-                fresh_cfg = _read_config() or cfg
-                fresh_cfg["database"]["url"] = cfg["database"]["url"]
-                env = _config_to_env(fresh_cfg)
-                api_proc = spawn_api(env, api_port)
-                # Restart UI too so its module nav slots reflect the new config
-                ui_proc = spawn_ui(env, ui_port)
-            else:
-                click.echo(f"API server exited with code {api_proc.returncode}", err=True)
-                update.stop_process(ui_proc)
-                sys.exit(api_proc.returncode)
-        if ui_proc.poll() is not None:
-            click.echo(f"UI server exited with code {ui_proc.returncode}", err=True)
-            update.stop_process(api_proc)
-            sys.exit(ui_proc.returncode)
-        time.sleep(0.5)
 
 
 @main.command("reset-password")

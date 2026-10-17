@@ -452,30 +452,74 @@ class TestProtectedPriceListDeletion:
 
 class TestRestoreJourneyNotice:
     @pytest.mark.asyncio
-    async def test_login_shows_restore_notice_once(self, ui_client, monkeypatch, tmp_path):
-        """The one-shot notice survives the post-restore restart: first login render
-        shows it (unmissable), then it is gone - no permanent banner."""
+    async def test_login_says_the_backup_was_restored_and_keeps_the_details(self, ui_client, monkeypatch, tmp_path):
+        """The sign-in page, which anyone can open, says the backup was restored and how
+        to sign in. The warnings and the safety copy's path (a server path naming the
+        account's profile) wait for the installation owner's first signed-in page."""
         import json as _json
         from celerp.config import settings
         from celerp.services.backup_import import RESTORE_NOTICE_FILE
 
         monkeypatch.setattr(settings, "data_dir", tmp_path)
         (tmp_path / RESTORE_NOTICE_FILE).write_text(_json.dumps({
-            "company_name": "Acme",
             "warnings": ["celerp-fictional"],
             "safety_archive": "/data/recovery-safety/pre-recovery.celerp-backup",
             "restart_scheduled": True,
         }))
         with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
-            r = await ui_client.get("/login")
-            assert r.status_code == 200
-            assert "Backup from Acme restored" in r.text
-            assert "celerp-fictional" in r.text
-            assert "/data/recovery-safety/pre-recovery.celerp-backup" in r.text
-            assert not (tmp_path / RESTORE_NOTICE_FILE).exists()  # consumed
+            for _ in range(2):
+                r = await ui_client.get("/login")
+                assert r.status_code == 200
+                assert "Backup restored. Sign in with the credentials from the backup." in r.text
+                assert "celerp-fictional" not in r.text
+                assert "/data/recovery-safety/pre-recovery.celerp-backup" not in r.text
+            assert (tmp_path / RESTORE_NOTICE_FILE).exists()
 
-            r2 = await ui_client.get("/login")
-            assert "Backup from Acme restored" not in r2.text  # one-shot, not perpetual
+    @pytest.mark.asyncio
+    async def test_restore_notice_wins_over_the_eviction_redirect(self, ui_client, monkeypatch, tmp_path):
+        """A recovery ends every session, so the open page's event stream sends the
+        browser to /login?reason=evicted. The recovery is the true reason: the user
+        sees that the backup was restored, never "a new session was started"."""
+        import json as _json
+        from celerp.config import settings
+        from celerp.services.backup_import import RESTORE_NOTICE_FILE
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        (tmp_path / RESTORE_NOTICE_FILE).write_text(_json.dumps({
+            "warnings": [], "safety_archive": "/data/recovery-safety/pre-recovery.celerp-backup",
+            "restart_scheduled": False,
+        }))
+        with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
+            r = await ui_client.get("/login?reason=evicted&next=%2Fsettings%2Fsystem-recovery")
+            assert r.status_code == 200
+            assert "Backup restored. Sign in with the credentials from the backup." in r.text
+            assert "a new session was started" not in r.text
+
+            (tmp_path / RESTORE_NOTICE_FILE).unlink()
+            r2 = await ui_client.get("/login?reason=evicted")
+            assert "a new session was started" in r2.text  # an ordinary eviction is unchanged
+
+    @pytest.mark.asyncio
+    async def test_failed_recovery_is_the_reason_given_at_sign_in(self, ui_client, monkeypatch, tmp_path):
+        """A failed recovery also ends every session. The sign-in page says the recovery
+        did not complete, never "a new session was started"; its details (server paths)
+        stay for the owner's first signed-in page, so the record is not consumed here."""
+        import json as _json
+        from celerp.config import settings
+        from celerp.services.backup_import import RECOVERY_FAILURE_FILE
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        (tmp_path / RECOVERY_FAILURE_FILE).write_text(_json.dumps({
+            "message": "System Recovery did not complete: Access is denied: /data/staging",
+            "detail": "Access is denied: /data/staging",
+        }))
+        with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
+            r = await ui_client.get("/login?reason=evicted&next=%2Fsettings%2Fsystem-recovery")
+            assert r.status_code == 200
+            assert "System Recovery did not complete. The installation was put back as it was before." in r.text
+            assert "a new session was started" not in r.text
+            assert "/data/staging" not in r.text
+            assert (tmp_path / RECOVERY_FAILURE_FILE).exists()
 
 
 @pytest.mark.asyncio

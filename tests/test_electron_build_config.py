@@ -351,7 +351,7 @@ def test_build_workflow_validates_final_macos_dmg_before_distribution():
     publish_idx = workflow.index("  publish-release:")
     publish_block = workflow[publish_idx:publish_idx + 300]
     needs_line = next(l for l in publish_block.splitlines() if l.strip().startswith("needs:"))
-    assert needs_line.strip() == "needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke]"
+    assert needs_line.strip() == "needs: [prepare-release, setup-matrix, build, account-names, openapi-asset, upgrade-smoke]"
 
 
 def test_build_workflow_exports_versioned_openapi_before_publish():
@@ -394,6 +394,10 @@ def test_windows_installer_check_covers_every_starting_point():
     assert "celerp-ci-sentinel.txt" in run
     assert 'if ($after -ne $before) { Fail "older installer changed the install' in run
     assert 'if ($code -ne 2) { Fail "older installer over 999.0.0' in run
+    # The full-disk and stopped-install checks look for an entry before anything has
+    # installed for the runner's account, when its uninstall key does not exist yet.
+    entry = run.split("function Entry {", 1)[1].split("\n          }\n", 1)[0]
+    assert entry.index("if (-not (Test-Path $key)) { return }") < entry.index("Get-ChildItem $key")
 
 
 def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
@@ -415,10 +419,10 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
 
     unix = by_name["Boot smoke (launch the packaged app, require db:ok)"]
     win = by_name["Boot smoke (Windows, require db:ok)"]
-    for smoke in (unix, win):
+    for smoke, minutes in ((unix, 15), (win, 20)):
         assert names.index(check["name"]) < names.index(smoke["name"])
         # A hung app fails the step with its log instead of holding the runner for hours.
-        assert smoke["timeout-minutes"] == 15
+        assert smoke["timeout-minutes"] == minutes
     assert ('json.load(open("../default_modules/first_party.lock.json"))' in unix["run"]
             and "export ENABLED_MODULES" in unix["run"])
     # A boot that never gets ready shows the app's output and logs, then ends the app,
@@ -432,11 +436,14 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
     assert 'PG_PIDFILE="$PG_DATA/postmaster.pid"' in unix["run"] and 'find "$HOME"' not in unix["run"].split("boot smoke OK")[1]
     # Linux and macOS: a force-quit app (SIGKILL) must leave no API or database running.
     assert 'kill -9 "$ELECTRON"' in unix["run"] and "left the API or the database running" in unix["run"]
-    assert ('Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json'
-            in win["run"])
-    assert "set ENABLED_MODULES=$enabled" in win["run"]
+    # A fresh install under an account named with spaces and non-ASCII letters: the
+    # profile, data and install folders all carry them, and the database must set up.
+    assert win["run"] == './scripts/win-boot-smoke.ps1 -Account standard -UserName "Célerp Tëst ü" -OverRunning' and win["working-directory"] == "electron"
+    smoke = _win_boot_smoke()
+    assert 'Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json' in smoke
+    assert "set ENABLED_MODULES=$enabled" in smoke
     # Windows: the job object ends the API and the database when the app is force-quit.
-    assert "taskkill /IM Celerp.exe /F" in win["run"] and "left the API or the database running" in win["run"]
+    assert "taskkill /IM Celerp.exe /F" in smoke and "force-quit left the API or the database running" in smoke
 
 
 def test_packaged_upgrade_smoke_runs_in_the_tag_release_and_on_demand_only():
@@ -468,3 +475,146 @@ def test_packaged_upgrade_smoke_runs_in_the_tag_release_and_on_demand_only():
     steps = [s.get("name") for s in upgrade["steps"]]
     assert "Previous, candidate, downgrade, reopen (Linux, data)" in steps
     assert "Previous, candidate, downgrade, in-app update run (Windows, install)" in steps
+
+
+def test_windows_build_ships_the_visual_cpp_runtime_and_checks_every_dll_import():
+    """The Windows build stages the Visual C++ runtime for afterPack before packaging,
+    then fails when a bundled binary imports a DLL the package does not ship."""
+    steps = _workflow("build.yml")["jobs"]["build"]["steps"]
+    names = [s.get("name") for s in steps]
+    by_name = dict(zip(names, steps))
+    stage = by_name["Stage the Visual C++ runtime (Windows)"]
+    assert stage["if"] == "runner.os == 'Windows'"
+    assert '"${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe" -latest -property installationPath' in stage["run"]
+    assert "\\x64\\Microsoft.VC143.CRT" in stage["run"]
+    assert 'foreach ($dll in "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")' in stage["run"]
+    assert '"CELERP_VC_RUNTIME_DIR=$dest" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV' in stage["run"]
+    for build in ("Build (Windows / Linux - release tag)", "Build (Windows / Linux - dev build)"):
+        assert names.index(stage["name"]) < names.index(build)
+
+    closure = by_name["Check the Windows DLL closure"]
+    assert closure["if"] == "runner.os == 'Windows'"
+    assert "node electron/scripts/check-win-dll-closure.js" in closure["run"]
+    assert '"$RES/app.asar.unpacked/node_modules/@embedded-postgres/windows-x64/native/bin"' in closure["run"]
+    assert '"$RES/pg-win/bin"' in closure["run"]
+    assert names.index("Build (Windows / Linux - dev build)") < names.index(closure["name"])
+
+
+def _win_boot_smoke():
+    return (Path(__file__).parent.parent / "electron" / "scripts" / "win-boot-smoke.ps1").read_text()
+
+
+def test_windows_install_over_the_running_app_requires_the_app_running_first():
+    """-OverRunning proves the installer closes an open app only if the app is open: its
+    window, API and database processes and a db:ok API are required before the install,
+    and afterwards exactly those processes (by id and start time) must be gone, the
+    install whole, and the app must boot again."""
+    smoke = _win_boot_smoke()
+    over = smoke.split("if ($OverRunning) {", 1)[1].split("\n}\n", 1)[0]
+    running_app = smoke.split("function RunningApp(", 1)[1].split("\n}\n", 1)[0]
+    for name in ('"Celerp"', '"python"', '"postgres"'):
+        assert name in running_app
+    assert "/health/ready" in running_app and "Fail " in running_app
+    assert over.index("$before = RunningApp $installDir $port") < over.index("InstallSetup $setup")
+    assert "Get-Process -Id $_.Id" in over and "$p.StartTime -eq $_.StartTime" in over
+    assert over.index("InstallSetup $setup") < over.index("TreeMatches $installDir") < over.index("Launch $exe")
+
+
+def test_windows_boot_smoke_runs_as_an_administrator_with_uac_off():
+    """A second Windows boot smoke installs and launches the app as the built-in
+    Administrator, whose full token has no standard token linked to it (what UAC off
+    gives an administrator), and requires db:ok. The runner's own account has UAC on,
+    so it cannot stand in."""
+    steps = _workflow("build.yml")["jobs"]["build"]["steps"]
+    names = [s.get("name") for s in steps]
+    by_name = dict(zip(names, steps))
+    admin = by_name["Boot smoke (Windows administrator, UAC off)"]
+    assert admin["if"] == "runner.os == 'Windows'" and admin["timeout-minutes"] == 15
+    assert admin["run"] == "./scripts/win-boot-smoke.ps1 -Account admin" and admin["working-directory"] == "electron"
+    assert names.index("Boot smoke (Windows, require db:ok)") < names.index(admin["name"])
+    smoke = _win_boot_smoke()
+    assert "EnableLUA" not in smoke
+    admin_setup = smoke.split('if ($Account -eq "standard") {', 1)[1].split("$cred = ", 1)[0].split("} else {", 1)[1]
+    assert '$_.SID.Value -like "S-1-5-21-*-500"' in admin_setup and "Enable-LocalUser" in admin_setup
+    assert "-Name FilterAdministratorToken -Value 0" in admin_setup
+    # The app must not depend on the Server service to read its token.
+    assert "Stop-Service LanmanServer -Force" in admin_setup and "net session" not in smoke
+    # Both sides of the restricted launcher, read from the installed app's own token
+    # check run as that account: "admin", and the launcher's child "standard".
+    assert 'if ($state -ne $Account)' in smoke and '$child -ne "standard"' in smoke
+    assert smoke.index("--token-state") < smoke.index('$port = Launch $exe "first launch"')
+    assert "/health/ready" in smoke and '"db"\\s*:\\s*"ok"' in smoke
+    launch = smoke.split("function Launch(", 1)[1].split("\n}\n", 1)[0]
+    assert launch.index("Electron stdout/stderr") < launch.index('Fail "$what`: db:ok not reached')
+
+
+def test_checks_that_run_the_packaged_python_leave_the_build_unchanged():
+    """The Windows smokes compare each install file by file with win-unpacked, so a
+    check that runs the packaged Python must not write bytecode into it."""
+    steps = _workflow("build.yml")["jobs"]["build"]["steps"]
+    names = [s.get("name") for s in steps]
+    built = names.index("Build (Windows / Linux - dev build)")
+    first_smoke = min(i for i, n in enumerate(names) if n and n.startswith("Boot smoke"))
+    runs_packaged_python = [s for s in steps[built:first_smoke] if '"$PY"' in s.get("run", "")]
+    assert {s["name"] for s in runs_packaged_python} == {
+        "Check the Windows bundle", "Check bundled modules in the packaged artifact"}
+    for step in runs_packaged_python:
+        assert step.get("env", {}).get("PYTHONDONTWRITEBYTECODE") == "1", step["name"]
+
+
+def test_windows_smoke_commands_run_with_the_account_user_name():
+    """Start-Process -Credential hands the child the runner's environment, so without
+    this the installer sees the runner's USERNAME. The installer only closes a running
+    app found with tasklist /FI "USERNAME eq %USERNAME%", so it would miss the
+    account's running app and copy over files that app holds open."""
+    smoke = _win_boot_smoke()
+    env_set = smoke.split("$envSet = ", 1)[1].split("\n", 1)[0]
+    assert "set USERNAME=$u`r`n" in env_set
+    assert "set USERDOMAIN=$env:COMPUTERNAME`r`n" in env_set
+
+
+def test_windows_account_names_match_the_named_name_tests():
+    """The release build runs the packaged app under every name in ACCOUNT_NAMES, so
+    the file-name tests and the Windows accounts cover the same scripts."""
+    import yaml
+
+    from test_helpers import ACCOUNT_NAMES
+
+    workflow = yaml.safe_load((Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text())
+    rows = workflow["jobs"]["win-names"]["strategy"]["matrix"]["include"]
+    assert {r["case"]: r["user"] for r in rows} == ACCOUNT_NAMES
+
+
+def test_windows_account_rows_expect_2_5_6_to_fail_under_every_non_ascii_name():
+    """2.5.6 hands the profile path to the Postgres bootstrap in the ANSI code page, so
+    its database setup fails under any name outside ASCII, accents the code page holds
+    included ("José" arrives as the byte 0xE9). A row that expects 2.5.6 to start under
+    such a name fails at the old release instead of testing the upgrade."""
+    import yaml
+
+    workflow = yaml.safe_load((Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text())
+    rows = workflow["jobs"]["win-names"]["strategy"]["matrix"]["include"]
+    assert {r["case"]: r["fails"] for r in rows} == {r["case"]: not r["user"].isascii() for r in rows}
+
+
+def test_jobs_downstream_of_the_tag_only_job_run_outside_tags_when_they_should():
+    """prepare-release runs only for a tag, so outside a tag it is skipped, and success()
+    is false in every job that depends on it, however indirectly. A job gated on
+    success() below it is then skipped too: on a pull request the account-name matrix
+    never ran and account-names failed with nothing tested. Below prepare-release,
+    success() is only for jobs that run for tags alone; the rest check the result of
+    the job they need."""
+    jobs = _workflow("build.yml")["jobs"]
+
+    def needs(name):
+        n = jobs[name].get("needs", [])
+        return [n] if isinstance(n, str) else n
+
+    def below_tag_only(name):
+        return any(n == "prepare-release" or below_tag_only(n) for n in needs(name))
+
+    for name, job in jobs.items():
+        cond = str(job.get("if", ""))
+        if below_tag_only(name) and "success()" in cond:
+            assert "startsWith(github.ref, 'refs/tags/v')" in cond, name
+    assert jobs["win-names"]["if"].startswith("always() && needs.build.result == 'success'")

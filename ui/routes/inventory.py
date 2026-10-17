@@ -4842,15 +4842,11 @@ function celerpPrintLabel(entityId, templateId) {
             from starlette.responses import Response as _R
             return _R(str(e.detail), status_code=e.status)
         content_type = resp.headers.get("content-type", "application/octet-stream")
-        cd = resp.headers.get("content-disposition", "")
-        filename = "download"
-        if "filename=" in cd:
-            filename = cd.split("filename=")[-1].strip('"').strip("'")
         from starlette.responses import Response as _R
         return _R(
             content=resp.content,
             media_type=content_type,
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            headers={"Content-Disposition": api.file_disposition(resp, "inline")},
         )
 
     # ── List thumbnail column: upload into the cell, serve the preview ─────────

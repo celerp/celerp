@@ -60,10 +60,9 @@ def local_backup_buttons(
             title=t(_TOOLTIP_KEYS["download"]),
         ),
         Button(t("btn.import_backup"),
-            # Confirm before the file picker opens: the import replaces the
-            # whole installation. The translated text arrives via data-* (R2).
-            data_confirm_text=t("system_recovery.confirm"),
-            onclick=f"if(confirm(this.dataset.confirmText))document.getElementById('{import_input_id}').click()",
+            # The picker opens straight from the click: the browser stops a click
+            # from opening it once the user has spent a few seconds on a dialog.
+            onclick=f"document.getElementById('{import_input_id}').click()",
             cls=f"btn btn--secondary{size_cls}",
             title=t(_TOOLTIP_KEYS["import"]),
             id="backup-import-btn",
@@ -74,10 +73,14 @@ def local_backup_buttons(
             hx_post="/backup/import", hx_encoding="multipart/form-data",
             hx_target=f"#{flash_target_id}", hx_swap="outerHTML",
             hx_disabled_elt="#backup-import-btn",
-            # The translated in-progress label is passed via a data-* attribute (R2),
+            # Confirm once a file is chosen: the import replaces the whole
+            # installation. Cancelling clears the choice so the same file can be
+            # picked again. Translated text arrives via data-* attributes (R2),
             # never spliced into the JS source string.
+            data_confirm_text=t("system_recovery.confirm"),
             data_restoring_text=t("auth.restoring"),
-            onchange="var btn=document.getElementById('backup-import-btn');if(btn){btn.disabled=true;btn.textContent=this.dataset.restoringText;}",
+            hx_on__confirm="event.preventDefault();if(confirm(this.dataset.confirmText))event.detail.issueRequest(true);else this.value='';",
+            hx_on__before_request="var btn=document.getElementById('backup-import-btn');if(btn){btn.disabled=true;btn.textContent=this.dataset.restoringText;}",
             style="display:none",
         ),
     ]

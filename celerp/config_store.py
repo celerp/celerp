@@ -162,22 +162,33 @@ def _refreshing_release(lock_path: str, fd: int, token: bytes):
     return release
 
 
-def _fsync_dir(dir_path: str) -> None:
+# Windows cannot open a directory to fsync it; NTFS commits a rename's directory
+# entry with the rename itself.
+_DIR_FSYNC_SUPPORTED = os.name == "posix"
+
+
+def fsync_dir(dir_path, *, strict: bool = False) -> None:
     """Fsync the directory so a preceding atomic rename is durable, not only the
     renamed file's contents. A crash after os.replace but before the directory
-    entry reaches disk could otherwise lose the rename. No-op on platforms that
-    cannot fsync a directory fd (Windows), and any OSError is swallowed because
-    the rename itself already committed the write."""
-    if os.name != "posix":
+    entry reaches disk could otherwise lose the rename. No-op on Windows.
+
+    strict: raise any OSError from opening or syncing the directory. Callers whose
+    next step relies on the rename surviving a crash (a recovery marker, a landing
+    mark) pass it; otherwise the error is swallowed because the rename itself
+    already committed the write."""
+    if not _DIR_FSYNC_SUPPORTED:
         return
     try:
         dir_fd = os.open(dir_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     except OSError:
+        if strict:
+            raise
         return
     try:
         os.fsync(dir_fd)
     except OSError:
-        pass
+        if strict:
+            raise
     finally:
         try:
             os.close(dir_fd)
@@ -225,7 +236,7 @@ def atomic_write_text(path: str, data: str) -> None:
         except OSError:
             pass
         raise
-    _fsync_dir(os.path.dirname(path) or ".")
+    fsync_dir(os.path.dirname(path) or ".")
 
 
 def merge_packaged_config(updates: dict) -> bool:

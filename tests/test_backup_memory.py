@@ -61,8 +61,7 @@ def big_dump(monkeypatch, tmp_path):
 
     async def fake_meta():
         return {"celerp_version": running_version(), "pg_version": "16",
-                "created_at": "2026-10-12T00:00:00Z", "company_name": "TestCo",
-                "enabled_modules": []}
+                "created_at": "2026-10-12T00:00:00Z", "enabled_modules": []}
     monkeypatch.setattr(backup_export, "archive_meta", fake_meta)
     monkeypatch.setattr(settings, "backup_encryption_key",
                         base64.b64encode(secrets.token_bytes(32)).decode())

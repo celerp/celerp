@@ -91,6 +91,8 @@ const APP_DIR = IS_DEV
 
 const DATA_DIR = path.join(app.getPath("userData"), "celerp-data");
 const PG_DATA_DIR = path.join(DATA_DIR, "postgres");
+// Runs a program with the administrator rights removed; also reports the token state.
+const RESTRICTED_LAUNCHER = path.join(APP_DIR, "celerp", "win_restricted_launch.py");
 const LOG_DIR = path.join(DATA_DIR, "logs");
 const MODULE_DIR = path.join(DATA_DIR, "modules");
 const CONFIG_PATH = path.join(DATA_DIR, "celerp-config.json");
@@ -120,7 +122,7 @@ function _readStoredDbPassword() {
 function getBundledDbPassword() {
   const stored = _readStoredDbPassword();
   if (stored) return stored;
-  const firstBoot = !fs.existsSync(path.join(PG_DATA_DIR, "PG_VERSION"));
+  const firstBoot = !fs.existsSync(path.join(pgDataDir(), "PG_VERSION"));
   if (firstBoot) {
     const pw = require("crypto").randomBytes(24).toString("hex");
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -193,6 +195,9 @@ const { compatibilityArgs, mayOpenData } = require("./compatibility");
 const { openData, reopenData } = require("./boot");
 const { writeConfig: writeLockedConfig } = require("./config-writer");
 const { serveUpdateState } = require("./update-state");
+const { startupDeelevation, relaunchThroughExplorer } = require("./deelevation");
+const { windowsStartFailure, clusterStartFailure, logSince } = require("./windows-start-errors");
+const { initialiseClusterOnce, postgresPaths } = require("./windows-initdb");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -217,13 +222,14 @@ function portOpen(port) {
   });
 }
 
-/** Poll until a TCP port accepts connections (max `attempts` × `intervalMs`). */
-function waitForPort(port, attempts = 60, intervalMs = 500) {
+/** Poll until a TCP port accepts connections (max `attempts` × `intervalMs`), or until
+ *  `hasExited` says the server that should open it is gone. */
+function waitForPort(port, { attempts = 60, intervalMs = 500, hasExited = () => false } = {}) {
   return new Promise((resolve, reject) => {
     let tries = 0;
     const check = async () => {
       if (await portOpen(port)) resolve();
-      else if (++tries >= attempts) reject(new Error(`Port ${port} never opened`));
+      else if (hasExited() || ++tries >= attempts) reject(new Error(`Port ${port} never opened`));
       else setTimeout(check, intervalMs);
     };
     check();
@@ -241,9 +247,7 @@ function pgBinDir() {
   if (process.platform === "darwin") {
     return path.join(process.resourcesPath, `pg-${process.arch}`, "bin");
   }
-  if (process.platform === "win32") {
-    return path.join(process.resourcesPath, "pg-win", "bin");
-  }
+  if (process.platform === "win32") return windowsPgPaths().clientBinDir;
   if (process.platform === "linux") {
     return path.join(process.resourcesPath, "pg-linux", "bin");
   }
@@ -269,45 +273,124 @@ function pythonBin() {
 
 // ── Startup sequence ─────────────────────────────────────────────────────────
 
+/**
+ * The user's private ASCII folder under ProgramData, made or checked by
+ * win_restricted_launch.py --private-dir. Throws a message the user can act on
+ * when the folder there is not the user's own.
+ */
+function windowsPrivateRoot() {
+  const parent = process.env.ProgramData;
+  if (!parent) throw new Error("Windows did not say where its ProgramData folder is, so Celerp cannot set up its database.");
+  const r = childProcess.spawnSync(pythonBin(), ["-I", RESTRICTED_LAUNCHER, "--private-dir", parent, "Celerp-"],
+    { encoding: "utf8", env: { ...process.env, PYTHONIOENCODING: "utf-8" }, timeout: 30000 });
+  if (r.status === 0) return r.stdout.trim();
+  const reason = (r.stderr || r.error?.message || `exit code ${r.status}`).replace(/^win_restricted_launch:\s*/, "").trim();
+  throw new Error(
+    `Celerp keeps its database in a folder under ${parent}, because your Windows account name has ` +
+    `letters the database cannot read, and it cannot use that folder: ${reason}. Ask whoever ` +
+    "manages this PC to remove that folder, then start Celerp again. Your data is not affected.");
+}
+
+let windowsPgPathsCache = null;
+
+/** Windows: the folders Postgres runs from and keeps its data in (windows-initdb.js postgresPaths). */
+function windowsPgPaths() {
+  windowsPgPathsCache ??= postgresPaths({
+    dataDir: PG_DATA_DIR,
+    // The platform package's "exports" blocks require.resolve of its package.json, so
+    // locate the binaries under the unpacked resources directly (asarUnpack keeps the
+    // native bins outside app.asar).
+    nativeDir: path.join(process.resourcesPath, "app.asar.unpacked", "node_modules",
+      "@embedded-postgres", "windows-x64", "native"),
+    clientBinDir: path.join(process.resourcesPath, "pg-win", "bin"),
+    privateRoot: windowsPrivateRoot,
+  });
+  return windowsPgPathsCache;
+}
+
+/** The bundled cluster's data folder. */
+function pgDataDir() {
+  return process.platform === "win32" && !IS_DEV ? windowsPgPaths().dataDir : PG_DATA_DIR;
+}
+
 // Windows-only first-boot initdb that mirrors embedded-postgres's initialise()
 // (same args/auth so the cluster is identical and .start() can connect), but with
 // stdio disabled so initdb's stderr cannot fill an unread pipe and deadlock.
+// initialiseClusterOnce runs it into a setup folder that is moved into place only
+// on success, so a setup cut short is run again on the next start.
 async function initialisePostgresWindows(password) {
   const logPath = path.join(LOG_DIR, "initdb-win.log");
   const trace = (m) => { try { fs.appendFileSync(logPath, m + "\n"); } catch { /* ignore */ } };
-  // The platform package's "exports" blocks require.resolve of its package.json, so
-  // locate the binary under the unpacked resources directly (asarUnpack keeps the
-  // native bins outside app.asar).
-  const initdbBin = path.join(process.resourcesPath, "app.asar.unpacked", "node_modules",
-    "@embedded-postgres", "windows-x64", "native", "bin", "initdb.exe");
+  const { nativeDir, dataDir } = windowsPgPaths();
+  const initdbBin = path.join(nativeDir, "bin", "initdb.exe");
   trace(`initdb bin=${initdbBin} exists=${fs.existsSync(initdbBin)}`);
-  const pwfile = path.join(DATA_DIR, `pg-pwfile-${process.pid}`);
-  fs.writeFileSync(pwfile, `${password}\n`);
-  const out = fs.openSync(logPath, "a");
-  try {
-    await new Promise((resolve, reject) => {
-      const proc = _spawn(initdbBin, [
-        `--pgdata=${PG_DATA_DIR}`,
-        "--auth=password",
-        "--username=celerp",
-        `--pwfile=${pwfile}`,
-        // Force a UTF-8 / C-locale cluster. Without this initdb adopts the Windows
-        // system locale (e.g. WIN1252), and the app's UTF-8 data + migrations fail
-        // against a WIN1252 database.
-        "--encoding=UTF8",
-        "--no-locale",
-      ], { stdio: ["ignore", out, out], env: { ...process.env } });
-      proc.on("error", (e) => { trace("initdb spawn error: " + e.message); reject(e); });
-      proc.on("exit", (code) => { trace("initdb exit code=" + code); (code === 0 ? resolve() : reject(new Error(`initdb exited with code ${code}`))); });
-    });
-  } finally {
-    try { fs.closeSync(out); } catch { /* ignore */ }
-    try { fs.rmSync(pwfile, { force: true }); } catch { /* ignore */ }
-  }
+  const runInitdb = async (target) => {
+    // Next to the target, so its path is one initdb can read too.
+    const pwfile = path.join(path.dirname(target), `pg-pwfile-${process.pid}`);
+    fs.writeFileSync(pwfile, `${password}\n`);
+    // Only this run's part of the log is read back to explain a failure.
+    const offset = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
+    const out = fs.openSync(logPath, "a");
+    try {
+      await new Promise((resolve, reject) => {
+        const proc = _spawn(initdbBin, [
+          `--pgdata=${target}`,
+          "--auth=password",
+          "--username=celerp",
+          `--pwfile=${pwfile}`,
+          // Force a UTF-8 / C-locale cluster. Without this initdb adopts the Windows
+          // system locale (e.g. WIN1252), and the app's UTF-8 data + migrations fail
+          // against a WIN1252 database.
+          "--encoding=UTF8",
+          "--no-locale",
+          "-L", path.join(nativeDir, "share"),
+        ], { stdio: ["ignore", out, out], env: { ...process.env } });
+        proc.on("error", (e) => { trace("initdb spawn error: " + e.message); reject(e); });
+        proc.on("exit", (code) => {
+          trace("initdb exit code=" + code);
+          if (code === 0) { resolve(); return; }
+          const known = windowsStartFailure({ exitCode: code, output: logSince(logPath, offset) });
+          reject(new Error(known ?? `initdb exited with code ${code}`));
+        });
+      });
+    } finally {
+      try { fs.closeSync(out); } catch { /* ignore */ }
+      try { fs.rmSync(pwfile, { force: true }); } catch { /* ignore */ }
+    }
+  };
+  await initialiseClusterOnce({ dataDir, runInitdb });
+}
+
+/**
+ * Command words put before the postgres binary. Linux and macOS run it under
+ * desktop_child.py so it stops with the app. Windows runs it directly (the app's
+ * job object ends it), or, when the app is still elevated after de-elevation,
+ * through the restricted launcher.
+ */
+function postgresLauncher() {
+  if (process.platform !== "win32") return [pythonBin(), "-I", path.join(APP_DIR, "celerp", "desktop_child.py")];
+  return restrictedLauncher();
+}
+
+/**
+ * When the app is still elevated after de-elevation (Windows only), the words that
+ * start a program through win_restricted_launch.py, which drops the administrator
+ * rights Postgres refuses to run with and the servers have no need of. The launcher
+ * ends the program when it is itself killed. Empty otherwise.
+ */
+function restrictedLauncher() {
+  return deelevation === "boot-restricted" ? [pythonBin(), "-I", RESTRICTED_LAUNCHER] : [];
+}
+
+/** The command and arguments that start the server for `asgiApp` on `port`. */
+function serverCommand(asgiApp, port) {
+  const [command, ...prefix] = [...restrictedLauncher(), pythonBin()];
+  return [command, [...prefix, ...serverArgs(asgiApp, port)]];
 }
 
 async function startPostgres(dbPort) {
-  fs.mkdirSync(PG_DATA_DIR, { recursive: true });
+  const dataDir = pgDataDir();
+  fs.mkdirSync(dataDir, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
 
   if (!EmbeddedPostgres) {
@@ -315,8 +398,11 @@ async function startPostgres(dbPort) {
   }
 
   const dbPassword = getBundledDbPassword();
+  const pgOutput = outputTail();
   pgInstance = new EmbeddedPostgres({
-    databaseDir: PG_DATA_DIR,
+    databaseDir: dataDir,
+    // Windows runs the server from a path it can read (windowsPgPaths).
+    ...(process.platform === "win32" && !IS_DEV && { postgresBinary: path.join(windowsPgPaths().nativeDir, "bin", "postgres.exe") }),
     user: "celerp",
     password: dbPassword,
     port: dbPort,
@@ -324,13 +410,14 @@ async function startPostgres(dbPort) {
     // Prevent locale-derived SQL_ASCII clusters on Linux/macOS first boot.
     // Windows uses initialisePostgresWindows(), which already passes UTF-8.
     initdbFlags: ["--encoding=UTF8"],
-    launcher: process.platform === "win32" ? [] : [pythonBin(), "-I", path.join(APP_DIR, "celerp", "desktop_child.py")],
+    launcher: postgresLauncher(),
+    onLog: (message) => { pgOutput.add(message); console.log(message); },
   });
 
   // Only run initdb on first boot — PG_VERSION is written by initdb and
   // signals that the cluster is already initialised. Calling initialise()
   // on an existing data directory causes initdb to exit non-zero and crash.
-  const pgVersionFile = path.join(PG_DATA_DIR, "PG_VERSION");
+  const pgVersionFile = path.join(dataDir, "PG_VERSION");
   if (!fs.existsSync(pgVersionFile)) {
     // First boot: create the cluster. On Windows we initialise it ourselves (see
     // initialisePostgresWindows) because embedded-postgres is ESM and imports the
@@ -341,7 +428,17 @@ async function startPostgres(dbPort) {
       ? initialisePostgresWindows(dbPassword)
       : pgInstance.initialise());
   }
-  await pgInstance.start();
+  try {
+    await pgInstance.start();
+  } catch (e) {
+    // start() rejects without a reason when postgres exits before it is ready.
+    const known = windowsStartFailure({ exitCode: pgInstance.process?.exitCode, output: pgOutput.text() });
+    if (known) throw new Error(known);
+    // Anything else on Windows: say where the database is and that it was left
+    // alone, never remove it (the message tells an unfinished one from a used one).
+    if (process.platform === "win32") throw new Error(clusterStartFailure(dataDir, e?.message || pgOutput.text()));
+    throw e;
+  }
 
   // Create database if it doesn't exist yet
   const client = pgInstance.getPgClient();
@@ -498,51 +595,61 @@ function _copyDirSync(src, dst) {
   }
 }
 
+// The environment both Python servers start with. They are separate processes that
+// share the data folder (recovery and restore outcomes, caches), so every path and
+// setting they have in common is set here, once.
+function serverEnv(dbUrl, cfg) {
+  return {
+    ...process.env,
+    // Scrub Python environment variables that the user's shell may have set
+    // (pyenv, conda, Homebrew, virtualenv). If inherited, they redirect the
+    // bundled standalone Python to the wrong stdlib and crash uvicorn before
+    // it ever binds a port. This is the cause of "Port N never opened" when
+    // launching a notarized app from the terminal (Finder launch gets a clean
+    // environment and never triggers this).
+    PYTHONHOME: undefined,
+    PYTHONSTARTUP: undefined,
+    VIRTUAL_ENV: undefined,
+    CONDA_PREFIX: undefined,
+    CONDA_DEFAULT_ENV: undefined,
+    PYTHONUTF8: "1",  // UTF-8 file I/O on Windows (cp1252 default crashes on UTF-8 data)
+    DATABASE_URL: dbUrl,
+    JWT_SECRET: getOrCreateJwtSecret(),
+    PYTHONPATH: `${APP_DIR}${path.delimiter}${MODULE_DIR}`,
+    MODULE_DIR: MODULE_DIR,
+    // Tell the Python module loader that DEFAULT_MODULES_SRC is first-party trusted.
+    // Seeded copies in MODULE_DIR inherit trust; without this the loader's BSL AST
+    // scan rejects celerp-ai, celerp-connectors, celerp-backup, and celerp-admin.
+    CELERP_TRUSTED_MODULE_DIRS: DEFAULT_MODULES_SRC,
+    CELERP_DATA_DIR: DATA_DIR,
+    CELERP_CONFIG: PYTHON_CONFIG_PATH,
+    CELERP_MODE: "desktop",
+    CELERP_API_PORT: String(apiPort),
+    CELERP_UI_PORT: String(uiPort),
+    CELERP_PG_BIN_DIR: pgBinDir(),
+    ...resolveStorageEnv(cfg),
+  };
+}
+
 function startApi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
     // apiPort and uiPort are pre-allocated by the caller before startApi/startUi
     // are invoked, so both values are already set here.
+    // Publish the API port so external tooling (the CI boot smoke, local debugging)
+    // can find it without dictating it, which matters when the app de-elevated into
+    // a fresh process that did not inherit our env. Every start writes it: a restart
+    // moves the API to a new port.
+    try { fs.writeFileSync(path.join(DATA_DIR, "api-port"), String(apiPort)); } catch { /* non-fatal */ }
     const env = {
-      ...process.env,
-      // Scrub Python environment variables that the user's shell may have set
-      // (pyenv, conda, Homebrew, virtualenv). If inherited, they redirect the
-      // bundled standalone Python to the wrong stdlib and crash uvicorn before
-      // it ever binds a port. This is the cause of "Port N never opened" when
-      // launching a notarized app from the terminal (Finder launch gets a clean
-      // environment and never triggers this).
-      PYTHONHOME: undefined,
-      PYTHONSTARTUP: undefined,
-      VIRTUAL_ENV: undefined,
-      CONDA_PREFIX: undefined,
-      CONDA_DEFAULT_ENV: undefined,
-      PYTHONUTF8: "1",  // UTF-8 file I/O on Windows (cp1252 default crashes on UTF-8 data)
-      DATABASE_URL: dbUrl,
-      JWT_SECRET: getOrCreateJwtSecret(),
-      PYTHONPATH: `${APP_DIR}${path.delimiter}${MODULE_DIR}`,
-      MODULE_DIR: MODULE_DIR,
-      // Tell the Python module loader that DEFAULT_MODULES_SRC is first-party trusted.
-      // Seeded copies in MODULE_DIR inherit trust; without this the loader's BSL AST
-      // scan rejects celerp-ai, celerp-connectors, celerp-backup, and celerp-admin.
-      CELERP_TRUSTED_MODULE_DIRS: DEFAULT_MODULES_SRC,
-      CELERP_DATA_DIR: DATA_DIR,
-      CELERP_CONFIG: PYTHON_CONFIG_PATH,
+      ...serverEnv(dbUrl, cfg),
       CELERP_INSTALL_CHANNEL: "electron",
-      CELERP_MODE: "desktop",
       // C2: make the desktop app version authoritative everywhere. The PC-browser/relay
       // path reads the version from /health (it has no window.celerp), so pass the Electron
       // app version through to the API; /health reports it instead of the Python package
       // version, keeping desktop and relay in agreement.
       CELERP_APP_VERSION: app.getVersion(),
-      CELERP_API_PORT: String(apiPort),
-      CELERP_UI_PORT: String(uiPort),
-      CELERP_PG_BIN_DIR: pgBinDir(),
-      ...resolveStorageEnv(cfg),
     };
-    const proc = spawn(
-      pythonBin(),
-      serverArgs("celerp.main:app", apiPort),
-      { cwd: APP_DIR, env, stdio: "pipe" }
-    );
+    const proc = spawn(...serverCommand("celerp.main:app", apiPort), { cwd: APP_DIR, env, stdio: "pipe" });
     apiProcess = proc;
     const apiLog = openProcessLog("api.log");
     const logFile = path.join(LOG_DIR, "api.log");
@@ -564,7 +671,8 @@ function startApi(dbUrl, cfg) {
       stdoutLines(s);
       consumeRelayStateFromLog(s);  // C4: hold/release the sleep blocker on relay state changes
     });
-    proc.on("error", reject);
+    // a server that could not start has no exit to wait for; stop polling its port
+    proc.on("error", (e) => { exited = true; reject(e); });
     proc.on("exit", (code) => {
       exited = true;
       if (code !== 0 && code !== null) reject(new Error(`API process exited (code ${code}). Full log: ${logFile}\n${output.text()}`));
@@ -593,44 +701,21 @@ function serverArgs(asgiApp, port) {
 function startUi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
     // uiPort is pre-allocated by the caller; no need to allocate here.
-    const env = {
-      ...process.env,
-      // Scrub Python environment variables that the user's shell may have set.
-      // See startApi comment for full explanation.
-      PYTHONHOME: undefined,
-      PYTHONSTARTUP: undefined,
-      VIRTUAL_ENV: undefined,
-      CONDA_PREFIX: undefined,
-      CONDA_DEFAULT_ENV: undefined,
-      API_URL: `http://127.0.0.1:${apiPort}`,
-      PYTHONUTF8: "1",  // UTF-8 file I/O on Windows (cp1252 default crashes on UTF-8 data)
-      DATABASE_URL: dbUrl,
-      JWT_SECRET: getOrCreateJwtSecret(),
-      PYTHONPATH: `${APP_DIR}${path.delimiter}${MODULE_DIR}`,
-      MODULE_DIR: MODULE_DIR,
-      CELERP_TRUSTED_MODULE_DIRS: DEFAULT_MODULES_SRC,
-      CELERP_CONFIG: PYTHON_CONFIG_PATH,
-      CELERP_MODE: "desktop",
-      CELERP_UI_PORT: String(uiPort),
-      CELERP_API_PORT: String(apiPort),
-      CELERP_PG_BIN_DIR: pgBinDir(),
-      ...resolveStorageEnv(cfg),
-    };
-    uiProcess = spawn(
-      pythonBin(),
-      serverArgs("ui.app:app", uiPort),
-      { cwd: APP_DIR, env, stdio: "pipe" }
-    );
+    const env = { ...serverEnv(dbUrl, cfg), API_URL: `http://127.0.0.1:${apiPort}` };
+    uiProcess = spawn(...serverCommand("ui.app:app", uiPort), { cwd: APP_DIR, env, stdio: "pipe" });
     const uiLog = openProcessLog("ui.log");
     const logFile = path.join(LOG_DIR, "ui.log");
     const output = outputTail();
     uiProcess.stderr.on("data", (d) => { output.add(d.toString()); uiLog?.write(d); });
     uiProcess.stdout.on("data", (d) => { output.add(d.toString()); uiLog?.write(d); });
-    uiProcess.on("error", reject);
+    let exited = false;
+    // a server that could not start has no exit to wait for; stop polling its port
+    uiProcess.on("error", (e) => { exited = true; reject(e); });
     uiProcess.on("exit", (code) => {
+      exited = true;
       if (code !== 0 && code !== null) reject(new Error(`UI process exited (code ${code}). Full log: ${logFile}\n${output.text()}`));
     });
-    waitForPort(uiPort).then(resolve).catch(() =>
+    waitForPort(uiPort, { hasExited: () => exited }).then(resolve).catch(() =>
       reject(new Error(`UI port ${uiPort} never opened. Full log: ${logFile}\n${output.text()}`))
     );
   });
@@ -939,7 +1024,15 @@ async function _doUninstallDeleteData() {
   // userData throughout the process lifetime; deleting userData itself leaves those
   // dirs behind on macOS. DATA_DIR is everything Celerp owns (postgres, modules,
   // config, JWT secret) and is safe to remove while the process is still running.
-  const dataPath = DATA_DIR;
+  // On Windows the database may instead sit in the user's private folder under
+  // ProgramData (windowsPgPaths), which goes too.
+  const dataPaths = [DATA_DIR];
+  if (process.platform === "win32" && !IS_DEV) {
+    try {
+      const { privateRoot } = windowsPgPaths();
+      if (privateRoot) dataPaths.push(privateRoot);
+    } catch (err) { console.error("[uninstall] cannot use the private database folder:", err); }
+  }
   const { response } = await dialog.showMessageBox(mainWindow, {
     type: "warning",
     buttons: ["Cancel", "Delete Data & Quit"],
@@ -949,14 +1042,18 @@ async function _doUninstallDeleteData() {
     message: "Delete all Celerp data?",
     detail:
       "This will permanently delete:\n\n" +
-      `• ${dataPath}\n\n` +
+      dataPaths.map((p) => `• ${p}\n`).join("") + "\n" +
       "This includes your database, configuration, modules, and all business data. " +
       "This cannot be undone.\n\n" +
       "After quitting, drag Celerp from Applications to Trash to complete removal.",
   });
   if (response === 1) {
-    try { fs.rmSync(dataPath, { recursive: true, force: true }); }
-    catch (err) { console.error("[uninstall] failed to delete data dir:", err); }
+    // A link in the private folder is removed as a link; the program folder it
+    // points to is not followed.
+    for (const p of dataPaths) {
+      try { fs.rmSync(p, { recursive: true, force: true }); }
+      catch (err) { console.error("[uninstall] failed to delete data dir:", err); }
+    }
     isQuitting = true;
     app.quit();
   }
@@ -1152,50 +1249,39 @@ ipcMain.handle("uninstall-keep-data", () => _doUninstallKeepData());
 ipcMain.handle("uninstall-delete-data", () => _doUninstallDeleteData());
 
 // ── Windows: de-elevate before doing anything else ──────────────────────────
-// The bundled Postgres refuses to run under a Windows administrator token, so a
-// user who launches Celerp elevated (Run as administrator, or a machine with UAC
-// turned off) would crash on boot. If we hold an admin token, relaunch ourselves
-// at a restricted "normal user" token (SAFER /trustlevel) in the same desktop
-// session and exit; the relaunched copy boots normally. This must run BEFORE the
+// The bundled Postgres refuses to run under a Windows administrator token. The
+// token state is read from the app's own access token (deelevation.js): an
+// elevated start with UAC on relaunches through Explorer, which starts the copy
+// with the user's standard token; an administrator with UAC off boots here and
+// starts Postgres with the administrator rights removed. This must run BEFORE the
 // single-instance lock so the relaunched copy can acquire it.
-function isWindowsElevated() {
-  if (process.platform !== "win32") return false;
+function windowsTokenState() {
   try {
-    // `net session` succeeds only with administrator rights; it throws otherwise.
-    childProcess.execSync("net session", { stdio: "ignore", windowsHide: true });
-    return true;
-  } catch {
-    return false;
+    return childProcess.execFileSync(pythonBin(), ["-I", RESTRICTED_LAUNCHER, "--token-state"], {
+      encoding: "utf8", timeout: 15000, windowsHide: true,
+    }).trim();
+  } catch (e) {
+    console.error("[startup] could not read the Windows token state; starting Postgres restricted:", e);
+    return null;
   }
 }
 
-if (isWindowsElevated()) {
-  let relaunched = false;
-  try {
-    // Relaunch de-elevated by handing the exe back to Explorer (the shell). With
-    // UAC on - the normal Windows configuration - Explorer runs at the user's
-    // standard integrity, so the copy it starts inherits a non-admin token, which
-    // is what Postgres needs. This also sidesteps Electron's job object: Electron
-    // runs its own children in a job with KILL_ON_JOB_CLOSE, so a direct relaunch
-    // would die the moment this instance exits, but an Explorer-launched process is
-    // the shell's child, not ours, and survives.
-    const explorer = path.join(process.env.SystemRoot || "C:\\Windows", "explorer.exe");
-    const child = childProcess.spawn(explorer, [process.execPath], {
-      detached: true, stdio: "ignore", windowsHide: true,
-    });
-    child.on("error", (e) => console.error("[startup] de-elevation spawn error:", e));
-    child.unref();
-    relaunched = true;
-    console.log("[startup] elevated launch detected; relaunched de-elevated (Postgres cannot run as admin)");
-  } catch (e) {
-    // Fall through and boot (Postgres will then report the admin error, no worse
-    // than before).
-    console.error("[startup] de-elevation relaunch failed; continuing:", e);
-  }
-  if (relaunched) {
+const deelevationMarker = path.join(app.getPath("userData"), "deelevate-attempt");
+let deelevation = process.platform === "win32"
+  ? startupDeelevation({ token: windowsTokenState(), markerPath: deelevationMarker, now: Date.now() })
+  : "boot";
+
+if (deelevation === "relaunch") {
+  if (relaunchThroughExplorer({
+    spawnSync: childProcess.spawnSync, systemRoot: process.env.SystemRoot, exePath: process.execPath,
+    markerPath: deelevationMarker,
+  })) {
+    console.log("[startup] elevated launch detected; the copy relaunched through Explorer has started (Postgres cannot run as admin)");
     app.quit();
     return;  // stop the elevated instance (CommonJS module: top-level return is valid)
   }
+  console.error("[startup] booting here with Postgres restricted instead");
+  deelevation = "boot-restricted";
 }
 
 // ── Single-instance lock ─────────────────────────────────────────────────────
@@ -1250,10 +1336,10 @@ app.whenReady().then(async () => {
       console.log(`[DEV_MODE] Connecting to existing services — API :${DEV_API_PORT}, UI :${DEV_UI_PORT}`);
       apiPort = DEV_API_PORT;
       uiPort = DEV_UI_PORT;
-      await waitForPort(apiPort, 5, 500).catch(() => {
+      await waitForPort(apiPort, { attempts: 5 }).catch(() => {
         throw new Error(`DEV_MODE: FastAPI not found on port ${apiPort}. Start it first with:\n  uvicorn celerp.main:app --port ${apiPort}`);
       });
-      await waitForPort(uiPort, 5, 500).catch(() => {
+      await waitForPort(uiPort, { attempts: 5 }).catch(() => {
         throw new Error(`DEV_MODE: UI not found on port ${uiPort}. Start it first with:\n  uvicorn ui.app:app --port ${uiPort}`);
       });
       createWindow();
@@ -1363,10 +1449,6 @@ app.whenReady().then(async () => {
         const _pinApi = parseInt(process.env.CELERP_API_PORT || "", 10);
         apiPort = Number.isInteger(_pinApi) && _pinApi > 0 ? _pinApi : await getFreePort();
         uiPort = await getFreePort();
-        // Publish the chosen API port so external tooling (the CI boot smoke,
-        // local debugging) can discover it without having to dictate it — needed when
-        // the app self-de-elevated into a fresh process that didn't inherit our env.
-        try { fs.writeFileSync(path.join(DATA_DIR, "api-port"), String(apiPort)); } catch { /* non-fatal */ }
         setLoadingStatus("Starting API server…");
         await startApi(dbConfig.url, cfg);
       },

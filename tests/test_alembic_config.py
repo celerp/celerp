@@ -108,6 +108,15 @@ class TestBuildAlembicConfig:
         script_loc = cfg.get_main_option("script_location")
         assert script_loc, "script_location must be set after build_alembic_config()"
 
+    @pytest.mark.parametrize("ini", ["alembic.ini", "celerp/alembic.ini"])
+    @pytest.mark.parametrize("codepage", ["cp1252", "cp874", "cp1256", "gbk", "cp932", "cp949", "cp950"])
+    def test_ini_reads_the_same_under_every_windows_code_page(self, ini, codepage):
+        """Alembic reads alembic.ini in the Windows code page (encoding="locale"), even
+        with PYTHONUTF8 set: under Chinese, Japanese or Korean Windows a non-ASCII byte
+        there stopped every database check, so Celerp could not open its data."""
+        raw = (Path(__file__).resolve().parent.parent / ini).read_bytes()
+        assert raw.decode(codepage) == raw.decode("utf-8")
+
     def test_raises_when_no_ini_exists(self, monkeypatch, tmp_path):
         """If the real alembic.ini is missing in the package, raise FileNotFoundError."""
         from celerp import alembic_config

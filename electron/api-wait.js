@@ -16,10 +16,13 @@
 // authoritative for its wording).
 const PROGRESS = /Rebuilding records: (\d+) of (\d+) ledger entries/;
 
-/** The rebuild progress in one line of API output, or null when it has none. */
+/**
+ * The rebuild progress in one line of API output, or null when it has none. An empty
+ * ledger (a fresh install) has nothing to rebuild, so its "0 of 0" is not progress.
+ */
 function rebuildProgress(line) {
   const m = PROGRESS.exec(String(line));
-  return m ? { done: Number(m[1]), total: Number(m[2]) } : null;
+  return m && Number(m[2]) > 0 ? { done: Number(m[1]), total: Number(m[2]) } : null;
 }
 
 // Longest partial line kept between chunks. Log lines are far shorter; this only
