@@ -763,6 +763,10 @@ def _class_names(classes: list[dict]) -> dict[str, str]:
     return {c["id"]: c["name"] for c in classes}
 
 
+# Each asset's figures in the register, so its cost less both accumulations reads as its net book value.
+_REGISTER_MONEY = ("cost", "accumulated_depreciation", "accumulated_impairment", "nbv")
+
+
 def _register_table(items: list[dict], classes: dict[str, str], currency: str) -> FT:
     """The asset list, each row ticked to dispose of several at once from the toolbar above it.
     Every row can be ticked: an asset that cannot be disposed of is refused at review with
@@ -770,14 +774,14 @@ def _register_table(items: list[dict], classes: dict[str, str], currency: str) -
     rows = [Tr(Td(Input(type="checkbox", cls="bulk-select", name="selected", value=a["id"]), cls="col-checkbox"),
                Td(A(a["number"], href=f"/fixed-assets/assets/{a['id']}")), Td(_text(a.get("name"))),
                Td(_text(classes.get(a.get("class_id")))), Td(_text(a.get("available_date"))),
-               _money_td(a.get("cost"), currency), _money_td(a.get("accumulated_depreciation"), currency),
-               _money_td(a.get("nbv"), currency), Td(t(f"fixed_assets.status.{a.get('status')}")), cls="data-row")
+               *[_money_td(a.get(k), currency) for k in _REGISTER_MONEY],
+               Td(t(f"fixed_assets.status.{a.get('status')}")), cls="data-row")
             for a in items]
     return Table(Thead(Tr(Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")),
                              cls="col-checkbox"),
                           Th(t("fixed_assets.number")), Th(t("fixed_assets.name")), Th(t("fixed_assets.class")),
-                          Th(t("fixed_assets.available_date")), _money_th(t("fixed_assets.cost")),
-                          _money_th(t("fixed_assets.accumulated_depreciation")), _money_th(t("fixed_assets.nbv")),
+                          Th(t("fixed_assets.available_date")),
+                          *[_money_th(t(f"fixed_assets.{k}")) for k in _REGISTER_MONEY],
                           Th(t("fixed_assets.status")))),
                  Tbody(*rows), cls="data-table", id="fa-register")
 

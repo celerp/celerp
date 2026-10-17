@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from decimal import Decimal
 
 import pytest
 
@@ -683,6 +684,35 @@ async def test_impair_from_the_asset_page_then_undo_it(owner_ui):
     assert (await owner_ui.api.get(f"{API}/assets/{car}")).json()["accumulated_impairment"] in ("0", "0.00")
 
 
+def _register(html: str) -> tuple[list[str], list[list[str]]]:
+    """The register table's headings and its rows' cell texts."""
+    table = re.search(r'<table[^>]*id="fa-register".*?</table>', html, re.S).group(0)
+
+    def text(cell: str) -> str:
+        return re.sub(r"<[^>]+>", "", cell).strip()
+
+    head = [text(c) for c in re.findall(r"<th\b.*?</th>", table, re.S)]
+    rows = [[text(c) for c in re.findall(r"<td\b.*?</td>", row, re.S)]
+            for row in re.findall(r"<tr\b[^>]*data-row.*?</tr>", table, re.S)]
+    return head, rows
+
+
+async def test_u27_the_register_shows_impairment_so_each_row_adds_up_to_its_net_book_value(owner_ui):
+    car = await _managed_car(owner_ui)
+    await _review_and_confirm(owner_ui, "impair", {
+        "asset_id": car, "date": "2026-09-30", "recoverable_amount": "9000", "basis": "Dealer quote",
+        "idempotency_key": str(uuid.uuid4())})
+    head, rows = _register((await owner_ui.get("/fixed-assets")).text)
+    columns = [t(f"fixed_assets.{k}") for k in ("cost", "accumulated_depreciation", "accumulated_impairment", "nbv")]
+    assert all(c in head for c in columns), head
+    at = [head.index(c) for c in columns]
+    assert rows
+    for row in rows:
+        cost, depreciation, impairment, nbv = (Decimal(re.sub(r"[^0-9.-]", "", row[i]) or "0") for i in at)
+        assert cost - depreciation - impairment == nbv, row
+    assert any(Decimal(re.sub(r"[^0-9.-]", "", row[at[2]]) or "0") > 0 for row in rows), rows
+
+
 async def test_add_an_improvement_and_see_the_repair_route(owner_ui):
     car = await _managed_car(owner_ui)
     repair = await owner_ui.get(f"/fixed-assets/assets/{car}/add", params={"kind": "repair"})
@@ -923,8 +953,6 @@ async def test_u17_a_page_waiting_on_setup_offers_the_step_in_place_and_opening_
 
 
 async def test_u18_the_asset_page_shows_how_it_depreciates_and_its_next_charge(owner_ui):
-    from decimal import Decimal
-
     car = await _managed_car(owner_ui)
     policy = (await _class(owner_ui, "Vehicles"))
     assert policy["method"] == "straight_line"
