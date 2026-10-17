@@ -48,6 +48,7 @@
   "accountant_access.from_no_open_date": "Pembukuan terkunci hingga {date}, jadi tidak ada tanggal terbuka untuk pembalikan. Pindahkan tanggal penguncian untuk membaliknya:",
   "accountant_access.from_voided": "Dibatalkan oleh akuntan Anda",
   "accountant_access.from_posted": "Diposting, tanggal {date}.",
+  "accountant_access.from_already": "Ini sudah dilakukan, bertanggal {date}. Tidak ada yang baru diposting.",
   "accountant_access.give_code": "Salin kode ini dan kirimkan ke akuntan Anda. Akuntan menempelkannya untuk menerbitkan kunci bagi perusahaan ini, jadi tidak ada yang perlu mengetik ID perusahaan.",
   "accountant_access.invalid": "Periksa kode pemasangan dan izin yang dipilih.",
   "accountant_access.no_scopes": "Pilih setidaknya satu jenis catatan yang akan dikirim klien ini.",

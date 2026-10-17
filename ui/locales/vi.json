@@ -48,6 +48,7 @@
   "accountant_access.from_no_open_date": "Sổ sách đã khóa đến {date} nên không còn ngày mở để ghi bút toán đảo. Hãy dời ngày khóa sổ để đảo:",
   "accountant_access.from_voided": "Kế toán viên đã hủy",
   "accountant_access.from_posted": "Đã ghi, ngày {date}.",
+  "accountant_access.from_already": "Việc này đã được thực hiện, ngày {date}. Không có bút toán mới nào được ghi.",
   "accountant_access.give_code": "Sao chép mã này và gửi cho kế toán của bạn. Kế toán dán mã để cấp khóa cho công ty này, không ai phải gõ ID công ty.",
   "accountant_access.invalid": "Kiểm tra mã ghép nối và các quyền đã chọn.",
   "accountant_access.no_scopes": "Chọn ít nhất một loại bản ghi để khách hàng này gửi.",

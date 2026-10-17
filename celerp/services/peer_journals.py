@@ -731,7 +731,7 @@ async def reverse(session: AsyncSession, company_id: uuid.UUID, actor_id, je_id:
     rid = reversal_id(je_id)
     existing = await session.get(Projection, (company_id, rid))
     if existing is not None:
-        return {"je_id": rid, "ts": str((existing.state or {}).get("ts"))[:10]}
+        return {"je_id": rid, "ts": str((existing.state or {}).get("ts"))[:10], "already": True}
     if state.get("status") != "posted":
         raise HTTPException(422, t("acct.err_reverse_not_posted"))
     company = await locked_company(session, company_id)
@@ -755,7 +755,7 @@ async def reverse(session: AsyncSession, company_id: uuid.UUID, actor_id, je_id:
         await _notify(session, company_id, "notice.peer_reversal_today", memo=memo or "Journal entry",
                       original=original, date=day)
     await session.commit()
-    return {"je_id": rid, "ts": day}
+    return {"je_id": rid, "ts": day, "already": False}
 
 
 async def prefill(session: AsyncSession, company_id: uuid.UUID, je_id: str) -> dict:

@@ -48,6 +48,7 @@
   "accountant_access.from_no_open_date": "I libri sono bloccati fino al {date}, quindi nessuna data è aperta per lo storno. Sposta la data di blocco per stornarlo:",
   "accountant_access.from_voided": "Annullata dal commercialista",
   "accountant_access.from_posted": "Registrata in data {date}.",
+  "accountant_access.from_already": "È già stato fatto, con data {date}. Non è stato registrato nulla di nuovo.",
   "accountant_access.give_code": "Copia questo codice e invialo al tuo commercialista. Lo incolla per emettere una chiave per questa azienda, senza digitare un ID azienda.",
   "accountant_access.invalid": "Controlla il codice di abbinamento e le autorizzazioni selezionate.",
   "accountant_access.no_scopes": "Scegli almeno un tipo di record che questo cliente deve inviare.",

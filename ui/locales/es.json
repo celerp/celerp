@@ -48,6 +48,7 @@
   "accountant_access.from_no_open_date": "Los libros están cerrados hasta el {date}, así que no hay ninguna fecha abierta para la reversión. Mueva la fecha de cierre para revertirlo:",
   "accountant_access.from_voided": "Anulado por su contador",
   "accountant_access.from_posted": "Registrado con fecha {date}.",
+  "accountant_access.from_already": "Esto ya se hizo, con fecha {date}. No se registró nada nuevo.",
   "accountant_access.give_code": "Copie este código y envíelo a su contable. Lo pega para emitir una clave para esta empresa, así nadie tiene que escribir un ID de empresa.",
   "accountant_access.invalid": "Compruebe el código de vinculación y los permisos seleccionados.",
   "accountant_access.no_scopes": "Elija al menos un tipo de registro para que este cliente lo envíe.",

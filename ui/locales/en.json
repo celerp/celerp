@@ -48,6 +48,7 @@
   "accountant_access.from_no_open_date": "The books are locked through {date}, so no date is open for the reversal. Move the lock date to reverse it:",
   "accountant_access.from_voided": "Voided by your accountant",
   "accountant_access.from_posted": "Posted, dated {date}.",
+  "accountant_access.from_already": "This was already done, dated {date}. Nothing new was posted.",
   "accountant_access.give_code": "Copy this code and send it to your accountant. They paste it to issue a key for this company, so nobody has to type a company ID.",
   "accountant_access.invalid": "Check the pairing code and selected permissions.",
   "accountant_access.no_scopes": "Choose at least one kind of record for this client to send.",

@@ -1853,8 +1853,12 @@ def setup_routes(app):
         except APIError as exc:
             return await _from_accountant_section(token, lang, refusal_text(exc.detail))
         section = await _from_accountant_section(token, lang)
+        date = result.get("ts") or "--"
+        if result.get("already"):  # a stale tab repeated it; nothing new was posted
+            return HTMLResponse(to_xml(section), headers=toast_header(
+                t("accountant_access.from_already", lang, date=date), "info"))
         return HTMLResponse(to_xml(section), headers=toast_header(
-            t("accountant_access.from_posted", lang, date=result.get("ts") or "--"), "success"))
+            t("accountant_access.from_posted", lang, date=date), "success"))
 
     @app.get("/settings/connectors/{platform}")
     async def connector_detail_page(request: Request, platform: str):

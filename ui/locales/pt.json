@@ -48,6 +48,7 @@
   "accountant_access.from_no_open_date": "Os livros estão bloqueados até {date}, então nenhuma data está aberta para o estorno. Mova a data de bloqueio para estorná-lo:",
   "accountant_access.from_voided": "Anulado pelo seu contador",
   "accountant_access.from_posted": "Registrado com data de {date}.",
+  "accountant_access.from_already": "Isto já foi feito, com data de {date}. Nada de novo foi lançado.",
   "accountant_access.give_code": "Copie este código e envie-o ao seu contador. Ele o cola para emitir uma chave para esta empresa, sem precisar digitar um ID de empresa.",
   "accountant_access.invalid": "Verifique o código de pareamento e as permissões selecionadas.",
   "accountant_access.no_scopes": "Escolha pelo menos um tipo de registro para este cliente enviar.",

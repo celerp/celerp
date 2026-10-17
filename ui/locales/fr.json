@@ -48,6 +48,7 @@
   "accountant_access.from_no_open_date": "Les livres sont clôturés jusqu'au {date} : aucune date n'est ouverte pour la contrepassation. Déplacez la date de clôture pour la contrepasser :",
   "accountant_access.from_voided": "Annulée par votre comptable",
   "accountant_access.from_posted": "Passée à la date du {date}.",
+  "accountant_access.from_already": "C'est déjà fait, en date du {date}. Rien de nouveau n'a été comptabilisé.",
   "accountant_access.give_code": "Copiez ce code et envoyez-le à votre comptable. Il le colle pour créer une clé pour cette entreprise, sans saisir d’ID d’entreprise.",
   "accountant_access.invalid": "Vérifiez le code d’appairage et les autorisations choisies.",
   "accountant_access.no_scopes": "Choisissez au moins un type d'enregistrement que ce client doit envoyer.",

@@ -48,6 +48,7 @@
   "accountant_access.from_no_open_date": "መዝገቦቹ እስከ {date} ድረስ ተዘግተዋል፣ ስለዚህ ለመቀልበሻው ክፍት ቀን የለም። ለመቀልበስ የመዝጊያ ቀኑን ያንቀሳቅሱ፦",
   "accountant_access.from_voided": "በሂሳብ ባለሙያዎ ተሰርዟል",
   "accountant_access.from_posted": "ገብቷል፣ ቀን {date}።",
+  "accountant_access.from_already": "ይህ ቀድሞውኑ ተከናውኗል፣ ቀን {date}። ምንም አዲስ ነገር አልተመዘገበም።",
   "accountant_access.give_code": "ይህን ኮድ ቀድተው ለሂሳብ ባለሙያዎ ይላኩ። ለዚህ ኩባንያ ቁልፍ ለማውጣት ይለጥፉታል፤ ማንም የኩባንያ መለያ መተየብ አያስፈልገውም።",
   "accountant_access.invalid": "የማጣመሪያ ኮዱን እና የተመረጡ ፈቃዶችን ያረጋግጡ።",
   "accountant_access.no_scopes": "ይህ ደንበኛ የሚልከውን ቢያንስ አንድ ዓይነት መዝገብ ይምረጡ።",
