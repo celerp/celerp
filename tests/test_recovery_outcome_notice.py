@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""The outcome of a System Recovery that failed after it signed everyone out is shown to
-the installation owner on the first page after signing in again, once; never to anyone
-else, and never on the login page, which anyone can open."""
+"""The outcome of a System Recovery, which signed everyone out, is shown in full to the
+installation owner on the first page after signing in again, once; never to anyone else,
+and never on the login page, which anyone can open and which only says what happened."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
@@ -60,5 +60,40 @@ async def test_login_page_does_not_show_the_failed_recovery(ui_client):
     with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
         r = await ui_client.get("/login")
     assert r.status_code == 200
-    assert "did not complete" not in r.text
+    assert "DuplicateColumn" not in r.text
     assert backup_import.take_recovery_failure() == _OUTCOME
+
+
+_SAFETY = "C:\\Users\\\u0e2a\u0e21\u0e0a\u0e32\u0e22\\celerp-data\\recovery-safety\\pre-recovery.celerp-backup"
+
+
+def _restored(warnings: list[str]) -> None:
+    from celerp.services import backup_import
+    backup_import.take_recovery_failure()
+    backup_import._write_restore_notice(warnings, _SAFETY, False)
+
+
+@pytest.mark.asyncio
+async def test_installation_owner_sees_the_restore_outcome_once_after_signing_in(ui_client):
+    _restored(["celerp-fictional is not installed."])
+    first = await _page(ui_client, install_owner=True)
+    assert "Backup imported." in first and "celerp-fictional is not installed." in first
+    assert _SAFETY in first and "flash--warning" in first
+    later = await _page(ui_client, install_owner=True)
+    assert _SAFETY not in later and "Backup imported." not in later
+
+
+@pytest.mark.asyncio
+async def test_a_clean_restore_outcome_is_a_success_notice(ui_client):
+    _restored([])
+    first = await _page(ui_client, install_owner=True)
+    assert _SAFETY in first and "flash--success" in first
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin", "viewer"])
+async def test_the_restore_outcome_waits_for_the_installation_owner(ui_client, role):
+    from celerp.services import backup_import
+    _restored(["celerp-fictional is not installed."])
+    assert _SAFETY not in await _page(ui_client, install_owner=False, role=role)
+    assert backup_import.take_restore_notice()["safety_archive"] == _SAFETY

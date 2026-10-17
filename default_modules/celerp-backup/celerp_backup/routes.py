@@ -89,11 +89,9 @@ def _restore_flash(result, base_msg: str) -> Response:
     sign-in link directly.
     """
     from fasthtml.common import Div, Script
-    from ui.components.shell import RESTART_POLL_JS
+    from ui.components.shell import RESTART_POLL_JS, restore_outcome_parts
 
-    parts = [base_msg, *result.warnings]
-    if result.safety_archive:
-        parts.append(t("system_recovery.safety_saved", path=result.safety_archive))
+    parts = restore_outcome_parts(base_msg, result.warnings, result.safety_archive)
     kind = "warning" if result.warnings else "success"
     if result.restart_scheduled:
         parts.append(t("settings.restarting_automatically"))

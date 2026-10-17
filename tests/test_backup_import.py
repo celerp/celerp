@@ -661,42 +661,43 @@ class TestReconcileSchema:
 
 class TestRestoreNotice:
     def test_notice_roundtrip_and_one_shot(self, monkeypatch, tmp_path):
-        """The importer persists the outcome; the login page consumes it exactly once,
-        so the banner survives the automatic restart but never becomes permanent."""
+        """The importer persists the outcome; it is waiting until taken, then taken
+        exactly once, so it survives the automatic restart but never becomes permanent."""
         from celerp.config import settings
-        from celerp.services.backup_import import RESTORE_NOTICE_FILE, _write_restore_notice
-        from ui.routes.auth import _consume_restore_notice
+        from celerp.services.backup_import import (
+            RESTORE_NOTICE_FILE, _write_restore_notice, restore_notice_waiting, take_restore_notice,
+        )
 
         monkeypatch.setattr(settings, "data_dir", tmp_path)
         _write_restore_notice(["celerp-labels"], "/data/recovery-safety/pre.celerp-backup", True)
         assert (tmp_path / RESTORE_NOTICE_FILE).is_file()
+        assert restore_notice_waiting()
 
-        notice = _consume_restore_notice()
+        notice = take_restore_notice()
         assert notice is not None
         assert "company_name" not in notice
         assert notice["warnings"] == ["celerp-labels"]
         assert notice["safety_archive"] == "/data/recovery-safety/pre.celerp-backup"
         assert notice["restart_scheduled"] is True
-        assert not (tmp_path / RESTORE_NOTICE_FILE).exists()  # one-shot
-        assert _consume_restore_notice() is None
+        assert not restore_notice_waiting()  # one-shot
+        assert take_restore_notice() is None
 
-    def test_notice_message_composes_all_parts(self):
-        from ui.routes.auth import _restore_notice_message
+    def test_outcome_parts_compose_all_parts(self):
+        from ui.components.shell import restore_outcome_parts
 
-        msg = _restore_notice_message({
-            "warnings": ["celerp-labels"],
-            "safety_archive": "/data/recovery-safety/pre.celerp-backup",
-        })
-        assert msg.startswith("Backup restored. Sign in with the credentials from the backup.")
-        assert "celerp-labels" in msg
-        assert "/data/recovery-safety/pre.celerp-backup" in msg
+        parts = restore_outcome_parts("Backup imported.", ["celerp-labels"], "/data/recovery-safety/pre.celerp-backup")
+        assert parts[0] == "Backup imported."
+        assert parts[1] == "celerp-labels"
+        assert "/data/recovery-safety/pre.celerp-backup" in parts[2]
+        assert restore_outcome_parts("Backup imported.", [], None) == ["Backup imported."]
 
     def test_no_notice_file_means_no_banner(self, monkeypatch, tmp_path):
         from celerp.config import settings
-        from ui.routes.auth import _consume_restore_notice
+        from celerp.services.backup_import import restore_notice_waiting, take_restore_notice
 
         monkeypatch.setattr(settings, "data_dir", tmp_path)
-        assert _consume_restore_notice() is None
+        assert not restore_notice_waiting()
+        assert take_restore_notice() is None
 
 
 class TestRestoreFlashContinuation:

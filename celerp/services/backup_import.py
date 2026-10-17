@@ -613,15 +613,16 @@ def _missing_module_warnings(modules: list[str]) -> list[str]:
 
 def _write_restore_notice(warnings: list[str], safety_archive: str | None,
                           restart_scheduled: bool) -> None:
-    """Persist a one-shot restore notice for the login page.
+    """Persist a one-shot restore notice for the installation owner's next signed-in page.
 
     The post-restore restart can replace the page that showed the result (the
     desktop shell reloads the window to the respawned server), so the outcome and
-    any warnings must survive it; the login page renders and then clears this file.
+    any warnings must survive it. The login page, which anyone can open, only says
+    that a backup was restored; the warnings and the safety copy's path wait for
+    the owner, whose page shows and then clears this file.
     """
-    from celerp.config import settings
     try:
-        path = settings.data_dir / RESTORE_NOTICE_FILE
+        path = _restore_notice_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({
             "warnings": warnings,
@@ -805,10 +806,18 @@ def take_recovery_failure() -> str | None:
     return message if isinstance(message, str) else None
 
 
+def _restore_notice_path() -> Path:
+    from celerp.config import settings
+    return settings.data_dir / RESTORE_NOTICE_FILE
+
+
+def restore_notice_waiting() -> bool:
+    return _restore_notice_path().is_file()
+
+
 def take_restore_notice() -> dict | None:
     """The one-shot notice of the last successful recovery (_write_restore_notice)."""
-    from celerp.config import settings
-    return _take(settings.data_dir / RESTORE_NOTICE_FILE)
+    return _take(_restore_notice_path())
 
 
 def _mark_recovery_finished() -> None:

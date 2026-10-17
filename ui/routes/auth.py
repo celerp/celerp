@@ -30,6 +30,7 @@ from ui.api_client import migration_staged_run as api_migration_staged_run
 from ui.components.shell import auth_shell, client_scripts, flash, landing_path, page_title, toast_header
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies, get_role
 from ui.i18n import t, get_lang
+from celerp.services import backup_import
 from celerp.services.app_paths import is_app_local_path
 from celerp.config import settings as _settings
 from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
@@ -51,30 +52,6 @@ def auth_header(title: str, subtitle: str = "") -> FT:
         P(subtitle, cls="auth-subtitle") if subtitle else "",
         cls="auth-header",
     )
-
-
-def _consume_restore_notice() -> dict | None:
-    """Read and clear the one-shot restore notice the importer persists.
-
-    The post-restore restart replaces whatever page showed the import result, so
-    the outcome and any warnings are re-shown here, on the first login page after
-    the restart, where the user cannot miss them."""
-    from celerp.services.backup_import import take_restore_notice
-    return take_restore_notice()
-
-
-def _recovery_failure_waiting() -> bool:
-    from celerp.services.backup_import import recovery_failure_waiting
-    return recovery_failure_waiting()
-
-
-def _restore_notice_message(notice: dict) -> str:
-    """One readable sentence block for the post-restore login banner."""
-    parts = [t("auth.backup_restored_signin")]
-    parts.extend(str(w) for w in notice.get("warnings") or [])
-    if notice.get("safety_archive"):
-        parts.append(t("system_recovery.safety_saved", path=notice["safety_archive"]))
-    return " ".join(parts)
 
 
 def setup_routes(app):
@@ -126,12 +103,12 @@ def setup_routes(app):
         except ValueError:
             by_ip = ""
         # A recovery ends every session, so the page that ran it arrives here as
-        # an eviction; its outcome is the true reason and is shown first. A failure's
-        # details name server paths, so they wait for the owner's first signed-in page.
-        if (restore_notice := _consume_restore_notice()) is not None:
-            notice = flash(_restore_notice_message(restore_notice),
-                           kind="warning" if restore_notice.get("warnings") else "success")
-        elif _recovery_failure_waiting():
+        # an eviction; its outcome is the true reason and is shown first. Anyone can
+        # open this page, so it only says what happened: the details name server
+        # paths and wait for the owner's first signed-in page (shell).
+        if backup_import.restore_notice_waiting():
+            notice = flash(t("auth.backup_restored_signin"), kind="success")
+        elif backup_import.recovery_failure_waiting():
             notice = flash(t("auth.recovery_failed_signin"))
         elif deactivated:
             notice = flash(t("auth.company_deactivated"))

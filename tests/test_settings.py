@@ -452,9 +452,10 @@ class TestProtectedPriceListDeletion:
 
 class TestRestoreJourneyNotice:
     @pytest.mark.asyncio
-    async def test_login_shows_restore_notice_once(self, ui_client, monkeypatch, tmp_path):
-        """The one-shot notice survives the post-restore restart: first login render
-        shows it (unmissable), then it is gone - no permanent banner."""
+    async def test_login_says_the_backup_was_restored_and_keeps_the_details(self, ui_client, monkeypatch, tmp_path):
+        """The sign-in page, which anyone can open, says the backup was restored and how
+        to sign in. The warnings and the safety copy's path (a server path naming the
+        account's profile) wait for the installation owner's first signed-in page."""
         import json as _json
         from celerp.config import settings
         from celerp.services.backup_import import RESTORE_NOTICE_FILE
@@ -466,22 +467,19 @@ class TestRestoreJourneyNotice:
             "restart_scheduled": True,
         }))
         with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
-            r = await ui_client.get("/login")
-            assert r.status_code == 200
-            assert "Backup restored. Sign in with the credentials from the backup." in r.text
-            assert "celerp-fictional" in r.text
-            assert "/data/recovery-safety/pre-recovery.celerp-backup" in r.text
-            assert not (tmp_path / RESTORE_NOTICE_FILE).exists()  # consumed
-
-            r2 = await ui_client.get("/login")
-            assert "Backup restored" not in r2.text  # one-shot, not perpetual
+            for _ in range(2):
+                r = await ui_client.get("/login")
+                assert r.status_code == 200
+                assert "Backup restored. Sign in with the credentials from the backup." in r.text
+                assert "celerp-fictional" not in r.text
+                assert "/data/recovery-safety/pre-recovery.celerp-backup" not in r.text
+            assert (tmp_path / RESTORE_NOTICE_FILE).exists()
 
     @pytest.mark.asyncio
     async def test_restore_notice_wins_over_the_eviction_redirect(self, ui_client, monkeypatch, tmp_path):
         """A recovery ends every session, so the open page's event stream sends the
         browser to /login?reason=evicted. The recovery is the true reason: the user
-        sees its outcome, never "a new session was started", and the notice is
-        consumed there rather than left for some later sign-out."""
+        sees that the backup was restored, never "a new session was started"."""
         import json as _json
         from celerp.config import settings
         from celerp.services.backup_import import RESTORE_NOTICE_FILE
@@ -495,10 +493,9 @@ class TestRestoreJourneyNotice:
             r = await ui_client.get("/login?reason=evicted&next=%2Fsettings%2Fsystem-recovery")
             assert r.status_code == 200
             assert "Backup restored. Sign in with the credentials from the backup." in r.text
-            assert "/data/recovery-safety/pre-recovery.celerp-backup" in r.text
             assert "a new session was started" not in r.text
-            assert not (tmp_path / RESTORE_NOTICE_FILE).exists()
 
+            (tmp_path / RESTORE_NOTICE_FILE).unlink()
             r2 = await ui_client.get("/login?reason=evicted")
             assert "a new session was started" in r2.text  # an ordinary eviction is unchanged
 

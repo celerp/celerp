@@ -1952,20 +1952,36 @@ def _redirect_notice(request, lang: str) -> list:
     return notices
 
 
-async def _recovery_failure_notice(request) -> list:
-    """The outcome of a System Recovery that failed after it signed everyone out, on
-    the installation owner's first signed-in page (backup_import.take_recovery_failure).
-    Nobody else sees it, and it stays for the owner until then."""
+def restore_outcome_parts(base_msg: str, warnings: list, safety_archive: str | None) -> list[str]:
+    """The sentences that report a finished System Recovery: *base_msg*, each warning,
+    then where the safety copy of the replaced installation was saved."""
+    parts = [base_msg, *(str(w) for w in warnings)]
+    if safety_archive:
+        parts.append(t("system_recovery.safety_saved", path=safety_archive))
+    return parts
+
+
+async def _recovery_outcome_notice(request) -> list:
+    """The outcome of a System Recovery, which ended every session, on the installation
+    owner's first signed-in page (backup_import.take_recovery_failure and
+    take_restore_notice). It names server paths, so nobody else sees it, and it stays
+    for the owner until then."""
     from celerp.services import backup_import
     from ui.config import get_token
     token = get_token(request) if request is not None else None
-    if not token or not backup_import.recovery_failure_waiting():
+    if not token or not (backup_import.recovery_failure_waiting() or backup_import.restore_notice_waiting()):
         return []
     import ui.api_client as _api
     if not await _api.installation_owner(token):
         return []
-    message = backup_import.take_recovery_failure()
-    return [flash(message)] if message else []
+    notices = []
+    if message := backup_import.take_recovery_failure():
+        notices.append(flash(message))
+    if (restored := backup_import.take_restore_notice()) is not None:
+        warnings = restored.get("warnings") or []
+        parts = restore_outcome_parts(t("system_recovery.imported"), warnings, restored.get("safety_archive"))
+        notices.append(flash(" ".join(parts), kind="warning" if warnings else "success"))
+    return notices
 
 
 def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
@@ -2060,7 +2076,7 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
         lang = get_lang(request)
     sidebar = _sidebar(nav_active, lang=lang, role=role, request=request, settings=company_settings)
     return _shell_document(
-        *await _recovery_failure_notice(request), *content, nav=sidebar, title=title, companies=companies,
+        *await _recovery_outcome_notice(request), *content, nav=sidebar, title=title, companies=companies,
         extra_head=extra_head, lang=lang, request=request,
     )
 

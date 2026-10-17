@@ -627,15 +627,16 @@ async def test_recovery_safety_archive_outside_restore_roots_and_survives_swap(r
 
 
 async def test_recovery_notice_names_safety_archive(rec, tmp_path):
-    """The result, the post-restore sign-in notice and the page all name the safety archive."""
+    """The result, the owner's post-restore notice and the page all name the safety archive."""
     from celerp.services import backup_import
     from celerp_backup.routes import _restore_flash
-    from ui.routes.auth import _restore_notice_message
+    from ui.components.shell import restore_outcome_parts
     result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup"))
     assert result.ok is True, result.error
     notice = json.loads((rec.data / "restore-notice.json").read_text())
     assert notice["safety_archive"] == result.safety_archive
-    assert result.safety_archive in _restore_notice_message(notice)
+    assert result.safety_archive in " ".join(
+        restore_outcome_parts("Restored.", notice["warnings"], notice["safety_archive"]))
     assert result.safety_archive in _restore_flash(result, "Restored.").body.decode()
 
 
