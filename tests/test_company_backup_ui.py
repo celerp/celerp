@@ -1389,3 +1389,22 @@ async def test_a_non_owner_is_refused_under_the_company_copies_heading(ui, real_
     assert "Only the company owner can make, send or open a company copy." in page
     assert '<h1 class="auth-title">Company copies</h1>' in page
     assert "Open a company copy" not in page
+
+
+async def test_replacing_names_one_changed_record_and_times_a_same_day_copy():
+    """One record changed reads as one record, and when the copy and the company here were
+    last changed on the same day, the times show which is older."""
+    from fasthtml.common import Div, to_xml
+
+    from ui.routes.company_backup import SETTINGS, _replace_section
+
+    def facts(when: str) -> dict:
+        return {"documents": 1, "journals": 1, "items": 1, "last_changed": when}
+
+    replace = {"company_name": "Demo Trading Co", "can_replace": True, "changed_after_copy": 1,
+               "current": facts("2026-10-17T15:40:00+00:00"), "incoming": facts("2026-10-17T09:05:00+00:00"),
+               "older": {"since": "2026-10-17T09:05:00+00:00", "documents": 1}}
+    page = _html.unescape(to_xml(Div(*_replace_section(SETTINGS, {}, replace))))
+    assert "1 record in Demo Trading Co changed after this copy was made." in page
+    assert "1 records" not in page
+    assert "2026-10-17 15:40 UTC" in page and "2026-10-17 09:05 UTC" in page
