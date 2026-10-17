@@ -1562,13 +1562,13 @@ def _runs_table(items: list[dict], currency: str) -> FT:
                  Tbody(*rows), cls="data-table", id="fa-runs")
 
 
-async def _hx_write(token: str, method: str, path: str, body: dict, done: str) -> Response:
-    """A plain write from a small form: on success go to ``done`` with a toast, else say why."""
+async def _hx_write(token: str, method: str, path: str, body: dict, done: str, said: str) -> Response:
+    """A plain write from a small form: on success go to ``done`` with a toast that ``said`` what changed, else say why."""
     try:
         await api.fixed_assets_send(token, method, path, body)
     except APIError as e:
         return Response(headers=toast_header(_error_text(e), "error", persist=True))
-    return Response(headers={"HX-Redirect": done, **toast_header(t("fixed_assets.done"))})
+    return Response(headers={"HX-Redirect": done, **toast_header(said)})
 
 
 def _class_select(classes: list[dict], value: str = "") -> FT:
@@ -2185,7 +2185,7 @@ def setup_ui_routes(app) -> None:
         if step == "review":
             return _preview(action, result, currency)
         return Response(headers={"HX-Redirect": done_href(result, form),
-                                 **toast_header(t("fixed_assets.done"))})
+                                 **toast_header(t(f"fixed_assets.toast.{action.replace('-', '_')}"))})
 
     @app.get("/fixed-assets/assets/new")
     async def new_asset_page(request: Request, kind: str = "opening"):
@@ -2367,7 +2367,7 @@ def setup_ui_routes(app) -> None:
         form = await request.form()
         return await _hx_write(token, "POST", f"/assets/{quote(asset_id, safe=':')}/skip",
                                {"month": str(form.get("month") or ""), "reason": str(form.get("reason") or "")},
-                               f"/fixed-assets/assets/{asset_id}")
+                               f"/fixed-assets/assets/{asset_id}", t("fixed_assets.toast.month_skipped"))
 
     @app.delete("/fixed-assets/assets/{asset_id}/skip/{month}")
     async def withdraw_skip(request: Request, asset_id: str, month: str):
@@ -2375,7 +2375,7 @@ def setup_ui_routes(app) -> None:
         if not token:
             return Response(status_code=401)
         return await _hx_write(token, "DELETE", f"/assets/{quote(asset_id, safe=':')}/skip/{quote(month, safe='')}",
-                               {}, f"/fixed-assets/assets/{asset_id}")
+                               {}, f"/fixed-assets/assets/{asset_id}", t("fixed_assets.toast.skip_withdrawn"))
 
     @app.post("/fixed-assets/assets/{asset_id}/readings")
     async def record_reading(request: Request, asset_id: str):
@@ -2385,7 +2385,7 @@ def setup_ui_routes(app) -> None:
         form = await request.form()
         return await _hx_write(token, "POST", f"/assets/{quote(asset_id, safe=':')}/readings",
                                {"period": str(form.get("period") or ""), "units": str(form.get("units") or "")},
-                               f"/fixed-assets/assets/{asset_id}")
+                               f"/fixed-assets/assets/{asset_id}", t("fixed_assets.toast.reading_recorded"))
 
     @app.post("/fixed-assets/first-period")
     async def confirm_first_period(request: Request):
@@ -2396,7 +2396,8 @@ def setup_ui_routes(app) -> None:
         back = str(form.get("back") or "")
         return await _hx_write(token, "PATCH", "/settings",
                                {"first_managed_period": str(form.get("first_managed_period") or "")},
-                               back if back.startswith("/fixed-assets/") else "/fixed-assets")
+                               back if back.startswith("/fixed-assets/") else "/fixed-assets",
+                               t("fixed_assets.toast.first_period_confirmed"))
 
     @app.get("/fixed-assets/reconciliation")
     async def reconciliation_page(request: Request, at: str = ""):
@@ -2437,7 +2438,7 @@ def setup_ui_routes(app) -> None:
         form = await request.form()
         return await _hx_write(token, "POST", "/reconciliation/acknowledge",
                                {k: str(form.get(k) or "") for k in ("key", "amount", "state", "reason", "effect")},
-                               "/fixed-assets/reconciliation")
+                               "/fixed-assets/reconciliation", t("fixed_assets.toast.difference_noted"))
 
     @app.get("/fixed-assets/opening")
     async def opening_page(request: Request):
@@ -2470,7 +2471,9 @@ def setup_ui_routes(app) -> None:
                                         {k: True for k in ("keep_open", "reopen") if form.get(k)})
         except APIError as e:
             return _error_box(e)
-        return Response(headers={"HX-Redirect": "/fixed-assets/opening", **toast_header(t("fixed_assets.done"))})
+        said = "reopen" if form.get("reopen") else "keep_open" if form.get("keep_open") else "finish"
+        return Response(headers={"HX-Redirect": "/fixed-assets/opening",
+                                 **toast_header(t(f"fixed_assets.toast.opening_{said}"))})
 
     @app.get("/fixed-assets/runs")
     async def runs_page(request: Request):
@@ -2913,7 +2916,7 @@ def setup_ui_routes(app) -> None:
         found = done.get("impairment")
         if not found:
             return Response(headers={"HX-Redirect": f"/fixed-assets/assets/{asset_id}",
-                                     **toast_header(t("fixed_assets.done"))})
+                                     **toast_header(t("fixed_assets.toast.review_recorded"))})
         params = {"op": "impairment", "date": found["date"], "value": found["recoverable_amount"],
                   "basis": found["basis"]}
         return Response(headers={"HX-Redirect": f"/fixed-assets/assets/{asset_id}/remeasure?{urlencode(params)}",
@@ -2926,7 +2929,7 @@ def setup_ui_routes(app) -> None:
             return Response(status_code=401)
         return await _hx_write(token, "POST", f"/assets/{quote(asset_id, safe=':')}/reviews/"
                                               f"{quote(review_id, safe=':')}/withdraw", {},
-                               f"/fixed-assets/assets/{asset_id}")
+                               f"/fixed-assets/assets/{asset_id}", t("fixed_assets.toast.review_withdrawn"))
 
     @app.get("/fixed-assets/reviews")
     async def reviews_page(request: Request):
@@ -3117,7 +3120,8 @@ def setup_ui_routes(app) -> None:
         except ValueError:
             copies = []
         return await _hx_write(token, "POST", f"/classes/{quote(class_id, safe=':')}/valuer-report/remove",
-                               {"files": copies}, f"/fixed-assets/classes/{class_id}/revalue")
+                               {"files": copies}, f"/fixed-assets/classes/{class_id}/revalue",
+                               t("fixed_assets.toast.valuer_report_removed"))
 
     @app.post("/fixed-assets/dispose/selected")
     async def dispose_selected(request: Request):
@@ -3260,7 +3264,7 @@ def setup_ui_routes(app) -> None:
         if not token:
             return Response(status_code=401)
         return await _hx_write(token, "POST", f"/corrections/{quote(correction_id, safe=':')}/withdraw", {},
-                               f"/fixed-assets/corrections/{correction_id}")
+                               f"/fixed-assets/corrections/{correction_id}", t("fixed_assets.toast.correction_withdrawn"))
 
     @app.get("/fixed-assets/classes/{class_id}/apply")
     async def apply_class_page(request: Request, class_id: str):
@@ -3335,7 +3339,8 @@ def setup_ui_routes(app) -> None:
         form = await request.form()
         body = _tax_book_body(form, schema)
         return await _hx_write(token, "PATCH", f"/tax-books/{asset_id}/{regime}", body,
-                               f"/fixed-assets/tax-books?{urlencode({'regime': regime, 'year': year})}")
+                               f"/fixed-assets/tax-books?{urlencode({'regime': regime, 'year': year})}",
+                               t("fixed_assets.toast.tax_book_saved"))
 
     @app.post("/fixed-assets/tax-years/{regime}/{year}/{action}")
     async def tax_year_action(request: Request, regime: str, year: int, action: str):
@@ -3347,7 +3352,8 @@ def setup_ui_routes(app) -> None:
         form = await request.form()
         body = {"reason": str(form.get("reason") or "")} if action == "reopen" else {}
         return await _hx_write(token, "POST", f"/tax-years/{regime}/{year}/{action}", body,
-                               f"/fixed-assets/tax-books?{urlencode({'regime': regime, 'year': year})}")
+                               f"/fixed-assets/tax-books?{urlencode({'regime': regime, 'year': year})}",
+                               t(f"fixed_assets.toast.tax_year_{action}"))
 
     async def _year_end(token: str, year: int) -> tuple[dict, list[dict], str, dict, int]:
         """The year end of ``year``, or of last year when none is asked for, with the year it is."""
@@ -3422,7 +3428,7 @@ def setup_ui_routes(app) -> None:
         form = await request.form()
         return await _hx_write(token, "POST", f"/year-end/{year}/marks",
                                {k: str(form.get(k) or "") for k in ("key", "state", "reason", "effect")},
-                               f"/fixed-assets/year-end?year={year}")
+                               f"/fixed-assets/year-end?year={year}", t("fixed_assets.toast.year_end_noted"))
 
     @app.get("/settings/fixed-assets")
     async def settings_page(request: Request):

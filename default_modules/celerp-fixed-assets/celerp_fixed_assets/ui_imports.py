@@ -376,7 +376,7 @@ def setup_import_routes(app) -> None:
             return await _review(token, ref, notice=_error_text(e))
         import_stage.delete_ref(ref)
         return Response("", headers={"HX-Redirect": _batch_href(result["batch"]["id"]),
-                                     **toast_header(t("fixed_assets.done"))})
+                                     **toast_header(t("fixed_assets.toast.imported"))})
 
     @app.get("/fixed-assets/imports/{batch_id}")
     async def import_batch_page(request: Request, batch_id: str):

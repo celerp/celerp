@@ -3,6 +3,7 @@
 """The fixed assets pages, driven the way a user drives them, against the real API."""
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from decimal import Decimal
@@ -23,14 +24,23 @@ def _fingerprint(html: str) -> str:
     return found.group(1)
 
 
-async def _review_and_confirm(ui, action: str, form: dict) -> str:
-    """Review shows the journal lines; Confirm does what was reviewed. Returns where it leads."""
+async def _confirmed(ui, action: str, form: dict):
+    """Review shows the journal lines; Confirm does what was reviewed. Returns Confirm's response."""
     form = {**form, "idempotency_key": str(uuid.uuid4())}
     review = await ui.post(f"/fixed-assets/op/{action}/review", data=form)
     assert review.status_code == 200 and t("fixed_assets.confirm") in review.text, review.text
     done = await ui.post(f"/fixed-assets/op/{action}/confirm", data={**form, "fingerprint": _fingerprint(review.text)})
     assert done.status_code == 200 and "HX-Redirect" in done.headers, done.text
-    return done.headers["HX-Redirect"]
+    return done
+
+
+async def _review_and_confirm(ui, action: str, form: dict) -> str:
+    """Where a confirmed operation leads."""
+    return (await _confirmed(ui, action, form)).headers["HX-Redirect"]
+
+
+def _toast(response) -> str:
+    return json.loads(response.headers["HX-Trigger"])["celerpToast"]["message"]
 
 
 async def _demo(ui) -> None:
@@ -641,6 +651,23 @@ async def test_u36_a_sale_invoice_line_shows_its_price_and_total_as_money(owner_
     # The blank add-a-line row holds "0"; the sale's own line is the only other one.
     assert [v for v in _line_inputs(page, 'data-name="unit_price"') if v != "0"] == ["9000.00"]
     assert [v for v in _line_inputs(page, 'data-name="line_total"') if v != "0"] == ["9000.00"]
+
+
+async def test_u39_a_toast_says_what_changed(owner_ui):
+    car = await _managed_car(owner_ui)
+    added = await _confirmed(owner_ui, "add-to-asset", {"asset_id": car, "kind": "improvement", "amount": "1200",
+                                                        "credit_account": "3100", "date": "2026-09-15"})
+    assert _toast(added) == t("fixed_assets.toast.add_to_asset") != "fixed_assets.toast.add_to_asset"
+    reminded = await owner_ui.post(f"/fixed-assets/assets/{car}/reminders",
+                                   data={"kind": "maintenance", "due": "2026-12-01", "detail": "Oil change"})
+    assert _toast(reminded) == t("fixed_assets.toast.reminder_added") != "fixed_assets.toast.reminder_added"
+
+
+async def test_u39_every_operation_has_its_own_toast():
+    from celerp_fixed_assets.ui_routes import _OPERATIONS
+    said = {action: t(f"fixed_assets.toast.{action.replace('-', '_')}") for action in _OPERATIONS}
+    assert not [a for a, text in said.items() if text.startswith("fixed_assets.")], said
+    assert len(set(said.values())) == len(said), said
 
 
 async def test_u38_a_sale_credit_note_names_and_links_the_invoice_it_credits(owner_ui):

@@ -237,7 +237,8 @@ def setup_upkeep_routes(app) -> None:
         body[KINDS.get(kind, "work")] = _form_text(form, "detail")
         if kind == "insurance":
             body.update({k: _form_text(form, k) for k in ("policy", "insured_value")})
-        return await _hx_write(token, "POST", f"/assets/{_rid(asset_id)}/reminders", body, _back(asset_id))
+        return await _hx_write(token, "POST", f"/assets/{_rid(asset_id)}/reminders", body, _back(asset_id),
+                               t("fixed_assets.toast.reminder_added"))
 
     async def _reminder_write(request: Request, reminder_id: str, action: str, fields: tuple[str, ...]):
         token = _token(request)
@@ -249,7 +250,8 @@ def setup_upkeep_routes(app) -> None:
         except APIError as e:
             return Response(headers=_toast_error(e))
         return await _hx_write(token, "POST", f"/reminders/{_rid(reminder_id)}/{action}",
-                               {k: _form_text(form, k) for k in fields}, _back(asset_id))
+                               {k: _form_text(form, k) for k in fields}, _back(asset_id),
+                               t(f"fixed_assets.toast.reminder_{action}"))
 
     @app.post("/fixed-assets/reminders/{reminder_id}/done")
     async def reminder_done(request: Request, reminder_id: str):
@@ -321,7 +323,7 @@ def setup_upkeep_routes(app) -> None:
         form = await request.form()
         return await _hx_write(token, "POST", f"/assets/{_rid(asset_id)}/maintenance",
                                {k: _form_text(form, k) for k in ("date", "work", "by", "next_due", "every_months")},
-                               _back(asset_id))
+                               _back(asset_id), t("fixed_assets.toast.entry_added"))
 
     async def _entry_write(request: Request, maint_id: str, action: str):
         token = _token(request)
@@ -331,7 +333,8 @@ def setup_upkeep_routes(app) -> None:
             asset_id = await _asset_of(token, f"/maintenance/{_rid(maint_id)}")
         except APIError as e:
             return Response(headers=_toast_error(e))
-        return await _hx_write(token, "POST", f"/maintenance/{_rid(maint_id)}/{action}", {}, _back(asset_id))
+        return await _hx_write(token, "POST", f"/maintenance/{_rid(maint_id)}/{action}", {}, _back(asset_id),
+                               t(f"fixed_assets.toast.entry_{action}"))
 
     @app.post("/fixed-assets/maintenance/{maint_id}/remove")
     async def entry_remove(request: Request, maint_id: str):
@@ -355,7 +358,7 @@ def setup_upkeep_routes(app) -> None:
             entry = await api.fixed_assets_form(token, "POST", f"/maintenance/{_rid(maint_id)}/files", {}, files=payload)
         except APIError as e:
             return Response(headers=_toast_error(e))
-        return Response(headers={"HX-Redirect": _back(entry["asset_id"]), **toast_header(t("fixed_assets.done"))})
+        return Response(headers={"HX-Redirect": _back(entry["asset_id"]), **toast_header(t("fixed_assets.toast.file_attached"))})
 
     @app.get("/fixed-assets/maintenance/{maint_id}/field/{field}/edit")
     async def entry_field_edit(request: Request, maint_id: str, field: str):

@@ -234,7 +234,8 @@ def setup_physical_routes(app) -> None:
         token = _token(request)
         if not token:
             return Response(status_code=401)
-        return await _hx_write(token, "POST", f"/mine/{quote(asset_id, safe=':')}/confirm", {}, "/fixed-assets/mine")
+        return await _hx_write(token, "POST", f"/mine/{quote(asset_id, safe=':')}/confirm", {}, "/fixed-assets/mine",
+                               t("fixed_assets.toast.mine_confirmed"))
 
     @app.post("/fixed-assets/mine/{asset_id}/problems")
     async def mine_problem(request: Request, asset_id: str):
@@ -308,7 +309,8 @@ def setup_physical_routes(app) -> None:
         token = _token(request)
         if not token:
             return Response(status_code=401)
-        return await _hx_write(token, "DELETE", f"/checks/{quote(check_id, safe=':')}", {}, _CHECKS)
+        return await _hx_write(token, "DELETE", f"/checks/{quote(check_id, safe=':')}", {}, _CHECKS,
+                               t("fixed_assets.toast.check_removed"))
 
     async def _not_seen(token: str, since: str) -> list[dict]:
         return (await api.fixed_assets_get(token, "/checks/not-seen", {"since": since}))["items"]
