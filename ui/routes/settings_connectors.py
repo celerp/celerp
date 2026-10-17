@@ -1422,6 +1422,8 @@ def setup_routes(app):
         if not is_https_origin(address):
             return Span(t("accountant_access.address_invalid", lang),
                         cls="flash flash--warning")
+        if not form.getlist("scopes"):
+            return Span(t("accountant_access.no_scopes", lang), cls="flash flash--warning")
         try:
             source, source_name = parse_pairing_code(form.get("pairing_code"))
             source_id = str(source)

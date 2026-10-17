@@ -50,6 +50,7 @@
   "accountant_access.from_posted": "Gebucht mit Datum {date}.",
   "accountant_access.give_code": "Kopieren Sie diesen Code und senden Sie ihn an Ihren Buchhalter. Er fügt ihn ein, um einen Schlüssel für dieses Unternehmen auszustellen, sodass niemand eine Unternehmens-ID eintippen muss.",
   "accountant_access.invalid": "Prüfen Sie den Kopplungscode und die ausgewählten Berechtigungen.",
+  "accountant_access.no_scopes": "Wählen Sie mindestens eine Art von Datensatz, die dieser Mandant senden soll.",
   "accountant_access.issue": "Kopplungslink erstellen",
   "accountant_access.label": "Beschreibung",
   "accountant_access.label_example": "Mandantenbuchhaltung",

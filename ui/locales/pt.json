@@ -50,6 +50,7 @@
   "accountant_access.from_posted": "Registrado com data de {date}.",
   "accountant_access.give_code": "Copie este código e envie-o ao seu contador. Ele o cola para emitir uma chave para esta empresa, sem precisar digitar um ID de empresa.",
   "accountant_access.invalid": "Verifique o código de pareamento e as permissões selecionadas.",
+  "accountant_access.no_scopes": "Escolha pelo menos um tipo de registro para este cliente enviar.",
   "accountant_access.issue": "Criar link de emparelhamento",
   "accountant_access.label": "Descrição",
   "accountant_access.label_example": "Contabilidade do cliente",

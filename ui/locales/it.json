@@ -50,6 +50,7 @@
   "accountant_access.from_posted": "Registrata in data {date}.",
   "accountant_access.give_code": "Copia questo codice e invialo al tuo commercialista. Lo incolla per emettere una chiave per questa azienda, senza digitare un ID azienda.",
   "accountant_access.invalid": "Controlla il codice di abbinamento e le autorizzazioni selezionate.",
+  "accountant_access.no_scopes": "Scegli almeno un tipo di record che questo cliente deve inviare.",
   "accountant_access.issue": "Crea link di abbinamento",
   "accountant_access.label": "Descrizione",
   "accountant_access.label_example": "Contabilità del cliente",

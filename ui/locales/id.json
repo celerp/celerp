@@ -50,6 +50,7 @@
   "accountant_access.from_posted": "Diposting, tanggal {date}.",
   "accountant_access.give_code": "Salin kode ini dan kirimkan ke akuntan Anda. Akuntan menempelkannya untuk menerbitkan kunci bagi perusahaan ini, jadi tidak ada yang perlu mengetik ID perusahaan.",
   "accountant_access.invalid": "Periksa kode pemasangan dan izin yang dipilih.",
+  "accountant_access.no_scopes": "Pilih setidaknya satu jenis catatan yang akan dikirim klien ini.",
   "accountant_access.issue": "Buat tautan pemasangan",
   "accountant_access.label": "Deskripsi",
   "accountant_access.label_example": "Pembukuan klien",

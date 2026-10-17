@@ -50,6 +50,7 @@
   "accountant_access.from_posted": "Posted, dated {date}.",
   "accountant_access.give_code": "Copy this code and send it to your accountant. They paste it to issue a key for this company, so nobody has to type a company ID.",
   "accountant_access.invalid": "Check the pairing code and selected permissions.",
+  "accountant_access.no_scopes": "Choose at least one kind of record for this client to send.",
   "accountant_access.issue": "Create pairing link",
   "accountant_access.label": "Description",
   "accountant_access.label_example": "Client books",

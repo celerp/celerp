@@ -50,6 +50,7 @@
   "accountant_access.from_posted": "تم الترحيل بتاريخ {date}.",
   "accountant_access.give_code": "انسخ هذا الرمز وأرسله إلى محاسبك. يلصقه لإصدار مفتاح لهذه الشركة، فلا يحتاج أحد إلى كتابة معرّف الشركة.",
   "accountant_access.invalid": "تحقق من رمز الاقتران والأذونات المحددة.",
+  "accountant_access.no_scopes": "اختر نوعًا واحدًا على الأقل من السجلات ليرسله هذا العميل.",
   "accountant_access.issue": "إنشاء رابط اقتران",
   "accountant_access.label": "الوصف",
   "accountant_access.label_example": "دفاتر العميل",
