@@ -4023,6 +4023,8 @@
   "system_recovery.imported": "Copia de seguridad de {company} importada.",
   "system_recovery.signed_out": "Se ha cerrado la sesión de todos. Inicie sesión con una cuenta de la instalación restaurada.",
   "system_recovery.failed_signed_out": "Se ha cerrado la sesión de todos. Inicie sesión de nuevo para continuar.",
+  "system_recovery.no_migration_history": "Esta copia de seguridad no registra las actualizaciones de base de datos por las que pasaron sus datos, así que Celerp no puede ponerla al día de forma segura. No se restauró. No se cambió nada. Elija una copia de seguridad exportada desde Celerp.",
+  "system_recovery.unknown_migration": "Esta copia de seguridad la actualizó por última vez una versión de Celerp que esta copia no conoce (revisión de base de datos {revision}), así que no se restauró. No se cambió nada. Actualice Celerp y después restáurela.",
   "system_recovery.safety_saved": "Se guardó una copia de seguridad de la instalación anterior en {path}.",
   "system_recovery.safety_failed_confirm": "No se ha cambiado nada. Puede restaurar sin copia de seguridad, pero no se podrá deshacer.",
   "system_recovery.continue_without_safety": "Restaurar sin copia de seguridad",

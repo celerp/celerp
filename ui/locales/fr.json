@@ -4023,6 +4023,8 @@
   "system_recovery.imported": "Sauvegarde de {company} importée.",
   "system_recovery.signed_out": "Tout le monde a été déconnecté. Connectez-vous avec un compte de l'installation restaurée.",
   "system_recovery.failed_signed_out": "Tout le monde a été déconnecté. Reconnectez-vous pour continuer.",
+  "system_recovery.no_migration_history": "Cette sauvegarde ne garde aucune trace des mises à jour de base de données subies par ses données, Celerp ne peut donc pas la mettre à jour en toute sécurité. Elle n'a pas été restaurée. Rien n'a été modifié. Choisissez une sauvegarde exportée depuis Celerp.",
+  "system_recovery.unknown_migration": "Cette sauvegarde a été mise à jour pour la dernière fois par une version de Celerp que cette copie ne connaît pas (révision de base de données {revision}), elle n'a donc pas été restaurée. Rien n'a été modifié. Mettez Celerp à jour, puis restaurez-la.",
   "system_recovery.safety_saved": "Une copie de sécurité de l'installation précédente a été enregistrée dans {path}.",
   "system_recovery.safety_failed_confirm": "Rien n'a été modifié. Vous pouvez restaurer sans copie de sécurité, mais cela ne pourra pas être annulé.",
   "system_recovery.continue_without_safety": "Restaurer sans copie de sécurité",

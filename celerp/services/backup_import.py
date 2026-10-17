@@ -401,6 +401,28 @@ def _stage_members(archive: Path, root: Path) -> None:
         raise ValueError(t("error.restore_incomplete"))
 
 
+def _refuse_unrecorded_history(dump: Path) -> None:
+    """ValueError for a dump whose migration history is missing or names a revision this
+    copy does not have: its schema can then only be guessed, and a wrong guess fails the
+    recovery after the installation has been replaced. A Celerp install records its
+    history from its first start."""
+    from alembic.script import ScriptDirectory
+    from alembic.util import CommandError
+    from celerp.alembic_config import build_alembic_config
+    from celerp.services.backup import recorded_migrations
+    revisions = recorded_migrations(dump)
+    if not revisions:
+        raise ValueError(t("system_recovery.no_migration_history"))
+    script = ScriptDirectory.from_config(build_alembic_config())
+    for revision in revisions:
+        try:
+            known = script.get_revision(revision) is not None
+        except CommandError:
+            known = False
+        if not known:
+            raise ValueError(t("system_recovery.unknown_migration", revision=revision))
+
+
 def _prepare_sync(path: Path) -> PreparedRecovery:
     from celerp.config import settings
     from celerp.services.backup import check_backup_dump, write_restore_script
@@ -414,6 +436,7 @@ def _prepare_sync(path: Path) -> PreparedRecovery:
         digest = _sha256(root / _STAGED_ARCHIVE)
         _stage_members(root / _STAGED_ARCHIVE, root)
         check_backup_dump(root / _STAGED_DUMP, settings.database_url)
+        _refuse_unrecorded_history(root / _STAGED_DUMP)
         try:
             write_restore_script(root / _STAGED_DUMP, root / _STAGED_SCRIPT)
         except RuntimeError as exc:

@@ -4023,6 +4023,8 @@
   "system_recovery.imported": "Đã nhập bản sao lưu từ {company}.",
   "system_recovery.signed_out": "Tất cả mọi người đã bị đăng xuất. Vui lòng đăng nhập bằng một tài khoản từ bản cài đặt đã khôi phục.",
   "system_recovery.failed_signed_out": "Tất cả mọi người đã bị đăng xuất. Vui lòng đăng nhập lại để tiếp tục.",
+  "system_recovery.no_migration_history": "Bản sao lưu này không có bản ghi các lần cập nhật cơ sở dữ liệu mà dữ liệu của nó đã trải qua, nên Celerp không thể cập nhật nó một cách an toàn. Bản sao lưu chưa được khôi phục. Không có gì bị thay đổi. Hãy chọn một bản sao lưu được xuất từ Celerp.",
+  "system_recovery.unknown_migration": "Bản sao lưu này được cập nhật lần cuối bởi một phiên bản Celerp mà bản này không biết (bản sửa đổi cơ sở dữ liệu {revision}), nên chưa được khôi phục. Không có gì bị thay đổi. Hãy cập nhật Celerp rồi khôi phục lại.",
   "system_recovery.safety_saved": "Bản sao an toàn của bản cài đặt trước đã được lưu tại {path}.",
   "system_recovery.safety_failed_confirm": "Chưa có gì thay đổi. Bạn có thể khôi phục mà không có bản sao an toàn, nhưng việc đó không thể hoàn tác.",
   "system_recovery.continue_without_safety": "Khôi phục không có bản sao an toàn",

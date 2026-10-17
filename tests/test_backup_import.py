@@ -411,6 +411,7 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
         monkeypatch.setattr(backup_import, name, _none)
     monkeypatch.setattr(backup_import, "make_safety_archive", _safety)
     monkeypatch.setattr("celerp.services.backup.check_backup_dump", lambda path, url: None)
+    monkeypatch.setattr(backup_import, "_refuse_unrecorded_history", lambda path: None)
     monkeypatch.setattr("celerp.services.backup.write_restore_script", shutil.copyfile)
     monkeypatch.setattr(backup_import, "_apply_modules", _apply)
     monkeypatch.setattr("celerp.modules.registry.load_set", _every_company)

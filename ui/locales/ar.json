@@ -4023,6 +4023,8 @@
   "system_recovery.imported": "تم استيراد النسخة الاحتياطية من {company}.",
   "system_recovery.signed_out": "تم تسجيل خروج الجميع. قم بتسجيل الدخول بحساب من التثبيت المستعاد.",
   "system_recovery.failed_signed_out": "تم تسجيل خروج الجميع. سجّل الدخول مرة أخرى للمتابعة.",
+  "system_recovery.no_migration_history": "لا تحتوي هذه النسخة الاحتياطية على سجل لتحديثات قاعدة البيانات التي مرت بها بياناتها، لذا لا يستطيع Celerp تحديثها بأمان. لم تتم استعادتها. لم يتغير شيء. اختر نسخة احتياطية مصدّرة من Celerp.",
+  "system_recovery.unknown_migration": "آخر تحديث لهذه النسخة الاحتياطية كان بإصدار من Celerp لا تعرفه هذه النسخة (مراجعة قاعدة البيانات {revision})، لذا لم تتم استعادتها. لم يتغير شيء. حدّث Celerp ثم استعدها.",
   "system_recovery.safety_saved": "تم حفظ نسخة أمان من التثبيت السابق في {path}.",
   "system_recovery.safety_failed_confirm": "لم يتغيّر شيء. يمكنك الاستعادة دون نسخة أمان، لكن لا يمكن التراجع عن ذلك.",
   "system_recovery.continue_without_safety": "الاستعادة بدون نسخة أمان",

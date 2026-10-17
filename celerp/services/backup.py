@@ -380,6 +380,17 @@ def check_backup_dump(dump_path: Path, database_url: str,
     _check_server_objects(dump_path, database_url, source)
 
 
+_HISTORY_ROWS = re.compile(r"^COPY public\.alembic_version \(version_num\) FROM stdin;\n(.*?)^\\\.$", re.M | re.S)
+
+
+def recorded_migrations(dump_path: Path) -> list[str]:
+    """The migration revisions a pg_dump archive records in its ``alembic_version`` table;
+    empty when it has none, as a database built without migrations has."""
+    script = _text(_run_tool([_find_pg_tool("pg_restore"), "--data-only", "-t", "alembic_version", "-f", "-",
+                              dump_path.name], None, timeout=60, cwd=dump_path.parent))
+    return [row for match in _HISTORY_ROWS.findall(script) for row in match.splitlines() if row]
+
+
 # pg_dump writes a policy's roles, unless it is for PUBLIC, as quoted identifiers after TO.
 _IDENTIFIER = r'(?:"(?:[^"]|"")*"|[^\s",.;()]+)'
 _POLICY_ROLES = re.compile(rf"^CREATE POLICY ({_IDENTIFIER}) ON {_IDENTIFIER}\.({_IDENTIFIER})"

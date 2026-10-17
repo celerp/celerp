@@ -4023,6 +4023,8 @@
   "system_recovery.imported": "ከ{company} የተገኘው ምትኬ ገብቷል።",
   "system_recovery.signed_out": "ሁሉም ሰው ከመለያ ወጥቷል። ከተመለሰው መጫኛ በሆነ መለያ ይግቡ።",
   "system_recovery.failed_signed_out": "ሁሉም ሰው ከመለያ ወጥቷል። ለመቀጠል እንደገና ይግቡ።",
+  "system_recovery.no_migration_history": "ይህ መጠባበቂያ ውሂቡ ያለፈባቸውን የውሂብ ጎታ ዝማኔዎች መዝገብ የለውም፣ ስለዚህ Celerp በደህና ወቅታዊ ማድረግ አይችልም። ወደነበረበት አልተመለሰም። ምንም አልተለወጠም። ከCelerp የተላከ መጠባበቂያ ይምረጡ።",
+  "system_recovery.unknown_migration": "ይህ መጠባበቂያ ለመጨረሻ ጊዜ የተዘመነው ይህ ቅጂ በማያውቀው የCelerp ስሪት ነው (የውሂብ ጎታ ክለሳ {revision})፣ ስለዚህ ወደነበረበት አልተመለሰም። ምንም አልተለወጠም። Celerpን ያዘምኑ፣ ከዚያ ወደነበረበት ይመልሱት።",
   "system_recovery.safety_saved": "የቀደመው መጫኛ የደህንነት ቅጂ በ {path} ተቀምጧል።",
   "system_recovery.safety_failed_confirm": "ምንም አልተቀየረም። ያለ ደኅንነት ቅጂ መመለስ ይችላሉ፣ ነገር ግን ያ ሊቀለበስ አይችልም።",
   "system_recovery.continue_without_safety": "ያለ የደህንነት ቅጂ መልስ",

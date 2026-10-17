@@ -14,6 +14,7 @@ import time
 import psycopg2
 import pytest
 
+from test_helpers import released_migration_history
 from ui.i18n import t
 
 pytestmark = pytest.mark.browser
@@ -60,7 +61,8 @@ def recovery(page, ui_server, api, tmp_path, monkeypatch):
 
     url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
     names = _company_names(url)
-    backup.dump_database(settings.database_url, tmp_path / "database.dump")
+    with released_migration_history(settings.database_url):
+        backup.dump_database(settings.database_url, tmp_path / "database.dump")
     dump = (tmp_path / "database.dump").read_bytes()
     _rename_companies(url, _RENAMED)
 
@@ -167,7 +169,8 @@ def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
 
     url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
     names = _company_names(url)
-    backup.dump_database(settings.database_url, tmp_path / "database.dump")
+    with released_migration_history(settings.database_url):
+        backup.dump_database(settings.database_url, tmp_path / "database.dump")
     dump = (tmp_path / "database.dump").read_bytes()
     real_reconcile = backup_import._reconcile_schema
     failed = []

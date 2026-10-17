@@ -93,6 +93,7 @@ def _import_internals(monkeypatch, tmp_path, *, safety_error: str | None = None)
     monkeypatch.setattr(backup, "check_backup_dump", lambda path, url: None)
     monkeypatch.setattr(backup, "write_restore_script", shutil.copyfile)
     monkeypatch.setattr(ownership, "connector_maintenance_guard", _guard)
+    monkeypatch.setattr(backup_import, "_refuse_unrecorded_history", lambda path: None)
     for name in ("_reconcile_connectors", "_dispose_engine", "_reconcile_schema",
                  "_clear_restored_connector_state"):
         monkeypatch.setattr(backup_import, name, _none)

@@ -440,3 +440,40 @@ async def ui_get(headers: dict, path: str):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
                                cookies={"celerp_token": token}) as ui:
             return await ui.get(path)
+
+
+@contextmanager
+def released_migration_history(database_url: str = DATABASE_URL):
+    """The database with its migration history recorded at head, as every Celerp install
+    has it from its first start and a create_all test database does not. Afterwards the
+    history the database had before is put back, or none."""
+    import psycopg2
+    from alembic.script import ScriptDirectory
+    from celerp.alembic_config import build_alembic_config
+    head = ScriptDirectory.from_config(build_alembic_config()).get_current_head()
+    conn = psycopg2.connect(database_url.replace("postgresql+asyncpg://", "postgresql://"))
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('public.alembic_version') IS NOT NULL")
+        had = cur.fetchone()[0]
+        before = []
+        if had:
+            cur.execute("SELECT version_num FROM alembic_version")
+            before = [row[0] for row in cur.fetchall()]
+        cur.execute("CREATE TABLE IF NOT EXISTS alembic_version "
+                    "(version_num varchar(32) NOT NULL PRIMARY KEY)")
+        cur.execute("DELETE FROM alembic_version")
+        cur.execute("INSERT INTO alembic_version VALUES (%s)", (head,))
+    try:
+        yield head
+    finally:
+        with conn.cursor() as cur:
+            if had:
+                cur.execute("CREATE TABLE IF NOT EXISTS alembic_version "
+                            "(version_num varchar(32) NOT NULL PRIMARY KEY)")
+                cur.execute("DELETE FROM alembic_version")
+                for revision in before:
+                    cur.execute("INSERT INTO alembic_version VALUES (%s)", (revision,))
+            else:
+                cur.execute("DROP TABLE IF EXISTS alembic_version")
+        conn.close()

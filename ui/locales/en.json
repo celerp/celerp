@@ -4023,6 +4023,8 @@
   "system_recovery.imported": "Imported backup from {company}.",
   "system_recovery.signed_out": "Everyone has been signed out. Sign in with an account from the restored installation.",
   "system_recovery.failed_signed_out": "Everyone has been signed out. Sign in again to continue.",
+  "system_recovery.no_migration_history": "This backup has no record of the database updates its data went through, so Celerp cannot bring it up to date safely. It was not restored. Nothing was changed. Choose a backup exported from Celerp.",
+  "system_recovery.unknown_migration": "This backup was last updated by a version of Celerp this copy does not know (database revision {revision}), so it was not restored. Nothing was changed. Update Celerp, then restore it.",
   "system_recovery.safety_saved": "A safety copy of the previous installation was saved to {path}.",
   "system_recovery.safety_failed_confirm": "Nothing has been changed. You can restore without a safety copy, but that can't be undone.",
   "system_recovery.continue_without_safety": "Restore without safety copy",

@@ -4023,6 +4023,8 @@
   "system_recovery.imported": "Sicherung von {company} importiert.",
   "system_recovery.signed_out": "Alle wurden abgemeldet. Melden Sie sich mit einem Konto aus der wiederhergestellten Installation an.",
   "system_recovery.failed_signed_out": "Alle wurden abgemeldet. Melden Sie sich erneut an, um fortzufahren.",
+  "system_recovery.no_migration_history": "Dieses Backup enthält keinen Nachweis der Datenbank-Aktualisierungen, die seine Daten durchlaufen haben, daher kann Celerp es nicht sicher auf den aktuellen Stand bringen. Es wurde nicht wiederhergestellt. Es wurde nichts geändert. Wählen Sie ein aus Celerp exportiertes Backup.",
+  "system_recovery.unknown_migration": "Dieses Backup wurde zuletzt von einer Celerp-Version aktualisiert, die diese Kopie nicht kennt (Datenbankrevision {revision}), daher wurde es nicht wiederhergestellt. Es wurde nichts geändert. Aktualisieren Sie Celerp und stellen Sie es dann wieder her.",
   "system_recovery.safety_saved": "Eine Sicherheitskopie der vorherigen Installation wurde unter {path} gespeichert.",
   "system_recovery.safety_failed_confirm": "Es wurde nichts geändert. Sie können ohne Sicherheitskopie wiederherstellen, aber das lässt sich nicht rückgängig machen.",
   "system_recovery.continue_without_safety": "Ohne Sicherheitskopie wiederherstellen",
