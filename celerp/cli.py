@@ -1383,34 +1383,74 @@ def _supervise(cfg: dict, release_lock) -> None:
 @click.option("--email", prompt="User email", help="Email of the user account to reset.")
 @click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True, help="New password.")
 def reset_password(email: str, password: str) -> None:
-    """Reset a user's password directly via the database."""
+    """Reset a user's password from a terminal on this computer.
+
+    The desktop's database listens on a new port each start, so when the command runs
+    with the app's data folder (CELERP_DATA_DIR) it uses the address the app published
+    there; otherwise the configured database."""
     try:
         validate_password(password)
     except ValueError:
         click.echo(f"Error: password must be at least {MIN_PASSWORD_LENGTH} characters.", err=True)
         sys.exit(1)
-    cfg = _read_config()
-    if not cfg:
-        click.echo("Not initialized. Run `celerp init` first.", err=True)
-        sys.exit(1)
-    ensure_database(cfg)
-    db_url = cfg["database"]["url"]
+    published = Path(os.environ.get("CELERP_DATA_DIR") or "") / "database-url"
+    if os.environ.get("CELERP_DATA_DIR") and published.is_file():
+        db_url = published.read_text(encoding="utf-8").strip()
+    else:
+        cfg = _read_config()
+        if not cfg:
+            click.echo("Not initialized. Run `celerp init` first.", err=True)
+            sys.exit(1)
+        ensure_database(cfg)
+        db_url = cfg["database"]["url"]
+    from sqlalchemy import exc as sa_exc
+
+    from celerp.migrations.compatibility import IncompatibleDatabase
+
     try:
-        from sqlalchemy import text
-        from celerp.services.auth import hash_password
-        with _db_engine(db_url) as engine, engine.begin() as conn:
-            row = conn.execute(text("SELECT id, name FROM users WHERE email = :e"), {"e": email}).fetchone()
-            if not row:
-                click.echo(f"No user found with email: {email}", err=True)
-                sys.exit(1)
-            conn.execute(
-                text("UPDATE users SET auth_hash = :h, reset_token = NULL, reset_token_expires = NULL WHERE id = :id"),
-                {"h": hash_password(password), "id": row[0]},
-            )
-        click.echo(f"  \u2713 Password reset for {row[1]} ({email})")
-    except Exception as exc:
-        click.echo(f"Error: {exc}", err=True)
+        found = _reset_password_in(db_url, email, password)
+    except IncompatibleDatabase as e:
+        click.echo(f"  ✗ {e}", err=True)
         sys.exit(1)
+    except (OSError, sa_exc.OperationalError, sa_exc.InterfaceError):
+        click.echo("Could not reach the database. Keep Celerp open and run the command again.", err=True)
+        sys.exit(1)
+    if not found:
+        click.echo(f"No user found with email: {email}", err=True)
+        sys.exit(1)
+    click.echo("Password reset. Sign in with the new password.")
+
+
+def _reset_password_in(db_url: str, email: str, password: str) -> bool:
+    """Reset through the shared reset inside this version's fence; whether *email*
+    named an active user."""
+    import asyncio
+    import getpass
+
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from celerp.migrations.compatibility import mutating_scope
+    from celerp.services.password_reset import reset_password as _reset, user_by_email
+
+    async def _run(engine) -> bool:
+        try:
+            async with AsyncSession(engine) as session:
+                user = await user_by_email(session, email)
+                if user is None:
+                    return False
+                await _reset(session, user, password, method="terminal", os_user=getpass.getuser())
+                return True
+        finally:
+            await engine.dispose()
+
+    with mutating_scope(_sync_url(db_url)) as held:
+        engine = create_async_engine(db_url, poolclass=NullPool)
+        held.guard(engine)
+        try:
+            return asyncio.run(_run(engine))
+        finally:
+            held.unguard(engine)
 
 
 @main.command()
