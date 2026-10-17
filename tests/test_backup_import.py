@@ -806,10 +806,12 @@ def test_recovery_marker_is_written_where_a_directory_cannot_be_opened(monkeypat
     """Windows refuses os.open on a directory with PermissionError, so a System Recovery
     there must still record and clear its marker: the directory sync after the rename is
     skipped where the platform cannot do it, never turned into a failed recovery."""
+    from celerp import config_store
     from celerp.config import settings
     from celerp.services import backup_import
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(config_store, "_DIR_FSYNC_SUPPORTED", False)
     real_open = os.open
 
     def _open_like_windows(path, flags, *args, **kwargs):
@@ -822,3 +824,43 @@ def test_recovery_marker_is_written_where_a_directory_cannot_be_opened(monkeypat
     assert backup_import.recovery_incomplete() is True
     backup_import._mark_recovery_finished()
     assert backup_import.recovery_incomplete() is False
+
+
+def _fail_directory_fsync(monkeypatch):
+    """Make every fsync of a directory fail, as a disk error or a filesystem that cannot
+    sync would, while file fsyncs still succeed."""
+    import stat
+    real_fsync = os.fsync
+
+    def _fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(5, "Input/output error")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", _fsync)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="directories are synced only on POSIX")
+def test_recovery_marker_fails_when_its_directory_cannot_be_synced(monkeypatch, tmp_path):
+    """The recovery marker is what brings an interrupted System Recovery back to a whole
+    state, so a recovery must not start on a marker whose rename may not be on disk."""
+    from celerp.config import settings
+    from celerp.services import backup_import
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    _fail_directory_fsync(monkeypatch)
+    with pytest.raises(OSError):
+        backup_import._mark_recovery_started(tmp_path / "target.celerp-backup", [])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="directories are synced only on POSIX")
+def test_attachment_landing_mark_fails_when_its_directory_cannot_be_synced(monkeypatch, tmp_path):
+    """Files are stored only after their landing mark is durable, so a mark that may not
+    survive a crash fails the store instead of leaving files nothing will clean up."""
+    from celerp.config import settings
+    from celerp.services import attachments
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    _fail_directory_fsync(monkeypatch)
+    with pytest.raises(OSError):
+        attachments.mark_landing("c0ffee00-0000-4000-8000-000000000001")

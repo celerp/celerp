@@ -728,14 +728,14 @@ def _write_marker(state: dict) -> None:
         out.flush()
         os.fsync(out.fileno())
     partial.replace(path)
-    fsync_dir(path.parent)
+    fsync_dir(path.parent, strict=True)
 
 
 def _mark_recovery_finished() -> None:
     from celerp.config import settings
     _marker_path().unlink(missing_ok=True)
     (settings.data_dir / RECOVERY_SAFETY_DIR / UNFINISHED_RECOVERY_ARCHIVE).unlink(missing_ok=True)
-    fsync_dir(_marker_path().parent)
+    fsync_dir(_marker_path().parent, strict=True)
 
 
 def _keep_for_retry(prepared: PreparedRecovery) -> Path:

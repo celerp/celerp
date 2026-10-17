@@ -247,7 +247,7 @@ def mark_landing(company_id: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     with open(folder / company_id, "wb") as fh:
         os.fsync(fh.fileno())
-    fsync_dir(folder)
+    fsync_dir(folder, strict=True)
 
 
 def landing_companies() -> list[str]:
