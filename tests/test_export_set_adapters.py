@@ -112,6 +112,16 @@ def test_a_set_missing_a_file_or_holding_a_stranger_names_each_file(tmp_path):
     assert "ChartOfAccounts.csv (Chart of accounts)" in message   # what was recognised
 
 
+def test_an_unreadable_file_is_named_and_not_also_called_missing(tmp_path):
+    files = _set(tmp_path, [*_without("Contacts.csv"), ("Contacts.csv", b"\x81\x8d\x8f\x90\x9d" * 20)])
+    with pytest.raises(ScanError) as caught:
+        _adapter().inspect(files)
+    message = str(caught.value)
+    assert "Contacts.csv could not be read. Export it again and upload the new file." in message
+    assert "? could not be read" not in message
+    assert "Contacts is missing" not in message
+
+
 def test_overlapping_batches_are_refused(tmp_path):
     first = dict(_xero())["Invoices 1.csv"]
     with pytest.raises(ScanError, match="Invoices 1.csv.*Invoices 9.csv"):
