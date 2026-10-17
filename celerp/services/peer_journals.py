@@ -283,6 +283,40 @@ async def _answer(session: AsyncSession, grant, answer: _Answer) -> str:
     return "updated"
 
 
+async def _client_lines(session: AsyncSession, grant, journal: _Journal) -> list[dict]:
+    """The lines of a client's journal as the firm posts them: its contacts and accounts
+    the firm's own, balanced."""
+    from celerp.services.journal_accounts import require_destinations
+    from celerp.services.peer_identity import peer_identity
+
+    company_id, source = grant.company_id, grant.source_company_id
+    entries = []
+    debits = credits = Decimal(0)
+    for line in journal.entries:
+        stored = line.model_dump(exclude_none=True)
+        if line.contact:
+            mapped = await peer_identity(session, target_company=company_id, source_company=source,
+                                         entity_type="contact", source_entity_id=line.contact)
+            if mapped is None:
+                raise HTTPException(409, "A line names a contact that has not been sent yet.")
+            stored["contact"] = mapped
+        debits += Decimal(str(line.debit))
+        credits += Decimal(str(line.credit))
+        entries.append(stored)
+    if debits != credits or debits == 0:
+        raise HTTPException(422, "The journal entry does not balance.")
+    company = await session.get(Company, company_id)
+    placed = await peer_accounts.place(
+        session, company_id=company_id, source_company_id=source,
+        accounts=peer_accounts.parse(journal.accounts), codes=[e["account"] for e in entries],
+        sender=grant.label, receiver=company.name, record=f"the journal {journal.memo or 'entry'}",
+        firm=True)
+    for stored in entries:
+        stored["account"] = placed[stored["account"]]
+    await require_destinations(session, company_id, {e["account"] for e in entries})
+    return entries
+
+
 async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str,
                           source_revision: int, data: dict) -> str:
     """One manual journal entry of the client's, posted once in the firm's copy as the
@@ -290,7 +324,6 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
     the firm's. A reversal of a journal of the firm's is listed in the firm view with Post
     again, and reversing that reversal (Undo) removes it from the list. Also takes the
     client's answer to a journal of the firm's (``{"answer": ...}``)."""
-    from celerp.services.journal_accounts import require_destinations
     from celerp.services.peer_identity import claim_peer_revision, commit_peer_revision, peer_identity
 
     try:
@@ -323,31 +356,6 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
     if journal.status == "void":
         return "skipped"  # voided before it was ever sent: nothing to post
 
-    entries = []
-    debits = credits = Decimal(0)
-    for line in journal.entries:
-        stored = line.model_dump(exclude_none=True)
-        if line.contact:
-            mapped = await peer_identity(session, target_company=company_id, source_company=source,
-                                         entity_type="contact", source_entity_id=line.contact)
-            if mapped is None:
-                raise HTTPException(409, "A line names a contact that has not been sent yet.")
-            stored["contact"] = mapped
-        debits += Decimal(str(line.debit))
-        credits += Decimal(str(line.credit))
-        entries.append(stored)
-    if debits != credits or debits == 0:
-        raise HTTPException(422, "The journal entry does not balance.")
-    company = await session.get(Company, company_id)
-    placed = await peer_accounts.place(
-        session, company_id=company_id, source_company_id=source,
-        accounts=peer_accounts.parse(journal.accounts), codes=[e["account"] for e in entries],
-        sender=grant.label, receiver=company.name, record=f"the journal {journal.memo or 'entry'}",
-        firm=True)
-    for stored in entries:
-        stored["account"] = placed[stored["account"]]
-    await require_destinations(session, company_id, {e["account"] for e in entries})
-
     reverses = origin = None
     if journal.reverses is not None:
         if journal.reverses.origin is not None:
@@ -361,6 +369,17 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
                                            source_entity_id=journal.reverses.journal)
             if reverses is None:
                 raise HTTPException(409, "The journal it reverses has not been sent yet.")
+    if reverses is not None:
+        # A reversal takes the lines it reverses back off the accounts they posted to here,
+        # whatever the client's accounts and roles are now.
+        reversed_state = origin or await _firm_journal(session, company_id, reverses) or {}
+        entries = [{_SWAPPED.get(k, k): v for k, v in line.items()}
+                   for line in reversed_state.get("entries") or []]
+        if sorted(_amount(e) for e in entries) != sorted(
+                _amount(line.model_dump()) for line in journal.entries):
+            raise HTTPException(409, "The reversal does not match the journal it reverses.")
+    else:
+        entries = await _client_lines(session, grant, journal)
     created = {"memo": journal.memo, "ts": journal.ts, "entries": entries, "je_type": "manual",
                "status": "posted",
                "peer_source": {"journal": source_entity_id, "company": str(source)},
