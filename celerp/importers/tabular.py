@@ -41,6 +41,20 @@ MAX_XLSX_UNCOMPRESSED = 50 * 1024 * 1024
 MAX_XLSX_ENTRIES = 4096
 
 
+@dataclass(frozen=True)
+class Limits:
+    """The bounds one read enforces. A single table import reads at the module's
+    bounds; a source export set reads whole ledgers and states its own."""
+    rows: int
+    cells: int
+    file_bytes: int
+    uncompressed: int
+
+
+def _limits(limits: Limits | None) -> Limits:
+    return limits or Limits(MAX_ROWS, MAX_CELLS, MAX_TABLE_BYTES, MAX_XLSX_UNCOMPRESSED)
+
+
 class TabularError(ValueError):
     """A file that cannot be turned into a table. Carries the offending cell
     position (``row``/``column``) for formula errors and the available sheet
@@ -584,12 +598,13 @@ def _rows_to_csv(rows: list[dict], cols: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _enforce_bounds(n_cols: int, n_rows: int) -> None:
-    if n_rows > MAX_ROWS:
-        raise TabularError(t("import.err_too_many_rows", n_rows=n_rows, max=MAX_ROWS))
+def _enforce_bounds(n_cols: int, n_rows: int, limits: Limits | None = None) -> None:
+    bounds = _limits(limits)
+    if n_rows > bounds.rows:
+        raise TabularError(t("import.err_too_many_rows", n_rows=n_rows, max=bounds.rows))
     cells = n_rows * max(n_cols, 1)
-    if cells > MAX_CELLS:
-        raise TabularError(t("import.err_too_many_cells", cells=cells, max=MAX_CELLS))
+    if cells > bounds.cells:
+        raise TabularError(t("import.err_too_many_cells", cells=cells, max=bounds.cells))
 
 
 def _filled_width(line: list[str]) -> int:
@@ -613,11 +628,23 @@ async def read_upload_bytes(upload: Any, limit: int = MAX_TABLE_BYTES) -> bytes:
     return b"".join(chunks)
 
 
-def _csv_lines(text: str) -> list[list[str]]:
+def _csv_lines(text: str, delimiter: str = ",") -> list[list[str]]:
     """Every line of CSV text as cells, BOM stripped."""
     if text.startswith("\ufeff"):
         text = text[1:]
-    return list(csv.reader(io.StringIO(text)))
+    return list(csv.reader(io.StringIO(text), delimiter=delimiter))
+
+
+def delimited_lines(text: str, delimiter: str, limits: Limits) -> list[list[str]]:
+    """Every line of comma or tab separated text as cells, within ``limits``."""
+    lines = _csv_lines(text, delimiter)
+    _enforce_bounds(max((_filled_width(line) for line in lines), default=0), len(lines), limits)
+    return lines
+
+
+def workbook_lines(data: bytes, limits: Limits) -> list[list[str]]:
+    """Every row of a workbook's only filled sheet as cells, within ``limits``."""
+    return _xlsx_lines(data, sheet=None, limits=limits)
 
 
 def _table(lines: list[list[str]], header_row: int) -> tuple[list[str], list[dict]]:
@@ -720,7 +747,7 @@ def _sheet_is_empty(ws) -> bool:
     return True
 
 
-def _xlsx_lines(data: bytes, *, sheet: str | None) -> list[list[str]]:
+def _xlsx_lines(data: bytes, *, sheet: str | None, limits: Limits | None = None) -> list[list[str]]:
     """Every row of one workbook sheet as cells.
 
     A zipfile pre-check bounds the entry count and total uncompressed size
@@ -729,7 +756,8 @@ def _xlsx_lines(data: bytes, *, sheet: str | None) -> list[list[str]]:
     available names. A formula cell raises with its position: formulas and
     external links are never evaluated.
     """
-    if len(data) > MAX_TABLE_BYTES:
+    bounds = _limits(limits)
+    if len(data) > bounds.file_bytes:
         raise TabularError(t("import.err_file_too_large"))
 
     try:
@@ -739,7 +767,7 @@ def _xlsx_lines(data: bytes, *, sheet: str | None) -> list[list[str]]:
     infos = archive.infolist()
     if len(infos) > MAX_XLSX_ENTRIES:
         raise TabularError(t("import.err_xlsx_entries"))
-    if sum(info.file_size for info in infos) > MAX_XLSX_UNCOMPRESSED:
+    if sum(info.file_size for info in infos) > bounds.uncompressed:
         raise TabularError(t("import.err_xlsx_uncompressed"))
 
     try:
@@ -785,7 +813,7 @@ def _xlsx_lines(data: bytes, *, sheet: str | None) -> list[list[str]]:
             # The same bounds as CSV, counted on the widest row actually read,
             # so a ragged row wider than the header counts in full.
             width = max(width, _filled_width(values))
-            _enforce_bounds(width, len(lines))
+            _enforce_bounds(width, len(lines), bounds)
             lines.append(values)
         return lines
     finally:

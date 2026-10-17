@@ -20,8 +20,13 @@ pytestmark = pytest.mark.asyncio
 
 
 async def migrate(engine, data: bytes, name: str, decisions: dict, monkeypatch, tmp_path):
-    """Scan, decide and run one source file into a staged company named as the source
-    names itself, as the wizard proposes.
+    """Scan, decide and run one source file; see `migrate_set`."""
+    return await migrate_set(engine, [(name, data)], decisions, monkeypatch, tmp_path)
+
+
+async def migrate_set(engine, files: list[tuple[str, bytes]], decisions: dict, monkeypatch, tmp_path):
+    """Scan, decide and run one upload of source files into a staged company named as the
+    source names itself, as the wizard proposes.
 
     Returns the finished run and every record a sink rejected, as
     (source_type, source_external_id, message).
@@ -45,7 +50,7 @@ async def migrate(engine, data: bytes, name: str, decisions: dict, monkeypatch, 
         s.add(user)
         await s.flush()
         owner = ("user", user.id)
-        scan = await store.create_scan(upload_parts((name, data)), owner=owner)
+        scan = await store.create_scan(upload_parts(*files), owner=owner)
         chosen = migrations.validate_decisions(scan, decisions)
         scan = store.save_decisions(scan.token, owner=owner, decisions=chosen)
         company = await provisioning.provision_migration_company(s, owner=user, company_name=scan.scan.company_name)
@@ -184,7 +189,7 @@ async def _projections(engine, run, entity_type: str) -> dict:
 
 def _passing(run) -> None:
     assert run.status == "ready_to_finalize", run.error_summary
-    assert run.reconciliation["blockers"] == 0
+    assert run.reconciliation["blockers"] == 0, [r for r in run.reconciliation["rows"] if r["result"] not in ("pass", "rounding")]
     assert [r for r in run.reconciliation["rows"] if r["result"] not in ("pass", "rounding")] == []
 
 
@@ -309,6 +314,58 @@ async def test_manager_cutover_reconciles_synthetic_fixture(real_engine, monkeyp
     held = {(r["check"], r["key"], r["currency"]): r["celerp"] for r in run.reconciliation["rows"]}
     expected = {(check, key, currency): figure for check, key, currency, figure in expected_rows(fixture, "USD")}
     assert {row: Decimal(held[row]) if held.get(row) is not None else None for row in expected} == expected
+
+
+@pytest.mark.parametrize("mode", ["full_history", "cutover"])
+async def test_manager_foreign_currency_full_history_and_cutover(real_engine, monkeypatch, tmp_path, mode):
+    """Euro invoices, bills, notes, a receipt, a payment, a transfer and a journal migrate at
+    their own rates: Celerp posts the same exchange differences the source books, documents
+    keep their euro figures, and the company ends at the source's position either way."""
+    from decimal import Decimal
+
+    from fixtures.manager_io.support import CHECKPOINTS, FX, expected_rows, ref
+
+    fixture = CHECKPOINTS["fx"]
+    section = fixture[mode]
+    decisions = {"mode": mode, **({"cutover_date": section["cutover_date"]} if mode == "cutover" else {})}
+    run, rejected = await migrate(real_engine, FX.read_bytes(), FX.name, decisions, monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    held = {(r["check"], r["key"], r["currency"]): r["celerp"] for r in run.reconciliation["rows"]}
+    expected = {(check, key, currency): figure for check, key, currency, figure in expected_rows(section, "USD")}
+    assert {row: Decimal(held[row]) if held.get(row) is not None else None for row in expected} == expected
+
+    maps = await _maps(real_engine, run)
+    target = {m.source_external_id: m.target_entity_id for m in maps if m.target_entity_type in ("doc", "journal_entry")}
+    source_account = {m.target_entity_id: m.source_external_id for m in maps if m.target_entity_type == "account"}
+    docs = await _projections(real_engine, run, "doc")
+    invoice = docs[target[ref("INVE2")]]
+    assert (invoice["currency"], Decimal(str(invoice["conversion_rate"])), Decimal(str(invoice["total"]))) == (
+        "EUR", Decimal("1.25"), Decimal("30.03"))
+    entries = await _projections(real_engine, run, "journal_entry")
+
+    def fx_lines(source_id: str) -> dict[str, tuple]:
+        return {source_account[ln["account"]]: (Decimal(str(ln.get("fx_debit") or 0)) - Decimal(str(ln.get("fx_credit") or 0)),
+                                                ln.get("fx_currency"))
+                for ln in entries[target[source_id]]["entries"] if ln.get("fx_currency")}
+
+    if mode == "full_history":
+        [(amount, rate)] = section["euro_journal"].values()
+        [line] = [ln for ln in entries[target[ref("JEE1")]]["entries"] if source_account[ln["account"]] == ref("EBANK")]
+        assert (Decimal(str(line["fx_debit"])), line["fx_currency"], Decimal(str(line["fx_rate"]))) == (
+            Decimal(amount), "EUR", Decimal(rate))
+    else:
+        mapped = {m.source_external_id for m in maps}
+        assert {ref(label) for label in section["native"]} <= mapped
+        assert not {ref(label) for label in section["closed"]} & mapped
+        opening = f"opening:{section['cutover_date']}"
+        lines: dict[str, Decimal] = {}
+        for line in entries[target[opening]]["entries"]:
+            account = source_account[line["account"]]
+            lines[account] = lines.get(account, Decimal(0)) + Decimal(str(line["debit"])) - Decimal(str(line["credit"]))
+        assert lines == {ref(label): Decimal(amount) for label, amount in section["opening_journal"].items()}
+        assert fx_lines(opening) == {ref(label): (Decimal(amount), currency)
+                                     for label, (currency, amount) in section["opening_native"].items()}
 
 
 async def test_manager_on_account_money_reaches_the_customer_statement(real_engine, monkeypatch, tmp_path):
@@ -612,3 +669,43 @@ async def test_discard_keeps_attachment_files_until_commit_and_survives_a_storag
     warnings = [r.getMessage() for r in caplog.records if r.name == "celerp.services.migrations"]
     assert any(str(task_id) in m and "kept for a retry" in m for m in warnings), warnings
     assert all(company not in m for m in warnings)
+
+@pytest.mark.parametrize("doc_type, measure", [
+    ("invoice", "ar_document_residual"), ("bill", "ap_document_residual"),
+])
+async def test_open_documents_must_tie_out_to_imported_control_balances(
+    real_engine, monkeypatch, tmp_path, doc_type, measure,
+):
+    """A balanced ledger alone cannot prove the imported open documents are correct."""
+    from decimal import Decimal
+    from celerp.models.projections import Projection
+    from celerp.services import migrations
+    from fixtures.manager_io.support import BASIC
+
+    run, rejected = await migrate(real_engine, BASIC.read_bytes(), BASIC.name,
+                                  {"mode": "full_history"}, monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    initial = {row["check"]: row for row in run.reconciliation["rows"]
+               if row["check"] == measure}
+    assert initial[measure]["result"] == "pass"
+
+    async with maker(real_engine)() as session:
+        row = (await session.execute(select(Projection).where(
+            Projection.company_id == run.company_id,
+            Projection.entity_type == "doc",
+        ))).scalars().all()
+        target = next(p for p in row if p.state.get("doc_type") == doc_type
+                      and Decimal(str(p.state.get("amount_outstanding", 0))) > 0)
+        previous = Decimal(str(target.state["amount_outstanding"]))
+        target.state = {**target.state, "amount_outstanding": str(previous + Decimal("7.00"))}
+        await session.commit()
+
+    async with maker(real_engine)() as session:
+        refreshed = await session.get(type(run), run.id)
+        report = await migrations._verification(session, refreshed)
+    by_check = {row["check"]: row for row in report["rows"] if row["check"] == measure}
+    assert by_check[measure]["result"] == "fail"
+    assert Decimal(by_check[measure]["difference"]) in (Decimal("-7"), Decimal("7"))
+    assert all(row["result"] == "pass" for row in report["rows"]
+               if row["check"] in ("ar_control", "ap_control"))

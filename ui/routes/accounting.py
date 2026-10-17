@@ -165,7 +165,7 @@ def setup_routes(app):
         )
 
     async def _render_journal_form(request: Request, token: str, ts: str, memo: str,
-                                   lines: list[dict], idem_token: str, error: str | None,
+                                   lines: list[dict], idem_token: str, error: str | FT | None,
                                    date_from: str = "", date_to: str = ""):
         try:
             _settings = (await api.get_company(token)).get("settings") or {}
@@ -197,6 +197,12 @@ def setup_routes(app):
             if error is None:
                 error = (t("acct.not_authorized") if e.status == 403
                          else e.detail or t("acct.error_loading_data"))
+        # Copied amounts arrive as numbers and show at the currency's precision;
+        # typed amounts stay as they were typed.
+        dp = currency_dp(base_currency)
+        lines = [{**line, **{k: f"{line[k]:.{dp}f}" for k in ("debit", "credit")
+                             if isinstance(line.get(k), float)}}
+                 for line in lines]
         return await base_shell(
             page_header(t("acct.new_journal_entry", get_lang(request))),
             _journal_entry_form(accounts, ts, memo, lines, idem_token, error,
@@ -213,10 +219,26 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        # ?from=<journal entry>: prefilled from it (Post again), posting nothing until submitted.
+        ts, memo, lines, error = _date.today().isoformat(), "", [], None
+        if source := request.query_params.get("from"):
+            try:
+                copied = await api.journal_prefill(token, source)
+                ts, memo = copied["ts"], copied["memo"]
+                lines = [{"account": l.get("account") or "", "contact": l.get("contact") or "",
+                          "debit": float(l["debit"]) if l.get("debit") else "",
+                          "credit": float(l["credit"]) if l.get("credit") else ""}
+                         for l in copied.get("entries") or []]
+            except APIError as e:
+                # Post again is chosen on Client companies, so a missing entry leads back there.
+                error = (Span(t("acct.post_again_gone"), " ",
+                              A(t("acct.post_again_back", page=t("firm_view.title")),
+                                href="/companies"))
+                         if e.status == 404 else str(e.detail))
         return await _render_journal_form(
             request, token,
-            ts=_date.today().isoformat(), memo="", lines=[],
-            idem_token=str(uuid.uuid4()), error=None,
+            ts=ts, memo=memo, lines=lines,
+            idem_token=str(uuid.uuid4()), error=error,
             date_from=request.query_params.get("date_from", ""),
             date_to=request.query_params.get("date_to", ""),
         )
@@ -469,7 +491,7 @@ def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]],
 
 
 def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[dict],
-                        idem_token: str, error: str | None = None,
+                        idem_token: str, error: str | FT | None = None,
                         date_from: str = "", date_to: str = "",
                         base_currency: str = "",
                         contacts: list[dict] | None = None,

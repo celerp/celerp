@@ -64,16 +64,13 @@ class ActingMember:
 async def acting_member(context: SinkContext) -> ActingMember:
     """The migrating user as a member of the target company; a non-member cannot write."""
     session = context.session
-    role = (await session.execute(
-        select(UserCompany.role).where(
-            UserCompany.user_id == context.user_id, UserCompany.company_id == context.company_id,
-        )
-    )).scalar_one_or_none()
+    from celerp.services.auth import usable_company_link
+    link = await usable_company_link(session, context.user_id, context.company_id)
     user = await session.get(User, context.user_id)
     company = await session.get(Company, context.company_id)
-    if role is None or user is None or company is None:
+    if link is None or user is None or not user.is_active or company is None:
         raise PermissionError("The migrating user is not a member of the company.")
-    return ActingMember(user, role, dict(company.settings or {}))
+    return ActingMember(user, link.role, dict(company.settings or {}))
 
 
 async def mapped_targets(
@@ -225,13 +222,15 @@ def attachment_cleanup_task_id(run_id: uuid.UUID, file_id: str) -> uuid.UUID:
     return uuid.uuid5(run_id, f"cleanup:{file_id}")
 
 
-async def _stage_cleanup(context: SinkContext, file_id: str, mime: str, key: str) -> uuid.UUID:
-    """Record the file for deletion, committed on its own before the file is written, so a
-    file whose batch never commits is always found and removed."""
-    task_id = attachment_cleanup_task_id(context.run_id, file_id)
-    async with AsyncSession(bind=context.session.bind) as s:
+async def stage_file_cleanup(session: AsyncSession, company_id: uuid.UUID, run_id: uuid.UUID,
+                             file_id: str, mime: str, key: str) -> uuid.UUID:
+    """Record a migrated file for deletion, committed on its own before the file is written,
+    so a file whose transaction never commits is always found and removed. The transaction
+    that links the file deletes the returned task."""
+    task_id = attachment_cleanup_task_id(run_id, file_id)
+    async with AsyncSession(bind=session.bind) as s:
         await s.execute(pg_insert(MigrationCleanupTask.__table__).values(
-            id=task_id, company_id=context.company_id, run_ids=[str(context.run_id)],
+            id=task_id, company_id=company_id, run_ids=[str(run_id)],
             attachment={"file_id": file_id, "mime": mime, "idempotency_key": key},
         ).on_conflict_do_nothing(index_elements=["id"]))
         await s.commit()
@@ -274,7 +273,7 @@ async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tup
         return "", "The file content does not match its recorded hash; the file was not attached."
     mime = record.declared_content_type or mimetypes.guess_type(record.file_name)[0] or "application/octet-stream"
     file_id = attachment_file_id(context.run_id, record.source_external_id, record.sha256)
-    task_id = await _stage_cleanup(context, file_id, mime, key)
+    task_id = await stage_file_cleanup(context.session, context.company_id, context.run_id, file_id, mime, key)
     try:
         meta = await store_file(str(context.company_id), content, record.file_name, mime, att_id=file_id)
     except ValueError as exc:

@@ -63,7 +63,8 @@ from celerp.services.lot_origin import (
     recorded_value, refuse_draft,
 )
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
-from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
+from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
+from celerp.services.peer_import import peer_batch
 from celerp.services.business_time import business_date_at
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
 from celerp.services.csv_export import csv_stream, resolve_export_cols
@@ -4977,6 +4978,7 @@ async def batch_import_items(
     __: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> BatchImportResult:
     """Batch-import CIF item records. Idempotent on idempotency_key. Max 500 per call.
 
@@ -4984,6 +4986,8 @@ async def batch_import_items(
     The writer is services.write_import_batch, shared with /import/rows and the
     agent /import/commit.
     """
+    if (peer := await peer_batch(auth, session, body.records)) is not None:
+        return BatchImportResult(**peer)
     role, settings = await _import_authority(session, company_id, user.id)
     return await commit_import_batch(session, company_id, user, role, settings, body)
 

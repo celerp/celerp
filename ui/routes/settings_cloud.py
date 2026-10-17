@@ -1553,7 +1553,7 @@ async def _try_s3_connect(endpoint: str, bucket: str, access_key: str, secret_ke
         ClientError = EndpointConnectionError = ConnectTimeoutError = ReadTimeoutError = _NoMatch
 
     try:
-        async with attachments._s3_client(endpoint, access_key, secret_key) as client:
+        async with attachments.s3_client(endpoint, access_key, secret_key) as client:
             await client.head_bucket(Bucket=bucket)
     except ImportError:
         raise RuntimeError(t("settings_cloud.s3_support_unavailable"))

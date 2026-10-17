@@ -265,7 +265,8 @@ async def test_a_document_import_with_a_removed_or_unknown_item_is_refused(commi
     async with factory() as s:
         result = await docs.batch_import_docs(
             docs.DocBatchImportRequest(records=[good, bad]),
-            company_id=company_id, _=None, __=None, user=user, session=s)
+            company_id=company_id, _=None, __=None, user=user, session=s,
+            auth=types.SimpleNamespace(peer=None))
 
     assert result.created == 1
     assert len(result.errors) == 1 and missing in result.errors[0] and "Line 2" in result.errors[0]

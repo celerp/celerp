@@ -102,6 +102,9 @@ class SourceAdapter(Protocol):
     display_name: str
     artifact_specs: tuple[ArtifactSpec, ...]
     adapter_version: str
+    # Which versions of the source's files the adapter reads and how to get an older file
+    # there, shown where the import says what it accepts.
+    accepts: str
 
     def detect(self, artifacts: ArtifactSet) -> DetectionResult: ...
 

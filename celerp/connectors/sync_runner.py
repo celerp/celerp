@@ -9,6 +9,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from celerp.connectors.base import (
+    INBOUND_ENTITIES,
+    OUTBOUND_ENTITIES,
     ConnectorBase,
     ConnectorContext,
     SyncDirection,
@@ -22,29 +24,16 @@ from celerp.models.sync_run import SyncRun
 
 log = logging.getLogger(__name__)
 
-_SYNC_METHODS = {
-    "products": "sync_products",
-    "orders": "sync_orders",
-    "contacts": "sync_contacts",
-    "inventory": "sync_inventory",
-    "products_out": "sync_products_out",
-    "invoices_out": "sync_invoices_out",
-    "inventory_out": "sync_inventory_out",
-}
-_OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out"}
+_SYNC_METHODS = {entity: f"sync_{entity}" for entity in (*INBOUND_ENTITIES, *OUTBOUND_ENTITIES)}
 CONNECTOR_RESET_ENTITY = "__connector_reset__"
-_OUTBOUND_ENTITY_METHODS = {
-    "products_out": "sync_products_out",
-    "invoices_out": "sync_invoices_out",
-    "inventory_out": "sync_inventory_out",
-}
 
 
 def supported_outbound(connector: ConnectorBase) -> list[str]:
     """Outbound entities implemented by this connector, in stable dispatch order."""
     return [
-        entity for entity, method in _OUTBOUND_ENTITY_METHODS.items()
-        if getattr(type(connector), method, None) is not getattr(ConnectorBase, method, None)
+        entity for entity in OUTBOUND_ENTITIES
+        if getattr(type(connector), _SYNC_METHODS[entity], None)
+        is not getattr(ConnectorBase, _SYNC_METHODS[entity], None)
     ]
 
 
@@ -84,19 +73,23 @@ async def run_connector_sync(
         expected_direction = resolved_direction if config is not None else None
         await guard_session.commit()
 
-    return [
-        await run_sync(
-            connector,
-            ctx,
-            entity,
-            direction=resolved_direction,
-            reconcile=reconcile,
-            expected_config_id=expected_config_id,
+    if resolved_direction != SyncDirection.INBOUND:
+        await connector.before_outbound(ctx)
+    results: list[SyncResult] = []
+    completed: dict[str, bool] = {}
+    dependencies = getattr(connector, "outbound_dependencies", {})
+    for entity in sync_plan(connector, resolved_direction):
+        if any(completed.get(dep) is not True for dep in dependencies.get(entity, ())):
+            break
+        result = await run_sync(
+            connector, ctx, entity, direction=resolved_direction,
+            reconcile=reconcile, expected_config_id=expected_config_id,
             expected_direction=expected_direction,
             expected_store_handle=ctx.store_handle,
         )
-        for entity in sync_plan(connector, resolved_direction)
-    ]
+        completed[entity] = result.ok
+        results.append(result)
+    return results
 
 
 def _since_reset(company_id: str, connector: str):
@@ -175,8 +168,9 @@ async def attention_entries(
     company_id: str, connector: str, entity: str | None = None
 ) -> list[dict]:
     """Records still waiting on a person, for one entity or (entity None) the
-    whole connector. Read errors propagate: a sync that cannot read the list
-    must fail rather than start an empty one."""
+    whole connector, where each entry also names its ``entity``. Read errors
+    propagate: a sync that cannot read the list must fail rather than start an
+    empty one."""
     import sqlalchemy as sa
 
     from celerp.db import get_session_ctx
@@ -192,7 +186,8 @@ async def attention_entries(
         for name in entities:
             run = await _attention_run(session, company_id, connector, name)
             if run is not None:
-                entries.extend(run.attention)
+                entries.extend(run.attention if entity is not None
+                               else [{**e, "entity": name} for e in run.attention])
         return entries
 
 
@@ -396,7 +391,7 @@ async def run_sync(
             else:
                 if (
                     since is None
-                    and entity not in _OUTBOUND_ENTITIES
+                    and entity not in OUTBOUND_ENTITIES
                     and use_watermark
                 ):
                     since = await _last_success_watermark(
@@ -428,7 +423,7 @@ async def run_sync(
                     await bind_connector_store(
                         guard_session, ctx.company_id, connector, current_ctx
                     )
-                    if entity in _OUTBOUND_ENTITIES:
+                    if entity in OUTBOUND_ENTITIES:
                         result = await sync_method(current_ctx)
                     else:
                         accepts = inspect.signature(sync_method).parameters

@@ -77,7 +77,7 @@ async def create_install_owner(session: AsyncSession, *, name: str, email: str, 
     """Create the first user of a fresh install."""
     user = User(
         id=uuid.uuid4(), email=email, name=name, auth_hash=hash_password(password),
-        api_key=None, is_active=True, is_install_owner=True,
+        is_active=True, is_install_owner=True,
     )
     session.add(user)
     await session.flush()

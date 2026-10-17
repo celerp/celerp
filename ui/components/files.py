@@ -47,7 +47,7 @@ _ITEM_TAGS: tuple[str, ...] = (
 FILES_PAGE_SIZE = 20
 
 
-def _fmt_size(size: int) -> str:
+def fmt_size(size: int) -> str:
     if size < 1_048_576:
         return f"{size / 1024:.0f} KB"
     return f"{size / 1_048_576:.1f} MB"
@@ -381,7 +381,7 @@ def files_section(
                 hero_cell = Td()
             row_cells.append(hero_cell)
         row_cells += [
-            Td(Span(_fmt_size(size), cls="muted")),
+            Td(Span(fmt_size(size), cls="muted")),
             Td(
                 Button(
                     "×",
@@ -495,6 +495,12 @@ def files_section(
       if(e.target===zone||e.target.closest('.file-drop-text,.file-drop-icon,.file-drop-hint')) inp.click();
     }});
     inp.addEventListener('change',function(){{ if(inp.files.length) upload(inp.files[0]); }});
+    var cam=document.getElementById('file-camera-input-{sid}');
+    var camBtn=zone.querySelector('.file-camera-btn');
+    if(cam&&camBtn){{
+      camBtn.addEventListener('click',function(e){{e.preventDefault(); cam.click();}});
+      cam.addEventListener('change',function(){{ if(cam.files.length) upload(cam.files[0]); }});
+    }}
     zone.addEventListener('dragover',function(e){{e.preventDefault();zone.classList.add('file-drop-zone--active');}});
     zone.addEventListener('dragleave',function(){{zone.classList.remove('file-drop-zone--active');}});
     zone.addEventListener('drop',function(e){{
@@ -514,6 +520,11 @@ def files_section(
         Div("📁", cls="file-drop-icon"),
         Div(t("msg.drop_files_here"), cls="file-drop-text"),
         Input(type="file", id=f"file-drop-input-{sid}", style="display:none"),
+        # On a phone this opens the camera, so a receipt is photographed straight into
+        # the document; desktop browsers open the file picker for images.
+        Button(t("msg.take_photo"), type="button", cls="btn btn--sm btn--secondary file-camera-btn"),
+        Input(type="file", id=f"file-camera-input-{sid}", accept="image/*",
+              capture="environment", style="display:none"),
         Script(drop_js),
         cls="file-drop-zone",
         id=f"file-drop-zone-{sid}",

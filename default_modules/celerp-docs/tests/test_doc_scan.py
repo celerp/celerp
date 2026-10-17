@@ -1066,3 +1066,50 @@ async def test_patch_cannot_write_the_scan_ledger(client, kind):
     assert body.get("duplicate"), body
     reader = _lines if kind == "docs" else _list_lines
     assert float((await reader(client, t, record))[0]["quantity"]) == 1.0
+
+
+async def test_old_scan_key_replays_after_recent_cache_pruned(client, monkeypatch):
+    from celerp_docs import routes
+    monkeypatch.setattr(routes, "_MAX_SCAN_RUNS", 1)
+    token = await _register(client)
+    await _item(client, token, "OLD-ONE", qty=2)
+    await _item(client, token, "OLD-TWO", qty=2)
+    doc = await _doc(client, token, "bill")
+    first = await _scan(client, token, doc, "OLD-ONE", run_key="scan-old")
+    assert first.status_code == 200 and first.json()["scanned"] == 1
+    second = await _scan(client, token, doc, "OLD-TWO", run_key="scan-new")
+    assert second.status_code == 200 and second.json()["scanned"] == 1
+    previous = await _scan(client, token, doc, "OLD-ONE", run_key="scan-old")
+    assert previous.status_code == 200 and previous.json()["duplicate"] is True
+    assert previous.json()["results"] == first.json()["results"]
+    assert len(await _lines(client, token, doc)) == 2
+    mismatch = await _scan(client, token, doc, "OLD-TWO", run_key="scan-old")
+    assert mismatch.status_code == 409 and mismatch.json()["code"] == "scan_run_conflict"
+    assert len(await _lines(client, token, doc)) == 2
+
+
+async def test_failed_only_scan_key_is_durable(client):
+    token = await _register(client)
+    doc = await _doc(client, token)
+    first = await _scan(client, token, doc, "AVAILABLE-LATER", run_key="scan-fail")
+    assert first.status_code == 200 and first.json()["scanned"] == 0
+    await _item(client, token, "AVAILABLE-LATER")
+    replay = await _scan(client, token, doc, "AVAILABLE-LATER", run_key="scan-fail")
+    assert replay.status_code == 200 and replay.json()["duplicate"] is True
+    assert replay.json()["failed"] == first.json()["failed"]
+    assert await _lines(client, token, doc) == []
+
+
+async def test_list_scan_key_survives_recent_cache_prune(client, monkeypatch):
+    from celerp_docs import routes
+    monkeypatch.setattr(routes, "_MAX_SCAN_RUNS", 1)
+    token = await _register(client)
+    await _item(client, token, "LIST-ONE", qty=2)
+    await _item(client, token, "LIST-TWO", qty=2)
+    listing = await _quotation_list(client, token)
+    a = await _list_scan(client, token, listing, "LIST-ONE", run_key="list-old")
+    b = await _list_scan(client, token, listing, "LIST-TWO", run_key="list-new")
+    assert a.status_code == b.status_code == 200
+    replay = await _list_scan(client, token, listing, "LIST-ONE", run_key="list-old")
+    assert replay.status_code == 200 and replay.json()["duplicate"] is True
+    assert len(await _list_lines(client, token, listing)) == 2

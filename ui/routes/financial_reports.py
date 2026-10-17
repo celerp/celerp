@@ -102,6 +102,16 @@ def ledger_path(account_code: str) -> str:
     return f"/reports/ledger/{account_code}"
 
 
+def elsewhere_note(elsewhere: list[dict]) -> FT | str:
+    """What each connected company calls this account, where its code or name differs."""
+    if not elsewhere:
+        return ""
+    return Div(*[P(t("financial.ledger_elsewhere", company=e["company"], code=e["code"], name=e["name"])
+                   if e.get("company") else
+                   t("financial.ledger_elsewhere_unnamed", code=e["code"], name=e["name"]),
+                   cls="settings-hint") for e in elsewhere])
+
+
 def _report_path(key: str) -> str:
     return REPORTS[key][0]
 
@@ -729,7 +739,7 @@ def _soa_table(data: dict, currency: str | None = None,
         _bal_cell(data.get("opening_balance", 0)),
     )]
     for row in data.get("rows", []):
-        ref = row.get("doc_ref") or row.get("doc_id") or ""
+        ref = row.get("doc_ref") or row.get("doc_id") or "--"
         ref_cell = (A(ref, href=f"/docs/{row['doc_id']}", cls="drilldown-link")
                     if row.get("doc_id") else ref)
         rows.append(Tr(
@@ -752,7 +762,7 @@ def _soa_table(data: dict, currency: str | None = None,
         Thead(Tr(
             Th(t("th.date")),
             Th(t("th.ref")),
-            Th(t("th.type")),
+            Th(t("th.description")),
             Th(t("th.debit"), cls="cell--number"),
             Th(t("th.credit"), cls="cell--number"),
             Th(t("th.balance"), cls="cell--number"),
@@ -1140,9 +1150,10 @@ def setup_routes(app):
                 _date_filter_bar(ledger_path(account_code), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
                                  extra_params=f"&src={origin}"),
-                A(f"← {t(back_key)}", href=href(back_path, back_qs), cls="btn btn--ghost btn--sm"),
+                A(t(back_key), href=href(back_path, back_qs), cls="btn btn--ghost btn--sm"),
                 cls="flex-row flex-between",
             ),
+            elsewhere_note(data.get("elsewhere") or []),
             _ledger_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
         )
         name = data.get("account_name", account_code)
@@ -1606,7 +1617,7 @@ def setup_routes(app):
             rows.append([_subject_heading(s["kind"], data)])
             if s["merged"]:
                 rows.append([t("acct.soa_merged_notice")])
-            rows.append(["Date", "Ref", "Type", "Debit", "Credit", "Balance"])
+            rows.append(["Date", "Ref", "Description", "Debit", "Credit", "Balance"])
             rows.append([d_from, "", "Opening Balance", "", "",
                          csv_amount(data.get("opening_balance", 0), currency)])
             rows += [[r.get("date", ""), r.get("doc_ref", ""), r.get("kind", ""),

@@ -285,16 +285,16 @@ async def test_setup_options_hide_supported_line_when_sources_fail(ui_client):
 
 
 @pytest.mark.asyncio
-async def test_setup_options_and_later_note_present(ui_client):
+async def test_first_run_offers_open_company_copy(ui_client):
     with _Stubs():
         r = await ui_client.get("/setup")
     html = r.text
     assert "Additional options" in html
     assert 'href="/setup/restore-backup"' in html
     assert 'href="/setup/migrate"' in html
-    assert "Restore a Celerp backup" in html
+    assert "Open a company copy" in html
     assert "Not sure yet? Create your workspace now." in html
-    assert "You can restore a backup or move your books in later from the dashboard." in html
+    assert "You can open a company copy or move your books in later from the dashboard." in html
     assert len(re.findall(r'class="[^"]*\bbtn--primary\b', html)) == 1
     assert "Try sample company" not in html
 

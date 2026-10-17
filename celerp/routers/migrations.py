@@ -9,6 +9,8 @@ Two entry modes share one flow (scan, decide, start, watch, verify, finish):
   Start creates the first owner and the staged company in one transaction.
 - company: an authenticated company owner moves another company in. Their session stays
   on the company they are working in; they open the new company only after finishing.
+  The owner can also email a client the export checklist of a source and add the files
+  the client uploads to the scan (``migration_export_requests``).
 
 Run routes belong to the run's creator while they own its company, whichever company
 their current token is scoped to (``migrations.get_owned_migration_run``); to anyone
@@ -34,13 +36,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.importers.adapters.registry import list_adapters
+from celerp.importers.adapters.registry import get_adapter, list_adapters
 from celerp.models.company import Company, User
 from celerp.models.migration import MigrationRun
 from celerp.modules import requirements
 from celerp.routers.auth import companyless_login, hold_direct_slot, limiter
 from celerp.services import bootstrap
+from celerp.services import company_handoff_sender as sender
+from celerp.services import migration_batches as batches
+from celerp.services import migration_export_requests as export_requests_service
+from celerp.services import migration_move_requests as move_requests_service
 from celerp.services import migration_scan_store as store
+from celerp.services import migration_templates
+from celerp.services import migration_xero_attachments as xero_attachments
 from celerp.services import migrations
 from celerp.services import posting_readiness
 from celerp.services.auth import (
@@ -92,9 +100,10 @@ class StartCompanyStartIn(BaseModel):
 
 
 class FinalizeIn(BaseModel):
-    """Posting-account choices; ``posting_readiness.apply_choices`` checks them so every problem is explained."""
+    """Posting-account choices and acknowledgment of measured differences."""
     roles: Any = None
     add_accounts: Any = None
+    reviewed_differences: bool = False
 
 
 class BootstrapStartIn(BaseModel):
@@ -272,10 +281,18 @@ async def _owned_run(session: AsyncSession, run_id: uuid.UUID, ctx: AuthContext)
 @router.get("/sources")
 async def sources() -> list[dict]:
     return [{
-        "key": a.key, "display_name": a.display_name,
+        "key": a.key, "display_name": a.display_name, "accepts": a.accepts,
         "artifacts": [{"key": s.key, "label": s.label, "extensions": list(s.extensions), "max_bytes": s.max_bytes}
                       for s in a.artifact_specs],
+        "checklist": a.checklist().view() if hasattr(a, "checklist") else None,
     } for a in list_adapters()]
+
+
+def _scan_result(result: store.ScanSession | store.DraftSession) -> dict:
+    """An upload's answer: the scan to review, or the export set still being brought in."""
+    if isinstance(result, store.DraftSession):
+        return {"draft_token": result.token, "checklist": result.view()}
+    return {"scan_token": result.token, "scan": migrations.scan_view(result)}
 
 
 # ── Bootstrap (no user exists yet) ───────────────────────────────────────────
@@ -286,8 +303,7 @@ async def bootstrap_scan(request: Request, session: AsyncSession = Depends(get_s
                          x_setup_code: str | None = Header(None)) -> dict:
     await ensure_not_bootstrapped(session)
     bootstrap.verify_setup_code(x_setup_code)
-    scan = await store.create_scan(_upload_parts(request), owner=BOOTSTRAP)
-    return {"scan_token": scan.token, "scan": migrations.scan_view(scan)}
+    return _scan_result(await store.create_scan(_upload_parts(request), owner=BOOTSTRAP))
 
 
 @router.post("/bootstrap/scan/read")
@@ -345,8 +361,16 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
 
 @router.post("/scan")
 async def scan(request: Request, ctx: AuthContext = Depends(user_owner)) -> dict:
-    result = await store.create_scan(_upload_parts(request), owner=("user", ctx.user.id))
-    return {"scan_token": result.token, "scan": migrations.scan_view(result)}
+    return _scan_result(await store.create_scan(_upload_parts(request), owner=("user", ctx.user.id)))
+
+
+def _user_scan_owner(scan_token: str, ctx: AuthContext) -> store.ScanOwner:
+    """The caller's own scan: its one-company upload, or one file of its Move several
+    companies upload. Anyone else's reads as expired."""
+    owner = store.scan_owner(scan_token)
+    if owner not in (("user", ctx.user.id), (store.SEVERAL, ctx.user.id)):
+        raise store.ScanStoreError(410, store.EXPIRED)
+    return owner
 
 
 @router.post("/scan/read")
@@ -357,12 +381,13 @@ async def scan_read(payload: ScanTokenIn, ctx: AuthContext = Depends(user_owner)
     run_id = await migrations.started_run_id(session, store.scan_claim(payload.scan_token), ctx.user.id)
     if run_id is not None:
         return {"run_id": str(run_id)}
-    return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=("user", ctx.user.id)))}
+    owner = _user_scan_owner(payload.scan_token, ctx)
+    return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=owner))}
 
 
 @router.post("/scan/decisions")
 async def scan_decisions(payload: DecisionsIn, ctx: AuthContext = Depends(user_owner)) -> dict:
-    return await _save_decisions(("user", ctx.user.id), payload)
+    return await _save_decisions(_user_scan_owner(payload.scan_token, ctx), payload)
 
 
 @router.post("/start-from-scan", status_code=201)
@@ -373,7 +398,7 @@ async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: Aut
     async with _start_errors(session):
         run = await migrations.lock_scan_claim(session, store.scan_claim(payload.scan_token))
         if run is None:
-            scan = store.load_scan(payload.scan_token, owner=("user", ctx.user.id))
+            scan = store.load_scan(payload.scan_token, owner=_user_scan_owner(payload.scan_token, ctx))
             plan = await _prepare(scan)
             errors: dict[str, str] = {}
             company_name = _company_name(payload.company_name, errors)
@@ -418,8 +443,7 @@ async def start_company_scan(request: Request, credentials: HTTPBasicCredentials
     user_id = (await companyless_login(session, credentials.username, credentials.password,
                                        request_caller(request))).id
     await session.rollback()  # nothing is held while the upload streams in
-    scan = await store.create_scan(_upload_parts(request), owner=(START_COMPANY, user_id))
-    return {"scan_token": scan.token, "scan": migrations.scan_view(scan)}
+    return _scan_result(await store.create_scan(_upload_parts(request), owner=(START_COMPANY, user_id)))
 
 
 @router.post("/start-company/scan/read")
@@ -470,6 +494,109 @@ async def _run_view(session: AsyncSession, run_id: uuid.UUID, ctx: AuthContext) 
     await migrations.mark_stale_runs_interrupted(session, run.company_id)
     await session.refresh(run)
     return await migrations.run_view(session, run)
+
+
+# ── Export requests: a client sends their export files ───────────────────────
+
+class ExportRequestIn(BaseModel):
+    operation_id: uuid.UUID
+    firm_name: str
+    client_name: str
+    recipient: str
+    reply_to: str
+    source: str
+
+
+class AddExportFilesIn(BaseModel):
+    draft_token: str | None = None
+
+
+@router.get("/export-requests")
+async def export_requests(ctx: AuthContext = Depends(user_owner)) -> dict:
+    return {"items": await sender.as_http(export_requests_service.list_requests())}
+
+
+@router.post("/export-requests", status_code=201)
+async def send_export_request(payload: ExportRequestIn, ctx: AuthContext = Depends(user_owner)) -> dict:
+    """Email a client the export checklist of a source; the files they upload are added here."""
+    return await sender.as_http(export_requests_service.send_request(**payload.model_dump()))
+
+
+@router.post("/export-requests/{request_id}/add")
+async def add_export_files(request_id: uuid.UUID, payload: AddExportFilesIn,
+                           ctx: AuthContext = Depends(user_owner)) -> dict:
+    """The client's files, read and added to the upload or to the open draft."""
+    return _scan_result(await sender.as_http(export_requests_service.add_files(
+        request_id, payload.draft_token, owner=("user", ctx.user.id))))
+
+
+@router.post("/export-requests/{request_id}/revoke")
+async def revoke_export_request(request_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)) -> dict:
+    return await sender.as_http(export_requests_service.revoke(request_id))
+
+
+# ── Move requests: Celerp's team moves a client ──────────────────────────────
+
+class MoveRequestIn(BaseModel):
+    operation_id: uuid.UUID
+    firm_name: str
+    client_name: str
+    reply_to: str
+    draft_token: str = ""
+
+
+@router.get("/move-requests")
+async def move_requests(ctx: AuthContext = Depends(user_owner)) -> dict:
+    return {"items": await sender.as_http(move_requests_service.list_requests())}
+
+
+@router.post("/move-requests", status_code=201)
+async def send_move_request(payload: MoveRequestIn, ctx: AuthContext = Depends(user_owner)) -> dict:
+    """Send the open export set to Celerp's team, who move the client and send back a company copy."""
+    return await sender.as_http(move_requests_service.send(**payload.model_dump(), owner=("user", ctx.user.id)))
+
+
+@router.post("/move-requests/{request_id}/withdraw")
+async def withdraw_move_request(request_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)) -> dict:
+    return await sender.as_http(move_requests_service.withdraw(request_id))
+
+
+# ── Move several companies ───────────────────────────────────────────────────
+
+@router.get("/several")
+async def several(ctx: AuthContext = Depends(user_owner), session: AsyncSession = Depends(get_session)) -> dict:
+    return {"items": await batches.items(session, ctx.user.id)}
+
+
+@router.post("/several", status_code=201)
+async def upload_several(request: Request, ctx: AuthContext = Depends(user_owner),
+                         session: AsyncSession = Depends(get_session)) -> dict:
+    """Keep each file of the upload as its own company to move, then list them all."""
+    await batches.add(session, ctx.user.id, _upload_parts(request))
+    return {"items": await batches.items(session, ctx.user.id)}
+
+
+@router.post("/several/{file_id}/open")
+async def open_several(file_id: uuid.UUID, ctx: AuthContext = Depends(user_owner),
+                       session: AsyncSession = Depends(get_session)) -> dict:
+    return await batches.open_file(session, ctx.user.id, file_id)
+
+
+@router.delete("/several/{file_id}", status_code=204)
+async def remove_several(file_id: uuid.UUID, ctx: AuthContext = Depends(user_owner),
+                         session: AsyncSession = Depends(get_session)) -> Response:
+    await batches.remove(session, ctx.user.id, file_id)
+    return Response(status_code=204)
+
+
+@router.delete("/templates/{source_system}", status_code=204)
+async def forget_template(source_system: str, ctx: AuthContext = Depends(get_auth_context),
+                          session: AsyncSession = Depends(get_session)) -> Response:
+    """Forget the posting accounts this person's migrations from ``source_system`` saved."""
+    if get_adapter(source_system) is None:
+        raise HTTPException(status_code=404, detail=t("migration.err_unknown_source"))
+    await migration_templates.forget(session, ctx.user.id, source_system)
+    return Response(status_code=204)
 
 
 @router.get("/staged")
@@ -546,7 +673,8 @@ async def get_posting_accounts(run_id: uuid.UUID, ctx: AuthContext = Depends(get
                                session: AsyncSession = Depends(get_session)) -> dict:
     """The posting accounts finishing this migration will set, and the choices for each."""
     run = await _owned_run(session, run_id, ctx)
-    return {"roles": await posting_readiness.readiness(session, run.company_id) or []}
+    previous = await migration_templates.answers(session, run.created_by_user_id, run.source_system)
+    return {"roles": await posting_readiness.readiness(session, run.company_id, previous) or []}
 
 
 @router.post("/{run_id}/finalize")
@@ -555,7 +683,10 @@ async def finalize_run(run_id: uuid.UUID, body: FinalizeIn | None = None,
                        session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
     try:
-        await migrations.finalize(session, run, body.model_dump() if body else None)
+        await migrations.finalize(
+            session, run, body.model_dump(exclude={"reviewed_differences"}) if body else None,
+            reviewed_by=ctx.user if body and body.reviewed_differences else None,
+        )
     except BaseException:
         await session.rollback()
         raise
@@ -566,9 +697,39 @@ async def finalize_run(run_id: uuid.UUID, body: FinalizeIn | None = None,
 async def discard_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                       session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
+    open_fetch = await xero_attachments.discarded_cloud_id(session, run.id)
     try:
         redirect = await migrations.discard(session, run)
     except BaseException:
         await session.rollback()
         raise
+    await xero_attachments.close_at_relay(open_fetch)
     return {"redirect": redirect}
+
+
+# ── Xero attachments ─────────────────────────────────────────────────────────
+
+@router.get("/{run_id}/xero-attachments")
+async def get_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
+                               session: AsyncSession = Depends(get_session)) -> dict:
+    """The fetch of the files attached to this Xero migration's documents in Xero."""
+    return await xero_attachments.view(session, await _owned_run(session, run_id, ctx))
+
+
+@router.post("/{run_id}/xero-attachments")
+async def start_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
+                                 session: AsyncSession = Depends(get_session)) -> dict:
+    """Start fetching them, or return the fetch under way with its Xero sign-in link."""
+    run = await _owned_run(session, run_id, ctx)
+    try:
+        return await sender.as_http(xero_attachments.start(session, run, ctx.user.id))
+    except BaseException:
+        await session.rollback()
+        raise
+
+
+@router.post("/{run_id}/xero-attachments/stop")
+async def stop_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
+                                session: AsyncSession = Depends(get_session)) -> dict:
+    """End the fetch and close its Xero access; files already attached stay."""
+    return await xero_attachments.stop(session, await _owned_run(session, run_id, ctx))

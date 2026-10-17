@@ -253,6 +253,135 @@ def test_connector_detail_shows_disconnect_outcome_under_its_buttons():
     assert 'id="connector-disconnect-result-woocommerce"' in html
 
 
+def test_connector_detail_controls_swap_into_the_detail_page():
+    """Every control on the detail page swaps into an element that page has, so a
+    changed direction or frequency shows at once (the connectors list's card is
+    not on it)."""
+    import re
+
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import _connector_detail_body
+
+    html = to_xml(_connector_detail_body({"id": "celerp", "category": "accounting"}, {}, None))
+    targets = re.findall(r'hx-target="#([^"]+)"', html)
+    assert targets and [t for t in targets if f'id="{t}"' not in html] == []
+    assert 'hx-post="/settings/connectors/celerp/direction?detail=1"' in html
+    assert 'hx-post="/settings/connectors/celerp/frequency?detail=1"' in html
+
+
+@pytest.mark.asyncio
+async def test_direction_set_on_the_detail_page_returns_its_toggle(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from fasthtml.common import to_xml
+    from fastapi import FastAPI
+    from starlette.requests import Request
+
+    import celerp.connectors.ownership as ownership
+    import celerp.db as db
+    from ui.routes import settings_connectors as routes
+
+    config = SimpleNamespace(direction="both")
+
+    class Session:
+        async def commit(self):
+            pass
+
+    @asynccontextmanager
+    async def session_ctx():
+        yield Session()
+
+    async def lock(session, company_id, platform, require_owner=False):
+        return config
+
+    async def allowed(request, permission):
+        return None
+
+    monkeypatch.setattr(db, "get_session_ctx", session_ctx)
+    monkeypatch.setattr(ownership, "lock_connector_operation", lock)
+    monkeypatch.setattr(routes, "_token", lambda request: "jwt")
+    monkeypatch.setattr(routes, "_check_permission", allowed)
+    monkeypatch.setattr(routes, "_request_company_id", lambda request: "company-1")
+    app = FastAPI()
+    routes.setup_routes(app)
+    endpoint = next(r.endpoint for r in app.routes
+                    if getattr(r, "path", "") == "/settings/connectors/{platform}/direction")
+
+    async def receive():
+        return {"type": "http.request", "body": b"direction=outbound", "more_body": False}
+
+    request = Request({
+        "type": "http", "method": "POST", "path": "/settings/connectors/celerp/direction",
+        "query_string": b"detail=1", "headers": [(b"content-type", b"application/x-www-form-urlencoded")],
+    }, receive)
+    html = to_xml(await endpoint(request, "celerp"))
+    assert config.direction == "outbound"
+    assert 'class="connector-direction-toggle"' in html and "connector-card" not in html
+    outbound = html.split(">Outbound<")[0].rsplit("<button", 1)[1]
+    assert "btn--primary" in outbound
+
+
+def _ui_owner_patches():
+    return patch(
+        "ui.api_client.get_company",
+        AsyncMock(return_value={
+            "id": "00000000-0000-0000-0000-000000000002",
+            "settings": {},
+            "current_role": "owner",
+        }),
+    )
+
+
+@pytest.mark.asyncio
+async def test_celerp_connector_returns_to_the_accounting_tab():
+    """The accountant connector is not in the relay's catalog; its way back, and
+    where a finished disconnect lands, is its own Accounting Sync tab."""
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui.app import app as ui_app
+    from ui.routes import settings_connectors as routes
+
+    token = make_test_token(role="owner")
+    with _ui_owner_patches(), \
+            patch("ui.api_client.delete_connector_credentials", AsyncMock(return_value={"ok": True})), \
+            patch.object(routes, "_fetch_catalog", AsyncMock(return_value=([], "", False))), \
+            patch.object(routes, "_get_connector_config", AsyncMock(return_value=None)), \
+            patch.object(routes, "_entity_runs", AsyncMock(return_value={})), \
+            patch.object(routes, "_attention", AsyncMock(return_value=[])), \
+            patch.object(routes, "_from_accountant_section", AsyncMock(return_value="")):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
+            page = await client.get("/settings/connectors/celerp", cookies={"celerp_token": token})
+            gone = await client.delete("/settings/connectors/celerp/disconnect?redirect=1",
+                                       cookies={"celerp_token": token})
+
+    assert 'href="/settings/cloud?tab=accounting"' in page.text
+    assert "tab=website" not in page.text
+    assert gone.headers["HX-Redirect"] == "/settings/cloud?tab=accounting"
+
+
+@pytest.mark.asyncio
+async def test_connector_refusals_show_the_reason_without_the_status_code():
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui.api_client import APIError
+    from ui.app import app as ui_app
+
+    token = make_test_token(role="owner")
+    refused = AsyncMock(side_effect=APIError(401, "No active Celerp Connect session."))
+    with _ui_owner_patches(), patch("ui.api_client.delete_connector_credentials", refused), \
+            patch("ui.api_client.start_connector_sync", refused):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
+            gone = await client.delete("/settings/connectors/celerp/disconnect?redirect=1",
+                                       cookies={"celerp_token": token})
+            sync = await client.post("/settings/connectors/celerp/sync",
+                                     cookies={"celerp_token": token})
+
+    for html in (gone.text, sync.text):
+        assert "No active Celerp Connect session." in html
+        assert "API 401" not in html
+
+
 def _card_html(catalog: list[dict], config=None, awaiting=None, category="accounting"):
     from fasthtml.common import to_xml
     from ui.routes.settings_connectors import connectors_tab_content

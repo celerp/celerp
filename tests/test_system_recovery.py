@@ -174,7 +174,7 @@ async def test_backup_tab_has_no_system_recovery_actions(ui, real_engine, cloud_
     r = await ui.get("/settings/general?tab=backup")
     assert r.status_code == 200, r.text
     page = _page(r)
-    assert _link(page, "/company-backup/download", "Download company backup")
+    assert _link(page, "/company-backup/download", "Download company copy")
     assert _controls(page) == set()
 
 

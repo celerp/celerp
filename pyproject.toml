@@ -105,13 +105,14 @@ asyncio_mode = "auto"
 # 8-19s per worker there, and a two-render test lands at 20-25s, so shards failed
 # on timing rather than on anything being wrong. 60s keeps the guard meaningful
 # (a genuine deadlock still trips it) with headroom for parallel runs.
-addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser and not embedded_pg' --timeout=60"
+addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser and not embedded_pg and not integration' --timeout=60"
 norecursedirs = [".git", ".claude", ".venv", "__pycache__", "build", "dist", "premium_modules/*/tests"]
 pythonpath = [".", ".."]
 markers = [
     "browser: Playwright browser UI tests (requires running servers + Chromium). Run separately with: pytest tests/test_browser/ -m browser",
     "embedded_pg: bundled-PostgreSQL integration tests (boot a real pgserver cluster; ~slow). Run separately with: pytest -m embedded_pg",
     "process: spawns OS processes or races separate database connections (slow). CI runs these in their own job.",
+    "integration: several installations, each its own server process and database, and a stand-in relay (slow). CI runs these in their own job.",
 ]
 
 # NOTE: do NOT set [tool.coverage.run] core = "sysmon" here. The sys.monitoring

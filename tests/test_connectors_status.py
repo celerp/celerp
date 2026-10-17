@@ -57,7 +57,7 @@ def test_status_view_polls_only_while_in_progress():
 def test_entity_status_table_rows_and_empty():
     assert "Never synced" in to_xml(_entity_status_table({}))
     out = to_xml(_entity_status_table({"products": _r(created_count=1200, updated_count=3)}))
-    assert "Products" in out and "+1,200 ~3" in out
+    assert "Products" in out and "1,200 added, 3 updated" in out
 
 
 @pytest.mark.asyncio

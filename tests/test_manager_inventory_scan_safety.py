@@ -1,9 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Inventory Celerp cannot carry yet stops a Manager migration at the scan: more than one
-inventory location, stock transfers between locations, and stock that runs below zero.
-Each is a blocker naming the record type and how many there are, refused on both modes
-before any company or run exists, and never a warning the user can click past."""
+"""Inventory Celerp cannot carry yet stops a Manager migration at the scan: stock that runs
+below zero. It is a blocker naming the record type and how many there are, refused on both
+modes before any company or run exists, and never a warning the user can click past.
+Further inventory locations are carried, the stock held at them arriving at the default
+location as a listed loss, and transfers between locations are listed as not carried."""
 
 from __future__ import annotations
 
@@ -18,9 +19,7 @@ from sqlalchemy import text
 from fixtures.manager_io import specs
 from migration_support import migration_env, save_decisions, scan_upload  # noqa: F401 - fixture
 
-LOCATIONS = "CustomInventoryLocation (multiple locations)"
-LOCATED = "PurchaseInvoice (multiple locations)"
-TRANSFERS = "InventoryTransfer (inter-location transfer)"
+LOCATED = "PurchaseInvoice (location)"
 NEGATIVE = "DeliveryNote (negative stock)"
 MODES = (("full_history", None), ("cutover", "2026-01-05"))          # the first record's date
 
@@ -65,21 +64,30 @@ def _not_a_warning(scan, labels) -> None:
         assert not [w for w in scan["warnings"] if label.split(" (")[0] in w], (label, scan["warnings"])
 
 
-async def test_manager_multiple_locations_refused_at_scan(client, session, migration_env, tmp_path):
-    """RED before the change: extra inventory locations are listed as not carried and the
-    migration goes ahead, putting stock held at the second location in the first."""
-    scan_token, scan = await _scan(client, tmp_path, locations=1)
-    assert _blockers(scan) == {LOCATIONS: 1, LOCATED: 1}
-    _not_a_warning(scan, [LOCATIONS])
-    await _refused_everywhere(client, session, migration_env, scan_token, [f"{LOCATIONS} (1)", f"{LOCATED} (1)"])
+def _coverage(scan) -> dict[str, dict]:
+    return {row["source_type"]: row for row in scan["coverage"]}
 
 
-async def test_manager_inventory_transfer_refused_at_scan(client, session, migration_env, tmp_path):
-    """RED before the change: stock transfers are listed as not carried and dropped."""
-    scan_token, scan = await _scan(client, tmp_path, transfers=1)
-    assert _blockers(scan) == {TRANSFERS: 1}
-    _not_a_warning(scan, [TRANSFERS])
-    await _refused_everywhere(client, session, migration_env, scan_token, [f"{TRANSFERS} (1)"])
+async def test_manager_further_location_scans_as_a_listed_loss(client, session, migration_env, tmp_path):
+    """RED before the change: a further inventory location, and the bill that stocks it,
+    each stop the migration.
+
+    The location is carried, and the bill's stock is listed as arriving at the default
+    location: neither is a blocker."""
+    _, scan = await _scan(client, tmp_path, locations=1)
+    assert _blockers(scan) == {}
+    rows = _coverage(scan)
+    assert (rows["CustomInventoryLocation"]["coverage_class"], rows[LOCATED]["count"],
+            rows[LOCATED]["coverage_class"]) == ("mapped_with_loss", 1, "mapped_with_loss")
+
+
+async def test_manager_inventory_transfer_listed_as_not_carried(client, session, migration_env, tmp_path):
+    """RED before the change: a stock transfer stops the migration, though it changes no
+    figure Manager reports."""
+    _, scan = await _scan(client, tmp_path, transfers=1)
+    assert _blockers(scan) == {}
+    row = _coverage(scan)["InventoryTransfer"]
+    assert (row["count"], row["coverage_class"]) == (1, "unsupported_nonfinancial")
 
 
 async def test_manager_negative_stock_refused_at_scan(client, session, migration_env, tmp_path):
@@ -93,29 +101,27 @@ async def test_manager_negative_stock_refused_at_scan(client, session, migration
 async def test_manager_unsupported_inventory_refused_before_run_creation(
     client, session, migration_env, tmp_path,
 ):
-    """RED before the change: every one of these scans clean enough to start a company."""
-    for kinds, labels in (({"locations": 1}, [LOCATIONS]), ({"transfers": 1}, [TRANSFERS]),
-                          ({"negative": True}, [NEGATIVE])):
-        scan_token, _ = await _scan(client, tmp_path, **kinds)
-        await _refused_everywhere(client, session, migration_env, scan_token, labels)
+    """RED before the change: negative stock scans clean enough to start a company."""
+    scan_token, _ = await _scan(client, tmp_path, negative=True)
+    await _refused_everywhere(client, session, migration_env, scan_token, [NEGATIVE])
 
 
 async def test_manager_inventory_blockers_are_never_warning_only(client, session, migration_env, tmp_path):
-    """RED before the change: locations and transfers appear only as warnings."""
+    """RED before the change: negative stock appears only as a warning."""
     _, scan = await _scan(client, tmp_path, locations=2, transfers=2, negative=True)
-    assert set(_blockers(scan)) == {LOCATIONS, LOCATED, TRANSFERS, NEGATIVE}
+    assert set(_blockers(scan)) == {NEGATIVE}
     for warning in scan["warnings"]:
-        for name in ("CustomInventoryLocation", "InventoryTransfer", "DeliveryNote", "GoodsReceipt"):
+        for name in ("DeliveryNote", "GoodsReceipt"):
             assert name not in warning, warning
 
 
 async def test_manager_inventory_blocker_coverage_names_type_and_count(client, session, migration_env, tmp_path):
-    """RED before the change: none of these are counted as blockers."""
+    """RED before the change: negative stock is not counted as a blocker, and further
+    locations and transfers are."""
     scan_token, scan = await _scan(client, tmp_path, locations=2, transfers=2, negative=True)
-    assert _blockers(scan) == {LOCATIONS: 2, LOCATED: 1, TRANSFERS: 2, NEGATIVE: 1}
+    assert _blockers(scan) == {NEGATIVE: 1}
     assert all(b["reason"] for b in scan["blockers"])
-    await _refused_everywhere(client, session, migration_env, scan_token, [
-        f"{LOCATIONS} (2)", f"{LOCATED} (1)", f"{TRANSFERS} (2)", f"{NEGATIVE} (1)"])
+    await _refused_everywhere(client, session, migration_env, scan_token, [f"{NEGATIVE} (1)"])
 
 
 NEGATIVE_SALE = "SalesInvoice (negative stock)"
@@ -158,29 +164,31 @@ async def test_manager_negative_stock_refused_at_scan_cutover(client, session, m
             build([artifact(tmp_path / "safety.manager")], decisions)
 
 
-async def test_manager_single_named_location_imports_with_exact_item_location_reconciliation(
+async def test_manager_single_named_location_imports_at_the_default_location(
     client, session, migration_env, tmp_path,
 ):
-    """RED before the change: the goods receipt is not read and the flagged bill's location
-    is ignored, so the 8 widgets held at Store 2 are imported at the default location.
+    """RED before the change: the goods receipt and the flagged bill each stop the
+    migration, since they put stock into Store 2, which is not Manager's default location.
 
-    Stock held only at one named location is refused, naming each record type and count,
-    because Celerp cannot yet reconcile stock per named location. Nothing is put in the
-    default location instead: no company, no run, and no manifest."""
-    from celerp.importers.adapters.base import MigrationDecisions, ScanError
+    Both locations are carried, and the 8 widgets held at Store 2 are imported at the
+    default location, each record listed as such, so the user can move them with a
+    transfer once the import is done."""
+    from celerp.importers.adapters.base import MigrationDecisions
     from celerp.importers.schema import CIFMode
-    from fixtures.manager_io.support import adapter, artifact
+    from fixtures.manager_io.support import adapter, artifact, ref
 
-    placed = "GoodsReceipt (multiple locations)"
-    scan_token, scan = await _scan(client, tmp_path, specs.build_single_named_location)
-    assert _blockers(scan) == {LOCATIONS: 1, placed: 1, LOCATED: 1}
-    _not_a_warning(scan, [LOCATIONS, placed, LOCATED])
-    await _refused_everywhere(client, session, migration_env, scan_token,
-                              [f"{LOCATIONS} (1)", f"{placed} (1)", f"{LOCATED} (1)"])
+    placed = "GoodsReceipt (location)"
+    _, scan = await _scan(client, tmp_path, specs.build_single_named_location)
+    assert _blockers(scan) == {}
+    rows = _coverage(scan)
+    assert {label: (rows[label]["count"], rows[label]["coverage_class"]) for label in (placed, LOCATED)} == {
+        placed: (1, "mapped_with_loss"), LOCATED: (1, "mapped_with_loss")}
     for decisions in (MigrationDecisions(mode=CIFMode.FULL_HISTORY),
                       MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=date(2026, 1, 5))):
-        with pytest.raises(ScanError, match=re.escape(f"{LOCATIONS} (1), {placed} (1), {LOCATED} (1)")):
-            adapter().build_manifest([artifact(tmp_path / "safety.manager")], decisions)
+        bundle = adapter().build_manifest([artifact(tmp_path / "safety.manager")], decisions).bundle
+        assert [loc.name for loc in bundle.locations] == ["Head Office", "Store 2"]
+        held = [(a.quantity, a.value) for a in bundle.inventory_adjustments if a.item_external_id == ref("WID")]
+        assert (sum(q for q, _ in held), sum(v or D(0) for _, v in held)) == (D("8"), D("32.00"))
 
 
 async def _row_counts(session) -> dict[str, int]:
@@ -201,7 +209,7 @@ async def test_manager_unsupported_inventory_refused_before_run_creation_bootstr
     business row in any table."""
     before = await _row_counts(session)
     for build, kinds in ((specs.build_inventory_safety, {"locations": 2, "transfers": 2, "negative": True}),
-                         (specs.build_negative_recovery, {}), (specs.build_single_named_location, {})):
+                         (specs.build_negative_recovery, {})):
         scan_token, scan = await _scan(client, tmp_path, build, **kinds)
         await _refused_everywhere(client, session, migration_env, scan_token,
                                   [f"{label} ({count})" for label, count in _blockers(scan).items()])
@@ -239,7 +247,7 @@ async def test_scan_preview_shows_inventory_blocker_rows(client, session, migrat
     page = html.unescape(r.text)
     reasons = {b["source_type"]: b["reason"] for b in scan["blockers"]}
     blocking, _, warnings = page.partition("<h3>Warnings</h3>")
-    for label, count in {LOCATIONS: 2, LOCATED: 1, TRANSFERS: 2, NEGATIVE: 1}.items():
+    for label, count in {NEGATIVE: 1}.items():
         assert f"<li>{label}: {count} records. {reasons[label]}</li>" in blocking, label
         assert label not in warnings, label
 

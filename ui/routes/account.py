@@ -52,6 +52,10 @@ _NEXT_RES = (
     re.compile(r"^buy:[a-z0-9_-]+:(monthly|once)$"),
     re.compile(r"^community:[a-z0-9_-]+$"),
     re.compile(r"^doc-send$"),
+    re.compile(r"^copy-send$"),
+    re.compile(r"^export-send$"),
+    re.compile(r"^move-send$"),
+    re.compile(r"^xero-attachments$"),
 )
 
 # Every gate delivers its panel inside the shared modal dialog, floating over
@@ -62,7 +66,17 @@ _GATE_BENEFIT_KEYS = {
     "buy": "account.gate_buy_benefit",
     "community": "account.gate_community_benefit",
     "doc-send": "account.gate_doc_send_benefit",
+    "copy-send": "account.gate_copy_send_benefit",
+    "export-send": "account.gate_export_send_benefit",
+    "move-send": "account.gate_move_send_benefit",
+    "xero-attachments": "account.gate_xero_attachments_benefit",
 }
+
+# Continuations whose form kept every typed value and the same operation: submitting it
+# again reuses what was staged, so the copy is never re-exported, the client gets one
+# email with one link, Celerp's team gets one move request, and a Xero sign-in keeps its link.
+_RESUBMIT_FORMS = {"copy-send": "copy-send-form", "export-send": "export-request-form",
+                   "move-send": "move-request-form", "xero-attachments": "xero-attachments-form"}
 
 
 def _next_from(value: str | None) -> str | None:
@@ -216,11 +230,11 @@ def _signup_body(lang: str, panel_id: str, google: bool,
     ]
     if next_action:
         # State the concrete reason the sign-in stands between the user and the
-        # action they clicked, above the generic hint.
+        # action they clicked, in place of the generic hint.
         kind = next_action.split(":", 1)[0]
         benefit = (t(_GATE_BENEFIT_KEYS[kind], lang, n=free_quota)
                    if kind == "doc-send" else t(_GATE_BENEFIT_KEYS[kind], lang))
-        parts.insert(1, P(benefit, cls="settings-hint account-panel__benefit"))
+        parts[1] = P(benefit, cls="settings-hint account-panel__benefit")
     if method_toggle is not None:
         parts.append(method_toggle)
     parts.append(email_path)
@@ -434,6 +448,10 @@ def _resume_parts(next_action: str) -> list:
         return [_resume_guard_script(next_action,
                                      "sessionStorage.setItem('celerp_open_send','1');"
                                      "location.reload();")]
+    if next_action in _RESUBMIT_FORMS:
+        return [_resume_guard_script(next_action,
+                                     f"var f=document.getElementById('{_RESUBMIT_FORMS[next_action]}');"
+                                     "if(f){f.requestSubmit();}")]
     if next_action.startswith("buy:"):
         _, slug, kind = next_action.split(":")
         fire = Div(id="account-resume",

@@ -41,10 +41,15 @@ RELEASE_HEAD = "o2d3e4f5a6b7"
 # What this release adds on top of it, oldest first: session companies, then the
 # payment revisions, then per-company modules for companies from 2.5, then the invoice
 # an unmatched payment is recorded on, then cash flow sections, notice translations and
-# generated account codes, then import reversibility, then per-user notice reads.
+# generated account codes, then import reversibility, then per-user notice reads,
+# then company peer grants, then removing per-user API keys, then the firm view's
+# key last use and refused records, then the revisions two-way sync sent or declined,
+# then the account links two-way sync keeps, then the attachments a Xero migration fetches.
 RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1", "t7i8j9k0l1m2",
                  "u8j9k0l1m2n3", "c7f1a2b3d4e5", "d8e9f0a1b2c3", "e9f0a1b2c3d4", "v0m1n2o3p4q5",
-                 "w1n2o3p4q5r6"]
+                 "w1n2o3p4q5r6", "x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9",
+                 "a5t6u7v8w9x0", "b6u7v8w9x0y1", "c7v8w9x0y1z2", "d8w9x0y1z2a3",
+                 "e9x0y1z2a3b4"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.
@@ -90,6 +95,50 @@ def test_this_release_runs_in_order_after_the_last_release():
     script = ScriptDirectory.from_config(build_alembic_config())
     walked = [r.revision for r in script.walk_revisions(base=RELEASE_HEAD, head="heads")]
     assert list(reversed(walked)) == [RELEASE_HEAD, *RELEASE_CHAIN]
+
+
+@pytest.mark.parametrize("table", ["company_peer_grants", "company_peer_identities"])
+def test_peer_downgrade_preserves_persisted_records(table):
+    with throwaway_db("peer_rollback") as (_, sync_url):
+        upgrade_to(sync_url, head_rev())
+        eng = create_engine(sync_url)
+        company_id = str(uuid.uuid4())
+        try:
+            with eng.begin() as conn:
+                conn.execute(text(
+                    "INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                    "VALUES (:id, 'Peer', 'peer', '{}', true, now())"),
+                    {"id": company_id})
+                if table == "company_peer_grants":
+                    conn.execute(text(
+                        "INSERT INTO company_peer_grants "
+                        "(id, company_id, source_company_id, token_hash, label, scopes, "
+                        "created_at, expires_at) VALUES "
+                        "(:id, :company, :source, :digest, 'Firm', '[\"contacts\"]', "
+                        "now(), now() + interval '1 day')"), {
+                            "id": str(uuid.uuid4()), "company": company_id,
+                            "source": str(uuid.uuid4()), "digest": "a" * 64,
+                        })
+                else:
+                    conn.execute(text(
+                        "INSERT INTO company_peer_identities "
+                        "(id, company_id, source_company_id, entity_type, source_entity_id, "
+                        "source_key_hash, target_entity_id, last_revision) "
+                        "VALUES (:id, :company, :source, 'contact', 'old', :digest, 'contact:new', 1)"), {
+                            "id": str(uuid.uuid4()), "company": company_id,
+                            "source": str(uuid.uuid4()), "digest": "b" * 64,
+                        })
+        finally:
+            eng.dispose()
+        with pytest.raises(RuntimeError, match="Cannot downgrade while company integrations exist"):
+            _downgrade_to(sync_url, "w1n2o3p4q5r6")
+        eng = create_engine(sync_url)
+        try:
+            with eng.connect() as conn:
+                assert conn.execute(text(f"SELECT count(*) FROM {table}")).scalar_one() == 1
+                assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == head_rev()
+        finally:
+            eng.dispose()
 
 
 def _without_instance_meta(schema: dict[str, set]) -> dict[str, set]:
@@ -237,6 +286,10 @@ def test_a_database_from_before_the_revisions_were_reordered_reaches_the_same_sc
 # company backup never carries them.
 OUTLIVES_ITS_COMPANY = {"payment_closures", "payment_recoveries", "unmatched_payments", "unmatched_refunds"}
 
+# Tables this release adds that belong to a person on this installation, never to a
+# company, so no company backup carries them.
+BELONGS_TO_A_PERSON = {"migration_templates", "migration_batch_files"}
+
 
 def test_every_table_and_column_this_release_adds_is_placed_for_company_backups():
     from celerp.migrations._auto_stamp import extract_signatures
@@ -249,7 +302,7 @@ def test_every_table_and_column_this_release_adds_is_placed_for_company_backups(
              for sig in extract_signatures(Path(rev.path)) if sig.kind in ("create_table", "add_column")}
     tables = Base.metadata.tables
 
-    assert added >= OUTLIVES_ITS_COMPANY
+    assert added >= OUTLIVES_ITS_COMPANY | BELONGS_TO_A_PERSON
     for table in sorted(added):
         if "company_id" in tables[table].c:
             assert (table in cb.PORTABLE_TABLES) != (table in cb.EXCLUDED_TABLES), table
@@ -258,4 +311,5 @@ def test_every_table_and_column_this_release_adds_is_placed_for_company_backups(
             # off a table that stays with the installation (a notice's read receipts).
             parents = {fk.column.table.name for fk in tables[table].foreign_keys}
             assert table not in cb.PORTABLE_TABLES, table
-            assert table in OUTLIVES_ITS_COMPANY or parents & set(cb.EXCLUDED_TABLES), table
+            assert (table in OUTLIVES_ITS_COMPANY or parents & set(cb.EXCLUDED_TABLES)
+                    or table in BELONGS_TO_A_PERSON and parents == {"users"}), table

@@ -41,6 +41,7 @@ from celerp.services.account_roles import (
     lot_account,
     merge_survivors,
     resolve,
+    resolve_importing,
     resolve_many,
     party_key,
     scope_codes,
@@ -197,8 +198,14 @@ async def _with_fx_difference(session, company_id, entries: list[dict]) -> list[
     fx_role = _fx_difference_role(entries)
     if fx_role is None:
         return entries
-    acc = await resolve_many(session, company_id, [fx_role])
-    return _balanced_with_fx_difference(entries, _line(acc[fx_role], fx_role))
+    return _balanced_with_fx_difference(entries, await _fx_line(session, company_id, fx_role))
+
+
+async def _fx_line(session, company_id, fx_role) -> dict:
+    """The exchange gain or loss line for new recognition, on the role's account or, while
+    a migration is still importing, the source books' own (resolve_importing)."""
+    account = await resolve_importing(session, company_id, fx_role)
+    return _origin_line(await current_settings(session, company_id), account, fx_role)
 
 
 class UnbalancedJournalEntry(ValueError):
@@ -806,12 +813,10 @@ async def _restate_receivable(session, *, company_id, user_id, doc_id: str, sett
         return
     entries = [_origin_line(settings, ar, R.RECEIVABLE, debit=to_stored_float(max(gap, _Dec(0))),
                             credit=to_stored_float(max(-gap, _Dec(0))))]
-    role = _fx_difference_role(entries)
-    acc = await resolve_many(session, company_id, [role])
     await _emit_auto_posted_je(
         session, company_id=company_id, user_id=user_id, je_id=je_id,
         idem_create=je_idempotency_key(doc_id, op, "c"), idem_posted=je_idempotency_key(doc_id, op, "p"),
-        memo=memo, ts=ts, entries=_balanced_with_fx_difference(entries, _line(acc[role], role)),
+        memo=memo, ts=ts, entries=await _with_fx_difference(session, company_id, entries),
         metadata_=metadata_,
     )
 
@@ -1024,9 +1029,7 @@ async def _settlement_accounts(session, company_id, *, doc_id: str, control: Acc
     ``entries_for(control_line, bank_code)`` returns the entry's two lines."""
     settings = await current_settings(session, company_id)
     origin = await party_origin(session, company_id, doc_id, control, settings)
-    probe = entries_for(lambda debit=0.0, credit=0.0: {"debit": debit, "credit": credit}, "")
-    roles = [r for r in (None if origin else control, None if bank else R.DEFAULT_DEPOSIT,
-                         _fx_difference_role(probe)) if r is not None]
+    roles = [r for r in (None if origin else control, None if bank else R.DEFAULT_DEPOSIT) if r is not None]
     acc = await resolve_many(session, company_id, roles) if roles else {}
     if origin:
         def control_line(debit=0.0, credit=0.0):
@@ -1038,8 +1041,7 @@ async def _settlement_accounts(session, company_id, *, doc_id: str, control: Acc
         entries = entries_for(control_line, bank)
     else:
         entries = entries_for(control_line, acc[R.DEFAULT_DEPOSIT])
-    fx_role = _fx_difference_role(entries)
-    return _balanced_with_fx_difference(entries, _line(acc[fx_role], fx_role) if fx_role else None)
+    return await _with_fx_difference(session, company_id, entries)
 
 
 def payment_amounts(*, amount: float, base_currency: str, doc_rate: float, settlement_rate: float,
@@ -1117,6 +1119,102 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     )
 
 
+
+async def create_for_online_fees(
+    session, *, company_id, user_id, doc_id: str, reference: str,
+    payment: dict, fees: dict, occurred_at: datetime,
+) -> str | None:
+    """Book actual settled online fees against the receipt's original deposit account,
+    on the account the company chose for online payment fees. Returns that account
+    when this call posted the fees, None when they were already posted or net to zero.
+
+    Gross settlement of the invoice remains unchanged. Every provider transaction is
+    a separate signed cash movement, including actual fee refunds. No inferred fees.
+    """
+    import hashlib
+    import json
+    from celerp.events.engine import find_event_by_idempotency
+    from celerp.services.business_time import business_date_at
+    from celerp.services.posting_dates import correction_day
+    from celerp.models.company import Company
+
+    # The provider identifies each settled fee adjustment independently. The same
+    # transaction may be redelivered, but cannot revise its accounting facts.
+    tx = fees["transaction_id"]
+    token = hashlib.sha256(tx.encode("utf-8")).hexdigest()[:24]
+    suffix = f"online-fees:{token}"
+    create_key = je_idempotency_key("online-fees", suffix, "c")
+    digest = hashlib.sha256(json.dumps(
+        {"reference": reference, "fees": fees, "paid_bank": payment["bank_account"],
+         "rate": payment["conversion_rate"]},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
+    previous = await find_event_by_idempotency(session, company_id, create_key)
+    if previous is not None:
+        if (previous.event_type != "acc.journal_entry.created"
+                or (previous.metadata_ or {}).get("fee_hash") != digest):
+            raise ValueError("Online fee transaction was previously posted with other details")
+        return None
+
+    from celerp.services.payments import stripe_amount
+    from celerp.services.money import checked_exchange_rate, to_decimal
+    from celerp.services.account_roles import resolve
+    from celerp_docs.routes import books_currency_still
+    bank = payment["bank_account"]
+    base = payment["books"]["base_currency"].upper()
+    await books_currency_still(session, company_id, base)
+    fee_currency = fees["currency"].upper()
+    paid_currency = str(payment.get("currency") or "").upper()
+    if fee_currency == base:
+        rate = _Dec(1)
+    elif fee_currency == paid_currency:
+        rate = checked_exchange_rate(payment["conversion_rate"])
+    else:
+        raise ValueError("Provider fee currency cannot be converted from recorded payment books")
+    expense = await resolve(session, company_id, R.ONLINE_PAYMENT_FEES)
+    parts = (("processor", "processor_minor"), ("platform", "platform_minor"),
+             ("other", "other_minor"))
+    running = _Dec(0)
+    converted = _Dec(0)
+    entries: list[dict] = []
+    for label, name in parts:
+        running += stripe_amount(fees[name], fees["currency"])
+        total = to_decimal(to_base(running, rate, base))
+        signed = total - converted
+        converted = total
+        if signed:
+            value = to_stored_float(abs(signed))
+            entries.append({
+                **_line(expense, R.ONLINE_PAYMENT_FEES,
+                        debit=value if signed > 0 else 0.0,
+                        credit=value if signed < 0 else 0.0),
+                "fee_kind": label,
+            })
+    if not entries:
+        return None
+    amount = to_stored_float(abs(converted))
+    if converted:
+        entries.append({"account": bank,
+                        "debit": amount if converted < 0 else 0.0,
+                        "credit": amount if converted > 0 else 0.0})
+    company = await session.get(Company, company_id)
+    original_day = business_date_at(occurred_at, ((company.settings if company else None) or {}).get("timezone"))
+    day = await correction_day(session, company_id, original_day) or original_day
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id,
+        je_id=f"je:auto:{doc_id}:online-fees:{token}",
+        idem_create=create_key, idem_posted=je_idempotency_key("online-fees", suffix, "p"),
+        memo=f"Online payment processing fees for {doc_id}",
+        ts=day, currency=base, entries=entries,
+        metadata_={"trigger": "doc.online_fees", "doc_id": doc_id,
+                   "reference": reference, "fee_hash": digest,
+                   "transaction_id": tx, "fee_currency": fees["currency"],
+                   "fee_components_minor": {key: fees[key] for key in
+                                            ("processor_minor", "platform_minor", "other_minor")}},
+    )
+    return expense
+
+
 def _reversal_template(entry: dict) -> dict:
     """A line on the same account, with the same role snapshot, as ``entry``."""
     out = {"account": entry["account"], "debit": 0.0, "credit": 0.0}
@@ -1158,9 +1256,8 @@ async def payment_return_entries(session, company_id, *, doc_id: str, payment_in
         return {**control_template, "debit": debit, "credit": credit}
     entries = entries_for(control_line, _reversal_template(bank_entry))
     difference = _reversal_template(posted[2]) if len(posted) > 2 else None
-    if difference is None and _fx_difference_role(entries) is not None:
-        fx_role = _fx_difference_role(entries)
-        difference = _line((await resolve_many(session, company_id, [fx_role]))[fx_role], fx_role)
+    if difference is None:
+        return await _with_fx_difference(session, company_id, entries)
     return _balanced_with_fx_difference(entries, difference)
 
 
@@ -4476,7 +4573,8 @@ async def create_for_mfg_movement(
 
 
 # Memo prefix per list-adjustment kind; the full memo is "<prefix> <list_id>".
-_ADJUST_MEMO = {"audit": "Inventory audit adjustment", "writeoff": "Inventory write-off"}
+_ADJUST_MEMO = {"audit": "Inventory audit adjustment", "writeoff": "Inventory write-off",
+                "writeoff_cost": "Inventory write-off cost correction"}
 
 
 def _list_adjustment_je_id(list_id: str, kind: str, cycle: int) -> str:

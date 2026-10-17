@@ -136,6 +136,7 @@ async def list_unsynced_invoices(company_id: str, platform: str) -> list[dict]:
         for r in rows
         if not any((st := r.state or {}).get(m) for m in _IMPORTED_INVOICE_MARKERS)
         and not st.get(f"{platform}_invoice_id")
+        and not (platform in {"quickbooks", "xero", "celerp"} and st.get("accounting_sync_excluded"))
     ]
 
 
@@ -153,6 +154,8 @@ async def invoice_for_push(company_id: str, entity_id: str, platform: str) -> di
         )
     state = (row.state or {}) if row is not None else {}
     if state.get("doc_type") != "invoice":
+        return None
+    if platform in {"quickbooks", "xero", "celerp"} and state.get("accounting_sync_excluded"):
         return None
     return {
         **_invoice_for_push(row.entity_id, state),

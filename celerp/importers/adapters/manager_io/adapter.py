@@ -17,11 +17,11 @@ from celerp.importers.adapters.base import (
     SourceScan,
 )
 from celerp.importers.adapters.manager_io import attachments
-from celerp.importers.adapters.manager_io.book import Book, read_book
+from celerp.importers.adapters.manager_io.book import MERGED_CONTROLS, PAYSLIP_ITEMS, STARTING_TYPES, Book, read_book
 from celerp.importers.adapters.manager_io.ledger import Ledger, Posting, build_ledger
 from celerp.importers.adapters.manager_io.mappings import SOURCE_SYSTEM, build_bundle, carried
 from celerp.importers.adapters.manager_io.reconcile import expectations_from
-from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader
+from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader, supported
 from celerp.importers.schema import (
     CIFImportBundle,
     CIFImportManifest,
@@ -33,9 +33,12 @@ from ui.i18n import t
 
 MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 MAPPED = (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS)
-# Records carried only through others: the default location holds all stock, and unit
-# costs price the cost of sales on each invoice.
-NOT_CARRIED = frozenset({"DefaultInventoryLocation", "InventoryUnitCost", "LockDate"})
+# Records carried only through others: the default location holds all stock, unit costs
+# price the cost of sales on each invoice, starting balances post as one journal, a sub
+# account arrives as the account each line places on it, and the customer, supplier and
+# inventory control accounts fold into receivables, payables and inventory.
+NOT_CARRIED = frozenset({"DefaultInventoryLocation", "ExchangeRate", "InventoryUnitCost", "InvestmentMarketPrice",
+                         "LockDate", "SubAccount", *STARTING_TYPES, *MERGED_CONTROLS, *PAYSLIP_ITEMS})
 
 
 def _single(artifacts: ArtifactSet) -> Artifact:
@@ -65,7 +68,8 @@ def _representations(book: Book, key: str, postings: list[Posting], moved: dict[
 
 def _refuse_gaps(book: Book, ledger: Ledger, bundle: CIFImportBundle) -> None:
     """Refuse a bundle missing a representation of a mapped source record: every record in
-    full history or after the cutover, every pre-cutover document it carries, every master."""
+    full history or after the cutover, every pre-cutover document, quote and order it carries,
+    every master."""
     by_record: dict[str, list[Posting]] = defaultdict(list)
     imported = ledger.imported_postings()
     for p in {*imported, *(p for p in ledger.postings if ledger.cutover is None or p.date > ledger.cutover)}:
@@ -76,6 +80,8 @@ def _refuse_gaps(book: Book, ledger: Ledger, bundle: CIFImportBundle) -> None:
     for key, verdict in book.verdicts.items():
         if verdict.coverage_class not in MAPPED or verdict.source_type == attachments.REJECTED:
             continue
+        if key in book.orders and key not in ledger.orders:
+            continue                                    # a quote or order converted or cancelled before the cutover
         if not _representations(book, key, by_record.get(key, []), moved) <= present:
             missing[verdict.source_type] += 1
     if missing:
@@ -95,6 +101,10 @@ class ManagerIOAdapter:
     display_name = "Manager.io"
     adapter_version = "2"
     artifact_specs = (ArtifactSpec("business_file", "Manager business file", (".manager",), MAX_FILE_BYTES),)
+
+    @property
+    def accepts(self) -> str:
+        return supported()
 
     def detect(self, artifacts: ArtifactSet) -> DetectionResult:
         try:
@@ -142,6 +152,8 @@ class ManagerIOAdapter:
                              for key, reason in sorted(screened.rejected.items())],
             },
         }
+        if any(book.is_foreign(c) for c in book.currencies):
+            summary["fx"] = {"realized": str(ledger.realized), "unrealized": ledger.unrealized}
         return CIFImportManifest(
             source=book.company_name or artifact.original_name,
             source_system=self.key,

@@ -4,14 +4,14 @@
 the item label the posting and reconcile pages share.
 
 Offers the chart accounts that can serve the role and, where one is proposed, adding
-a new account. More than ten options become a searchable picker (rule i).
+a new account. The picker is always searchable: a chart can grow past ten accounts (rule i).
 """
 from __future__ import annotations
 
 from fasthtml.common import *
 
 from celerp.accounting_roles import account_label
-from ui.components.table import _SEARCHABLE_THRESHOLD, display_enum, searchable_select
+from ui.components.table import display_enum, searchable_select
 from ui.i18n import t
 
 NEW_ACCOUNT = "__new__"
@@ -34,11 +34,5 @@ def account_picker(name: str, candidates: list[dict], value: str = "", proposal:
     options = [(c["code"], account_label(c)) for c in candidates]
     if proposal:
         options.append((NEW_ACCOUNT, proposal_label(proposal)))
-    if len(options) > _SEARCHABLE_THRESHOLD:
-        return searchable_select(name, options, value=value, placeholder=t("posting.choose"),
-                                 aria_label=aria_label, **attrs)
-    return Select(
-        Option(t("posting.choose"), value="", selected=not value),
-        *[Option(label, value=code, selected=code == value) for code, label in options],
-        name=name, cls="form-input", aria_label=aria_label or None, **attrs,
-    )
+    return searchable_select(name, options, value=value, placeholder=t("posting.choose"),
+                             aria_label=aria_label, **attrs)

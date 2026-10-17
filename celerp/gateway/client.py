@@ -48,9 +48,15 @@ _REAP_GRACE = 5 * 60       # seconds
 # socket is wedged (a stalled or backpressured peer). Bound every send so it surfaces as an
 # error instead of pinning the proxy task holding a relay slot forever.
 _SEND_DEADLINE = 30        # seconds
-# Anonymous API-app pages a visitor opens from a link: shared documents and pay links.
-# Matched on a segment boundary, so /payments or /shared-thing stay on the UI server.
-_PUBLIC_API_PREFIXES = ("/share", "/pay")
+# Anonymous API-app pages reached from outside: shared documents and pay links a visitor
+# opens, and the key check a client company's installation makes before it syncs (granting
+# that key needs sign-in, so /company-peers/grants stays on the UI server). Matched on a
+# segment boundary, so /payments or /shared-thing stay on the UI server.
+_PUBLIC_API_PREFIXES = (
+    "/share",
+    "/pay",
+    "/company-peers/verify",
+)
 
 
 class _SharedProxyTransport(httpx.AsyncHTTPTransport):
@@ -168,18 +174,24 @@ class GatewayClient:
             self._ui_port = cfg.get("server", {}).get("ui_port", 8080)
             self._api_port = cfg.get("server", {}).get("api_port", 8000)
 
-    def _local_port_for(self, path: str) -> int:
+    def _local_port_for(self, path: str, method: str = "GET", authorization: str = "") -> int:
         """Route a relayed request to the local server that owns the path.
 
         Browser-facing traffic lives on the UI server — including routes under
         /api/, which are UI-server endpoints (HTMX fragments, image/barcode
         previews, item & bulk actions), NOT the internal data API. The API
         server is an internal backend the UI calls server-side via api_client.
-        The exceptions are the anonymous API-app pages a visitor opens from a link
+        The exceptions are the anonymous API-app pages reached from outside
         (_PUBLIC_API_PREFIXES): routed to the UI server they 404, so every shared
-        document and every pay link would be dead.
+        document, every pay link and every accountant sync call would be dead. So are
+        the import and file routes a client company's installation signs with its key
+        (peer_access.PEER_ROUTES); the same routes signed in through a browser stay UI.
         """
+        from celerp.services.peer_access import route_entity
+
         if any(path == p or path.startswith(p + "/") for p in _PUBLIC_API_PREFIXES):
+            return self._api_port
+        if authorization.startswith("Peer ") and route_entity(method, path) is not None:
             return self._api_port
         return self._ui_port
 
@@ -522,6 +534,7 @@ class GatewayClient:
         "invoice.payment": "_handle_invoice_payment",
         "invoice.payment_release": "_handle_invoice_payment_release",
         "invoice.refund": "_handle_invoice_refund",
+        "invoice.fees": "_handle_invoice_fees",
     }
 
     def _build_hello_payload(self, tos_version: str, app_version: str) -> dict:
@@ -763,6 +776,11 @@ class GatewayClient:
         from celerp.services.payments import receive_payment
         await self._receive_delivery("invoice.payment", receive_payment, payload)
 
+    async def _handle_invoice_fees(self, payload: dict) -> None:
+        """Record actual payment fee adjustments using the invoice's existing books."""
+        from celerp.services.payments import receive_fees
+        await self._receive_delivery("invoice.fees", receive_fees, payload)
+
     async def _handle_invoice_refund(self, payload: dict) -> None:
         """Record a delivered change to a refund of an invoice payment and acknowledge
         it once recorded."""
@@ -965,7 +983,8 @@ class GatewayClient:
         # Port is chosen from the canonical path (an encoded variant must map to
         # the same local app), but the original path is forwarded verbatim so the
         # local server performs its own decoding.
-        port = self._local_port_for(policy_path)
+        authorization = next((v for k, v in headers.items() if k.lower() == "authorization"), "")
+        port = self._local_port_for(policy_path, method, str(authorization))
         # The local server takes a forwarding address from this machine as the visitor's,
         # but the one the relay copies names an edge server or whatever the visitor typed.
         # Without it every proxied visitor arrives from loopback, which names no one.

@@ -1155,6 +1155,10 @@ class AccJournalEntryCreated(BaseModel):
     # Read-only history: entries posted before currency and rate moved onto the
     # line carry one pair here for the whole entry. Nothing emits it now.
     fx: AccJournalEntryFx | None = None
+    # Accountant sync: where a journal came from and what it reverses.
+    peer_origin: dict | None = None
+    peer_source: dict | None = None
+    reverses: str | None = None
 
 
 class AccJournalEntryPosted(BaseModel):

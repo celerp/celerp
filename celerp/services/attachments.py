@@ -315,7 +315,7 @@ def local_attachment_url_path(company_id: str, url: str) -> Path | None:
 
 # ── S3Backend ─────────────────────────────────────────────────────────────────
 
-def _s3_client(endpoint: str, access_key: str, secret_key: str):
+def s3_client(endpoint: str, access_key: str, secret_key: str):
     """Single construction point for the aiobotocore S3 client, returning the
     async context manager that both S3Backend.store and the settings
     connectivity test consume - one place builds the client (DRY). aiobotocore
@@ -352,7 +352,7 @@ class S3Backend:
             raise ValueError(t("error.attachment_not_found"))
         key = f"attachments/{company_id}/{att_id}{_stored_extension(mime)}"
 
-        async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
+        async with s3_client(self._endpoint, self._access_key, self._secret_key) as client:
             await client.put_object(
                 Bucket=self._bucket,
                 Key=key,
@@ -385,7 +385,7 @@ class S3Backend:
     async def _read_name(self, company_id: str, name: str, max_bytes: int) -> bytes | None:
         if not is_plain_name(name):
             return None
-        async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
+        async with s3_client(self._endpoint, self._access_key, self._secret_key) as client:
             try:
                 resp = await client.get_object(Bucket=self._bucket, Key=f"attachments/{company_id}/{name}")
             except Exception as exc:
@@ -402,14 +402,14 @@ class S3Backend:
         name = stored_id + _stored_extension(mime)
         if not is_plain_name(name):
             raise ValueError(t("error.attachment_not_found"))
-        async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
+        async with s3_client(self._endpoint, self._access_key, self._secret_key) as client:
             await client.delete_object(Bucket=self._bucket, Key=f"attachments/{company_id}/{name}")
 
     async def delete_company(self, company_id: str) -> None:
         if not is_plain_name(str(company_id)):
             raise ValueError(f"Invalid company id: {company_id!r}")
         prefix = f"attachments/{company_id}/"
-        async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
+        async with s3_client(self._endpoint, self._access_key, self._secret_key) as client:
             listing = {"Bucket": self._bucket, "Prefix": prefix}
             while True:
                 page = await client.list_objects_v2(**listing)
@@ -671,6 +671,7 @@ async def attach_file(
     document_tag: str | None = None,
     is_hero: bool | None = None,
     description: str | None = None,
+    metadata_: dict | None = None,
 ):
     """Attach a stored file (``meta`` from store_file) to one contact, document or item.
 
@@ -702,7 +703,7 @@ async def attach_file(
             location_id=None,
             source=source,
             idempotency_key=idempotency_key or str(uuid.uuid4()),
-            metadata_={},
+            metadata_=metadata_ or {},
         )
 
 

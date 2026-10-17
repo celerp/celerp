@@ -45,7 +45,7 @@ from celerp.held_back import (
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, OlderStockMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception, notify_refused
 from ui.i18n import I18nMiddleware, t
 
-from celerp.routers import auth, companies, company_backup, ledger, migrations
+from celerp.routers import auth, companies, company_backup, company_peers, ledger, migrations
 from celerp.routers import health, notifications, system, events as events_router_mod
 from celerp.routers import stars as stars_router_mod
 from celerp.importers.sinks import register_sink
@@ -125,7 +125,7 @@ async def _try_auto_activate() -> None:
             f"{relay_base}/auth/activate",
             activate_payload(
                 iid, first_boot=_FIRST_BOOT, activation_verifier=verifier,
-                boot_id=_BOOT_ID))
+                boot_id=_BOOT_ID, include_handoff=True))
 
         if r is None or r.status_code != 200:
             return
@@ -140,7 +140,8 @@ async def _try_auto_activate() -> None:
             tos_version=data.get("tos_version"),
             backup_encryption_key=data.get("backup_encryption_key"),
             tier=data.get("tier"), status=data.get("status"),
-            expected_verifier=verifier if verifier else None)
+            expected_verifier=verifier if verifier else None,
+            acknowledged_copy_id=data.get("acknowledged_copy_id"))
         _log.info("Recovered cloud relay activation (instance_id=%s)", iid)
     except Exception as exc:
         logging.getLogger(__name__).debug(
@@ -173,6 +174,8 @@ async def _verify_runtime_dependencies() -> None:
     )
     from celerp.connectors.daily_scheduler import scheduler_loop_all
     from celerp.connectors.relay_token import fetch_context as connector_token_fetcher
+    from celerp.services.peer_access import expiry_warning_loop
+    from celerp.services.migration_xero_attachments import fetch_loop as xero_attachment_loop
     from celerp.services.reorder import reorder_alert_loop
     from celerp.services.update import update_loop
 
@@ -188,6 +191,8 @@ async def _verify_runtime_dependencies() -> None:
         scheduler_loop_all,
         connector_token_fetcher,
         reorder_alert_loop,
+        expiry_warning_loop,
+        xero_attachment_loop,
         update_loop,
     )
     if settings.gateway_token and not settings.celerp_public_url:
@@ -609,6 +614,16 @@ async def _serve(_app: FastAPI, held):
             asyncio.create_task(reorder_alert_loop()),
         ]
 
+    # Company key expiry: an hourly check that keeps one notice standing while a key
+    # this company issued to a client company expires within a week.
+    from celerp.services.peer_access import expiry_warning_loop
+    background.append(asyncio.create_task(expiry_warning_loop()))
+
+    # Xero attachments: once a minute, takes each fetch the owner started from a Xero
+    # migration as far as it can go (sign-in, then reading and attaching files).
+    from celerp.services.migration_xero_attachments import fetch_loop as xero_attachment_loop
+    background.append(asyncio.create_task(xero_attachment_loop()))
+
     # Update checks: reports the last update attempt once, then checks hourly and,
     # when automatic updates are on, installs overnight in the owner's time zone.
     from celerp.services.update import update_loop
@@ -800,6 +815,7 @@ app.include_router(events_router_mod.router)
 app.include_router(search_router_mod.router, tags=["search"])
 app.include_router(migrations.router)
 app.include_router(company_backup.router)
+app.include_router(company_peers.router)
 register_sink(CORE_SINK)
 
 # Backup router — always registered; individual endpoints gate on cloud connection.

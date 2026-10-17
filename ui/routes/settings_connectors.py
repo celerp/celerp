@@ -8,10 +8,11 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, RedirectResponse
 
 from ui.components.attrs import hx_vals
 from ui.components.activity import relative_time
@@ -19,7 +20,10 @@ from ui.i18n import get_lang, refusal_text, t
 from ui.routes.settings import _check_permission, _token
 from ui.security import is_safe_authorize_url
 
-from celerp.connectors.base import ConnectorCategory, SyncFrequency
+from celerp.accounting_roles import PERIOD_LOCK_PATH
+from celerp.connectors.base import (
+    INBOUND_ENTITIES, OUTBOUND_ENTITIES, ConnectorCategory, SyncFrequency,
+)
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
 from celerp.services.background import spawn_background
 
@@ -38,15 +42,23 @@ def _store_url_error(store_url: str, platform: str) -> str | None:
         allow_http = store_url.startswith("http://") and bool(os.environ.get("CELERP_ALLOW_HTTP_STORE"))
         if not (store_url.startswith("https://") or allow_http):
             return "connectors.store_url_must_use_https"
-    elif platform == "woocommerce":
+    elif platform in ("woocommerce", "celerp"):
         return "connectors.store_url_required"
+    if platform == "celerp" and store_url:
+        from celerp.services.peer_access import is_https_origin
+        if not is_https_origin(store_url):
+            return "connectors.store_url_must_use_https"
     return None
+
+# Where a client sends its accountant to learn how Celerp works for firms.
+ACCOUNTANTS_URL = "https://celerp.com/accountants"
 
 _CONNECTOR_ICONS: dict[str, str] = {
     "shopify": "🛍️",
     "woocommerce": "🛒",
     "quickbooks": "📊",
     "xero": "📗",
+    "celerp": "📚",
 }
 
 _DEFAULT_FREQUENCY: dict[str, SyncFrequency] = {
@@ -100,6 +112,7 @@ _FAILURE_REASONS: tuple[tuple[re.Pattern, str], ...] = tuple(
         (r"does not have them", "connectors.fail_store_changed"),
         (r"credentials are temporarily unavailable", "connectors.fail_credentials"),
         (r"realm_id", "connectors.fail_credentials"),
+        (r"key was revoked or has expired", "connectors.fail_key_closed"),
         (r"\b40[13]\b|unauthori[sz]ed|forbidden|invalid.{0,20}(token|key|credential)", "connectors.fail_access"),
         (r"\b429\b|rate.?limit|too many requests", "connectors.fail_rate_limited"),
         (r"timed? ?out|timeout|connecterror|connection (refused|reset|error)|name or service|"
@@ -112,6 +125,7 @@ _FAILURE_REASONS: tuple[tuple[re.Pattern, str], ...] = tuple(
 # product 12: ..."); the record stays in front of the reason.
 _RECORD_PREFIX = re.compile(r"^((?:[A-Za-z]+ )?(?:SKU|Invoice|Customer|Contact|Item|Product)\b[^:]*): (.*)$", re.DOTALL)
 _SYNC_REASONS_ID = "connector-sync-reasons"
+_ATTENTION_ID = "connector-attention"
 
 
 def sync_failure_reason(raw: str, service: str, lang: str | None = None) -> str:
@@ -146,6 +160,11 @@ def _sync_reasons(runs: dict, service: str, lang: str = "en") -> FT:
     )
 
 
+def _changes(run, lang: str | None = None) -> str:
+    """What a sync run added and updated, in words."""
+    return t("connectors.changes", lang, added=f"{run.created_count:,}", updated=f"{run.updated_count:,}")
+
+
 def _last_sync_info(run, attention: int = 0, href: str = "") -> FT:
     """Compact summary of the latest SyncRun, or a 'never synced' note. Uses the shared
     relative_time() formatter and thousands-separated counts for consistency with the
@@ -164,10 +183,16 @@ def _last_sync_info(run, attention: int = 0, href: str = "") -> FT:
         "partial": "connector-sync-info--warn",
         "failed": "connector-sync-info--err",
     }.get(run.status, "")
-    counts = f"+{run.created_count:,} ~{run.updated_count:,}"
+    counts = _changes(run)
     status = _sync_status_label(run.status)
     if href and run.status in ("failed", "partial") and getattr(run, "errors", None):
         status = A(status, href=f"{href}#{_SYNC_REASONS_ID}")
+    elif run.status == "success" and attention:
+        # The sync finished, but records it processed are still waiting on a person.
+        status_cls = "connector-sync-info--warn"
+        status = t("connectors.needs_attention")
+        if href:
+            status = A(status, href=f"{href}#{_ATTENTION_ID}")
     parts = [relative_time(finished.isoformat()), status, counts]
     if attention:
         parts.append(t("connectors.attention_count", n=attention))
@@ -177,8 +202,9 @@ def _last_sync_info(run, attention: int = 0, href: str = "") -> FT:
     return Span(*joined, cls=f"connector-sync-info {status_cls}")
 
 
-def _direction_toggle(cid: str, current: str, lang: str = "en") -> FT:
-    """Three-option sync direction toggle: Inbound / Outbound / Both."""
+def _direction_toggle(cid: str, current: str, lang: str = "en", detail: bool = False) -> FT:
+    """Three-option sync direction toggle: Inbound / Outbound / Both. On the detail
+    page (`detail`) it swaps itself; on the connectors list, the connector's card."""
     options = [
         ("inbound", t("connectors.dir_inbound", lang, default="Inbound")),
         ("outbound", t("connectors.dir_outbound", lang, default="Outbound")),
@@ -191,9 +217,9 @@ def _direction_toggle(cid: str, current: str, lang: str = "en") -> FT:
             Button(
                 label,
                 cls=f"btn btn--xs {active}",
-                hx_post=f"/settings/connectors/{cid}/direction",
+                hx_post=f"/settings/connectors/{cid}/direction" + ("?detail=1" if detail else ""),
                 hx_vals=hx_vals({"direction": val}),
-                hx_target=f"#connector-card-{cid}",
+                hx_target="closest .connector-direction-toggle" if detail else f"#connector-card-{cid}",
                 hx_swap="outerHTML",
             )
         )
@@ -204,8 +230,8 @@ def _direction_toggle(cid: str, current: str, lang: str = "en") -> FT:
     )
 
 
-def _frequency_select(cid: str, current: str, lang: str = "en") -> FT:
-    """Sync frequency selector for accounting connectors."""
+def _frequency_select(cid: str, current: str, lang: str = "en", detail: bool = False) -> FT:
+    """Sync frequency selector for accounting connectors; swaps like _direction_toggle."""
     options = [
         (SyncFrequency.MANUAL.value, t("connectors.freq_manual", lang, default="Manual")),
         (SyncFrequency.DAILY.value, t("connectors.freq_daily", lang, default="Daily")),
@@ -217,8 +243,8 @@ def _frequency_select(cid: str, current: str, lang: str = "en") -> FT:
             *opts,
             name="sync_frequency",
             cls="select select--sm",
-            hx_post=f"/settings/connectors/{cid}/frequency",
-            hx_target=f"#connector-card-{cid}",
+            hx_post=f"/settings/connectors/{cid}/frequency" + ("?detail=1" if detail else ""),
+            hx_target="closest .connector-frequency-select" if detail else f"#connector-card-{cid}",
             hx_swap="outerHTML",
             hx_include="closest div",
         ),
@@ -280,6 +306,15 @@ def _open_attention_count(entries: list[dict]) -> int:
     return sum(1 for e in entries if not e.get("reconciled"))
 
 
+def _open_attention_by_entity(entries: list[dict]) -> dict[str, int]:
+    """Entries not yet marked reconciled, counted per entity."""
+    counts: dict[str, int] = {}
+    for e in entries:
+        if not e.get("reconciled"):
+            counts[e.get("entity", "")] = counts.get(e.get("entity", ""), 0) + 1
+    return counts
+
+
 def _request_company_id(request: Request) -> str:
     """Return the API-verified company id cached by the permission gate."""
     company = getattr(request.state, "auth_company", None)
@@ -336,7 +371,7 @@ def _local_connector_entry(platform: str) -> dict:
         "id": platform,
         "name": connector.display_name,
         "category": category,
-        "auth_type": "api_key" if platform == "woocommerce" else "oauth",
+        "auth_type": "api_key" if platform in ("woocommerce", "celerp") else "oauth",
         "connected": False,
         "entities": [
             getattr(entity, "value", entity)
@@ -409,10 +444,15 @@ _ENTITY_LABELS: dict[str, str] = {
     "orders": "dashboard.orders",
     "contacts": "dashboard.contacts",
     "inventory": "nav.inventory",
-    "invoices": "nav.invoices",
+    "journals": "connectors.entity_journals",
+    "period_lock": "connectors.entity_period_lock",
     "products_out": "connectors.entity_products_out",
+    "contacts_out": "dashboard.contacts",
+    "journals_out": "connectors.entity_journals_out",
     "invoices_out": "connectors.entity_invoices_out",
+    "documents_out": "connectors.entity_documents_out",
     "inventory_out": "connectors.entity_inventory_out",
+    "attachments_out": "connectors.entity_attachments_out",
 }
 
 
@@ -422,8 +462,7 @@ def _entity_label(entity: str, lang: str = "en") -> str:
     key = _ENTITY_LABELS.get(entity)
     return t(key, lang) if key else entity
 
-_ENTITY_ORDER = ["products", "orders", "contacts", "inventory", "invoices",
-                 "products_out", "invoices_out", "inventory_out"]
+_ENTITY_ORDER = [*INBOUND_ENTITIES, *OUTBOUND_ENTITIES]
 
 
 async def _entity_runs(company_id: str, connector: str) -> dict:
@@ -468,8 +507,25 @@ def _overall_status(runs: dict) -> str:
     return "success"
 
 
-def _status_badge_for(status: str, lang: str = "en", has_reasons: bool = False) -> FT:
-    """Status badge; a Failed or Issues badge with reasons links to them below the table."""
+def _sync_complete_toast(runs: dict, attention: list[dict], service: str,
+                         lang: str = "en") -> tuple[str, str]:
+    """The toast for a finished sync, and its kind: a sync that finished with records
+    still waiting on a person says how many, so it never reads as all done."""
+    if _overall_status(runs) == "failed":
+        return t("connectors.sync_failed", lang, service=service), "error"
+    if (waiting := _open_attention_count(attention)):
+        return t("connectors.sync_complete_attention", lang, n=waiting), "warning"
+    return t("connectors.sync_complete", lang), "success"
+
+
+def _status_badge_for(status: str, lang: str = "en", has_reasons: bool = False,
+                      attention: int = 0) -> FT:
+    """Status badge; a Failed or Issues badge with reasons links to them below the table.
+    A sync that finished with ``attention`` records waiting on a person says Needs
+    attention with the count, linked to the list."""
+    if status == "success" and attention:
+        return A(t("connectors.status_needs_attention", lang, n=attention),
+                 href=f"#{_ATTENTION_ID}", cls="badge badge--draft")
     cls = {"success": "badge--active", "partial": "badge--draft",
            "failed": "badge--overdue", "running": "badge--inactive"}.get(status, "badge--inactive")
     label = {"success": t("connectors.status_ok", lang), "partial": t("connectors.status_partial", lang),
@@ -480,8 +536,10 @@ def _status_badge_for(status: str, lang: str = "en", has_reasons: bool = False) 
     return Span(label, cls=f"badge {cls}")
 
 
-def _entity_status_table(runs: dict, lang: str = "en") -> FT:
-    """Per-entity sync status table. Shared by the detail view and the polling fragment."""
+def _entity_status_table(runs: dict, lang: str = "en", attention: dict[str, int] | None = None) -> FT:
+    """Per-entity sync status table. Shared by the detail view and the polling fragment.
+    ``attention`` counts each entity's records still waiting on a person."""
+    attention = attention or {}
     present = [e for e in _ENTITY_ORDER if e in runs]
     if not present:
         return P(t("connectors.never_synced", lang), cls="empty-state-msg")
@@ -490,20 +548,22 @@ def _entity_status_table(runs: dict, lang: str = "en") -> FT:
         r = runs[e]
         running = getattr(r, "finished_at", None) is None
         when = t("connectors.syncing", lang) if running else relative_time(r.finished_at.isoformat())
-        counts = "…" if running else f"+{r.created_count:,} ~{r.updated_count:,}"
+        counts = "…" if running else _changes(r, lang)
         errs = list(getattr(r, "errors", None) or [])
         rows.append(Tr(
             Td(_entity_label(e, lang)),
             Td(when),
-            Td(_status_badge_for("running" if running else r.status, lang, has_reasons=bool(errs))),
+            Td(_status_badge_for("running" if running else r.status, lang, has_reasons=bool(errs),
+                                 attention=attention.get(e, 0))),
             Td(counts, cls="cell--number"),
             Td(str(len(errs)) if errs else "--", cls="cell--number"),
             cls="data-row",
         ))
     return Table(
         Thead(Tr(Th(t("connectors.entity", lang)), Th(t("connectors.last_sync", lang)),
-                 Th(t("connectors.status", lang)), Th(t("connectors.changes", lang)),
-                 Th(t("connectors.issues_header", lang)))),
+                 Th(t("connectors.status", lang)),
+                 Th(t("connectors.changes", lang), cls="cell--number"),
+                 Th(t("connectors.issues_header", lang), cls="cell--number"))),
         Tbody(*rows),
         cls="data-table",
     )
@@ -511,8 +571,8 @@ def _entity_status_table(runs: dict, lang: str = "en") -> FT:
 
 def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | None = None) -> FT:
     """One record waiting on a person. A change only a person can reconcile
-    (it carries a signature) offers Mark reconciled, and Undo once marked.
-    ``error`` explains why the last Mark or Undo did not apply."""
+    (it carries a signature) offers Mark reconciled, and Undo once marked; one the lock
+    date holds links to Period lock. ``error`` explains why the last Mark or Undo did not apply."""
     record_id = str(entry.get("id", ""))
     item_id = f"connector-attention-{platform}-{record_id}"
     action = Span()
@@ -532,15 +592,18 @@ def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | N
                 hx_vals=hx_vals({"signature": entry["signature"]}), **common,
             ))
     from ui.components.shell import flash
+    locked = Span(" ", t("connectors.attention_locked", lang), " ",
+                  A(t("page.period_lock", lang), href=PERIOD_LOCK_PATH)) if entry.get("locked") else Span()
     return Li(
         Strong(str(entry.get("label", record_id))), ": ", str(entry.get("reason", "")),
-        action, flash(error) if error else Span(), id=item_id,
+        locked, action, flash(error) if error else Span(), id=item_id,
     )
 
 
 def _attention_list(platform: str, entries: list[dict], lang: str = "en") -> FT:
     """Records the connector could not import and is holding for a person (an
-    order whose customer or product is missing, or a refund to reconcile). The
+    order whose customer or product is missing, a refund to reconcile, or a record
+    the receiving company could not take, named by its number or name). The
     list is kept until a sync produces a new one, so a failed run never hides it.
     Orders a person marked reconciled sit in a collapsed section under the open
     ones, with Undo, until the order changes in the store."""
@@ -549,13 +612,16 @@ def _attention_list(platform: str, entries: list[dict], lang: str = "en") -> FT:
     open_entries = [e for e in entries if not e.get("reconciled")]
     reconciled = [e for e in entries if e.get("reconciled")]
     return Div(
-        P(t("connectors.attention_header", lang), cls="settings-section-title"),
+        # A store connector holds orders; the Celerp connector holds any record it sends.
+        P(t("connectors.attention_header_records" if platform == "celerp"
+            else "connectors.attention_header", lang), cls="settings-section-title"),
         Ul(*[_attention_item(platform, e, lang) for e in open_entries]) if open_entries else Span(),
         Details(
             Summary(t("connectors.attention_reconciled_header", lang, n=len(reconciled)),
                     cls="text-muted mt-md"),
             Ul(*[_attention_item(platform, e, lang) for e in reconciled]),
         ) if reconciled else Span(),
+        id=_ATTENTION_ID,
         cls="connector-attention",
     )
 
@@ -578,7 +644,7 @@ def _connector_status_view(
         attrs = {"hx_get": f"/settings/connectors/{platform}/status?polling=1",
                  "hx_trigger": "load delay:2s", "hx_swap": "outerHTML"}
     return Div(
-        _entity_status_table(runs, lang),
+        _entity_status_table(runs, lang, _open_attention_by_entity(attention)),
         _sync_reasons(runs, service_name(platform), lang),
         _attention_list(platform, list(attention), lang),
         id=f"connector-status-{platform}",
@@ -641,9 +707,9 @@ def _connector_detail_body(
         hx_target=f"#connector-disconnect-result-{cid}",
         hx_swap="innerHTML",
     )
-    config_rows = [_direction_toggle(cid, config.direction if config else "both", lang)]
+    config_rows = [_direction_toggle(cid, config.direction if config else "both", lang, detail=True)]
     if category == ConnectorCategory.ACCOUNTING.value:
-        config_rows.append(_frequency_select(cid, frequency, lang))
+        config_rows.append(_frequency_select(cid, frequency, lang, detail=True))
     if deposit is not None:
         config_rows.append(_deposit_select_row(cid, deposit["current"], deposit["bank_accounts"], lang))
 
@@ -864,14 +930,24 @@ def _connector_card(
             )
             if config is not None else None
         )
-        action_area = Div(
-            Form(
+        if cid == "celerp":
+            fields = [Input(name="pairing_link", type="password", autocomplete="off",
+                            placeholder=t("accountant_access.pairing_link", lang),
+                            cls="input input--sm", style="flex:1;min-width:260px;")]
+        else:
+            fields = [
                 Input(name="store_url", placeholder="https://mystore.com",
                       cls="input input--sm", style="flex:1;min-width:200px;"),
                 Input(name="consumer_key", placeholder=t("connectors.consumer_key_placeholder", lang),
-                      cls="input input--sm", style="width:160px;"),
+                      cls="input input--sm", style="width:200px;"),
                 Input(name="consumer_secret", placeholder=t("connectors.consumer_secret_placeholder", lang),
                       type="password", cls="input input--sm", style="width:160px;"),
+            ]
+        action_area = Div(
+            *([P(t("accountant_access.connector_source_help", lang), cls="settings-hint")]
+              if cid == "celerp" else []),
+            Form(
+                *fields,
                 Button(t("connectors.connect", lang),
                        type="submit", cls="btn btn--sm btn--primary"),
                 hx_post=f"/settings/connectors/{cid}/connect-apikey",
@@ -913,6 +989,9 @@ def _connector_card(
         connected_details,
         # Action area
         action_area,
+        *([P(A(t("connectors.send_to_accountant", lang), href=ACCOUNTANTS_URL,
+               target="_blank", rel="noopener"), cls="settings-hint")]
+          if cid == "celerp" else []),
         id=f"connector-card-{cid}",
         cls=card_cls,
     )
@@ -1038,14 +1117,372 @@ async def connectors_tab_content(lang: str, token: str, category: str, company_i
     names = {c["id"]: c.get("name", c["id"]) for c in catalog}
     lost = [names[cid] for cid in await _awaiting_reconnect(company_id) if cid in names]
 
+    from ui.api_client import get_company, role_from_company
+    show_recipient_access = False
+    if category == "accounting":
+        try:
+            show_recipient_access = role_from_company(await get_company(token)) == "owner"
+        except Exception:
+            pass
     return Div(
         *([_reconnect_banner(lost, lang)] if lost else []),
         *cards,
+        *([Div(
+            H3(t("accountant_access.title", lang)),
+            P(t("accountant_access.description", lang)),
+            A(t("accountant_access.manage", lang), href="/settings/accountant-access",
+              cls="btn btn--secondary"),
+            cls="settings-card",
+        )] if show_recipient_access else []),
         cls="settings-card",
     )
 
 
+def _pairing_card(company_id: str, name: str, lang: str) -> FT:
+    """The sending company's pairing code, copied once and pasted by the receiving owner."""
+    import uuid
+    from celerp.services.peer_access import pairing_code
+    return Div(
+        P(t("accountant_access.your_code", lang)),
+        Div(
+            Code(pairing_code(uuid.UUID(company_id), name), cls="cell--mono",
+                 id="peer-pairing-code"),
+            Button(t("btn.copy", lang), type="button",
+                   **{"data-copy": "#peer-pairing-code"},
+                   cls="btn btn--xs btn--secondary ml-sm"),
+            cls="flex-row align-center gap-sm",
+        ),
+        P(t("accountant_access.give_code", lang), cls="settings-hint"),
+        cls="settings-card",
+    )
+
+
+def _from_accountant_action(item: dict, lang: str) -> FT:
+    """Reverse an entry the accountant posted, or undo its reversal; each confirm names
+    the date it posts on, and an entry with no open date says so instead."""
+    common = {"hx_target": "#from-accountant", "hx_swap": "outerHTML"}
+    if item.get("status") == "void":
+        return Span(t("accountant_access.from_voided", lang))
+    reversal = item.get("reversal")
+    target, day = (reversal["id"], reversal.get("undo_on")) if reversal else (item["id"], item.get("reverse_on"))
+    if day is None:
+        return Span(t("accountant_access.from_no_open_date", lang, date=item.get("locked_through") or "--"),
+                    " ", A(t("page.period_lock", lang), href=PERIOD_LOCK_PATH))
+    url = f"/settings/connectors/celerp/from-accountant/{quote(target, safe='')}/reverse"
+    if reversal:
+        return Span(
+            Em(t("accountant_access.from_reversed_on", lang, date=reversal["ts"])), " ",
+            Button(t("btn.undo", lang), cls="btn btn--xs btn--outline", hx_post=url,
+                   hx_confirm=t("accountant_access.from_undo_confirm", lang, memo=item["memo"] or "--", date=day),
+                   **common))
+    return Button(t("accountant_access.from_reverse", lang), cls="btn btn--xs btn--outline", hx_post=url,
+                  hx_confirm=t("accountant_access.from_reverse_confirm", lang, memo=item["memo"] or "--", date=day),
+                  **common)
+
+
+def _from_accountant(items: list[dict] | None, lang: str, error: str | None = None) -> FT:
+    """The journal entries the accountant posted in these books, newest first; None when
+    they could not be read."""
+    from ui.components.shell import flash
+    from ui.components.table import EMPTY, fmt_money
+    notice = [flash(error)] if error else []
+    if items is None:
+        body = []
+    elif not items:
+        body = [P(t("accountant_access.from_empty", lang), cls="empty-state-msg")]
+    else:
+        body = [Table(
+            Thead(Tr(Th(t("th.date", lang)), Th(t("th.memo", lang)),
+                     Th(t("accountant_access.from_lines", lang)),
+                     Th(t("th.total", lang), cls="cell--number"), Th(t("th.actions", lang)))),
+            Tbody(*[Tr(
+                Td(item.get("ts") or EMPTY), Td(item.get("memo") or EMPTY),
+                Td(item.get("lines") or EMPTY),
+                Td(fmt_money(item.get("total")), cls="cell--number"),
+                Td(_from_accountant_action(item, lang)),
+                cls="data-row",
+            ) for item in items]),
+            cls="data-table",
+        )]
+    return Div(
+        H3(t("accountant_access.from_title", lang)),
+        P(t("accountant_access.from_hint", lang), cls="settings-hint"),
+        *notice, *body,
+        id="from-accountant", cls="settings-card",
+    )
+
+
+def _sync_accounts_card(lang: str) -> FT:
+    """Where records held for an account, and accounts sync added, are settled."""
+    from ui.routes.sync_accounts import PAGE
+    return Div(
+        H3(t("sync_accounts.title", lang)),
+        P(t("sync_accounts.card_hint", lang), cls="settings-hint"),
+        A(t("sync_accounts.open", lang), href=PAGE, cls="btn btn--secondary btn--sm"),
+        cls="settings-card",
+    )
+
+
+async def _from_accountant_section(token: str, lang: str, error: str | None = None) -> FT:
+    from ui.api_client import APIError, journals_from_accountant
+    try:
+        items = await journals_from_accountant(token)
+    except APIError as exc:
+        return _from_accountant(None, lang, error or refusal_text(exc.detail))
+    return _from_accountant(items, lang, error)
+
+
+def _grant_form(lang: str) -> FT:
+    from celerp.config import settings
+    from celerp.services.peer_access import SCOPE_ORDER
+    return Form(
+        Label(t("accountant_access.pairing_code", lang)),
+        Input(name="pairing_code", type="text", maxlength="1024", cls="form-input"),
+        Label(t("accountant_access.address", lang)),
+        Input(name="address", type="url", maxlength="512",
+              value=settings.celerp_public_url or "", cls="form-input"),
+        P(t("accountant_access.address_hint", lang), cls="form-hint"),
+        Label(t("accountant_access.label", lang)),
+        Input(name="label", maxlength="128",
+              placeholder=t("accountant_access.label_example", lang),
+              cls="form-input"),
+        Div(*(
+            Label(Input(type="checkbox", name="scopes", value=scope,
+                        checked=scope in ("contacts", "products")),
+                  t(f"accountant_access.{scope}", lang))
+            for scope in SCOPE_ORDER
+        ), cls="flex-col gap-sm"),
+        Button(t("accountant_access.issue", lang), type="submit",
+               cls="btn btn--primary"),
+        hx_post="/settings/accountant-access/grants",
+        hx_target="#accountant-access-result",
+        hx_swap="innerHTML",
+        hx_disabled_elt="find button",  # a second click would issue a second key nobody holds
+        id="accountant-access-form", cls="form-card",
+    )
+
+
+def _grant_status(g: dict, lang: str, now: datetime) -> FT:
+    """How long a key still works, so the owner can renew it before synchronization stops."""
+    from celerp.services.peer_access import RENEW_WITHIN
+    if g.get("revoked"):
+        return Span(t("accountant_access.revoked", lang), cls="badge badge--neutral")
+    try:
+        expires = datetime.fromisoformat(str(g.get("expires_at")))
+    except ValueError:
+        return Span("--")
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires <= now:
+        return Span(t("accountant_access.expired", lang), cls="badge badge--expired")
+    days = (expires - now).days + (1 if (expires - now).seconds else 0)
+    label = (t("accountant_access.expires_in", lang, days=days) if days > 1
+             else t("accountant_access.expires_in_one", lang))
+    return Span(label,
+                cls="badge badge--soon" if expires - now <= RENEW_WITHIN else "badge badge--active")
+
+
+def _grant_actions(g: dict, lang: str) -> FT:
+    if g.get("revoked"):
+        return Span("--")
+    path = f"/settings/accountant-access/grants/{g['id']}"
+    swap = {"hx_target": "#accountant-access-grants", "hx_swap": "outerHTML"}
+    return Div(
+        Button(t("accountant_access.renew", lang), type="button", hx_post=f"{path}/renew",
+               cls="btn btn--secondary btn--sm", **swap),
+        Button(t("accountant_access.revoke", lang), type="button", hx_post=f"{path}/revoke",
+               hx_confirm=t("accountant_access.revoke_confirm", lang),
+               cls="btn btn--danger btn--sm", **swap),
+        cls="flex-row gap-sm",
+    )
+
+
+def _grants_table(grants: list[dict], lang: str, now: datetime | None = None, **attrs) -> FT:
+    """The receiving company's keys, newest first; Renew key and Revoke swap this table in place."""
+    from ui.components.table import format_value
+    when = now or datetime.now(timezone.utc)
+    if not grants:
+        return Div(P(t("accountant_access.none", lang)), id="accountant-access-grants", **attrs)
+    rows = [
+        Tr(
+            Td(g.get("label") or "--"),
+            Td(", ".join(t(f"accountant_access.{scope}", lang) for scope in g.get("scopes") or []) or "--",
+               cls="grant-scopes"),
+            Td(format_value(g.get("created_at"), "date")),
+            Td(format_value(g.get("expires_at"), "date")),
+            Td(_grant_status(g, lang, when)),
+            Td(_grant_actions(g, lang)),
+        )
+        for g in sorted(grants, key=lambda g: str(g.get("created_at") or ""), reverse=True)
+    ]
+    return Div(
+        Table(
+            Thead(Tr(
+                Th(t("accountant_access.label", lang)),
+                Th(t("accountant_access.scopes", lang)),
+                Th(t("accountant_access.issued", lang)),
+                Th(t("accountant_access.expires", lang)),
+                Th(t("th.status", lang)),
+                Th(t("th.actions", lang)),
+            )),
+            Tbody(*rows),
+            cls="data-table",
+        ),
+        P(t("accountant_access.revoke_reason", lang), cls="settings-hint"),
+        id="accountant-access-grants", **attrs,
+    )
+
+
+async def _owner_token(request: Request):
+    """The owner's token for a key action, or the response refusing it."""
+    from ui import api_client as api
+    from ui.security import not_permitted_redirect
+    token = _token(request)
+    if not token:
+        return None, RedirectResponse("/login", status_code=302)
+    if (denied := await _check_permission(request, "manage_integrations")):
+        return None, denied
+    if api.role_from_company(getattr(request.state, "auth_company", {})) != "owner":
+        return None, not_permitted_redirect(request)
+    return token, None
+
+
+async def _grant_action(request: Request, grant_id: str, action):
+    """Run Extend or Revoke and answer with the refreshed table."""
+    import uuid
+    from ui import api_client as api
+    from starlette.responses import Response
+    token, refused = await _owner_token(request)
+    if refused is not None:
+        return refused
+    try:
+        grant_id = str(uuid.UUID(grant_id))
+    except ValueError:
+        return Response(status_code=404)
+    lang = get_lang(request)
+    errors, grants = [], []
+    try:
+        await action(token, grant_id)
+    except api.APIError as exc:
+        errors.append(str(exc))
+    try:
+        grants = (await api.accountant_peer_grants(token)).get("items", [])
+    except api.APIError as exc:
+        errors.append(str(exc))
+    table = _grants_table(grants, lang)
+    table.children = (*(P(e, cls="flash flash--warning") for e in errors), *table.children)
+    return HTMLResponse(to_xml(table))
+
+
 def setup_routes(app):
+
+    @app.get("/settings/accountant-access")
+    async def accountant_access_page(request: Request):
+        from ui.api_client import APIError, accountant_peer_grants, role_from_company
+        from ui.components.shell import base_shell, page_header
+        from ui.security import not_permitted_redirect
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (denied := await _check_permission(request, "manage_integrations")):
+            return denied
+        company = getattr(request.state, "auth_company", {})
+        if role_from_company(company) != "owner":
+            return not_permitted_redirect(request)
+        lang = get_lang(request)
+        try:
+            grants = (await accountant_peer_grants(token)).get("items", [])
+        except APIError as exc:
+            grants = []
+            notice = P(str(exc), cls="flash flash--warning")
+        else:
+            notice = ""
+        return await base_shell(
+            page_header(
+                t("accountant_access.title", lang),
+                A(t("connectors.back_to_connectors", lang),
+                  href="/settings/cloud?tab=accounting",
+                  cls="btn btn--secondary btn--sm"),
+            ),
+            P(t("accountant_access.description", lang)),
+            P(t("accountant_access.direction_warning", lang), cls="settings-hint"),
+            P(t("accountant_access.source_help", lang)),
+            _grant_form(lang),
+            Div(id="accountant-access-result"),
+            notice,
+            H3(t("accountant_access.active_grants", lang)),
+            _grants_table(grants, lang),
+            title=t("accountant_access.title", lang), nav_active="settings",
+            request=request,
+        )
+
+    @app.post("/settings/accountant-access/grants")
+    async def accountant_access_issue(request: Request):
+        from celerp.services.peer_access import SCOPES, is_https_origin, pairing_link, parse_pairing_code
+        from ui import api_client as api
+        token, refused = await _owner_token(request)
+        if refused is not None:
+            return refused
+        lang = get_lang(request)
+        form = await request.form()
+        address = str(form.get("address") or "").strip().rstrip("/")
+        if not is_https_origin(address):
+            return Span(t("accountant_access.address_invalid", lang),
+                        cls="flash flash--warning")
+        if not form.getlist("scopes"):
+            return Span(t("accountant_access.no_scopes", lang), cls="flash flash--warning")
+        try:
+            source, source_name = parse_pairing_code(form.get("pairing_code"))
+            source_id = str(source)
+            label = str(form.get("label") or "").strip() or source_name
+            scopes = sorted(set(str(scope) for scope in form.getlist("scopes")))
+            if not (1 <= len(label) <= 128 and scopes and set(scopes) <= SCOPES):
+                raise ValueError("Invalid grant selection")
+        except (ValueError, TypeError):
+            return Span(t("accountant_access.invalid", lang),
+                        cls="flash flash--warning")
+        try:
+            issued = await api.issue_accountant_peer_grant(token, {
+                "source_company_id": source_id, "label": label,
+                "scopes": scopes,
+            })
+        except api.APIError as exc:
+            return Span(str(exc), cls="flash flash--warning")
+        try:
+            link = pairing_link(address, issued.get("credential"))
+        except (ValueError, TypeError, AttributeError):
+            return Span(t("accountant_access.unavailable", lang),
+                        cls="flash flash--warning")
+        content = Div(
+            P(t("accountant_access.copy_now", lang)),
+            Div(
+                Code(link, cls="cell--mono", id="issued-pairing-link"),
+                Button(t("accountant_access.copy_link", lang), type="button",
+                       **{"data-copy": "#issued-pairing-link"},
+                       cls="btn btn--xs btn--secondary ml-sm"),
+                cls="flex-row align-center gap-sm",
+            ),
+            P(t("accountant_access.one_time", lang)),
+            cls="settings-card",
+        )
+        try:
+            grants = (await api.accountant_peer_grants(token)).get("items", [])
+        except api.APIError:
+            grants = None
+        refreshed = [] if grants is None else [_grants_table(grants, lang, hx_swap_oob="true")]
+        return HTMLResponse(
+            to_xml(Div(content, *refreshed)),
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+    @app.post("/settings/accountant-access/grants/{grant_id}/renew")
+    async def accountant_access_renew(request: Request, grant_id: str):
+        from ui import api_client as api
+        return await _grant_action(request, grant_id, api.renew_accountant_peer_grant)
+
+    @app.post("/settings/accountant-access/grants/{grant_id}/revoke")
+    async def accountant_access_revoke(request: Request, grant_id: str):
+        from ui import api_client as api
+        return await _grant_action(request, grant_id, api.revoke_accountant_peer_grant)
 
     @app.get("/settings/connectors/{platform}/oauth-redirect")
     async def connector_oauth_redirect(request: Request, platform: str, shop: str = ""):
@@ -1127,6 +1564,8 @@ def setup_routes(app):
                 return Span(str(exc), cls="flash flash--warning")
             config.sync_frequency = frequency
             await session.commit()
+        if request.query_params.get("detail"):
+            return _frequency_select(platform, frequency, lang, detail=True)
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next(
@@ -1175,6 +1614,8 @@ def setup_routes(app):
                 return Span(str(exc), cls="flash flash--warning")
             config.direction = direction
             await session.commit()
+        if request.query_params.get("detail"):
+            return _direction_toggle(platform, direction, lang, detail=True)
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
@@ -1201,10 +1642,12 @@ def setup_routes(app):
         company_id = _request_company_id(request)
         lang = get_lang(request)
 
-        from ui.api_client import delete_connector_credentials
+        from ui.api_client import APIError, delete_connector_credentials
         force = request.query_params.get("force") == "1"
         try:
             revoke_result = await delete_connector_credentials(token, platform, force=force)
+        except APIError as exc:
+            revoke_result = {"ok": False, "detail": exc.detail}
         except Exception as exc:
             revoke_result = {"ok": False, "detail": str(exc)}
         if not revoke_result.get("ok"):
@@ -1224,9 +1667,10 @@ def setup_routes(app):
             )
 
         if request.query_params.get("redirect"):
-            # Disconnected from the full-page detail view -> return to the overview tab.
+            # Disconnected from the full-page detail view -> return to the connector's tab.
             from starlette.responses import Response
-            return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud?tab=website"})
+            tab = _local_connector_entry(platform)["category"]
+            return Response(status_code=204, headers={"HX-Redirect": f"/settings/cloud?tab={tab}"})
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
@@ -1282,11 +1726,15 @@ def setup_routes(app):
             return err
 
     
+        from ui.api_client import APIError
+
         company_id = _request_company_id(request)
         lang = get_lang(request)
 
         try:
             await _kickoff_connector_sync(company_id, platform, token)
+        except APIError as exc:
+            return Span(f"✗ {refusal_text(exc.detail) or exc.detail}", cls="flash flash--warning")
         except Exception as exc:
             return Span(f"✗ {exc}", cls="flash flash--warning")
 
@@ -1313,17 +1761,13 @@ def setup_routes(app):
         company_id = _request_company_id(request)
         lang = get_lang(request)
         runs = await _entity_runs(company_id, platform)
-        view = _connector_status_view(platform, runs, lang,
-                                      attention=await _attention(company_id, platform))
+        attention = await _attention(company_id, platform)
+        view = _connector_status_view(platform, runs, lang, attention=attention)
         polling = request.query_params.get("polling") == "1"
         if polling and runs and not _any_in_progress(runs):
-            ok = _overall_status(runs) != "failed"
-            msg = t("connectors.sync_complete", lang) if ok else t("connectors.sync_failed", lang, service=service_name(platform))
+            msg, kind = _sync_complete_toast(runs, attention, service_name(platform), lang)
             from ui.components.shell import toast_header
-            return HTMLResponse(
-                to_xml(view),
-                headers=toast_header(msg, "success" if ok else "error"),
-            )
+            return HTMLResponse(to_xml(view), headers=toast_header(msg, kind))
         return view
 
     @app.post("/settings/connectors/{platform}/deposit-account")
@@ -1400,6 +1844,29 @@ def setup_routes(app):
     async def connector_unmark_reconciled(request: Request, platform: str, record_id: str):
         return await _set_reconciled(request, platform, record_id, mark=False)
 
+    @app.post("/settings/connectors/celerp/from-accountant/{je_id}/reverse")
+    async def from_accountant_reverse(request: Request, je_id: str):
+        """HTMX: reverse an entry the accountant posted, or undo its reversal, then show
+        the section again with what happened."""
+        from ui.api_client import APIError, reverse_from_accountant
+        from ui.components.shell import toast_header
+
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        try:
+            result = await reverse_from_accountant(token, je_id)
+        except APIError as exc:
+            return await _from_accountant_section(token, lang, refusal_text(exc.detail))
+        section = await _from_accountant_section(token, lang)
+        date = result.get("ts") or "--"
+        if result.get("already"):  # a stale tab repeated it; nothing new was posted
+            return HTMLResponse(to_xml(section), headers=toast_header(
+                t("accountant_access.from_already", lang, date=date), "info"))
+        return HTMLResponse(to_xml(section), headers=toast_header(
+            t("accountant_access.from_posted", lang, date=date), "success"))
+
     @app.get("/settings/connectors/{platform}")
     async def connector_detail_page(request: Request, platform: str):
         """Full-page connector detail (status + config + actions). Reached from the overview
@@ -1421,8 +1888,7 @@ def setup_routes(app):
         company_id = _request_company_id(request)
         lang = get_lang(request)
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
-        c = next((x for x in catalog if x["id"] == platform),
-                 {"id": platform, "name": platform.title(), "category": "website"})
+        c = next((x for x in catalog if x["id"] == platform), _local_connector_entry(platform))
         config = await _get_connector_config(company_id, platform)
         runs = await _entity_runs(company_id, platform)
         deposit = await _deposit_context(token) if platform == "woocommerce" else None
@@ -1435,8 +1901,12 @@ def setup_routes(app):
                 A(t("connectors.back_to_connectors", lang), href=f"/settings/cloud?tab={c.get('category', 'website')}",
                   cls="btn btn--secondary btn--sm"),
             ),
+            _pairing_card(company_id, str(getattr(request.state, "auth_company", {}).get("name") or ""), lang)
+            if platform == "celerp" else "",
             _connector_detail_body(c, runs, config, lang, deposit=deposit,
                                    attention=await _attention(company_id, platform)),
+            await _from_accountant_section(token, lang) if platform == "celerp" else "",
+            _sync_accounts_card(lang) if platform == "celerp" else "",
             title=f"{name} - Celerp",
             nav_active="settings",
             request=request,
@@ -1465,7 +1935,20 @@ def setup_routes(app):
         consumer_key = form.get("consumer_key", "").strip()
         consumer_secret = form.get("consumer_secret", "").strip()
 
-        if not consumer_key or not consumer_secret:
+        if platform not in ("woocommerce", "celerp"):
+            return Span(t("connectors.unknown_connector", lang, platform=platform))
+        if platform == "celerp":
+            from celerp.services.peer_access import parse_pairing_link
+            try:
+                store_url, consumer_key = parse_pairing_link(form.get("pairing_link"))
+            except ValueError:
+                return Div(
+                    Span(t("accountant_access.pairing_link_invalid", lang),
+                         cls="flash flash--warning"),
+                    id=f"connector-card-{platform}", cls="connector-card",
+                )
+            store_url = store_url.rstrip("/")
+        if not consumer_key or (platform == "woocommerce" and not consumer_secret):
             return Div(
                 Span(t("connectors.missing_credentials", lang),
                      cls="flash flash--warning"),

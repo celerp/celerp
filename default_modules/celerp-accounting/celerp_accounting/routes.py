@@ -37,6 +37,8 @@ from celerp_accounting.chart_rules import (
     checked_code_length,
     parent_problem,
     posting_targets,
+    removal_problem,
+    remove_account,
     trimmed_text,
 )
 from celerp_accounting.import_service import AccImportRecord
@@ -46,10 +48,13 @@ from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, refusal
 from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
 from celerp.services.lot_origin import rerun_after_placing
+from celerp.services import peer_accounts, peer_journals
 from celerp.services.attachments import (
     company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
 )
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services import peer_access
+from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user
+from celerp.services.peer_import import SourceRevision, peer_batch
 from celerp.services.company_lock import lock_chart, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
@@ -126,6 +131,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "6700", "name": "Insurance", "account_type": "expense", "parent_code": "6000"},
     {"code": "6800", "name": "Office Supplies", "account_type": "expense", "parent_code": "6000"},
     {"code": "6900", "name": "Travel and Transportation", "account_type": "expense", "parent_code": "6000"},
+    {"code": "6940", "name": "Online Payment Fees", "account_type": "expense", "parent_code": "6000"},
     {"code": "6950", "name": "Miscellaneous Expenses", "account_type": "expense", "parent_code": "6000"},
     {"code": "6960", "name": "Foreign Exchange Difference", "account_type": "expense", "parent_code": "6000"},
     {"code": "6970", "name": "Inventory Shrinkage & Write-offs", "account_type": "expense", "parent_code": "6000"},
@@ -255,6 +261,7 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
 _SEEDED_ANCHORS: dict[AccountRole, tuple[str, ...]] = {
     AccountRole.WORK_IN_PROGRESS: ("1130", "1130-P", "1130-OB"),
     AccountRole.CONSIGNOR_PAYABLE: ("2100", "2110"),
+    AccountRole.ONLINE_PAYMENT_FEES: ("6000", "6950"),
 }
 
 
@@ -1793,6 +1800,14 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
             status_code=422,
             detail=t("acct.err_je_not_manual"),
         )
+    # A journal a connected company sent is that company's to void; this company answers
+    # it with a journal entry of its own. One the accountant posted here is reversed, so
+    # the accountant sees the reversal.
+    if (sender := await peer_journals.synced_source(session, company_id, "journal_entry",
+                                                    entity_id)) is not None:
+        raise HTTPException(status_code=422, detail=t("acct.err_je_from_peer", company=sender))
+    if state.get("peer_origin"):
+        raise HTTPException(status_code=422, detail=t("acct.err_je_peer_origin"))
     if state.get("status") == "void":
         return {"je_id": entity_id, "status": "void", "void_reason": state.get("void_reason")}
 
@@ -1991,6 +2006,9 @@ async def account_ledger(
     return {
         "account_code": account_code,
         "account_name": account.name if account else account_code,
+        # A8: how each connected company names this account, where that differs.
+        "elsewhere": await peer_accounts.elsewhere(session, company_id, account_code, account.name)
+        if account else [],
         "account_type": account_type,
         # The sign convention is decided here, once; consumers (UI, CSV) must
         # use this flag rather than re-deriving it from account_type.
@@ -4601,7 +4619,200 @@ async def get_period_lock(
         "lock_date": settings.get("lock_date"),
         "lock_date_set_by": settings.get("lock_date_set_by"),
         "lock_date_set_at": settings.get("lock_date_set_at"),
+        # The accountant's lock date that binds these books, beside their own.
+        "firm_lock": peer_journals.firm_lock(settings),
     }
+
+
+class PeerJournalRecord(BaseModel):
+    entity_id: str = Field(min_length=1, max_length=512)
+    event_type: str = Field(max_length=64)
+    data: dict
+    source: str = Field(max_length=32)
+    idempotency_key: str = Field(max_length=1024)
+    source_revision: SourceRevision = None
+
+
+class PeerJournalBatch(BaseModel):
+    records: list[PeerJournalRecord] = Field(..., max_length=500)
+
+
+@router.get("/peer/journals")
+async def peer_journal_feed(
+    after: str = Query("", max_length=512),
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """This company's own journal entries, for the client its key belongs to; a
+    connected company's key only."""
+    return await peer_journals.journal_feed(session, auth, after)
+
+
+@router.post("/peer/journals")
+async def peer_journal_receive(
+    body: PeerJournalBatch,
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """A client's journal entries and its answers to this company's; a connected
+    company's key only."""
+    if auth.peer is None:
+        raise HTTPException(status_code=403, detail=peer_access.UNAVAILABLE)
+    return await peer_batch(auth, session, body.records)
+
+
+@router.get("/peer/lock")
+async def peer_lock(
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """This company's lock date, for the client its key belongs to."""
+    return await peer_journals.lock_feed(session, auth)
+
+
+@router.get("/journal-entries/from-accountant")
+async def journals_from_accountant(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The journal entries the accountant posted in these books, newest first."""
+    return {"items": await peer_journals.from_accountant(session, company_id)}
+
+
+@router.post("/journal-entries/{entity_id}/reverse")
+async def reverse_from_accountant(
+    entity_id: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Reverse a journal entry the accountant posted, or undo that reversal."""
+    return await peer_journals.reverse(session, company_id, user.id, entity_id)
+
+
+@router.get("/journal-entries/{entity_id}/prefill")
+async def prefill_journal(
+    entity_id: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """A new journal entry's fields copied from this one, dated on the first open day."""
+    return await peer_journals.prefill(session, company_id, entity_id)
+
+
+class PeerHoldFix(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(pattern="^(use|add|unarchive)$")
+    account: str | None = Field(default=None, min_length=1, max_length=64)
+    code: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class PeerReviewAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    account: str = Field(min_length=1, max_length=64)
+    use: str | None = Field(default=None, min_length=1, max_length=64)
+    add: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class PeerReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_company_id: uuid.UUID
+    finish: bool = False
+    answers: list[PeerReviewAnswer] = Field(default_factory=list, max_length=1000)
+
+
+@router.get("/peer/holds")
+async def peer_holds(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Records a connected company sent that wait for one of their accounts to be fixed,
+    and the accounts sync added here, newest first; each added account says whether it
+    can still be removed, or why it can only be archived."""
+    added = await peer_accounts.added(session, company_id)
+    for item in added:
+        item["why"] = await removal_problem(session, company_id, item["code"])
+        item["removable"] = item["why"] is None
+    return {"items": await peer_accounts.holds(session, company_id), "added": added}
+
+
+class PeerAddedAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(pattern="^(keep|archive|remove)$")
+
+
+@router.post("/peer/added/{item_id}")
+async def settle_peer_added(
+    item_id: str,
+    body: PeerAddedAction,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Keep an account sync added, archive it, or remove it while it is unused; each
+    closes its notice. Remove also drops the link, so a later record adds it again."""
+    item = await peer_accounts.added_item(session, company_id, item_id)
+    code = (item.fix or {}).get("code")
+    if body.action == "archive":
+        await change_account(session, company_id, code, is_active=False)
+    elif body.action == "remove":
+        await remove_account(session, company_id, code)
+    await peer_accounts.close_added(session, item, removed=body.action == "remove")
+    await session.commit()
+    return {"ok": True}
+
+
+@router.post("/peer/holds/{item_id}/fix")
+async def fix_peer_hold(
+    item_id: str,
+    body: PeerHoldFix,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Use another account for a held record's account, add it under a free code, or
+    unarchive the account it posts to; the record posts on the next sync, and until then
+    it shows as fixed (a sync that holds it again replaces its fix)."""
+    item = await peer_accounts.held_item(session, company_id, item_id)
+    if body.action == "unarchive":
+        if (item.fix or {}).get("kind") != "archived" or not item.fix.get("local"):
+            raise HTTPException(status_code=422, detail="This record is not held by an archived account.")
+        await change_account(session, company_id, item.fix["local"], is_active=True)
+    else:
+        await peer_accounts.fix_hold(session, company_id, item, action=body.action,
+                                     account=body.account, code=body.code)
+    item.fix, item.reason = {**item.fix, "fixed": True}, "Fixed. It posts on the next sync."
+    await session.commit()
+    return {"ok": True}
+
+
+@router.get("/peer/review")
+async def peer_review(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Each client whose accounts wait for this company's review, with the accounts."""
+    return {"companies": await peer_accounts.review(session, company_id)}
+
+
+@router.post("/peer/review")
+async def answer_peer_review(
+    body: PeerReview,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Link or add a client's reviewed accounts; ``finish`` ends the review."""
+    await peer_accounts.answer_review(
+        session, company_id, body.source_company_id,
+        [a.model_dump(exclude_none=True) for a in body.answers], body.finish)
+    await session.commit()
+    return {"ok": True}
 
 
 @router.post("/period-lock")

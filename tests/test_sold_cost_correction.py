@@ -613,7 +613,7 @@ async def test_written_off_lot_refuses_and_writes_nothing(client, session):
                      actor_id=auth["user_id"], location_id=None, source="test",
                      idempotency_key=f"dispose-{uuid.uuid4().hex}", metadata_={})
     await session.commit()
-    await _refused(client, session, auth, item, 100.0, "written off")
+    await _refused(client, session, auth, item, 100.0, "without a closed write-off")
 
 
 # -- Hardening at the same seam --------------------------------------------

@@ -47,7 +47,7 @@ def test_reset_dialog_needs_the_exact_name_and_shows_refusals_inside(page, fresh
     name = source["name"]
     _open_reset(page)
     dialog = page.locator("#company-reset-modal")
-    assert dialog.locator('a:has-text("Download company backup first")').get_attribute("href") \
+    assert dialog.locator('a:has-text("Download company copy first")').get_attribute("href") \
         == "/company-backup/download"
     assert dialog.locator(f'strong:has-text("{name}")').count() >= 1
     _shot(page, "1-reset-dialog")
@@ -113,7 +113,7 @@ def test_resetting_lands_on_the_owners_company_still_being_moved_in(playwright, 
         page.wait_for_url(re.compile(rf"/migrations/{run_id}$"), timeout=_WAIT_MS)
         assert _db("SELECT count(*) FROM companies WHERE id = %s", source["id"])[0][0] == 0
         assert _session_company(ctx) == str(staged)
-        assert page.locator('button:has-text("Cancel")').count() == 1
+        assert page.locator('button:has-text("Pause import")').count() == 1
         _shot(page, "6-reset-lands-on-the-move-in-progress")
         # Coming back later returns to the same move.
         page.goto("/")

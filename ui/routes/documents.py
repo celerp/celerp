@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 import math
 import re
 import time
@@ -466,7 +467,7 @@ _PER_PAGE = 50
 # and the export link, so no link on the page can drop a filter another link set.
 _DOC_STATE_KEYS = ("q", "type", "status", "status_in", "contact_id", "overdue_only", "unfulfilled_only",
                    "not_restocked", "not_stocked", "all_issued", "converted_to_type", "view", "ids",
-                   "sort", "dir", "per_page", "preset", "from", "to")
+                   "sort", "dir", "per_page", "preset", "from", "to", "accounting_sync")
 _DOC_BOOL_KEYS = frozenset({"overdue_only", "unfulfilled_only", "not_restocked", "not_stocked", "all_issued"})
 # The keys a status card replaces when clicked; card links carry everything else.
 _DOC_STATUS_KEYS = ("status", "status_in", "overdue_only", "unfulfilled_only", "not_restocked", "not_stocked",
@@ -487,7 +488,7 @@ def _page_number(request: Request) -> int:
 
 # The summary cards count the set the list's narrowing filters select, split by status, so a
 # status filter never travels to the summary and neither does the page.
-_DOC_SUMMARY_KEYS = ("doc_type", "q", "contact_id", "ids", "date_from", "date_to")
+_DOC_SUMMARY_KEYS = ("doc_type", "q", "contact_id", "ids", "date_from", "date_to", "accounting_sync")
 _LIST_SUMMARY_KEYS = ("list_type", "q", "date_from", "date_to")
 
 
@@ -540,6 +541,8 @@ def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limi
             params[key] = "1"
     if state.get("converted_to_type"):
         params["converted_to_type"] = state["converted_to_type"]
+    if state.get("accounting_sync") in ("included", "excluded"):
+        params["accounting_sync"] = state["accounting_sync"]
     if date_from:
         params["date_from"] = date_from
     if date_to:
@@ -643,6 +646,32 @@ async def _doc_results(token: str, state: dict[str, str], date_from: str, date_t
     return docs, total, summary if isinstance(summary, dict) else {}
 
 
+_ACCOUNTING_SYNC_CHOICES = (
+    ("", "documents.accounting_sync_all"),
+    ("included", "documents.accounting_sync_included"),
+    ("excluded", "documents.accounting_sync_excluded"),
+)
+
+
+def _accounting_sync_filter(state: dict[str, str]) -> FT:
+    """Document-list view filter; keep every other selection and sort key. A value it does not
+    know filters nothing, and says so."""
+    links = []
+    for choice, title in _ACCOUNTING_SYNC_CHOICES:
+        params = {k: v for k, v in state.items() if k != "accounting_sync"}
+        if choice:
+            params["accounting_sync"] = choice
+        links.append(A(
+            t(title), href="/docs?" + urlencode(params),
+            cls="btn btn--sm " + (
+                "btn--primary" if state.get("accounting_sync", "") == choice else "btn--secondary"),
+        ))
+    if state.get("accounting_sync", "") not in dict(_ACCOUNTING_SYNC_CHOICES):
+        return Div(P(t("documents.accounting_sync_unknown"), cls="flash flash--warning"),
+                   Div(*links, cls="filter-actions"))
+    return Div(*links, cls="filter-actions")
+
+
 def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, summary: dict,
                   page: int, per_page: int, currency: str | None, lang: str) -> FT:
     """Summary, status cards, table and pager for a document list state: the page embeds it
@@ -652,6 +681,7 @@ def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, sum
     # The status cards keep the dates and sort; the sort links and pages keep everything.
     cards_base_url = "/docs?" + urlencode({"type": doc_type, **{k: v for k, v in state.items() if k not in _DOC_STATUS_KEYS and k != "type"}})
     return Div(
+        _accounting_sync_filter(state),
         _summary_bar(summary, doc_type, currency, lang),
         _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang,
                           status_in=state.get("status_in", ""), overdue_only=bool(state.get("overdue_only")),
@@ -3593,6 +3623,33 @@ celerpUpdateBulkAlloc();
         ship_id = result.get("entity_id") or result.get("id", "")
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{ship_id}"})
 
+    @app.post("/docs/bulk-accounting-sync")
+    async def bulk_accounting_sync_route(request: Request):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        flag = request.query_params.get("excluded")
+        if flag not in ("0", "1"):
+            return _action_error(t("documents.accounting_sync_invalid"))
+        form = await request.form()
+        doc_ids = [d.strip() for d in str(form.get("doc_ids") or "").split(",") if d.strip()]
+        operation_id = str(form.get("operation_id") or "")
+        try:
+            uuid.UUID(operation_id)
+        except ValueError:
+            return _action_error(t("documents.accounting_sync_invalid"))
+        if not doc_ids:
+            return _action_error(t("doc.no_documents_selected"))
+        try:
+            await api.bulk_accounting_sync(token, doc_ids, flag == "1", operation_id)
+        except APIError as exc:
+            if exc.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return _action_error(error_message(exc))
+        return _R("", status_code=204, headers={"HX-Refresh": "true"})
+
+
     @app.post("/docs/bulk-payment")
     async def bulk_payment_route(request: Request):
         from starlette.responses import Response as _R
@@ -5168,7 +5225,7 @@ def _doc_table(
     # Internal demand docs carry no money: drop the Total / Outstanding columns.
     no_money = doc_type in _NO_MONEY_DOC_TYPES
     # Checkboxes: invoice/bill for bulk payment; any doc type in draft view for bulk delete
-    show_checkboxes = doc_type in ("invoice", "bill", "memo") or is_drafts_view
+    show_checkboxes = True
 
     # The rows arrive in the API's order (the same sort the export uses); the headers only
     # mark it. Draft views default to last-updated, matching _doc_api_params.
@@ -5217,6 +5274,8 @@ def _doc_table(
             *([Td(format_value(d.get("_updated_at"), "date"))] if is_drafts_view else [Td(format_value(due_date, "date"))]),
             *money_tds,
             Td(format_value(d.get("status"), "badge", domain="doc_status")),
+            Td(t("documents.accounting_sync_excluded") if d.get("accounting_sync_excluded")
+               else t("documents.accounting_sync_included")),
             id=f"doc-{eid}",
             cls="data-row",
         )
@@ -5236,6 +5295,10 @@ def _doc_table(
             # Consolidation: several orders for one customer ship as one box on
             # one shipping document (same endpoint as the detail-page action).
             _action_opts.append(Option(t("btn.create_shipping_doc"), value="doc-ship"))
+        _action_opts.extend([
+            Option(t("documents.accounting_sync_exclude_action"), value="doc-exclude"),
+            Option(t("documents.accounting_sync_include_action"), value="doc-include"),
+        ])
         _bulk_children = [
             Span(t("doc.0_selected"), id="doc-bulk-count", cls="bulk-count"),
             Select(*_action_opts, id="doc-bulk-select", cls="form-input form-input--sm",
@@ -5270,7 +5333,22 @@ def _doc_table(
                 hx_disabled_elt="this",
                 hx_swap="none",
             ),
+            Button(t("documents.accounting_sync_exclude_action"),
+                   type="button", id="doc-bulk-exclude-btn",
+                   cls="btn btn--secondary btn--sm", style="display:none",
+                   hx_post="/docs/bulk-accounting-sync?excluded=1",
+                   hx_include="#doc-bulk-ids,#doc-bulk-operation",
+                   hx_confirm=t("documents.accounting_sync_exclude_confirm"),
+                   hx_disabled_elt="this", hx_swap="none"),
+            Button(t("documents.accounting_sync_include_action"),
+                   type="button", id="doc-bulk-include-btn",
+                   cls="btn btn--secondary btn--sm", style="display:none",
+                   hx_post="/docs/bulk-accounting-sync?excluded=0",
+                   hx_include="#doc-bulk-ids,#doc-bulk-operation",
+                   hx_disabled_elt="this", hx_swap="none"),
             Div(id="bulk-payment-panel"),
+            Input(type="hidden", id="doc-bulk-operation", name="operation_id",
+                  value=str(uuid.uuid4())),
             Input(type="hidden", id="doc-bulk-ids", name="doc_ids", value=""),
         ]
         bulk_bar = Div(*_bulk_children, cls="bulk-toolbar", id="doc-bulk-bar")
@@ -5288,6 +5366,8 @@ def _doc_table(
     var delBtn = document.getElementById('doc-bulk-delete-btn');
     var payBtn = document.getElementById('doc-bulk-pay-btn');
     var shipBtn = document.getElementById('doc-bulk-ship-btn');
+    var excludeBtn = document.getElementById('doc-bulk-exclude-btn');
+    var includeBtn = document.getElementById('doc-bulk-include-btn');
     var idsInput = document.getElementById('doc-bulk-ids');
     function getSelected() {{
         return Array.from(table.querySelectorAll('.doc-row-select:checked'));
@@ -5303,11 +5383,15 @@ def _doc_table(
         if (delBtn) delBtn.style.display = 'none';
         if (payBtn) payBtn.style.display = 'none';
         if (shipBtn) shipBtn.style.display = 'none';
+        if (excludeBtn) excludeBtn.style.display = 'none';
+        if (includeBtn) includeBtn.style.display = 'none';
     }}
     window.docBulkActionSelected = function(action) {{
         if (delBtn) delBtn.style.display = action === 'doc-delete' ? '' : 'none';
         if (payBtn) payBtn.style.display = action === 'doc-pay' ? '' : 'none';
         if (shipBtn) shipBtn.style.display = action === 'doc-ship' ? '' : 'none';
+        if (excludeBtn) excludeBtn.style.display = action === 'doc-exclude' ? '' : 'none';
+        if (includeBtn) includeBtn.style.display = action === 'doc-include' ? '' : 'none';
     }};
     // Mixed-customer consolidation is deliberate (a freight consolidator's box),
     // so it confirms first: the shipping document will have NO customer details
@@ -5360,6 +5444,7 @@ def _doc_table(
                 _th(t("documents.th_last_updated"), "updated") if is_drafts_view else _th(t("documents.th_due"), "due"),
                 *([] if no_money else [_th(t("th.total"), "total"), _th(t("th.outstanding"), "outstanding")]),
                 _th(t("th.status"), "status"),
+                Th(t("documents.accounting_sync")),
             )),
             Tbody(*[_row(d) for d in docs]),
             cls="data-table sticky-head",

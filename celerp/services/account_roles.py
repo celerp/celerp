@@ -547,6 +547,26 @@ async def resolve(session: AsyncSession, company_id, role) -> str:
     return (await resolve_many(session, company_id, [role]))[str(AccountRole(role))]
 
 
+async def resolve_importing(session: AsyncSession, company_id, role) -> str:
+    """``role``'s target, or while a migration is still bringing the books in (posting
+    accounts not chosen yet), the one account the source books kept it on: entries the
+    import books itself, such as exchange differences, land where the source booked them.
+    Finishing the migration then offers that account for the role (posting_readiness)."""
+    from celerp.services.journal_accounts import lock_accounts
+
+    settings = await current_settings(session, company_id)
+    role = AccountRole(role).value
+    codes = source_controls(settings, role)
+    if SCHEMA_KEY in settings or role_map(settings).get(role) or len(codes) != 1:
+        return await resolve(session, company_id, role)
+    # Judged as the source books map the roles, so one account for gain and loss is allowed.
+    trial = {r.value: c[0] for r in AccountRole if len(c := source_controls(settings, r.value)) == 1}
+    problems = target_problems([role], trial, await lock_accounts(session, company_id, {codes[0]}))
+    if problems:
+        raise PostingRoleError([problems[role]])
+    return codes[0]
+
+
 async def continue_role(session: AsyncSession, company_id, role, code: str) -> str:
     """The account a balance already recognized for ``role`` keeps moving on: ``code``,
     where it was recognized, never today's target. A remap does not move the balance, so

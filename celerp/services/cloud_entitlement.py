@@ -94,8 +94,8 @@ async def persisted_api_key() -> str:
 
 async def authenticated_request(method: str, path: str, *, total_s: float = RELAY_ENTITLEMENT_TIMEOUT,
                                 json: dict | None = None, params: dict | None = None,
-                                api_key: str | None = None):
-    """Make one bounded authenticated Connect request."""
+                                content: bytes | None = None, api_key: str | None = None):
+    """Make one bounded authenticated Connect request; ``content`` sends raw bytes instead of JSON."""
     from celerp.config import ensure_instance_id, settings
     from celerp.gateway.state import (
         fetch_relay_auth, is_foreign_relay_identity,
@@ -112,9 +112,13 @@ async def authenticated_request(method: str, path: str, *, total_s: float = RELA
         if (pending_verifier
                 and is_foreign_relay_identity(authenticated_iid, local_iid)):
             return None
+        headers = {"Authorization": f"Bearer {jwt}"}
+        raw = {}
+        if content is not None:
+            headers["Content-Type"] = "application/octet-stream"
+            raw = {"content": content}
         return await client.request(
-            method, f"{base}{path}", json=json, params=params,
-            headers={"Authorization": f"Bearer {jwt}"})
+            method, f"{base}{path}", json=json, params=params, **raw, headers=headers)
 
     return await with_relay_client(total_s, _op)
 
@@ -142,6 +146,7 @@ async def apply_activation_state(
     expected_verifier: str | None = None,
     keep_disconnected: bool = False,
     restart_transport: bool = False,
+    acknowledged_copy_id: str | None = None,
 ) -> bool:
     """Persist authoritative activation first, then converge local runtime."""
     from celerp.config import record_cloud_activation, settings
@@ -173,6 +178,12 @@ async def apply_activation_state(
     )
     if not accepted:
         return False
+    if acknowledged_copy_id:
+        try:
+            from celerp.services.company_backup_files import acknowledge_handoff
+            await asyncio.to_thread(acknowledge_handoff, acknowledged_copy_id)
+        except OSError:
+            log.warning("Could not clear a confirmed company handoff receipt")
 
     settings.gateway_instance_id = iid
     if effective_backup_key:
@@ -282,7 +293,7 @@ async def sync_existing_entitlement(
         response = await client.post(
             f"{relay_http_url()}/auth/activate",
             json=activate_payload(
-                target_iid, first_boot=first_boot, boot_id=boot_id),
+                target_iid, first_boot=first_boot, boot_id=boot_id, include_handoff=True),
             headers={"Authorization": f"Bearer {bearer}"},
         )
         return response, target_iid
@@ -310,6 +321,7 @@ async def sync_existing_entitlement(
             backup_encryption_key=data.get("backup_encryption_key"),
             tier=data.get("tier"), status=data.get("status"),
             expected_api_key=expected_key,
+            acknowledged_copy_id=data.get("acknowledged_copy_id"),
         )
     except Exception as exc:
         log.warning(

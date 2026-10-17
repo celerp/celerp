@@ -46,6 +46,7 @@
       "main.js",
       "app-main.js",
       "api-wait.js",
+      "handoff-protocol.js",
       "restart.js",
       "shutdown.js",
       "db-mode.js",
@@ -223,7 +224,8 @@
       "owner": "celerp",
       "repo": "celerp",
       "releaseType": "draft"
-    }
+    },
+    "protocols": [{ "name": "Celerp Company Handoff", "schemes": ["celerp"] }]
   },
   "jest": {
     "testEnvironment": "node",

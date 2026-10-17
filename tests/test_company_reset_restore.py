@@ -165,7 +165,7 @@ async def test_start_company_page_offers_restoring_a_backup(ui, real_client, rea
     ui.cookies.clear()
 
     page = _page(await ui.get(START))
-    assert _link(page, BASE, "Restore a company backup")
+    assert _link(page, BASE, "Open a company copy")
     r = await ui.get(BASE)
     assert r.status_code == 200, r.text
     for field in ('name="email"', 'name="password"', 'type="file"'):

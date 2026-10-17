@@ -7,6 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import BinaryIO
+from urllib.parse import quote
 
 import httpx
 
@@ -798,6 +799,11 @@ async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
 async def my_companies(token: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/auth/my-companies")).json()
+
+
+async def firm_view(token: str, params: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/auth/firm-view", params=params or None)).json()
 
 
 async def switch_company(token: str, company_id: str) -> tuple[str, str]:
@@ -2971,6 +2977,15 @@ async def bulk_payment(token: str, doc_ids: list[str], amount: float, payment_da
         })).json()
 
 
+async def bulk_accounting_sync(
+    token: str, entity_ids: list[str], excluded: bool, operation_id: str,
+) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/docs/accounting-sync/bulk", json={
+            "entity_ids": entity_ids, "excluded": excluded, "operation_id": operation_id,
+        })).json()
+
+
 # ---------------------------------------------------------------------------
 # Sprint 6a: Activity feed
 # ---------------------------------------------------------------------------
@@ -3454,6 +3469,50 @@ async def set_period_lock(token: str, lock_date: str | None) -> dict:
         return _raise(await c.post("/accounting/period-lock", json={"lock_date": lock_date})).json()
 
 
+async def journal_prefill(token: str, je_id: str) -> dict:
+    """A new journal entry's fields copied from journal entry ``je_id``."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/accounting/journal-entries/{quote(je_id, safe='')}/prefill")).json()
+
+
+async def journals_from_accountant(token: str) -> list[dict]:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/journal-entries/from-accountant")).json()["items"]
+
+
+async def reverse_from_accountant(token: str, je_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/journal-entries/{quote(je_id, safe='')}/reverse")).json()
+
+
+async def peer_holds(token: str) -> dict:
+    """GET records held for an account and the accounts sync added, newest first."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/peer/holds")).json()
+
+
+async def fix_peer_hold(token: str, item_id: str, body: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/peer/holds/{quote(item_id, safe='')}/fix", json=body)).json()
+
+
+async def settle_added_account(token: str, item_id: str, action: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/peer/added/{quote(item_id, safe='')}",
+                                   json={"action": action})).json()
+
+
+async def peer_review(token: str) -> dict:
+    """GET each client whose accounts wait for this company's review."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/peer/review")).json()
+
+
+async def answer_peer_review(token: str, body: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/peer/review", json=body)).json()
+
+
 async def get_posting_accounts(token: str) -> dict:
     """GET each posting role's account and status, and the accounts older stock can sit on."""
     async with _api_client(token) as c:
@@ -3812,16 +3871,22 @@ def _migration_path(token: str | None, step: str, group: str) -> str:
 
 async def migration_scan(token: str | None, files: list[tuple[str, BinaryIO]], source: str | None,
                          setup_code: str | None = None, *, group: str = "bootstrap",
-                         credentials: tuple[str, str] | None = None) -> dict:
-    """Upload source files for analysis. Returns {"scan_token", "scan"}. A login with no
-    company signs the upload with its ``credentials`` (email, password)."""
+                         credentials: tuple[str, str] | None = None, draft: str | None = None,
+                         remove: list[str] = (), check: bool = False) -> dict:
+    """Upload source files for analysis. Returns {"scan_token", "scan"}, or for an export
+    set still short of files {"draft_token", "checklist"}. ``draft`` adds the files to that
+    draft less its ``remove`` files; ``check`` only checks the set. A login with no company
+    signs the upload with its ``credentials`` (email, password)."""
+    # Every field travels as a multipart part, so a request with no new file stays multipart.
+    fields = [("source", source), ("draft", draft), *(("remove", name) for name in remove),
+              ("check", "1" if check else None)]
     async with _local_error_mapping():
         async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True,
                                  headers=None if token else _setup_code_headers(setup_code)) as c:
             r = await c.post(
                 _migration_path(token, "scan", group),
-                files=[("files", (name, content, "application/octet-stream")) for name, content in files],
-                data={"source": source} if source else None,
+                files=[*((name, (None, value)) for name, value in fields if value),
+                       *(("files", (name, content, "application/octet-stream")) for name, content in files)],
                 auth=httpx.BasicAuth(*credentials) if credentials else httpx.USE_CLIENT_DEFAULT,
             )
     return _raise(r).json()
@@ -3930,7 +3995,8 @@ def _backup_path(token: str | None, step: str) -> str:
 
 
 async def company_backup_read(token: str | None, filename: str, content: BinaryIO,
-                              setup_code: str | None = None, mode: str | None = None) -> dict:
+                              setup_code: str | None = None, mode: str | None = None,
+                              handoff: tuple[str, str] | None = None) -> dict:
     """Upload a company backup for checking. Nothing is written. Returns the upload token, a
     preview and, for a signed-in owner, what restoring it in ``mode`` does."""
     async with _local_error_mapping():
@@ -3938,8 +4004,166 @@ async def company_backup_read(token: str | None, filename: str, content: BinaryI
                                  headers=None if token else _setup_code_headers(setup_code)) as c:
             r = await c.post(_backup_path(token, "read"),
                              files=[("file", (filename, content, "application/octet-stream"))],
-                             data={"mode": mode} if token and mode else None)
+                             data={**({"mode": mode} if token and mode else {}),
+                                   **({"handoff_copy_id": handoff[0], "handoff_proof": handoff[1]}
+                                      if handoff else {})} or None)
     return _raise(r).json()
+
+
+async def company_backup_send_handoff(token: str, payload: dict) -> dict:
+    """Owner-authorized export and encrypted handoff on the canonical backup API."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=httpx.Timeout(900, connect=10.0), bulk=True) as c:
+            response = await c.post("/company-backups/send-handoff", json=payload)
+    return _raise(response).json()
+
+
+async def company_backup_handoffs(token: str) -> dict:
+    """Activity for the authenticated company's copies."""
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            response = await c.get("/company-backups/handoffs")
+    return _raise(response).json()
+
+
+async def migration_export_requests(token: str) -> list[dict]:
+    """The export checklists emailed to clients from here, newest first, with the files that arrived."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.get("/migrations/export-requests")
+    return _raise(r).json()["items"]
+
+
+async def migration_send_export_request(token: str, values: dict) -> dict:
+    """Email a client a source's export checklist; a retry of the same operation_id sends nothing new."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.post("/migrations/export-requests", json=values)
+    return _raise(r).json()
+
+
+async def migration_add_export_request(token: str, request_id: str, draft: str | None) -> dict:
+    """Add a request's files to the upload, or to the ``draft`` open: {"draft_token", "checklist"}
+    or {"scan_token", "scan"}, as for an upload."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True) as c:
+            r = await c.post(f"/migrations/export-requests/{request_id}/add",
+                             json={"draft_token": draft} if draft else {})
+    return _raise(r).json()
+
+
+async def migration_revoke_export_request(token: str, request_id: str) -> dict:
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.post(f"/migrations/export-requests/{request_id}/revoke")
+    return _raise(r).json()
+
+
+async def migration_forget_template(token: str, source: str) -> None:
+    """DELETE /migrations/templates/{source}: forget the posting accounts saved from this source."""
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            r = await c.delete(f"/migrations/templates/{source}")
+    _raise(r)
+
+
+async def migration_several(token: str) -> dict:
+    """The files of this person's Move several companies uploads, newest first, each with its step."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.get("/migrations/several")
+    return _raise(r).json()
+
+
+async def migration_several_upload(token: str, files: list[tuple[str, BinaryIO]], source: str | None,
+                                   prepared_by: str) -> dict:
+    """Upload several files, each one company to move; returns the whole list."""
+    fields = [("source", source), ("prepared_by", prepared_by)]
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True) as c:
+            r = await c.post("/migrations/several", files=[
+                *((name, (None, value)) for name, value in fields if value),
+                *(("files", (name, content, "application/octet-stream")) for name, content in files)])
+    return _raise(r).json()
+
+
+async def migration_several_open(token: str, file_id: str) -> dict:
+    """Continue one file: ``{"scan_token", "prepared_by"}``, or ``{"run_id"}`` once started."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.post(f"/migrations/several/{file_id}/open")
+    return _raise(r).json()
+
+
+async def migration_several_remove(token: str, file_id: str) -> None:
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.delete(f"/migrations/several/{file_id}")
+    _raise(r)
+
+
+async def migration_move_requests(token: str) -> list[dict]:
+    """The clients sent to Celerp's team to move, newest first, with each status and note."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.get("/migrations/move-requests")
+    return _raise(r).json()["items"]
+
+
+async def migration_send_move_request(token: str, values: dict) -> dict:
+    """Send the open export set (``values["draft_token"]``) to Celerp's team; a retry of the
+    same operation_id continues the same request."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True) as c:
+            r = await c.post("/migrations/move-requests", json=values)
+    return _raise(r).json()
+
+
+async def migration_withdraw_move_request(token: str, request_id: str) -> dict:
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await c.post(f"/migrations/move-requests/{request_id}/withdraw")
+    return _raise(r).json()
+
+
+async def migration_xero_attachments(token: str, run_id: str, action: str = "") -> dict:
+    """The Xero attachment fetch of a migration; ``action`` "start" or "stop" acts on it first.
+    Starting and stopping reach the cloud, so they get the cloud's time to answer."""
+    path = f"/migrations/{run_id}/xero-attachments" + ("/stop" if action == "stop" else "")
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=40.0) as c:
+            r = await (c.post(path) if action else c.get(path))
+    return _raise(r).json()
+
+
+async def company_backup_sender(token: str) -> dict:
+    """The firm name and reply address of the last company copy sent here."""
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            response = await c.get("/company-backups/sender")
+    return _raise(response).json()
+
+
+async def company_backup_revoke_handoff(token: str, copy_id: str) -> dict:
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            response = await c.post(f"/company-backups/handoffs/{copy_id}/revoke")
+    return _raise(response).json()
+
+
+async def company_backup_restore_handoff(token: str, copy_id: str) -> dict:
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            response = await c.post(f"/company-backups/handoffs/{copy_id}/restore")
+    return _raise(response).json()
+
+
+async def company_backup_new_handoff_link(token: str, copy_id: str, operation_id: str) -> dict:
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            response = await c.post(f"/company-backups/handoffs/{copy_id}/new-link",
+                                    json={"operation_id": operation_id})
+    return _raise(response).json()
 
 
 async def company_backup_staged(token: str | None, upload_token: str, mode: str | None = None) -> dict:
@@ -3952,11 +4176,19 @@ async def company_backup_staged(token: str | None, upload_token: str, mode: str 
 
 
 async def company_backup_prepare(token: str | None, upload_token: str, consent: list[str],
-                                 setup_code: str | None = None) -> dict:
-    """Turn on the modules an uploaded backup needs. Returns whether Celerp is restarting to load them."""
+                                 setup_code: str | None = None, *, mode: str | None = None,
+                                 open_with: dict | None = None) -> dict:
+    """Turn on the modules an uploaded backup needs; with ``open_with`` (the preview's
+    plan_fingerprint and the company_name chosen) the backup opens once they run. Returns
+    whether Celerp is restarting to load them."""
+    body: dict = {"upload_token": upload_token, "consent": consent}
+    if token and mode:
+        body["mode"] = mode
+    if token and open_with is not None:
+        body["open"] = open_with
     async with _local_error_mapping():
         async with _local_client(token, headers=None if token else _setup_code_headers(setup_code)) as c:
-            r = await c.post(_backup_path(token, "prepare"), json={"upload_token": upload_token, "consent": consent})
+            r = await c.post(_backup_path(token, "prepare"), json=body)
     return _raise(r).json()
 
 
@@ -3992,6 +4224,49 @@ async def company_backup_restore(token: str, upload_token: str, mode: str, plan_
     return _raise(r).json()
 
 
+async def company_backup_replace(token: str, upload_token: str, mode: str, plan_fingerprint: str,
+                                 company_name: str) -> dict:
+    """Replace the signed-in owner's company of the same lineage with an uploaded copy, as
+    the preview offered, once its name is typed. Returns the outcome, the kept copy's id,
+    the company and tokens for it."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
+            r = await c.post("/company-backups/replace", json={
+                "upload_token": upload_token, "mode": mode, "plan_fingerprint": plan_fingerprint,
+                "company_name": company_name})
+    return _raise(r).json()
+
+
+async def company_backup_kept(token: str) -> dict:
+    """The copies kept of the session company each time a copy replaced it, newest first."""
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            r = await c.get("/company-backups/kept")
+    return _raise(r).json()
+
+
+async def company_backup_kept_download(token: str, kept_id: str):
+    """GET one kept copy's file, streamed. Returns (chunk_iterator, headers)."""
+    return await _stream_get(token, f"/company-backups/kept/{kept_id}/download", params=None,
+                             timeout_message=timeout_message())
+
+
+async def company_backup_delete_kept(token: str, kept_id: str) -> None:
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            r = await c.delete(f"/company-backups/kept/{kept_id}")
+    _raise(r)
+
+
+async def company_backup_put_back(token: str, kept_id: str, company_name: str) -> dict:
+    """Put a kept copy back in place of the session company once its name is typed, keeping
+    the version it replaces in turn. Returns the outcome, the company and tokens for it."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
+            r = await c.post(f"/company-backups/kept/{kept_id}/replace", json={"company_name": company_name})
+    return _raise(r).json()
+
+
 async def company_backup_reactivate(token: str, upload_token: str, mode: str, plan_fingerprint: str) -> dict:
     """Reactivate the deactivated company an uploaded backup was already restored as. Returns
     the outcome, the company, connectors to connect again, and tokens for it."""
@@ -4002,14 +4277,17 @@ async def company_backup_reactivate(token: str, upload_token: str, mode: str, pl
     return _raise(r).json()
 
 
-async def company_backup_start_read(email: str, password: str, filename: str, content: BinaryIO) -> dict:
+async def company_backup_start_read(email: str, password: str, filename: str, content: BinaryIO,
+                                    handoff: tuple[str, str] | None = None) -> dict:
     """Upload a company backup for a login with no company left, for checking. Nothing is
     written. Returns the upload token, a preview and what restoring it does."""
     async with _local_error_mapping():
         async with _local_client(None, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True) as c:
             r = await c.post("/company-backups/start-company/read",
                              files=[("file", (filename, content, "application/octet-stream"))],
-                             data={"email": email, "password": password})
+                             data={"email": email, "password": password,
+                                   **({"handoff_copy_id": handoff[0], "handoff_proof": handoff[1]}
+                                      if handoff else {})} or None)
     return _raise(r).json()
 
 
@@ -4035,3 +4313,23 @@ async def company_backup_bootstrap_restore(upload_token: str, name: str, email: 
                 "company_name": company_name,
             })
     return _raise(r).json()
+
+
+async def accountant_peer_grants(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/company-peers/grants")).json()
+
+
+async def issue_accountant_peer_grant(token: str, payload: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/company-peers/grants", json=payload)).json()
+
+
+async def renew_accountant_peer_grant(token: str, grant_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/company-peers/grants/{grant_id}/renew")).json()
+
+
+async def revoke_accountant_peer_grant(token: str, grant_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/company-peers/grants/{grant_id}/revoke")).json()

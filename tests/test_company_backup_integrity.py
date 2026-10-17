@@ -324,6 +324,6 @@ async def test_backup_of_restored_company_keeps_author_labels(real_engine, real_
 def test_actor_label_marks_names_from_a_backup():
     from ui.components.activity import actor_label
     assert actor_label({"actor_name": "Owner"}) == "Owner"
-    assert actor_label({"actor_name": "Owner", "actor_historical": True}) == "Owner (from a backup)"
+    assert actor_label({"actor_name": "Owner", "actor_historical": True}) == "Owner (from a company copy)"
     assert actor_label({"actor_name": str(uuid.uuid4())}) == "--"
     assert actor_label({}) == "--"
