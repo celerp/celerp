@@ -497,6 +497,40 @@ async def test_sell_from_the_asset_page_then_credit_the_sale(owner_ui):
         assert t("fixed_assets.correct_sale") in doc_page.text
 
 
+async def test_u8_u9_the_sale_card_opens_the_draft_credit_note_and_folds_a_returned_sale(owner_ui):
+    car = await _managed_car(owner_ui)
+    href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",
+                                                       "contact_name": "Buyer Co"})
+    invoice_id = href.removeprefix("/docs/")
+    assert (await owner_ui.api.post(f"/docs/{invoice_id}/finalize")).status_code == 200
+    href = await _review_and_confirm(owner_ui, "sale-credit", {"asset_id": car, "kind": "adjust", "amount": "1000",
+                                                              "date": "2026-10-20"})
+    draft_id = href.removeprefix("/docs/")
+    number = (await owner_ui.api.get(f"/docs/{draft_id}")).json()["ref_id"]
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert t("fixed_assets.credit_open_draft", number=number) in page.text
+    assert f'href="/docs/{draft_id}"' in page.text
+    assert "/fixed-assets/op/sale-credit/review" not in page.text, "the open draft is finished, not drafted again"
+    # Two tabs: the second Review says it opens the draft, and Confirm leads to it.
+    form = {"asset_id": car, "kind": "adjust", "amount": "500", "date": "2026-10-21"}
+    review = await owner_ui.post("/fixed-assets/op/sale-credit/review",
+                                 data={**form, "idempotency_key": str(uuid.uuid4())})
+    assert t("fixed_assets.credit_open_draft", number=number) in review.text
+    assert await _review_and_confirm(owner_ui, "sale-credit", form) == f"/docs/{draft_id}"
+
+    assert (await owner_ui.api.delete(f"/docs/{draft_id}")).status_code == 200
+    href = await _review_and_confirm(owner_ui, "sale-credit", {"asset_id": car, "kind": "returned",
+                                                              "date": "2026-10-22"})
+    assert (await owner_ui.api.post(f"/docs/{href.removeprefix('/docs/')}/finalize")).status_code == 200
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    card = page.text[page.text.index('id="fa-sale-'):]
+    assert "<details" in card[:400], "a returned sale folds into history"
+    assert t("fixed_assets.sale_returned_summary", invoice=(await owner_ui.api.get(
+        f"/docs/{invoice_id}")).json()["doc_number"]) in card
+    assert t("fixed_assets.remaining") in card and t("fixed_assets.gain_or_loss") not in card.split("</details>")[0]
+    assert "fixed_assets." not in page.text
+
+
 async def test_a_deleted_sale_draft_is_reissued_or_cancelled_from_the_asset_page(owner_ui):
     car = await _managed_car(owner_ui)
     href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",

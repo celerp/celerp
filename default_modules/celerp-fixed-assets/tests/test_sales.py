@@ -414,6 +414,7 @@ async def test_s4_paid_sale_asset_returned(fa):
     short = (await fa.ok(await _credit_note(fa, inv, "7000", on="2026-06-20", returned=True)))["id"]
     refused = await _doc(fa, short, "finalize")
     assert refused.status_code == 409 and "8,000" in refused.json()["detail"]
+    assert (await fa.client.delete(f"/docs/{short}", headers=fa.h)).status_code == 200
     made = await fa.operate(f"/assets/{car}/sale/credit", {"kind": "returned", "date": "2026-06-20"}, key="ret-1")
     note = await fa.state(made["credit_note_id"])
     assert note["line_items"][0]["asset_returned"] is True and D(str(note["total"])) == D("8000")
@@ -941,8 +942,18 @@ async def test_s4_concurrent_credits_take_what_is_left_once(committed_engine):
                                       "op_key": "sell"}))["invoice_id"]
     async with factory() as s:
         await finalize_document(inv, cid, SimpleNamespace(id=uid), s)
-    drafts = [(await operate(sales.credit, {"kind": "adjust", "amount": "6000", "date": "2026-06-10",
-                                            "op_key": key}))["credit_note_id"] for key in ("one", "two")]
+    one = (await operate(sales.credit, {"kind": "adjust", "amount": "6000", "date": "2026-06-10",
+                                        "op_key": "one"}))["credit_note_id"]
+    # The operation opens the draft it made; a second one is made on the invoice, as the
+    # documents' own Credit note does.
+    async with factory() as s:
+        note = (await s.get(Projection, {"company_id": cid, "entity_id": one})).state
+        data = {k: note[k] for k in ("doc_type", "original_doc_id", "issue_date", "currency", "contact_name")
+                if note.get(k)}
+        data["line_items"] = [{**li, "line_id": uuid.uuid4().hex} for li in note["line_items"]]
+        two = await sales._draft(s, cid, uid, data)
+        await s.commit()
+    drafts = [one, two]
     async with factory() as s:
         before = (await s.get(Projection, {"company_id": cid, "entity_id": car})).state["disposal"]["gain_or_loss"]
 
@@ -1195,3 +1206,52 @@ async def test_l1_a_return_restores_what_the_sale_took_off_and_no_more(fa):
     assert await fa.balance("6980") == 0
     await _assert_clearing(fa, car, "0")
     await fa.fold_matches(car)
+
+
+async def test_u8_crediting_again_reuses_the_open_draft_and_the_sale_lists_it(fa):
+    """A second Credit the sale while a draft credit note is open opens that draft instead of
+    drafting another, and the sale lists the draft until it is finalized or deleted."""
+    car, inv = await _sold_car(fa)
+    first = (await fa.operate(f"/assets/{car}/sale/credit", {"kind": "adjust", "amount": "2000",
+                                                             "date": "2026-06-10"}, key="cr-1"))["credit_note_id"]
+    sale = await _sale(fa, car)
+    assert [d["id"] for d in sale["draft_credit_notes"]] == [first]
+    assert "credit" not in sale["actions"]
+    review = await fa.ok(await fa.post(f"/assets/{car}/sale/credit", {
+        "kind": "adjust", "amount": "1500", "date": "2026-06-11", "preview": True, "op_key": "cr-2"}))
+    assert review["open_draft"] == await _number(fa, first)
+    again = await fa.operate(f"/assets/{car}/sale/credit", {"kind": "adjust", "amount": "1500",
+                                                            "date": "2026-06-11"}, key="cr-2")
+    assert again["credit_note_id"] == first
+    drafts = [n for n in await fa.entities("doc") if n.get("doc_type") == "credit_note"]
+    assert len(drafts) == 1
+    # Deleted, the draft is gone from the sale and a new one can be drafted.
+    assert (await fa.client.delete(f"/docs/{first}", headers=fa.h)).status_code == 200
+    sale = await _sale(fa, car)
+    assert sale["draft_credit_notes"] == [] and "credit" in sale["actions"]
+    second = (await fa.operate(f"/assets/{car}/sale/credit", {"kind": "adjust", "amount": "1500",
+                                                              "date": "2026-06-11"}, key="cr-3"))["credit_note_id"]
+    assert second != first
+    await _finalize(fa, second)
+    sale = await _sale(fa, car)
+    assert sale["draft_credit_notes"] == [] and [c["id"] for c in sale["credit_notes"]] == [second]
+    await _assert_clearing(fa, car, "8500")
+
+
+async def test_u9_a_returned_sale_has_nothing_left_to_credit_and_no_result(fa):
+    """After a part credit and the return of the rest, the sale shows all of it credited,
+    nothing left, and no gain or loss; disposing of the asset later leaves the sale's figures
+    alone."""
+    car, inv = await _sold_car(fa)
+    await _credit(fa, inv, "2000", on="2026-06-10")
+    sale = await _sale(fa, car)
+    assert (D(sale["credited"]), D(sale["remaining"]), D(sale["gain_or_loss"])) == (D("2000"), D("8000"), D("-3200"))
+    await _credit(fa, inv, "8000", on="2026-07-05", returned=True)
+    sale = await _sale(fa, car)
+    assert sale["state"] == "returned" and sale["actions"] == []
+    assert (D(sale["credited"]), D(sale["remaining"])) == (D("10000"), D(0))
+    assert sale["gain_or_loss"] is None and sale["carrying_amount"] is None
+    await fa.operate(f"/assets/{car}/dispose", {"date": "2026-07-20", "reason": "scrapped"}, key="scrap")
+    sale = await _sale(fa, car)
+    assert sale["gain_or_loss"] is None and D(sale["remaining"]) == 0
+    assert (await fa.asset(car))["disposal"]["gain_or_loss"] is not None

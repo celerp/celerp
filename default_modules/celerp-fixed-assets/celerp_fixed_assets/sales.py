@@ -261,6 +261,17 @@ async def _draft_invoice(session, company_id, user_id, asset_id: str, asset: dic
     return await _draft(session, company_id, user_id, data, before=wait)
 
 
+async def _draft_credit_notes(session, company_id, invoice_id: str, asset_id: str) -> list[dict]:
+    """The draft credit notes on the sale invoice that carry ``asset_id``, oldest first."""
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string() == "credit_note",
+        Projection.state["original_doc_id"].as_string() == invoice_id,
+        Projection.state["status"].as_string() == "draft").order_by(Projection.entity_id))).scalars().all()
+    return [{"id": r.entity_id, "number": doc_number(r.state, r.entity_id), "date": r.state.get("issue_date")}
+            for r in rows if _carries(r.state, asset_id) is not None]
+
+
 def _pending(asset: dict) -> dict:
     sale = asset.get("sale") or {}
     if sale.get("state") != "pending":
@@ -379,6 +390,11 @@ async def credit(session, company_id, user_id, asset_id: str, body: dict) -> dic
         source = _carries(invoice, asset_id)
         if source is None:
             raise conflict(f"Invoice {doc_number(invoice, sale['invoice_id'])} no longer carries {asset['number']}.")
+        # A credit note already drafted for the sale is opened, never drafted twice.
+        drafts = await _draft_credit_notes(session, company_id, sale["invoice_id"], asset_id)
+        if drafts:
+            return ({"number": asset["number"], "open_draft": drafts[0]["number"]},
+                    {"open_draft": drafts[0]["id"], "basis": [asset.get("version"), drafts[0]["id"]]})
         remaining = _dec(sale["proceeds"]) - _credited(sale)
         rate = _dec(invoice.get("conversion_rate") or 1)
         base = await setup.currency(session, company_id)
@@ -395,6 +411,8 @@ async def credit(session, company_id, user_id, asset_id: str, body: dict) -> dic
                        "basis": [asset.get("version"), asset.get("movement_count"), sale.get("credits")]}
 
     async def apply(context, op_key):
+        if context.get("open_draft"):
+            return {"credit_note_id": context["open_draft"]}, _effects()
         invoice, sale, source = context["invoice"], context["sale"], context["source"]
         line = {"name": source.get("name"), "quantity": 1, "unit_price": float(context["amount"]),
                 "asset_id": asset_id, "source_line_id": source["line_id"], "line_id": uuid.uuid4().hex,
@@ -456,14 +474,21 @@ async def view(session, company_id, asset_id: str) -> dict:
             out.update(carrying_amount=item["shown"]["carrying_amount"], gain_or_loss=item["shown"]["gain_or_loss"],
                        journal=_journal_view(item["lines"], currency))
         return out
-    credited = _credited(sale)
     currency = await setup.currency(session, company_id)
+    if sale["state"] == "returned":
+        # A return credits what was left, and the sale's result went back with the asset.
+        out.update(proceeds=money(_dec(sale["proceeds"]), currency), credited=money(_dec(sale["proceeds"]), currency),
+                   remaining=money(0, currency), carrying_amount=None, gain_or_loss=None, actions=[],
+                   draft_credit_notes=[])
+        return out
+    credited = _credited(sale)
+    drafts = await _draft_credit_notes(session, company_id, sale["invoice_id"], asset_id)
     je = await _state(session, company_id, sale["journal_id"]) if sale.get("journal_id") else None
     out.update(proceeds=money(_dec(sale["proceeds"]), currency), credited=money(credited, currency),
                remaining=money(_dec(sale["proceeds"]) - credited, currency),
                carrying_amount=sale.get("carrying_amount"),
                gain_or_loss=(asset.get("disposal") or {}).get("gain_or_loss"),
-               actions=["credit"] if sale["state"] == "sold" else [],
+               draft_credit_notes=drafts, actions=["credit"] if sale["state"] == "sold" and not drafts else [],
                journal={"lines": [{"account": e["account"], "debit": money(e.get("debit"), currency),
                                    "credit": money(e.get("credit"), currency)}
                                   for e in (je or {}).get("entries") or []]})

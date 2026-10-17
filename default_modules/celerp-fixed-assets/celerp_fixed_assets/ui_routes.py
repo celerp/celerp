@@ -204,6 +204,8 @@ def _preview(action: str, result: dict, currency: str) -> FT:
                            Tbody(*rows), cls="data-table"))
     if result.get("classification"):
         parts += _correction_preview(result, currency)
+    if result.get("open_draft"):
+        parts.append(P(t("fixed_assets.credit_open_draft", number=result["open_draft"]), cls="flash flash--info"))
     if "gain_or_loss" in result:
         parts.append(_detail_table([(t(f"fixed_assets.{k}"), _money_td(result[k], currency))
                                     for k in ("depreciation", "carrying_amount", "gain_or_loss")]))
@@ -812,8 +814,10 @@ def _sale_card(asset: dict, sale: dict, currency: str) -> FT | str:
         # Only a completed sale can be credited.
         rows += [(t("fixed_assets.credited"), _money_td(sale.get("credited"), currency)),
                  (t("fixed_assets.remaining"), _money_td(sale.get("remaining"), currency))]
-    rows += [(t("fixed_assets.sale_carrying_amount"), _money_td(sale.get("carrying_amount"), currency)),
-             (t("fixed_assets.gain_or_loss"), _money_td(sale.get("gain_or_loss"), currency))]
+    if sale["state"] != "returned":
+        # A returned sale's result went back with the asset.
+        rows += [(t("fixed_assets.sale_carrying_amount"), _money_td(sale.get("carrying_amount"), currency)),
+                 (t("fixed_assets.gain_or_loss"), _money_td(sale.get("gain_or_loss"), currency))]
     parts: list[FT] = [H2(t("fixed_assets.sale_title"), cls="section-title")]
     if sale.get("draft_deleted"):
         parts.append(Div(Strong(t("fixed_assets.sale_draft_deleted")), " ", t("fixed_assets.sale_draft_deleted_hint"),
@@ -835,6 +839,10 @@ def _sale_card(asset: dict, sale: dict, currency: str) -> FT | str:
                        Td(t(f"fixed_assets.credit_kind.{n['kind']}")), _money_td(n.get("amount"), currency))
                     for n in sorted(notes, key=lambda n: n.get("date") or "", reverse=True)]),
             cls="data-table")]
+    for draft in sale.get("draft_credit_notes") or []:
+        parts.append(Div(t("fixed_assets.credit_open_draft", number=draft["number"]), " ",
+                         A(t("fixed_assets.open_credit_note"), href=_doc_href(draft["id"]), cls="btn btn--secondary"),
+                         cls="flash flash--info"))
     actions = sale.get("actions") or []
     if "reissue" in actions:
         parts.append(_op_form("sale-reissue", hidden, P(t("fixed_assets.reissue_hint"), cls="settings-hint"),
@@ -853,6 +861,10 @@ def _sale_card(asset: dict, sale: dict, currency: str) -> FT | str:
             _field(t("fixed_assets.amount"), _input("amount", type_="number", step="any", min="0"),
                    t("fixed_assets.credit_amount_hint")),
             review_label=t("fixed_assets.credit_sale")))
+    if sale["state"] == "returned":
+        # The sale no longer stands: kept as history, folded under one line.
+        parts = [Details(Summary(t("fixed_assets.sale_returned_summary", invoice=sale["invoice_number"]),
+                                 cls="section-title"), *parts[1:])]
     return Div(*parts, cls="detail-card section-card", id=f"fa-sale-{quote(asset_id, safe=':')}")
 
 
