@@ -23,7 +23,7 @@ from test_peer_sync_end_to_end import _company_of, _route_to_app
 from test_peer_two_way_sync import (ADJUSTED, _journals, _notices, _pair_journals, _post_journal,
                                     _received, _two_way)
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.timeout(120)]
 
 
 async def _net(client, tok: str) -> dict[str, Decimal]:
@@ -229,3 +229,26 @@ async def test_one_sync_takes_a_reversal_and_its_undo_in_order(real_client, real
     assert results["journals_out"].attention == []
     assert _moved(await _books(real_client, real_engine, tok, firm_tok, client_company, firm_company), before) == (
         {"6500": Decimal(100), "6200": Decimal(-100)}, {"6500": Decimal(100), "6200": Decimal(-100)})
+
+
+async def test_a_reversal_follows_the_original_lines_after_the_account_changes(
+        real_client, real_engine, monkeypatch):
+    """The client renames the account an accountant's journal posted to and makes it its
+    General expense account, then reverses the journal: the reversal takes the original
+    lines back off the same accounts in both companies, not the firm's General expense."""
+    tok, firm_tok, client_company, firm_company, credential, firm_je, local, before = await _start(
+        real_client, real_engine, monkeypatch)
+    renamed = await real_client.patch("/accounting/accounts/6500", headers=auth(tok),
+                                      json={"name": "Audit and review fees"})
+    assert renamed.status_code == 200, renamed.text
+    role = await real_client.put("/accounting/posting-accounts/general_expense", headers=auth(tok),
+                                 json={"code": "6500"})
+    assert role.status_code == 200, role.text
+    reversal = await _reverse(real_client, tok, local)
+    assert reversal.status_code == 200, reversal.text
+    await _two_way(client_company, credential)
+    assert _moved(await _books(real_client, real_engine, tok, firm_tok, client_company, firm_company), before) == (
+        {}, {})
+    firm_side = [je for je in (await _journals(real_engine, firm_company)).values()
+                 if je.get("memo") == "Reversal of Accrue audit fee"]
+    assert [je["status"] for je in firm_side] == ["posted"]
