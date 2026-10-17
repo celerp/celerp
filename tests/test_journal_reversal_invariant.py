@@ -202,3 +202,30 @@ async def test_racing_void_and_reversal_cancel_once(real_client, real_engine, mo
     for _ in range(3):
         await _two_way(client_company, credential)
     assert _moved(await _books(real_client, real_engine, tok, firm_tok, client_company, firm_company), before) == ({}, {})
+
+
+async def test_one_sync_takes_a_reversal_and_its_undo_in_order(real_client, real_engine, monkeypatch):
+    """The client reverses the firm's journal and undoes that reversal before syncing.
+    However their ids sort, one sync delivers the reversal before its undo, so the firm
+    takes both in that run and the original stands in both books, with nothing held."""
+    from celerp.services import peer_journals
+
+    real = peer_journals.reversal_id
+
+    def undo_sorts_first(je_id: str) -> str:
+        rid = real(je_id)
+        return rid.replace("je:reversal:", "je:reversal:a" if je_id.startswith("je:reversal:")
+                           else "je:reversal:z", 1)
+
+    monkeypatch.setattr(peer_journals, "reversal_id", undo_sorts_first)
+    tok, firm_tok, client_company, firm_company, credential, firm_je, local, before = await _start(
+        real_client, real_engine, monkeypatch)
+    reversal = await _reverse(real_client, tok, local)
+    undo = await _reverse(real_client, tok, reversal.json()["je_id"])
+    assert undo.status_code == 200, undo.text
+    assert undo.json()["je_id"] < reversal.json()["je_id"]
+    results = await _two_way(client_company, credential)
+    assert results["journals_out"].ok, results["journals_out"].errors
+    assert results["journals_out"].attention == []
+    assert _moved(await _books(real_client, real_engine, tok, firm_tok, client_company, firm_company), before) == (
+        {"6500": Decimal(100), "6200": Decimal(-100)}, {"6500": Decimal(100), "6200": Decimal(-100)})
