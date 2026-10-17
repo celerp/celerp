@@ -4022,6 +4022,7 @@
   "system_recovery.restored": "تمت استعادة قاعدة البيانات من نقطة الاسترداد.",
   "system_recovery.imported": "تم استيراد النسخة الاحتياطية من {company}.",
   "system_recovery.signed_out": "تم تسجيل خروج الجميع. قم بتسجيل الدخول بحساب من التثبيت المستعاد.",
+  "system_recovery.failed_signed_out": "تم تسجيل خروج الجميع. سجّل الدخول مرة أخرى للمتابعة.",
   "system_recovery.safety_saved": "تم حفظ نسخة أمان من التثبيت السابق في {path}.",
   "system_recovery.safety_failed_confirm": "لم يتغيّر شيء. يمكنك الاستعادة دون نسخة أمان، لكن لا يمكن التراجع عن ذلك.",
   "system_recovery.continue_without_safety": "الاستعادة بدون نسخة أمان",

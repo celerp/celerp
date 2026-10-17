@@ -88,10 +88,8 @@ def _restore_flash(result, base_msg: str) -> Response:
     once the server is back, which lands on sign-in; otherwise offer the
     sign-in link directly.
     """
-    from fasthtml.common import A, Div, Script, to_xml
+    from fasthtml.common import Div, Script
     from ui.components.shell import RESTART_POLL_JS
-
-    from celerp.services.backup_import import SESSION_ENDED_HEADER
 
     parts = [base_msg, *result.warnings]
     if result.safety_archive:
@@ -99,26 +97,34 @@ def _restore_flash(result, base_msg: str) -> Response:
     kind = "warning" if result.warnings else "success"
     if result.restart_scheduled:
         parts.append(t("settings.restarting_automatically"))
-        body = Div(
-            Div(" ".join(parts), cls=f"flash flash--{kind}"),
-            Script(RESTART_POLL_JS),
-            id="backup-flash",
-        )
-    else:
-        parts.append(t("system_recovery.signed_out"))
-        body = Div(
-            Div(" ".join(parts), cls=f"flash flash--{kind}"),
-            A(t("btn.sign_in"), href="/login", cls="btn btn--primary mt-sm"),
-            id="backup-flash",
-        )
-    return Response(content=to_xml(body), media_type="text/html",
+        return _signed_out(Div(" ".join(parts), cls=f"flash flash--{kind}"), Script(RESTART_POLL_JS))
+    parts.append(t("system_recovery.signed_out"))
+    return _signed_out(Div(" ".join(parts), cls=f"flash flash--{kind}"))
+
+
+def _signed_out(message, follow=None) -> Response:
+    """The answer to a recovery that ended every session: *message*, then *follow*
+    (default: the sign-in link), with SESSION_ENDED_HEADER for the UI to drop the
+    browser's session cookies."""
+    from fasthtml.common import A, Div, to_xml
+
+    from celerp.services.backup_import import SESSION_ENDED_HEADER
+    if follow is None:
+        follow = A(t("btn.sign_in"), href="/login", cls="btn btn--primary mt-sm")
+    return Response(content=to_xml(Div(message, follow, id="backup-flash")), media_type="text/html",
                     headers={SESSION_ENDED_HEADER: "1"})
 
 
 def _recovery_response(result, success_msg: str) -> Response:
-    """The page's answer to a recovery: restored, waiting for confirmation, or failed."""
+    """The page's answer to a recovery: restored, waiting for confirmation, or failed.
+    A failure after the recovery started has ended every session; its outcome is also
+    shown on the owner's first page after signing in again."""
+    from fasthtml.common import Div
     if result.needs_confirmation:
         return _confirm_without_safety(result)
+    if result.session_ended:
+        return _signed_out(Div(f"{result.error} {t('system_recovery.failed_signed_out')}",
+                               cls="flash flash--error"))
     if not result.ok:
         return _flash(result.error or t("error.restore_failed_unknown"), "error")
     return _restore_flash(result, success_msg)

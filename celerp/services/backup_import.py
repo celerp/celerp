@@ -228,10 +228,13 @@ def _is_protected_module_dir(
 
 
 RESTORE_NOTICE_FILE = "restore-notice.json"
+# The outcome of a recovery that failed after it started, kept for the installation
+# owner's first signed-in page: every session ended with it (take_recovery_failure).
+RECOVERY_FAILURE_FILE = "recovery-failure.json"
 
 
-# Response header on a successful whole-installation restore: every session
-# ended with it, so the UI drops the browser's session cookies.
+# Response header on a whole-installation restore that ended every session, so the
+# UI drops the browser's session cookies.
 SESSION_ENDED_HEADER = "X-Session-Ended"
 
 
@@ -680,8 +683,7 @@ def _failed(error: str, **kw):
     return BackupResult(ok=False, size_bytes=0, error=error, **kw)
 
 
-def _commit_failure(exc: Exception, safety_archive: str | None, restored: bool) -> str:
-    detail = (str(exc) or repr(exc)).rstrip(".")
+def _commit_failure(detail: str, safety_archive: str | None, restored: bool) -> str:
     if restored:
         return (f"System Recovery did not complete: {detail}. The installation was put back "
                 f"as it was before, from the safety archive {safety_archive}; connections to "
@@ -720,7 +722,11 @@ def _mark_recovery_started(target: Path, connectors: list[dict]) -> None:
 
 
 def _write_marker(state: dict) -> None:
-    path = _marker_path()
+    _write_durably(_marker_path(), state)
+
+
+def _write_durably(path: Path, state: dict) -> None:
+    """Write *state* as JSON to *path* so that it survives a crash once this returns."""
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(path.name + ".partial")
     with partial.open("w") as out:
@@ -729,6 +735,48 @@ def _write_marker(state: dict) -> None:
         os.fsync(out.fileno())
     partial.replace(path)
     fsync_dir(path.parent, strict=True)
+
+
+def _failure_path() -> Path:
+    from celerp.config import settings
+    return settings.data_dir / RECOVERY_FAILURE_FILE
+
+
+def _keep_recovery_failure(message: str, detail: str | None = None) -> None:
+    """Keep *message*, the outcome of a recovery that failed after it started, for
+    the installation owner's next signed-in page. *detail* is the failure itself,
+    for the start that later finishes or undoes the recovery to report again. A
+    copy that cannot be kept is logged; the recovery's own result stands."""
+    try:
+        _write_durably(_failure_path(), {"message": message, "detail": detail})
+    except OSError:
+        log.exception("The outcome of the failed System Recovery could not be kept")
+
+
+def recovery_failure_waiting() -> bool:
+    return _failure_path().is_file()
+
+
+def _take(path: Path) -> dict | None:
+    """Read and remove the one-shot JSON notice at *path*; None when there is none."""
+    try:
+        notice = json.loads(path.read_text())
+        path.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        return None
+    return notice if isinstance(notice, dict) else None
+
+
+def take_recovery_failure() -> str | None:
+    """The kept outcome of the last recovery, when it failed after it started; read once."""
+    message = (_take(_failure_path()) or {}).get("message")
+    return message if isinstance(message, str) else None
+
+
+def take_restore_notice() -> dict | None:
+    """The one-shot notice of the last successful recovery (_write_restore_notice)."""
+    from celerp.config import settings
+    return _take(settings.data_dir / RESTORE_NOTICE_FILE)
 
 
 def _mark_recovery_finished() -> None:
@@ -813,8 +861,27 @@ async def finish_incomplete_recovery() -> None:
         async with _recovery_locks():
             await _replace_from(target)
         log.info("Unfinished System Recovery completed from %s", target)
+        _report_finished_at_start(target)
     except Exception:
         log.exception("Unfinished System Recovery could not be completed; Celerp stays unavailable")
+
+
+def _report_finished_at_start(target: Path) -> None:
+    """Keep, as the outcome of a recovery that failed or was cut off by a stop, what
+    the start that just resolved it did: put the installation back, or finish
+    restoring the backup."""
+    try:
+        detail = json.loads(_failure_path().read_text()).get("detail")
+    except (OSError, ValueError, AttributeError):
+        detail = None
+    detail = detail or "Celerp stopped before the recovery finished"
+    if target.name == UNFINISHED_RECOVERY_ARCHIVE:
+        message = (f"System Recovery did not complete: {detail}. Celerp finished restoring the "
+                   "backup when Celerp started again; connections to other services must be "
+                   "connected again and everyone must sign in again.")
+    else:
+        message = _commit_failure(detail, str(target), restored=True)
+    _keep_recovery_failure(message, detail)
 
 
 async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | None):
@@ -848,8 +915,14 @@ async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | Non
                     restored = True
                 except Exception:
                     log.exception("The installation could not be put back from %s", safety_archive)
-            return _failed(_commit_failure(exc, safety, restored), safety_archive=safety)
+            detail = (str(exc) or repr(exc)).rstrip(".")
+            message = _commit_failure(detail, safety, restored)
+            # Every session has ended, or the installation stays closed until a start
+            # resolves the recovery: the page that started it may never show this.
+            _keep_recovery_failure(message, detail)
+            return _failed(message, safety_archive=safety, session_ended=True)
         _mark_recovery_finished()
+        _failure_path().unlink(missing_ok=True)
         # Celerp Cloud learns of the restore now; until it has, no company can be reset,
         # and the reconciliation at start and every few minutes keeps trying.
         from celerp.services.payments import reconcile_payments

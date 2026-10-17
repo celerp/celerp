@@ -1952,6 +1952,22 @@ def _redirect_notice(request, lang: str) -> list:
     return notices
 
 
+async def _recovery_failure_notice(request) -> list:
+    """The outcome of a System Recovery that failed after it signed everyone out, on
+    the installation owner's first signed-in page (backup_import.take_recovery_failure).
+    Nobody else sees it, and it stays for the owner until then."""
+    from celerp.services import backup_import
+    from ui.config import get_token
+    token = get_token(request) if request is not None else None
+    if not token or not backup_import.recovery_failure_waiting():
+        return []
+    import ui.api_client as _api
+    if not await _api.installation_owner(token):
+        return []
+    message = backup_import.take_recovery_failure()
+    return [flash(message)] if message else []
+
+
 def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """The outer HTML document shared by every full-chrome page: head assets, the
     supplied nav, top bar, banners, main content, and footer.
@@ -2044,7 +2060,7 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
         lang = get_lang(request)
     sidebar = _sidebar(nav_active, lang=lang, role=role, request=request, settings=company_settings)
     return _shell_document(
-        *content, nav=sidebar, title=title, companies=companies,
+        *await _recovery_failure_notice(request), *content, nav=sidebar, title=title, companies=companies,
         extra_head=extra_head, lang=lang, request=request,
     )
 

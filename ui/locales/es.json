@@ -4022,6 +4022,7 @@
   "system_recovery.restored": "Base de datos restaurada desde el punto de recuperación.",
   "system_recovery.imported": "Copia de seguridad de {company} importada.",
   "system_recovery.signed_out": "Se ha cerrado la sesión de todos. Inicie sesión con una cuenta de la instalación restaurada.",
+  "system_recovery.failed_signed_out": "Se ha cerrado la sesión de todos. Inicie sesión de nuevo para continuar.",
   "system_recovery.safety_saved": "Se guardó una copia de seguridad de la instalación anterior en {path}.",
   "system_recovery.safety_failed_confirm": "No se ha cambiado nada. Puede restaurar sin copia de seguridad, pero no se podrá deshacer.",
   "system_recovery.continue_without_safety": "Restaurar sin copia de seguridad",

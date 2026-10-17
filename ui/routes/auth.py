@@ -59,16 +59,8 @@ def _consume_restore_notice() -> dict | None:
     The post-restore restart replaces whatever page showed the import result, so
     the outcome and any warnings are re-shown here, on the first login page after
     the restart, where the user cannot miss them."""
-    from celerp.services.backup_import import RESTORE_NOTICE_FILE
-    path = _settings.data_dir / RESTORE_NOTICE_FILE
-    try:
-        if not path.is_file():
-            return None
-        notice = json.loads(path.read_text())
-        path.unlink(missing_ok=True)
-        return notice if isinstance(notice, dict) else None
-    except Exception:
-        return None
+    from celerp.services.backup_import import take_restore_notice
+    return take_restore_notice()
 
 
 def _restore_notice_message(notice: dict) -> str:

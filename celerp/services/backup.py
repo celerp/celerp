@@ -136,6 +136,9 @@ class BackupResult:
     archive_digest: str | None = None
     # Where the safety archive of the replaced installation was saved.
     safety_archive: str | None = None
+    # A recovery that failed after it started ended every session (or left the
+    # installation closed): the page must sign in again to see anything.
+    session_ended: bool = False
 
 
 def _parse_key(b64_key: str) -> bytes:

@@ -151,3 +151,80 @@ def test_import_backup_cancelled_at_the_warning_sends_nothing_browser(page, reco
     button = page.locator("#backup-import-btn")
     assert button.is_enabled() and button.inner_text() == t("btn.import_backup", "en")
     assert set(_company_names(url)) == {_RENAMED}
+
+
+def _auth_nonces(url: str) -> list[tuple]:
+    with psycopg2.connect(url) as conn, conn.cursor() as cur:
+        cur.execute("SELECT user_id, nonce FROM user_auth_state")
+        return cur.fetchall()
+
+
+def _put_back_nonces(url: str, rows: list[tuple]) -> None:
+    with psycopg2.connect(url) as conn, conn.cursor() as cur:
+        for user_id, nonce in rows:
+            cur.execute("UPDATE user_auth_state SET nonce = %s WHERE user_id = %s", (nonce, user_id))
+
+
+def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
+        page, ui_server, api, seeded_user, tmp_path, monkeypatch):
+    """A recovery that fails after it started is put back and signs everyone out. The page
+    says so and offers sign-in; the login page does not show the failure; the first page
+    after signing in again does, once."""
+    import celerp.config as config
+    import celerp.routers.system as system
+    from celerp.config import settings
+    from celerp.services import backup, backup_import
+
+    from .conftest import _set_auth_cookie, clear_session_registry
+
+    url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
+    names = _company_names(url)
+    nonces = _auth_nonces(url)
+    backup.dump_database(settings.database_url, tmp_path / "database.dump")
+    dump = (tmp_path / "database.dump").read_bytes()
+    real_reconcile = backup_import._reconcile_schema
+    failed = []
+
+    async def _reconcile_fails_once():
+        if not failed:
+            failed.append(True)
+            raise RuntimeError("DuplicateColumn: column already exists")
+        await real_reconcile()
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
+    monkeypatch.setattr(settings, "backup_encryption_key", None)
+    monkeypatch.setattr(backup_import, "_reconcile_schema", _reconcile_fails_once)
+    monkeypatch.setattr(config, "replace_enabled_modules", lambda names: False)
+    monkeypatch.setattr(system, "_send_sigterm", lambda: None)
+    (tmp_path / "data").mkdir()
+    try:
+        page.goto(f"{ui_server}/settings/system-recovery", wait_until="domcontentloaded")
+        page.on("dialog", lambda d: d.accept())
+        page.set_input_files("#backup-import-input", _archive(tmp_path / "whole.celerp-backup", dump))
+        page.wait_for_selector("#backup-flash .flash--error", timeout=_WAIT_MS)
+        flash = page.locator("#backup-flash").inner_text()
+        assert "System Recovery did not complete" in flash and "DuplicateColumn" in flash
+        assert t("system_recovery.failed_signed_out", "en") in flash
+        assert _company_names(url) == names
+
+        page.click('#backup-flash a:has-text("Sign in")')
+        page.wait_for_selector("#email", timeout=_WAIT_MS)
+        assert "did not complete" not in page.content()
+
+        clear_session_registry()
+        page.fill("#email", seeded_user["email"])
+        page.fill("#password", seeded_user["password"])
+        page.click('button[type="submit"]')
+        page.wait_for_selector("#main-content", timeout=_WAIT_MS)
+        outcome = page.locator("#main-content .flash--error").first
+        outcome.wait_for(timeout=_WAIT_MS)
+        assert "System Recovery did not complete" in outcome.inner_text()
+        assert "DuplicateColumn" in outcome.inner_text()
+
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_selector("#main-content", timeout=_WAIT_MS)
+        assert "did not complete" not in page.locator("#main-content").inner_text()
+    finally:
+        _put_back_nonces(url, nonces)
+        clear_session_registry()
+        _set_auth_cookie(page.context, api.headers["Authorization"].split(" ", 1)[1])

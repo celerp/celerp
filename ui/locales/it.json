@@ -4022,6 +4022,7 @@
   "system_recovery.restored": "Database ripristinato dal punto di ripristino.",
   "system_recovery.imported": "Backup di {company} importato.",
   "system_recovery.signed_out": "Tutti sono stati disconnessi. Accedi con un account dell'installazione ripristinata.",
+  "system_recovery.failed_signed_out": "Tutti sono stati disconnessi. Accedi di nuovo per continuare.",
   "system_recovery.safety_saved": "Una copia di sicurezza dell'installazione precedente è stata salvata in {path}.",
   "system_recovery.safety_failed_confirm": "Non è stato modificato nulla. Puoi ripristinare senza copia di sicurezza, ma non potrà essere annullato.",
   "system_recovery.continue_without_safety": "Ripristina senza copia di sicurezza",

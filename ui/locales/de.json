@@ -4022,6 +4022,7 @@
   "system_recovery.restored": "Datenbank aus dem Wiederherstellungspunkt wiederhergestellt.",
   "system_recovery.imported": "Sicherung von {company} importiert.",
   "system_recovery.signed_out": "Alle wurden abgemeldet. Melden Sie sich mit einem Konto aus der wiederhergestellten Installation an.",
+  "system_recovery.failed_signed_out": "Alle wurden abgemeldet. Melden Sie sich erneut an, um fortzufahren.",
   "system_recovery.safety_saved": "Eine Sicherheitskopie der vorherigen Installation wurde unter {path} gespeichert.",
   "system_recovery.safety_failed_confirm": "Es wurde nichts geändert. Sie können ohne Sicherheitskopie wiederherstellen, aber das lässt sich nicht rückgängig machen.",
   "system_recovery.continue_without_safety": "Ohne Sicherheitskopie wiederherstellen",

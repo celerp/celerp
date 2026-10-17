@@ -4022,6 +4022,7 @@
   "system_recovery.restored": "Database restored from the recovery point.",
   "system_recovery.imported": "Imported backup from {company}.",
   "system_recovery.signed_out": "Everyone has been signed out. Sign in with an account from the restored installation.",
+  "system_recovery.failed_signed_out": "Everyone has been signed out. Sign in again to continue.",
   "system_recovery.safety_saved": "A safety copy of the previous installation was saved to {path}.",
   "system_recovery.safety_failed_confirm": "Nothing has been changed. You can restore without a safety copy, but that can't be undone.",
   "system_recovery.continue_without_safety": "Restore without safety copy",

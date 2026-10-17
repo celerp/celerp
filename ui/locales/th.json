@@ -4022,6 +4022,7 @@
   "system_recovery.restored": "กู้คืนฐานข้อมูลจากจุดกู้คืนแล้ว",
   "system_recovery.imported": "นำเข้าข้อมูลสำรองจาก {company} แล้ว",
   "system_recovery.signed_out": "ทุกคนออกจากระบบแล้ว กรุณาเข้าสู่ระบบด้วยบัญชีจากการติดตั้งที่กู้คืนแล้ว",
+  "system_recovery.failed_signed_out": "ทุกคนออกจากระบบแล้ว กรุณาเข้าสู่ระบบอีกครั้งเพื่อดำเนินการต่อ",
   "system_recovery.safety_saved": "บันทึกสำเนาสำรองเพื่อความปลอดภัยของการติดตั้งก่อนหน้าไว้ที่ {path} แล้ว",
   "system_recovery.safety_failed_confirm": "ยังไม่มีการเปลี่ยนแปลงใด ๆ คุณกู้คืนโดยไม่มีสำเนาสำรองเพื่อความปลอดภัยได้ แต่จะย้อนกลับไม่ได้",
   "system_recovery.continue_without_safety": "กู้คืนโดยไม่มีสำเนาสำรอง",

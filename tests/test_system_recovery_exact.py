@@ -1226,6 +1226,100 @@ async def test_failed_recovery_does_not_revive_sessions(tmp_path, monkeypatch, c
     assert backup_import.recovery_incomplete() is False
 
 
+# ── A failed recovery's outcome waits for the next sign-in ───────────────────
+
+async def test_failed_recovery_outcome_waits_for_the_next_sign_in(rec, tmp_path, monkeypatch):
+    """A recovery that fails once it has started ends every session, so the page that
+    started it may never show the result: the outcome is kept for the owner's next
+    signed-in page, and shown once."""
+    from celerp.services import backup_import
+    rec.seed()
+    _inject(monkeypatch, "schema")
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is False and result.session_ended is True
+    assert backup_import.take_recovery_failure() == result.error
+    assert backup_import.take_recovery_failure() is None
+
+
+async def test_recovery_refused_before_any_change_keeps_no_outcome(rec, tmp_path):
+    """A recovery refused before anything changed signs no one out: its page shows the
+    answer, and nothing waits for a later sign-in."""
+    from celerp.services import backup_import
+    rec.fail_safety()
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.needs_confirmation is True and result.session_ended is False
+    bad = _archive(tmp_path / "bad.celerp-backup", modules=["../evil"])
+    refused = await backup_import.run_recovery(bad)
+    assert refused.ok is False and refused.session_ended is False
+    assert backup_import.take_recovery_failure() is None
+
+
+async def test_successful_recovery_clears_an_earlier_failure(rec, tmp_path, monkeypatch):
+    """The outcome shown after sign-in is the last recovery's, never an older failure's."""
+    from celerp.services import backup_import
+    rec.seed()
+    _inject(monkeypatch, "schema")
+    assert (await backup_import.run_recovery(_archive(tmp_path / "a.celerp-backup", SOURCE_FILES))).ok is False
+    assert (await backup_import.run_recovery(_archive(tmp_path / "b.celerp-backup", SOURCE_FILES))).ok is True
+    assert backup_import.take_recovery_failure() is None
+
+
+async def test_outcome_says_how_the_next_start_resolved_the_recovery(rec, tmp_path, monkeypatch):
+    """A recovery that could not be undone keeps the installation closed until a start
+    resolves it; the outcome then shown says what that start did, not to restart."""
+    from celerp.services import backup_import
+    rec.seed()
+    real_restore = backup_import._run_restore_script
+    broken = [True]
+
+    async def _restore(dump, url):
+        await real_restore(dump, url)
+        if broken:
+            raise RuntimeError("disk full")
+
+    monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is False and result.session_ended is True
+    broken.clear()
+    await backup_import.finish_incomplete_recovery()
+    outcome = backup_import.take_recovery_failure()
+    assert outcome is not None and "disk full" in outcome
+    assert "put back" in outcome and result.safety_archive in outcome
+    assert "restart Celerp" not in outcome
+
+
+async def test_outcome_says_the_next_start_finished_a_recovery_without_safety_copy(rec, tmp_path, monkeypatch):
+    from celerp.services import backup_import
+    rec.seed()
+    _inject(monkeypatch, "root_swap")
+    rec.fail_safety()
+    first = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    result = await backup_import.continue_recovery(first.confirmation_id, first.archive_digest)
+    assert result.ok is False and result.session_ended is True
+    await backup_import.finish_incomplete_recovery()
+    outcome = backup_import.take_recovery_failure()
+    assert outcome is not None and "root_swap broke" in outcome
+    assert "finished restoring the backup when Celerp started again" in outcome
+    assert "restart Celerp" not in outcome
+
+
+async def test_failed_recovery_page_signs_out_and_says_to_sign_in(rec, real_client, real_engine, tmp_path,
+                                                                  monkeypatch):
+    """The page that started a recovery which then failed says so, drops the ended session
+    and offers sign-in, instead of leaving a dead session to bounce to the login page."""
+    tok = await _install_owner(real_engine)
+    rec.seed()
+    _inject(monkeypatch, "schema")
+    archive = _archive(tmp_path / "src.celerp-backup", SOURCE_FILES)
+    r = await real_client.post("/backup/import", files={"file": ("src.celerp-backup", archive.read_bytes())},
+                               headers=auth(tok))
+    assert r.status_code == 200, r.text
+    assert "schema broke" in r.text and "flash--error" in r.text
+    assert t("system_recovery.failed_signed_out", "en") in html.unescape(r.text)
+    assert 'href="/login"' in r.text
+    assert r.headers.get("X-Session-Ended") == "1"
+
+
 # ---------------------------------------------------------------------------
 # An unfinished recovery is resolved before normal startup touches the database
 # ---------------------------------------------------------------------------
