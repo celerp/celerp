@@ -1763,6 +1763,25 @@ class TestAccountingPage:
         assert '<a href="/companies">Back to Client companies</a>' in page
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("currency,shown", [("THB", "45.00"), ("JPY", "45")])
+    async def test_post_again_shows_amounts_at_the_currency_precision(self, ui_client, currency, shown):
+        """Post again fills each amount the way the books show it, not as a raw float."""
+        copied = {"ts": "2026-10-18", "memo": "Rent", "entries": [
+            {"account": "1000", "debit": 45.0, "credit": 0, "contact": None},
+            {"account": "1000", "debit": 0, "credit": 45.0, "contact": None}]}
+        with patch("ui.api_client.journal_prefill", new=AsyncMock(return_value=copied)), \
+             patch("ui.api_client.get_chart",
+                   new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})), \
+             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": currency})), \
+             patch("ui.api_client.list_contacts",
+                   new=AsyncMock(return_value={"items": [], "total": 0})):
+            r = await ui_client.get("/accounting/journal/new?from=je-1", cookies=_authed())
+        assert r.status_code == 200
+        page = r.content.decode()
+        assert page.count(f'value="{shown}"') == 2
+        assert 'value="45.0"' not in page
+
+    @pytest.mark.asyncio
     async def test_pnl_shortcut_redirects_to_the_report(self, ui_client):
         r = await ui_client.get("/accounting/pnl", cookies=_authed())
         assert r.status_code == 302
