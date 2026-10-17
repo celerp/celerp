@@ -86,7 +86,7 @@ async def class_refusal(session, company_id, exc: HTTPException) -> HTTPExceptio
                     f"fixed_assets.class_account_{found['problem']}",
                     UNUSABLE[found["problem"]].format(asset_class=cls["name"], account=found["label"]),
                     asset_class=cls["name"], account=found["label"],
-                    href=found["href"]))
+                    href=found["href"], action="fixed_assets.action.fix_account"))
     return exc
 
 

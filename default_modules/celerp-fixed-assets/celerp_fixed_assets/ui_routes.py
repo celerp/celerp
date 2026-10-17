@@ -80,10 +80,10 @@ def _error_text(e: APIError) -> str:
 
 
 def _error_box(e: APIError):
-    """A refusal, with the way to fix it when it names one (a class's posting account)."""
-    href = ((e.data or {}).get("params") or {}).get("href")
-    return Div(_error_text(e), *([" ", A(t("fixed_assets.action.fix_account"), href=href)] if href else []),
-               cls="flash flash--error")
+    """A refusal, with the way to fix it when it names one (its ``href`` and ``action`` label)."""
+    params = (e.data or {}).get("params") or {}
+    fix = [" ", A(t(params["action"]), href=params["href"])] if params.get("href") and params.get("action") else []
+    return Div(_error_text(e), *fix, cls="flash flash--error")
 
 
 def _money(value, currency: str | None) -> FT | str:
@@ -177,11 +177,20 @@ async def _page(request: Request, *content, title_key: str, nav: str = "fixed_as
                             company_settings=settings)
 
 
-def _refused(request: Request, e: APIError, title_key: str):
+async def _refused(request: Request, e: APIError, title_key: str):
+    """A page the API refused, saying why with the way on. A page waiting on the first
+    managed period offers its confirmation in place, and comes back here once confirmed."""
     if e.status == 401:
         return RedirectResponse("/login", status_code=302)
-    return _page(request, page_header(t(title_key)), _error_box(e),
-                 title_key=title_key)
+    body = _error_box(e)
+    if (e.data or {}).get("message_key") == "fixed_assets.not_managed":
+        try:
+            first = (await api.fixed_assets_get(_token(request), "/setup")).get("first_period")
+        except APIError:
+            first = None
+        if first:
+            body = _first_period_card(first, back=request.url.path + (f"?{request.url.query}" if request.url.query else ""))
+    return await _page(request, page_header(t(title_key)), body, title_key=title_key)
 
 
 # ── Review and confirm ───────────────────────────────────────────────────────
@@ -1397,17 +1406,21 @@ def _opening_table(accounts: list[dict], currency: str) -> FT:
                  Tbody(*rows), cls="data-table", id="fa-opening-accounts")
 
 
-def _opening_actions(state: str | None) -> FT:
-    def button(label: str, **body):
-        return Button(label, type="button", cls="btn btn--secondary", hx_post="/fixed-assets/opening/finish",
-                      hx_vals=json.dumps(body), hx_swap="none")
+def _opening_actions(state: str | None, cutover: str) -> FT:
+    """Finish, keep open or reopen; a refusal is said in the box above them with its way on."""
+    def button(label: str, primary: bool = False, **body):
+        return Button(label, type="button", cls="btn " + ("btn--primary" if primary else "btn--secondary"),
+                      hx_post="/fixed-assets/opening/finish", hx_vals=json.dumps(body),
+                      hx_target="#fa-opening-refusal", hx_swap="innerHTML")
 
+    refusal = Div(id="fa-opening-refusal")
     if state:
-        return Div(P(t(f"fixed_assets.opening_state.{state}"), cls="settings-hint"),
-                   button(t("fixed_assets.opening_reopen"), reopen="1"), cls="form-actions")
-    return Div(Button(t("fixed_assets.opening_finish"), type="button", cls="btn btn--primary",
-                      hx_post="/fixed-assets/opening/finish", hx_vals="{}", hx_swap="none"),
-               button(t("fixed_assets.opening_keep_open"), keep_open="1"), cls="form-actions")
+        return Div(refusal, Div(P(t(f"fixed_assets.opening_state.{state}"), cls="settings-hint"),
+                                button(t("fixed_assets.opening_reopen"), reopen="1"), cls="form-actions"))
+    return Div(refusal, Div(button(t("fixed_assets.opening_finish"), primary=True),
+                            button(t("fixed_assets.opening_keep_open"), keep_open="1"),
+                            A(t("fixed_assets.record_opening_journal"), href=f"/accounting/journal/new?ts={cutover}",
+                              cls="btn btn--secondary"), cls="form-actions"))
 
 
 def _last_month(today: date) -> str:
@@ -2323,7 +2336,7 @@ def setup_ui_routes(app) -> None:
                                                         A(t("fixed_assets.add_asset"), href="/fixed-assets/assets/new",
                                                           cls="btn btn--secondary")),
                            P(t("fixed_assets.opening_hint", cutover=shown["cutover"]), cls="settings-hint"),
-                           _opening_table(shown["accounts"], currency), _opening_actions(shown["state"]),
+                           _opening_table(shown["accounts"], currency), _opening_actions(shown["state"], shown["cutover"]),
                            title_key="fixed_assets.opening_title")
 
     @app.post("/fixed-assets/opening/finish")
@@ -2332,8 +2345,12 @@ def setup_ui_routes(app) -> None:
         if not token:
             return Response(status_code=401)
         form = await request.form()
-        return await _hx_write(token, "POST", "/opening/finish",
-                               {k: True for k in ("keep_open", "reopen") if form.get(k)}, "/fixed-assets/opening")
+        try:
+            await api.fixed_assets_send(token, "POST", "/opening/finish",
+                                        {k: True for k in ("keep_open", "reopen") if form.get(k)})
+        except APIError as e:
+            return _error_box(e)
+        return Response(headers={"HX-Redirect": "/fixed-assets/opening", **toast_header(t("fixed_assets.done"))})
 
     @app.get("/fixed-assets/runs")
     async def runs_page(request: Request):

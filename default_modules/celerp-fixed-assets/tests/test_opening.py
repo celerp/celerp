@@ -80,7 +80,8 @@ async def test_s7_first_period_explicit(client, session):
     vehicles = (await fa.classes())["Vehicles"]["id"]
     refused = await fa.post("/register", {"source": van["source"], "class_id": vehicles, "mode": "separate",
                                           "preview": True, "op_key": "early"})
-    assert refused.status_code == 409 and "first managed period" in refused.json()["detail"]
+    assert refused.status_code == 409 and refused.json()["detail"]["message_key"] == "fixed_assets.not_managed"
+    assert refused.json()["detail"]["params"]["href"] == "/fixed-assets#fa-first-period", "the refusal names its way on"
 
     # Depreciation already booked by hand moves the suggestion to the month after it.
     booked = _month_end(suggested + timedelta(days=40))
@@ -151,7 +152,7 @@ async def test_s7_opening_posts_nothing_finish_needs_zero(fa):
     cutover = (await _settings(fa))["cutover"]
     await _opening(fa)
     refused = await fa.post("/opening/finish", {})
-    assert refused.status_code == 409 and "1210" in refused.json()["detail"]
+    assert refused.status_code == 409 and "1210" in refused.json()["detail"]["message"]
     await fa.journal(cutover, [{"account": "1210", "debit": 250000}, {"account": "1220", "credit": 40000},
                                {"account": "3100", "credit": 210000}])
     opening = await fa.ok(await fa.get("/opening"))

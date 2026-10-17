@@ -820,3 +820,32 @@ async def test_u16_a_finalized_bill_leads_to_registering_its_asset_line_then_to_
     again = await owner_ui.get(href.group(1).replace("&amp;", "&"))
     assert t("fixed_assets.line_registered", description="Coffee roaster") in again.text
     assert f'href="/fixed-assets/assets/{asset_id}">{number}</a>' in again.text
+
+
+async def test_u17_a_page_waiting_on_setup_offers_the_step_in_place_and_opening_names_its_journal(owner_ui):
+    await _demo(owner_ui)
+    await owner_ui.post("/fixed-assets/start")
+    page = await owner_ui.get("/fixed-assets/reconciliation")
+    assert t("fixed_assets.not_managed") not in page.text and 'id="fa-first-period"' in page.text, \
+        "the confirmation is offered where it is needed, not only named"
+    assert 'name="back" value="/fixed-assets/reconciliation"' in page.text
+    suggested = re.search(r'name="first_managed_period" value="([^"]+)"', page.text).group(1)
+    done = await owner_ui.post("/fixed-assets/first-period", data={"first_managed_period": suggested,
+                                                                  "back": "/fixed-assets/reconciliation"})
+    assert done.headers.get("HX-Redirect") == "/fixed-assets/reconciliation"
+    assert 'id="fa-first-period"' not in (await owner_ui.get("/fixed-assets/reconciliation")).text
+
+    cutover = (await owner_ui.api.get(f"{API}/opening")).json()["cutover"]
+    r = await owner_ui.api.post("/accounting/journal-entries", json={
+        "ts": cutover, "memo": "Generator", "idempotency_token": str(uuid.uuid4()), "entries": [
+            {"account": "1210", "debit": 900}, {"account": "3100", "credit": 900}]})
+    assert r.status_code == 200, r.text
+    journal = f"/accounting/journal/new?ts={cutover}"
+    opening = await owner_ui.get("/fixed-assets/opening")
+    assert f'href="{journal}"' in opening.text and t("fixed_assets.record_opening_journal") in opening.text
+    refused = await owner_ui.post("/fixed-assets/opening/finish", data={})
+    assert "flash--error" in refused.text and "HX-Redirect" not in refused.headers
+    assert f'<a href="{journal}">{t("fixed_assets.record_opening_journal")}</a>' in refused.text, \
+        "the refusal carries the way to record the opening journal"
+    form = await owner_ui.get(journal)
+    assert f'value="{cutover}"' in form.text, "the journal form opens on the cutover"

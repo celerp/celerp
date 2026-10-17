@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import uuid
 
+from fastapi import HTTPException
+
 from celerp_fixed_assets import projections, runs, setup, sources
 from celerp_fixed_assets.operations import _dec, _move, conflict
 from celerp_fixed_assets.store import _entities, movements_by_asset
@@ -86,8 +88,14 @@ async def finish(session, company_id, user_id, body: dict) -> dict:
     if not reopen and not keep_open:
         apart = [f"{a['label']} ({a['difference']})" for a in shown["accounts"] if _dec(a["difference"])]
         if apart:
-            raise conflict("The ledger and the register differ at the cutover on " + ", ".join(apart)
-                           + ". Record the opening journal or the missing opening assets, or keep the differences open.")
+            from celerp.accounting_roles import refusal
+
+            accounts = ", ".join(apart)
+            raise HTTPException(status_code=409, detail=refusal(
+                "fixed_assets.opening_apart", f"The ledger and the register differ at the cutover on {accounts}. "
+                "Record the opening journal or the missing opening assets, or keep the differences open.",
+                accounts=accounts, href=f"/accounting/journal/new?ts={shown['cutover']}",
+                action="fixed_assets.record_opening_journal"))
     fa = setup.settings_of(company.settings)
     state = None if reopen else OPENING_STATES[1] if keep_open else OPENING_STATES[0]
     fa["opening"] = {"state": state, "by": str(user_id), "on": setup.today_in(company.settings).isoformat()} if state else None

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import threading
 import uuid
 from datetime import date, timedelta
@@ -684,7 +685,10 @@ def test_j18_cutover_difference_kept_open_carries_the_banner_until_acknowledged(
 
     page.goto("/fixed-assets/opening")
     page.get_by_role("button", name="Finish").click()
-    expect(page.locator(".toast-container .toast--error").last).to_contain_text("keep the differences open")
+    refusal = page.locator("#fa-opening-refusal")
+    expect(refusal).to_contain_text("keep the differences open")
+    expect(refusal.get_by_role("link", name="Record the opening journal")).to_have_attribute(
+        "href", re.compile(r"/accounting/journal/new\?ts="))
     with page.expect_navigation():
         page.get_by_role("button", name="Keep differences open").click()
     expect(page.locator("main")).to_contain_text("finished with their differences kept open")

@@ -206,8 +206,11 @@ async def require_managed(session, company_id) -> dict:
     """The settings, once fixed assets is started and its first managed period confirmed."""
     fa = await require_started(session, company_id)
     if not fa.get("first_managed_period"):
-        raise HTTPException(status_code=409, detail="Confirm the first managed period in the fixed asset "
-                                                    "settings first. Nothing is recorded before it is confirmed.")
+        from celerp.accounting_roles import refusal
+
+        raise HTTPException(status_code=409, detail=refusal(
+            "fixed_assets.not_managed", "Confirm the first managed period first. Nothing is recorded before it "
+            "is confirmed.", href="/fixed-assets#fa-first-period", action="fixed_assets.first_period_title"))
     return fa
 
 
@@ -261,10 +264,18 @@ async def start(session, company_id, user_id) -> dict:
     return view(fa)
 
 
+def not_started() -> HTTPException:
+    from celerp.accounting_roles import refusal
+
+    return HTTPException(status_code=409, detail=refusal(
+        "fixed_assets.not_started", "Start fixed assets first.", href="/fixed-assets#fa-start",
+        action="fixed_assets.start_title"))
+
+
 async def require_started(session, company_id) -> dict:
     fa = settings_of(await company_settings(session, company_id))
     if not fa.get("started"):
-        raise HTTPException(status_code=409, detail="Start fixed assets first.")
+        raise not_started()
     return fa
 
 
@@ -285,7 +296,7 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
     company = await locked_company(session, company_id)
     fa = settings_of(company.settings)
     if not fa.get("started"):
-        raise HTTPException(status_code=409, detail="Start fixed assets first.")
+        raise not_started()
     unknown = set(body) - {"threshold", "run_mode", "run_day", "convention", "first_managed_period", "tax_year_end",
                            "tax_regimes"}
     if unknown:
