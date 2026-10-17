@@ -21,7 +21,7 @@ import unicodedata
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Collection
+from typing import Any, Callable, Collection, Mapping
 
 import openpyxl
 from openpyxl.utils.exceptions import InvalidFileException
@@ -210,6 +210,7 @@ def suggest_mapping(
     category_attrs: list[str] | None = None,
     *,
     skip_cols: Collection[str] = SYSTEM_SKIP_COLS,
+    aliases: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Return {csv_col: suggested_target} for each CSV column.
 
@@ -219,7 +220,8 @@ def suggest_mapping(
     Priority:
     0. ``skip_cols``, the columns the importer manages itself → always MAPPING_SKIP
     1. Exact match to a core target column
-    2. Known alias match to a core target column
+    2. ``aliases`` (the caller's own header names, such as its field labels), then
+       known alias match to a core target column
     2b. Known alias match to a category attribute key
     3. Exact match to a category attribute key (prefixed with MAPPING_ATTR_PREFIX)
     4. Default to MAPPING_ATTRIBUTE (import as custom field)
@@ -247,10 +249,12 @@ def suggest_mapping(
             claimed.add(match)
 
     # Pass 2: alias matches to core fields
+    own = {normalize_header(name): target for name, target in (aliases or {}).items()}
     for csv_col in csv_cols:
         if csv_col in mapping:
             continue
-        alias_target = _COMMON_ALIASES.get(normalize_header(csv_col))
+        norm = normalize_header(csv_col)
+        alias_target = own.get(norm) or _COMMON_ALIASES.get(norm)
         if alias_target and alias_target in target_norm.values() and alias_target not in claimed:
             mapping[csv_col] = alias_target
             claimed.add(alias_target)

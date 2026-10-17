@@ -304,7 +304,8 @@ async def test_j14_import_page_turns_the_module_on(fa):
 async def test_j5_wizard_upload_review_import(fa):
     cut = await _cutover(fa)
     template = await fa.page("/fixed-assets/import/template")
-    assert template.status_code == 200 and template.text.splitlines()[0].startswith("number,name,class")
+    assert template.status_code == 200 and template.text.splitlines()[0].startswith(
+        ",".join(t(f"fixed_assets.{k}") for k in ("number", "name", "class")))
     csv_text = ("Asset,Name,Class,In use from,Cost,Depreciation to date\n"
                 "FA-0050,Warehouse,Buildings,2020-01-01,250000,40000\n"
                 "FA-0051,Garage,Garages,2020-01-01,50000,0\n")
@@ -331,3 +332,35 @@ async def test_j5_wizard_upload_review_import(fa):
     assert page.status_code == 200 and "Garage" in page.text and "FA-0050" in page.text
     assert "Fix and import rows" in page.text and "Undo import" in page.text
     assert cut in page.text
+
+
+async def test_u41_the_template_reads_in_field_labels_maps_itself_and_shows_money_as_money(fa):
+    import csv
+    import io
+    import re
+
+    from celerp.output.doc_print import fmt_money
+    from celerp.services.money import books_currency
+    from celerp_fixed_assets.imports import COLUMNS
+    from celerp_fixed_assets.ui_imports import _labels
+
+    await _cutover(fa)
+    # The sample would be numbered on import, so it never takes a number already on the register.
+    await _import(fa, [{"number": "FA-0001", "name": "Office", "class": "Buildings", "available_date": "2020-01-01",
+                        "cost": "1000"}])
+    template = await fa.page("/fixed-assets/import/template")
+    header, sample = list(csv.reader(io.StringIO(template.text)))
+    labels = _labels()
+    assert header == [labels[c] for c in COLUMNS] and sample[COLUMNS.index("number")] == ""
+    mapped = await fa._ui("POST", "/fixed-assets/import/preview",
+                          files={"csv_file": ("asset_register.csv", template.text.encode(), "text/csv")})
+    suggested = dict(re.findall(r'name="map__([^"]+)" value="([^"]*)"', mapped.text))
+    assert suggested == {labels[c]: c for c in COLUMNS}, suggested
+    csv_ref = mapped.text.split('name="csv_ref" value="', 1)[1].split('"', 1)[0]
+    review = await fa._ui("POST", "/fixed-assets/import/mapped", follow_redirects=True,
+                          data={"csv_ref": csv_ref, **{f"map__{labels[c]}": c for c in COLUMNS}})
+    assert review.status_code == 200 and 'name="preview_hash"' in review.text, review.text
+    currency = books_currency((await fa.client.get("/companies/me", headers=fa.h)).json())
+    grid = review.text[review.text.index("import-preview-table"):]
+    assert re.search(rf'<td class="cell-ro cell--number">{re.escape(fmt_money(250000.0, currency))}</td>', grid), grid
+

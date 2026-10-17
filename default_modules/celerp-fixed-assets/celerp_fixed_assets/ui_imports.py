@@ -61,12 +61,19 @@ _LABEL_KEYS = {
     "revaluation_surplus": "revaluation_surplus", "disposed_date": "disposal_date",
     "disposal_proceeds": "proceeds", "parent_number": "parent_number", "tag": "tag",
 }
-_EXAMPLE = {"number": "FA-0001", "name": "Warehouse", "class": "Buildings", "available_date": "2020-01-01",
+# The sample row leaves the number blank, so importing it as it stands numbers it in sequence.
+_EXAMPLE = {"name": "Warehouse", "class": "Buildings", "available_date": "2020-01-01",
             "cost": "250000", "accumulated_depreciation": "40000"}
+_MONEY = ("cost", "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus", "disposal_proceeds")
 
 
 def _labels() -> dict[str, str]:
     return {col: t(f"fixed_assets.{key}") for col, key in _LABEL_KEYS.items()}
+
+
+def _headers() -> dict[str, str]:
+    """Each header the template writes, by the column it fills."""
+    return {label: col for col, label in _labels().items()}
 
 
 def _batch_href(batch_id: str) -> str:
@@ -112,7 +119,7 @@ def _mapping(form, csv_text: str, csv_ref: str, errors: list[str] | None = None)
     return column_mapping_form(csv_cols=list(reader.fieldnames or []), target_cols=list(COLUMNS), csv_ref=csv_ref,
                                sample_rows=list(reader), confirm_action=f"{_HOME}/mapped", back_href=_HOME,
                                required_targets=_REQUIRED, errors=errors, form_values=dict(form) if errors else None,
-                               col_labels=_labels(), custom_fields=False)
+                               col_labels=_labels(), custom_fields=False, aliases=_headers())
 
 
 def _draft_rows(loaded: tuple[str, dict, int]) -> tuple[list[dict], list[str], dict, int]:
@@ -174,7 +181,8 @@ async def _review(token: str, ref: str, *, notice: str = "") -> FT:
         rows=rows, cols=cols, col_labels=_labels(), csv_ref=ref, revision=revision,
         plan={**plan, "preview_hash": plan["fingerprint"], "decisions": {"exclude": _excluded(draft)}},
         review_action=f"{_HOME}/review", confirm_action=f"{_HOME}/confirm", error_report_action=f"{_HOME}/errors",
-        cancel_action=f"{_HOME}/cancel", upload_href=_HOME, notice=notice, extra=_review_extra(plan, currency))
+        cancel_action=f"{_HOME}/cancel", upload_href=_HOME, notice=notice, extra=_review_extra(plan, currency),
+        money_cols=_MONEY, currency=currency)
 
 
 def _card(title_key: str, *body) -> FT:
@@ -252,8 +260,11 @@ def setup_import_routes(app) -> None:
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        example = ",".join(_EXAMPLE.get(c, "") for c in COLUMNS)
-        return PlainTextResponse(",".join(COLUMNS) + "\n" + example + "\n", media_type="text/csv",
+        out = io.StringIO()
+        labels = _labels()
+        csv.writer(out, lineterminator="\n").writerows([[labels[c] for c in COLUMNS],
+                                                          [_EXAMPLE.get(c, "") for c in COLUMNS]])
+        return PlainTextResponse(out.getvalue(), media_type="text/csv",
                                  headers={"Content-Disposition": "attachment; filename=asset_register.csv"})
 
     @app.post(f"{_HOME}/preview")
@@ -263,7 +274,7 @@ def setup_import_routes(app) -> None:
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows, ref, err = await stage_tabular_upload(token, form, known=known_headers(COLUMNS))
+        rows, ref, err = await stage_tabular_upload(token, form, known=known_headers([*COLUMNS, *_headers()]))
         if err:
             return await _upload_page(request, token, err)
         loaded = await load_import_draft(token, ref)

@@ -25,7 +25,7 @@ import io
 import json
 import logging
 import uuid
-from typing import Any
+from typing import Any, Collection
 
 from fasthtml.common import *
 from starlette.responses import StreamingResponse
@@ -36,6 +36,7 @@ from ui.i18n import get_lang, refusal_text, t
 from ui.components.table import searchable_select
 
 from celerp.importers import tabular
+from celerp.output.doc_print import fmt_money
 from celerp.importers.tabular import (  # re-exported for the existing CSV importers
     CsvImportSpec,
     MAPPING_ATTR_PREFIX,
@@ -270,6 +271,7 @@ def column_mapping_form(
     mutex_groups: list[list[str]] | None = None,
     skip_cols: frozenset[str] = SYSTEM_SKIP_COLS,
     custom_fields: bool = True,
+    aliases: dict[str, str] | None = None,
 ) -> FT:
     """Render a horizontal spreadsheet-style column mapping UI.
 
@@ -278,12 +280,14 @@ def column_mapping_form(
     ``col_labels`` names core and category targets in the reader's language; ``skip_cols``
     are the file's columns the importer manages itself, suggested as Skip. Without
     ``custom_fields`` the records hold no custom fields, so a column no target matches
-    is suggested as Skip and custom is not offered.
+    is suggested as Skip and custom is not offered. ``aliases`` are further header names
+    suggested as their target, such as the headers of the importer's own template.
     """
     attrs = category_attrs or []
     unmatched = MAPPING_ATTRIBUTE if custom_fields else MAPPING_SKIP
     suggested = {col: unmatched if target == MAPPING_ATTRIBUTE else target for col, target in
-                 suggest_mapping(csv_cols, target_cols, category_attrs=attrs, skip_cols=skip_cols).items()}
+                 suggest_mapping(csv_cols, target_cols, category_attrs=attrs, skip_cols=skip_cols,
+                                 aliases=aliases).items()}
     req = required_targets or set()
     fv = form_values or {}
     preview = sample_rows[:5]
@@ -1423,6 +1427,15 @@ def _review_decisions(plan: dict) -> FT | str:
     return Div(*items, cls="import-decisions") if items else ""
 
 
+def _review_amount(value: str, currency: str | None) -> str:
+    """An amount as the books show it; a value that is not a number stays as typed."""
+    try:
+        float(value)
+    except ValueError:
+        return value or "--"
+    return fmt_money(value, currency)
+
+
 def plan_review_panel(
     *,
     rows: list[dict],
@@ -1440,6 +1453,8 @@ def plan_review_panel(
     upsert_label: str = "",
     notice: str = "",
     extra: Any = "",
+    money_cols: Collection[str] = (),
+    currency: str | None = None,
 ) -> FT:
     """The review of an import, read entirely from the server's plan of its rows.
 
@@ -1450,6 +1465,7 @@ def plan_review_panel(
     only when the plan has no blocker, and carries the plan's hash. An import
     that can update existing records names them in ``upsert_label``, which
     offers the choice; ``extra`` is what else the importer shows above the rows.
+    Each of ``money_cols`` reads as an amount in ``currency``, right-aligned.
     """
     errors = list(plan.get("errors") or [])
     excluded = set((plan.get("decisions") or {}).get("exclude") or [])
@@ -1477,6 +1493,8 @@ def plan_review_panel(
                 cells.append(Td(Input(type="text", value=value, data_col=col, data_row=str(n - 1),
                                       title=bad[col], aria_label=f"{col_labels.get(col, col)} {n}",
                                       cls="cell-edit input--error")))
+            elif col in money_cols:
+                cells.append(Td(_review_amount(value, currency), cls="cell-ro cell--number"))
             else:
                 cells.append(Td(value or "--", cls="cell-ro"))
         cells.append(Td("; ".join(e["message"] for e in by_row.get(n, [])) if n not in excluded else "",
@@ -1509,7 +1527,8 @@ def plan_review_panel(
                 _review_decisions(plan),
                 Div(Table(
                     Thead(Tr(Th(t("import.col_row")), Th(t("import.col_exclude")),
-                             *[Th(column_label(c, col_labels)) for c in shown_cols],
+                             *[Th(column_label(c, col_labels), cls="cell--number" if c in money_cols else None)
+                               for c in shown_cols],
                              Th(t("import.col_problem")))),
                     Tbody(*body),
                     cls="csv-fix-table data-table import-preview-table",
