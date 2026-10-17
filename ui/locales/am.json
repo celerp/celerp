@@ -3911,7 +3911,7 @@
   "migration.err_store_failed": "Celerp የተሰቀለውን ፋይል ማስቀመጥ አልቻለም። ይህ ኮምፒውተር ነጻ የዲስክ ቦታ እንዳለው ያረጋግጡ፣ ከዚያ እንደገና ይሞክሩ።",
   "migration.err_source_unavailable": "ከዚህ ፕሮግራም ማስገባት በእርስዎ Celerp ውስጥ አይገኝም። ሌላ ምንጭ ይምረጡ፣ ወይም Celerpን ያዘምኑ።",
   "migration.err_already_running": "ይህ ማስገባት አስቀድሞ እየሄደ ነው። እስኪጨርስ ይጠብቁ።",
-  "migration.err_not_found": "Celerp ይህን ማስገባት ሊያገኘው አልቻለም። ተሰርዞ ሊሆን ይችላል። በ«ከሌላ ሥርዓት አዛውር» አዲስ ይጀምሩ።",
+  "migration.err_not_found": "Celerp ይህን ፍልሰት ማግኘት አልቻለም። ተሰርዞ ሊሆን ይችላል፣ ወይም ሌላ ተጠቃሚ ጀምሮታል፡ ሊከፍተው የሚችለው የጀመረው ተጠቃሚ ብቻ ነው።",
   "migration.answers_saved": "የመረጧቸው የሂሳብ መለያዎች ተቀምጠዋል። ከ{source} የሚመጣው ቀጣዩ ደንበኛዎ ቀድመው ተመርጠው ያቀርባቸዋል፣ ከመጨረስዎ በፊት እንዲያረጋግጡ።",
   "migration.forget_answers": "እነዚህን መልሶች እርሳ",
   "migration.answers_forgotten": "መልሶቹ ተረስተዋል። ቀጣዩ ደንበኛዎ ያለ እነሱ ይጀምራል።",

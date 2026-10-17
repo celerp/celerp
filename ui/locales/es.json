@@ -3911,7 +3911,7 @@
   "migration.err_store_failed": "Celerp no pudo guardar el archivo subido. Compruebe que este equipo tiene espacio libre en disco e inténtelo de nuevo.",
   "migration.err_source_unavailable": "Importar desde este programa no está disponible en su Celerp. Elija otra fuente o actualice Celerp.",
   "migration.err_already_running": "Esta importación ya está en curso. Espere a que termine.",
-  "migration.err_not_found": "Celerp no encuentra esta importación. Puede que se haya descartado. Empiece una nueva con Traer desde otro sistema.",
+  "migration.err_not_found": "Celerp no encontró esta migración. Puede que se haya descartado, o la inició otro usuario: solo quien la inició puede abrirla.",
   "migration.answers_saved": "Las cuentas contables que eligió están guardadas. Su próximo cliente de {source} las ofrece ya seleccionadas para que las revise antes de terminar.",
   "migration.forget_answers": "Olvidar estas respuestas",
   "migration.answers_forgotten": "Respuestas olvidadas. Su próximo cliente empieza sin ellas.",

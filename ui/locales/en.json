@@ -3911,7 +3911,7 @@
   "migration.err_store_failed": "Celerp couldn't save the uploaded file. Check that this computer has free disk space, then try again.",
   "migration.err_source_unavailable": "Importing from this program isn't available in your copy of Celerp. Choose another source, or update Celerp.",
   "migration.err_already_running": "This import is already running. Wait for it to finish.",
-  "migration.err_not_found": "Celerp couldn't find this import. It may have been discarded. Start a new one with Move from another system.",
+  "migration.err_not_found": "Celerp couldn't find this migration. It may have been discarded, or another user started it: only the user who started it can open it.",
   "migration.answers_saved": "The posting accounts you chose are saved. Your next client from {source} offers them already selected, for you to check before you finish.",
   "migration.forget_answers": "Forget these answers",
   "migration.answers_forgotten": "Answers forgotten. Your next client starts without them.",

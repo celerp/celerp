@@ -3911,7 +3911,7 @@
   "migration.err_store_failed": "Celerp tidak dapat menyimpan file yang diunggah. Pastikan komputer ini memiliki ruang disk kosong, lalu coba lagi.",
   "migration.err_source_unavailable": "Impor dari program ini tidak tersedia di Celerp Anda. Pilih sumber lain, atau perbarui Celerp.",
   "migration.err_already_running": "Impor ini sudah berjalan. Tunggu sampai selesai.",
-  "migration.err_not_found": "Celerp tidak dapat menemukan impor ini. Mungkin sudah dibuang. Mulai yang baru dengan Pindahkan dari sistem lain.",
+  "migration.err_not_found": "Celerp tidak dapat menemukan migrasi ini. Mungkin sudah dibuang, atau pengguna lain yang memulainya: hanya pengguna yang memulainya yang dapat membukanya.",
   "migration.answers_saved": "Akun posting yang Anda pilih telah disimpan. Klien berikutnya dari {source} akan menawarkannya sudah terpilih, untuk Anda periksa sebelum selesai.",
   "migration.forget_answers": "Lupakan jawaban ini",
   "migration.answers_forgotten": "Jawaban dilupakan. Klien berikutnya dimulai tanpa jawaban tersebut.",

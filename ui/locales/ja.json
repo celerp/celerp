@@ -3911,7 +3911,7 @@
   "migration.err_store_failed": "Celerp はアップロードされたファイルを保存できませんでした。このコンピューターのディスクに空き容量があるか確認して、もう一度お試しください。",
   "migration.err_source_unavailable": "お使いの Celerp では、このプログラムからのインポートは利用できません。別の取り込み元を選ぶか、Celerp を更新してください。",
   "migration.err_already_running": "このインポートはすでに実行中です。完了するまでお待ちください。",
-  "migration.err_not_found": "Celerp はこのインポートを見つけられませんでした。破棄された可能性があります。「別のシステムから移行」で新しく開始してください。",
+  "migration.err_not_found": "この移行が見つかりませんでした。破棄されたか、別のユーザーが開始した可能性があります。移行を開けるのは開始したユーザーだけです。",
   "migration.answers_saved": "選択した転記勘定を保存しました。{source}からの次の顧客では、完了前に確認できるよう選択済みで表示されます。",
   "migration.forget_answers": "この回答を削除",
   "migration.answers_forgotten": "回答を削除しました。次の顧客はこの回答なしで始まります。",

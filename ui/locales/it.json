@@ -3911,7 +3911,7 @@
   "migration.err_store_failed": "Celerp non è riuscito a salvare il file caricato. Verifica che questo computer abbia spazio libero su disco, poi riprova.",
   "migration.err_source_unavailable": "L'importazione da questo programma non è disponibile nella tua copia di Celerp. Scegli un'altra origine o aggiorna Celerp.",
   "migration.err_already_running": "Questa importazione è già in corso. Attendi che finisca.",
-  "migration.err_not_found": "Celerp non trova questa importazione. Potrebbe essere stata scartata. Avviane una nuova con Sposta da un altro sistema.",
+  "migration.err_not_found": "Celerp non ha trovato questa migrazione. Potrebbe essere stata scartata, oppure l'ha avviata un altro utente: solo chi l'ha avviata può aprirla.",
   "migration.answers_saved": "I conti di registrazione scelti sono salvati. Il prossimo cliente da {source} li propone già selezionati, da controllare prima di terminare.",
   "migration.forget_answers": "Dimentica queste risposte",
   "migration.answers_forgotten": "Risposte dimenticate. Il prossimo cliente inizia senza di esse.",

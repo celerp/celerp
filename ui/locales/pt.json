@@ -3911,7 +3911,7 @@
   "migration.err_store_failed": "O Celerp não conseguiu salvar o arquivo enviado. Verifique se este computador tem espaço livre em disco e tente novamente.",
   "migration.err_source_unavailable": "A importação deste programa não está disponível no seu Celerp. Escolha outra origem ou atualize o Celerp.",
   "migration.err_already_running": "Esta importação já está em andamento. Aguarde a conclusão.",
-  "migration.err_not_found": "O Celerp não encontrou esta importação. Ela pode ter sido descartada. Inicie uma nova em Mover de outro sistema.",
+  "migration.err_not_found": "O Celerp não encontrou esta migração. Ela pode ter sido descartada, ou outro usuário a iniciou: só quem a iniciou pode abri-la.",
   "migration.answers_saved": "As contas de lançamento escolhidas foram guardadas. O seu próximo cliente de {source} apresenta-as já selecionadas, para verificar antes de concluir.",
   "migration.forget_answers": "Esquecer estas respostas",
   "migration.answers_forgotten": "Respostas esquecidas. O seu próximo cliente começa sem elas.",

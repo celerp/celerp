@@ -3911,7 +3911,7 @@
   "migration.err_store_failed": "Celerp không lưu được tệp đã tải lên. Hãy kiểm tra máy tính này còn dung lượng đĩa trống, rồi thử lại.",
   "migration.err_source_unavailable": "Bản Celerp của bạn chưa hỗ trợ nhập từ chương trình này. Hãy chọn nguồn khác hoặc cập nhật Celerp.",
   "migration.err_already_running": "Lần nhập này đang chạy. Hãy chờ đến khi xong.",
-  "migration.err_not_found": "Celerp không tìm thấy lần nhập này. Có thể nó đã bị hủy. Hãy bắt đầu lần mới bằng Chuyển từ hệ thống khác.",
+  "migration.err_not_found": "Celerp không tìm thấy quá trình di chuyển này. Có thể nó đã bị hủy bỏ, hoặc người dùng khác đã bắt đầu nó: chỉ người đã bắt đầu mới mở được.",
   "migration.answers_saved": "Các tài khoản hạch toán bạn chọn đã được lưu. Khách hàng tiếp theo từ {source} sẽ hiển thị chúng đã được chọn sẵn để bạn kiểm tra trước khi hoàn tất.",
   "migration.forget_answers": "Quên các câu trả lời này",
   "migration.answers_forgotten": "Đã quên các câu trả lời. Khách hàng tiếp theo sẽ bắt đầu mà không có chúng.",

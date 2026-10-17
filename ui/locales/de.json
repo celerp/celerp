@@ -3911,7 +3911,7 @@
   "migration.err_store_failed": "Celerp konnte die hochgeladene Datei nicht speichern. Prüfen Sie, ob auf diesem Computer freier Speicherplatz vorhanden ist, und versuchen Sie es erneut.",
   "migration.err_source_unavailable": "Der Import aus diesem Programm ist in Ihrer Celerp-Installation nicht verfügbar. Wählen Sie eine andere Quelle oder aktualisieren Sie Celerp.",
   "migration.err_already_running": "Dieser Import läuft bereits. Warten Sie, bis er abgeschlossen ist.",
-  "migration.err_not_found": "Celerp konnte diesen Import nicht finden. Er wurde möglicherweise verworfen. Starten Sie einen neuen über Aus einem anderen System übernehmen.",
+  "migration.err_not_found": "Celerp konnte diese Migration nicht finden. Sie wurde vielleicht verworfen, oder ein anderer Benutzer hat sie gestartet: Nur der Benutzer, der sie gestartet hat, kann sie öffnen.",
   "migration.answers_saved": "Die gewählten Buchungskonten sind gespeichert. Ihr nächster Mandant aus {source} bietet sie bereits ausgewählt an, damit Sie sie vor dem Abschluss prüfen.",
   "migration.forget_answers": "Diese Antworten vergessen",
   "migration.answers_forgotten": "Antworten vergessen. Ihr nächster Mandant beginnt ohne sie.",

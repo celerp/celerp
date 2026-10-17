@@ -3911,7 +3911,7 @@
   "migration.err_store_failed": "Celerp n'a pas pu enregistrer le fichier envoyé. Vérifiez qu'il reste de l'espace disque sur cet ordinateur, puis réessayez.",
   "migration.err_source_unavailable": "L'import depuis ce programme n'est pas disponible dans votre Celerp. Choisissez une autre source ou mettez Celerp à jour.",
   "migration.err_already_running": "Cet import est déjà en cours. Attendez qu'il se termine.",
-  "migration.err_not_found": "Celerp ne trouve pas cet import. Il a peut-être été abandonné. Lancez-en un nouveau avec Importer depuis un autre système.",
+  "migration.err_not_found": "Celerp n'a pas trouvé cette migration. Elle a peut-être été abandonnée, ou un autre utilisateur l'a lancée : seul l'utilisateur qui l'a lancée peut l'ouvrir.",
   "migration.answers_saved": "Les comptes d'imputation choisis sont enregistrés. Votre prochain client venant de {source} les propose déjà sélectionnés, à vérifier avant de terminer.",
   "migration.forget_answers": "Oublier ces réponses",
   "migration.answers_forgotten": "Réponses oubliées. Votre prochain client commence sans elles.",
