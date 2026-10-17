@@ -1251,6 +1251,7 @@ def _grant_form(lang: str) -> FT:
         hx_post="/settings/accountant-access/grants",
         hx_target="#accountant-access-result",
         hx_swap="innerHTML",
+        hx_disabled_elt="find button",  # a second click would issue a second key nobody holds
         cls="form-card",
     )
 
