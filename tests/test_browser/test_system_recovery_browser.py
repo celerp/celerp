@@ -158,8 +158,8 @@ def test_import_backup_cancelled_at_the_warning_sends_nothing_browser(page, reco
 def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
         page, ui_server, api, seeded_user, keep_sign_ins, tmp_path, monkeypatch):
     """A recovery that fails after it started is put back and signs everyone out. The page
-    says so and offers sign-in; the login page does not show the failure; the first page
-    after signing in again does, once."""
+    says so and offers sign-in; the login page says only that it did not complete; the
+    first page after signing in again shows the failure, once."""
     import celerp.config as config
     import celerp.routers.system as system
     from celerp.config import settings
@@ -199,7 +199,8 @@ def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
 
         page.click('#backup-flash a:has-text("Sign in")')
         page.wait_for_selector("#email", timeout=_WAIT_MS)
-        assert "did not complete" not in page.content()
+        assert t("auth.recovery_failed_signin", "en") in page.content()
+        assert "DuplicateColumn" not in page.content()
 
         clear_session_registry()
         page.fill("#email", seeded_user["email"])
