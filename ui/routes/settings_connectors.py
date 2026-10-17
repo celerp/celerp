@@ -195,8 +195,9 @@ def _last_sync_info(run, attention: int = 0, href: str = "") -> FT:
     return Span(*joined, cls=f"connector-sync-info {status_cls}")
 
 
-def _direction_toggle(cid: str, current: str, lang: str = "en") -> FT:
-    """Three-option sync direction toggle: Inbound / Outbound / Both."""
+def _direction_toggle(cid: str, current: str, lang: str = "en", detail: bool = False) -> FT:
+    """Three-option sync direction toggle: Inbound / Outbound / Both. On the detail
+    page (`detail`) it swaps itself; on the connectors list, the connector's card."""
     options = [
         ("inbound", t("connectors.dir_inbound", lang, default="Inbound")),
         ("outbound", t("connectors.dir_outbound", lang, default="Outbound")),
@@ -209,9 +210,9 @@ def _direction_toggle(cid: str, current: str, lang: str = "en") -> FT:
             Button(
                 label,
                 cls=f"btn btn--xs {active}",
-                hx_post=f"/settings/connectors/{cid}/direction",
+                hx_post=f"/settings/connectors/{cid}/direction" + ("?detail=1" if detail else ""),
                 hx_vals=hx_vals({"direction": val}),
-                hx_target=f"#connector-card-{cid}",
+                hx_target="closest .connector-direction-toggle" if detail else f"#connector-card-{cid}",
                 hx_swap="outerHTML",
             )
         )
@@ -222,8 +223,8 @@ def _direction_toggle(cid: str, current: str, lang: str = "en") -> FT:
     )
 
 
-def _frequency_select(cid: str, current: str, lang: str = "en") -> FT:
-    """Sync frequency selector for accounting connectors."""
+def _frequency_select(cid: str, current: str, lang: str = "en", detail: bool = False) -> FT:
+    """Sync frequency selector for accounting connectors; swaps like _direction_toggle."""
     options = [
         (SyncFrequency.MANUAL.value, t("connectors.freq_manual", lang, default="Manual")),
         (SyncFrequency.DAILY.value, t("connectors.freq_daily", lang, default="Daily")),
@@ -235,8 +236,8 @@ def _frequency_select(cid: str, current: str, lang: str = "en") -> FT:
             *opts,
             name="sync_frequency",
             cls="select select--sm",
-            hx_post=f"/settings/connectors/{cid}/frequency",
-            hx_target=f"#connector-card-{cid}",
+            hx_post=f"/settings/connectors/{cid}/frequency" + ("?detail=1" if detail else ""),
+            hx_target="closest .connector-frequency-select" if detail else f"#connector-card-{cid}",
             hx_swap="outerHTML",
             hx_include="closest div",
         ),
@@ -697,9 +698,9 @@ def _connector_detail_body(
         hx_target=f"#connector-disconnect-result-{cid}",
         hx_swap="innerHTML",
     )
-    config_rows = [_direction_toggle(cid, config.direction if config else "both", lang)]
+    config_rows = [_direction_toggle(cid, config.direction if config else "both", lang, detail=True)]
     if category == ConnectorCategory.ACCOUNTING.value:
-        config_rows.append(_frequency_select(cid, frequency, lang))
+        config_rows.append(_frequency_select(cid, frequency, lang, detail=True))
     if deposit is not None:
         config_rows.append(_deposit_select_row(cid, deposit["current"], deposit["bank_accounts"], lang))
 
@@ -1548,6 +1549,8 @@ def setup_routes(app):
                 return Span(str(exc), cls="flash flash--warning")
             config.sync_frequency = frequency
             await session.commit()
+        if request.query_params.get("detail"):
+            return _frequency_select(platform, frequency, lang, detail=True)
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next(
@@ -1596,6 +1599,8 @@ def setup_routes(app):
                 return Span(str(exc), cls="flash flash--warning")
             config.direction = direction
             await session.commit()
+        if request.query_params.get("detail"):
+            return _direction_toggle(platform, direction, lang, detail=True)
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
