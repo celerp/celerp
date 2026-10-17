@@ -191,3 +191,23 @@ def test_backup_restore_waits_for_module_pages_before_its_first_write(monkeypatc
         _smoke.backup_restore("http://api", str(tmp_path))
 
     assert posted == [{"name": _smoke.CUSTOMER}]
+
+
+def test_stock_roles_are_the_roles_that_carry_stock_value():
+    """The smoke runs without the app installed, so it holds the stock roles itself."""
+    from celerp.accounting_roles import INVENTORY_VALUE_ROLES
+    assert _smoke.STOCK_ROLES == {r.value for r in INVENTORY_VALUE_ROLES}
+
+
+def test_posting_choices_keep_stock_accounts_for_stock_roles():
+    def row(role, codes, current=None):
+        return {"role": role, "required": True, "current": current, "preselect": None,
+                "candidates": [{"code": c} for c in codes], "proposal": {"code": "9" + role[:3]}}
+    readiness = [row("inventory", ["1010"], current="1010"),
+                 row("landed_freight", ["1200", "1010"]),
+                 row("cash", ["1010", "1000"]),
+                 row("sales", ["1010"])]
+
+    assert _smoke.posting_choices(readiness) == {
+        "roles": {"landed_freight": "1010", "cash": "1000"},
+        "add_accounts": [{"code": "9sal", "role": "sales"}]}

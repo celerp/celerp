@@ -27,6 +27,14 @@ any release.
   python scripts/smoke_records.py restored http://127.0.0.1:PORT FOLDER
       After that restart: the records and the attachment, bytes and name, must be
       exactly those saved before the backup.
+  python scripts/smoke_records.py demo PORT_FILE FOLDER SAMPLE TEXT
+      Moves the SAMPLE company in as Settings > Import does (as the first owner on
+      fresh data, or the owner already there), following Celerp through the restart
+      onto the port PORT_FILE names. Then, with TEXT as the customer's name, the
+      invoice number prefix and an attachment's name: finalizes an invoice, checks
+      the attachment downloads with its bytes and name, the invoice PDF and the
+      document and contact CSV exports carry TEXT, and a company backup restores
+      as a new company holding the invoice and the attachment.
 """
 from __future__ import annotations
 
@@ -224,6 +232,179 @@ def restored(api: str, folder: str) -> None:
     print(f"restored {len(after['records']['ledger'])} ledger events, the records and {ATTACHMENT} exactly")
 
 
+def _ok(status: int, body, what: str):
+    if status not in (200, 201, 202):
+        fail(f"{what}: {status} {str(body)[:600]}")
+    return body
+
+
+def _rows(body) -> list:
+    return body if isinstance(body, list) else body.get("items", [])
+
+
+def _download(api: str, path: str, token: str) -> tuple[bytes, str]:
+    status, raw, headers = transfer("GET", api + path, token, timeout=600)
+    if status != 200:
+        fail(f"GET {path}: {status} {raw[:300]!r}")
+    return raw, sent_name(headers.get("content-disposition", ""))
+
+
+# The roles that carry stock value (celerp.accounting_roles.INVENTORY_VALUE_ROLES; a
+# test keeps the two equal): the API refuses one account for stock and anything else.
+STOCK_ROLES = frozenset({"inventory", "inventory_purchased", "inventory_opening", "landed_freight",
+                         "landed_insurance", "landed_duty", "landed_import_vat"})
+
+
+def posting_choices(readiness: list[dict]) -> dict:
+    """The posting accounts a user finishing a migration picks: for each needed role not
+    already settled, the first account offered, or the proposed one to add. Stock roles
+    take an account another stock role already uses; any other role skips those."""
+    stock = {row["current"] or row["preselect"] for row in readiness if row["role"] in STOCK_ROLES} - {None}
+    roles, add_accounts = {}, []
+    for row in readiness:
+        if not row["required"] or row["current"] or row["preselect"]:
+            continue
+        codes = [c["code"] for c in row["candidates"]]
+        if row["role"] in STOCK_ROLES:
+            codes = [c for c in codes if c in stock] + [c for c in codes if c not in stock]
+        else:
+            codes = [c for c in codes if c not in stock]
+        if codes:
+            roles[row["role"]] = codes[0]
+        else:
+            add_accounts.append({**row["proposal"], "role": row["role"]})
+    return {"roles": roles, "add_accounts": add_accounts}
+
+
+def _serving(port_file: str) -> str:
+    """The API the running copy publishes in its api-port file."""
+    try:
+        return "http://127.0.0.1:" + Path(port_file).read_text().strip()
+    except OSError as exc:
+        fail(f"no API port in {port_file}: {exc}")
+
+
+def _sample(port_file: str, sample: str) -> tuple[str, str, str]:
+    """Move the sample company in as Settings > Import does and finish it: as the
+    first owner on fresh data, or as the owner already there. Celerp restarts on a
+    new port when the sample needs modules it has not turned on; the run is then
+    followed through ``port_file``. Returns the API, the company id and a token for it."""
+    api = _serving(port_file)
+    status, _ = http("POST", api + "/auth/login-force", body={"email": EMAIL, "password": PASSWORD})
+    owner = login(api) if status == 200 else None
+    prefix = "/migrations" if owner else "/migrations/bootstrap"
+    data = Path(sample).read_bytes()
+    boundary = uuid.uuid4().hex
+    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="{Path(sample).name}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n").encode() + data + f"\r\n--{boundary}--\r\n".encode()
+    status, raw, _ = transfer("POST", api + prefix + "/scan", owner, body, f"multipart/form-data; boundary={boundary}", 600)
+    scan = _ok(status, raw[:600], f"POST {prefix}/scan") and json.loads(raw)
+    token = scan["scan_token"]
+    _ok(*http("POST", api + ("/migrations/scan/decisions" if owner else prefix + "/decisions"), owner, {
+        "scan_token": token, "mode": "full_history", "cutover_date": None, "mappings": {}, "prepared_by": None}),
+        "migration decisions")
+    name = scan["scan"].get("company_name") or "Sample company"
+    if owner:
+        started = _ok(*http("POST", api + "/migrations/start-from-scan", owner,
+                            {"scan_token": token, "company_name": name}), "POST /migrations/start-from-scan")
+        session = owner
+    else:
+        started = _ok(*http("POST", api + prefix + "/start", body={
+            "scan_token": token, "company_name": name, "name": "Owner", "email": EMAIL, "password": PASSWORD}),
+            f"POST {prefix}/start")
+        session = started["access_token"]
+    run = started["run_id"]
+    deadline = time.monotonic() + 900
+    while True:
+        api = _serving(port_file)
+        try:
+            status, view = http("GET", f"{api}/migrations/{run}", session)
+        except OSError:
+            status, view = 0, {}
+        if status == 200 and view["status"] == "ready_to_finalize":
+            break
+        if status == 200 and view["status"] in ("failed", "interrupted", "cancelled", "completed"):
+            fail(f"the sample migration stopped at {view['status']}: {view.get('error')}")
+        if time.monotonic() > deadline:
+            fail(f"the sample migration is not ready to finish after 900 s: {status} {str(view)[:300]}")
+        time.sleep(2)
+    print(f"sample migration ready on {api}" + (", after the restart that turned on its modules"
+                                                 if started.get("preparing") else ""))
+    roles = _ok(*http("GET", f"{api}/migrations/{run}/posting-accounts", session), "posting accounts")["roles"]
+    choices = posting_choices(roles)
+    done = _ok(*http("POST", f"{api}/migrations/{run}/finalize", session, choices), "finalize the sample migration")
+    if done["status"] != "completed":
+        fail(f"finishing the sample migration left it {done['status']}: {done.get('error')}")
+    switched = _ok(*http("POST", f"{api}/auth/switch-company/{done['company_id']}", login(api)), "switch to the sample")
+    return api, done["company_id"], switched["access_token"]
+
+
+def demo(port_file: str, folder: str, sample: str, text: str) -> None:
+    out = Path(folder)
+    out.mkdir(parents=True, exist_ok=True)
+    api, company_id, token = _sample(port_file, sample)
+    try:
+        module_get(api, "/crm/contacts", token)
+    except RuntimeError as exc:
+        fail(str(exc))
+    contact_id = _ok(*http("POST", api + "/crm/contacts", token, {"name": text, "contact_type": "customer"}),
+                     "POST /crm/contacts")["id"]
+    item = _rows(_ok(*http("GET", api + "/items?limit=1", token), "GET /items"))[0]
+    _ok(*http("PATCH", api + "/docs/sequences/invoice", token, {"prefix": text}), "number invoices")
+    doc = _ok(*http("POST", api + "/docs", token, {
+        "doc_type": "invoice", "contact_id": contact_id,
+        "line_items": [{"item_id": item.get("entity_id") or item.get("id"), "name": text, "quantity": 1, "unit_price": 10}],
+        "subtotal": 10, "total": 10}), "POST /docs")
+    doc_id = doc.get("id") or doc.get("entity_id")
+    _ok(*http("POST", f"{api}/docs/{doc_id}/finalize", token), "finalize the invoice")
+    number = _ok(*http("GET", f"{api}/docs/{doc_id}", token), "GET the invoice").get("doc_number", "")
+    if not number.startswith(f"{text}-"):  # the sequence adds the separator
+        fail(f"the invoice is numbered {number!r}, not {text}-...")
+    name = f"{text}.pdf"
+    content = b"%PDF-1.4\n% " + text.encode() + b" " + uuid.uuid4().hex.encode() + b"\n%%EOF\n"
+    status, raw = upload(f"{api}/docs/{doc_id}/files", token, name, content, "application/pdf")
+    file_id = _ok(status, raw[:300], f"attach {name}") and json.loads(raw)["id"]
+    got, got_name = _download(api, f"/docs/{doc_id}/files/{file_id}", token)
+    if (got_name, got) != (name, content):
+        fail(f"the attachment came back as {got_name!r} ({len(got)} bytes), not as {name!r} ({len(content)} bytes)")
+    pdf, pdf_name = _download(api, f"/docs/{doc_id}/pdf", token)
+    # The docs module names the PDF after the number with "/" as "-" and spaces as "_".
+    if not pdf.startswith(b"%PDF") or pdf_name != f"{number}.pdf".replace("/", "-").replace(" ", "_"):
+        fail(f"the invoice PDF starts {pdf[:8]!r} and downloads as {pdf_name!r}")
+    for path in ("/docs/export/csv", "/crm/contacts/export/csv"):
+        csv, csv_name = _download(api, path, token)
+        must = number if path.startswith("/docs") else text
+        if must not in csv.decode("utf-8-sig"):
+            fail(f"{path} ({csv_name}) does not hold {must!r}")
+    print(f"sample company moved in; invoice {number} with {name} (bytes and name as attached), "
+          f"its PDF {pdf_name} and the document and contact CSV exports")
+
+    backup, backup_name = _download(api, "/company-backups/download", token)
+    (out / backup_name).write_bytes(backup)
+    boundary = uuid.uuid4().hex
+    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="mode"\r\n\r\nnew_company\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{backup_name}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n").encode() + backup + f"\r\n--{boundary}--\r\n".encode()
+    status, raw, _ = transfer("POST", api + "/company-backups/read", token, body,
+                              f"multipart/form-data; boundary={boundary}", 600)
+    preview = _ok(status, raw[:600], f"read the company backup {backup_name}") and json.loads(raw)
+    restored = _ok(*http("POST", api + "/company-backups/restore", token, {
+        "upload_token": preview["upload_token"], "mode": "new_company", "plan_fingerprint": preview["plan_fingerprint"],
+        "company_name": f"{text} restored"}), "restore the company backup")
+    copy = restored["access_token"]
+    docs = _rows(_ok(*http("GET", api + "/docs?limit=500", copy), "GET /docs in the restored company"))
+    match = [d for d in docs if d.get("doc_number") == number]
+    if restored["company_id"] == company_id or not match:
+        fail(f"the company restored from {backup_name} holds no invoice {number}")
+    copy_id = match[0].get("id") or match[0].get("entity_id")
+    files = _ok(*http("GET", f"{api}/docs/{copy_id}", copy), "GET the restored invoice").get("files") or []
+    kept = [f for f in files if f.get("filename") == name]
+    got, got_name = _download(api, f"/docs/{copy_id}/files/{kept[0]['id']}", copy) if kept else (b"", "")
+    if (got_name, got) != (name, content):
+        fail(f"the restored invoice {number} lost {name}: {files}")
+    print(f"company backup {backup_name} restored as {restored['company_name']!r}, with invoice {number} and {name}")
+
+
 def carried(before_path: str, after_path: str) -> None:
     before, after = (json.loads(open(p, encoding="utf-8").read()) for p in (before_path, after_path))
     if before["ledger"] != after["ledger"]:
@@ -247,6 +428,8 @@ if __name__ == "__main__":
         carried(sys.argv[2], sys.argv[3])
     elif len(sys.argv) == 3 and sys.argv[1] in ("seed", "snapshot"):
         {"seed": seed, "snapshot": snapshot}[sys.argv[1]](sys.argv[2].rstrip("/"))
+    elif len(sys.argv) == 6 and sys.argv[1] == "demo":
+        demo(*sys.argv[2:])
     elif len(sys.argv) == 4 and sys.argv[1] in ("backup-restore", "restored"):
         {"backup-restore": backup_restore, "restored": restored}[sys.argv[1]](sys.argv[2].rstrip("/"), sys.argv[3])
     else:
