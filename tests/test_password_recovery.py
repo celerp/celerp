@@ -359,8 +359,10 @@ async def test_recovery_terminal_command_not_for_connect_visitor(client):
 
 @pytest.mark.parametrize("config", [None, "/srv/celerp/celerp.toml"])
 async def test_terminal_command_renders_real_paths(monkeypatch, config):
-    """The command carries this process's own interpreter, app folder and data folder,
-    quoted for the shell it is pasted into, whatever characters they hold."""
+    """The command carries this process's own interpreter, app folder, data folder and
+    config file, quoted for the shell it is pasted into, whatever characters they hold.
+    The config file is named even when it comes from the config folder rather than
+    CELERP_CONFIG, so the terminal cannot fall back to another install's config."""
     import sys
 
     import celerp
@@ -374,12 +376,15 @@ async def test_terminal_command_renders_real_paths(monkeypatch, config):
         monkeypatch.setenv("CELERP_CONFIG", config)
     else:
         monkeypatch.delenv("CELERP_CONFIG", raising=False)
+        monkeypatch.setenv("XDG_CONFIG_HOME", "/home/สมชาย/.config")
+        monkeypatch.setenv("APPDATA", "/home/สมชาย/.config")
+        config = "/home/สมชาย/.config/celerp/config.toml"
 
     posix = terminal_command(windows=False)
     words = shlex.split(posix)
     assert words[:3] == ["cd", app_dir, "&&"]
     assert "CELERP_DATA_DIR=/data/O'Brien ข้อมูล" in words
-    assert ((f"CELERP_CONFIG={config}" in words) if config else not any("CELERP_CONFIG" in w for w in words))
+    assert f"CELERP_CONFIG={config}" in words
     assert words[words.index("/opt/it's here/bin/python3"):] == [
         "/opt/it's here/bin/python3", "-E", "-X", "utf8", "-m", "celerp", "reset-password"]
 
@@ -388,7 +393,7 @@ async def test_terminal_command_renders_real_paths(monkeypatch, config):
     windows = terminal_command(windows=True)
     assert windows.startswith(f"Set-Location -LiteralPath '{app_dir.replace(chr(39), chr(39) * 2)}'; ")
     assert "$env:CELERP_DATA_DIR='C:\\Users\\สมชาย O''Neil\\AppData\\Roaming\\Celerp'" in windows
-    assert ((f"$env:CELERP_CONFIG='{config}'" in windows) if config else "CELERP_CONFIG" not in windows)
+    assert f"$env:CELERP_CONFIG='{config}'" in windows
     assert windows.endswith(
         "& 'C:\\Users\\สมชาย O''Neil\\AppData\\Local\\Celerp\\python\\python.exe' -E -X utf8 -m celerp reset-password")
 

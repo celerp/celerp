@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import celerp
-from celerp.config import settings
+from celerp.config import config_path, settings
 from celerp.models.accounting import UserCompany
 from celerp.models.auth import PasswordReset, PasswordResetNotice
 from celerp.models.company import User
@@ -83,14 +83,13 @@ def _powershell_quote(value: str) -> str:
 
 def terminal_command(*, windows: bool | None = None) -> str:
     """The command that resets a password from a terminal on this computer, built from
-    this process's own interpreter, app folder and data folder (and its config file,
-    when it has one). `-E` keeps the terminal's own Python variables out."""
+    this process's own interpreter, app folder, data folder and config file, so the
+    terminal reaches this install and no other. `-E` keeps the terminal's own Python
+    variables out."""
     if windows is None:
         windows = os.name == "nt"
     app_dir = str(Path(celerp.__file__).resolve().parent.parent)
-    env = {"CELERP_DATA_DIR": str(settings.data_dir)}
-    if os.environ.get("CELERP_CONFIG"):
-        env["CELERP_CONFIG"] = os.environ["CELERP_CONFIG"]
+    env = {"CELERP_DATA_DIR": str(settings.data_dir), "CELERP_CONFIG": str(config_path())}
     run = "-E -X utf8 -m celerp reset-password"
     if windows:
         q = _powershell_quote

@@ -182,6 +182,12 @@ def setup_routes(app):
             return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
         return await finish_sign_in(request, access_token, refresh_token, nxt)
 
+    # The address bar keeps the address a form posted to; opening it again goes to the
+    # page that starts that form rather than to an error.
+    @app.get("/login-force")
+    async def login_force_page(request: Request):
+        return RedirectResponse("/login", status_code=303)
+
     @app.post("/login-force")
     async def login_force_submit(request: Request):
         form = await request.form()
@@ -594,6 +600,10 @@ def setup_routes(app):
         if outcome == "unavailable":
             return RedirectResponse(_TERMINAL_UNAVAILABLE, status_code=303)
         return _recovery(_recovery_code_form(email))
+
+    @app.get("/forgot-password/reset")
+    async def recovery_reset_page(request: Request):
+        return RedirectResponse("/forgot-password", status_code=303)
 
     @app.post("/forgot-password/reset")
     async def recovery_reset(request: Request):

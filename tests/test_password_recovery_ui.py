@@ -122,6 +122,14 @@ async def test_recovery_pages_back_to_sign_in(client, session, relay, short_floo
         _anchor(r.text, "/login")
 
 
+@pytest.mark.parametrize("path, page", [("/forgot-password/reset", "/forgot-password"), ("/login-force", "/login")])
+async def test_a_form_address_opened_directly_goes_to_its_page(ui, path, page):
+    """The address bar shows where a form posted to; opening that address again (a new
+    tab, a bookmark, a restored session) lands on the page that starts it, not an error."""
+    r = await ui.get(path)
+    assert (r.status_code, r.headers.get("location")) == (303, page)
+
+
 async def test_recovery_without_an_email_asks_for_it(relay):
     """Send code with the email left empty stays on the first form and asks for the
     email; nothing goes to Celerp."""
