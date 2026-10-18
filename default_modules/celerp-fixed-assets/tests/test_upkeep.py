@@ -12,7 +12,7 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy import select
 
-from celerp_fixed_assets.setup import today_in
+from celerp.services.business_time import business_today
 from fa_fixtures import FA
 from test_files_tags import PDF, _ui
 from test_runs import _contributed, _managed_from, _tick
@@ -20,7 +20,7 @@ from test_runs import _contributed, _managed_from, _tick
 pytestmark = pytest.mark.asyncio
 
 # Today for a company with no business timezone set, as every test company is.
-TODAY = today_in(None)
+TODAY = business_today(None)
 
 
 def _on(days: int) -> str:

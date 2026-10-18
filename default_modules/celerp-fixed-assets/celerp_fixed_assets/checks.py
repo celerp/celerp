@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.business_time import company_today
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.permissions import require_permission
 
@@ -46,7 +47,7 @@ async def record_check(session, company_id, user_id, tag: str) -> dict:
     asset_id, asset = found
     if asset.get("status") in _LEFT:
         raise setup.unprocessable(_LEFT[asset["status"]].format(date=(asset.get("disposal") or {}).get("date")))
-    today = (await setup.business_today(session, company_id)).isoformat()
+    today = (await company_today(session, company_id)).isoformat()
     for check in await live_checks(session, company_id):
         if (check["asset_id"], check["user_id"], check["date"]) == (asset_id, str(user_id), today):
             return {**check, "already": True}
@@ -113,7 +114,7 @@ async def remove_check(check_id: str, company_id=Depends(get_current_company_id)
         raise HTTPException(status_code=404, detail="No such check.")
     if row.state["user_id"] != str(user.id):
         raise HTTPException(status_code=403, detail="Only the person who recorded a check can remove it.")
-    if row.state["date"] != (await setup.business_today(session, company_id)).isoformat():
+    if row.state["date"] != (await company_today(session, company_id)).isoformat():
         raise setup.unprocessable(f"This check was recorded on {row.state['date']}. A check can only be removed on "
                                   "the day it was recorded.")
     await _emit(session, company_id, user.id, check_id, ENTITY_TYPE, "fa.check.removed", {"user_id": str(user.id)})

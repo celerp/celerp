@@ -25,6 +25,8 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
+from celerp.services.business_time import business_today, company_today
+
 from celerp_fixed_assets import recon, remeasure, runs, setup, taxbooks
 from celerp_fixed_assets.calc.periods import month_index, period_label
 from celerp_fixed_assets.projections import money
@@ -210,7 +212,7 @@ async def mark(session, company_id, user_id, year, body: dict) -> dict:
         marks.pop(key, None)
     else:
         marks[key] = {"state": state, "reason": reason, "effect": effect or None, "amount": found["amount"],
-                      "at": (await setup.business_today(session, company_id)).isoformat(), "user": str(user_id)}
+                      "at": (await company_today(session, company_id)).isoformat(), "user": str(user_id)}
     await _emit(session, company_id, user_id, yearend_id(year), "fa_yearend", "fa.yearend.recorded",
                 {"year": year, "marks": marks})
     return {**found, "state": state, "reason": reason or None, "effect": effect or None}
@@ -220,7 +222,7 @@ async def mark(session, company_id, user_id, year, body: dict) -> dict:
 
 
 def _history(saved: dict, settings: dict, action: str, user_id, reason: str | None = None) -> list:
-    return [{"action": action, "reason": reason, "at": setup.today_in(settings).isoformat(), "user": str(user_id)},
+    return [{"action": action, "reason": reason, "at": business_today(settings.get("timezone")).isoformat(), "user": str(user_id)},
             *(saved.get("history") or [])]
 
 
@@ -245,7 +247,7 @@ async def close(session, company_id, user_id, regime_key: str, year) -> dict:
     if saved.get("status") == "closed":
         raise conflict(f"Tax year {year} is already closed.")
     start, end = regime.tax_year(taxbooks.tax_year_end(settings), year)
-    if end >= setup.today_in(settings):
+    if end >= business_today(settings.get("timezone")):
         raise conflict(f"Tax year {year} ends on {end.isoformat()}, so it cannot close yet.")
     years = await taxbooks.years(session, company_id, settings, regime, year)
     earlier = [y for y, f in sorted(years.items()) if y < year and f.get("status") != "closed"

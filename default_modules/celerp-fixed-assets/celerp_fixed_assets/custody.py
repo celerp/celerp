@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.business_time import company_today
 
 from celerp_fixed_assets import files, setup
 from celerp_fixed_assets.moves import _GONE, _locked_assets
@@ -99,7 +100,7 @@ async def confirm(asset_id: str, company_id=Depends(get_current_company_id), use
     """The custodian confirms they still hold the asset, today."""
     await _locked_held(session, company_id, user.id, asset_id)
     await _emit(session, company_id, user.id, asset_id, "fa_asset", "fa.asset.confirmed",
-                {"confirmed": {"user_id": str(user.id), "date": (await setup.business_today(session, company_id)).isoformat()}})
+                {"confirmed": {"user_id": str(user.id), "date": (await company_today(session, company_id)).isoformat()}})
     await session.commit()
     return shown(asset_id, await _state(session, company_id, asset_id), await _locations(session, company_id))
 
@@ -120,7 +121,7 @@ async def report_problem(asset_id: str, text: str = Form(""), photo: UploadFile 
         if not held_by(state, user.id):
             raise HTTPException(status_code=404, detail="No such asset in your care.")
         problem = {"id": str(uuid.uuid4()), "text": text, "user_id": str(user.id),
-                   "date": (await setup.business_today(session, company_id)).isoformat()}
+                   "date": (await company_today(session, company_id)).isoformat()}
         await _emit(session, company_id, user.id, asset_id, "fa_asset", "fa.asset.problem", {"problem": problem})
         responsible = state.get("responsible_user_id")
         await create_keyed(session, company_id, "fixed_assets", "fixed_assets.notice.problem",

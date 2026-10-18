@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.business_time import business_today
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, require_permission
 from celerp_fixed_assets import (
     additions, classtable, corrections, disposal, fixaccount, imports, moves, opening, operations, recon, reclassify, remeasure, reports,
@@ -74,7 +75,7 @@ async def get_setup(company_settings: dict = Depends(get_current_company_setting
     fa = setup.settings_of(company_settings)
     first = await setup.first_period(session, company_id, fa) if fa.get("started") else None
     return {"started": bool(fa.get("started")), "settings": setup.view(fa), "first_period": first,
-            "rules": setup.rules_view(company_settings), "today": setup.today_in(company_settings).isoformat(),
+            "rules": setup.rules_view(company_settings), "today": business_today(company_settings.get("timezone")).isoformat(),
             "money_shown": money}
 
 
@@ -474,7 +475,7 @@ async def revalue_class(class_id: str, body: dict = Body(...), company_id=Depend
 async def due_reviews(company_id=Depends(get_current_company_id),
                       company_settings: dict = Depends(get_current_company_settings), money: bool = _MONEY,
                       session: AsyncSession = Depends(get_session)) -> dict:
-    today = setup.today_in(company_settings)
+    today = business_today(company_settings.get("timezone"))
     return {"items": views.readable(await remeasure.due_reviews(session, company_id, today), money)}
 
 
