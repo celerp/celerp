@@ -1056,8 +1056,13 @@ class TestCompanySwitcher:
             back = await ui_client.get("/switch-company/c2?next=/fixed-assets/assets/a1/dispose", cookies=_authed())
             away = await ui_client.get("/switch-company/c2?next=//evil.example/x", cookies=_authed())
             plain = await ui_client.get("/switch-company/c2", cookies=_authed())
+            # A dot segment would let the browser resolve a listed prefix to an unlisted page.
+            climbs = [await ui_client.get(f"/switch-company/c2?next={n}", cookies=_authed())
+                      for n in ("/fixed-assets/../settings/users", "/fixed-assets/%2e%2e/settings/users",
+                                "/fixed-assets/./assets")]
         assert back.headers["location"] == "/fixed-assets/assets/a1/dispose"
         assert away.headers["location"] == "/" and plain.headers["location"] == "/"
+        assert [c.headers["location"] for c in climbs] == ["/", "/", "/"]
 
     @pytest.mark.asyncio
     async def test_switch_company_post_without_auth_redirects(self, ui_client):

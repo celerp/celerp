@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -449,7 +449,9 @@ def setup_routes(app):
         # always one of the listed pages on this site.
         destination = _safe_next(request.query_params.get("next"))
         path = urlsplit(destination).path
-        if path not in SWITCH_DESTINATIONS and not path.startswith(SWITCH_PREFIXES):
+        # A dot segment would let the browser resolve a listed prefix to an unlisted page.
+        climbs = any(seg in (".", "..") for seg in unquote(path).split("/"))
+        if climbs or (path not in SWITCH_DESTINATIONS and not path.startswith(SWITCH_PREFIXES)):
             destination = "/"
         resp = RedirectResponse(destination, status_code=302)
         set_session_cookies(resp, new_access, new_refresh, request)
