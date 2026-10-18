@@ -12,9 +12,10 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
+from sqlalchemy.orm.attributes import set_committed_value
 
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
@@ -195,9 +196,16 @@ async def authenticate(session: AsyncSession, email: str, password: str, caller:
     if not password_attempts.check(email, password, auth_hash, caller):
         raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
     # A legacy hash moves to the current scheme now; a legacy password shorter than
-    # the policy keeps its hash until the user changes it.
+    # the policy keeps its hash until the user changes it. The new hash replaces only
+    # the one just checked: a password changed meanwhile stands and this sign-in fails.
     if password_needs_rehash(user.auth_hash) and len(password) >= MIN_PASSWORD_LENGTH:
-        user.auth_hash = hash_password(password)
+        upgraded = hash_password(password)
+        replaced = await session.execute(
+            update(User).where(User.id == user.id, User.auth_hash == user.auth_hash)
+            .values(auth_hash=upgraded).execution_options(synchronize_session=False))
+        if replaced.rowcount != 1:
+            raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
+        set_committed_value(user, "auth_hash", upgraded)
     return user
 
 

@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 from jose import jwt
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
@@ -107,7 +108,9 @@ async def issue_token_pair(
       never jump onto the newer generation (F2).
     - A fresh credential (register, password login, force-login, setup-code and
       password-authenticated restores and migration starts) passes
-      ``expected_snonce=None`` and always mints on whatever the locked row holds.
+      ``expected_snonce=None`` and mints on whatever the locked row holds, provided
+      the password *user* was loaded with is still the stored one. A password changed
+      after the caller checked it refuses the sign-in with a neutral 401.
 
     Holding the lock across the read-check-mint-register-commit window is what
     serializes issuance against ``invalidate_sessions``/``invalidate_all_sessions``.
@@ -125,6 +128,10 @@ async def issue_token_pair(
     if expected_snonce is not None and expected_snonce != auth_state.nonce:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=refusal(
             "error.session_expired", "You were signed out. Refresh the page and sign in again."))
+    if expected_snonce is None and (await session.execute(
+            select(User.auth_hash).where(User.id == user.id))).scalar_one_or_none() != user.auth_hash:
+        from ui.i18n import t
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=t("auth.invalid_credentials"))
     snonce = auth_state.nonce
     access_token, token_jti = create_access_token(
         user_id, company_id, role, user.email, jti=jti, snonce=snonce
