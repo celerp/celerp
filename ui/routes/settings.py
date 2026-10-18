@@ -3029,19 +3029,19 @@ def _password_form(error: str = "", success: str = "", lang: str = "en") -> FT:
             Div(
                 Label(t("settings.current_password", lang), fr="current_password"),
                 Input(type="password", name="current_password", id="current_password",
-                      required=True, cls="input", autocomplete="current-password"),
+                      required=True, cls="form-input", autocomplete="current-password"),
                 cls="form-group",
             ),
             Div(
                 Label(t("settings.new_password", lang), fr="new_password"),
                 Input(type="password", name="new_password", id="new_password",
-                      required=True, minlength="8", cls="input", autocomplete="new-password"),
+                      required=True, minlength="8", cls="form-input", autocomplete="new-password"),
                 cls="form-group",
             ),
             Div(
                 Label(t("settings.confirm_password", lang), fr="confirm_password"),
                 Input(type="password", name="confirm_password", id="confirm_password",
-                      required=True, minlength="8", cls="input", autocomplete="new-password"),
+                      required=True, minlength="8", cls="form-input", autocomplete="new-password"),
                 cls="form-group",
             ),
             Button(t("btn.change_password", lang), type="submit", cls="btn btn--primary mt-sm"),
