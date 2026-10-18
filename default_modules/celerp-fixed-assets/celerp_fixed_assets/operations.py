@@ -251,8 +251,9 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
     previewed = str(body.get("fingerprint") or "")
     if previewed != fingerprint:
         if previewed.split(".", 1)[0] != str(generation):
-            raise conflict("Line was registered and released since you opened this form. Review again.")
-        raise conflict("Assets, accounts or postings changed since preview. Review again.")
+            raise conflict("Line was registered and released since you opened this form. Press Review again.")
+        raise conflict("An asset, account or posting on this review changed since you reviewed it. "
+                       "Press Review again to see it as it stands now.")
     context["intent_hash"] = intent_hash
     result, effects = await _applied(session, company_id, apply, context, op_key)
     await _emit(session, company_id, user_id, f"fa:op:{op_key}", "fa_op", "fa.op.recorded", {

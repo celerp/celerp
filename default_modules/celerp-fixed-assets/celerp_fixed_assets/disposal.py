@@ -56,7 +56,7 @@ def _share(asset: dict, body: dict) -> tuple[Decimal, Decimal]:
             return Decimal(1), quantity
         out = setup.number(body["quantity"], "The quantity disposed of")
         if out <= 0 or out > quantity:
-            raise setup.unprocessable(f"The quantity disposed of is more than 0 and at most {quantity}.")
+            raise setup.unprocessable(f"Enter a quantity disposed of above 0 and up to {quantity}.")
         return out / quantity, out
     if body.get("quantity") not in (None, "") and setup.number(body["quantity"], "The quantity disposed of") != quantity:
         raise setup.unprocessable(f"This asset has a quantity of {quantity}. Dispose of a percentage of it instead.")
@@ -64,7 +64,7 @@ def _share(asset: dict, body: dict) -> tuple[Decimal, Decimal]:
         return Decimal(1), quantity
     percent = setup.number(body["percent"], "The percent disposed of")
     if percent <= 0 or percent > 100:
-        raise setup.unprocessable("The percent disposed of is more than 0 and at most 100.")
+        raise setup.unprocessable("Enter a percent disposed of above 0 and up to 100.")
     share = percent / 100
     return share, quantity if share == 1 else Decimal(0)
 

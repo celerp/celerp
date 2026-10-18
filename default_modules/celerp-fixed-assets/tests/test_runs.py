@@ -430,7 +430,7 @@ async def test_s8_fingerprint_detects_changes(fa):
         await change()
         r = await fa.post("/runs", {"month": "2026-03", "preview": False, "op_key": "fp",
                                     "fingerprint": preview["fingerprint"]})
-        assert r.status_code == 409 and "changed since preview" in r.json()["detail"], r.text
+        assert r.status_code == 409 and "changed since you reviewed it" in r.json()["detail"], r.text
 
     async def new_asset():
         await _contributed(fa, "Trailer", cost="6000", on="2026-02-01")

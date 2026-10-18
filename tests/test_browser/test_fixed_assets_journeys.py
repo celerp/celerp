@@ -694,7 +694,7 @@ def test_j9_stale_move_form_asks_for_a_new_review_and_the_move_succeeds(page: Pa
     _operate(c, f"/assets/{car}/move", {"date": "2026-01-20", "location_id": office})
 
     page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
-    expect(page.locator("#fa-preview .flash--error")).to_contain_text("changed since preview")
+    expect(page.locator("#fa-preview .flash--error")).to_contain_text("changed since you reviewed it")
     page.locator("#fa-preview").get_by_role("button", name="Review again").click()
     with page.expect_navigation(url=f"**/fixed-assets/assets/{car}"):
         page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
