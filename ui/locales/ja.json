@@ -6094,6 +6094,7 @@
   "firm_view.sync_off": "オフ",
   "firm_view.sync_failing": "失敗中",
   "firm_view.sync_expiring": "キーの期限切れ間近",
+  "firm_view.sync_owner_only": "所有者のみ",
   "firm_view.last_sync": "最終同期",
   "firm_view.attention": "要対応",
   "firm_view.to_look_at": "確認する項目 {n} 件",

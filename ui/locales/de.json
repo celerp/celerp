@@ -6094,6 +6094,7 @@
   "firm_view.sync_off": "Aus",
   "firm_view.sync_failing": "Fehlerhaft",
   "firm_view.sync_expiring": "Schlüssel läuft ab",
+  "firm_view.sync_owner_only": "Nur Inhaber",
   "firm_view.last_sync": "Letzte Synchronisierung",
   "firm_view.attention": "Braucht Aufmerksamkeit",
   "firm_view.to_look_at": "{n} zu prüfen",

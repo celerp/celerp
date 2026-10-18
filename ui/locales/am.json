@@ -6094,6 +6094,7 @@
   "firm_view.sync_off": "ጠፍቷል",
   "firm_view.sync_failing": "እየተሳካ አይደለም",
   "firm_view.sync_expiring": "ቁልፉ ሊያበቃ ነው",
+  "firm_view.sync_owner_only": "ባለቤቱ ብቻ",
   "firm_view.last_sync": "የመጨረሻ ማመሳሰል",
   "firm_view.attention": "ትኩረት ያስፈልገዋል",
   "firm_view.to_look_at": "ለማየት {n}",

@@ -6094,6 +6094,7 @@
   "firm_view.sync_off": "Tắt",
   "firm_view.sync_failing": "Đang lỗi",
   "firm_view.sync_expiring": "Khóa sắp hết hạn",
+  "firm_view.sync_owner_only": "Chỉ chủ sở hữu",
   "firm_view.last_sync": "Lần đồng bộ cuối",
   "firm_view.attention": "Cần chú ý",
   "firm_view.to_look_at": "{n} mục cần xem",

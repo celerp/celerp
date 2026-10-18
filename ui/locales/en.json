@@ -6094,6 +6094,7 @@
   "firm_view.sync_off": "Off",
   "firm_view.sync_failing": "Failing",
   "firm_view.sync_expiring": "Key expiring",
+  "firm_view.sync_owner_only": "Owner only",
   "firm_view.last_sync": "Last sync",
   "firm_view.attention": "Needs attention",
   "firm_view.to_look_at": "{n} to look at",

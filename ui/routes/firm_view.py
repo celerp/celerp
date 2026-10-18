@@ -73,7 +73,10 @@ def _actions(row: dict, lang: str) -> FT:
 
 
 def _sync(row: dict, lang: str) -> str:
-    return t(f"firm_view.sync_{row['sync']}", lang) if row.get("sync") else "--"
+    """The key's state; a company someone else owns says so, a move with no books yet reads --."""
+    if row.get("sync"):
+        return t(f"firm_view.sync_{row['sync']}", lang)
+    return t("firm_view.sync_owner_only", lang) if row.get("role") else "--"
 
 
 def _table(rows: list[dict], lang: str, params: dict, error: str | None = None) -> FT:

@@ -6094,6 +6094,7 @@
   "firm_view.sync_off": "ปิด",
   "firm_view.sync_failing": "ล้มเหลว",
   "firm_view.sync_expiring": "คีย์ใกล้หมดอายุ",
+  "firm_view.sync_owner_only": "เฉพาะเจ้าของ",
   "firm_view.last_sync": "ซิงก์ล่าสุด",
   "firm_view.attention": "ต้องดูแล",
   "firm_view.to_look_at": "{n} รายการที่ต้องดู",

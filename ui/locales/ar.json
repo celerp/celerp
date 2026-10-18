@@ -6094,6 +6094,7 @@
   "firm_view.sync_off": "متوقفة",
   "firm_view.sync_failing": "متعثرة",
   "firm_view.sync_expiring": "المفتاح على وشك الانتهاء",
+  "firm_view.sync_owner_only": "المالك فقط",
   "firm_view.last_sync": "آخر مزامنة",
   "firm_view.attention": "يحتاج إلى انتباه",
   "firm_view.to_look_at": "{n} للمراجعة",

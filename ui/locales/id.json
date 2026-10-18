@@ -6094,6 +6094,7 @@
   "firm_view.sync_off": "Nonaktif",
   "firm_view.sync_failing": "Gagal",
   "firm_view.sync_expiring": "Kunci segera kedaluwarsa",
+  "firm_view.sync_owner_only": "Hanya pemilik",
   "firm_view.last_sync": "Sinkronisasi terakhir",
   "firm_view.attention": "Perlu perhatian",
   "firm_view.to_look_at": "{n} untuk diperiksa",

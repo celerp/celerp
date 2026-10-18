@@ -6094,6 +6094,7 @@
   "firm_view.sync_off": "Disattiva",
   "firm_view.sync_failing": "Con errori",
   "firm_view.sync_expiring": "Chiave in scadenza",
+  "firm_view.sync_owner_only": "Solo il proprietario",
   "firm_view.last_sync": "Ultima sincronizzazione",
   "firm_view.attention": "Da controllare",
   "firm_view.to_look_at": "{n} da controllare",
