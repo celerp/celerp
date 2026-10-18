@@ -1036,13 +1036,24 @@ async function _doUninstallDeleteData() {
   // config, JWT secret); the servers and the database hold files in it open, so
   // they stop first, and nothing is deleted unless they did. On Windows the
   // database may instead sit in the user's private folder under ProgramData
-  // (windowsPgPaths), which goes too.
+  // (windowsPgPaths), which goes too; when that folder cannot be used it may still
+  // hold the database, so nothing is deleted and the user is told why.
   const dataPaths = [DATA_DIR];
   if (process.platform === "win32" && !IS_DEV) {
+    let privateRoot;
     try {
-      const { privateRoot } = windowsPgPaths();
-      if (privateRoot) dataPaths.push(privateRoot);
-    } catch (err) { console.error("[uninstall] cannot use the private database folder:", err); }
+      ({ privateRoot } = windowsPgPaths());
+    } catch (err) {
+      console.error("[uninstall] cannot use the private database folder:", err);
+      await dialog.showMessageBox(mainWindow, {
+        type: "error",
+        title: "Uninstall and Delete All Data",
+        message: "Nothing was deleted",
+        detail: `${err.message}\n\nCelerp deleted none of your data, because your database may be in that folder.`,
+      });
+      return;
+    }
+    if (privateRoot) dataPaths.push(privateRoot);
   }
   const { response } = await dialog.showMessageBox(mainWindow, {
     type: "warning",
