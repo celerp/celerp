@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio as _asyncio
 import json as _json
 import logging
-from datetime import date, datetime, timezone as _tz
+from datetime import datetime, timezone as _tz
 from urllib.parse import quote_plus as _quote_plus, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -22,6 +22,7 @@ from ui.components.shell import base_shell, info_tip, page_header, page_title
 from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_section as _shared_files_section, _DOCUMENT_TAGS
+from celerp.services.business_time import business_today
 from celerp.services.currencies import CURRENCY_CODES as _CURRENCY_CODES
 from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
@@ -264,7 +265,7 @@ def _settings_card(c: dict) -> FT:
     )
 
 
-def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start: str = "01-01",
+def _financial_summary(docs: list[dict], contact_id: str = "", company: dict | None = None,
                        consigned_total: float | None = None, on_memo_total: float | None = None) -> FT:
     """Compute and render financial summary cards from contact docs.
 
@@ -276,10 +277,11 @@ def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start
     hidden from this role), and the card falls back to the document-derived total.
     """
     from ui.routes.reports import _fy_start
-    today = date.today()
+    company = company or {}
+    today = business_today(company.get("timezone"))
     # Reuse the canonical parser: it falls back to Jan 1 on a malformed
     # fiscal_year_start (e.g. "01" with no day) instead of crashing the page.
-    fy_start = _fy_start(fiscal_year_start, today)
+    fy_start = _fy_start(company.get("fiscal_year_start") or "01-01", today)
     fy_start_str = fy_start.isoformat()
 
     invoices = [d for d in docs if d.get("doc_type") == "invoice"]
@@ -845,7 +847,6 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         nav_active_key = nav_active
     cid = contact.get("entity_id") or contact.get("id") or contact_id
     is_deleted = bool(contact.get("deleted"))
-    fiscal_year_start = company.get("fiscal_year_start") or "01-01"
     page_title = title or contact_name
 
     autofocus_script = (
@@ -889,7 +890,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         autofocus_script,
         action_bar,
         delete_btn,
-        *([_financial_summary(docs, contact_id=cid, fiscal_year_start=fiscal_year_start,
+        *([_financial_summary(docs, contact_id=cid, company=company,
                               consigned_total=consigned_total, on_memo_total=on_memo_total)]
           if show_financials else []),
         Div(

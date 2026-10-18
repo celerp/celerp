@@ -7,7 +7,6 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from datetime import date as _date
 from urllib.parse import quote
 
 from fasthtml.common import *
@@ -16,6 +15,7 @@ from starlette.responses import RedirectResponse, Response
 
 from celerp.accounting_roles import account_label
 from celerp.importers import tabular
+from celerp.services.business_time import business_today
 import ui.api_client as api
 from ui.components.icons import import_icon
 from ui.api_client import APIError
@@ -587,6 +587,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             banks = []
             currency = ""
+            company = {}
 
         bank_options = [
             Option(f"{b['bank_name']} {b.get('account_number', '')}", value=b["id"])
@@ -617,7 +618,7 @@ def setup_routes(app):
                 Div(
                     Label(t("label.statement_date"), cls="form-label"),
                     Input(type="date", name="statement_date",
-                          value=_date.today().isoformat(),
+                          value=business_today(company.get("timezone")).isoformat(),
                           cls="form-input", required=True),
                     cls="form-field",
                 ),

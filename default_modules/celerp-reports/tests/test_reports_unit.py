@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
 
+from celerp.services.business_time import business_today
 from celerp_reports import routes as reports
 
 
@@ -21,6 +22,10 @@ class _Res:
 
     def all(self):
         return self._rows
+
+    def scalar_one_or_none(self):
+        # The company's settings: none saved, so its business day is the UTC day.
+        return None
 
 
 class _FakeSession:
@@ -37,7 +42,7 @@ def _proj(entity_id: str, entity_type: str, state: dict, location_id=None):
 
 @pytest.mark.asyncio
 async def test_reports_unit_branches_heavy():
-    today = date.today()
+    today = business_today(None)
     rows = [
         _proj("doc:1", "doc", {"doc_type": "invoice", "status": "partial", "contact_id": "c1", "contact_name": "C1", "total": 100, "amount_outstanding": 100, "due_date": (today - timedelta(days=10)).isoformat(), "date": today.isoformat(), "line_items": [{"item_id": "i1", "name": "Item1", "quantity": 2, "line_total": 100, "cost_total": 20}], "cost_total": 20}),
         _proj("doc:2", "doc", {"doc_type": "invoice", "status": "final", "contact_id": "c2", "customer_name": "C2", "total": 50, "due_date": (today - timedelta(days=70)).isoformat(), "date": (today - timedelta(days=40)).isoformat(), "line_items": [{"entity_id": "i2", "description": "Item2", "quantity": 1, "price": 50}], "cost_total": 10}),
@@ -211,7 +216,7 @@ def test_aging_drilldown_unlinked_contact_no_contact_id():
 # ---------------------------------------------------------------------------
 
 def _days_ago(n: int) -> str:
-    return (date.today() - timedelta(days=n)).isoformat()
+    return (business_today(None) - timedelta(days=n)).isoformat()
 
 
 def _invoice_state(total: float, outstanding: float, status: str, due_days_ago: int, contact: str = "c1") -> dict:

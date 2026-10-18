@@ -13,7 +13,6 @@ import re
 import json as _json
 import uuid
 import asyncio
-from datetime import date as _date
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -44,7 +43,7 @@ from ui.i18n import t, get_lang
 from ui.routes.documents import _action_error
 from ui.routes.financial_reports import MOVED_TABS, REPORTS, ledger_path, report_nav
 from ui.routes.reports import (
-    _date_filter_bar, _get_fiscal, _page_or_fragment, _parse_dates,
+    _company_today, _date_filter_bar, _page_or_fragment, _parse_dates,
 )
 from celerp.services.money import CURRENCY_DP, DEFAULT_DP, currency_dp
 
@@ -111,8 +110,7 @@ def setup_routes(app):
         try:
             company = await api.get_company(token)
             currency = company.get("currency")
-            fy = await _get_fiscal(token)
-            d_from, d_to, preset = _parse_dates(request, fy)
+            d_from, d_to, preset = _parse_dates(request, company)
             filters = journal_filters(request)
             params = {**_date_params(d_from, d_to), **filters}
             data = await api.get_journal(token, params)
@@ -215,7 +213,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         return await _render_journal_form(
             request, token,
-            ts=_date.today().isoformat(), memo="", lines=[],
+            ts=await _company_today(token), memo="", lines=[],
             idem_token=str(uuid.uuid4()), error=None,
             date_from=request.query_params.get("date_from", ""),
             date_to=request.query_params.get("date_to", ""),

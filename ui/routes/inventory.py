@@ -2401,10 +2401,9 @@ function celerpPrintLabel(entityId, templateId) {
     @app.get("/inventory/{entity_id}/worksheet/print")
     async def worksheet_print(request: Request, entity_id: str):
         """Standalone printable production worksheet (auto window.print(); user saves as PDF)."""
-        from datetime import datetime, timezone
-
         from fasthtml.common import to_xml
         from starlette.responses import HTMLResponse
+        from ui.routes.reports import _company_today
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -2416,7 +2415,7 @@ function celerpPrintLabel(entityId, templateId) {
         items += (await deleted_items(token, [c.get("item_id") for c in (item.get("recipe") or {}).get("components", [])])).values()
         cat = item.get("category") or ""
         category = category_label(cat, (await api.get_category_labels(token)).get(cat)) if cat else ""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = await _company_today(token)
         return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, items, today, category)))
 
     @app.post("/api/items/{entity_id}/gallery-hero/{file_id}")

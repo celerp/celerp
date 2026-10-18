@@ -1146,7 +1146,7 @@ _PNL = {"revenue": {"total": 500, "lines": [{"account_name": "Sales", "amount": 
         "expenses": {"total": 100, "lines": []}, "net_profit": 200}
 _BS = {"assets": {"total": 1000, "lines": [{"account_name": "Cash", "amount": 1000}]},
        "liabilities": {"total": 300, "lines": []}, "equity": {"total": 700, "lines": []}, "balanced": True}
-_AGING = {"lines": [{"contact_name": "Alice", "doc_number": "INV-001", "due_date": "2026-01-15",
+_AGING = {"as_of": "2026-02-24", "lines": [{"contact_name": "Alice", "doc_number": "INV-001", "due_date": "2026-01-15",
           "outstanding": 100, "days_overdue": 40, "bucket": "31-60"}], "buckets": {"31-60": 100}}
 _SALES = {"lines": [{"label": "Alice", "count": 3, "total": 500}], "group_by": "customer", "total": 500}
 _EXPIRING = {"count": 1, "days_threshold": 30, "items": [

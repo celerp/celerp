@@ -17,6 +17,7 @@ from ui.components.shell import base_shell, page_header, page_title
 from ui.components.table import EMPTY, empty_state_cta, fmt_money
 from ui.config import PAYMENT_TERMS_URL, get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang, category_label
+from celerp.services.business_time import business_today
 from celerp.services.permissions import role_has_permission
 
 
@@ -33,20 +34,17 @@ def _show_margin(request, settings: dict | None) -> bool:
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _get_fiscal_and_currency(token: str) -> tuple[str, str | None, dict]:
-    """Fetch company fiscal_year_start, currency, and settings; defaults on any error."""
+async def _get_company(token: str) -> dict:
+    """The company (fiscal year start, timezone, currency, settings); empty on any error."""
     try:
-        company = await api.get_company(token)
-        return (company.get("fiscal_year_start") or "01-01",
-                company.get("currency") or None,
-                company.get("settings") or {})
+        return await api.get_company(token)
     except Exception:
-        return ("01-01", None, {})
+        return {}
 
 
-async def _get_fiscal(token: str) -> str:
-    fy, _, _ = await _get_fiscal_and_currency(token)
-    return fy
+async def _company_today(token: str) -> str:
+    """Today's date (ISO) in the company's timezone."""
+    return business_today((await _get_company(token)).get("timezone")).isoformat()
 
 
 def _is_htmx(request: Request) -> bool:
@@ -70,8 +68,9 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        fy, currency, _ = await _get_fiscal_and_currency(token)
-        date_from, date_to, preset = _parse_dates(request, fy)
+        company = await _get_company(token)
+        currency = company.get("currency") or None
+        date_from, date_to, preset = _parse_dates(request, company)
         sort = request.query_params.get("sort", "outstanding")
         sort_dir = request.query_params.get("dir", "desc")
         header = page_header(t(title_key), A(t("label.back"), href="/reports", cls="btn btn--secondary"))
@@ -107,8 +106,9 @@ def setup_routes(app):
         group_by = request.query_params.get("group_by", "customer")
         sort = request.query_params.get("sort", "amount")
         sort_dir = request.query_params.get("dir", "desc")
-        fy, currency, settings = await _get_fiscal_and_currency(token)
-        date_from, date_to, preset = _parse_dates(request, fy)
+        company = await _get_company(token)
+        currency, settings = company.get("currency") or None, company.get("settings") or {}
+        date_from, date_to, preset = _parse_dates(request, company)
         params = {"group_by": group_by}
         if date_from:
             params["date_from"] = date_from
@@ -143,8 +143,9 @@ def setup_routes(app):
         group_by = request.query_params.get("group_by", "supplier")
         sort = request.query_params.get("sort", "amount")
         sort_dir = request.query_params.get("dir", "desc")
-        fy, currency, settings = await _get_fiscal_and_currency(token)
-        date_from, date_to, preset = _parse_dates(request, fy)
+        company = await _get_company(token)
+        currency, settings = company.get("currency") or None, company.get("settings") or {}
+        date_from, date_to, preset = _parse_dates(request, company)
         params = {"group_by": group_by}
         if date_from:
             params["date_from"] = date_from
@@ -177,8 +178,6 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         days = int(request.query_params.get("days", 30))
-        fy, currency, _ = await _get_fiscal_and_currency(token)
-        date_from, date_to, preset = _parse_dates(request, fy)
         try:
             data = await api.get_expiring(token, days)
         except APIError as e:
@@ -225,8 +224,11 @@ def _fy_start(fiscal_year_start: str, reference: date) -> date:
     return candidate
 
 
-def _resolve_preset(preset: str, fiscal_year_start: str = "01-01") -> tuple[str, str]:
-    today = date.today()
+def _resolve_preset(preset: str, company: dict) -> tuple[str, str]:
+    """The (from, to) window a date preset names, ending on the company's today and
+    counting fiscal years from its fiscal year start."""
+    today = business_today(company.get("timezone"))
+    fiscal_year_start = company.get("fiscal_year_start") or "01-01"
     if preset == "this_month":
         return (today.replace(day=1).isoformat(), today.isoformat())
     if preset == "last_3m":
@@ -246,10 +248,10 @@ def _resolve_preset(preset: str, fiscal_year_start: str = "01-01") -> tuple[str,
     return ("", "")
 
 
-def _parse_dates(request: Request, fiscal_year_start: str = "01-01") -> tuple[str, str, str]:
+def _parse_dates(request: Request, company: dict) -> tuple[str, str, str]:
     preset = request.query_params.get("preset", "")
     if preset and preset != "custom":
-        date_from, date_to = _resolve_preset(preset, fiscal_year_start)
+        date_from, date_to = _resolve_preset(preset, company)
         return date_from, date_to, preset
     date_from = request.query_params.get("from", "")
     date_to = request.query_params.get("to", "")
@@ -257,7 +259,7 @@ def _parse_dates(request: Request, fiscal_year_start: str = "01-01") -> tuple[st
         if date_from and date_to and date_from > date_to:
             date_from, date_to = date_to, date_from
         return date_from, date_to, "custom"
-    dflt_from, dflt_to = _resolve_preset("this_fy", fiscal_year_start)
+    dflt_from, dflt_to = _resolve_preset("this_fy", company)
     return dflt_from, dflt_to, "this_fy"
 
 
@@ -374,9 +376,8 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
         linked = bool(cid) and cid not in ("unlinked", "Unlinked", "unknown")
         contact_cell = Td(A(name, href=f"/crm/contacts/{cid}", cls="link") if linked else name)
 
-        # Build doc list drilldown links using due_date ranges.
-        # as_of is today's date from the API response.
-        as_of = data.get("as_of", "")
+        # Build doc list drilldown links using due_date ranges, counted back from the day the
+        # API aged the balances on (the company's today).
         doc_type_param = "invoice" if label == "AR" else "purchase_order"
         status_param = "status_in=final,partial"
 
@@ -397,12 +398,8 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
                 params += f"&due_to={due_to_val}"
             return Td(A(fmt_money(amount, currency), href=f"/docs?{params}", cls="drilldown-link"), cls="cell--number")
 
-        # Compute bucket boundaries relative to as_of
-        from datetime import date as _d, timedelta as _td
-        try:
-            today_d = _d.fromisoformat(as_of) if as_of else _d.today()
-        except ValueError:
-            today_d = _d.today()
+        from datetime import timedelta as _td
+        today_d = date.fromisoformat(data["as_of"])
 
         return Tr(
             contact_cell,

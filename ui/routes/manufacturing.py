@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
 from decimal import Decimal
 
 from fasthtml.common import *
@@ -25,6 +24,8 @@ from ui.components.table import (EMPTY, empty_mark, status_cards, empty_state_ct
                                  bulk_toolbar, filter_th, display_enum, breadcrumbs, COLUMN_FILTER_JS, doc_href)
 from ui.config import get_token as _token
 from ui.i18n import reconcile_reason, refusal_text, t
+from ui.routes.reports import _company_today, _get_company
+from celerp.services.business_time import business_today
 
 logger = logging.getLogger(__name__)
 
@@ -438,14 +439,14 @@ def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str
 
 def setup_routes(app):
 
-    def _order_params(request: Request) -> tuple[dict, str, str, str]:
+    def _order_params(request: Request, company: dict) -> tuple[dict, str, str, str]:
         """Shared q + date-range parsing for the orders list and its search fragment."""
         from ui.routes.reports import _date_filter_bar as _dfb, _parse_dates  # noqa: F401 (reused below)
         q = request.query_params.get("q", "")
         has_explicit_date = bool(request.query_params.get("preset")
                                  or request.query_params.get("from") or request.query_params.get("to"))
         if has_explicit_date:
-            date_from, date_to, preset = _parse_dates(request)
+            date_from, date_to, preset = _parse_dates(request, company)
         else:
             date_from, date_to, preset = "", "", "all"  # an order queue defaults to everything
         params: dict = {}
@@ -573,7 +574,7 @@ def setup_routes(app):
                  "confirm": t("manufacturing.confirm_cancel_runs")},
             ]),
             # The queue swaps in place by #mfg-table; the wrap stays and scrolls it on a narrow screen.
-            Div(_order_table(shown, await _deleted_outputs(token, shown), today=date.today().isoformat()), cls="table-scroll-wrap"),
+            Div(_order_table(shown, await _deleted_outputs(token, shown), today=await _company_today(token)), cls="table-scroll-wrap"),
             Script(COLUMN_FILTER_JS),
         )
         return await base_shell(
@@ -708,8 +709,7 @@ def setup_routes(app):
             return HTMLResponse(str(e.detail), status_code=e.status or 404)
         items = (await api.list_items(token, {"limit": 1000, "status": "all"})).get("items", [])
         items += (await deleted_items(token, [i.get("item_id") for i in order.get("inputs") or []])).values()
-        today = date.today().isoformat()
-        return HTMLResponse(to_xml(_run_sheet_print_view(order, items, today)))
+        return HTMLResponse(to_xml(_run_sheet_print_view(order, items, await _company_today(token))))
 
     @app.get("/manufacturing/to-make-search")
     async def to_make_search(request: Request):
@@ -731,12 +731,14 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        params, _f, _t, _p = _order_params(request)
+        company = await _get_company(token)
+        params, _f, _t, _p = _order_params(request, company)
         try:
             orders = (await api.list_mfg_orders(token, params)).get("items", [])
         except APIError:
             orders = []
-        return _order_table(orders, await _deleted_outputs(token, orders), today=date.today().isoformat())
+        today = business_today(company.get("timezone")).isoformat()
+        return _order_table(orders, await _deleted_outputs(token, orders), today=today)
 
     def _runs_for_status(orders: list[dict], status: str) -> list[dict]:
         if status in ("active", "incomplete", "all"):
@@ -750,7 +752,7 @@ def setup_routes(app):
         except APIError:
             orders = []
         runs = _runs_for_status(orders, "active")
-        return _order_table(runs, await _deleted_outputs(token, runs), today=date.today().isoformat())
+        return _order_table(runs, await _deleted_outputs(token, runs), today=await _company_today(token))
 
     # Per-action success toast KEY (R1); each holds a count-neutral "...: {n}" template (R7).
     _BULK_RUN_MSG = {"start": "manufacturing.bulk_started", "issue": "manufacturing.bulk_issued",
@@ -798,7 +800,7 @@ def setup_routes(app):
             kind = "success" if done else "info"
         runs = _runs_for_status(orders, status)
         return HTMLResponse(
-            to_xml(_order_table(runs, await _deleted_outputs(token, runs), today=date.today().isoformat(),
+            to_xml(_order_table(runs, await _deleted_outputs(token, runs), today=await _company_today(token),
                                 kept_key=kept)),
             headers=toast_header(msg, kind),
         )
