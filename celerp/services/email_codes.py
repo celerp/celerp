@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from enum import Enum
 
 import httpx
@@ -18,6 +19,11 @@ import httpx
 from celerp.config import ensure_instance_id
 
 log = logging.getLogger(__name__)
+
+# The relay's rule for an address it will mail (the relay's email-codes router, through its
+# signup address check, is the authority; keep this in step with it).
+_MAILABLE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_MAILABLE_MAX = 255
 
 # Each call's whole budget, connection included.
 BUDGET_S = 3.0
@@ -56,6 +62,12 @@ async def _call(method: str, path: str, body: dict | None = None, *, refused: tu
     except httpx.HTTPError as exc:
         log.warning("Relay email-codes %s unavailable: %s", path, type(exc).__name__)
         return Outcome.UNAVAILABLE
+
+
+def mailable(email: str) -> bool:
+    """Whether the relay would ever mail a code to *email*."""
+    email = email.strip().lower()
+    return bool(_MAILABLE.match(email)) and len(email) <= _MAILABLE_MAX
 
 
 async def status() -> Outcome:

@@ -517,6 +517,8 @@ def setup_routes(app):
             return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         if outcome == "unavailable":
             return RedirectResponse(_TERMINAL_UNAVAILABLE, status_code=303)
+        if outcome == "undeliverable":
+            return RedirectResponse(_TERMINAL_UNDELIVERABLE, status_code=303)
         return _recovery(_recovery_code_form(email))
 
     @app.get("/forgot-password/reset")
@@ -552,10 +554,12 @@ def setup_routes(app):
             command = await api.recovery_terminal()
         except APIError as e:
             return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
-        unavailable = request.query_params.get("reason") == "unavailable"
+        reason = request.query_params.get("reason")
+        unavailable = reason == "unavailable"
+        notice = {"unavailable": "recovery.unavailable", "undeliverable": "recovery.undeliverable"}.get(reason)
         return _recovery(Div(
             auth_header(t("recovery.terminal_title")),
-            _above_form(flash(t("recovery.unavailable"), kind="warning") if unavailable else "",
+            _above_form(flash(t(notice), kind="warning") if notice else "",
                         _terminal_block(command)),
             P(A(t("recovery.send_new_code"), href="/forgot-password", cls="auth-link"),
               cls="auth-footer-text") if unavailable else "",
@@ -1028,6 +1032,7 @@ def _company_picker_panel(companies: list[dict]) -> FT:
 
 
 _TERMINAL_UNAVAILABLE = "/forgot-password/terminal?reason=unavailable"
+_TERMINAL_UNDELIVERABLE = "/forgot-password/terminal?reason=undeliverable"
 
 
 def _relay_unavailable(e: APIError) -> bool:

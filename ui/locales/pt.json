@@ -1462,6 +1462,7 @@
   "recovery.use_terminal": "Usar um comando de terminal",
   "recovery.code_refused": "Esse código não está certo ou expirou. Envie um novo código ou redefina a senha em um terminal:",
   "recovery.unavailable": "Não foi possível contatar o Celerp, então nenhum código foi enviado. Redefina a senha em um terminal.",
+  "recovery.undeliverable": "O Celerp não pode enviar códigos para este endereço. Redefina a senha em um terminal.",
   "recovery.terminal_title": "Redefinir em um terminal",
   "recovery.terminal_steps": "Mantenha o Celerp aberto. Abra um terminal neste computador, cole o comando e siga as instruções.",
   "recovery.terminal_ask": "Peça à pessoa que administra este Celerp para executar celerp reset-password no computador onde ele roda.",

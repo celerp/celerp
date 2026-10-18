@@ -1691,6 +1691,7 @@
   "recovery.use_terminal": "Use a terminal command instead",
   "recovery.code_refused": "That code is not right or has expired. Send a new code, or reset the password from a terminal:",
   "recovery.unavailable": "Celerp could not be reached, so no code was sent. Reset the password from a terminal instead.",
+  "recovery.undeliverable": "Celerp cannot email codes to this address. Reset the password from a terminal instead.",
   "recovery.terminal_title": "Reset from a terminal",
   "recovery.terminal_steps": "Keep Celerp open. Open a terminal on this computer, paste the command and follow the prompts.",
   "recovery.terminal_ask": "Ask the person who runs this Celerp to run celerp reset-password on the computer it runs on.",

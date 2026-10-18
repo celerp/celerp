@@ -1462,6 +1462,7 @@
   "recovery.use_terminal": "Dùng lệnh terminal thay thế",
   "recovery.code_refused": "Mã đó không đúng hoặc đã hết hạn. Hãy gửi mã mới, hoặc đặt lại mật khẩu từ terminal:",
   "recovery.unavailable": "Không thể kết nối Celerp nên chưa có mã nào được gửi. Hãy đặt lại mật khẩu từ terminal.",
+  "recovery.undeliverable": "Celerp không thể gửi mã đến địa chỉ này. Hãy đặt lại mật khẩu từ terminal.",
   "recovery.terminal_title": "Đặt lại từ terminal",
   "recovery.terminal_steps": "Giữ Celerp đang mở. Mở terminal trên máy tính này, dán lệnh và làm theo hướng dẫn.",
   "recovery.terminal_ask": "Hãy nhờ người quản lý Celerp này chạy celerp reset-password trên máy tính đang chạy Celerp.",

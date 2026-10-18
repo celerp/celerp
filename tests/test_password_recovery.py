@@ -175,14 +175,14 @@ async def test_recovery_send_is_enumeration_neutral(client, session, relay, shor
     await _register(client)
 
     answers, took = [], []
-    for email in (OWNER, "nobody@example.com", ""):
+    for email in (OWNER, "nobody@example.com"):
         started = time.monotonic()
         answers.append(await _send(client, email))
         took.append(time.monotonic() - started)
-    assert [(r.status_code, r.json()) for r in answers] == [(200, {"outcome": "sent"})] * 3
+    assert [(r.status_code, r.json()) for r in answers] == [(200, {"outcome": "sent"})] * 2
     assert min(took) >= short_floor
     assert relay.sent_to() == [OWNER]
-    assert relay.paths().count("/email-codes/status") == 3
+    assert relay.paths().count("/email-codes/status") == 2
 
     relay.calls.clear()
     started = time.monotonic()
@@ -207,6 +207,16 @@ async def test_recovery_send_says_when_no_code_is_coming(client, session, relay,
     for status in (422, 429):
         relay.send_status = status
         assert (await _send(client, OWNER)).json() == {"outcome": "unavailable"}
+
+
+async def test_recovery_send_undeliverable_address_answers_alike(client, session, relay, short_floor):
+    """An address the relay will never mail is answered the same whether or not it is a
+    user here, and never reaches the relay."""
+    await _register(client, "admin@localhost")
+    for email in ("admin@localhost", "nobody@localhost", "no-at-sign", "a b@example.com"):
+        assert (await _send(client, email)).json() == {"outcome": "undeliverable"}, email
+    assert relay.calls == []
+    assert (await _send(client, OWNER)).json() == {"outcome": "sent"}
 
 
 async def test_recovery_matches_users_exactly_as_sign_in(client, session, relay, short_floor):

@@ -1462,6 +1462,7 @@
   "recovery.use_terminal": "Usar un comando de terminal en su lugar",
   "recovery.code_refused": "Ese código no es correcto o ha caducado. Envíe un código nuevo o restablezca la contraseña desde un terminal:",
   "recovery.unavailable": "No se pudo contactar con Celerp, así que no se envió ningún código. Restablezca la contraseña desde un terminal.",
+  "recovery.undeliverable": "Celerp no puede enviar códigos a esta dirección. Restablezca la contraseña desde un terminal.",
   "recovery.terminal_title": "Restablecer desde un terminal",
   "recovery.terminal_steps": "Mantenga Celerp abierto. Abra un terminal en este equipo, pegue el comando y siga las indicaciones.",
   "recovery.terminal_ask": "Pida a la persona que gestiona este Celerp que ejecute celerp reset-password en el equipo donde funciona.",

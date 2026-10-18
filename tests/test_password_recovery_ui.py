@@ -215,6 +215,20 @@ async def test_recovery_unavailable_goes_to_terminal(client, session, relay, sho
     assert t("recovery.unavailable") in page.text
 
 
+async def test_recovery_undeliverable_address_goes_to_terminal(client, session, relay, short_floor):
+    """An address that cannot receive codes is told so, with the terminal command, and
+    is never told to try again later."""
+    await _register(client)
+    async with _ui() as ui:
+        r = await ui.post("/forgot-password", data={"email": "admin@localhost"})
+        assert (r.status_code, r.headers["location"]) == (303, "/forgot-password/terminal?reason=undeliverable")
+        page = await ui.get("/forgot-password/terminal?reason=undeliverable")
+    assert sys.executable in page.text and TERMINAL_STEPS in page.text
+    assert t("recovery.undeliverable") in page.text
+    assert t("recovery.unavailable") not in page.text and t("recovery.send_new_code") not in page.text
+    assert relay.calls == []
+
+
 async def test_login_shows_password_reset_reason(client, ui):
     await _register(client)
     assert RESET_REASON in (await ui.get("/login?reason=password-reset")).text

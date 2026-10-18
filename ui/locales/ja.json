@@ -1462,6 +1462,7 @@
   "recovery.use_terminal": "代わりにターミナルのコマンドを使う",
   "recovery.code_refused": "コードが正しくないか、有効期限が切れています。新しいコードを送信するか、ターミナルからパスワードをリセットしてください：",
   "recovery.unavailable": "Celerp に接続できなかったため、コードは送信されませんでした。代わりにターミナルからパスワードをリセットしてください。",
+  "recovery.undeliverable": "Celerp はこのアドレスにコードを送信できません。代わりにターミナルからパスワードをリセットしてください。",
   "recovery.terminal_title": "ターミナルからリセット",
   "recovery.terminal_steps": "Celerp は開いたままにしてください。このコンピューターでターミナルを開き、コマンドを貼り付けて、表示される指示に従ってください。",
   "recovery.terminal_ask": "この Celerp を管理している人に、Celerp が動いているコンピューターで celerp reset-password を実行するよう依頼してください。",

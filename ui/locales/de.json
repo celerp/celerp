@@ -1462,6 +1462,7 @@
   "recovery.use_terminal": "Stattdessen einen Terminal-Befehl verwenden",
   "recovery.code_refused": "Dieser Code ist falsch oder abgelaufen. Fordern Sie einen neuen Code an oder setzen Sie das Passwort in einem Terminal zurück:",
   "recovery.unavailable": "Celerp war nicht erreichbar, daher wurde kein Code gesendet. Setzen Sie das Passwort stattdessen in einem Terminal zurück.",
+  "recovery.undeliverable": "Celerp kann an diese Adresse keine Codes senden. Setzen Sie das Passwort stattdessen in einem Terminal zurück.",
   "recovery.terminal_title": "In einem Terminal zurücksetzen",
   "recovery.terminal_steps": "Lassen Sie Celerp geöffnet. Öffnen Sie ein Terminal auf diesem Computer, fügen Sie den Befehl ein und folgen Sie den Anweisungen.",
   "recovery.terminal_ask": "Bitten Sie die Person, die dieses Celerp betreibt, auf dem Computer, auf dem es läuft, celerp reset-password auszuführen.",

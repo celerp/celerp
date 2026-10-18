@@ -1568,6 +1568,7 @@
   "recovery.use_terminal": "በምትኩ የተርሚናል ትዕዛዝ ይጠቀሙ",
   "recovery.code_refused": "ያ ኮድ ትክክል አይደለም ወይም ጊዜው አልፏል። አዲስ ኮድ ይላኩ፣ ወይም የይለፍ ቃሉን ከተርሚናል ዳግም ያስጀምሩ፡",
   "recovery.unavailable": "Celerpን ማግኘት ስላልተቻለ ምንም ኮድ አልተላከም። በምትኩ የይለፍ ቃሉን ከተርሚናል ዳግም ያስጀምሩ።",
+  "recovery.undeliverable": "Celerp ወደዚህ አድራሻ ኮድ መላክ አይችልም። በምትኩ የይለፍ ቃሉን ከተርሚናል ዳግም ያስጀምሩ።",
   "recovery.terminal_title": "ከተርሚናል ዳግም ያስጀምሩ",
   "recovery.terminal_steps": "Celerpን ክፍት ያድርጉት። በዚህ ኮምፒውተር ላይ ተርሚናል ይክፈቱ፣ ትዕዛዙን ይለጥፉ እና የሚታዩትን መመሪያዎች ይከተሉ።",
   "recovery.terminal_ask": "ይህን Celerp የሚያስተዳድረውን ሰው በሚሰራበት ኮምፒውተር ላይ celerp reset-password እንዲያሂድ ይጠይቁ።",

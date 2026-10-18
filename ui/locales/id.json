@@ -1462,6 +1462,7 @@
   "recovery.use_terminal": "Gunakan perintah terminal saja",
   "recovery.code_refused": "Kode itu salah atau sudah kedaluwarsa. Kirim kode baru, atau atur ulang kata sandi dari terminal:",
   "recovery.unavailable": "Celerp tidak dapat dihubungi, jadi tidak ada kode yang dikirim. Atur ulang kata sandi dari terminal saja.",
+  "recovery.undeliverable": "Celerp tidak dapat mengirim kode ke alamat ini. Atur ulang kata sandi dari terminal saja.",
   "recovery.terminal_title": "Atur ulang dari terminal",
   "recovery.terminal_steps": "Biarkan Celerp tetap terbuka. Buka terminal di komputer ini, tempelkan perintahnya, lalu ikuti petunjuknya.",
   "recovery.terminal_ask": "Minta orang yang menjalankan Celerp ini untuk menjalankan celerp reset-password di komputer tempat Celerp berjalan.",

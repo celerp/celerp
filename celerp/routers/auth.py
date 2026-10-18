@@ -440,7 +440,10 @@ def _code_refused() -> HTTPException:
 @limiter.limit("3/minute", key_func=_account_key)
 async def recovery_send(request: Request, payload: EmailBody, session: AsyncSession = Depends(get_session)) -> dict:
     """Email a recovery code to the user whose email this is, if there is one here.
-    "unavailable" says no code is coming: the relay is down, or it could not deliver it."""
+    "unavailable" says no code is coming: the relay is down, or it could not deliver it.
+    "undeliverable" says the relay never mails such an address, for any address alike."""
+    if not email_codes.mailable(payload.email):
+        return {"outcome": "undeliverable"}
     if await email_codes.status() is not Outcome.OK:
         return {"outcome": "unavailable"}
     started = time.monotonic()

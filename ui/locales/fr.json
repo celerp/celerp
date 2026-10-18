@@ -1462,6 +1462,7 @@
   "recovery.use_terminal": "Utiliser plutôt une commande de terminal",
   "recovery.code_refused": "Ce code est incorrect ou a expiré. Envoyez un nouveau code, ou réinitialisez le mot de passe depuis un terminal :",
   "recovery.unavailable": "Celerp n'a pas pu être joint, aucun code n'a donc été envoyé. Réinitialisez plutôt le mot de passe depuis un terminal.",
+  "recovery.undeliverable": "Celerp ne peut pas envoyer de codes à cette adresse. Réinitialisez plutôt le mot de passe depuis un terminal.",
   "recovery.terminal_title": "Réinitialiser depuis un terminal",
   "recovery.terminal_steps": "Laissez Celerp ouvert. Ouvrez un terminal sur cet ordinateur, collez la commande et suivez les instructions.",
   "recovery.terminal_ask": "Demandez à la personne qui gère ce Celerp d'exécuter celerp reset-password sur l'ordinateur où il tourne.",
