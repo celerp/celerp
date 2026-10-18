@@ -129,6 +129,37 @@ async def test_connect_with_pairing_link_stores_address_and_key(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_refused_pairing_keeps_the_pasted_link(monkeypatch):
+    """A refused pairing answers beside the form instead of replacing the card, so the
+    pasted link stays in its masked field, which has a Show control."""
+    async def store(token, platform, key, secret, url):
+        raise RuntimeError("relay refused")
+
+    async def permission(request, key):
+        return None
+    monkeypatch.setattr(routes, "_token", lambda request: "t")
+    monkeypatch.setattr(routes, "get_lang", lambda request: "en")
+    monkeypatch.setattr(routes, "_request_company_id", lambda request: str(uuid.uuid4()))
+    monkeypatch.setattr(routes, "_check_permission", permission)
+    monkeypatch.setattr(api_client, "store_connector_credentials", store)
+    handler = _endpoint("/settings/connectors/{platform}/connect-apikey")
+
+    from celerp.services.peer_access import pairing_link
+    for link, said in (("not a link", "Check the pairing link"),
+                       (pairing_link(ADDRESS, KEY), "relay refused")):
+        refused = await handler(Request({"pairing_link": link}), "celerp")
+        assert refused.headers["HX-Retarget"] == "#connector-connect-result-celerp"
+        assert refused.headers["HX-Reswap"] == "innerHTML"
+        assert said in refused.body.decode()
+
+    card = _celerp_card()
+    assert 'id="connector-connect-result-celerp"' in card
+    field = re.search(r'<input\b[^>]*name="pairing_link"[^>]*>', card).group(0)
+    assert 'type="password"' in field and 'id="pairing_link"' in field
+    assert 'data-reveal="#pairing_link"' in card
+
+
+@pytest.mark.asyncio
 async def test_issue_result_shows_pairing_link(monkeypatch):
     from celerp.config import settings
     from celerp.services.peer_access import pairing_code, parse_pairing_link

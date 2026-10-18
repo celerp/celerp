@@ -12,6 +12,7 @@ import inspect
 import io
 import json
 import re
+import secrets
 import uuid
 import zipfile
 from datetime import datetime
@@ -1408,3 +1409,38 @@ async def test_replacing_names_one_changed_record_and_times_a_same_day_copy():
     assert "1 record in Demo Trading Co changed after this copy was made." in page
     assert "1 records" not in page
     assert "2026-10-17 15:40 UTC" in page and "2026-10-17 09:05 UTC" in page
+
+
+def _kept_link(html: str) -> str:
+    """The copy link field's value, which must stay masked."""
+    field = re.search(r'<input\b[^>]*name="handoff_link"[^>]*>', html).group(0)
+    assert 'type="password"' in field
+    assert 'data-reveal="#handoff_link"' in html
+    return re.search(r'value="([^"]*)"', field).group(1) if 'value="' in field else ""
+
+
+async def test_a_refused_link_stays_in_the_field(ui, real_engine, monkeypatch):
+    """A link that is refused, at once or after its download fails, comes back in its
+    field, masked, with a Show control, so the owner can check what they pasted."""
+    from celerp.services.company_handoff_links import handoff_page_link
+    from celerp.services.company_handoff_transfer import HandoffDownloadError
+    from ui.routes import company_backup as page
+
+    _, _, tok = await _setup(real_engine)
+    ui.cookies.set("celerp_token", tok)
+    assert _kept_link((await ui.get("/settings/restore-backup")).text) == ""
+
+    pasted = "https://evil.example/handoffs/abcd/open#" + "A" * 43
+    r = await ui.post("/settings/restore-backup/read", data={"handoff_link": pasted})
+    assert _kept_link(r.text) == pasted
+
+    async def unavailable(value, destination, progress=None):
+        raise HandoffDownloadError("expired")
+
+    monkeypatch.setattr(page, "download_company_handoff", unavailable)
+    link = handoff_page_link(uuid.uuid4(), secrets.token_bytes(32))
+    await ui.post("/settings/restore-backup/read", data={"handoff_link": link})
+    await _until(ui, "failed")
+    r = await ui.get("/settings/restore-backup/opened")
+    assert t("company_backup.handoff_unavailable") in _page(r)
+    assert _kept_link(r.text) == link
