@@ -90,7 +90,7 @@ def _unreachable(*_a, **_k):
 async def _render(ui, lang: str, before_setup: bool) -> dict[str, str]:
     h = {"Accept-Language": lang}
     if before_setup:
-        pages = {url: (await ui.get(url, headers=h)) for url in ("/setup/email", "/setup/import-backup")}
+        pages = {url: (await ui.get(url, headers=h)) for url in ("/setup", "/setup/import-backup")}
     else:
         pages = {url: (await ui.get(url, headers=h)) for url in
                  ("/login", "/forgot-password", "/forgot-password/terminal", "/setup/start-company")}

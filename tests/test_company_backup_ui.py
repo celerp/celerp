@@ -23,7 +23,6 @@ import pytest_asyncio
 from sqlalchemy import text
 
 from company_backup_support import company, download, manifest, members, owner, read, rezip, token
-from email_codes_support import confirm_setup_email, relay  # noqa: F401 - fixture
 from migration_support import code_config, count, real_client, real_engine  # noqa: F401
 from ui.i18n import t
 
@@ -280,7 +279,7 @@ async def test_add_company_restore_previews_before_write(ui, real_engine, real_c
 
 # ── Fresh installation ───────────────────────────────────────────────────────
 
-async def test_bootstrap_restore_ui_journey(ui, real_engine, real_client, code_config, relay):
+async def test_bootstrap_restore_ui_journey(ui, real_engine, real_client, code_config):
     """A fresh installation restores a company backup with the setup code and a new owner account, then enters it."""
     _, _, tok = await _setup(real_engine)
     data = await download(real_client, tok)
@@ -292,7 +291,6 @@ async def test_bootstrap_restore_ui_journey(ui, real_engine, real_client, code_c
         await conn.execute(text("TRUNCATE users, companies RESTART IDENTITY CASCADE"))
     ui.cookies.clear()
 
-    await confirm_setup_email(ui, "owner@example.com")
     r = await ui.get("/setup")
     assert r.status_code == 200, r.text
     base = "/setup/restore-backup"
@@ -334,10 +332,9 @@ async def test_company_copy_page_gone(ui, real_engine):
 
 # ── Setup form start options ─────────────────────────────────────────────────
 
-async def test_setup_form_offers_one_restore_entry_point(ui, real_engine, relay):
+async def test_setup_form_offers_one_restore_entry_point(ui, real_engine):
     """The setup form links the company restore once; the whole-installation recovery
     sits on the restore page, so restore has one entry point and no copy choice."""
-    await confirm_setup_email(ui, "owner@example.com")
     page = _page(await ui.get("/setup"))
     assert re.search(r"\bcop(y|ies)\b", page, re.I) is None
     assert "/setup/open-copy" not in page

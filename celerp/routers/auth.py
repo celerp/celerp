@@ -405,7 +405,7 @@ async def switch_company(
     return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=ctx.snonce)
 
 
-# ── Password recovery and the setup email ────────────────────────────────────
+# ── Password recovery ────────────────────────────────────────────────────────
 #
 # The relay emails a code and confirms it (celerp.services.email_codes); this install
 # alone decides whose password changes, matching users exactly as sign-in does. Every
@@ -424,44 +424,26 @@ class EmailBody(BaseModel):
     email: str
 
 
-class EmailCodeBody(BaseModel):
+class RecoveryResetBody(BaseModel):
     email: str
     code: str
-
-
-class RecoveryResetBody(EmailCodeBody):
     new_password: str
-
-
-def _unavailable() -> JSONResponse:
-    return JSONResponse(status_code=503, content={"detail": t("recovery.unavailable"), "outcome": "unavailable"})
 
 
 def _code_refused() -> HTTPException:
     return HTTPException(status_code=400, detail=t("recovery.code_refused"))
 
 
-async def _send_code(email: str | None, purpose: str) -> dict:
-    """Send *email* a code in the background, when the relay is up; the answer is the
-    same whether or not there is an *email* to send to."""
-    if await email_codes.status() is not Outcome.OK:
-        return {"outcome": "unavailable"}
-    if email:
-        spawn_background(email_codes.send(email, purpose))
-    return {"outcome": "sent"}
-
-
-async def _refuse_once_set_up(session: AsyncSession) -> None:
-    if (await session.execute(select(User))).scalars().first() is not None:
-        raise HTTPException(status_code=409, detail=t("setup_email.already_set_up"))
-
-
 @router.post("/password-recovery/send", dependencies=_PER_ACCOUNT)
 @limiter.limit("3/minute", key_func=_account_key)
 async def recovery_send(request: Request, payload: EmailBody, session: AsyncSession = Depends(get_session)) -> dict:
-    """Email a recovery code to the user whose email this is, if there is one here."""
-    user = await user_by_email(session, payload.email)
-    return await _send_code(user.email if user else None, "recovery")
+    """Email a recovery code to the user whose email this is, if there is one here, when
+    the relay is up; the answer is the same whether or not there is."""
+    if await email_codes.status() is not Outcome.OK:
+        return {"outcome": "unavailable"}
+    if user := await user_by_email(session, payload.email):
+        spawn_background(email_codes.send(user.email))
+    return {"outcome": "sent"}
 
 
 @router.post("/password-recovery/reset", dependencies=_PER_ACCOUNT)
@@ -482,7 +464,7 @@ async def recovery_reset(
     try:
         if outcome is Outcome.OK:
             user = await user_by_email(session, payload.email)
-            outcome = await email_codes.verify(user.email, "recovery", payload.code) if user else Outcome.REFUSED
+            outcome = await email_codes.verify(user.email, payload.code) if user else Outcome.REFUSED
         if outcome is Outcome.OK:
             try:
                 await reset_password(session, user, payload.new_password, method="email_code")
@@ -494,7 +476,7 @@ async def recovery_reset(
     finally:
         await asyncio.sleep(max(0.0, started + RECOVERY_FLOOR_S - time.monotonic()))
     if outcome is Outcome.UNAVAILABLE:
-        return _unavailable()
+        return JSONResponse(status_code=503, content={"detail": t("recovery.unavailable"), "outcome": "unavailable"})
     if outcome is Outcome.REFUSED:
         raise _code_refused()
     return {"ok": True}
@@ -525,31 +507,6 @@ async def take_reset_notices(
     return [{"own": subject.id == user.id, "user_name": subject.name, "user_email": subject.email,
              "method": reset.method, "by_name": by_name, "os_user": reset.os_user,
              "created_at": reset.created_at.isoformat()} for reset, subject, by_name in rows]
-
-
-@router.post("/setup-email/send", dependencies=_PER_ACCOUNT)
-@limiter.limit("3/minute", key_func=_account_key)
-async def setup_email_send(request: Request, payload: EmailBody, session: AsyncSession = Depends(get_session)) -> dict:
-    """Email a code confirming the email the first user sets Celerp up with."""
-    await _refuse_once_set_up(session)
-    return await _send_code(payload.email.strip(), "setup")
-
-
-@router.post("/setup-email/verify", dependencies=_PER_ACCOUNT)
-@limiter.limit("10/minute", key_func=_account_key)
-async def setup_email_verify(request: Request, payload: EmailCodeBody, session: AsyncSession = Depends(get_session)):
-    """Whether the code is the one the relay emailed for setting Celerp up."""
-    await _refuse_once_set_up(session)
-    if not _CODE.fullmatch(payload.code):
-        raise _code_refused()
-    outcome = await email_codes.status()
-    if outcome is Outcome.OK:
-        outcome = await email_codes.verify(payload.email.strip(), "setup", payload.code)
-    if outcome is Outcome.UNAVAILABLE:
-        return _unavailable()
-    if outcome is Outcome.REFUSED:
-        raise _code_refused()
-    return {"ok": True}
 
 
 class ChangePasswordBody(BaseModel):

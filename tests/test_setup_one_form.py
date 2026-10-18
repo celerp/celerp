@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from email_codes_support import confirm_setup_email, setup_email_api_stub
 from test_helpers import make_test_token
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
@@ -37,15 +36,11 @@ _SOURCES = [{"key": "manager_io", "display_name": "Manager.io", "artifacts": []}
 
 
 @pytest.fixture()
-async def ui_client():
-    """A UI client whose session has confirmed the owner's email, as setup needs."""
+def ui_client():
     import httpx
     from ui.app import app as ui_app
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=ui_app),
-                                 base_url="http://testserver", follow_redirects=False) as client:
-        with _Stubs(), setup_email_api_stub():
-            await confirm_setup_email(client, _VALID["email"])
-        yield client
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=ui_app),
+                             base_url="http://testserver", follow_redirects=False)
 
 
 def _authed(role: str = "owner") -> dict:

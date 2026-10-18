@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """The pages of password recovery, the sign-in forms that lead to it, the notice the
 first sign-in after a reset shows, an owner's reset of a staff password in Settings >
-Users, and the email step of first-run setup. The UI runs in process against the real
+Users, and first-run setup asking the relay nothing. The UI runs in process against the real
 API, so every page is checked with what the API actually answers."""
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from celerp.main import app as api_app
 from celerp.models.company import User
-from email_codes_support import CODE, confirm_setup_email, relay, settle, short_floor  # noqa: F401 - fixtures
+from email_codes_support import CODE, relay, settle, short_floor  # noqa: F401 - fixtures
 from test_helpers import invite_user
 from ui.i18n import t
 
@@ -32,8 +32,6 @@ CONSENT = "The free Celerp account is what enables Celerp to send you an email."
 RESET_REASON = "Your password was reset. Sign in with your new password."
 CODE_REFUSED = "That code is not right or has expired. Send a new code, or reset the password from a terminal:"
 TERMINAL_STEPS = "Keep Celerp open. Open a terminal on this computer, paste the command and follow the prompts."
-SETUP_UNAVAILABLE = ("Celerp could not be reached to confirm your email. Check the address carefully; "
-                     "you can continue without confirming.")
 STAFF_RESET_DONE = "Password reset. Tell them their new password; their sessions have ended."
 
 
@@ -261,7 +259,7 @@ async def test_every_sign_in_refusal_shows_message_and_recovery_link(client, ui)
 async def test_auth_pages_escape_blurs_field(client, ui):
     from ui.components.shell import ESC_BLURS_FIELD
 
-    assert ESC_BLURS_FIELD in (await ui.get("/setup/email")).text
+    assert ESC_BLURS_FIELD in (await ui.get("/setup")).text
     await _register(client)
     for path in ("/login", "/forgot-password", "/forgot-password/terminal", "/setup/start-company"):
         assert ESC_BLURS_FIELD in (await ui.get(path)).text, path
@@ -378,7 +376,7 @@ async def test_users_tab_explains_reset_password_to_an_admin(client, session, ow
     assert await _can_sign_in(client, STAFF, "userpw123")
 
 
-# --- Setup confirms the owner's email ------------------------------------------------------
+# --- Setup asks nothing of the relay -----------------------------------------------------
 
 
 _SETUP = {"company_name": "Setup Co", "name": "Owner Person", "email": OWNER, "password": NEW_PW,
@@ -397,63 +395,24 @@ async def _bootstrapped(client) -> bool:
     return (await client.get("/auth/bootstrap-status")).json()["bootstrapped"]
 
 
-async def test_setup_requires_confirmed_email(client, relay, setup_mocks):
-    """The first owner confirms their email before the account is made: setup goes to
-    the email step first, refuses an email other than the confirmed one, and shows the
-    confirmed email fixed, with Change to go back."""
+async def test_setup_goes_straight_to_the_form_and_never_calls_the_relay(client, relay, setup_mocks):
+    """First-run setup is the setup form itself: no email step, no code and no free
+    Celerp account; only Forgot password ever asks Celerp for a code."""
     async with _ui() as ui:
         r = await ui.get("/setup")
-        assert (r.status_code, r.headers.get("location")) == (303, "/setup/email")
-        step = await ui.get("/setup/email")
-        assert CONSENT in step.text
+        assert r.status_code == 200 and re.search(r'<input\b[^>]*name="email"', r.text)
+        assert CONSENT not in r.text
+        assert (await ui.get("/setup/email")).status_code == 404
         r = await ui.post("/setup", data=_SETUP)
-        assert (r.status_code, r.headers.get("location")) == (303, "/setup/email")
-        assert not await _bootstrapped(client)
-
-        wrong = await ui.post("/setup/email", data={"action": "verify", "email": OWNER, "code": "000000"})
-        assert wrong.status_code == 200 and "/setup/email" in wrong.text
-        await confirm_setup_email(ui, OWNER)
-        form = await ui.get("/setup")
-        assert form.status_code == 200
-        assert re.search(rf'<input\b[^>]*value="{re.escape(OWNER)}"[^>]*readonly|'
-                         rf'<input\b[^>]*readonly[^>]*value="{re.escape(OWNER)}"', form.text)
-        _anchor(form.text, "/setup/email")
-        changing = await ui.get("/setup/email")
-        back = re.search(r'<a\b[^>]*href="/setup"[^>]*>([^<]+)</a>', changing.text)
-        assert back and back.group(1).strip() == t("auth.return_to_setup") and "←" not in back.group(1)
-
-        r = await ui.post("/setup", data={**_SETUP, "email": "other@example.com"})
-        assert (r.status_code, r.headers.get("location")) == (303, "/setup/email")
-        assert not await _bootstrapped(client)
-        r = await ui.post("/setup", data=_SETUP)
-        assert r.status_code in (302, 303) and r.headers["location"] != "/setup/email"
+        assert r.status_code in (302, 303), r.text
+    await settle()
     assert await _bootstrapped(client)
     assert await _can_sign_in(client, OWNER, NEW_PW)
+    assert relay.calls == []
 
 
-async def test_setup_continue_without_confirming_only_when_relay_unavailable(client, relay, setup_mocks):
-    """An offline first run is never stuck: when Celerp cannot be reached the step says
-    so and offers to continue without confirming; at any other time it does not."""
-    async with _ui() as ui:
-        sent = await ui.post("/setup/email", data={"action": "send", "email": OWNER})
-        assert t("setup_email.continue_without") not in sent.text
-        r = await ui.post("/setup/email", data={"action": "skip", "email": OWNER})
-        assert r.headers.get("location") != "/setup"
-        r = await ui.post("/setup", data=_SETUP)
-        assert (r.status_code, r.headers.get("location")) == (303, "/setup/email")
-
-        relay.failure = "down"
-        down = await ui.post("/setup/email", data={"action": "send", "email": OWNER})
-        assert SETUP_UNAVAILABLE in down.text and t("setup_email.continue_without") in down.text
-        r = await ui.post("/setup/email", data={"action": "skip", "email": OWNER})
-        assert (r.status_code, r.headers.get("location")) == (303, "/setup")
-        r = await ui.post("/setup", data=_SETUP)
-        assert r.status_code in (302, 303) and r.headers["location"] != "/setup/email"
-    assert await _bootstrapped(client)
-
-
-async def test_migrate_bootstrap_requires_confirmed_email(client, relay):
-    """Moving in from another system as the first owner confirms the email the same way."""
+async def test_migrate_bootstrap_never_calls_the_relay(client, relay):
+    """Moving in from another system as the first owner starts without an email step too."""
     from ui.routes.migrations import SCAN_COOKIE
 
     form = {k: _SETUP[k] for k in ("company_name", "name", "email", "password", "confirm_password")}
@@ -462,11 +421,7 @@ async def test_migrate_bootstrap_requires_confirmed_email(client, relay):
          patch("ui.routes.migrations.setup_code_required", new=AsyncMock(return_value=False)):
         async with _ui(cookies={SCAN_COOKIE: "scan-1"}) as ui:
             r = await ui.post("/setup/migrate/start", data=form)
-            assert (r.status_code, r.headers.get("location")) == (303, "/setup/email")
-            await confirm_setup_email(ui, OWNER)
-            r = await ui.post("/setup/migrate/start", data={**form, "email": "other@example.com"})
-            assert (r.status_code, r.headers.get("location")) == (303, "/setup/email")
-            start.assert_not_awaited()
-            r = await ui.post("/setup/migrate/start", data=form)
     start.assert_awaited_once()
     assert r.headers.get("location") == "/migrations/run-1"
+    await settle()
+    assert relay.calls == []

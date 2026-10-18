@@ -1,11 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Codes the Celerp relay emails and confirms, for password recovery and the setup
-email step.
+"""Codes the Celerp relay emails and confirms, for password recovery.
 
 The relay only sends a code to an address and says whether a code is the one it
-sent, for this installation (named by its instance id) and this purpose. It never
+sent, for this installation (named by its instance id). It never
 learns which users this installation has and links nothing. Only a plain yes is OK:
 anything else the relay says, or failing to say anything in time, never resets a
 password.
@@ -67,16 +66,15 @@ async def status() -> Outcome:
     return await _call("GET", "status")
 
 
-async def send(email: str, purpose: str) -> Outcome:
-    """Ask the relay to email a code to *email* for *purpose*."""
+async def send(email: str) -> Outcome:
+    """Ask the relay to email a code to *email*."""
     iid = await asyncio.to_thread(ensure_instance_id)
-    return await _call("POST", "send", {"email": email, "instance_id": iid, "purpose": purpose},
+    return await _call("POST", "send", {"email": email, "instance_id": iid},
                        refused=(400, 429))
 
 
-async def verify(email: str, purpose: str, code: str) -> Outcome:
-    """Whether *code* is the one the relay emailed *email* for *purpose*; the relay
-    spends it on a yes."""
+async def verify(email: str, code: str) -> Outcome:
+    """Whether *code* is the one the relay emailed *email*; the relay spends it on a yes."""
     iid = await asyncio.to_thread(ensure_instance_id)
-    return await _call("POST", "verify", {"email": email, "instance_id": iid, "purpose": purpose, "code": code},
+    return await _call("POST", "verify", {"email": email, "instance_id": iid, "code": code},
                        refused=(400, 429))

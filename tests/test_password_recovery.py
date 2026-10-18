@@ -136,20 +136,11 @@ async def test_reset_password_is_atomic(client, session):
 # --- Recovery by emailed code -----------------------------------------------------
 
 
-async def _fail_closed_setup(client, relay):
-    """Before the first user: the setup email step fails closed too."""
-    send = await client.post("/auth/setup-email/send", json={"email": OWNER})
-    assert (send.status_code, send.json()) == (200, {"outcome": "unavailable"}), send.text
-    verify = await client.post("/auth/setup-email/verify", json={"email": OWNER, "code": CODE})
-    assert verify.status_code == 503, verify.text
-
-
 @pytest.mark.parametrize("failure", FAILURES)
 async def test_recovery_fails_closed(client, session, relay, short_floor, failure):
     """Relay down, slow, without the endpoint, broken or talking nonsense: nothing is
     reset and the answer says the code could not be sent or checked."""
     relay.failure = failure
-    await _fail_closed_setup(client, relay)
     await _register(client)
     before = await _hash(session, OWNER)
 
@@ -442,23 +433,20 @@ async def test_reset_notice_reaches_other_owners(client, session):
     assert await _take(client, second) == []
 
 
-# --- Setup email step (API) ---------------------------------------------------------
+# --- Only recovery asks the relay for codes ------------------------------------------
 
 
-async def test_setup_email_send_refused_after_bootstrap(client, relay):
-    send = await client.post("/auth/setup-email/send", json={"email": OWNER})
-    assert (send.status_code, send.json()) == (200, {"outcome": "sent"}), send.text
-    await settle()
-    assert [b["purpose"] for p, b in relay.calls if p == "/email-codes/send"] == ["setup"]
-    verify = await client.post("/auth/setup-email/verify", json={"email": OWNER, "code": CODE})
-    assert (verify.status_code, verify.json()) == (200, {"ok": True}), verify.text
-
+async def test_only_recovery_asks_the_relay_for_codes(client, relay):
+    """Setting up asks the relay nothing, and a recovery code request names only the
+    email and this installation."""
+    assert (await client.post("/auth/setup-email/send", json={"email": OWNER})).status_code == 404
+    assert (await client.post("/auth/setup-email/verify", json={"email": OWNER, "code": CODE})).status_code == 404
     await _register(client)
-    relay.calls.clear()
-    assert (await client.post("/auth/setup-email/send", json={"email": OWNER})).status_code == 409
-    assert (await client.post("/auth/setup-email/verify", json={"email": OWNER, "code": CODE})).status_code == 409
     await settle()
     assert relay.calls == []
+    assert (await _send(client, OWNER)).json() == {"outcome": "sent"}
+    await settle()
+    assert [sorted(body) for path, body in relay.calls if path == "/email-codes/send"] == [["email", "instance_id"]]
 
 
 # --- An owner resets a staff password ------------------------------------------------

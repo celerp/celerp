@@ -42,26 +42,6 @@ START_COMPANY = "/setup/start-company"
 START_COMPANY_RESTORE = f"{START_COMPANY}/restore-backup"
 START_COMPANY_MIGRATE = f"{START_COMPANY}/migrate"
 
-# The first owner confirms their email before the account is made. The signed session
-# holds the email setup may use, and the email Celerp could not be reached to confirm.
-SETUP_EMAIL = "/setup/email"
-_CONFIRMED = "setup_email"
-_UNREACHABLE = "setup_email_unreachable"
-
-
-def confirmed_setup_email(request: Request) -> str | None:
-    return request.session.get(_CONFIRMED)
-
-
-def setup_email_refusal(request: Request, email: str | None = None) -> RedirectResponse | None:
-    """The way back to the email step when first-run setup may not go on, else None:
-    no email confirmed yet, or *email* is not the confirmed one."""
-    confirmed = confirmed_setup_email(request)
-    if confirmed is None or (email is not None and email != confirmed):
-        return RedirectResponse(SETUP_EMAIL, status_code=303)
-    return None
-
-
 def auth_header(title: str, subtitle: str = "") -> FT:
     """The logo, title and optional subtitle that open every sign-in and setup card."""
     return Div(
@@ -236,72 +216,12 @@ def setup_routes(app):
 
     # ── Bootstrap wizard: first-admin + company setup ───────────────────────
 
-    def _setup_email_step(*content) -> FT:
-        return auth_shell(*content, title=page_title("setup_email.title"))
-
-    @app.get(SETUP_EMAIL)
-    async def setup_email_page(request: Request):
-        if (gate := await _unbootstrapped_gate(request)) is not None:
-            return gate
-        confirmed = confirmed_setup_email(request)
-        return _setup_email_step(_setup_email_form(confirmed or "", back=confirmed is not None))
-
-    @app.post(SETUP_EMAIL)
-    async def setup_email_submit(request: Request):
-        if (gate := await _unbootstrapped_gate(request)) is not None:
-            return gate
-        form = await request.form()
-        action = str(form.get("action", ""))
-        email = str(form.get("email", "")).strip()
-        if action == "skip":
-            # Only an email Celerp could not be reached to confirm may go on unconfirmed.
-            if email and request.session.get(_UNREACHABLE) == email:
-                request.session[_CONFIRMED] = email
-                return RedirectResponse("/setup", status_code=303)
-            return RedirectResponse(SETUP_EMAIL, status_code=303)
-        if action == "verify":
-            try:
-                await api.setup_email_verify(email, str(form.get("code", "")).strip())
-            except APIError as e:
-                if _relay_unavailable(e):
-                    request.session[_UNREACHABLE] = email
-                    return _setup_email_step(_setup_email_form(email, unreachable=True))
-                if e.status == 409:
-                    return RedirectResponse("/login", status_code=303)
-                if e.status in (400, 422, 429):
-                    error = t("setup_email.code_refused") if e.status == 400 else str(e.detail)
-                    return _setup_email_step(_setup_email_code_form(email, error=error))
-                return _setup_email_step(_api_error_page(str(e.detail)))
-            request.session.pop(_UNREACHABLE, None)
-            request.session[_CONFIRMED] = email
-            return RedirectResponse("/setup", status_code=303)
-        # Sending a code starts over: the email setup may use is the one confirmed next.
-        request.session.pop(_CONFIRMED, None)
-        request.session.pop(_UNREACHABLE, None)
-        if not email:
-            return _setup_email_step(_setup_email_form(error=t("auth.email_required")))
-        try:
-            outcome = await api.setup_email_send(email)
-        except APIError as e:
-            if e.status == 409:
-                return RedirectResponse("/login", status_code=303)
-            if e.status in (422, 429):
-                return _setup_email_step(_setup_email_form(email, error=str(e.detail)))
-            return _setup_email_step(_api_error_page(str(e.detail)))
-        if outcome == "unavailable":
-            request.session[_UNREACHABLE] = email
-            return _setup_email_step(_setup_email_form(email, unreachable=True))
-        return _setup_email_step(_setup_email_code_form(email))
-
     @app.get("/setup")
     async def setup_page(request: Request):
         if (gate := await _unbootstrapped_gate(request)) is not None:
             return gate
-        if (refused := setup_email_refusal(request)) is not None:
-            return refused
         from ui.api_client import setup_code_required as _code_req
-        return await _setup_page(request, {"email": confirmed_setup_email(request)},
-                                 code_required=await _code_req())
+        return await _setup_page(request, {}, code_required=await _code_req())
 
     @app.get("/setup/import-backup")
     async def setup_import_page(request: Request):
@@ -439,8 +359,6 @@ def setup_routes(app):
         async def _fail(msg: str, field: str):
             return await _setup_page(request, values, code_required=code_required, error=msg, error_field=field)
 
-        if (refused := setup_email_refusal(request, values["email"])) is not None:
-            return refused
         missing = next((f for f in ("company_name", "name", "email") if not values[f]), None)
         if missing or not password:
             return await _fail(t("settings.all_fields_required"), missing or "password")
@@ -860,15 +778,14 @@ def _setup_form(
     # Text fields whose error is shown under the field rather than at the top.
     at_field: list[str] = []
 
-    def _text(label_key: str, name: str, *, type: str = "text", autocomplete: str, hint: FT = "",
-              readonly: bool = False) -> FT:
+    def _text(label_key: str, name: str, *, type: str = "text", autocomplete: str, hint: str = "") -> FT:
         bad = bool(error) and error_field == name
         if bad:
             at_field.append(name)
         return Div(
             Label(t(label_key), For=name, cls="form-label"),
             Input(type=type, id=name, name=name, value=v.get(name, "") if type != "password" else "",
-                  required=True, readonly=readonly, autocomplete=autocomplete, cls="form-input",
+                  required=True, autocomplete=autocomplete, cls="form-input",
                   aria_invalid="true" if bad else None, aria_describedby=f"{name}-error" if bad else None,
                   # The first field takes focus on a fresh page; after an error the
                   # script focuses the field the error is about.
@@ -881,9 +798,7 @@ def _setup_form(
     texts = (
         _text("label.company_name", "company_name", autocomplete="organization"),
         _text("label.your_name", "name", autocomplete="name"),
-        # The email confirmed at the step before; Change goes back to it.
-        _text("label.email", "email", type="email", autocomplete="email", readonly=True,
-              hint=A(t("auth.change"), href=SETUP_EMAIL, cls="auth-link")),
+        _text("label.email", "email", type="email", autocomplete="email"),
         _text("label.password", "password", type="password", autocomplete="new-password",
               hint=t("setup.password_hint", n=MIN_PASSWORD_LENGTH)),
         _text("label.confirm_password", "confirm_password", type="password", autocomplete="new-password"),
@@ -1181,54 +1096,5 @@ def _recovery_code_form(email: str, error: str | None = None, terminal: FT = "")
         ),
         P(A(t("auth.change"), href="/forgot-password", cls="auth-link"), cls="auth-footer-text"),
         _recovery_links(),
-        cls="auth-card",
-    )
-
-
-def _setup_email_action(action: str, label: str, *fields, primary: bool = True) -> FT:
-    return Form(
-        Input(type="hidden", name="action", value=action),
-        *fields,
-        Button(label, type="submit", cls=f"btn btn--{'primary' if primary else 'secondary'} btn--full"),
-        method="post", action=SETUP_EMAIL, cls="auth-form",
-    )
-
-
-def _kept_email(email: str) -> FT:
-    return Input(type="hidden", name="email", value=email)
-
-
-def _setup_email_links(back: bool = False) -> FT:
-    """Restoring a backup needs no confirmed email: the owner's email comes from the backup."""
-    from ui.routes.company_backup import BOOTSTRAP as RESTORE
-    return Div(
-        P(A(t("auth.restore_backup_btn"), href=RESTORE.base, cls="auth-link"), cls="auth-alt-action"),
-        P(A(t("auth.return_to_setup"), href="/setup", cls="auth-link"), cls="auth-footer-text") if back else "",
-    )
-
-
-def _setup_email_form(email: str = "", *, error: str | None = None, unreachable: bool = False,
-                      back: bool = False) -> FT:
-    """The email to confirm; when Celerp could not be reached, the choice to go on without."""
-    return Div(
-        auth_header(t("setup_email.title"), t("setup_email.intro")),
-        _above_form(flash(error) if error else ""),
-        Div(flash(t("setup_email.unavailable"), kind="warning"),
-            _setup_email_action("skip", t("setup_email.continue_without"), _kept_email(email), primary=False),
-            cls="mb-md") if unreachable else "",
-        _setup_email_action("send", t("recovery.send_code"),
-                            P(t("recovery.consent"), cls="form-hint"), _email_field(email)),
-        _setup_email_links(back),
-        cls="auth-card",
-    )
-
-
-def _setup_email_code_form(email: str, error: str | None = None) -> FT:
-    return Div(
-        auth_header(t("setup_email.title"), "" if error else t("setup_email.code_sent", email=email)),
-        _above_form(flash(error) if error else ""),
-        _setup_email_action("verify", t("btn.confirm"), _kept_email(email), _code_field()),
-        _setup_email_action("send", t("recovery.send_new_code"), _kept_email(email), primary=False),
-        P(A(t("auth.change"), href=SETUP_EMAIL, cls="auth-link"), cls="auth-footer-text"),
         cls="auth-card",
     )

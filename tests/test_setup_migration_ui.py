@@ -25,7 +25,6 @@ import pytest_asyncio
 from sqlalchemy import func, select
 
 from celerp.models.migration import MigrationStatus
-from email_codes_support import confirm_setup_email, relay  # noqa: F401 - fixture
 from test_helpers import make_test_token
 from ui.i18n import t
 
@@ -405,8 +404,7 @@ _UPLOAD = {"files": ("books.manager", b"source bytes", "application/octet-stream
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_setup_form_offers_restore_and_move(ui, router, relay, session, sample_module):
-    await confirm_setup_email(ui, _GOOD_SETUP["email"])
+async def test_setup_form_offers_restore_and_move(ui, router, session, sample_module):
     r = await ui.get("/setup")
     assert r.status_code == 200
     page = _page(r)
@@ -450,8 +448,7 @@ _GOOD_SETUP = {"company_name": "Keep Co", "name": "Kept Name", "email": "kept@ex
 
 
 @pytest.mark.asyncio
-async def test_setup_registers_and_applies_without_migration_state(ui, router, relay, session):
-    await confirm_setup_email(ui, "owner@example.com")
+async def test_setup_registers_and_applies_without_migration_state(ui, router, session):
     r = await ui.post("/setup", data={**_GOOD_SETUP, "company_name": "Fresh Start Ltd",
                                       "email": "owner@example.com"})
     assert r.status_code == 302
@@ -463,7 +460,7 @@ async def test_setup_registers_and_applies_without_migration_state(ui, router, r
 
 
 @pytest.mark.asyncio
-async def test_setup_failure_states_keep_typed_values(ui, router, relay, session):
+async def test_setup_failure_states_keep_typed_values(ui, router, session):
 
     router.overrides[("GET", "/auth/bootstrap-status")] = _raise(httpx.ConnectError)
     r = await ui.get("/setup")
@@ -472,7 +469,6 @@ async def test_setup_failure_states_keep_typed_values(ui, router, relay, session
     del router.overrides[("GET", "/auth/bootstrap-status")]
 
     good = _GOOD_SETUP
-    await confirm_setup_email(ui, good["email"])
     cases = [
         ({**good, "name": ""}, t("settings.all_fields_required"), None),
         ({**good, "confirm_password": "different-horse-9"}, t("settings.passwords_do_not_match"), None),
@@ -502,9 +498,8 @@ async def test_setup_failure_states_keep_typed_values(ui, router, relay, session
 
 
 @pytest.mark.asyncio
-async def test_setup_password_mismatch_shown_at_confirm_field(ui, router, relay, session):
+async def test_setup_password_mismatch_shown_at_confirm_field(ui, router, session):
     """A mismatch marks the confirm field and says so under it, not at the top of the form."""
-    await confirm_setup_email(ui, _GOOD_SETUP["email"])
 
     r = await ui.post("/setup", data={**_GOOD_SETUP, "confirm_password": "different-horse-9"})
     assert r.status_code == 200
@@ -937,9 +932,8 @@ async def test_company_mode_start_keeps_the_working_session(ui, router, fake_api
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_start_signs_in_the_new_owner(ui, router, fake_api, relay):
+async def test_bootstrap_start_signs_in_the_new_owner(ui, router, fake_api):
     """With no working session to keep, bootstrap signs the first owner in."""
-    await confirm_setup_email(ui, "owner@example.com")
     r = await ui.post("/setup/migrate/scan", files=_UPLOAD, data={"source": "manager_io"})
     assert r.status_code == 303, r.text
     ui.cookies.set(SCAN_COOKIE, _cookie_value(r, SCAN_COOKIE))

@@ -541,17 +541,6 @@ async def recovery_terminal() -> str | None:
         return _raise(await c.get("/auth/password-recovery/terminal")).json()["command"]
 
 
-async def setup_email_send(email: str) -> str:
-    async with _anon_api_client() as c:
-        return _raise(await c.post("/auth/setup-email/send", json={"email": email})).json()["outcome"]
-
-
-async def setup_email_verify(email: str, code: str) -> None:
-    """Raises APIError: 400 the code was refused, 503 the relay is out of reach."""
-    async with _anon_api_client() as c:
-        _raise(await c.post("/auth/setup-email/verify", json={"email": email, "code": code}))
-
-
 async def take_reset_notices(token: str) -> list[dict]:
     """The password resets this user has not been told about yet, each handed out once."""
     async with _api_client(token) as c:

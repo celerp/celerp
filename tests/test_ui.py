@@ -38,7 +38,6 @@ from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
 from ui.i18n import t
 from celerp.services.permissions import missing_permission_text
-from email_codes_support import confirm_setup_email, setup_email_api_stub
 from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
 
@@ -388,9 +387,7 @@ class TestAuthRouting:
         with (
             patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=False)),
             patch("ui.api_client.setup_code_required", new=AsyncMock(return_value=False)),
-            setup_email_api_stub(),
         ):
-            await confirm_setup_email(ui_client, "owner@example.com")
             r = await ui_client.get("/setup")
         assert r.status_code == 200
         assert r.content  # non-empty HTML

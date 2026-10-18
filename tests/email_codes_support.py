@@ -1,15 +1,14 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """A stand-in for the Celerp relay's /email-codes endpoints, for the app's password
-recovery and setup email tests. It issues one known code per email and purpose,
-records every call, and can be switched to each way the relay fails."""
+recovery tests. It issues one known code per email, records every call, and can be
+switched to each way the relay fails."""
 from __future__ import annotations
 
 import asyncio
 import json
-import re
 from contextlib import contextmanager
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -24,7 +23,7 @@ FAILURES = ("down", "timeout", "404", "405", "500", "bad-json")
 class FakeRelay:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
-        self.issued: dict[tuple[str, str], str] = {}
+        self.issued: dict[str, str] = {}
         self.failure: str | None = None
         self.send_gate: asyncio.Event | None = None
 
@@ -51,12 +50,11 @@ class FakeRelay:
         if path == "/email-codes/send":
             if self.send_gate is not None:
                 await self.send_gate.wait()
-            self.issued[(body["email"], body["purpose"])] = CODE
+            self.issued[body["email"]] = CODE
             return httpx.Response(200, json={"ok": True})
         if path == "/email-codes/verify":
-            key = (body["email"], body["purpose"])
-            if self.issued.get(key) == body.get("code"):
-                del self.issued[key]
+            if self.issued.get(body["email"]) == body.get("code"):
+                del self.issued[body["email"]]
                 return httpx.Response(200, json={"ok": True})
             return httpx.Response(400, json={"detail": "code_refused"})
         return httpx.Response(404, json={"detail": "Not Found"})
@@ -94,22 +92,3 @@ async def settle() -> None:
     """Let the background sends the app started finish."""
     from celerp.services import background
     await asyncio.gather(*list(background._BG_TASKS), return_exceptions=True)
-
-
-@contextmanager
-def setup_email_api_stub():
-    """The app's setup email answers, for UI tests that stub the API: a code is sent,
-    and the code typed back is accepted."""
-    with patch("ui.api_client.setup_email_send", new=AsyncMock(return_value="sent")), \
-         patch("ui.api_client.setup_email_verify", new=AsyncMock(return_value=None)):
-        yield
-
-
-async def confirm_setup_email(ui, email: str) -> None:
-    """Confirm *email* on first-run setup's email step, so the session of the UI
-    client *ui* may go on to /setup with it."""
-    sent = await ui.post("/setup/email", data={"action": "send", "email": email})
-    assert sent.status_code == 200 and re.search(r'<input\b[^>]*name="code"', sent.text), sent.text
-    await settle()
-    r = await ui.post("/setup/email", data={"action": "verify", "email": email, "code": CODE})
-    assert (r.status_code, r.headers.get("location")) == (303, "/setup"), r.text
