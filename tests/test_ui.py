@@ -6207,20 +6207,42 @@ class TestCompanyFilesAggregation:
 
 
     @pytest.mark.asyncio
-    async def test_the_contact_page_with_a_failed_documents_read_shows_the_error_not_none_yet(self, ui_client):
-        from ui.api_client import APIError
-        with patch("ui.api_client.list_contact_docs", new=AsyncMock(side_effect=APIError(503, "down"))), \
-             patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1", "name": "Acme"})):
-            r = await ui_client.get("/contacts/c1", cookies=_authed())
-        assert "down" in r.text and "documents could not be loaded" in r.text and "None yet" not in r.text
-
-    @pytest.mark.asyncio
     async def test_the_contact_page_with_a_failed_contact_read_shows_the_error_not_a_blank_contact(self, ui_client):
         from ui.api_client import APIError
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(503, "down"))):
             r = await ui_client.get("/contacts/c1", cookies=_authed())
         assert "down" in r.text and "contact could not be loaded" in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_failed_documents_read_keeps_the_contact_page_and_shows_the_notice_in_the_documents_tab(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.list_contact_docs", new=AsyncMock(side_effect=APIError(503, "down"))), \
+             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1", "name": "Acme Trading", "contact_type": "customer"})):
+            r = await ui_client.get("/contacts/c1", cookies=_authed())
+        assert r.status_code == 200
+        assert "Acme Trading" in r.text and "tab-bar" in r.text
+        tab = r.text.split('id="tab-content"', 1)[1]
+        assert "documents could not be loaded" in tab and "Open Documents again" in tab and "None yet" not in tab
+        assert "financial-card" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_contact_not_found_shows_the_api_sentence_alone_under_a_heading(self, ui_client):
+        from ui.api_client import APIError
+        sentence = "Celerp couldn't find this contact. It may have been deleted."
+        with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(404, sentence))):
+            r = await ui_client.get("/contacts/c1", cookies=_authed())
+        assert sentence in r.text and "could not be loaded" not in r.text and "Reload the page" not in r.text
+        assert 'class="page-title"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_temporary_contact_failure_keeps_the_wrapper_and_has_a_heading(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(503, "down"))):
+            r = await ui_client.get("/contacts/c1", cookies=_authed())
+        assert "Reload the page to try again" in r.text and 'class="page-title"' in r.text
 
     @pytest.mark.asyncio
     async def test_a_contact_with_no_documents_still_shows_none_yet(self, ui_client):

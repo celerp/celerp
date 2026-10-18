@@ -794,11 +794,14 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
                          back: tuple | None = None, nav_active: str | None = None,
                          title: str | None = None,
                          consigned_total: float | None = None,
-                         on_memo_total: float | None = None) -> FT:
+                         on_memo_total: float | None = None,
+                         docs_error: FT | None = None) -> FT:
     """Shared assembly for the contact detail page. The Company Details page reuses this verbatim with
     show_financials=False / show_delete=False / show_contact_addresses=False (the company is its own
     customer+vendor self-contact, and it has no financial-summary-against-itself) - one page layout, no
-    fork. The only differences are the conditional sections gated by the flags."""
+    fork. The only differences are the conditional sections gated by the flags. ``docs_error`` is the
+    notice for a failed documents read: it replaces the Documents tab and the document-derived
+    financial cards, which would otherwise show figures computed from an empty list."""
     contact_name = contact.get("name", t("contacts.contact_name_fallback"))
     contact_type = contact.get("contact_type", "")
     if back is not None:
@@ -857,7 +860,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         delete_btn,
         *([_financial_summary(docs, contact_id=cid, company=company,
                               consigned_total=consigned_total, on_memo_total=on_memo_total)]
-          if show_financials else []),
+          if show_financials and docs_error is None else []),
         Div(
             Div(
                 _contact_info_card(contact),
@@ -875,7 +878,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         *(extra_sections or []),
         _tab_bar(cid),
         Div(
-            _documents_tab(docs, contact, cid),
+            docs_error if docs_error is not None else _documents_tab(docs, contact, cid),
             id="tab-content",
         ),
         title=f"{page_title} - Celerp",
@@ -1160,20 +1163,28 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        failed_key = "msg.contact_load_failed"
         try:
             contact = await api.get_contact(token, contact_id)
-            failed_key = "msg.documents_load_failed"
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            # A missing contact is final, so the API's own sentence stands alone; only a
+            # temporary failure is worth "reload to try again".
+            body = str(e.detail) if e.status == 404 else t("msg.contact_load_failed", detail=str(e.detail))
+            return await base_shell(
+                breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.customers"), "/contacts/customers")]),
+                page_header(t("page.contact_detail")),
+                files_error_block(body, e.status),
+                title=page_title("nav.customers"), nav_active="customers", request=request,
+            )
+        docs_error = None
+        try:
             docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
             docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return await base_shell(
-                breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.customers"), "/contacts/customers")]),
-                files_error_block(t(failed_key, detail=str(e.detail)), e.status),
-                title=page_title("nav.customers"), nav_active="customers", request=request,
-            )
+            docs, docs_error = [], files_error_block(t("msg.documents_load_failed", detail=str(e.detail)), e.status)
         try:
             vocab = await api.get_contact_tags_vocabulary(token)
         except Exception:
@@ -1196,7 +1207,8 @@ def setup_routes(app):
         )
 
         return await build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id,
-                                          on_memo_total=on_memo_total, consigned_total=consigned_total)
+                                          on_memo_total=on_memo_total, consigned_total=consigned_total,
+                                          docs_error=docs_error)
 
     # ── Company Details (Finance) ─────────────────────────────────────────
     # The company is its own customer+vendor self-contact, so this page is the same contact-detail
