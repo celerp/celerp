@@ -1448,3 +1448,27 @@ async def test_a_refused_link_stays_in_the_field(ui, real_engine, monkeypatch):
     r = await ui.get("/settings/restore-backup/opened")
     assert t("company_backup.handoff_unavailable") in _page(r)
     assert _kept_link(r.text) == link
+
+
+def test_copies_row_actions_sit_in_one_menu():
+    """Each copy's actions open from one menu on its row, so the cell never wraps buttons
+    onto two uneven lines; a missing key reads under the status, not as a menu item."""
+    from fasthtml.common import to_xml
+
+    from ui.routes import company_backup as route
+
+    live = {"id": "c1", "recipient": "client@example.test", "firm_name": "Harbor Bookkeeping",
+            "status": "sent", "opened": True, "downloaded": False, "company_opened": False,
+            "sent_at": "2026-10-17", "expires_at": "2026-10-31T00:00:00+00:00",
+            "link": "https://relay.example/h/x", "renewable": True}
+    lost = {**live, "id": "c2", "link": None, "renewable": False, "key_missing": True}
+    page = to_xml(route._copies_table([live, lost]))
+    assert page.count('class="row-menu"') == 2
+    menu = page[page.index('id="menu-copy-c1"'):]
+    menu = menu[:menu.index("</div>")]
+    for label in ("company_backup.ready_copy_link", "company_backup.copies_new_link",
+                  "company_backup.copies_resend", "btn.revoke"):
+        assert t(label) in menu
+    assert menu.count("row-menu-item") == 4 and "btn--sm" not in menu
+    assert t("company_backup.copies_key_missing") in page
+    assert t("company_backup.copies_key_missing") not in page[page.index('id="menu-copy-c2"'):].split("</div>")[0]
