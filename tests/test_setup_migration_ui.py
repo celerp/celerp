@@ -1690,3 +1690,18 @@ async def test_finish_pressed_again_shows_the_run_where_it_is(ui, fake_api):
     for action in ("start", "cancel", "finalize"):
         text = t(f"migration.err_cannot_{action}", "en", status=t("migration.status.running", "en"))
         assert '"' not in text and "Refresh" not in text, text
+
+
+@pytest.mark.asyncio
+async def test_a_refused_run_action_keeps_its_reason_through_the_polls(ui, fake_api):
+    """The run's progress block replaces itself every 2 seconds while the import runs, so a
+    refusal shown on that page sits outside it and is still there after the next poll."""
+    from bs4 import BeautifulSoup
+
+    _owner(ui)
+    run_id = fake_api.add_run("running")
+    reason = "Cannot finalize a migration that is running."
+    soup = BeautifulSoup(_page(await ui.post(f"/migrations/{run_id}/finalize")), "html.parser")
+    polled = soup.find(id="migration-progress")
+    assert polled is not None and polled.get("hx-trigger") == "every 2s"
+    assert reason in soup.get_text() and reason not in polled.get_text()
