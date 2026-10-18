@@ -307,9 +307,31 @@ def _placement(result: dict, key: str) -> str:
     return t("fixed_assets.back_to", now=now or none[:1].upper() + none[1:], was=to or none)
 
 
+def _said(value, currency: str | None) -> str:
+    """An amount inside a sentence: the money, or the hidden mark's word."""
+    return t("fixed_assets.amount_hidden") if value in (None, "") else fmt_money(float(value), currency)
+
+
+def _sale_effect(action: str, result: dict, currency: str) -> str | None:
+    """What Confirm does on a review of a sale's next step, which posts no journal of its own."""
+    number = result.get("number")
+    if action == "sale-reissue":
+        return t("fixed_assets.effect.sale_reissue", number=number, price=_said(result.get("price"), currency),
+                 buyer=_text(result.get("contact_name")), date=result["date"])
+    if action == "sale-cancel":
+        return (t("fixed_assets.effect.sale_cancel_voids", number=number, invoice=result["voids"])
+                if result.get("voids") else t("fixed_assets.effect.sale_cancel", number=number))
+    if action == "sale-credit" and "kind" in result:
+        return t(f"fixed_assets.effect.sale_credit.{result['kind']}", number=number, invoice=result["invoice"],
+                 amount=_said(result.get("amount"), result.get("currency") or currency))
+    return None
+
+
 def _preview(action: str, result: dict, currency: str) -> FT:
     """What an operation will do: the assets it creates or changes, and every journal line."""
     parts: list[FT] = []
+    if effect := _sale_effect(action, result, currency):
+        parts.append(P(effect, cls="settings-hint", id="fa-effect"))
     assets = result.get("assets") or []
     if "missing" in result:
         parts += _class_revaluation_preview(result, currency)

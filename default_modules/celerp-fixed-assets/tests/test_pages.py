@@ -721,6 +721,49 @@ async def test_u8_u9_the_sale_card_opens_the_draft_credit_note_and_folds_a_retur
     assert "fixed_assets." not in page.text
 
 
+def _effect(review) -> str:
+    found = re.search(r'id="fa-effect"[^>]*>([^<]+)<', review.text)
+    assert found, review.text
+    return html.unescape(found.group(1))
+
+
+async def _review(ui, action: str, form: dict):
+    review = await ui.post(f"/fixed-assets/op/{action}/review", data={**form, "idempotency_key": str(uuid.uuid4())})
+    assert review.status_code == 200, review.text
+    return review
+
+
+async def test_a_sale_review_says_what_confirm_does_to_the_invoice_and_the_asset(owner_ui):
+    car = await _managed_car(owner_ui)
+    number = (await owner_ui.api.get(f"{API}/assets/{car}")).json()["number"]
+    buyer = (await owner_ui.api.get("/crm/contacts", params={"limit": 1})).json()["items"][0]
+    href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",
+                                                       "contact_id": buyer["id"]})
+    assert (await owner_ui.api.delete(href)).status_code == 200
+    reissue = _effect(await _review(owner_ui, "sale-reissue", {"asset_id": car}))
+    assert reissue.startswith(t("fixed_assets.effect.sale_reissue", number=number, price="", buyer=buyer["name"],
+                                date="2026-10-05").split(" at ")[0])
+    assert "9,000.00" in reissue and buyer["name"] in reissue and "2026-10-05" in reissue
+
+    draft = (await _review_and_confirm(owner_ui, "sale-reissue", {"asset_id": car})).removeprefix("/docs/")
+    invoice = (await owner_ui.api.get(f"/docs/{draft}")).json()["ref_id"]
+    assert _effect(await _review(owner_ui, "sale-cancel", {"asset_id": car})) == t(
+        "fixed_assets.effect.sale_cancel_voids", number=number, invoice=invoice)
+
+    assert (await owner_ui.api.post(f"/docs/{draft}/finalize")).status_code == 200
+    invoice = (await owner_ui.api.get(f"/docs/{draft}")).json()["doc_number"]
+    adjust = _effect(await _review(owner_ui, "sale-credit", {"asset_id": car, "kind": "adjust", "amount": "1000",
+                                                             "date": "2026-10-20"}))
+    assert invoice in adjust and "1,000.00" in adjust and number in adjust
+    assert adjust.endswith(t("fixed_assets.effect.sale_credit.adjust", number=number, invoice="",
+                             amount="").split(". ", 1)[1])
+    returned = _effect(await _review(owner_ui, "sale-credit", {"asset_id": car, "kind": "returned",
+                                                               "date": "2026-10-20"}))
+    assert invoice in returned and "9,000.00" in returned
+    assert returned.endswith(t("fixed_assets.effect.sale_credit.returned", number=number, invoice="",
+                               amount="").split(". ", 1)[1])
+
+
 async def test_a_deleted_sale_draft_is_reissued_or_cancelled_from_the_asset_page(owner_ui):
     car = await _managed_car(owner_ui)
     href = await _review_and_confirm(owner_ui, "sell", {"asset_id": car, "date": "2026-10-05", "price": "9000",

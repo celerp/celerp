@@ -413,7 +413,8 @@ async def credit(session, company_id, user_id, asset_id: str, body: dict) -> dic
         else:
             amount = round_money(remaining / rate, in_doc)
         shown = {"number": asset["number"], "kind": kind, "date": day, "amount": money(amount, in_doc),
-                 "invoice": doc_number(invoice, sale["invoice_id"]), "remaining": money(remaining, base)}
+                 "invoice": doc_number(invoice, sale["invoice_id"]), "remaining": money(remaining, base),
+                 "currency": in_doc}
         return shown, {"invoice": invoice, "sale": sale, "source": source, "kind": kind, "day": day, "amount": amount,
                        "basis": [asset.get("version"), asset.get("movement_count"), sale.get("credits")]}
 
