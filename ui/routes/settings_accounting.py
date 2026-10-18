@@ -23,7 +23,7 @@ from ui.components.table import (EMPTY, add_new_option, bulk_toolbar, searchable
 
 from ui.components.posting_accounts import account_picker
 from ui.components.operation_key import operation_key_attrs, operation_key_input, required_operation_key
-from ui.routes.accounting_import import ACCOUNT_TYPES
+from ui.routes.accounting_import import ACCOUNT_TYPES, asset_register_target
 
 # The cash flow sections an account may be pinned to. The accounting API owns this
 # list (celerp_accounting.routes.CASH_FLOW_CATEGORIES) and validates against it; the
@@ -753,6 +753,8 @@ def _chart_tab(chart: list[dict]) -> FT:
         Div(
             A(t("acct.add_account"), href="/settings/accounting/chart/new", cls="btn btn--primary"),
             A(import_icon(), t("acct.import_chart_csv"), href="/accounting/import/chart", cls="btn btn--secondary"),
+            A(import_icon(), t("acct.import_asset_register"), href="/import/asset-register", cls="btn btn--secondary")
+            if asset_register_target() else None,
             Form(
                 Button(t("btn.seed_default_chart"), type="submit", cls="btn btn--secondary"),
                 hx_post="/settings/accounting/chart/seed",

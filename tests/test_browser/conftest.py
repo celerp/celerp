@@ -26,7 +26,7 @@ import pytest
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 _ALL_MODULES = (
     "celerp-accounting,celerp-ai,celerp-connectors,celerp-contacts,celerp-sales-funnel,celerp-dashboard,celerp-docs,celerp-inventory,"
-    "celerp-labels,celerp-manufacturing,celerp-reports,celerp-subscriptions,celerp-verticals"
+    "celerp-fixed-assets,celerp-labels,celerp-manufacturing,celerp-reports,celerp-subscriptions,celerp-verticals"
 )
 os.environ.setdefault("ENABLED_MODULES", _ALL_MODULES)
 

@@ -66,6 +66,10 @@ class UntrustedChartError(ValueError):
     """A chart offered by code that is not the bundled accounting module."""
 
 
+class UnbalancedJournalEntry(ValueError):
+    """An automatic journal entry whose lines do not balance in the company currency."""
+
+
 _chart: ChartAccess | None = None
 
 

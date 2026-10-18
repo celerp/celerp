@@ -31,6 +31,7 @@ from celerp.accounting_roles import (
     SEEDED_TARGETS,
     SOURCE_CONTROLS_KEY,
     UNGUESSED_ROLES,
+    pair_of,
     AccountRole,
     is_role,
     needs_accounting,
@@ -559,7 +560,16 @@ async def continue_role(session: AsyncSession, company_id, role, code: str) -> s
     accounts = await lock_accounts(session, company_id, {code})
     if accounts is None:
         return code
-    problem = target_problem(role, {role: code}, accounts.get(code))
+    # A gain and loss pair's net account served both at once, so it takes either type.
+    # Scopes only grow, so reading them without the company lock is safe.
+    trial = {role: code}
+    pair = pair_of(role)
+    if pair:
+        company = await session.get(Company, company_id)
+        settings = company.settings if company is not None else None
+        if all(code in scope_codes(settings, r.value) | {role_map(settings).get(r.value)} for r in pair):
+            trial = {r.value: code for r in pair}
+    problem = target_problem(role, trial, accounts.get(code))
     if problem:
         raise HTTPException(status_code=409, detail=refusal(
             "posting.continued_account_unusable",
@@ -591,10 +601,10 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
     before = dict(company.settings or {})
     settings = with_role(before, role, code)
     new_map = role_map(settings)
-    # Exchange gain and loss are judged as a pair: moving one side can change what
-    # the other side's account is allowed to be.
-    fx_pair = (AccountRole.FX_GAIN.value, AccountRole.FX_LOSS.value)
-    checked = [role, *(r for r in fx_pair if role in fx_pair and r != role and new_map.get(r))]
+    # A gain and loss pair is judged together: moving one side can change what the
+    # other side's account is allowed to be.
+    pair = pair_of(role) or ()
+    checked = [role, *(r.value for r in pair if r != role and new_map.get(r.value))]
     accounts = await lock_accounts(session, company_id, {new_map[r] for r in checked})
     if accounts is None:
         raise HTTPException(status_code=409, detail=needs_accounting())

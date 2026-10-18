@@ -250,6 +250,15 @@ from celerp_labels.ui_routes import setup_ui_routes as _setup_labels_ui
 _setup_labels(app)
 _setup_labels_ui(_ui_app)
 
+# Register fixed assets module routes onto the test app.
+_fa_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-fixed-assets")
+if _os.path.abspath(_fa_src) not in [_os.path.abspath(p) for p in _sys.path]:
+    _sys.path.insert(0, _os.path.abspath(_fa_src))
+from celerp_fixed_assets.routes import setup_api_routes as _setup_fa
+from celerp_fixed_assets.ui_routes import setup_ui_routes as _setup_fa_ui
+_setup_fa(app)
+_setup_fa_ui(_ui_app)
+
 # Register warehousing module path so its UI components can be imported in tests.
 _wh_src = _os.path.join(_os.path.dirname(__file__), "premium_modules", "celerp-warehousing")
 _wh_available = _os.path.isfile(_os.path.join(_wh_src, "celerp_warehousing", "__init__.py"))
@@ -361,6 +370,39 @@ _SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
         "contrib": {
             "handler": "celerp_manufacturing.routes:auto_create_work_orders_on_finalize",
             "_module": "celerp-manufacturing",
+        },
+    },
+    {
+        "slot": "projection_handler",
+        "contrib": {
+            "prefix": "fa.",
+            "handler": "celerp_fixed_assets.projections:apply_fixed_asset_event",
+            "_module": "celerp-fixed-assets",
+        },
+    },
+    {
+        "slot": "demo_records",
+        "contrib": {
+            "handler": "celerp_fixed_assets.demo:seed_demo_assets_hook",
+            "_module": "celerp-fixed-assets",
+            "_first_party": True,
+        },
+    },
+    {
+        "slot": "doc_asset_lines",
+        "contrib": {
+            "handler": "celerp_fixed_assets.sales:on_asset_lines",
+            "_module": "celerp-fixed-assets",
+            "_first_party": True,
+        },
+    },
+    {
+        "slot": "import_target",
+        "contrib": {
+            "kind": "fixed_asset_register",
+            "href": "/fixed-assets/import",
+            "handler": "celerp_fixed_assets.imports:import_register",
+            "_module": "celerp-fixed-assets",
         },
     },
     {
@@ -756,6 +798,16 @@ async def session(_db_engine) -> AsyncSession:
         if trans.is_active:
             await trans.rollback()
         await conn.close()
+
+
+@pytest.fixture(autouse=True)
+def core_sample_records_only(monkeypatch, _ensure_slot_registration):
+    """Companies registered in a test start with the core sample stock only, without the
+    sample records modules add on top (Fixed assets seeds asset bills). A module whose tests
+    need its own sample records overrides this fixture in its test folder."""
+    from celerp.modules import slots
+
+    monkeypatch.setitem(slots._slots, "demo_records", [])
 
 
 @pytest.fixture

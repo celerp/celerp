@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import VALUED_FROM_KEY
 from celerp.models.projections import Projection
-from celerp.services import auto_je
 from celerp.services.units import is_non_stock_line
 
 
@@ -77,6 +76,7 @@ async def outstanding_physical_lines(session: AsyncSession, company_id, docs: li
     Goods a customer sent back on a credit note raised on the document were taken back too:
     each returned lot still received comes off the line of the sold lot it was valued from,
     or, when it names none, off the document's lines of its SKU from the last."""
+    from celerp.services import auto_je
     from sqlalchemy import select
 
     from celerp.models.ledger import LedgerEntry

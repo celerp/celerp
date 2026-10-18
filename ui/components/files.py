@@ -69,6 +69,40 @@ def _fmt_date(iso: str | None) -> str:
     return iso[:10]
 
 
+def linked_files(own: list[dict], docs: list[dict]) -> list[dict]:
+    """An entity's own files followed by the files on its related documents.
+
+    Own files have no linked_ref (shown as '--'). Document files carry linked_ref (the
+    document number), linked_url (/docs/{id}) and download and action URLs under the
+    document, and cannot be deleted from here. File ids are unique across the list."""
+    seen: set[str] = set()
+    result: list[dict] = []
+
+    for f in own:
+        fid = f.get("id", "")
+        if fid not in seen:
+            seen.add(fid)
+            result.append({**f, "linked_ref": "", "linked_url": ""})
+
+    for doc in docs:
+        doc_id = doc.get("entity_id") or doc.get("id") or ""
+        ref = doc.get("ref_id") or doc.get("doc_number") or ""
+        url = f"/docs/{doc_id}" if doc_id else ""
+        for f in doc.get("files", []):
+            fid = f.get("id", "")
+            if fid not in seen:
+                seen.add(fid)
+                # The file lives under the document, so its download and changes go there.
+                download_url = f"/docs/{doc_id}/files/{fid}/download" if doc_id else ""
+                action_base = f"/docs/{doc_id}/files" if doc_id else ""
+                result.append({**f, "linked_ref": ref, "linked_url": url,
+                               "_download_url": download_url,
+                               "_action_base_url": action_base,
+                               "_no_delete": True})
+
+    return result
+
+
 def files_section(
     entity_type: str,
     entity_id: str,
@@ -90,6 +124,7 @@ def files_section(
     show_preview: bool = True,
     compact: bool = False,
     base_url: str | None = None,
+    tags: tuple[str, ...] | None = None,
 ) -> FT:
     """Render the files section for any entity.
 
@@ -107,12 +142,13 @@ def files_section(
         date_from:    filter uploaded_at >= this date (YYYY-MM-DD)
         date_to:      filter uploaded_at <= this date (YYYY-MM-DD)
         search:       filter by filename, description, or linked_ref (case-insensitive substring)
+        tags:         the tag slugs offered, for an entity type whose module owns its own list
     """
     # Default derives the per-entity REST base; an aggregated/virtual view (e.g. all company files)
     # passes its own base_url so the sort + pagination links target a real _section route.
     base_url = base_url or f"/{entity_type}s/{entity_id}/files"
     sid = _safe_id(entity_id)  # safe DOM id fragment (no colons)
-    _tags = _ITEM_TAGS if entity_type == "item" else _DOCUMENT_TAGS
+    _tags = tags or (_ITEM_TAGS if entity_type == "item" else _DOCUMENT_TAGS)
 
     # Product images are excluded BEFORE sort/filter/pagination where they would
     # clutter business documents (the aggregated Company Files view) - never on

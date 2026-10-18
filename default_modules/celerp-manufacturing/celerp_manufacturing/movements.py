@@ -43,7 +43,6 @@ from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.notifications import service as notification_service
-from celerp.services import auto_je
 from celerp.services.account_roles import (
     PostingRoleError,
     continue_role,
@@ -190,6 +189,8 @@ class _Op:
 
     async def post(self, movement: str, memo: str, wip_code: str | None, wip: Decimal,
                    lots: dict[str, Decimal], waste: Decimal = _ZERO, equity: Decimal = _ZERO) -> None:
+        from celerp.services import auto_je
+
         if not self.books:
             return
         await auto_je.create_for_mfg_movement(
@@ -200,6 +201,8 @@ class _Op:
 
 async def _begin(session: AsyncSession, company_id, user_id, order_id: str, at: str) -> _Op:
     """Take the company lock (always first) and fix the operation's business day."""
+    from celerp.services import auto_je
+
     await lock_company(session, company_id)
     settings = await current_settings(session, company_id)
     return _Op(session=session, company_id=company_id, user_id=user_id, order_id=order_id,
@@ -1192,6 +1195,8 @@ async def settle_open_runs(session: AsyncSession, company_id) -> None:
 
 
 async def _settle(session: AsyncSession, company_id) -> None:
+
+    from celerp.services import auto_je
 
     await lock_company(session, company_id)
     settings = await current_settings(session, company_id)

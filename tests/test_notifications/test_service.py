@@ -115,6 +115,24 @@ async def test_create_notification_publishes_sse(session, company, user):
     assert event["title"] == "Done"
 
 
+# ── notify_once ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_notify_once_is_once_per_addressee(session, company, user, user_b):
+    """The same notice told to two members reaches each of them once; telling it again
+    to either creates nothing."""
+    with patch("celerp.notifications.service.deliver"):
+        assert await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user.id)
+        assert await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user_b.id)
+        assert not await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user.id)
+        assert await svc.notify_once(session, company.id, "fa", "Due", "Van")
+        assert not await svc.notify_once(session, company.id, "fa", "Due", "Van")
+        await session.commit()
+
+    assert await svc.get_unread_count(session, company.id, user.id) == 2
+    assert await svc.get_unread_count(session, company.id, user_b.id) == 2
+
+
 # ── unread_count ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

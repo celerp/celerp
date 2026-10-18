@@ -38,7 +38,6 @@ from celerp.importers.schema import (
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkContext
 from celerp.models.company import Company
 from celerp.models.projections import Projection
-from celerp.services import auto_je
 from celerp.services.account_roles import current_settings, source_control
 from celerp.services.migration_core_sink import (
     acting_member,
@@ -336,6 +335,8 @@ async def _post_document(
     """Post an issued document's entry, record the receipts and deliveries that moved its
     goods, and apply a credit note to its invoice. An invoice's entry carries the cost of
     sales each line booked, so later deliveries, returns and cost corrections true it up."""
+    from celerp.services import auto_je
+
     if not _posts(record):
         return outcome
     label = f"Document {record.ref or record.source_external_id}"
@@ -376,6 +377,8 @@ async def _import_debit_note(
     imported: dict[str, str],
 ) -> RecordOutcome:
     """Post a debit note as a journal fallback on its bill and apply it as a payment."""
+    from celerp.services import auto_je
+
     label = f"Debit note {record.ref or record.source_external_id}"
     if record.currency and record.currency.upper() != base:
         return RecordOutcome("", "rejected", f"{label} is in {record.currency}; only {base} documents can be imported.")

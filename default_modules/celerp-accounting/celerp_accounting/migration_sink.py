@@ -38,6 +38,7 @@ from celerp.services.migration_core_sink import (
     sink_result,
 )
 from celerp.services.money import round_money, to_stored_float
+from celerp.services.ledger_rows import journal_rows
 from celerp_accounting import import_service
 from celerp_accounting.import_service import JOURNAL_CREATED, AccImportRecord
 from celerp_accounting.models import Account
@@ -45,7 +46,6 @@ from celerp_accounting.routes import (
     _base_currency,
     _build_balances,
     _je_doc_refs,
-    _je_rows,
     _line_amounts,
     _line_party,
 )
@@ -103,7 +103,7 @@ class AccountingMigrationSink:
         )]
         if not wanted:
             return []
-        posted = await _je_rows(context.session, context.company_id)
+        posted = await journal_rows(context.session, context.company_id)
         balances = _build_balances(posted, None, None)
         codes = await mapped_targets(context, ACCOUNT, [e.key for e in wanted])
         settings = await current_settings(context.session, context.company_id)

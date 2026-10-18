@@ -166,9 +166,10 @@ def test_doc_lines_inputs_fill_their_cells(page, ui_server, api):
         assert fill_ratio(col) >= 0.9, f"{col} input leaves wasted space: {fill_ratio(col)}"
 
 
-def test_doc_lines_headers_centered_and_qty_inputs_uniform(page, ui_server, api):
-    """All line-table headers are centre-aligned, and the quantity input is the same width on
-    every row (the unit slot is reserved even when a row has no unit)."""
+def test_doc_lines_headers_align_over_their_column_and_qty_inputs_uniform(page, ui_server, api):
+    """Headers over figures are right-aligned over them, every other header is centred, and the
+    quantity input is the same width on every row (the unit slot is reserved even when a row has
+    no unit)."""
     g = api.post("/items", json={"status": "available", "sku": "HQ-G", "name": "Gold", "quantity": 10, "sell_by": "carat",
                                  "weight": 2, "weight_unit": "carat"}).json()["id"]
     r = api.post("/docs", json={"doc_type": "invoice", "status": "draft", "line_items": [
@@ -179,9 +180,13 @@ def test_doc_lines_headers_centered_and_qty_inputs_uniform(page, ui_server, api)
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.wait_for_selector("table.doc-lines tbody tr", timeout=5000)
 
-    aligns = page.eval_on_selector_all(
-        "table.doc-lines thead th", "els => els.map(e => getComputedStyle(e).textAlign)")
-    assert all(a == "center" for a in aligns), aligns  # every header centered, incl. the numeric ones
+    aligns = dict(page.eval_on_selector_all(
+        "table.doc-lines thead th", "els => els.map(e => [e.className, getComputedStyle(e).textAlign])"))
+    figures = ("col-qty", "col-unit-price", "col-disc", "col-tax", "col-total")
+    for cls, align in aligns.items():
+        want = "right" if any(f in cls.split() for f in figures) else "center"
+        assert align == want, (cls, align)
+    assert sum(any(f in c.split() for f in figures) for c in aligns) == len(figures), aligns
 
     qty_widths = page.eval_on_selector_all(
         "td.col-qty input[data-name=quantity]", "els => els.map(e => Math.round(e.offsetWidth))")
