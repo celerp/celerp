@@ -66,8 +66,7 @@ async def status() -> Outcome:
 async def send(email: str) -> Outcome:
     """Ask the relay to email a code to *email*."""
     iid = await asyncio.to_thread(ensure_instance_id)
-    return await _call("POST", "send", {"email": email, "instance_id": iid},
-                       refused=(400, 429))
+    return await _call("POST", "send", {"email": email, "instance_id": iid})
 
 
 async def verify(email: str, code: str) -> Outcome:

@@ -446,7 +446,6 @@ async def recovery_send(request: Request, payload: EmailBody, session: AsyncSess
     started = time.monotonic()
     try:
         user = await user_by_email(session, payload.email)
-        # A send the relay turns down for now answers as sent: the last code still stands.
         sent = await email_codes.send(user.email) if user else Outcome.OK
     finally:
         await asyncio.sleep(max(0.0, started + RECOVERY_FLOOR_S - time.monotonic()))

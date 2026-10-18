@@ -25,7 +25,7 @@ class FakeRelay:
         self.calls: list[tuple[str, dict]] = []
         self.issued: dict[str, str] = {}
         self.failure: str | None = None
-        # The answer to a send other than a plain yes: 503 could not deliver, 429 too many.
+        # The answer to a send other than a plain yes, meaning no code is coming.
         self.send_status: int | None = None
 
     def paths(self) -> list[str]:

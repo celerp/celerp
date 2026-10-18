@@ -197,15 +197,16 @@ async def test_recovery_send_is_enumeration_neutral(client, session, relay, shor
 
 
 async def test_recovery_send_says_when_no_code_is_coming(client, session, relay, short_floor):
-    """The relay is up but cannot deliver the code: the answer says none is coming. A
-    send the relay turns down for now answers as sent."""
+    """Any answer to a send but a plain yes means no code is coming, and the answer says
+    so; an email that is not a user still answers as sent."""
     await _register(client)
     relay.send_status = 503
     assert (await _send(client, OWNER)).json() == {"outcome": "unavailable"}
     assert (await _send(client, "nobody@example.com")).json() == {"outcome": "sent"}
 
-    relay.send_status = 429
-    assert (await _send(client, OWNER)).json() == {"outcome": "sent"}
+    for status in (422, 429):
+        relay.send_status = status
+        assert (await _send(client, OWNER)).json() == {"outcome": "unavailable"}
 
 
 async def test_recovery_matches_users_exactly_as_sign_in(client, session, relay, short_floor):
