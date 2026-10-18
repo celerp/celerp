@@ -622,9 +622,8 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     gone_cost, gone_ad, gone_imp = -moved["cost"], -moved[_AD], -moved[_IMP]
     from celerp.services.module_journals import JournalLine
 
-    lines = [JournalLine(account=cls["asset_account"], debit=gone_cost)]
-    if gone_ad + gone_imp:
-        lines.append(JournalLine(account=cls["accumulated_depreciation_account"], credit=gone_ad + gone_imp))
+    lines = [JournalLine(account=cls["asset_account"], debit=gone_cost),
+             *disposal.accumulated_lines(cls["accumulated_depreciation_account"], gone_ad, gone_imp, "credit")]
     # The surplus the sale released returns to the accounts the sale moved it between.
     sold = await _state(session, company_id, sale["journal_id"]) or {}
     for e in sold.get("entries") or []:

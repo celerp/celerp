@@ -186,8 +186,7 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     from celerp.services.module_journals import JournalLine
 
     lines = _lines(expense, accumulated, depreciation) if depreciation else []
-    if gone_ad + gone_imp:
-        lines.append(JournalLine(account=accumulated, debit=gone_ad + gone_imp))
+    lines += accumulated_lines(accumulated, gone_ad, gone_imp, "debit")
     if proceeds:
         lines.append(JournalLine(account=clearing, debit=proceeds, role=clearing_role))
     lines.append(JournalLine(account=cls["asset_account"], credit=gone_cost))
@@ -207,6 +206,15 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
             "amounts": {"cost": -gone_cost, _AD: -gone_ad, _IMP: -gone_imp, _SURPLUS: -gone_surplus},
             "periods": {period_label(k): str(v) for k, v in diff.items()}, "share": share,
             "currency": books.currency}
+
+
+def accumulated_lines(account: str, depreciation: Decimal, impairment: Decimal, side: str) -> list:
+    """The accumulated depreciation and impairment a share of an asset takes off (``side``
+    "debit") or brings back ("credit"). Impairment sits on the accumulated account beside
+    depreciation; each moves on its own line, so the journal reads as the review does."""
+    from celerp.services.module_journals import JournalLine
+
+    return [JournalLine(account=account, **{side: v}) for v in (depreciation, impairment) if v]
 
 
 async def record(session, company_id, user_id, item: dict, day: str, reason: str, note: str | None,

@@ -145,6 +145,10 @@ async def test_u1_partial_dispose_after_impairment_takes_its_share_of_both(fa):
     await _impair(fa, car, "2026-06-30", "8550")
     before = {code: await fa.balance(code) for code in ("1210", "1220", "6400", "6980")}
     await _dispose(fa, car, "2026-07-10", percent="25")
+    # The depreciation and the impairment that leave are each their own line, as on Review.
+    je = await _disposal_journal(fa, car)
+    assert [D(str(e["debit"])) for e in je["entries"] if e["account"] == "1220" and D(str(e.get("debit") or 0))] \
+        == [D("300"), D("562.50")], je["entries"]
     got = await fa.asset(car)
     assert D(got["cost"]) == D("9000")
     assert D(got["accumulated_depreciation"]) == D("1018.75")
