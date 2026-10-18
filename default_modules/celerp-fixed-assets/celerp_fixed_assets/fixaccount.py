@@ -117,7 +117,7 @@ async def refuse_stranding(session, company_id, class_id: str, cls: dict, change
 
 def _day(books: runs.Books) -> str:
     """The first day of the first month not yet run, after any period lock."""
-    month = books.last + 1 if books.last is not None else books.first
+    month = books.next
     day = date(month // 12, month % 12 + 1, 1)
     if books.lock is not None and day <= books.lock:
         day = date.fromordinal(books.lock.toordinal() + 1)

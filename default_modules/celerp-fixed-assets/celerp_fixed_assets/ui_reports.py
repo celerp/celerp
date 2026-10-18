@@ -137,18 +137,28 @@ def _register_rows(report: dict, currency: str) -> list[list]:
 # ── Depreciation by period ───────────────────────────────────────────────────
 
 
+def _posted_asset(a: dict) -> list:
+    """An asset's line in a month: what a later change took back reads as that."""
+    return [_asset_link(a), " ", _text(a.get("name")), *([", ", t("fixed_assets.taken_back")] if a.get("taken_back") else [])]
+
+
 def _depreciation_body(report: dict, currency: str) -> list[FT]:
     head = [Th(t("fixed_assets.month")), Th(t("fixed_assets.asset")), _money_th(t("fixed_assets.posted")),
             _money_th(t("fixed_assets.forecast")), Th(t("fixed_assets.skipped"))]
     rows: list[FT] = []
+    if report["caught_up"]:
+        rows.append(Tr(Td(Strong(t("fixed_assets.caught_up_next_run"))), Td(""), _money_td(None, currency),
+                       _money_td(report["totals"]["caught_up_next_run"], currency), Td("")))
+        rows += [Tr(Td(""), Td(_asset_link(a), " ", _text(a.get("name"))), _money_td(None, currency),
+                    _money_td(a["amount"], currency), Td(empty_mark())) for a in report["caught_up"]]
     for m in report["months"]:
         rows.append(Tr(Td(Strong(m["month"])), Td(""), _money_td(m["posted"], currency), _money_td(m["forecast"], currency),
                        Td("")))
-        rows += [Tr(Td(""), Td(_asset_link(a), " ", _text(a.get("name"))), _money_td(a["posted"], currency),
+        rows += [Tr(Td(""), Td(*_posted_asset(a)), _money_td(a["posted"], currency),
                     _money_td(a["forecast"], currency), Td(empty_mark())) for a in m["assets"]]
         rows += [Tr(Td(""), Td(_asset_link(s), " ", _text(s.get("name"))), _money_td(None, currency),
                     _money_td(None, currency), Td(_text(s.get("reason")))) for s in m["skipped"]]
-    if not any(m["assets"] or m["skipped"] for m in report["months"]):
+    if not report["caught_up"] and not any(m["assets"] or m["skipped"] for m in report["months"]):
         return [empty_state_cta(t("fixed_assets.depreciation_empty"))]
     rows.append(Tr(Td(Strong(t("fixed_assets.total"))), Td(""), _money_td(report["totals"]["posted"], currency),
                    _money_td(report["totals"]["forecast"], currency), Td("")))
@@ -158,9 +168,12 @@ def _depreciation_body(report: dict, currency: str) -> list[FT]:
 def _depreciation_rows(report: dict, currency: str) -> list[list]:
     out = [[t("fixed_assets.month"), t("fixed_assets.number"), t("fixed_assets.asset"), t("fixed_assets.posted"),
             t("fixed_assets.forecast"), t("fixed_assets.skipped")]]
+    out += [[t("fixed_assets.caught_up_next_run"), a.get("number") or "", a.get("name") or "", "",
+             csv_amount(a["amount"], currency), ""] for a in report["caught_up"]]
     for m in report["months"]:
-        out += [[m["month"], a.get("number") or "", a.get("name") or "", csv_amount(a["posted"], currency),
-                 csv_amount(a["forecast"], currency), ""] for a in m["assets"]]
+        out += [[m["month"], a.get("number") or "",
+                 ", ".join([a.get("name") or "", t("fixed_assets.taken_back")]) if a.get("taken_back") else a.get("name") or "",
+                 csv_amount(a["posted"], currency), csv_amount(a["forecast"], currency), ""] for a in m["assets"]]
         out += [[m["month"], s.get("number") or "", s.get("name") or "", "", "", s.get("reason") or ""]
                 for s in m["skipped"]]
     return out

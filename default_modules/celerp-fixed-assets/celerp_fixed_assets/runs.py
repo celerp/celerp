@@ -95,6 +95,8 @@ class Books:
         posted = [k for k, r in records.items() if r.get("status") in _POSTED]
         posted += [k for k, cycles in journals.items() if self.latest_posted(k)]
         self.last = max(posted, default=None)
+        # The first month the next run posts.
+        self.next = self.last + 1 if self.last is not None else self.first
 
     def locked(self, index: int) -> bool:
         return self.lock is not None and self.lock >= _end(index)
@@ -365,14 +367,19 @@ class Charge:
                 "responsible_user_id": str(user_id) if user_id else None}
 
 
+def depreciates(asset: dict, cls: dict | None) -> bool:
+    """Whether runs charge the asset: in use, in a class, on a depreciation method."""
+    return asset.get("status") == "active" and cls is not None and asset["policy"]["method"] != "none"
+
+
 async def next_charge(session, company_id, asset_id: str, asset: dict) -> dict | None:
     """What the next run charges the asset: its month and the amount, months it catches up
     included, or held when something holds the asset then. None when no run charges it."""
     cls = await _state(session, company_id, str(asset.get("class_id") or ""))
-    if asset.get("status") != "active" or cls is None or asset["policy"]["method"] == "none":
+    if not depreciates(asset, cls):
         return None
     books = await _books(session, company_id)
-    month = books.last + 1 if books.last is not None else books.first
+    month = books.next
     charge = Charge(asset_id, asset, cls, await operations.asset_movements(session, company_id, asset_id), books,
                     month, month)
     await charge.hold(session, company_id, books, month, {})
@@ -392,7 +399,7 @@ async def _charges(session, company_id, books: Books, through: int, start: int) 
     out = []
     for asset_id, asset in sorted(await _entities(session, company_id, "fa_asset"), key=lambda r: r[1].get("number") or ""):
         cls = classes.get(asset.get("class_id"))
-        if asset.get("status") != "active" or cls is None or asset["policy"]["method"] == "none":
+        if not depreciates(asset, cls):
             continue
         charge = Charge(asset_id, asset, cls, movements.get(asset_id, []), books, through, start)
         await charge.hold(session, company_id, books, through, booked)
@@ -435,7 +442,7 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
         raise setup.unprocessable(f"{label} is before the first managed period.")
     if books.locked(month):
         raise conflict(f"{label} is locked. Run a later month; what it owes is caught up there.")
-    start = books.last + 1 if books.last is not None else books.first
+    start = books.next
     charges = await _charges(session, company_id, books, month, start)
     open_months = [k for k in range(start, month + 1) if not books.locked(k)]
     target = {k: k for k in open_months}

@@ -2,13 +2,15 @@
 # SPDX-License-Identifier: MIT
 """The fixed asset reports, read from the movements.
 
-The schedule rolls each asset forward over a period: what it stood at when the period
-opened, what moved it during the period by kind of movement, and where it closed, with
-the depreciation the schedule plans for the period that no run has posted yet. Assets are
-grouped under the class each movement belongs to, so a reclassification moves the asset
-between classes in the transfers column. Depreciation by period lists
-each month's posted charge, the months skipped with their reason, and the forecast left
-to post; disposals lists each asset leaving the books with what it fetched.
+Every movement is dated as its journal posted it, so each period of the schedule and of
+depreciation by period ties to the ledger. The schedule rolls each asset forward over a
+period: what it stood at when the period opened, what moved it during the period by kind
+of movement, and where it closed, with the depreciation runs still post for the period.
+Assets are grouped under the class each movement belongs to, so a reclassification moves
+the asset between classes in the transfers column. Depreciation by period lists each
+month's posted charge, what a later change took back in the month it posted, the months
+skipped with their reason, and the forecast left to post; disposals lists each asset
+leaving the books with what it fetched.
 """
 from __future__ import annotations
 
@@ -17,7 +19,7 @@ from decimal import Decimal
 
 from celerp.services.money import books_currency
 from celerp_fixed_assets import projections, recon, runs, setup, taxbooks
-from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
+from celerp_fixed_assets.calc.periods import month_index, period_label
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import _dec
 from celerp_fixed_assets.sales import _credited, doc_number
@@ -80,7 +82,7 @@ def _roll(movements: list[dict], start: str, end: str) -> dict[str, Decimal]:
         amounts = mv.get("amounts") or {}
         cost, ad = _dec(amounts.get("cost")), _dec(amounts.get("accumulated_depreciation"))
         ai = _dec(amounts.get("accumulated_impairment"))
-        op, day = mv.get("operation"), mv["effective_date"]
+        op, day = mv.get("operation"), mv["posting_date"]
         if op in runs.OPENING_OPERATIONS or day < start:
             out["cost_opening"] += cost
             out["depreciation_opening"] += ad
@@ -114,16 +116,21 @@ def _by_class(movements: list[dict], closing: str | None) -> dict[str | None, li
     return out
 
 
-def _scheduled(asset: dict, movements: list[dict], settings: dict, through: int) -> dict[int, Decimal]:
-    """What the asset's schedule charges each month through ``through``; nothing for an
-    asset no longer in use or not depreciated."""
-    if asset.get("status") != "active" or (asset.get("policy") or {}).get("method", "none") == "none":
-        return {}
-    return {parse_period(p.period): p.amount for p in runs.full_schedule(asset, movements, settings, through).periods}
-
-
-def _planned(scheduled: dict[int, Decimal], charged: dict[int, Decimal], months: range) -> Decimal:
-    return sum((max(scheduled.get(k, _ZERO) - charged.get(k, _ZERO), _ZERO) for k in months), _ZERO)
+async def _owed(session, company_id, months: range) -> tuple[dict[str, dict[int, Decimal]], dict[str, Decimal]]:
+    """What runs still post per asset for ``months``, where the next runs post it: a month
+    not yet run nor locked in its own month, and what is owed for a month already run or
+    locked once, caught up by the next run."""
+    books = await runs._books(session, company_id)
+    forecast: dict[str, dict[int, Decimal]] = {}
+    caught_up: dict[str, Decimal] = {}
+    for charge in await runs._charges(session, company_id, books, months[-1], books.next):
+        for k in months:
+            amount = charge.owed.get(k, _ZERO)
+            if k >= books.next and not books.locked(k):
+                forecast.setdefault(charge.asset_id, {})[k] = amount
+            else:
+                caught_up[charge.asset_id] = caught_up.get(charge.asset_id, _ZERO) + amount
+    return forecast, caught_up
 
 
 def _shown(figures: dict[str, Decimal], currency: str) -> dict[str, str]:
@@ -132,10 +139,9 @@ def _shown(figures: dict[str, Decimal], currency: str) -> dict[str, str]:
 
 async def schedule(session, company_id, date_from, date_to) -> dict:
     _, start, end = await _range(session, company_id, date_from, date_to)
-    settings = await setup.company_settings(session, company_id)
-    currency = books_currency(settings)
+    currency = await setup.currency(session, company_id)
     assets, movements, classes = await _register(session, company_id)
-    months = range(month_index(start), month_index(end) + 1)
+    forecast, caught_up = await _owed(session, company_id, range(month_index(start), month_index(end) + 1))
     groups: dict[str | None, dict] = {}
     for asset_id, asset in assets:
         moved = movements.get(asset_id) or []
@@ -145,8 +151,8 @@ async def schedule(session, company_id, date_from, date_to) -> dict:
         for class_id, held in _by_class(moved, closing).items():
             figures = _roll(held, start.isoformat(), end.isoformat())
             if class_id == closing:
-                figures["planned_not_posted"] = _planned(_scheduled(asset, moved, settings, months[-1]),
-                                                         runs.charged_by_month(moved), months)
+                figures["planned_not_posted"] = sum((forecast.get(asset_id) or {}).values(),
+                                                    caught_up.get(asset_id, _ZERO))
             if not any(figures.values()):
                 continue
             group = groups.setdefault(class_id, {"id": class_id, "name": (classes.get(class_id) or {}).get("name"),
@@ -163,39 +169,60 @@ async def schedule(session, company_id, date_from, date_to) -> dict:
             "totals": _shown(totals, currency)}
 
 
+def _posted(movements: list[dict]) -> dict[tuple[int, bool], Decimal]:
+    """The depreciation each journal posted on the asset, by the month of the journal and
+    whether it was charged or taken back: a later change dated back takes back what runs
+    after its date charged, on its own journal."""
+    out: dict[tuple[int, bool], Decimal] = {}
+    for mv in projections.live(movements):
+        amount = _charge(mv)
+        if amount and mv.get("operation") not in runs.OPENING_OPERATIONS:
+            key = (month_index(date.fromisoformat(mv["posting_date"])), amount < 0)
+            out[key] = out.get(key, _ZERO) + amount
+    return out
+
+
 async def depreciation(session, company_id, date_from, date_to) -> dict:
-    """Each month's posted depreciation per asset, the months skipped, and the forecast:
-    what the schedule charges that is not posted yet. Newest month first."""
+    """Each month's depreciation as its journals posted it per asset, what a later change
+    took back in the month it posted, the months skipped, and the forecast: what runs still
+    post, each month not yet run in its month and the rest once, caught up by the next run.
+    Newest month first."""
     _, start, end = await _range(session, company_id, date_from, date_to)
-    settings = await setup.company_settings(session, company_id)
-    currency = books_currency(settings)
+    currency = await setup.currency(session, company_id)
     assets, movements, _ = await _register(session, company_id)
     months = range(month_index(start), month_index(end) + 1)
+    forecast, caught_up = await _owed(session, company_id, months)
     out = {k: {"month": period_label(k), "posted": _ZERO, "forecast": _ZERO, "assets": [], "skipped": []}
            for k in months}
+    owing = []
     for asset_id, asset in assets:
-        moved = movements.get(asset_id) or []
-        charged = runs.charged_by_month(moved)
-        scheduled = _scheduled(asset, moved, settings, months[-1])
+        named = {"id": asset_id, "number": asset.get("number"), "name": asset.get("name")}
+        posted = _posted(movements.get(asset_id) or [])
+        ahead = forecast.get(asset_id) or {}
         skips = asset.get("skips") or {}
         for k in months:
-            posted = charged.get(k, _ZERO)
-            forecast = max(scheduled.get(k, _ZERO) - posted, _ZERO)
-            label = period_label(k)
-            if label in skips:
-                out[k]["skipped"].append({"id": asset_id, "number": asset.get("number"), "name": asset.get("name"),
-                                          "reason": skips[label]})
-            if posted or forecast:
-                out[k]["posted"] += posted
-                out[k]["forecast"] += forecast
-                out[k]["assets"].append({"id": asset_id, "number": asset.get("number"), "name": asset.get("name"),
-                                         "posted": money(posted, currency), "forecast": money(forecast, currency)})
+            if period_label(k) in skips:
+                out[k]["skipped"].append({**named, "reason": skips[period_label(k)]})
+            charged, taken_back, due = posted.get((k, False), _ZERO), posted.get((k, True), _ZERO), ahead.get(k, _ZERO)
+            if charged or due:
+                out[k]["assets"].append({**named, "taken_back": False, "posted": money(charged, currency),
+                                         "forecast": money(due, currency)})
+            if taken_back:
+                out[k]["assets"].append({**named, "taken_back": True, "posted": money(taken_back, currency),
+                                         "forecast": money(_ZERO, currency)})
+            out[k]["posted"] += charged + taken_back
+            out[k]["forecast"] += due
+        if caught_up.get(asset_id):
+            owing.append({**named, "amount": caught_up[asset_id]})
     rows = [out[k] for k in reversed(months)]
+    behind = sum((a["amount"] for a in owing), _ZERO)
     return {"date_from": start.isoformat(), "date_to": end.isoformat(),
             "months": [{**m, "posted": money(m["posted"], currency), "forecast": money(m["forecast"], currency)}
                        for m in rows],
+            "caught_up": [{**a, "amount": money(a["amount"], currency)} for a in owing],
             "totals": {"posted": money(sum((m["posted"] for m in rows), _ZERO), currency),
-                       "forecast": money(sum((m["forecast"] for m in rows), _ZERO), currency)}}
+                       "caught_up_next_run": money(behind, currency),
+                       "forecast": money(sum((m["forecast"] for m in rows), behind), currency)}}
 
 
 def _carrying(mv: dict) -> Decimal:

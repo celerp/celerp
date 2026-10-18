@@ -455,7 +455,7 @@ async def _open(session, company_id, asset_id: str) -> tuple[dict, list[dict]]:
 
 def _first_open(books: runs.Books, start: int | None) -> int:
     """The first month not yet depreciated nor locked, and not before the asset started."""
-    k = books.last + 1 if books.last is not None else books.first
+    k = books.next
     while books.locked(k):
         k += 1
     return max(k, start if start is not None else k)
