@@ -181,11 +181,12 @@
     StrCpy $celerpMarker "$celerpParent\~S$celerpName"
     StrCpy $celerpMarkerText "${PRODUCT_NAME} setup is replacing $INSTDIR"
     ; Only a marker this setup would write is setup's own (a folder cannot be read).
+    ; It is UTF-16, as FileWrite would turn letters outside the code page into "?".
     StrCpy $celerpFile ""
     ClearErrors
     FileOpen $celerpFind "$celerpMarker" r
     ${IfNot} ${Errors}
-      FileRead $celerpFind $celerpFile
+      FileReadUTF16LE $celerpFind $celerpFile
       FileClose $celerpFind
     ${EndIf}
     ${If} $celerpFile == $celerpMarkerText
@@ -337,7 +338,7 @@
       ${EndIf}
       StrCpy $celerpMode "direct"
     ${Else}
-      FileWrite $celerpFile "$celerpMarkerText"
+      FileWriteUTF16LE $celerpFile "$celerpMarkerText"
       FileClose $celerpFile
     ${EndIf}
   ${EndIf}

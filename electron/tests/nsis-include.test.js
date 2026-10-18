@@ -177,7 +177,9 @@ test("the new version is copied next to the install folder under names of the sa
     expect(prepare).toContain('StrCpy $celerpMode "swap"');
     expect(prepare).toContain('StrCpy $celerpMode "fresh"');
     const begin = macro(include(), "celerpBeginCopy");
-    expect(begin).toContain('FileWrite $celerpFile "$celerpMarkerText"');
+    // in UTF-16, so a path with letters outside the code page reads back as written
+    expect(begin).toContain('FileWriteUTF16LE $celerpFile "$celerpMarkerText"');
+    expect(prepare).toContain("FileReadUTF16LE $celerpFind $celerpFile");
     expect(begin).toContain("SetOutPath $celerpStage");
   });
 
