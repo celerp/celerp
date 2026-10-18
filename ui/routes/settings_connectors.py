@@ -1418,16 +1418,28 @@ def setup_routes(app):
     async def accountant_access_page(request: Request):
         from ui.api_client import APIError, accountant_peer_grants, company_backup_sender, role_from_company
         from ui.components.shell import base_shell, page_header
-        from ui.security import not_permitted_redirect
+        from ui.config import get_role
+        from ui.security import company_owner, not_permitted_redirect
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        back = A(t("connectors.back_to_connectors", lang), href="/settings/cloud?tab=accounting",
+                 cls="btn btn--secondary btn--sm")
+        # Anyone but the owner stays here and learns whom to ask; the checks below still
+        # confirm the owner from the API before anything is shown.
+        if get_role(request) != "owner":
+            owner = await company_owner(token, lang)
+            page = await base_shell(
+                page_header(t("accountant_access.title", lang), back),
+                P(t("accountant_access.owner_only", lang, owner=owner), cls="flash flash--warning"),
+                title=t("accountant_access.title", lang), nav_active="settings", request=request)
+            return HTMLResponse(to_xml(page), status_code=403)
         if (denied := await _check_permission(request, "manage_integrations")):
             return denied
         company = getattr(request.state, "auth_company", {})
         if role_from_company(company) != "owner":
             return not_permitted_redirect(request)
-        lang = get_lang(request)
         try:
             grants = (await accountant_peer_grants(token)).get("items", [])
         except APIError as exc:
@@ -1441,12 +1453,7 @@ def setup_routes(app):
         except APIError:
             firm = ""
         return await base_shell(
-            page_header(
-                t("accountant_access.title", lang),
-                A(t("connectors.back_to_connectors", lang),
-                  href="/settings/cloud?tab=accounting",
-                  cls="btn btn--secondary btn--sm"),
-            ),
+            page_header(t("accountant_access.title", lang), back),
             P(t("accountant_access.description", lang)),
             P(t("accountant_access.direction_warning", lang), cls="settings-hint"),
             P(t("accountant_access.source_help", lang)),

@@ -53,6 +53,7 @@ from ui.config import (
 )
 from ui.i18n import doc_type_label, get_lang, role_label, t
 from ui.routes.account import account_panel
+from ui.security import company_owner
 from ui.routes.auth import auth_header
 
 SCAN_COOKIE = "celerp_migration_scan"
@@ -242,7 +243,9 @@ async def gate(request: Request, mode: WizardMode):
         return RedirectResponse("/login", status_code=302)
     from celerp.services.permissions import role_has_permission
     if not role_has_permission({}, get_role(request), "manage_company_lifecycle"):
-        return wizard_page(request, auth_header(t(mode.title)), flash(t(mode.owner_only)), back_link(mode.back),
+        owner = await company_owner(get_token(request))
+        return wizard_page(request, auth_header(t(mode.title)), flash(t(mode.owner_only, owner=owner)),
+                           back_link(mode.back),
                            status_code=403, title=mode.title)
     return None
 

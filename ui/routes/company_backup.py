@@ -92,6 +92,7 @@ BOOTSTRAP = WizardMode("bootstrap", "/setup/restore-backup", "/setup", _TITLE, _
 START_COMPANY = WizardMode("start_company", START_COMPANY_RESTORE, START_COMPANY_PAGE, _TITLE, _OWNER_ONLY)
 # Sending, listing and saved copies refuse a non-owner under a heading of their own.
 COPIES = WizardMode("settings", SETTINGS.base, BACKUP_TAB, "company_backup.handoffs_title", _OWNER_ONLY)
+SAVED_COPIES = WizardMode("settings", SETTINGS.base, BACKUP_TAB, "company_backup.saved_title", _OWNER_ONLY)
 
 USERS_AND_ROLES = "/settings/general?tab=users"
 
@@ -1257,7 +1258,7 @@ async def _company_name(token: str) -> str:
 
 
 async def _saved_page(request: Request, *, warning: str | None = None, status_code: int = 200):
-    if (denied := await _gate(request, COPIES)) is not None:
+    if (denied := await _gate(request, SAVED_COPIES)) is not None:
         return denied
     token = get_token(request)
     try:
@@ -1275,7 +1276,7 @@ async def _saved_page(request: Request, *, warning: str | None = None, status_co
 
 
 async def _saved_download(request: Request):
-    if (denied := await _gate(request, COPIES)) is not None:
+    if (denied := await _gate(request, SAVED_COPIES)) is not None:
         return denied
     if (kept := _kept_id(request)) is None:
         return await _saved_page(request, warning=t("company_backup.err_kept_not_found"), status_code=404)
@@ -1290,7 +1291,7 @@ async def _saved_download(request: Request):
 async def _saved_delete(request: Request):
     """Delete a saved copy, after the page asked. The table swaps in place; without htmx
     the page loads again."""
-    if (denied := await _gate(request, COPIES)) is not None:
+    if (denied := await _gate(request, SAVED_COPIES)) is not None:
         return denied
     token = get_token(request)
     notice = warning = None
@@ -1313,7 +1314,7 @@ async def _saved_delete(request: Request):
 
 async def _put_back(request: Request):
     """Put a saved copy back in place of this company, once its name is typed."""
-    if (denied := await _gate(request, COPIES)) is not None:
+    if (denied := await _gate(request, SAVED_COPIES)) is not None:
         return denied
     if (kept := _kept_id(request)) is None:
         return await _saved_page(request, warning=t("company_backup.err_kept_not_found"), status_code=404)
