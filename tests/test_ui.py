@@ -6203,7 +6203,44 @@ class TestCompanyFilesAggregation:
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(side_effect=APIError(503, "down"))), \
              patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1"})):
             r = await ui_client.get("/contacts/c1/tab/documents", cookies=_authed())
-        assert "down" in r.text and "cell-error" in r.text
+        assert "down" in r.text and "documents could not be loaded" in r.text and "Open Documents again" in r.text
+
+
+    @pytest.mark.asyncio
+    async def test_the_contact_page_with_a_failed_documents_read_shows_the_error_not_none_yet(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.list_contact_docs", new=AsyncMock(side_effect=APIError(503, "down"))), \
+             patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1", "name": "Acme"})):
+            r = await ui_client.get("/contacts/c1", cookies=_authed())
+        assert "down" in r.text and "documents could not be loaded" in r.text and "None yet" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_the_contact_page_with_a_failed_contact_read_shows_the_error_not_a_blank_contact(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(503, "down"))):
+            r = await ui_client.get("/contacts/c1", cookies=_authed())
+        assert "down" in r.text and "contact could not be loaded" in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_contact_with_no_documents_still_shows_none_yet(self, ui_client):
+        with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1", "name": "Acme"})):
+            r = await ui_client.get("/contacts/c1", cookies=_authed())
+        assert r.status_code == 200 and "None yet" in r.text and "could not be loaded" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_failed_company_files_read_says_the_list_could_not_load_and_how_to_retry(self, ui_client):
+        from ui.api_client import APIError
+        with self._patches(list_docs=AsyncMock(side_effect=APIError(503, "down"))):
+            r = await ui_client.get(self._URL, cookies=_authed())
+        assert "down" in r.text and "could not be loaded" in r.text and "Open Files again" in r.text
+
+    @pytest.mark.asyncio
+    async def test_an_upload_with_no_file_says_to_choose_one(self, ui_client):
+        with self._patches():
+            r = await ui_client.post("/finance/company-files", data={}, cookies=_authed())
+        assert "Choose a file to upload." in r.text
 
 
 class TestAttachmentRoutes:
@@ -6236,7 +6273,7 @@ class TestAttachmentRoutes:
             cookies=_authed(),
         )
         assert r.status_code == 400
-        assert b"no file" in r.content.lower()
+        assert b"choose a file" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_upload_attachment_unauthenticated(self, ui_client):
@@ -20879,6 +20916,7 @@ class TestCompanySettingsUnavailable:
             patch("ui.api_client.get_company", new=self._down()),
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACTS[0])),
+            patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})),
         ):
             r = await ui_client.get(url, cookies=_authed())
         assert r.status_code == 503

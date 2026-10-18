@@ -90,14 +90,19 @@ if(!window.celerpFilesFetch){
 """
 
 
-def files_error(body, status: int = 400) -> HTMLResponse:
-    """A refused Files-section request: an error status, so the client leaves the section as it is
-    and shows ``body`` in its notice. Every Files route answers a refusal this way, never with a
-    200 fragment that would be swapped over the section. A 401 says the session ended, with the
+def files_error_block(body, status: int = 400) -> FT:
+    """The red notice for a refused Files or Documents read; a 401 says the session ended, with the
     way to sign in again."""
     if status == 401:
         body = (t("error.session_expired"), " ", A(t("btn.sign_in"), href="/login?reason=expired"))
-    return HTMLResponse(to_xml(Div(body, cls="flash flash--error")), status_code=max(status, 400))
+    return Div(body, cls="flash flash--error")
+
+
+def files_error(body, status: int = 400) -> HTMLResponse:
+    """A refused Files-section request: an error status, so the client leaves the section as it is
+    and shows ``body`` in its notice. Every Files route answers a refusal this way, never with a
+    200 fragment that would be swapped over the section."""
+    return HTMLResponse(to_xml(files_error_block(body, status)), status_code=max(status, 400))
 
 
 def files_session_expired() -> HTMLResponse:

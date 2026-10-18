@@ -21,7 +21,7 @@ from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
 from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
-from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
+from ui.components.files import files_error, files_error_block, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
 from celerp.services.business_time import business_today
 from celerp.services.currencies import CURRENCY_CODES as _CURRENCY_CODES
 from ui.components.currency import currency_combobox_td
@@ -1160,17 +1160,20 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        failed_key = "msg.contact_load_failed"
         try:
             contact = await api.get_contact(token, contact_id)
-        except (APIError, Exception) as e:
-            if isinstance(e, APIError) and e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            contact = {}
-        try:
+            failed_key = "msg.documents_load_failed"
             docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
             docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
-        except Exception:
-            docs = []
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return await base_shell(
+                breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.customers"), "/contacts/customers")]),
+                files_error_block(t(failed_key, detail=str(e.detail)), e.status),
+                title=page_title("nav.customers"), nav_active="customers", request=request,
+            )
         try:
             vocab = await api.get_contact_tags_vocabulary(token)
         except Exception:
@@ -1249,7 +1252,7 @@ def setup_routes(app):
         try:
             files_html = await _company_files_section(token)
         except APIError as e:
-            files_html = Div(str(e.detail), cls="flash flash--error")
+            files_html = files_error_block(t("msg.files_load_failed", detail=str(e.detail)), e.status)
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("settings.company_details"), None)]),
             page_header("🏢 " + t("settings.company_details")),
@@ -1298,7 +1301,7 @@ def setup_routes(app):
         try:
             return await _company_files_section(token, **section_kwargs)
         except APIError as e:
-            return files_error(str(e.detail), e.status)
+            return files_error(t("msg.files_load_failed", detail=str(e.detail)), e.status)
 
     # Company files live as the first tab on the Company Details page (loaded via the _section route
     # below + the POST upload route), so there is no standalone page.
@@ -1351,7 +1354,7 @@ def setup_routes(app):
             docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
             contact = await api.get_contact(token, contact_id)
         except APIError as e:
-            return P(t("error.session_expired") if e.status == 401 else str(e.detail), cls="cell-error")
+            return files_error_block(t("msg.documents_load_failed", detail=str(e.detail)), e.status)
         cid = contact.get("entity_id") or contact.get("id") or contact_id
         # The company self-contact has its own Files tab, so its Documents tab is docs-only (no dup files).
         return _documents_tab(docs, contact, cid, show_files=not contact.get("is_self"))
