@@ -33,13 +33,15 @@ folder has letters Postgres cannot read:
 
 creates PARENT\\PREFIX<user SID> owned by the token's user and open only to that
 user, SYSTEM and Administrators, or checks that the folder already there is a
-real folder owned by that user, and prints its path. A folder another account
-made in its place is refused, never used.
+real folder owned by that user and open to no one else, and prints its path. A
+folder another account made in its place, or one other accounts can open, is
+refused, never used.
 
 On failure it writes one line starting with FAILURE_PREFIX to stderr and exits 1;
 the app recognises that prefix (electron/windows-start-errors.js).
 """
 import ctypes
+import re
 import subprocess
 import sys
 
@@ -74,6 +76,7 @@ RESUME_FAILED = 0xFFFFFFFF
 SDDL_REVISION_1 = 1
 SE_FILE_OBJECT = 1
 OWNER_SECURITY_INFORMATION = 0x1
+DACL_SECURITY_INFORMATION = 0x4
 ERROR_ALREADY_EXISTS = 183
 INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
 FILE_ATTRIBUTE_DIRECTORY = 0x10
@@ -108,15 +111,26 @@ def private_dir_sddl(user_sid: str) -> str:
     return f"O:{user_sid}D:P(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 
 
-def private_dir_problem(attributes: int, owner_sid: str | None, user_sid: str) -> str | None:
+def private_dir_problem(attributes: int, owner_sid: str | None, dacl: str | None, private_dacl: str,
+                        user_sid: str) -> str | None:
     """Why the existing folder cannot be used as the user's private folder, or None.
-    `owner_sid` is read only for a real folder (None otherwise)."""
+    `owner_sid` and `dacl` (its access list as SDDL) are read only for a real folder
+    (None otherwise); `private_dacl` is private_dir_sddl's access list as Windows
+    writes it back, with the same short names for well-known accounts. The folder
+    must grant no one more than that does, and take nothing from the folder above."""
     if attributes == INVALID_FILE_ATTRIBUTES or not attributes & FILE_ATTRIBUTE_DIRECTORY:
         return "is not a folder"
     if attributes & FILE_ATTRIBUTE_REPARSE_POINT:
         return "is a link to another place"
     if owner_sid != user_sid:
         return f"belongs to another account ({owner_sid})"
+    found = re.fullmatch(r"D:([A-Z_]*)((?:\([^()]*\))*)", dacl or "")
+    if not found:
+        return f"has an access list Celerp cannot read ({dacl})"
+    flags, entries = found.groups()
+    allowed = set(re.findall(r"\([^()]*\)", private_dacl))
+    if "P" not in flags or "NO_ACCESS_CONTROL" in flags or not set(re.findall(r"\([^()]*\)", entries)) <= allowed:
+        return "can be opened by other accounts"
     return None
 
 
@@ -194,6 +208,8 @@ def _api():
         (kernel32, "CreateDirectoryW"): (wintypes.BOOL, [wintypes.LPCWSTR, ctypes.c_void_p]),
         (kernel32, "GetFileAttributesW"): (wintypes.DWORD, [wintypes.LPCWSTR]),
         (advapi32, "ConvertSidToStringSidW"): (wintypes.BOOL, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]),
+        (advapi32, "ConvertSecurityDescriptorToStringSecurityDescriptorW"): (wintypes.BOOL, [
+            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]),
         (advapi32, "ConvertStringSecurityDescriptorToSecurityDescriptorW"): (wintypes.BOOL, [
             wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]),
         (advapi32, "GetNamedSecurityInfoW"): (wintypes.DWORD, [
@@ -297,6 +313,18 @@ def _sid_string(kernel32, advapi32, wintypes, sid) -> str:
         kernel32.LocalFree(text)
 
 
+def _dacl_sddl(kernel32, advapi32, descriptor) -> str:
+    """The access list of a security descriptor, as SDDL."""
+    text = ctypes.c_void_p()
+    _check(advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+        descriptor, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, ctypes.byref(text), None),
+        "ConvertSecurityDescriptorToStringSecurityDescriptorW")
+    try:
+        return ctypes.wstring_at(text.value)
+    finally:
+        kernel32.LocalFree(text)
+
+
 def private_dir(parent: str, prefix: str) -> str:
     """Create or check the user's private folder PARENT\\PREFIX<user SID>; return its path."""
     kernel32, advapi32, wintypes, *_ = _api()
@@ -323,6 +351,7 @@ def private_dir(parent: str, prefix: str) -> str:
         private_dir_sddl(user_sid), SDDL_REVISION_1, ctypes.byref(descriptor), None),
         "ConvertStringSecurityDescriptorToSecurityDescriptorW")
     try:
+        private_dacl = _dacl_sddl(kernel32, advapi32, descriptor)
         attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor.value, False)
         if not kernel32.CreateDirectoryW(folder, ctypes.byref(attributes)):
             error = ctypes.get_last_error()
@@ -332,19 +361,21 @@ def private_dir(parent: str, prefix: str) -> str:
         kernel32.LocalFree(descriptor)
 
     found = kernel32.GetFileAttributesW(folder)
-    owner_sid = None
+    owner_sid = dacl = None
     if found != INVALID_FILE_ATTRIBUTES and found & FILE_ATTRIBUTE_DIRECTORY and not found & FILE_ATTRIBUTE_REPARSE_POINT:
         owner = ctypes.c_void_p()
         security = ctypes.c_void_p()
-        error = advapi32.GetNamedSecurityInfoW(folder, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+        error = advapi32.GetNamedSecurityInfoW(folder, SE_FILE_OBJECT,
+                                               OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
                                                ctypes.byref(owner), None, None, None, ctypes.byref(security))
         if error:
             raise LaunchError(f"GetNamedSecurityInfoW failed (error {error})")
         try:
             owner_sid = _sid_string(kernel32, advapi32, wintypes, owner)
+            dacl = _dacl_sddl(kernel32, advapi32, security)
         finally:
             kernel32.LocalFree(security)
-    problem = private_dir_problem(found, owner_sid, user_sid)
+    problem = private_dir_problem(found, owner_sid, dacl, private_dacl, user_sid)
     if problem:
         raise LaunchError(f"{folder} {problem}")
     return folder

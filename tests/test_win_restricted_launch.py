@@ -162,15 +162,34 @@ def test_the_private_folder_is_the_users_own_and_closed_to_other_accounts():
         f"O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
 
 
-@pytest.mark.parametrize("attributes, owner, problem", [
-    (launch.FILE_ATTRIBUTE_DIRECTORY, "S-1-5-21-9", None),
-    (launch.FILE_ATTRIBUTE_DIRECTORY, "S-1-5-21-8", "belongs to another account (S-1-5-21-8)"),
-    (launch.FILE_ATTRIBUTE_DIRECTORY | launch.FILE_ATTRIBUTE_REPARSE_POINT, None, "is a link to another place"),
-    (0x20, None, "is not a folder"),  # FILE_ATTRIBUTE_ARCHIVE: a file
-    (launch.INVALID_FILE_ATTRIBUTES, None, "is not a folder"),
+# The access list of private_dir_sddl as Windows writes it back, for user S-1-5-21-9.
+PRIVATE = "D:PAI(A;OICI;FA;;;S-1-5-21-9)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+OPEN = "can be opened by other accounts"
+FOLDER = launch.FILE_ATTRIBUTE_DIRECTORY
+
+
+@pytest.mark.parametrize("attributes, owner, dacl, problem", [
+    (FOLDER, "S-1-5-21-9", PRIVATE, None),
+    (FOLDER, "S-1-5-21-9", PRIVATE.replace("D:PAI", "D:P"), None),
+    (FOLDER, "S-1-5-21-9", "D:P(A;OICI;FA;;;S-1-5-21-9)", None),
+    (FOLDER, "S-1-5-21-8", PRIVATE, "belongs to another account (S-1-5-21-8)"),
+    # The user's own folder, but readable by every user of the PC.
+    (FOLDER, "S-1-5-21-9", PRIVATE + "(A;OICI;FR;;;BU)", OPEN),
+    (FOLDER, "S-1-5-21-9", PRIVATE + "(A;;0x1200a9;;;WD)", OPEN),
+    (FOLDER, "S-1-5-21-9", PRIVATE.replace("S-1-5-21-9", "S-1-5-21-8"), OPEN),
+    # Not protected: it takes what the folder above it allows.
+    (FOLDER, "S-1-5-21-9", PRIVATE.replace("D:PAI", "D:AI") + "(A;OICIID;FR;;;BU)", OPEN),
+    (FOLDER, "S-1-5-21-9", PRIVATE.replace("D:PAI", "D:AI"), OPEN),
+    # No access list at all lets everyone in.
+    (FOLDER, "S-1-5-21-9", "D:NO_ACCESS_CONTROL", OPEN),
+    (FOLDER, "S-1-5-21-9", "", "has an access list Celerp cannot read ()"),
+    (FOLDER | launch.FILE_ATTRIBUTE_REPARSE_POINT, None, None, "is a link to another place"),
+    (0x20, None, None, "is not a folder"),  # FILE_ATTRIBUTE_ARCHIVE: a file
+    (launch.INVALID_FILE_ATTRIBUTES, None, None, "is not a folder"),
 ])
-def test_a_private_folder_found_in_place_is_used_only_when_it_is_the_users_own(attributes, owner, problem):
-    assert launch.private_dir_problem(attributes, owner, "S-1-5-21-9") == problem
+def test_a_private_folder_found_in_place_is_used_only_when_it_is_the_users_own_and_private(
+        attributes, owner, dacl, problem):
+    assert launch.private_dir_problem(attributes, owner, dacl, PRIVATE, "S-1-5-21-9") == problem
 
 
 def test_the_private_folder_flag_prints_its_path(monkeypatch, capsys):
