@@ -76,7 +76,8 @@ PLUGIN_MANIFEST = {
             "permission": "view_fixed_assets",
         },
         "projection_handler": [
-            {"prefix": "fa.", "handler": "celerp_fixed_assets.projections:apply_fixed_asset_event"},
+            {"prefix": "fa.", "handler": "celerp_fixed_assets.projections:apply_fixed_asset_event",
+             "permission": "view_fixed_assets"},
         ],
         # A demo company's sample data includes a few asset bills to register.
         "demo_records": {"handler": "celerp_fixed_assets.demo:seed_demo_assets_hook"},

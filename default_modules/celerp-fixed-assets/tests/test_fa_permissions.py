@@ -160,3 +160,22 @@ async def test_l3_a_role_outside_the_known_levels_cannot_be_given_and_reaches_no
     r = await fa.post(f"/assets/{car}/dispose", {"date": "2026-05-01", "reason": "lost", "preview": True,
                                                  "op_key": "l3"}, staff)
     assert r.status_code == 403, r.text
+
+
+async def test_activity_and_the_ledger_leave_out_asset_events_for_a_role_that_cannot_view_assets(fa):
+    from test_runs import _contributed, _managed_from
+
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    entry = next(e for e in (await fa.client.get("/ledger", headers=fa.h)).json()["items"]
+                 if e["event_type"].startswith("fa."))
+    for role, sees in (("viewer", False), ("operator", True)):
+        headers = await fa.role_headers(role)
+        feeds = [(await fa.client.get("/dashboard/activity", headers=headers)).json()["activities"],
+                 (await fa.client.get("/dashboard/activity/search", headers=headers)).json()["activities"],
+                 (await fa.client.get("/ledger", headers=headers)).json()["items"]]
+        for feed in feeds:
+            assert any(e["event_type"].startswith("fa.") for e in feed) is sees, (role, feed)
+            assert any(e["entity_id"] == car for e in feed) is sees, role
+        one = await fa.client.get(f"/ledger/{entry['id']}", headers=headers)
+        assert one.status_code == (200 if sees else 404), (role, one.text)

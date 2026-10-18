@@ -134,7 +134,10 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
 
 @router.get("/activity")
 async def get_activity(limit: int = Query(default=15, le=100), company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
-    rows = (await session.execute(select(LedgerEntry).where(LedgerEntry.company_id == company_id).order_by(LedgerEntry.id.desc()).limit(limit))).scalars().all()
+    from celerp.services.activity_redaction import readable_events
+
+    stmt = readable_events(select(LedgerEntry).where(LedgerEntry.company_id == company_id), settings, role)
+    rows = (await session.execute(stmt.order_by(LedgerEntry.id.desc()).limit(limit))).scalars().all()
     return {"activities": await _hydrate_entries(rows, company_id, session, settings, role)}
 
 
@@ -150,10 +153,11 @@ async def search_activity(
     settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    from sqlalchemy import and_, func
+    from sqlalchemy import func
     import sqlalchemy as _sa
+    from celerp.services.activity_redaction import readable_events
 
-    stmt = select(LedgerEntry).where(LedgerEntry.company_id == company_id)
+    stmt = readable_events(select(LedgerEntry).where(LedgerEntry.company_id == company_id), settings, role)
 
     if date_from:
         try:
