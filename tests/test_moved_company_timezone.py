@@ -114,3 +114,18 @@ async def test_an_unknown_timezone_is_refused_and_creates_nothing(real_client, r
 
     assert r.status_code == 422 and "Mars/Olympus" in r.json()["detail"]["timezone"], r.text
     assert await count(real_engine, "companies") == companies
+
+
+async def test_a_move_in_that_names_no_timezone_gets_the_default(real_client, real_engine, migration_env):
+    """An API client that sends no timezone moves its company in on the default business
+    timezone, as setup does, rather than being refused."""
+    boss = await owner(real_engine)
+    tok = await token(real_engine, boss, await company(real_engine, boss, "Home Co", "alpha"))
+    scan_token = (await scan_upload(real_client, fake_bytes(), token=tok)).json()["scan_token"]
+    assert (await save_decisions(real_client, scan_token, token=tok)).status_code == 200
+
+    r = await real_client.post("/migrations/start-from-scan", headers=auth(tok), json={
+        "scan_token": scan_token, "company_name": MOVED})
+
+    assert r.status_code == 201, r.text
+    assert (await _settings(real_engine)).get("timezone") == "UTC"

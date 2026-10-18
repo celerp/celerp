@@ -83,7 +83,7 @@ class DecisionsIn(BaseModel):
 class StartFromScanIn(BaseModel):
     scan_token: str
     company_name: str
-    timezone: str
+    timezone: str = ""  # unset is the default business timezone, as at setup
 
 
 class StartCompanyStartIn(BaseModel):
@@ -91,7 +91,7 @@ class StartCompanyStartIn(BaseModel):
     password: str
     scan_token: str
     company_name: str
-    timezone: str
+    timezone: str = ""  # unset is the default business timezone, as at setup
 
 
 class FinalizeIn(BaseModel):
@@ -103,7 +103,7 @@ class FinalizeIn(BaseModel):
 class BootstrapStartIn(BaseModel):
     scan_token: str
     company_name: str
-    timezone: str
+    timezone: str = ""  # unset is the default business timezone, as at setup
     name: str
     email: str
     password: str
