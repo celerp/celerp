@@ -5,6 +5,7 @@ sentence per rule, figures as money, dates the company's own, and a link to the 
 fixes it."""
 from __future__ import annotations
 
+import html
 from datetime import timedelta
 
 import pytest
@@ -133,3 +134,42 @@ async def test_undo_disposal_refusal_names_what_changed_and_the_way_on(fa: FA):
     number = (await fa.asset(car))["number"]
     assert _message(r) == (f"{number} has changed since it was disposed of (Depreciation), so the disposal can no "
                            "longer be undone. Use Correct to change its figures.")
+
+
+_HOME_CRUMB = '<a href="/fixed-assets" class="breadcrumb-link">'
+
+
+async def test_a_missing_record_keeps_the_breadcrumb_and_a_way_back(fa: FA):
+    await _managed_from(fa)
+    for path in ("/fixed-assets/assets/nope", "/fixed-assets/assets/nope/dispose", "/fixed-assets/corrections/nope",
+                 "/fixed-assets/imports/nope"):
+        page = (await fa.page(path)).text
+        assert _HOME_CRUMB in page, path
+        assert 'class="empty-state-cta-msg">No such' in page, path
+
+
+async def test_a_missing_permission_on_a_print_reads_as_on_screen_without_a_link_the_reader_cannot_use(fa: FA):
+    from celerp.services.permissions import missing_permission_text
+
+    await _managed_from(fa)
+    viewer = await fa.role_headers("viewer")
+    for path in ("/fixed-assets/reports/schedule", "/fixed-assets/reports/schedule/print",
+                 "/fixed-assets/year-end/print"):
+        r = await fa.page(path, headers=viewer)
+        page = html.unescape(r.text)
+        assert missing_permission_text("view_fixed_assets") in page, path
+        assert _HOME_CRUMB in r.text, path
+        assert "tab=users" not in page, path
+
+
+async def test_an_unknown_run_or_class_names_no_crumb_it_does_not_have(fa: FA):
+    await _managed_from(fa)
+    run = (await fa.page("/fixed-assets/runs/soon")).text
+    assert "soon" not in _crumbs(run) and "soon" not in run.split("<h1", 1)[1].split("</h1>", 1)[0]
+    for path in ("/fixed-assets/classes/nope/fix-account", "/fixed-assets/classes/nope/revalue",
+                 "/fixed-assets/classes/nope/apply"):
+        assert "--" not in _crumbs((await fa.page(path)).text), path
+
+
+def _crumbs(page: str) -> str:
+    return page[page.index('class="breadcrumbs"'):].split("</div>", 1)[0]

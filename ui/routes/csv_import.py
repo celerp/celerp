@@ -33,7 +33,7 @@ import ui.api_client as api
 from celerp.services import import_stage
 from ui.components.icons import import_icon
 from ui.i18n import get_lang, refusal_text, t
-from ui.components.table import searchable_select
+from ui.components.table import empty_mark, searchable_select
 
 from celerp.importers import tabular
 from celerp.output.doc_print import fmt_money
@@ -1497,8 +1497,8 @@ def plan_review_panel(
                 cells.append(Td(_review_amount(value, currency), cls="cell-ro cell--number"))
             else:
                 cells.append(Td(value or "--", cls="cell-ro"))
-        cells.append(Td("; ".join(e["message"] for e in by_row.get(n, [])) if n not in excluded else "",
-                        cls="import-problem"))
+        problem = "; ".join(e["message"] for e in by_row.get(n, [])) if n not in excluded else ""
+        cells.append(Td(problem or empty_mark(), cls="import-problem"))
         body.append(Tr(*cells, cls="data-row" + (" import-row--excluded" if n in excluded else "")))
     file_errors = by_row.get(0, [])
     counts = plan.get("counts") or {}

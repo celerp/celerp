@@ -50,15 +50,16 @@ class FA:
     async def patch(self, path: str, body: dict, headers=None):
         return await self.client.patch(f"{API}{path}", headers=headers or self.h, json=body)
 
-    async def page(self, path: str, **params):
-        """A UI page as this company's owner sees it, the UI talking to the API in process."""
-        return await self._ui("GET", path, params=params)
+    async def page(self, path: str, headers=None, **params):
+        """A UI page as this company's owner (or the member ``headers`` sign in as) sees it, the
+        UI talking to the API in process."""
+        return await self._ui("GET", path, headers=headers, params=params)
 
     async def submit(self, path: str, data: dict):
         """A UI form post as this company's owner sends it."""
         return await self._ui("POST", path, data=data)
 
-    async def _ui(self, method: str, path: str, **kwargs):
+    async def _ui(self, method: str, path: str, headers=None, **kwargs):
         from unittest.mock import patch
 
         from httpx import ASGITransport, AsyncClient
@@ -66,7 +67,7 @@ class FA:
         from celerp.main import app
         from ui.app import app as ui_app
 
-        token = self.h["Authorization"].removeprefix("Bearer ")
+        token = (headers or self.h)["Authorization"].removeprefix("Bearer ")
 
         def bridged(tok=None, *, timeout=10.0, follow_redirects=True, bulk=False, headers=None):
             auth = {"Authorization": f"Bearer {tok}"} if tok else {}

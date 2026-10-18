@@ -363,4 +363,6 @@ async def test_u41_the_template_reads_in_field_labels_maps_itself_and_shows_mone
     currency = books_currency((await fa.client.get("/companies/me", headers=fa.h)).json())
     grid = review.text[review.text.index("import-preview-table"):]
     assert re.search(rf'<td class="cell-ro cell--number">{re.escape(fmt_money(250000.0, currency))}</td>', grid), grid
+    # The sample row has no problem: its Problem cell says so with the empty mark.
+    assert re.search(r'<td class="import-problem">\s*<span class="cell-empty">--</span>\s*</td>', grid), grid
 

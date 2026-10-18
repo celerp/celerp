@@ -19,7 +19,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.report_kit import action_bar, csv_amount, csv_response, fname_date, plain_error_response, print_shell
 from ui.components.shell import page_header
-from ui.components.table import EMPTY, breadcrumbs, empty_state_cta
+from ui.components.table import EMPTY, breadcrumbs, empty_mark, empty_state_cta
 from ui.config import get_token as _token
 from ui.i18n import t
 
@@ -35,6 +35,7 @@ from celerp_fixed_assets.ui_routes import (
     _no_tax_regime,
     _page,
     _picker,
+    _refused,
     _restated_table,
     _text,
 )
@@ -144,7 +145,7 @@ def _depreciation_body(report: dict, currency: str) -> list[FT]:
         rows.append(Tr(Td(Strong(m["month"])), Td(""), _money_td(m["posted"], currency), _money_td(m["forecast"], currency),
                        Td("")))
         rows += [Tr(Td(""), Td(_asset_link(a), " ", _text(a.get("name"))), _money_td(a["posted"], currency),
-                    _money_td(a["forecast"], currency), Td("")) for a in m["assets"]]
+                    _money_td(a["forecast"], currency), Td(empty_mark())) for a in m["assets"]]
         rows += [Tr(Td(""), Td(_asset_link(s), " ", _text(s.get("name"))), _money_td(None, currency),
                     _money_td(None, currency), Td(_text(s.get("reason")))) for s in m["skipped"]]
     if not any(m["assets"] or m["skipped"] for m in report["months"]):
@@ -463,7 +464,7 @@ def _register_routes(app, report: Report) -> None:
             data = await fetch(token, params, request)
             company = await api.get_company(token)
         except APIError as e:
-            return plain_error_response(e)
+            return await _refused(request, e, report.title_key)
         return print_shell(company, t(report.title_key), _subtitle(params), Div(*report.body(data, currency)))
 
     @app.get(path, name=f"fa_report_{report.key}")
@@ -476,8 +477,7 @@ def _register_routes(app, report: Report) -> None:
             classes = ((await api.fixed_assets_get(token, "/classes"))["items"]
                        if report.period == "register" else [])
         except APIError as e:
-            return await _page(request, page_header(t(report.title_key)), _error_box(e),
-                               title_key=report.title_key)
+            return await _refused(request, e, report.title_key)
         here = request.url.path
         params = _params(report, request, setup)
         if report.period == "tax" and not params["regime"]:
@@ -489,7 +489,7 @@ def _register_routes(app, report: Report) -> None:
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            body = _error_box(e)
+            body = await _error_box(request, e)
         return await _page(request, _crumbs(report),
                            page_header(t(report.title_key), action_bar(f"{here}/print", f"{here}.csv", params)),
                            P(t(report.hint_key), cls="settings-hint"), _chooser(report, params, classes, setup, here),

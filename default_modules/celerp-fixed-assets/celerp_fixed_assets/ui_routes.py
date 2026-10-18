@@ -88,13 +88,25 @@ def _missing_permission(e: APIError) -> bool:
     return e.status == 403 and any(e.detail == missing_permission_text(p.key) for p in PERMISSIONS)
 
 
-def _error_box(e: APIError):
+async def _grants_permissions(request: Request) -> bool:
+    """True when the user can open Users, where roles are granted permissions."""
+    from celerp.services.permissions import role_has_permission
+
+    try:
+        settings = (await api.get_company(_token(request))).get("settings") or {}
+    except APIError:
+        return False
+    return role_has_permission(settings, get_role(request), "manage_company_settings")
+
+
+async def _error_box(request: Request, e: APIError):
     """A refusal, with the way to fix it when it names one (its ``href`` and ``action`` label),
     or a link to each record it names (``links``). A missing permission leads to Users, where
-    the owner grants it."""
+    it is granted, for a user who can open Users; the refusal tells anyone else who to ask."""
     params = (e.data or {}).get("params") or {}
     if _missing_permission(e):
-        params = {"href": "/settings/general?tab=users", "action": "fixed_assets.action.open_users"}
+        params = ({"href": "/settings/general?tab=users", "action": "fixed_assets.action.open_users"}
+                  if await _grants_permissions(request) else {})
     fix = [" ", A(t(params["action"]), href=params["href"])] if params.get("href") and params.get("action") else []
     for link in params.get("links") or []:
         fix += [" ", A(link["label"], href=link["href"])]
@@ -219,11 +231,17 @@ async def _page(request: Request, *content, title_key: str, nav: str = "fixed_as
 
 
 async def _refused(request: Request, e: APIError, title_key: str):
-    """A page the API refused, saying why with the way on. A page waiting on the first
-    managed period offers its confirmation in place, and comes back here once confirmed."""
+    """A page the API refused, under the module's breadcrumb, saying why with the way on. A
+    record that is not there leads back to the register. A page waiting on the first managed
+    period offers its confirmation in place, and comes back here once confirmed."""
     if e.status == 401:
         return RedirectResponse("/login", status_code=302)
-    body = _error_box(e)
+    crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
+                          *([(t(title_key), None)] if title_key != "fixed_assets.title" else [])])
+    if e.status == 404:
+        body = empty_state_cta(_error_text(e), t("fixed_assets.title"), "/fixed-assets")
+    else:
+        body = await _error_box(request, e)
     if (e.data or {}).get("message_key") == "fixed_assets.not_managed":
         try:
             first = (await api.fixed_assets_get(_token(request), "/setup")).get("first_period")
@@ -231,7 +249,7 @@ async def _refused(request: Request, e: APIError, title_key: str):
             first = None
         if first:
             body = _first_period_card(first, back=request.url.path + (f"?{request.url.query}" if request.url.query else ""))
-    return await _page(request, page_header(t(title_key)), body, title_key=title_key)
+    return await _page(request, crumbs, page_header(t(title_key)), body, title_key=title_key)
 
 
 # ── Review and confirm ───────────────────────────────────────────────────────
@@ -914,7 +932,8 @@ def _sale_card(asset: dict, sale: dict, currency: str, today: str) -> FT | str:
                              " ", A(t("fixed_assets.open_invoice"), href=_doc_href(sale["invoice_id"])),
                              cls="flash flash--warning"))
     parts.append(_detail_table(rows))
-    if (sale.get("journal") or {}).get("lines"):
+    # A void or deleted invoice will never be finalized, so it has no journal to show.
+    if (sale.get("journal") or {}).get("lines") and not (sale.get("invoice_void") or sale.get("draft_deleted")):
         parts += [H4(t("fixed_assets.sale_journal_" + ("pending" if sale["state"] == "pending" else "posted"))),
                   _lines_table(sale["journal"]["lines"], currency)]
     notes = sale.get("credit_notes") or []
@@ -1118,7 +1137,8 @@ def _classes_card(classes: list[dict], chart: list[dict]) -> FT:
 
 def _movements_table(items: list[dict], currency: str) -> FT:
     """Each movement's change to cost and accumulated depreciation, and to accumulated
-    impairment once any movement has touched it."""
+    impairment once any movement has touched it. A column the movement does not change
+    reads as empty."""
     if not items:
         return P(t("fixed_assets.no_movements"), cls="form-hint")
     columns = ["cost", "accumulated_depreciation"]
@@ -1126,8 +1146,7 @@ def _movements_table(items: list[dict], currency: str) -> FT:
         columns.append("accumulated_impairment")
     rows = [Tr(Td(_text(m.get("posting_date"))), Td(_text(m.get("effective_date"))),
                Td(t(f"fixed_assets.movement.{m.get('operation')}")),
-               *[_money_td((m.get("amounts") or {}).get(c) if m.get("amounts") is not None else None, currency)
-                 for c in columns])
+               *[_money_td(_known((m.get("amounts") or {}).get(c)) or None, currency) for c in columns])
             for m in items]
     return Table(Thead(Tr(Th(t("fixed_assets.posting_date")), Th(t("fixed_assets.effective_date")),
                           Th(t("fixed_assets.movement")), *[_money_th(t(f"fixed_assets.{c}")) for c in columns])),
@@ -2191,7 +2210,7 @@ def setup_ui_routes(app) -> None:
             result = await api.fixed_assets_send(token, "POST", path_of(form), body)
             _, currency = await _context(token)
         except APIError as e:
-            return Div(_error_box(e),
+            return Div(await _error_box(request, e),
                        *([Button(t("fixed_assets.review_again"), type="button", cls="btn btn--secondary",
                                  hx_post=f"/fixed-assets/op/{action}/review", hx_include="closest form",
                                  hx_target="closest #fa-preview", hx_swap="outerHTML")] if step == "confirm" else []),
@@ -2484,7 +2503,7 @@ def setup_ui_routes(app) -> None:
             await api.fixed_assets_send(token, "POST", "/opening/finish",
                                         {k: True for k in ("keep_open", "reopen") if form.get(k)})
         except APIError as e:
-            return _error_box(e)
+            return await _error_box(request, e)
         said = "reopen" if form.get("reopen") else "keep_open" if form.get("keep_open") else "finish"
         return Response(headers={"HX-Redirect": "/fixed-assets/opening",
                                  **toast_header(t(f"fixed_assets.toast.opening_{said}"))})
@@ -2524,14 +2543,15 @@ def setup_ui_routes(app) -> None:
             items = (await api.fixed_assets_get(token, "/runs"))["items"]
         except APIError as e:
             return await _refused(request, e, "fixed_assets.runs_title")
-        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
-                              (t("fixed_assets.runs_title"), "/fixed-assets/runs"), (month, None)])
         record = next((r for r in items if r["month"] == month), None)
         if record is None:
-            return await _page(request, crumbs, page_header(month),
+            crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.runs_title"), None)])
+            return await _page(request, crumbs, page_header(t("fixed_assets.runs_title")),
                                empty_state_cta(t("fixed_assets.run_missing"), t("fixed_assets.runs_title"),
                                                "/fixed-assets/runs"),
                                title_key="fixed_assets.runs_title")
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
+                              (t("fixed_assets.runs_title"), "/fixed-assets/runs"), (month, None)])
         summary = _detail_table([
             (t("fixed_assets.status"), t(f"fixed_assets.run_status.{record['status']}")),
             (t("label.total"), _money_td(record.get("total"), currency)),
@@ -2982,7 +3002,7 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.action.fix_account")
         cls = next((c for c in classes if c["id"] == class_id), None)
         crumbs = breadcrumbs([(t("fixed_assets.settings_title"), "/settings/fixed-assets"),
-                              (cls["name"] if cls else EMPTY, None), (t("fixed_assets.action.fix_account"), None)])
+                              *([(cls["name"], None)] if cls else []), (t("fixed_assets.action.fix_account"), None)])
         if cls is None:
             return await _page(request, crumbs, page_header(t("fixed_assets.action.fix_account")),
                                empty_state_cta(t("fixed_assets.class_missing"), t("fixed_assets.settings_title"),
@@ -3037,7 +3057,7 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.revalue_class")
         cls = next((c for c in classes if c["id"] == class_id), None)
         crumbs = breadcrumbs([(t("fixed_assets.settings_title"), "/settings/fixed-assets"),
-                              (cls["name"] if cls else EMPTY, None)])
+                              *([(cls["name"], None)] if cls else [])])
         if cls is None or not assets:
             return await _page(request, crumbs, page_header(t("fixed_assets.revalue_class")),
                                empty_state_cta(t("fixed_assets.class_missing" if cls is None
@@ -3121,7 +3141,7 @@ def setup_ui_routes(app) -> None:
                                                  {}, files=payload)
         except APIError as e:
             return await _revalue_class_view(request, token, class_id,
-                                             notices=(_error_box(e),))
+                                             notices=(await _error_box(request, e),))
         return await _revalue_class_view(request, token, class_id, report=report)
 
     @app.post("/fixed-assets/classes/{class_id}/revalue/report/remove")
@@ -3292,7 +3312,7 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.apply_to_assets")
         cls = next((c for c in classes if c["id"] == class_id), None)
         crumbs = breadcrumbs([(t("fixed_assets.settings_title"), "/settings/fixed-assets"),
-                              (cls["name"] if cls else EMPTY, None)])
+                              *([(cls["name"], None)] if cls else [])])
         if cls is None:
             return await _page(request, crumbs, page_header(t("fixed_assets.apply_to_assets")),
                                empty_state_cta(t("fixed_assets.class_missing"), t("fixed_assets.settings_title"),
@@ -3417,7 +3437,7 @@ def setup_ui_routes(app) -> None:
 
     @app.get("/fixed-assets/year-end/print")
     async def year_end_print(request: Request, year: int = 0):
-        from ui.components.report_kit import plain_error_response, print_shell
+        from ui.components.report_kit import print_shell
 
         token = _token(request)
         if not token:
@@ -3426,7 +3446,7 @@ def setup_ui_routes(app) -> None:
             report, books, currency, setup, year = await _year_end(token, year)
             company = await api.get_company(token)
         except APIError as e:
-            return plain_error_response(e)
+            return await _refused(request, e, "fixed_assets.year_end_title")
         body = Div(P(*_year_end_status(report, printed=True)),
                    _year_end_table(report, currency, printed=True),
                    H3(t("fixed_assets.tax_books_title")),
