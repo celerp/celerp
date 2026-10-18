@@ -67,8 +67,8 @@ describe("createShutdown", () => {
     expect(second).toBe(first);
     expect(lifecycle.stopping).toBe(true);
     expect(lifecycle.stopped).toBe(false);
-    await first;
-    await lifecycle.shutdown();
+    expect(await first).toBe(true);
+    expect(await lifecycle.shutdown()).toBe(true);
 
     expect(stopDatabase).toHaveBeenCalledTimes(1);
     expect(order).toEqual(["database (servers alive: false)"]);
@@ -83,7 +83,7 @@ describe("createShutdown", () => {
       stopDatabase: async () => { throw new Error("pg stop failed"); },
       log,
     });
-    await lifecycle.shutdown();
+    expect(await lifecycle.shutdown()).toBe(false);
     expect(lifecycle.stopped).toBe(true);
     expect(alive(api.pid)).toBe(false);
     expect(log).toHaveBeenCalledWith("[shutdown] database stop failed: pg stop failed");
@@ -97,7 +97,7 @@ describe("createShutdown", () => {
       databaseMs: 100,
       log,
     });
-    await lifecycle.shutdown();
+    expect(await lifecycle.shutdown()).toBe(false);
     expect(lifecycle.stopped).toBe(true);
     expect(log).toHaveBeenCalledWith("[shutdown] the database did not stop in time");
   });
@@ -107,7 +107,7 @@ describe("createShutdown", () => {
     const stopDatabase = jest.fn(async () => {});
     const log = jest.fn();
     const lifecycle = createShutdown({ children: () => [stuck], stopDatabase, graceMs: 50, log });
-    await lifecycle.shutdown();
+    expect(await lifecycle.shutdown()).toBe(false);
     expect(stuck.kill.mock.calls).toEqual([[], ["SIGKILL"]]);
     expect(log).toHaveBeenCalledWith("[shutdown] a server did not exit");
     expect(stopDatabase).toHaveBeenCalledTimes(1);
@@ -124,7 +124,7 @@ describe("createShutdown", () => {
     const done = lifecycle.shutdown();
     [api] = await servers({});
     restarted();
-    await done;
+    expect(await done).toBe(true);
 
     expect(alive(api.pid)).toBe(false);
     expect(stopDatabase).toHaveBeenCalledTimes(1);
