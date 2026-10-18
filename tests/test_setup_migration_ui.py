@@ -1688,8 +1688,8 @@ async def test_finish_pressed_again_shows_the_run_where_it_is(ui, fake_api):
     page = _visible(r)
     assert "The migration keeps running" in page and "Finish migration" not in page
     for action in ("start", "cancel", "finalize"):
-        text = t(f"migration.err_cannot_{action}", "en", status=t("migration.status.running", "en"))
-        assert '"' not in text and "Refresh" not in text, text
+        text = t(f"migration.err_cannot_{action}", "en")
+        assert '"' not in text and "Refresh" not in text and "status" not in text, text
 
 
 @pytest.mark.asyncio
