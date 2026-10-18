@@ -1194,25 +1194,26 @@ def _pairing_card(company_id: str, name: str, lang: str) -> FT:
 
 def _from_accountant_action(item: dict, lang: str) -> FT:
     """Reverse an entry the accountant posted, or undo its reversal; each confirm names
-    the date it posts on, and an entry with no open date says so instead."""
+    the date it posts on, and says so when a locked period moves it to today; an entry
+    with no open date says so instead."""
     common = {"hx_target": "#from-accountant", "hx_swap": "outerHTML"}
     if item.get("status") == "void":
         return Span(t("accountant_access.from_voided", lang))
     reversal = item.get("reversal")
-    target, day = (reversal["id"], reversal.get("undo_on")) if reversal else (item["id"], item.get("reverse_on"))
+    target, original, day = ((reversal["id"], reversal["ts"], reversal.get("undo_on")) if reversal
+                             else (item["id"], item.get("ts"), item.get("reverse_on")))
     if day is None:
         return Span(t("accountant_access.from_no_open_date", lang, date=item.get("locked_through") or "--"),
                     " ", A(t("page.period_lock", lang), href=PERIOD_LOCK_PATH))
     url = f"/settings/connectors/celerp/from-accountant/{quote(target, safe='')}/reverse"
+    key = f"accountant_access.from_{'undo' if reversal else 'reverse'}_confirm{'_moved' if day != original else ''}"
+    confirm = t(key, lang, memo=item["memo"] or "--", date=day, original=original)
     if reversal:
         return Span(
             Em(t("accountant_access.from_reversed_on", lang, date=reversal["ts"])), " ",
-            Button(t("btn.undo", lang), cls="btn btn--xs btn--outline", hx_post=url,
-                   hx_confirm=t("accountant_access.from_undo_confirm", lang, memo=item["memo"] or "--", date=day),
-                   **common))
+            Button(t("btn.undo", lang), cls="btn btn--xs btn--outline", hx_post=url, hx_confirm=confirm, **common))
     return Button(t("accountant_access.from_reverse", lang), cls="btn btn--xs btn--outline", hx_post=url,
-                  hx_confirm=t("accountant_access.from_reverse_confirm", lang, memo=item["memo"] or "--", date=day),
-                  **common)
+                  hx_confirm=confirm, **common)
 
 
 def _from_accountant(items: list[dict] | None, lang: str, error: str | None = None) -> FT:
