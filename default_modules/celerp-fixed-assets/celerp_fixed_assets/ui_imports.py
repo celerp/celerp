@@ -152,7 +152,7 @@ def _duplicates_card(duplicates: list[dict]) -> FT | str:
     if not duplicates:
         return ""
     return Div(P(t("fixed_assets.possible_duplicates"), cls="settings-hint"),
-               Ul(*[Li(f"{t('import.col_row')} {d['row']}: {d['message']}") for d in duplicates]),
+               Ul(*[Li(f"{t('import.col_row')} {d['row']}: {d['message']}") for d in duplicates], cls="list-disc"),
                cls="flash flash--warning")
 
 

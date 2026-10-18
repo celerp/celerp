@@ -34,6 +34,17 @@ async def _location(session, company_id, value) -> dict | None:
     return {"id": str(loc.id), "name": loc.name}
 
 
+async def _placed(session, placement: dict) -> dict:
+    """Where ``placement`` (an asset, or the values a move replaced) puts the asset, its location by name,
+    and with whom."""
+    from celerp.models.company import Location
+
+    loc_id = placement.get("location_id")
+    loc = await session.get(Location, uuid.UUID(loc_id)) if loc_id else None
+    return {"location": {"id": loc_id, "name": loc.name if loc else None} if loc_id else None,
+            "custodian": placement.get("custodian")}
+
+
 async def member_name(session, company_id, user_id) -> str | None:
     """The name of an active member of the company, or None when ``user_id`` is not one."""
     from sqlalchemy import select
@@ -130,8 +141,9 @@ async def undo_move(session, company_id, user_id, asset_id: str, body: dict) -> 
         if asset.get("status") in _GONE:
             raise conflict(f"{asset['number']} is no longer on the books, so its move cannot be undone.")
         latest = placements[-1]
-        shown = {"assets": [{"id": asset_id, "number": asset["number"]}], "date": latest["date"],
-                 **latest["previous"]}
+        shown = {"assets": [{"id": asset_id, "number": asset["number"], "name": asset.get("name")}],
+                 "date": latest["date"], **await _placed(session, latest["previous"]),
+                 "moved_from": await _placed(session, asset)}
         return shown, {"asset": asset, "basis": asset.get("version")}
 
     async def apply(context, op_key):

@@ -255,6 +255,16 @@ async def _refused(request: Request, e: APIError, title_key: str):
 # ── Review and confirm ───────────────────────────────────────────────────────
 
 
+def _placement(result: dict, key: str) -> str:
+    """What a move or its undo does to the asset's location or custodian: a move leaves a field it is not
+    given unchanged; an undo names where the asset is and where it goes back to."""
+    to = (result.get(key) or {}).get("name")
+    if "moved_from" not in result:
+        return _text(to) if result.get(key) else t("fixed_assets.unchanged")
+    now = (result["moved_from"].get(key) or {}).get("name")
+    return t("fixed_assets.unchanged") if now == to else t("fixed_assets.back_to", now=_text(now), was=_text(to))
+
+
 def _preview(action: str, result: dict, currency: str) -> FT:
     """What an operation will do: the assets it creates or changes, and every journal line."""
     parts: list[FT] = []
@@ -279,7 +289,11 @@ def _preview(action: str, result: dict, currency: str) -> FT:
     if result.get("open_draft"):
         parts.append(P(t("fixed_assets.credit_open_draft", number=result["open_draft"]), cls="flash flash--info"))
     if "gain_or_loss" in result:
+        # A percent disposed of applies to every asset it names.
+        shares = {a.get("share") for a in assets}
+        part = _part(shares.pop()) if len(shares) == 1 else None
         parts.append(_detail_table([*([(t("fixed_assets.buyer"), result["contact_name"])] if "contact_name" in result else []),
+                                    *([(t("fixed_assets.percent_disposed"), part)] if part else []),
                                     (t("fixed_assets.depreciation"), _money_td(result["depreciation"], currency)),
                                     *[(t(f"fixed_assets.leaving.{k}"), _money_td(result[k], currency))
                                       for k in ("cost", "accumulated_depreciation", "accumulated_impairment")
@@ -294,10 +308,9 @@ def _preview(action: str, result: dict, currency: str) -> FT:
     if result.get("kind") in ("improvement", "replacement"):
         parts.append(_addition_figures(result, currency))
     if "custodian" in result:
-        parts.append(_detail_table([
-            (t("fixed_assets.date"), _text(result.get("date"))),
-            (t("fixed_assets.location"), _text((result.get("location") or {}).get("name"))),
-            (t("fixed_assets.custodian"), _text((result.get("custodian") or {}).get("name")))]))
+        parts.append(_detail_table([(t("fixed_assets.date"), _text(result.get("date"))),
+                                    *[(t(f"fixed_assets.{key}"), _placement(result, key))
+                                      for key in ("location", "custodian")]]))
     if "old_account" in result:
         parts.append(_detail_table([(t("fixed_assets.date"), _text(result["date"])),
                                     (t("fixed_assets.old_account"), result["old_account"]),
@@ -868,6 +881,12 @@ def _disposal_fields(asset: dict | None, today: str) -> list[FT]:
     return [*fields, share]
 
 
+def _part(share) -> str | None:
+    """The share of an asset a partial disposal took off, as a percent; None when the whole asset left."""
+    part = Decimal(str(share or 1))
+    return None if part >= 1 else f"{(part * 100).quantize(Decimal('0.01')).normalize():f}%"
+
+
 def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | str:
     """The latest disposal still standing, what it posted, and the form that undoes it. A sale
     is shown by its own card and undone through its invoice."""
@@ -877,7 +896,10 @@ def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | st
         return ""
     latest = live[-1]
     asset_id = quote(asset["id"], safe=":")
+    part = _part(latest.get("share"))
     rows = [(t("fixed_assets.disposal_date"), _text(latest.get("effective_date"))),
+            *([(t("fixed_assets.leaving.cost"),
+                _money_td(-Decimal(str((latest.get("amounts") or {}).get("cost") or 0)), currency))] if part else []),
             (t("fixed_assets.reason"), t(f"fixed_assets.disposal_reason.{latest.get('reason')}")),
             (t("fixed_assets.note"), _text(latest.get("note"))),
             _result_row(latest.get("gain_or_loss"), currency),
@@ -892,7 +914,8 @@ def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | st
     undo = "" if target else _op_form("undo-disposal", Input(type="hidden", name="asset_id", value=asset["id"]),
                                       P(t("fixed_assets.undo_disposal_hint"), cls="settings-hint"),
                                       review_label=t("fixed_assets.undo_disposal"))
-    return Div(H2(t("fixed_assets.disposal_title"), cls="section-title"),
+    title = t("fixed_assets.partial_disposal_title", share=part) if part else t("fixed_assets.disposal_title")
+    return Div(H2(title, cls="section-title"),
                _detail_table(rows), undo, cls="detail-card section-card", id=f"fa-disposal-{asset_id}")
 
 
@@ -1226,7 +1249,7 @@ def _transfer_needs(others: list[dict]) -> FT:
     return Ul(*[Li(t(f"fixed_assets.transfer_other.{o['reason']}", company=o["name"]),
                    *((" ", A(t("fixed_assets.switch_to", company=o["name"]), href=f"/switch-company/{o['company_id']}"))
                      if o["reason"] == "not_using" else ()))
-                for o in others], cls="form-hint")
+                for o in others], cls="form-hint list-disc")
 
 
 def _origin(asset: dict, first: dict | None) -> FT:
@@ -1253,7 +1276,7 @@ def _sources_card(asset: dict, first: dict | None, currency: str) -> FT:
     else:
         body = Ul(*[Li(A(_source_name(s["source"], s.get("ref")), href=_source_href(s["source"])), " ",
                        _money(s.get("amount"), currency) if s.get("amount") is not None else "")
-                    for s in sources])
+                    for s in sources], cls="list-disc")
     return Div(H2(t("fixed_assets.sources"), cls="section-title"), body, cls="detail-card section-card")
 
 
@@ -1402,7 +1425,7 @@ def _undo_latest_card(asset: dict) -> FT:
 def _attention_card(items: list[dict]) -> FT:
     return Div(H3(t("fixed_assets.attention_title")), P(t("fixed_assets.attention_hint")),
                Ul(*[Li(A(f"{a['number']} {a.get('name') or ''}".strip(), href=f"/fixed-assets/assets/{a['asset_id']}"),
-                       " ", t(f"fixed_assets.action.{a['exception']['action']}")) for a in items]),
+                       " ", t(f"fixed_assets.action.{a['exception']['action']}")) for a in items], cls="list-disc"),
                cls="flash flash--warning", id="fa-attention")
 
 
@@ -2459,7 +2482,8 @@ def setup_ui_routes(app) -> None:
                                                           cls="btn btn--secondary")),
                            P(t("fixed_assets.recon_hint", cutover=report["cutover"]), cls="settings-hint"), when,
                            P(Strong(t(f"fixed_assets.recon_status.{_RECON_STATUS[report['status']]}")), id="fa-recon-status"),
-                           errors, _recon_accounts_table(report["accounts"], currency),
+                           errors, H2(t("fixed_assets.recon_accounts"), cls="section-title"),
+                           _recon_accounts_table(report["accounts"], currency),
                            H2(t("fixed_assets.recon_differences"), cls="section-title"),
                            _differences_table(report["accounts"], currency), title_key="fixed_assets.recon_title")
 
@@ -2765,9 +2789,10 @@ def setup_ui_routes(app) -> None:
             return await _page(request, crumbs, title, P(t("fixed_assets.transfer_hint"), cls="settings-hint"), hint,
                                _transfer_needs(reachable["others"]), title_key="fixed_assets.transfer")
         target = next((x for x in targets if x["company_id"] == company), targets[0])
-        tabs = Div(*[A(x["name"], href=f"/fixed-assets/assets/{asset_id}/transfer?{urlencode({'company': x['company_id']})}",
-                       cls="btn btn--sm " + ("btn--primary" if x is target else "btn--secondary")) for x in targets],
-                   cls="flex-row")
+        tabs = _field(t("fixed_assets.transfer_to"), Div(
+            *[A(x["name"], href=f"/fixed-assets/assets/{asset_id}/transfer?{urlencode({'company': x['company_id']})}",
+                cls="btn btn--sm " + ("btn--primary" if x is target else "btn--secondary"),
+                **({"aria_current": "true"} if x is target else {})) for x in targets], cls="flex-row"))
         receivables = [(a["code"], f"{a['code']} {a['name']}") for a in _postable(chart)
                        if a.get("account_type") == "asset"]
         fields = [Input(type="hidden", name="asset_id", value=asset_id),
@@ -3121,7 +3146,7 @@ def setup_ui_routes(app) -> None:
                 filled[by_number[number]] = {"fair_value": amount, "basis": basis}
         notices = [Div(t("fixed_assets.fair_values_filled", count=len(filled)), cls="flash flash--success")]
         if skipped:
-            notices.append(Div(P(t("fixed_assets.fair_values_skipped")), Ul(*[Li(s) for s in skipped]),
+            notices.append(Div(P(t("fixed_assets.fair_values_skipped")), Ul(*[Li(s) for s in skipped], cls="list-disc"),
                                cls="flash flash--warning"))
         return await _revalue_class_view(request, token, class_id, filled=filled, notices=tuple(notices))
 
@@ -3425,7 +3450,8 @@ def setup_ui_routes(app) -> None:
                        t("fixed_assets.ye_close_in_book")) for b in books],
                   Li(A(t("fixed_assets.book_tax_title"), href=f"/fixed-assets/reports/book-tax?year={year}")),
                   *[Li(A(f["label"], href=f"/fixed-assets/reports/statutory/{f['key']}?year={year}")) for f in forms],
-                  Li(A(t("fixed_assets.ye_period_lock"), href="/settings/accounting?tab=period-lock")), id="fa-ye-next")
+                  Li(A(t("fixed_assets.ye_period_lock"), href="/settings/accounting?tab=period-lock")), id="fa-ye-next",
+                  cls="list-disc")
         return await _page(request, crumbs,
                            page_header(t(title), A(t("fixed_assets.print"), href=f"/fixed-assets/year-end/print?year={year}",
                                                    cls="btn btn--secondary", target="_blank")),

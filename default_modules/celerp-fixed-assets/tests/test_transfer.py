@@ -605,6 +605,10 @@ async def test_asset_page_offers_move_reclassify_and_transfer(fa):
     assert reclassify.status_code == 200 and "Computer equipment" in reclassify.text
     transfer = await fa.page(f"/fixed-assets/assets/{car}/transfer")
     assert transfer.status_code == 200 and "Beta Co" in transfer.text
+    # The company chosen to receive it reads as a choice under its label, not as a lone action.
+    chosen = re.sub(r"\s*([<>])\s*", r"\1", transfer.text)
+    assert re.search(r'<label class="form-label">Transfer to</label><div class="flex-row[^"]*"><a [^>]*'
+                     r'aria-current="true"[^>]*>Beta Co</a>', chosen), chosen
     assert t("fixed_assets.transfer_taxable_hint") in transfer.text
     # Both companies keep books in the default currency, so the price is in USD and no rate is asked.
     assert t("fixed_assets.transfer_price_hint", currency="USD") in transfer.text

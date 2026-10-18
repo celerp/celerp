@@ -486,6 +486,29 @@ def test_a_long_asset_name_wraps_in_the_register_at_a_readable_measure(page: Pag
     assert cost["x"] + cost["width"] <= 1440, cost
 
 
+def _lists_sit_inside(page: Page, selector: str) -> None:
+    """Every bullet of the lists under ``selector`` sits in the list's own indent, inside its container."""
+    lists = page.locator(f"{selector} ul").all()
+    assert lists, selector
+    for ul in lists:
+        inner = ul.evaluate("u => { const p = u.parentElement; "
+                            "return p.getBoundingClientRect().left + parseFloat(getComputedStyle(p).paddingLeft); }")
+        for item in ul.locator("li").all():
+            assert item.bounding_box()["x"] - inner >= 16, (selector, inner, item.bounding_box())
+
+
+def test_lists_on_the_year_end_and_asset_pages_sit_inside_their_card(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _bill(c, "Pickup truck", "12000", "2026-01-10")
+    asset = _operate(c, "/register", {"source": _line(c, "Pickup truck")["source"],
+                                      "class_id": _classes(c)["Vehicles"]["id"], "mode": "separate"})["assets"][0]["id"]
+    page.goto("/fixed-assets/year-end?year=2026")
+    _lists_sit_inside(page, "main")
+    page.goto(f"/fixed-assets/assets/{asset}")
+    _lists_sit_inside(page, "main")
+
+
 def test_u35_enter_a_bill_stands_below_its_hint_and_clear_of_the_kind_buttons(page: Page, fresh_company):
     _started(fresh_company)
     page.goto("/fixed-assets/assets/new?kind=contributed")
