@@ -3246,13 +3246,16 @@ def _user_password_form(user_id: str, error: str = "", own_row: bool = False) ->
                   autocomplete="new-password", autofocus=True, cls="cell-input"),
             Input(type="password", name="confirm", placeholder=t("label.confirm_password"),
                   autocomplete="new-password", cls="cell-input"),
-            Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
-            Button(t("btn.cancel"), type="button", data_cancel="1", cls="btn btn--secondary btn--xs",
-                   hx_get=f"/settings/users/{user_id}/actions", hx_target="closest td", hx_swap="outerHTML"),
+            Div(
+                Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
+                Button(t("btn.cancel"), type="button", data_cancel="1", cls="btn btn--secondary btn--xs",
+                       hx_get=f"/settings/users/{user_id}/actions", hx_target="closest td", hx_swap="outerHTML"),
+                cls="inline-form-row",
+            ),
             hx_post=f"/settings/users/{user_id}/password", hx_target="closest td", hx_swap="outerHTML",
             onkeydown=("if(event.key==='Escape'){event.preventDefault();event.stopPropagation();"
                        "this.querySelector('[data-cancel]').click();}"),
-            cls="inline-form-row",
+            cls="cell-form",
         ),
         cls="cell cell--editing",
     )
@@ -3281,7 +3284,7 @@ def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en"
     role_matrix = _role_permissions_matrix(settings, is_owner, lang)
 
     return Div(
-        notice,
+        Div(notice, cls="mb-md") if notice else "",
         Table(
             Thead(Tr(Th(t("th.name", lang)), Th(t("th.email", lang)), Th(t("th.role", lang)), Th(t("th.active", lang)),
                      Th(t("th.actions", lang)))),

@@ -478,6 +478,10 @@ a:hover { text-decoration: underline; }
 .cell--paired .paired-tertiary { color: var(--c-text-muted, #888); font-style: italic; cursor: default; user-select: none; }
 
 .cell-error { color: var(--c-red); font-size: 11px; padding: 4px 8px; white-space: normal; max-width: 360px; }
+/* A form stacked in one cell. Its message wraps to the width the fields give the column,
+   so it never widens the table. */
+.cell-form { display: grid; gap: 0.5rem; }
+.cell-form > .cell-error { contain: inline-size; max-width: none; }
 .cell--channels { white-space: nowrap; }
 .catalog-channels { display: inline-flex; align-items: center; gap: 4px; }
 .catalog-channel {

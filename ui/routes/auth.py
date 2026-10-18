@@ -620,7 +620,7 @@ def _sign_in_error(e: APIError) -> str:
 def _login_form(email: str = "", error: str | None = None, notice: str = "", next_url: str = "/") -> FT:
     return Div(
         auth_header(t("page.sign_in_to_celerp")),
-        notice,
+        _above_form(notice),
         Form(
             flash(error) if error else "",
             # Carries the page the user was bounced from, so signing back in
