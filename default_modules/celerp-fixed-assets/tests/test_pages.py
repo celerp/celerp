@@ -308,21 +308,26 @@ async def test_u23_correct_shows_only_the_chosen_methods_settings_and_request_be
 async def test_forms_open_on_the_companys_today_not_the_servers(owner_ui):
     """A form's date starts on the company's today in its business timezone. Fourteen hours
     ahead of UTC and twelve behind are never on the same day, so at least one of them is not
-    the server's own date whenever this runs."""
+    the server's own date whenever this runs. The company's today is read before and after the
+    pages render, so a run that crosses that timezone's midnight accepts either day."""
     from celerp.services.business_time import business_date_of
 
     car = await _managed_car(owner_ui)
     for tz in ("Etc/GMT-14", "Etc/GMT+12"):
         r = await owner_ui.api.patch("/companies/me", json={"settings": {"timezone": tz}})
         assert r.status_code == 200, r.text
-        today = business_date_of(None, tz)
+        before = business_date_of(None, tz)
+        pages = {}
         for path in (f"/fixed-assets/assets/{car}/dispose", f"/fixed-assets/assets/{car}/sell",
-                     f"/fixed-assets/assets/{car}/move", "/fixed-assets/checks"):
+                     f"/fixed-assets/assets/{car}/move", "/fixed-assets/checks", f"/fixed-assets/assets/{car}"):
             page = await owner_ui.get(path)
             assert page.status_code == 200, (path, page.text)
-            assert f'value="{today}"' in page.text or f'value="{today[:8]}01"' in page.text, (tz, path)
-        upkeep = (await owner_ui.get(f"/fixed-assets/assets/{car}")).text.split('id="fa-upkeep"', 1)[1]
-        assert f'value="{today}"' in upkeep, tz
+            pages[path] = page.text
+        days = {before, business_date_of(None, tz)}
+        upkeep = pages.pop(f"/fixed-assets/assets/{car}").split('id="fa-upkeep"', 1)[1]
+        for path, text in pages.items():
+            assert any(f'value="{d}"' in text or f'value="{d[:8]}01"' in text for d in days), (tz, path)
+        assert any(f'value="{d}"' in upkeep for d in days), tz
 
 
 async def test_runs_page_reviews_posts_and_reverses_a_run(owner_ui):
