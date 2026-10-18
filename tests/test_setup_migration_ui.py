@@ -1672,3 +1672,18 @@ async def test_a_xero_import_says_attachments_are_fetched_after_it(ui, fake_api,
     assert hint not in _visible(await ui.get("/setup/migrate/coverage"))
     fake_api.scans[token]["scan"].update(source_system="xero", display_name="Xero")
     assert hint in _visible(await ui.get("/setup/migrate/coverage"))
+
+
+@pytest.mark.asyncio
+async def test_finish_pressed_again_shows_the_run_where_it_is(ui, fake_api):
+    """A second Finish (double click, a stale tab) on an import already on its way is
+    refused on the run's own page, which keeps itself current, in plain words."""
+    _owner(ui)
+    run_id = fake_api.add_run("running")
+    r = await ui.post(f"/migrations/{run_id}/finalize")
+    assert r.status_code == 200
+    page = _visible(r)
+    assert "The migration keeps running" in page and "Finish migration" not in page
+    for action in ("start", "cancel", "finalize"):
+        text = t(f"migration.err_cannot_{action}", "en", status=t("migration.status.running", "en"))
+        assert '"' not in text and "Refresh" not in text, text
