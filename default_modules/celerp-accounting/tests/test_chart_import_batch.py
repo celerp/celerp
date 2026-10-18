@@ -314,9 +314,9 @@ async def test_chart_import_resolves_parent_later_in_file(client):
 @pytest.mark.asyncio
 async def test_chart_import_resolves_parent_already_in_chart(client):
     h = await _reg(client)
-    r = await _import(client, h, [_row("1160", "Deposits", parent_code="1100")])
+    r = await _import(client, h, [_row("1170", "Deposits", parent_code="1100")])
     assert (r.json()["created"], r.json()["errors"]) == (1, [])
-    assert (await _chart(client, h))["1160"]["parent_code"] == "1100"
+    assert (await _chart(client, h))["1170"]["parent_code"] == "1100"
 
 
 @pytest.mark.asyncio

@@ -1159,6 +1159,10 @@ class AccJournalEntryCreated(BaseModel):
     peer_origin: dict | None = None
     peer_source: dict | None = None
     reverses: str | None = None
+    # A module journal: the record it belongs to (module, entity id, page, label as
+    # posted) and the hash of the request that posted it.
+    source: dict | None = None
+    intent_hash: str | None = None
 
 
 class AccJournalEntryPosted(BaseModel):

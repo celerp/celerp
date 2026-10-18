@@ -153,12 +153,15 @@ def journal_rows(data: dict, *, items: bool, newest_first: bool = True) -> list[
     entries = list(data.get("entries", []))
     for entry in reversed(entries) if newest_first else entries:
         source = entry.get("source_doc") or {}
+        module = entry.get("module_source") or {}
         shared = {
             "ts": str(entry.get("ts") or "")[:10],
             "je_id": entry.get("je_id", ""),
             "doc_id": source.get("doc_id", ""),
-            "source": source.get("doc_ref") or source.get("doc_id") or je_source_label(entry),
-            "source_csv": (source.get("doc_ref") or source.get("doc_id")
+            "href": module.get("href", ""),
+            "source": (source.get("doc_ref") or source.get("doc_id") or module.get("label")
+                       or je_source_label(entry)),
+            "source_csv": (source.get("doc_ref") or source.get("doc_id") or module.get("label")
                            or je_source_label(entry, csv_export=True)),
             "memo": entry.get("memo", ""),
             "status": entry.get("status"),
@@ -192,9 +195,11 @@ def _row(cells: list, row: dict, *, data_row: bool = False) -> FT:
 
 
 def _source_cell(row: dict):
-    """The source document, linked when the books still hold it."""
+    """The source document or module record, linked when the books still hold it."""
     if row.get("doc_id"):
         return A(row["source"], href=f"/docs/{row['doc_id']}", cls="drilldown-link")
+    if row.get("href"):
+        return A(row["source"], href=row["href"], cls="drilldown-link")
     return row["source"]
 
 

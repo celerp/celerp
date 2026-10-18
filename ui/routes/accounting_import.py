@@ -136,7 +136,46 @@ async def _chart_review(token: str, csv_ref: str, rows: list[dict], cols: list[s
     )
 
 
+def asset_register_target() -> dict | None:
+    """The module that imports an opening asset register, when one is loaded."""
+    from celerp.modules.slots import get as get_slot
+
+    return next((e for e in get_slot("import_target") if e.get("kind") == "fixed_asset_register"), None)
+
+
 def setup_routes(app):
+
+    @app.get("/import/asset-register")
+    async def import_asset_register_page(request: Request):
+        """Where an asset register is imported: the module's own import page, or how to turn it on."""
+        from celerp.modules.registry import uses_module
+        from ui.config import get_role
+        from ui.routes.modules_page import turn_on_action
+
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        target = asset_register_target()
+        if target is None:
+            return RedirectResponse("/settings/accounting?tab=chart", status_code=302)
+        try:
+            settings = (await api.get_company(token)).get("settings") or {}
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            raise
+        if uses_module(settings, target["_module"]):
+            return RedirectResponse(target["href"], status_code=303)
+        action = turn_on_action(get_role(request), settings, target["_module"],
+                                t("accounting_import.turn_on_fixed_assets"),
+                                t("accounting_import.ask_admin_fixed_assets"), target["href"], primary=True)
+        return await base_shell(
+            page_header(t("accounting_import.header_asset_register")),
+            Div(action, cls="settings-card"),
+            title=page_title("accounting_import.header_asset_register"),
+            nav_active="accounting",
+            request=request,
+        )
 
     @app.get("/accounting/import/chart")
     async def import_chart_page(request: Request):

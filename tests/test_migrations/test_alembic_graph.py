@@ -41,13 +41,14 @@ RELEASE_HEAD = "o2d3e4f5a6b7"
 # What this release adds on top of it, oldest first: session companies, then the
 # payment revisions, then per-company modules for companies from 2.5, then the invoice
 # an unmatched payment is recorded on, then cash flow sections, notice translations and
-# generated account codes, then import reversibility, then per-user notice reads,
-# then company peer grants, then removing per-user API keys, then the firm view's
-# key last use and refused records, then the revisions two-way sync sent or declined,
-# then the account links two-way sync keeps, then the attachments a Xero migration fetches.
+# generated account codes, then import reversibility, then per-user notice reads, then
+# the index on the asset a projection belongs to, then company peer grants, then removing
+# per-user API keys, then the firm view's key last use and refused records, then the
+# revisions two-way sync sent or declined, then the account links two-way sync keeps,
+# then the attachments a Xero migration fetches.
 RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1", "t7i8j9k0l1m2",
                  "u8j9k0l1m2n3", "c7f1a2b3d4e5", "d8e9f0a1b2c3", "e9f0a1b2c3d4", "v0m1n2o3p4q5",
-                 "w1n2o3p4q5r6", "x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9",
+                 "w1n2o3p4q5r6", "x2o3p4q5r6s7", "x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9",
                  "a5t6u7v8w9x0", "b6u7v8w9x0y1", "c7v8w9x0y1z2", "d8w9x0y1z2a3",
                  "e9x0y1z2a3b4"]
 
@@ -131,7 +132,7 @@ def test_peer_downgrade_preserves_persisted_records(table):
         finally:
             eng.dispose()
         with pytest.raises(RuntimeError, match="Cannot downgrade while company integrations exist"):
-            _downgrade_to(sync_url, "w1n2o3p4q5r6")
+            _downgrade_to(sync_url, "x2o3p4q5r6s7")
         eng = create_engine(sync_url)
         try:
             with eng.connect() as conn:

@@ -21,9 +21,10 @@ import pytest
 from celerp.modules import loader, slots
 
 _CODE = {
-    "hooks.py": "async def hook(*a):\n    return None\n",
+    "hooks.py": "async def hook(*a):\n    return None\nasync def loop():\n    return None\n",
     "search.py": "async def find(*a):\n    return {'items': []}\n",
     "render.py": "def render(doc):\n    return None\n",
+    "rules.py": "class Rate:\n    key = 'acme_rate'\n",
     "events.py": "def handle(state, event_type, data):\n    return state\n",
     "lineage.py": (
         "async def guard(*, session, entry, transition):\n    return None\n"
@@ -34,6 +35,14 @@ _CODE = {
         "async def positional_guard(session, entry, transition, /):\n    return None\n"
         "async def misnamed_in_production(*, db, company_id):\n    return 0\n"
         "async def extra_in_production(*, session, company_id, when=None):\n    return 0\n"
+        "async def demo(*, session, company_id, user_id):\n    return None\n"
+        "async def asset_lines(*, session, company_id, user_id, doc_id, doc, change):\n    return None\n"
+        "async def label_rows(*, session, company_id, ids):\n    return []\n"
+        "async def loose_label_rows(*, session, company_id):\n    return []\n"
+        "async def import_rows(*, session, company_id, user_id, rows, as_at, source, body):\n    return {}\n"
+        "async def short_import_rows(*, session, company_id, user_id, rows, as_at, source):\n    return {}\n"
+        "async def preflight(*, session, company_id):\n    return {'blocking': [], 'listed': []}\n"
+        "async def loose_preflight(*, session):\n    return {}\n"
     ),
 }
 
@@ -41,7 +50,9 @@ _CODE = {
 _VALID = {
     "nav": [{"key": "acme", "label": "Acme", "href": "/acme", "order": 40.5, "group": None},
             {"key": "acme-more", "label_key": "nav.acme", "href": "/acme/more", "order": 41,
-             "group": "Acme"}],
+             "group": "Acme"},
+            {"key": "acme-mine", "label": "Mine", "href": "/acme/mine", "order": 42,
+             "probe_href": "/acme/mine/nav"}],
     "search_provider": {"handler": "{inner}.search:find", "result_key": "items",
                         "permission": "view_inventory"},
     "bulk_action": [{"label": "Go", "form_action": "/acme/go", "action_type": "navigate",
@@ -63,6 +74,17 @@ _VALID = {
     "on_doc_payment": [{"handler": "{inner}.hooks:hook"}],
     "item_lineage_guard": [{"handler": "{inner}.lineage:guard"}],
     "inventory_in_production": [{"handler": "{inner}.lineage:in_production"}],
+    "demo_records": [{"handler": "{inner}.lineage:demo"}],
+    "background_loop": [{"handler": "{inner}.hooks:loop"}],
+    "doc_asset_lines": [{"handler": "{inner}.lineage:asset_lines"}],
+    "fixed_asset_rules": [{"kind": "method", "key": "acme_rate", "handler": "{inner}.rules:Rate"}],
+    "label_source": [{"entity_type": "acme_box", "handler": "{inner}.lineage:label_rows",
+                      "permission": "view_inventory", "label_key": "nav.acme", "keys": ["number", "name"],
+                      "preset": {"name": "Box tag", "width_mm": 50, "height_mm": 25,
+                                 "fields": [{"key": "number", "type": "text"}]}}],
+    "import_target": [{"kind": "acme_register", "handler": "{inner}.lineage:import_rows",
+                       "href": "/acme/import"}],
+    "turn_off_preflight": [{"handler": "{inner}.lineage:preflight"}],
 }
 
 # (slot, the entry's wrong key and value, the text the refusal names).
@@ -102,6 +124,18 @@ _WRONG = [
     ("projection_handler", {"prefix": 1}, "prefix"),
     ("doc_detail_actions", {"render": None}, "module.path:function"),
     ("on_doc_payment", {"handler": 5}, "module.path:function"),
+    ("fixed_asset_rules", {"kind": 3}, "kind"),
+    ("fixed_asset_rules", {"key": ""}, "key"),
+    ("nav", {"probe_href": "https://elsewhere.example/nav"}, "probe_href"),
+    ("label_source", {"entity_type": ""}, "entity_type"),
+    ("label_source", {"keys": "number"}, "keys"),
+    ("label_source", {"preset": None}, "preset"),
+    ("label_source", {"handler": "{inner}.lineage:loose_label_rows"}, "session, company_id, ids"),
+    ("import_target", {"kind": ""}, "kind"),
+    ("import_target", {"href": "https://elsewhere.example/import"}, "href"),
+    ("import_target", {"handler": "{inner}.lineage:short_import_rows"},
+     "session, company_id, user_id, rows, as_at, source, body"),
+    ("turn_off_preflight", {"handler": "{inner}.lineage:loose_preflight"}, "session, company_id"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:sync_guard"}, "must be async"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:short_guard"}, "session, entry, transition"),
     ("item_lineage_guard", {"handler": "{inner}.lineage:loose_guard"}, "session, entry, transition"),

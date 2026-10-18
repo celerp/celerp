@@ -91,6 +91,8 @@ _PROTECTED_BSL_INTERNALS: frozenset[str] = frozenset({
     "celerp.gateway",
     "celerp.connectors",
     "celerp.credentials",
+    "celerp.services.auto_je",
+    "celerp.services.module_journals",
 })
 
 _BSL_DOCS_URL = "https://celerp.com/licenses/bsl"
@@ -558,6 +560,9 @@ def _validated_manifest(raw) -> dict:
         if value is not None and not isinstance(value, str):
             raise ModuleLoadError(
                 f"'{key}' must be a dotted module path string, not {type(value).__name__}.")
+    if not isinstance(raw.get("readable_when_off", False), bool):
+        raise ModuleLoadError(
+            f"'readable_when_off' must be true or false, not {type(raw['readable_when_off']).__name__}.")
     slots_manifest = raw.get("slots")
     if slots_manifest is None:
         slots_manifest = {}
@@ -865,6 +870,8 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     for kind in ("api", "ui"):
         _check_route_source(pkg_path, manifest, kind)
     first_party = _matches_lock(name, digest)
+    if manifest.get("readable_when_off") and not first_party:
+        raise ModuleLoadError("Only Celerp's own modules stay readable while a company has them turned off.")
     _check_slot_contracts(pkg_path, manifest["slots"], first_party=first_party)
     _check_import_names(name, pkg_path)
     entry_files = _module_entry_files(pkg_path, manifest)
@@ -1880,13 +1887,25 @@ def route_module(scope) -> str | None:
     return None
 
 
+def reads_when_off(scope, module: str) -> bool:
+    """Whether this request only reads (GET or HEAD) a module whose records stay readable for
+    a company that has it turned off. Only a first-party module may declare readable_when_off
+    (checked at admission)."""
+    return scope.get("method") in ("GET", "HEAD") and any(
+        m["name"] == module and m.get("first_party") and m.get("readable_when_off") for m in _loaded)
+
+
 def register_api_routes(app, loaded: list[dict]) -> None:
     """Register API routes from all loaded modules into the FastAPI app, then
     take out any module whose code defined a table outside its table_prefix
     (:func:`_stray_table_problem`). This is the last step before the API process
     creates tables, so no such table is ever created. A first-party module's
     tables are part of Celerp's own schema (importer.reserved_tables) and keep
-    their names."""
+    their names. Journal operation types are open for registration from here until
+    modules are ready."""
+    from celerp.services.module_journals import open_operation_types
+
+    open_operation_types()
     _register_module_routes(app, loaded, "api")
     for manifest in list(_loaded):
         if manifest.get("first_party") or not is_running(manifest["name"]):
@@ -2421,21 +2440,36 @@ _CALLABLE_SLOTS = {
     "projection_handler": ("handler", False),
     "inventory_in_production": ("handler", True),
     "item_lineage_guard": ("handler", True),
+    "demo_records": ("handler", True),
+    "background_loop": ("handler", True),
+    "doc_asset_lines": ("handler", True),
+    "fixed_asset_rules": ("handler", False),
+    "label_source": ("handler", True),
+    "import_target": ("handler", True),
+    "turn_off_preflight": ("handler", True),
 }
 # Callable slots core calls with keyword arguments only, and those arguments. The
 # handler takes exactly these: no other parameter, none positional-only, and no
-# *args or **kwargs (lot_origin._in_production, events.engine._item_applied).
+# *args or **kwargs (lot_origin._in_production, events.engine._item_applied,
+# services.demo.seed_demo_items, routers.companies.reseed_demo_items).
 _HANDLER_KEYWORDS = {
     "inventory_in_production": ("session", "company_id"),
     "item_lineage_guard": ("session", "entry", "transition"),
+    "demo_records": ("session", "company_id", "user_id"),
+    "background_loop": (),
+    "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),
+    "label_source": ("session", "company_id", "ids"),
+    "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
+    "turn_off_preflight": ("session", "company_id"),
 }
 # Entry keys naming a permission. Gating surfaces index the permission registry,
 # so a value outside it must never reach them.
 _PERMISSION_ENTRY_KEYS = ("permission", "write_permission")
 # Entry keys naming where a click goes, and whether the entry must carry the key.
 _DESTINATION_KEYS = {
-    "nav": {"href": False, "settings_href": False},
+    "nav": {"href": False, "settings_href": False, "probe_href": False},
     "bulk_action": {"form_action": True},
+    "import_target": {"href": True},
 }
 
 
@@ -2532,6 +2566,16 @@ def _keyword_validator(slot: str):
     return validate
 
 
+def _validate_label_source(pkg_path: Path, contribution) -> None:
+    """Raise :class:`ModuleLoadError` unless every label_source entry names its
+    row keys as non-empty texts and its handler takes the slot's keywords."""
+    for item in contribution if isinstance(contribution, list) else [contribution]:
+        if not item["keys"] or any(not isinstance(k, str) or not k for k in item["keys"]):
+            raise ModuleLoadError(
+                f"Slot 'label_source' keys must list the row's field names as text, not {item['keys']!r}.")
+    _keyword_validator("label_source")(pkg_path, contribution)
+
+
 # Per-slot checks beyond the entry keys every slot declares (_SLOT_ENTRY_KEYS),
 # each called as validate(pkg_path, contribution) at admission.
 _SLOT_VALIDATORS = {
@@ -2540,6 +2584,7 @@ _SLOT_VALIDATORS = {
     "category_schema": _validate_category_schema,
     "projection_handler": _validate_projection_prefixes,
     **{slot: _keyword_validator(slot) for slot in _HANDLER_KEYWORDS},
+    "label_source": _validate_label_source,
 }
 
 _BULK_ACTION_TYPES = frozenset({"htmx", "navigate"})
@@ -2570,9 +2615,17 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "on_doc_payment": {},
     "inventory_in_production": {},
     "item_lineage_guard": {},
+    "demo_records": {},
+    "background_loop": {},
+    "doc_asset_lines": {},
+    "fixed_asset_rules": {"kind": (_TEXT, True), "key": (_TEXT, True)},
+    "label_source": {"entity_type": (_TEXT, True), "label_key": (_TEXT, True), "keys": ((list,), True),
+                     "preset": ((dict,), True)},
+    "import_target": {"kind": (_TEXT, True)},
+    "turn_off_preflight": {},
 }
 _TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",
-               list: "a list", type(None): "None"}
+               list: "a list", dict: "a dict", type(None): "None"}
 
 
 def _is_type(value, types: tuple[type, ...]) -> bool:

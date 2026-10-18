@@ -1,0 +1,8 @@
+{
+  "fixed_asset_classes": [
+    {"name": "Buildings", "life_months": 600, "tax_categories": {"zz_asset": "zz_buildings", "zz_pool": "zz_general"}},
+    {"name": "Vehicles", "tax_categories": {"zz_asset": "zz_plant", "zz_pool": "zz_cars"}},
+    {"name": "ZZ vessels", "kind": "tangible", "method": "zz_fixed_rate", "life_months": 120, "params": {"rate": "0.1"},
+     "tax_categories": {"zz_asset": "zz_plant", "zz_pool": "zz_general"}}
+  ]
+}

@@ -27,6 +27,10 @@ thead th { background: #f5f5f5; font-weight: 700; text-align: center; padding: 1
 thead th.cell--number, thead th.cell--right { text-align: right; }
 tbody td { padding: 1.2mm 2mm; border-bottom: 1px solid #eee; }
 td.cell--number, td.cell--right { text-align: right; }
+/* Figures print in the typeface the screen gives them (--font-mono in app.css); the
+   "--" empty mark keeps the body font, as on screen. */
+td.cell--number, td.cell--money { font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; }
+.cell-empty { font-family: 'Arial', sans-serif; }
 td.cell--muted { color: #888; font-size: 8pt; }
 td.cell--mono { font-family: 'Courier New', monospace; font-size: 8.5pt; }
 
@@ -52,10 +56,13 @@ td.cell--mono { font-family: 'Courier New', monospace; font-size: 8.5pt; }
 
 .report-footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 2mm 20mm; border-top: 1px solid #ddd; font-size: 8pt; color: #aaa; text-align: center; background: white; }
 .report-footer a { color: #aaa; text-decoration: none; }
-@page { margin: 0; size: A4 portrait; }
+/* The margin is the page's own, so every printed page keeps it, and the body runs
+   the full printable width. The footer follows the content once, never over a row. */
+@page { margin: 15mm; size: A4 portrait; }
 @media print {
-  body { padding: 15mm; }
+  body { padding: 0; }
   .report-section { page-break-inside: avoid; }
+  .report-footer { position: static; margin-top: 6mm; padding: 2mm 0; }
 }
 </style>
   </head>

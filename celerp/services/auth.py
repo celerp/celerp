@@ -372,11 +372,11 @@ async def get_auth_context(
                             headers={"WWW-Authenticate": "Bearer"})
     if ctx.company.is_migration_staged and not request.url.path.startswith(STAGED_ALLOWED_PREFIX):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("auth.company_staged"))
-    from celerp.modules.loader import route_module
+    from celerp.modules.loader import reads_when_off, route_module
     from celerp.modules.registry import uses_module
 
     module = route_module(request.scope)
-    if module and not uses_module(ctx.company.settings, module):
+    if module and not uses_module(ctx.company.settings, module) and not reads_when_off(request.scope, module):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MODULE_OFF)
     # The authority the request starts with is judged again under the company lock
     # (company_lock), so a write that waits there never runs on revoked access.

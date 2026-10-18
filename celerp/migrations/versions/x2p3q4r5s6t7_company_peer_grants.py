@@ -3,13 +3,13 @@
 """Company-scoped integration grants.
 
 Revision ID: x2p3q4r5s6t7
-Revises: w1n2o3p4q5r6
+Revises: x2o3p4q5r6s7
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "x2p3q4r5s6t7"
-down_revision = "w1n2o3p4q5r6"
+down_revision = "x2o3p4q5r6s7"
 branch_labels = None
 depends_on = None
 

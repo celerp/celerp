@@ -1176,7 +1176,7 @@ async def test_differences_are_shown_once_with_both_ways_forward(ui, router, fak
     r = await ui.get(f"/migrations/{run_id}/verify")
     assert r.status_code == 200
     page = _visible(r)
-    assert page.count("$-100.00") == 1
+    assert page.count("-$100.00") == 1
     assert "Finish now and correct later with a journal entry." in page
     assert "Or fix the file in Manager.io and upload it again." in page
     assert ("Finishing cannot be undone: the company goes live and new records can be built on it. "

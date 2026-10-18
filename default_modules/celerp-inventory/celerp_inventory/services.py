@@ -36,7 +36,6 @@ from celerp.inventory_codes import (
 from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services import auto_je
 from celerp.services.account_roles import current_settings, is_consigned, lot_account, sold_lot_account, sold_lot_key
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
@@ -396,6 +395,7 @@ async def _sale_of_lot(session: AsyncSession, company_id, entity_id: str, state:
     without fulfilling it (a converted memo) is adjusted through that invoice's
     allocation when it covers the whole lot. A lot marked sold by hand has no sale
     entry, so nothing is adjusted."""
+    from celerp.services import auto_je
     from celerp.services.cogs_backfill import legacy_cogs_refusal
 
     label = lot_label(state, entity_id)
@@ -458,6 +458,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
 
     Reads each lot from locked when it is there, else as currently committed.
     Raises CostRestatementConflict when the change cannot be carried."""
+    from celerp.services import auto_je
     from celerp_inventory.projections import apply_item_event
 
     async def _read(eid: str) -> Projection | None:
@@ -648,6 +649,8 @@ async def restate_item_cost(
     the first event is written: the change lands with all of its consequences in
     the caller's transaction, or raises CostRestatementConflict.
     """
+    from celerp.services import auto_je
+
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
         if replay.event_type != event_type or replay.entity_id != entity_id:
@@ -3708,6 +3711,7 @@ async def adjust_item_quantity(
             validate_quantity(data["new_qty"], unit_map[current_sell_by]["decimals"])
         if "landed_costs" not in data and "cost_base" not in data:
             from celerp.services.auto_je import company_currency
+
             data = {**data, **cost_kept(row.state, data["new_qty"], await company_currency(session, company_id))}
     return await emit_event(
         session,

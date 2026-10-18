@@ -1347,6 +1347,19 @@ def match_reason_text(record: dict, labels: dict[str, str]) -> str | None:
     return "; ".join(parts) or None
 
 
+def row_menu(safe_id: str, *items: FT) -> FT:
+    """A row's actions behind its ⋮ button, as the last cell of the row. Each item is an
+    ``A`` or ``Button`` carrying ``row-menu-item``; ``safe_id`` is unique on the page."""
+    return Td(
+        Div(
+            Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
+            Div(*items, cls="row-menu-dropdown", id=f"menu-{safe_id}"),
+            cls="row-menu",
+        ),
+        cls="col-actions",
+    )
+
+
 def data_row(
     row: dict,
     columns: list[dict],
@@ -1375,23 +1388,16 @@ def data_row(
         "'" + t("table.confirm_delete_row").replace("\\", "\\\\").replace("'", "\\'") + "'"
     )
     action_cell = [] if not show_row_menu else [
-        Td(
-            Div(
-                Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
-                Div(
-                    A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
-                    # Only a draft, or one already Deleted, can be deleted (the bulk bar's
-                    # rule); stock is written off.
-                    *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                              onclick=f"if(!confirm({_confirm_delete_row}))return;"
-                                      f"htmx.ajax('DELETE','{_delete_url}',"
-                                      f"{{target:'#row-{safe_id}',swap:'outerHTML'}})")]
-                      if str(row.get("status", "") or "").lower() in ("draft", "deleted") else []),
-                    cls="row-menu-dropdown", id=f"menu-{safe_id}",
-                ),
-                cls="row-menu",
-            ),
-            cls="col-actions",
+        row_menu(
+            safe_id,
+            A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
+            # Only a draft, or one already Deleted, can be deleted (the bulk bar's
+            # rule); stock is written off.
+            *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
+                      onclick=f"if(!confirm({_confirm_delete_row}))return;"
+                              f"htmx.ajax('DELETE','{_delete_url}',"
+                              f"{{target:'#row-{safe_id}',swap:'outerHTML'}})")]
+              if str(row.get("status", "") or "").lower() in ("draft", "deleted") else []),
         )
     ]
     status_val = str(row.get("status", "") or "").lower()

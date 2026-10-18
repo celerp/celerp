@@ -37,6 +37,7 @@ from celerp.accounting_roles import (
     AccountRole,
     allowed_types,
     is_role,
+    pair_of,
     refusal,
     target_problem,
     unknown_role,
@@ -174,10 +175,11 @@ async def account_names(session: AsyncSession, company_id, codes) -> dict[str, s
 
 
 def _candidate_types(role: str) -> frozenset[str]:
-    """Types an account may have to be offered for ``role``: exchange gain and loss may
+    """Types an account may have to be offered for ``role``: a gain and loss pair may
     share one account of either type."""
-    if role in (AccountRole.FX_GAIN.value, AccountRole.FX_LOSS.value):
-        return allowed_types(role, {AccountRole.FX_GAIN.value: "*", AccountRole.FX_LOSS.value: "*"})
+    pair = pair_of(role)
+    if pair:
+        return allowed_types(role, {r.value: "*" for r in pair})
     return ROLE_TYPES[AccountRole(role)]
 
 

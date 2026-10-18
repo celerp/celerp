@@ -513,6 +513,23 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
     await session.flush()
 
 
+async def _check_asset_lines(session, kwargs: dict) -> None:
+    """Every write of a document's lines, type or original document, by any writer (the
+    document page, an import and its upsert, a conversion, a module), goes through the
+    asset-line check with the document as stored and as written."""
+    from celerp.services import doc_asset_lines
+
+    data = kwargs.get("data") or {}
+    changed = data.get("fields_changed")
+    written = ({k: (v or {}).get("new") for k, v in changed.items()} if isinstance(changed, dict) else data)
+    if not {"line_items", "doc_type", "original_doc_id"} & written.keys():
+        return
+    proj = await session.get(Projection, (kwargs.get("company_id"), kwargs.get("entity_id")))
+    before = (proj.state or {}) if proj is not None and proj.entity_type == "doc" else {}
+    await doc_asset_lines.check_write(session, company_id=kwargs.get("company_id"), user_id=kwargs.get("actor_id"),
+                                      doc_id=kwargs.get("entity_id"), doc={**before, **written}, before=before)
+
+
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False, **kwargs
 ) -> LedgerEntry:
@@ -627,6 +644,9 @@ async def emit_event(
             await assert_document_item_uniqueness(
                 session, kwargs.get("company_id"), doc_type, line_set
             )
+
+    if kwargs.get("entity_type") == "doc":
+        await _check_asset_lines(session, kwargs)
 
     if kwargs.get("entity_type") == "doc" and kwargs.get("event_type") in PAYMENT_REMOVAL_EVENTS:
         await _refuse_stripe_payment_removal(session, kwargs)

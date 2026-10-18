@@ -219,8 +219,13 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        # ?from=<journal entry>: prefilled from it (Post again), posting nothing until submitted.
-        ts, memo, lines, error = _date.today().isoformat(), "", [], None
+        # A page that sends the user here to record a journal may name its date (``ts``);
+        # ?from=<journal entry> prefills from it (Post again), posting nothing until submitted.
+        try:
+            ts = _date.fromisoformat(request.query_params.get("ts", "")).isoformat()
+        except ValueError:
+            ts = _date.today().isoformat()
+        memo, lines, error = "", [], None
         if source := request.query_params.get("from"):
             try:
                 copied = await api.journal_prefill(token, source)
