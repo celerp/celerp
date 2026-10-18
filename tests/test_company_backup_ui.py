@@ -1469,6 +1469,6 @@ def test_copies_row_actions_sit_in_one_menu():
     for label in ("company_backup.ready_copy_link", "company_backup.copies_new_link",
                   "company_backup.copies_resend", "btn.revoke"):
         assert t(label) in menu
-    assert menu.count("row-menu-item") == 4 and "btn--sm" not in menu
+    assert menu.count('class="row-menu-item') == 4 and "btn--sm" not in menu
     assert t("company_backup.copies_key_missing") in page
     assert t("company_backup.copies_key_missing") not in page[page.index('id="menu-copy-c2"'):].split("</div>")[0]

@@ -55,7 +55,7 @@ import ui.handoff_opening as opening
 from ui.api_client import APIError
 from ui.components.files import fmt_size
 from ui.components.shell import flash, secret_input
-from ui.components.table import fmt_money, format_value
+from ui.components.table import fmt_money, format_value, row_menu
 from ui.config import cookie_domain, get_company_id, get_token, session_cookie_secure, set_session_cookies
 from ui.i18n import get_lang, t
 from ui.routes.account import account_panel
@@ -1096,30 +1096,29 @@ def _handoff_status(item: dict) -> str:
 
 
 def _copy_actions(item: dict) -> FT:
+    """The copy's actions behind one row menu; every action swaps the table in place."""
     path = f"{HANDOFFS}/{item['id']}"
     swap = {"hx_target": "#copies-list", "hx_swap": "outerHTML"}
     actions = []
     if item.get("link"):
-        actions.append(Button(t("company_backup.ready_copy_link"), type="button", cls="btn btn--secondary btn--sm",
+        actions.append(Button(t("company_backup.ready_copy_link"), type="button", cls="row-menu-item",
                               **{"data-copy": "", "data-copy-text": item["link"]}))
     if item.get("renewable"):
         actions.append(Button(t("company_backup.copies_new_link"), type="button", hx_post=f"{path}/new-link",
                               hx_vals=json.dumps({"operation_id": str(uuid.uuid4())}),
-                              cls="btn btn--secondary btn--sm", **swap))
-    elif item.get("key_missing"):
-        actions.append(Span(t("company_backup.copies_key_missing"), cls="form-hint"))
+                              cls="row-menu-item", **swap))
     if item.get("can_restore"):
         actions.append(Button(t("company_backup.copies_undo"), type="button", hx_post=f"{path}/restore",
-                              cls="btn btn--primary btn--sm", **swap))
+                              cls="row-menu-item", **swap))
     if item["status"] != "pending":
         resend = {k: item[k] for k in ("firm_name", "recipient") if item.get(k)}
-        actions.append(A(t("company_backup.copies_resend"), cls="btn btn--secondary btn--sm",
+        actions.append(A(t("company_backup.copies_resend"), cls="row-menu-item",
                          href=f"{SEND}?{urlencode(resend)}" if resend else SEND))
     if item["status"] in ("pending", "ready", "sent", "imported"):
         actions.append(Button(t("btn.revoke"), type="button", hx_post=f"{path}/revoke",
                               hx_confirm=t("company_backup.copies_revoke_confirm"),
-                              cls="btn btn--danger btn--sm", **swap))
-    return Div(*actions, cls="flex-row flex-wrap gap-sm") if actions else Span("--")
+                              cls="row-menu-item row-menu-item--danger", **swap))
+    return row_menu(f"copy-{item['id']}", *actions) if actions else Td("--")
 
 
 def _copies_table(items: list[dict], *, notice: str | None = None, warning: str | None = None) -> FT:
@@ -1127,10 +1126,12 @@ def _copies_table(items: list[dict], *, notice: str | None = None, warning: str 
     rows = [Tr(
         Td(item.get("recipient") or "--"),
         Td(item.get("firm_name") or "--"),
-        Td(_handoff_status(item)),
+        Td(_handoff_status(item),
+           P(t("company_backup.copies_key_missing"), cls="form-hint")
+           if item.get("key_missing") and not item.get("renewable") else None),
         Td(format_value(item["sent_at"], "date") if item.get("sent_at") else "--", cls="cell--date"),
         Td(format_value(item["expires_at"], "date") if item.get("expires_at") else "--", cls="cell--date"),
-        Td(_copy_actions(item)),
+        _copy_actions(item),
     ) for item in sorted(items, key=lambda item: str(item.get("sent_at") or ""), reverse=True)]
     return Div(
         P(notice, cls="flash flash--success") if notice else "",
