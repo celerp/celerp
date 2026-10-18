@@ -1669,6 +1669,9 @@ def migrations_routes(app) -> None:
                 "reviewed_differences": form.get("reviewed_differences") == "true",
             })
         except APIError as e:
+            run, failure = await _load_run(request, run_id)
+            if failure is None and run.get("status") != "ready_to_finalize":
+                return _progress_page(request, run, str(e.detail))  # already on its way
             return await _verify_page(request, run_id, str(e.detail), chosen)
         return RedirectResponse(f"/migrations/{run_id}/complete", status_code=303)
 
