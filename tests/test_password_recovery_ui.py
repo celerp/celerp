@@ -120,6 +120,22 @@ async def test_recovery_pages_back_to_sign_in(client, session, relay, short_floo
         _anchor(r.text, "/login")
 
 
+async def test_recovery_pages_never_show_the_attempt_secret(client, relay, short_floor):
+    """The secret the relay ties a code to stays on the server: no recovery page, header or
+    cookie carries it."""
+    await _register(client)
+    async with _ui() as ui:
+        pages = [await ui.post("/forgot-password", data={"email": OWNER}),
+                 await ui.post("/forgot-password", data={"email": OWNER}),
+                 await ui.post("/forgot-password/reset", data={
+                     "email": OWNER, "code": CODE, "password": NEW_PW, "confirm": NEW_PW})]
+    secrets = set(relay.attempts("/email-codes/send", OWNER) + relay.attempts("/email-codes/verify", OWNER))
+    assert len(secrets) == 1, secrets
+    secret = secrets.pop()
+    for r in pages:
+        assert secret not in r.text and secret not in str(r.headers), r.url
+
+
 @pytest.mark.parametrize("path, page", [("/forgot-password/reset", "/forgot-password"), ("/login-force", "/login")])
 async def test_a_form_address_opened_directly_goes_to_its_page(ui, path, page):
     """The address bar shows where a form posted to; opening that address again (a new

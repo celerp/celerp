@@ -1,12 +1,14 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """A stand-in for the Celerp relay's /email-codes endpoints, for the app's password
-recovery tests. It issues one known code per email, records every call, and can be
+recovery tests. It issues one known code per email and attempt secret, refuses a send or
+verify without a well-formed secret as the relay does, records every call, and can be
 switched to each way the relay fails."""
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -19,17 +21,24 @@ CODE = "246810"
 # Each way the relay can fail to answer, as the app sees it.
 FAILURES = ("down", "timeout", "404", "405", "500", "bad-json")
 
+# The relay's rule for an attempt secret.
+ATTEMPT = re.compile(r"[A-Za-z0-9_-]{32,128}")
+
 
 class FakeRelay:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
-        self.issued: dict[str, str] = {}
+        self.issued: dict[tuple[str, str], str] = {}
         self.failure: str | None = None
         # The answer to a send other than a plain yes, meaning no code is coming.
         self.send_status: int | None = None
 
     def paths(self) -> list[str]:
         return [path for path, _ in self.calls]
+
+    def attempts(self, path: str, email: str) -> list[str]:
+        """The attempt secret of each call to *path* for *email*, in order."""
+        return [body["attempt"] for p, body in self.calls if p == path and body["email"] == email]
 
     def sent_to(self) -> list[str]:
         return [body["email"] for path, body in self.calls if path == "/email-codes/send"]
@@ -48,14 +57,18 @@ class FakeRelay:
             return httpx.Response(200, content=b"<html>")
         if path == "/email-codes/status":
             return httpx.Response(200, json={"ok": True})
+        if path in ("/email-codes/send", "/email-codes/verify") and not (
+                isinstance(body.get("attempt"), str) and ATTEMPT.fullmatch(body["attempt"])):
+            return httpx.Response(422, json={"detail": "attempt"})
         if path == "/email-codes/send":
             if self.send_status is not None:
                 return httpx.Response(self.send_status, json={"detail": "no"})
-            self.issued[body["email"]] = CODE
+            self.issued[(body["email"], body["attempt"])] = CODE
             return httpx.Response(200, json={"ok": True})
         if path == "/email-codes/verify":
-            if self.issued.get(body["email"]) == body.get("code"):
-                del self.issued[body["email"]]
+            key = (body["email"], body["attempt"])
+            if self.issued.get(key) == body.get("code"):
+                del self.issued[key]
                 return httpx.Response(200, json={"ok": True})
             return httpx.Response(400, json={"detail": "code_refused"})
         return httpx.Response(404, json={"detail": "Not Found"})

@@ -234,7 +234,6 @@ async def test_recovery_matches_users_exactly_as_sign_in(client, session, relay,
         assert (await _send(client, email)).json() == {"outcome": "sent"}
         await settle()
         assert relay.sent_to() == [], email
-        relay.issued[(email.strip().lower(), "recovery")] = CODE
         assert (await _reset(client, email)).status_code == 400, email
         assert "/email-codes/verify" not in relay.paths(), email
 
@@ -494,12 +493,74 @@ async def test_reset_notice_reaches_other_owners(client, session):
     assert await _notices(client, second) == []
 
 
+# --- The attempt secret ------------------------------------------------------------
+
+
+async def test_recovery_attempt_secret_ties_send_to_verify(client, session, relay, short_floor, caplog):
+    """Each address's recovery carries one secret that only this install holds: its sends
+    and its verify name the same one, another address has its own, and it never shows in
+    an answer or a log."""
+    caplog.set_level("DEBUG")
+    tokens = await _register(client)
+    await _staff(client, session, tokens["access_token"])
+    answers = [await _send(client, OWNER), await _send(client, OWNER), await _send(client, STAFF)]
+    answers.append(await _reset(client, OWNER))
+    assert [r.status_code for r in answers] == [200, 200, 200, 200], [r.text for r in answers]
+    assert (await _login(client, OWNER, NEW_PW)).status_code == 200
+
+    sends = relay.attempts("/email-codes/send", OWNER)
+    assert len(sends) == 2 and len(set(sends)) == 1
+    assert relay.attempts("/email-codes/verify", OWNER) == sends[:1]
+    staff = relay.attempts("/email-codes/send", STAFF)
+    assert len(staff) == 1 and staff[0] != sends[0]
+    for secret in (sends[0], staff[0]):
+        assert all(secret not in r.text and secret not in str(r.headers) for r in answers)
+        assert secret not in caplog.text
+
+
+async def test_recovery_after_a_code_is_used_starts_a_new_attempt(client, relay, short_floor):
+    """A code that reset the password ends its attempt; the next request has a new secret."""
+    await _register(client)
+    await _send(client, OWNER)
+    assert (await _reset(client, OWNER)).status_code == 200
+    await _send(client, OWNER)
+    first, second = relay.attempts("/email-codes/send", OWNER)
+    assert first != second
+
+
+async def test_recovery_attempt_expires_with_its_code(client, relay, short_floor, monkeypatch):
+    """Past a code's life the secret goes with it, so a later request starts a new attempt."""
+    from celerp.services import email_codes
+    await _register(client)
+    monkeypatch.setattr(email_codes, "ATTEMPT_TTL_S", 0.0)
+    await _send(client, OWNER)
+    assert (await _reset(client, OWNER)).status_code == 400
+    await _send(client, OWNER)
+    first, second = relay.attempts("/email-codes/send", OWNER)
+    assert first != second
+
+
+async def test_recovery_lost_attempt_is_a_wrong_or_expired_code(client, session, relay, short_floor):
+    """A secret this install no longer holds (it restarted) is answered as a wrong or expired
+    code, and a new code works."""
+    from celerp.services import email_codes
+    await _register(client)
+    before = await _hash(session, OWNER)
+    await _send(client, OWNER)
+    email_codes._attempts.clear()
+    r = await _reset(client, OWNER)
+    assert (r.status_code, r.json()["detail"]) == (400, t("recovery.code_refused")), r.text
+    assert await _hash(session, OWNER) == before
+    await _send(client, OWNER)
+    assert (await _reset(client, OWNER)).status_code == 200
+
+
 # --- Only recovery asks the relay for codes ------------------------------------------
 
 
 async def test_only_recovery_asks_the_relay_for_codes(client, relay):
     """Setting up asks the relay nothing, and a recovery code request names only the
-    email and this installation."""
+    email, this installation and the attempt's secret."""
     assert (await client.post("/auth/setup-email/send", json={"email": OWNER})).status_code == 404
     assert (await client.post("/auth/setup-email/verify", json={"email": OWNER, "code": CODE})).status_code == 404
     await _register(client)
@@ -507,7 +568,7 @@ async def test_only_recovery_asks_the_relay_for_codes(client, relay):
     assert relay.calls == []
     assert (await _send(client, OWNER)).json() == {"outcome": "sent"}
     await settle()
-    assert [sorted(body) for path, body in relay.calls if path == "/email-codes/send"] == [["email", "instance_id"]]
+    assert [sorted(body) for path, body in relay.calls if path == "/email-codes/send"] == [["attempt", "email", "instance_id"]]
 
 
 # --- An owner resets a staff password ------------------------------------------------
