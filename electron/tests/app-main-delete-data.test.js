@@ -40,7 +40,7 @@ afterEach(() => {
 // A packaged Windows app whose user data and private database folder hold real
 // files, with its servers running and a database that records what was on disk
 // when it was asked to stop.
-async function installed({ stopDatabase = async () => {}, confirm = 1, exitedDatabase = null } = {}) {
+async function installed({ stopDatabase = async () => {}, confirm = 1, exitedDatabase = null, pathsError = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-delete-"));
   scratch.push(root);
   const userData = path.join(root, "userData");
@@ -71,7 +71,10 @@ async function installed({ stopDatabase = async () => {}, confirm = 1, exitedDat
   };
   const windowsInitdb = {
     ...require("../windows-initdb"),
-    postgresPaths: () => ({ dataDir: path.join(privateRoot, "postgres"), privateRoot }),
+    postgresPaths: () => {
+      if (pathsError) throw new Error(pathsError);
+      return { dataDir: path.join(privateRoot, "postgres"), privateRoot };
+    },
   };
   const loaded = loadAppMain({ app, dialog, platform: "win32", resourcesPath: path.join(root, "resources"),
                                extraFakes: { "./windows-initdb": windowsInitdb } });
@@ -147,6 +150,26 @@ test("a folder that cannot be deleted is shown to the user, and the rest is stil
       expect(shown[1].detail).toContain(privateRoot);
       expect(shown[1].detail).not.toContain(`${dataDir}:`);
       expect(log[log.length - 1]).toBe("quit");
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+test("a private database folder Celerp cannot use means nothing is deleted, and the user is told why",
+  async function test_delete_all_data_keeps_everything_when_the_private_folder_is_unusable() {
+    const errors = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const reason = "Celerp keeps its database in a folder under C:\\ProgramData, and it cannot use that folder: can be opened by other accounts.";
+      const { dataDir, privateRoot, api, database, app, shown, deleteAll } = await installed({ pathsError: reason });
+      await deleteAll();
+      expect(shown).toHaveLength(1);
+      expect(shown[0].type).toBe("error");
+      expect(shown[0].message).toBe("Nothing was deleted");
+      expect(shown[0].detail).toContain(reason);
+      expect(database.stop).not.toHaveBeenCalled();
+      expect(alive(api)).toBe(true);
+      expect(app.quit).not.toHaveBeenCalled();
+      expect([fs.existsSync(dataDir), fs.existsSync(privateRoot)]).toEqual([true, true]);
     } finally {
       errors.mockRestore();
     }
