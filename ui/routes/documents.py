@@ -21,6 +21,7 @@ import ui.api_client as api
 from ui.components.icons import import_icon
 from ui.api_client import APIError, error_message
 from celerp.accounting_roles import account_label
+from celerp.downloads import content_disposition
 from celerp.services.units import (
     DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, line_receive_kind, quantity_step,
 )
@@ -1917,7 +1918,7 @@ def setup_routes(app):
         return _Resp(
             content=buf.getvalue(),
             media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{doc_ref}_items.csv"'},
+            headers={"Content-Disposition": content_disposition("attachment", f"{doc_ref}_items.csv")},
         )
 
     @app.get("/docs/{entity_id}/items/csv")

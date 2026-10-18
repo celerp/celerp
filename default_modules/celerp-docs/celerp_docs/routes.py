@@ -24,6 +24,7 @@ import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
+from celerp.downloads import content_disposition
 from celerp.events.engine import (emit_event, find_event_by_idempotency, is_stripe_receipt,
                                   refuse_stripe_payment_removal, stripe_payment_indexes, stripe_receipt_references)
 from celerp.importers.results import failure_reason
@@ -1685,7 +1686,7 @@ async def get_doc_pdf(
     return _Resp(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition("inline", filename)},
     )
 
 

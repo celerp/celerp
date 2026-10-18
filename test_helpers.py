@@ -30,6 +30,23 @@ REPO_ROOT = Path(__file__).resolve().parent
 # imported; the default is just a sane placeholder for the Postgres-only app.
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp")
 
+# The Windows account names the release build runs the packaged app under (build.yml
+# win-names), one per way a name can break: scripts outside the ANSI code page, a
+# 20-character name, a supplementary-plane character, accents the code page holds, and
+# characters Windows maps to look-alike ASCII. Tests of user text in file names and
+# downloads run over the same list.
+ACCOUNT_NAMES = {
+    "thai": "สมชาย",
+    "thai-20": "สมชายใจดีมีทรัพย์มาก",
+    "arabic": "محمد",
+    "chinese": "张伟",
+    "supplementary": "𠮷 Test",
+    "accented": "José Müller",
+    "fullwidth": "Ｊｏｓｅ Ｌｉｍａ",
+    "arabic-indic-digits": "Ali ٣٤",
+    "ascii": "Celerp Upgrade",
+}
+
 _crm_src = os.path.join(os.path.dirname(__file__), "..", "premium_modules", "celerp-sales-funnel")
 _crm_available = os.path.isfile(os.path.join(_crm_src, "celerp_sales_funnel", "__init__.py"))
 
@@ -440,3 +457,40 @@ async def ui_get(headers: dict, path: str):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
                                cookies={"celerp_token": token}) as ui:
             return await ui.get(path)
+
+
+@contextmanager
+def released_migration_history(database_url: str = DATABASE_URL):
+    """The database with its migration history recorded at head, as every Celerp install
+    has it from its first start and a create_all test database does not. Afterwards the
+    history the database had before is put back, or none."""
+    import psycopg2
+    from alembic.script import ScriptDirectory
+    from celerp.alembic_config import build_alembic_config
+    head = ScriptDirectory.from_config(build_alembic_config()).get_current_head()
+    conn = psycopg2.connect(database_url.replace("postgresql+asyncpg://", "postgresql://"))
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('public.alembic_version') IS NOT NULL")
+        had = cur.fetchone()[0]
+        before = []
+        if had:
+            cur.execute("SELECT version_num FROM alembic_version")
+            before = [row[0] for row in cur.fetchall()]
+        cur.execute("CREATE TABLE IF NOT EXISTS alembic_version "
+                    "(version_num varchar(32) NOT NULL PRIMARY KEY)")
+        cur.execute("DELETE FROM alembic_version")
+        cur.execute("INSERT INTO alembic_version VALUES (%s)", (head,))
+    try:
+        yield head
+    finally:
+        with conn.cursor() as cur:
+            if had:
+                cur.execute("CREATE TABLE IF NOT EXISTS alembic_version "
+                            "(version_num varchar(32) NOT NULL PRIMARY KEY)")
+                cur.execute("DELETE FROM alembic_version")
+                for revision in before:
+                    cur.execute("INSERT INTO alembic_version VALUES (%s)", (revision,))
+            else:
+                cur.execute("DROP TABLE IF EXISTS alembic_version")
+        conn.close()

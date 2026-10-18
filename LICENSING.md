@@ -12,6 +12,7 @@ operative statement for that file; this map governs by path otherwise.
 | `celerp/` (engine/kernel) | Business Source License 1.1 | `LICENSE` |
 | `celerp/gateway/`, `celerp/session_gate.py`, `celerp/ai/`, `celerp/cloud/` | Celerp Official Components License (LicenseRef-Proprietary) | `legal/OFFICIAL-COMPONENTS.md` |
 | `celerp/output/` (official document/PDF + public share renderers) | Celerp Official Components License (LicenseRef-Proprietary) | `legal/OFFICIAL-COMPONENTS.md` |
+| `celerp/output/fonts/` (DejaVu Sans, bundled for PDFs) | Bitstream Vera Fonts license; DejaVu changes public domain | `celerp/output/fonts/LICENSE` |
 | `ui/` (application UI layer) | Celerp Official Components License (LicenseRef-Proprietary) | `legal/OFFICIAL-COMPONENTS.md` |
 | `default_modules/celerp-admin/` | Business Source License 1.1 | `LICENSE` |
 | `default_modules/celerp-ai/`, `celerp-backup/`, `celerp-connectors/` | Celerp Official Components License (LicenseRef-Proprietary) | `legal/OFFICIAL-COMPONENTS.md` |

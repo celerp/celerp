@@ -63,11 +63,11 @@ def test_local_backup_buttons_translate_labels_and_tooltips():
 
 def test_local_backup_buttons_pass_restoring_text_via_data_attr():
     """The JS-embedded 'restoring' label must arrive through a data-* attribute
-    (R2), not spliced into the onchange JS source - and it must be translated."""
+    (R2), not spliced into the before-request JS source - and it must be translated."""
     html = to_xml(local_backup_buttons())
     assert 'data-restoring-text="XX_RESTORING"' in html
-    # The onchange JS source itself carries no hardcoded English/sentinel text;
-    # it only reads the value back off the element's dataset at runtime.
-    onchange_attr = re.search(r'onchange="([^"]*)"', html).group(1)
-    assert "XX_RESTORING" not in onchange_attr
-    assert "dataset.restoringText" in onchange_attr
+    # The JS source itself carries no hardcoded English/sentinel text; it only
+    # reads the value back off the element's dataset at runtime.
+    handler = re.search(r'hx-on--before-request="([^"]*)"', html).group(1)
+    assert "XX_RESTORING" not in handler
+    assert "dataset.restoringText" in handler

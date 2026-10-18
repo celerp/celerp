@@ -2,9 +2,9 @@
 instead of moving on as if the company had been reset."""
 from __future__ import annotations
 
-import re
-
 import pytest
+
+from .conftest import wait_for_landing
 
 pytestmark = pytest.mark.browser
 
@@ -36,4 +36,4 @@ def test_an_accepted_reset_leaves_the_settings_page(page, ui_server, fresh_compa
     page.locator("#company-reset-confirm-input").fill(name)
     page.locator("#company-reset-confirm-btn").click()
     # The owner has other companies, so the reset signs them into one of those.
-    page.wait_for_url(re.compile(r"/(\?.*)?$|/dashboard"))
+    wait_for_landing(page)

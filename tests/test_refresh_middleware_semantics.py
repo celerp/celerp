@@ -122,3 +122,44 @@ async def test_refresh_middleware_diverts_on_401_but_serves_on_transient():
         assert seen["downstream_ran"] is True
         assert seen["start"]["status"] == 200
         assert seen["set_cookies"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("needs_refresh,cookies", [
+    (True, {"celerp_token": "old-access", "celerp_refresh": "old-refresh"}),
+    (False, {"celerp_refresh": "old-refresh"}),
+])
+async def test_route_minted_session_wins_over_sliding_refresh(needs_refresh, cookies):
+    """A route that opens another session (company switch, a restored company, login)
+    sets its own cookies. The sliding refresh of the old session must not add its own
+    after them: a browser keeps the last cookie of a name, so the request would land
+    back in the old company. RED before the change: the refresh's cookies came last."""
+    from unittest.mock import AsyncMock, patch
+
+    from ui.app import COOKIE_NAME, REFRESH_COOKIE_NAME, TokenRefreshMiddleware
+
+    async def _route(scope, receive, send):
+        await send({"type": "http.response.start", "status": 303, "headers": [
+            (b"set-cookie", f"{COOKIE_NAME}=route-access; Path=/".encode()),
+            (b"set-cookie", f"{REFRESH_COOKIE_NAME}=route-refresh; Path=/".encode())]})
+        await send({"type": "http.response.body", "body": b""})
+
+    sent: list[str] = []
+
+    async def _send(message):
+        if message["type"] == "http.response.start":
+            sent.extend(v.decode() for k, v in message["headers"] if k.lower() == b"set-cookie")
+
+    async def _receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    scope = {"type": "http", "method": "POST", "path": "/settings/restore-backup/restore", "query_string": b"",
+             "headers": [(b"cookie", "; ".join(f"{k}={v}" for k, v in cookies.items()).encode())]}
+    refresh = AsyncMock(return_value=("old-company-access", "old-company-refresh"))
+    with patch.object(api, "refresh_access_token", refresh), \
+            patch("ui.app._token_needs_refresh", lambda _t: needs_refresh):
+        await TokenRefreshMiddleware(_route)(scope, _receive, _send)
+
+    refresh.assert_awaited_once()
+    last = {c.split("=", 1)[0]: c.split("=", 1)[1].split(";", 1)[0] for c in sent}
+    assert last == {COOKIE_NAME: "route-access", REFRESH_COOKIE_NAME: "route-refresh"}

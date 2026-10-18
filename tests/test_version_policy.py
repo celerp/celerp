@@ -33,7 +33,7 @@ def _running(monkeypatch):
 
 
 def _archive(tmp_path, meta_extra: dict):
-    meta = {"pg_version": "16", "created_at": "2026-01-01T00:00:00Z", "company_name": "T", **meta_extra}
+    meta = {"pg_version": "16", "created_at": "2026-01-01T00:00:00Z", **meta_extra}
     path = tmp_path / "b.celerp-backup"
     with tarfile.open(path, "w:gz") as tar:
         for name, body in (("meta.json", json.dumps(meta).encode()), ("database.dump", b"PGDMP")):

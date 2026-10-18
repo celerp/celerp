@@ -53,6 +53,9 @@
       "migrate_cmd.js",
       "update-state.js",
       "compatibility.js",
+      "deelevation.js",
+      "windows-start-errors.js",
+      "windows-initdb.js",
       "boot.js",
       "preload.js",
       "assets/**"
@@ -89,6 +92,9 @@
     "win": {
       "icon": "assets/icon.ico",
       "artifactName": "Celerp-Setup.exe",
+      "files": [
+        "!node_modules/@embedded-postgres/darwin-*{,/**/*}"
+      ],
       "target": [
         {
           "target": "nsis",
@@ -205,6 +211,7 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
+      "preCompressedFileExtensions": [],
       "include": "build/installer.nsh"
     },
     "appImage": {

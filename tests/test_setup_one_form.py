@@ -217,7 +217,8 @@ async def test_setup_post_twice_is_harmless(ui_client):
         signed_out = await ui_client.post("/setup", data=_VALID)
         signed_in = await ui_client.post("/setup", data=_VALID, cookies=_authed())
     assert signed_out.status_code == 302 and signed_out.headers["location"] == "/login"
-    assert signed_in.status_code == 302 and signed_in.headers["location"] == "/dashboard"
+    # The signed-in owner goes to /, which lands on the first page their menu has.
+    assert signed_in.status_code == 302 and signed_in.headers["location"] == "/"
     s.register.assert_not_awaited()
 
 

@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
     branches: ["develop", "bugfix"]
   pull_request:
-    branches: ["main"]   # mac-only unsigned build + boot smoke (pre-tag gate)
+    branches: ["main"]   # unsigned macOS build + boot smoke, plus Windows when it is touched (pre-tag gate)
   workflow_dispatch:
     inputs:
       platforms:
@@ -69,16 +69,28 @@ jobs:
 
   # Compute the build matrix: the bugfix branch and pull requests build macOS only.
   # Bugfix pushes use the normal signed-dev path; pull requests remain unsigned
-  # because signing credentials must not be exposed to PR workflows.
+  # because signing credentials must not be exposed to PR workflows. A pull request
+  # that changes how the Windows app is packaged or started also builds Windows,
+  # with its DLL check and both boot smokes.
   setup-matrix:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
     steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2  # the merge commit and the base it merges into
+      - id: changed
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          { echo "files<<CHANGED_EOF"; git diff --name-only HEAD^1 HEAD; echo "CHANGED_EOF"; } >> "$GITHUB_OUTPUT"
       - id: gen
         shell: bash
         env:
           PLATFORMS: ${{ github.event.inputs.platforms }}
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
         run: |
           mac='{"os":"macos-latest","build_cmd":"pnpm run build:mac","platform_flag":"--mac","standalone_dir":"mac-arm64","pbs_triple":"aarch64-apple-darwin"}'
           win='{"os":"windows-latest","build_cmd":"pnpm run build:win","platform_flag":"--win","standalone_dir":"win-x64","pbs_triple":"x86_64-pc-windows-msvc"}'
@@ -92,6 +104,9 @@ jobs:
               *)       inc="$lin,$win,$mac" ;;
             esac
             echo "matrix={\"include\":[$inc]}" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_EVENT_NAME" = "pull_request" ] \
+            && printf '%s\n' "$CHANGED_FILES" | grep -qE '^(electron/|celerp/win_restricted_launch\.py$|\.github/workflows/build\.yml$|scripts/(download-python\.sh|check_packaged_modules\.py)$)'; then
+            echo "matrix={\"include\":[$win,$mac]}" >> "$GITHUB_OUTPUT"
           elif [ "$GITHUB_REF_NAME" = "bugfix" ] || [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             echo "matrix={\"include\":[$mac]}" >> "$GITHUB_OUTPUT"
           else
@@ -214,6 +229,13 @@ jobs:
           fi
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install . -c constraints.txt
+          # The Windows app runs the PostgreSQL server bundled with Electron
+          # (@embedded-postgres/windows-x64) and the pg-win backup tools, so the
+          # celerp-postgres wheel that `pip install celerp` users get is left out.
+          # celerp's metadata still lists it; `pip check` would report it missing.
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            "$PY" -m pip uninstall -y celerp-postgres
+          fi
 
       # ── Bundled pg_dump/pg_restore/psql (macOS) ──────────────────────────────
       # Built from source for both arches in this one arm64 job (x86_64 slice
@@ -487,6 +509,28 @@ jobs:
             security delete-keychain "$CSC_KEYCHAIN" || true
           fi
 
+      # The bundled PostgreSQL binaries link the Visual C++ runtime, which a clean
+      # Windows PC does not have. Stage the two DLLs from the runner's Visual Studio
+      # install; afterPack copies them next to the binaries and stops the build
+      # without them.
+      - name: Stage the Visual C++ runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          if (-not $vs) { Write-Host "::error::vswhere found no Visual Studio install"; exit 1 }
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC" -Directory |
+            Where-Object { $_.Name -match '^\d+(\.\d+)+$' -and (Test-Path "$($_.FullName)\x64\Microsoft.VC143.CRT") } |
+            Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (-not $crt) { Write-Host "::error::no x64 Microsoft.VC143.CRT folder under $vs\VC\Redist\MSVC"; exit 1 }
+          $src = "$($crt.FullName)\x64\Microsoft.VC143.CRT"
+          $dest = Join-Path $env:RUNNER_TEMP "vc-runtime"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          foreach ($dll in "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll") { Copy-Item (Join-Path $src $dll) $dest }
+          Write-Host "staged the Visual C++ runtime from $src"
+          "CELERP_VC_RUNTIME_DIR=$dest" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
       - name: Build (Windows / Linux - release tag)
         if: matrix.os != 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
         working-directory: electron
@@ -554,17 +598,6 @@ jobs:
             test -d "$RES/licenses/postgresql"   # from the built-from-source pg_dump tools
             test -d "$RES/licenses/openssl"
           fi
-          # Windows: the StackBuilder DLLs (wxWidgets + libcurl) must have been
-          # pruned by afterPack — fail loudly if any leaked into the package
-          # (otherwise we'd ship the wxWindows-licensed DLLs without attribution).
-          if [ "$OS" = "windows-latest" ]; then
-            BIN="$RES/app.asar.unpacked/node_modules/@embedded-postgres/windows-x64/native/bin"
-            if ls "$BIN"/wx*.dll "$BIN"/libcurl.dll >/dev/null 2>&1; then
-              echo "ERROR: StackBuilder DLLs leaked into the Windows package" >&2
-              ls "$BIN"/wx*.dll "$BIN"/libcurl.dll 2>/dev/null >&2
-              exit 1
-            fi
-          fi
           # Backup and restore run these tools from the package: each must be
           # executable, built for its architecture, and start with only the
           # libraries the package ships plus the system's.
@@ -607,10 +640,44 @@ jobs:
           esac
           echo "OK: third-party licenses and PostgreSQL tools present in packaged artifact"
 
+      # The Windows package leaves out the macOS PostgreSQL builds, the
+      # celerp-postgres wheel and everything electron/win-prune.json lists
+      # (the StackBuilder DLLs among them), keeps what the app runs on, and
+      # still carries a licence for every Python package that ships.
+      - name: Check the Windows bundle
+        if: runner.os == 'Windows'
+        shell: bash
+        # The smokes compare each install with win-unpacked file by file.
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -eo pipefail
+          RES="electron/dist/win-unpacked/resources"
+          PY="$RES/python-x64/python/python.exe"
+          "$PY" electron/scripts/check_win_bundle.py check electron/dist/win-unpacked
+          "$PY" electron/scripts/collect_licenses.py --check --out "$RES/licenses" \
+            --site-packages "$RES/python-x64/python/Lib/site-packages" \
+            --extra-python electron/licenses-extra/python-standalone \
+            --extra-psycopg2 electron/licenses-extra/psycopg2
+
+      # Every DLL a bundled Windows binary imports must ship beside it or be part
+      # of Windows itself; anything else fails on a clean PC with 0xC0000135.
+      - name: Check the Windows DLL closure
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          RES="electron/dist/win-unpacked/resources"
+          node electron/scripts/check-win-dll-closure.js \
+            "$RES/app.asar.unpacked/node_modules/@embedded-postgres/windows-x64/native/bin" \
+            "$RES/pg-win/bin"
+
       # The packaged default modules must be exactly the ones the lock names, with
       # the same content. The packaged Python runs the packaged loader's check.
       - name: Check bundled modules in the packaged artifact
         shell: bash
+        # The smokes compare each install with win-unpacked file by file.
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -eo pipefail
           case "${{ matrix.os }}" in
@@ -706,157 +773,19 @@ jobs:
           fi
           echo "force-quit OK on $RUNNER_OS: the API and the database stopped"
 
-      # Windows runs elevated on the GitHub runner and bundled Postgres refuses to
-      # run under an administrator token. The app self-de-elevates at startup
-      # (relaunches at a restricted token), so we launch it normally and just pass
-      # the port via machine env — the relaunched, restricted process inherits the
-      # machine environment (it would not inherit our process env).
+      # Boot the installed app the way most Windows users run it: from a standard
+      # (non-admin) account. A SAFER/runas restricted token would crash Electron; a
+      # real standard account gives a clean medium token where both Electron and
+      # Postgres run. With the app open, the installer runs again, as a user does
+      # with the app still running: it must close the app, install and boot again.
+      # The account's name, and so its profile, data and install folders, has spaces
+      # and non-ASCII letters.
       - name: Boot smoke (Windows, require db:ok)
-        timeout-minutes: 15
+        timeout-minutes: 20
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Set-Location electron
-          # The GitHub runner is full-admin with UAC off, where the bundled Postgres
-          # refuses to start (it rejects an administrator token). Real users run
-          # non-admin, so reproduce that: install and launch the app as a freshly-created
-          # standard user. A SAFER/runas restricted token would crash Electron; a real
-          # standard account gives a clean medium token where both Electron and
-          # Postgres run. We grant that user access to the runner's window station and
-          # desktop so Electron's main process can initialise, then wait for a real
-          # db:ok from the app's own boot -> migrations -> API path.
-          $u  = "celerpci"
-          $pw = "Ci-" + [guid]::NewGuid().ToString("N").Substring(0,16) + "!Aa9"
-
-          # seclogon backs Start-Process -Credential and is Stopped/Manual on the runner.
-          Set-Service seclogon -StartupType Manual
-          Start-Service seclogon
-
-          $sec  = ConvertTo-SecureString $pw -AsPlainText -Force
-          New-LocalUser -Name $u -Password $sec -AccountNeverExpires -PasswordNeverExpires | Out-Null
-          Add-LocalGroupMember -Group "Users" -Member $u -ErrorAction SilentlyContinue
-          $cred = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\$u", $sec)
-
-          # Grant the standard user access to this process's window station + desktop
-          # (Electron's main process needs a desktop even before any window). The
-          # -Credential child inherits the caller's window station/desktop, so granting
-          # on the handles we hold is what lets the launched app attach to them.
-          Add-Type @'
-          using System;
-          using System.Runtime.InteropServices;
-          using System.Security.AccessControl;
-          using System.Security.Principal;
-          public class WinStaAccess {
-            [DllImport("user32.dll", SetLastError=true)] static extern IntPtr GetProcessWindowStation();
-            [DllImport("user32.dll", SetLastError=true)] static extern IntPtr GetThreadDesktop(uint threadId);
-            [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
-            [DllImport("user32.dll", SetLastError=true)] static extern bool GetUserObjectSecurity(IntPtr h, ref int si, byte[] sd, int len, ref int needed);
-            [DllImport("user32.dll", SetLastError=true)] static extern bool SetUserObjectSecurity(IntPtr h, ref int si, byte[] sd);
-            const int DACL = 4;
-            static byte[] Get(IntPtr h) {
-              int si = DACL; int need = 0; GetUserObjectSecurity(h, ref si, null, 0, ref need);
-              byte[] b = new byte[need];
-              if (!GetUserObjectSecurity(h, ref si, b, need, ref need)) throw new Exception("Get failed " + Marshal.GetLastWin32Error());
-              return b;
-            }
-            static void Set(IntPtr h, byte[] b) { int si = DACL; if (!SetUserObjectSecurity(h, ref si, b)) throw new Exception("Set failed " + Marshal.GetLastWin32Error()); }
-            static void Add(IntPtr h, SecurityIdentifier sid, int mask, bool inheritOnlyGenericAll) {
-              var sd = new RawSecurityDescriptor(Get(h), 0);
-              var dacl = sd.DiscretionaryAcl == null ? new RawAcl(2, 1) : sd.DiscretionaryAcl;
-              int i = dacl.Count;
-              if (inheritOnlyGenericAll)
-                dacl.InsertAce(i++, new CommonAce(AceFlags.ObjectInherit|AceFlags.ContainerInherit|AceFlags.InheritOnly, AceQualifier.AccessAllowed, unchecked((int)0x10000000), sid, false, null));
-              dacl.InsertAce(i++, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, mask, sid, false, null));
-              sd.DiscretionaryAcl = dacl;
-              byte[] outb = new byte[sd.BinaryLength]; sd.GetBinaryForm(outb, 0); Set(h, outb);
-            }
-            public static void Grant(string account) {
-              var sid = (SecurityIdentifier)(new NTAccount(account)).Translate(typeof(SecurityIdentifier));
-              Add(GetProcessWindowStation(), sid, 0x37F, true);            // WINSTA_ALL_ACCESS + inherit-only GENERIC_ALL
-              Add(GetThreadDesktop(GetCurrentThreadId()), sid, 0x1FF, false); // DESKTOP_ALL
-            }
-          }
-          '@
-          [WinStaAccess]::Grant("$env:COMPUTERNAME\$u")
-
-          # Install the release installer as that standard user and launch the
-          # installed app exactly as a user would: default data directory, no
-          # --user-data-dir. Start-Process -Credential hands the child the CALLER's
-          # environment (the admin's %APPDATA%, which the standard user cannot
-          # write), so a warm-up logon first materialises the user's profile and
-          # the cmd wrappers point the profile variables at it, as a real logon does.
-          $pub = "C:\Users\Public"
-          $setup = Join-Path $pub "Celerp-Setup.exe"
-          Copy-Item "dist/Celerp-Setup.exe" $setup -Force
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "exit 0" -Credential $cred -LoadUserProfile -Wait -WorkingDirectory $pub
-          $sid = (New-Object System.Security.Principal.NTAccount("$env:COMPUTERNAME\$u")).Translate([System.Security.Principal.SecurityIdentifier]).Value
-          $profileDir = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid }).LocalPath
-          if (-not $profileDir) { Write-Host "::error::boot smoke FAILED on Windows - no profile created for $u"; exit 1 }
-          $envSet = "set USERPROFILE=$profileDir`r`nset APPDATA=$profileDir\AppData\Roaming`r`nset LOCALAPPDATA=$profileDir\AppData\Local`r`nset TEMP=$profileDir\AppData\Local\Temp`r`nset TMP=$profileDir\AppData\Local\Temp`r`nif not exist `"%APPDATA%`" mkdir `"%APPDATA%`"`r`nif not exist `"%TEMP%`" mkdir `"%TEMP%`""
-
-          $install = Join-Path $pub "celerp-install.cmd"
-          $installOut = Join-Path $pub "celerp-install.out"
-          Set-Content -Encoding Ascii $install "@echo off`r`n$envSet`r`n`"$setup`" /S /currentuser > `"$installOut`" 2>&1`r`necho installer exit %ERRORLEVEL% >> `"$installOut`""
-          Write-Host "smoke: installing $setup as standard user $u (profile $profileDir)"
-          $inst = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$install`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub -PassThru
-          if (-not $inst.WaitForExit(300000)) { Write-Host "::error::boot smoke FAILED on Windows - installer did not finish in 300s"; exit 1 }
-          if (Test-Path $installOut) { Get-Content $installOut }
-          $exe = Get-ChildItem -Path "$profileDir\AppData\Local\Programs" -Recurse -Filter "Celerp.exe" -EA SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-          if (-not $exe) { Write-Host "::error::boot smoke FAILED on Windows - Celerp.exe not installed under $profileDir"; exit 1 }
-          $udd = "$profileDir\AppData\Roaming"
-
-          # Launch through a cmd wrapper that captures Electron's stdout/stderr.
-          $boot = Join-Path $pub "celerp-boot.out"
-          $run  = Join-Path $pub "celerp-run.cmd"
-          Remove-Item $boot -EA SilentlyContinue
-          # Every module in the lock is enabled; a bundled module that is missing or
-          # fails to load stops startup, so readiness also proves they all load.
-          $enabled = ((Get-Content "..\default_modules\first_party.lock.json" -Raw | ConvertFrom-Json).PSObject.Properties.Name | Sort-Object) -join ","
-          Write-Host "smoke: enabling $enabled"
-          Set-Content -Encoding Ascii $run "@echo off`r`n$envSet`r`nset ELECTRON_ENABLE_LOGGING=1`r`nset ENABLED_MODULES=$enabled`r`n`"$exe`" > `"$boot`" 2>&1"
-
-          Write-Host "smoke: launching installed $exe as standard user $u (default data dir $udd, output $boot)"
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub
-
-          $deadline = (Get-Date).AddSeconds(240)
-          $ok = $false; $port = $null; $tick = 0
-          while ((Get-Date) -lt $deadline) {
-            if (-not $port) {
-              $pf = Get-ChildItem -Path $udd -Recurse -Filter "api-port" -EA SilentlyContinue | Select-Object -First 1
-              if ($pf) { $port = (Get-Content $pf.FullName -Raw).Trim(); Write-Host "smoke: app published API port $port ($($pf.FullName))" }
-            }
-            if ($port) {
-              try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$port/health/ready"; if ($r.Content -match '"db"\s*:\s*"ok"') { $ok = $true; break } } catch { }
-            }
-            if (($tick % 10) -eq 0) { Write-Host "smoke: t+$($tick*2)s Celerp procs=$(@(Get-Process Celerp -EA SilentlyContinue).Count) portFound=$([bool]$port)" }
-            $tick++; Start-Sleep -Seconds 2
-          }
-          $installDir = Split-Path $exe
-          $ours = { @(Get-Process postgres, python -EA SilentlyContinue | Where-Object { $_.Path -like "$installDir\*" }) }
-          $before = (& $ours).Count
-          taskkill /IM Celerp.exe /F 2>$null | Out-Null
-          if (-not $ok) {
-            Write-Host "::error::boot smoke FAILED on Windows - db:ok not reached (port=$port)"
-            Write-Host "===== Electron stdout/stderr ($boot) ====="
-            if (Test-Path $boot) { Get-Content $boot -Tail 200 } else { Write-Host "(no captured output)" }
-            Write-Host "===== boot-relevant files (logs / postgres state) ====="
-            Get-ChildItem -Path $udd -Recurse -EA SilentlyContinue |
-              Where-Object { -not $_.PSIsContainer -and $_.Name -match '(?i)\.log$|logfile|PG_VERSION|postmaster|\.pid$|migrat' } |
-              ForEach-Object { Write-Host "== $($_.FullName) =="; Get-Content $_.FullName -Tail 80 -EA SilentlyContinue }
-            exit 1
-          }
-          Write-Host "boot smoke OK on Windows (port $port)"
-
-          # The force-quit above must leave no API or database running (the app's job object ends them).
-          if ($before -eq 0) { Write-Host "::error::force-quit check could not see the app's API and database processes"; exit 1 }
-          for ($i = 0; $i -lt 15; $i++) {
-            $left = @(& $ours) + @(Get-NetTCPConnection -LocalPort $port -State Listen -EA SilentlyContinue)
-            if ($left.Count -eq 0) { break }
-            Start-Sleep -Seconds 2
-          }
-          if ($left.Count -ne 0) { Write-Host "::error::force-quit on Windows left the API or the database running"; $left | Format-Table | Out-String | Write-Host; exit 1 }
-          Write-Host "force-quit OK on Windows: the API and the database stopped ($before processes before)"
+        working-directory: electron
+        run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName "Célerp Tëst ü" -OverRunning
 
       # The installer reads the installed version from the uninstall entry. Over an
       # existing install: none -> installs; the same version run silently ->
@@ -864,6 +793,19 @@ jobs:
       # installed exe, a file in the install folder and the uninstall entry are
       # compared byte for byte); installed older -> updates; the in-app updater
       # (--updated) -> is never stopped or prompted.
+      # Before any of that: a disk without room for the app must stop the installer
+      # with a non-zero exit and register nothing; an installer stopped while it
+      # unpacks, and one stopped while it copies, register nothing, and the next run
+      # installs the complete app and removes what they left (their temporary
+      # folders and the half-copied folder). The first full install is timed into the
+      # job summary, reported and never compared against a limit.
+      # After them, an update on a nearly full disk (setup's temporary folder on the
+      # same disk) is refused before anything changes, and one where the disk fills
+      # while it unpacks or while it copies leaves the installed version byte for byte
+      # as it was. So does an update that cannot copy into a new folder next to the
+      # install: one that cannot write its marker file there, and one that finds a
+      # folder or marker there that it did not make. It stops, and leaves what it found.
+      # A normal update after them still replaces the install.
       - name: Installer version check (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -874,8 +816,11 @@ jobs:
             $p = Start-Process -FilePath $setup -ArgumentList $installerArgs -Wait -PassThru
             return $p.ExitCode
           }
+          # The runner's account has no per-user uninstall key until something installs.
           function Entry {
-            Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
+            $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+            if (-not (Test-Path $key)) { return }
+            Get-ChildItem $key |
               Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like "Celerp*" } |
               Select-Object -First 1
           }
@@ -896,11 +841,71 @@ jobs:
             } | ConvertTo-Json -Compress
           }
 
-          # none: a fresh install.
+          function NewTemp { @(Get-ChildItem $env:TEMP -Directory -Filter "ns*.tmp" -EA SilentlyContinue | Where-Object { $tempBefore -notcontains $_.Name }) }
+          function Siblings([string]$parent) { @(Get-ChildItem $parent -Force -EA SilentlyContinue | Where-Object { $_.Name -like "~*" } | ForEach-Object FullName) }
+          $diskpart = Join-Path $env:RUNNER_TEMP "lowdisk.txt"
+          function Volume([string]$vhd, [int]$mb) {
+            $letter = [char[]](70..90) | Where-Object { -not (Test-Path "${_}:\") } | Select-Object -Last 1
+            Set-Content -Encoding Ascii $diskpart "create vdisk file=`"$vhd`" maximum=$mb type=expandable`r`nselect vdisk file=`"$vhd`"`r`nattach vdisk`r`ncreate partition primary`r`nformat fs=ntfs quick label=lowdisk`r`nassign letter=$letter"
+            diskpart /s $diskpart | Out-Null
+            if (-not (Test-Path "${letter}:\")) { Fail "could not attach the low-disk volume $vhd" }
+            "${letter}:"
+          }
+          function Detach([string]$vhd) {
+            Set-Content -Encoding Ascii $diskpart "select vdisk file=`"$vhd`"`r`ndetach vdisk"
+            diskpart /s $diskpart | Out-Null
+          }
+          $tempBefore = @(Get-ChildItem $env:TEMP -Directory -Filter "ns*.tmp" -EA SilentlyContinue | ForEach-Object Name)
+
+          # A full disk: a 300 MB volume cannot hold the app. Setup says so before it
+          # writes anything.
+          $vhd = Join-Path $env:RUNNER_TEMP "lowdisk.vhdx"
+          $vol = Volume $vhd 300
+          $p = Start-Process -FilePath $setup -ArgumentList "/S /currentuser /D=$vol\Celerp" -PassThru
+          if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; Fail "installer on a full disk was still running after 600 s" }
+          if ($p.ExitCode -ne 2) { Fail "installer on a full disk exited $($p.ExitCode) (want 2)" }
+          if (Entry) { Fail "installer on a full disk registered an install" }
+          if ((NewTemp).Count) { Fail "installer on a full disk left $((NewTemp).FullName -join ', ')" }
+          if ((Siblings $vol).Count) { Fail "installer on a full disk left $((Siblings $vol) -join ', ')" }
+          Write-Host "full disk: stopped with exit 2 before writing, nothing registered or left behind"
+          Detach $vhd
+
+          # Stopped part way: the installer is ended once while it unpacks the app into
+          # its temporary folder, and once while it copies the app next to the install
+          # folder.
+          $target = Join-Path $env:LOCALAPPDATA "Programs\celerp"
+          function StopWhen([string]$what, [scriptblock]$count) {
+            $p = Start-Process -FilePath $setup -ArgumentList "/S /currentuser" -PassThru
+            $n = 0
+            while (-not $p.HasExited) {
+              $n = & $count
+              if ($n -ge 1000) { Stop-Process -Id $p.Id -Force; $p.WaitForExit(); break }
+              Start-Sleep -Milliseconds 100
+            }
+            if ($n -lt 1000) { Fail "the installer finished (exit $($p.ExitCode)) before it could be stopped $what" }
+            if (Entry) { Fail "an installer stopped $what registered an install" }
+            $mb = [math]::Round((((NewTemp) | ForEach-Object { Get-ChildItem $_.FullName -Recurse -File -EA SilentlyContinue }) | Measure-Object Length -Sum).Sum / 1MB)
+            Write-Host "stopped $what`: $n files, nothing registered; left $((NewTemp).Count) temporary folders ($mb MB) and [$((Siblings (Split-Path $target)) -join ', ')]"
+          }
+          StopWhen "while unpacking" { @((NewTemp) | ForEach-Object { Get-ChildItem (Join-Path $_.FullName "7z-out") -Recurse -File -EA SilentlyContinue }).Count }
+          StopWhen "while copying" { @(Get-ChildItem (Join-Path (Split-Path $target) "~Nlerp") -Recurse -File -EA SilentlyContinue).Count }
+          if (-not (Siblings (Split-Path $target)).Count) { Fail "the run stopped while copying left no copy folder to clean up; the check did not stop it where intended" }
+
+          # none: a full install, after the stopped runs.
+          $watch = [Diagnostics.Stopwatch]::StartNew()
           $code = Install @("/S", "/currentuser")
+          $watch.Stop()
           if ($code -ne 0) { Fail "fresh install exited $code" }
           if (-not (Entry)) { Fail "no Celerp uninstall entry after install" }
           $built = Installed
+          python electron/scripts/check_win_bundle.py installed electron/dist/win-unpacked (InstallDir)
+          if ($LASTEXITCODE -ne 0) { Fail "the install after the stopped runs differs from the build" }
+          if ((NewTemp).Count) { Fail "the stopped runs' temporary folders are still there: $((NewTemp).FullName -join ', ')" }
+          if ((Siblings (Split-Path $target)).Count) { Fail "the stopped run's copy is still there: $((Siblings (Split-Path $target)) -join ', ')" }
+          Write-Host "none: removed what the stopped runs left"
+          $line = "- Windows runner account, per-user silent install: {0:N1} s" -f $watch.Elapsed.TotalSeconds
+          Write-Host "timing: $line"
+          Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY $line
           Write-Host "none: installed $built"
 
           # same: the same version run silently reinstalls.
@@ -931,7 +936,161 @@ jobs:
           $code = Install @("/S", "/currentuser")
           if ($code -ne 0 -or (Installed) -ne $built) { Fail "newer installer over 0.0.1: exit $code, entry $(Installed) (want exit 0, $built)" }
           Write-Host "installed older: updated 0.0.1 to $built"
+
+          # An update on a nearly full disk. The app is installed on a volume with room
+          # for it, the installed copy is marked as an older version, and setup's
+          # temporary folder is put on the same volume.
+          $appMB = [math]::Ceiling(((Get-ChildItem electron/dist/win-unpacked -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB)
+          $setupMB = [math]::Ceiling((Get-Item $setup).Length / 1MB)
+          $vhd = Join-Path $env:RUNNER_TEMP "update.vhdx"
+          $vol = Volume $vhd (4 * $appMB + $setupMB + 1024)
+          $code = Install @("/S", "/currentuser", "/D=$vol\Celerp")
+          if ($code -ne 0 -or (InstallDir) -ne "$vol\Celerp") { Fail "install on the update volume: exit $code, folder $(InstallDir)" }
+          Set-ItemProperty (Entry).PSPath -Name DisplayVersion -Value "0.0.1"
+          $dir = InstallDir
+          Set-Content -Encoding Ascii (Join-Path $dir "celerp-ci-sentinel.txt") "installed copy"
+          $before = State
+          $tmp = "$vol\tmp"
+          New-Item -ItemType Directory $tmp | Out-Null
+          function Unchanged([string]$what) {
+            $after = State
+            if ($after -ne $before) { Fail "$what changed the install:`n before $before`n after  $after" }
+            Remove-Item (Join-Path $dir "celerp-ci-sentinel.txt")
+            python electron/scripts/check_win_bundle.py installed electron/dist/win-unpacked $dir
+            if ($LASTEXITCODE -ne 0) { Fail "$what`: the installed copy no longer matches the build" }
+            Set-Content -Encoding Ascii (Join-Path $dir "celerp-ci-sentinel.txt") "installed copy"
+            if ((Siblings $vol).Count) { Fail "$what left $((Siblings $vol) -join ', ')" }
+            $left = @(Get-ChildItem $tmp -Force)
+            if ($left.Count) { Fail "$what left $($left.FullName -join ', ') in its temporary folder" }
+          }
+          function Fill([string]$file, [long]$leave) {
+            $free = (Get-PSDrive $vol.TrimEnd(":")).Free
+            if ($free -gt $leave) { fsutil file createnew $file ($free - $leave) | Out-Null }
+          }
+          function Update {
+            $env:TEMP = $tmp; $env:TMP = $tmp
+            try { Start-Process -FilePath $setup -ArgumentList "/S /currentuser /D=$vol\Celerp" -PassThru } finally { $env:TEMP = $tempHome; $env:TMP = $tempHome }
+          }
+          $tempHome = $env:TEMP
+
+          # Too little room for the update: setup stops before changing anything.
+          Fill "$vol\filler-1.bin" 150MB
+          $p = Update
+          if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; Fail "update on a full disk was still running after 600 s" }
+          if ($p.ExitCode -ne 2) { Fail "update on a full disk exited $($p.ExitCode) (want 2)" }
+          Unchanged "an update on a full disk"
+          Write-Host "update on a full disk: stopped with exit 2, the installed version unchanged byte for byte"
+          Remove-Item "$vol\filler-1.bin"
+
+          # The disk fills up while the update unpacks, then while it copies: setup
+          # removes what it made and stops. The unpack case proves setup notices a short
+          # unpack, which the 7-Zip plugin does not report.
+          function FillDuring([string]$phase, [scriptblock]$count) {
+            $p = Update
+            while (-not $p.HasExited -and (& $count) -lt 50) { Start-Sleep -Milliseconds 50 }
+            if ($p.HasExited) { Fail "the update finished (exit $($p.ExitCode)) before the disk could fill $phase" }
+            for ($i = 0; $i -lt 5; $i++) { try { Fill "$vol\filler-$i.bin" 1MB } catch { } }
+            if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; Fail "update with the disk full $phase was still running after 600 s" }
+            if ($p.ExitCode -ne 2) { Fail "update with the disk full $phase exited $($p.ExitCode) (want 2)" }
+            Unchanged "an update with the disk full $phase"
+            Write-Host "update with the disk full $phase`: stopped with exit 2, the installed version unchanged byte for byte"
+            Get-ChildItem $vol -Filter "filler-*.bin" | Remove-Item
+          }
+          FillDuring "while unpacking" { @(Get-ChildItem $tmp -Directory -Filter "ns*.tmp" -EA SilentlyContinue | ForEach-Object { Get-ChildItem (Join-Path $_.FullName "7z-out") -Recurse -File -EA SilentlyContinue }).Count }
+          FillDuring "while copying" { @(Get-ChildItem "$vol\~Nlerp" -Recurse -File -EA SilentlyContinue).Count }
+
+          # An update that cannot copy next to the install first stops, and changes nothing.
+          function Refused([string]$what) {
+            $p = Update
+            if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; Fail "$what was still running after 600 s" }
+            if ($p.ExitCode -ne 2) { Fail "$what exited $($p.ExitCode) (want 2)" }
+          }
+          # Its marker file cannot be written: this account may make folders but no files
+          # in the folder that holds the install.
+          $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          icacls "$vol\" /deny "*${me}:(WD)" | Out-Null
+          try { Refused "an update that cannot write its marker" } finally { icacls "$vol\" /remove:d "*$me" | Out-Null }
+          Unchanged "an update that cannot write its marker"
+          Write-Host "update that cannot write its marker: stopped with exit 2, the installed version unchanged byte for byte"
+          # A folder or marker in a sibling's place that setup did not make, alone or with
+          # a marker that is not setup's own.
+          $foreign = "made by something other than setup"
+          $cases = [ordered]@{
+            "a copy folder"            = @("~Nlerp")
+            "an old-version folder"    = @("~Olerp")
+            "a folder in the marker's place" = @("~Slerp")
+            "a marker that is not setup's" = @("~Slerp=file", "~Nlerp")
+          }
+          foreach ($case in $cases.GetEnumerator()) {
+            foreach ($item in $case.Value) {
+              $name, $kind = $item -split "="
+              if ($kind -eq "file") { Set-Content -Encoding Ascii "$vol\$name" $foreign }
+              else { New-Item -ItemType Directory "$vol\$name" | Out-Null; Set-Content -Encoding Ascii "$vol\$name\foreign.txt" $foreign }
+            }
+            Refused "an update that found $($case.Key)"
+            foreach ($item in $case.Value) {
+              $name, $kind = $item -split "="
+              $file = if ($kind -eq "file") { "$vol\$name" } else { "$vol\$name\foreign.txt" }
+              if ((Get-Content $file -Raw -EA SilentlyContinue) -notmatch $foreign) { Fail "an update that found $($case.Key) changed $file" }
+              Remove-Item -Recurse -Force "$vol\$name"
+            }
+            Unchanged "an update that found $($case.Key)"
+            Write-Host "update that found $($case.Key): stopped with exit 2, left it as found, the installed version unchanged byte for byte"
+          }
+          # Nothing in the way: the update replaces the install.
+          Remove-Item (Join-Path $dir "celerp-ci-sentinel.txt")
+          $p = Update
+          if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; Fail "the update after the refused ones was still running after 600 s" }
+          if ($p.ExitCode -ne 0) { Fail "the update after the refused ones exited $($p.ExitCode) (want 0)" }
+          python electron/scripts/check_win_bundle.py installed electron/dist/win-unpacked $dir
+          if ($LASTEXITCODE -ne 0) { Fail "the update after the refused ones: the install differs from the build" }
+          if ((Siblings $vol).Count) { Fail "the update after the refused ones left $((Siblings $vol) -join ', ')" }
+          Write-Host "update after the refused ones: replaced the install, nothing left next to it"
+
+          $p = Start-Process -FilePath (Join-Path $dir "Uninstall Celerp.exe") -ArgumentList "/S /currentuser _?=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Fail "uninstall from the update volume exited $($p.ExitCode)" }
+          Detach $vhd
+
+          # A setup stopped while copying into a folder whose path has letters outside the
+          # system code page (a Thai account name) is still setup's own: the next setup
+          # cleans it up instead of refusing every later update.
+          $target = Join-Path $env:LOCALAPPDATA "Programs\ทดสอบ\celerp"
+          $p = Start-Process -FilePath $setup -ArgumentList "/S /currentuser /D=$target" -PassThru
+          $n = 0
+          while (-not $p.HasExited -and $n -lt 1000) {
+            $n = @(Get-ChildItem (Join-Path (Split-Path $target) "~Nlerp") -Recurse -File -EA SilentlyContinue).Count
+            Start-Sleep -Milliseconds 100
+          }
+          if ($n -lt 1000) { Fail "the installer into a Thai folder finished (exit $($p.ExitCode)) before it could be stopped" }
+          Stop-Process -Id $p.Id -Force; $p.WaitForExit()
+          $code = Install @("/S", "/currentuser", "/D=$target")
+          if ($code -ne 0) { Fail "install into a Thai folder after a stopped one exited $code" }
+          if ((Siblings (Split-Path $target)).Count) { Fail "install into a Thai folder left $((Siblings (Split-Path $target)) -join ', ')" }
+          $code = Install @("/S", "/currentuser", "/D=$target")
+          if ($code -ne 0) { Fail "update in a Thai folder exited $code" }
+          $p = Start-Process -FilePath (Join-Path $target "Uninstall Celerp.exe") -ArgumentList "/S /currentuser _?=$target" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Fail "uninstall from a Thai folder exited $($p.ExitCode)" }
+          Write-Host "setup stopped in a Thai folder: the next one cleaned up after it, and an update after that replaced the install"
           Write-Host "installer version check OK on Windows"
+
+      # An administrator on a PC with UAC off has no standard token to relaunch into,
+      # so the app must boot in place with its servers started at a restricted token.
+      - name: Boot smoke (Windows administrator, UAC off)
+        timeout-minutes: 15
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: electron
+        run: ./scripts/win-boot-smoke.ps1 -Account admin
+
+      # Installed for all users by an administrator, into a Program Files folder with
+      # spaces whose deepest file is as long as a path may be without long-path
+      # support, then run by a standard account that did not install it.
+      - name: Boot smoke (Windows, per-machine install, second standard account)
+        timeout-minutes: 20
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: electron
+        run: ./scripts/win-boot-smoke.ps1 -Account standard -UserName celerpci2 -Install machine
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"
@@ -971,6 +1130,82 @@ jobs:
             electron/dist/Celerp.AppImage
             electron/dist/Celerp.deb
           if-no-files-found: warn
+
+  # ── Windows accounts named in every script (Windows builds) ──────────────
+  # The built installer, run by a real local account per name with its profile
+  # loaded, so the profile, data, temp and install folders all carry the name. On
+  # a PC that makes no short (8.3) names Postgres cannot read a profile path
+  # outside the ANSI code page and has no short form to fall back on, so the
+  # database must be set up in the account's private folder. Each account first
+  # installs a release: where that release keeps data under the name, the
+  # upgrade must keep it; where 2.5.6 cannot start ("fails": any name outside
+  # ASCII, since 2.5.6 hands Postgres the path in the ANSI code page), this
+  # build must start clean from what it left behind. Then the sample company, attachment,
+  # exports, company and full backups, restores and a reopen, all named in the
+  # account's script (win-boot-smoke.ps1 -Demo). Gated on the build's result, not
+  # success(): outside a tag prepare-release is skipped, which makes success() false.
+  win-names:
+    needs: [setup-matrix, build]
+    if: always() && needs.build.result == 'success' && contains(needs.setup-matrix.outputs.matrix, 'windows-latest')
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { case: thai, user: "สมชาย", previous: v2.5.6, fails: true }
+          - { case: thai-20, user: "สมชายใจดีมีทรัพย์มาก", previous: v2.5.6, fails: true }
+          - { case: arabic, user: "محمد", previous: v2.5.6, fails: true }
+          - { case: chinese, user: "张伟", previous: v2.5.6, fails: true }
+          - { case: supplementary, user: "𠮷 Test", previous: v2.5.6, fails: true }
+          - { case: accented, user: "José Müller", previous: v2.5.6, fails: true }
+          - { case: fullwidth, user: "Ｊｏｓｅ Ｌｉｍａ", previous: v2.5.6, fails: true }
+          - { case: arabic-indic-digits, user: "Ali ٣٤", previous: v2.5.6, fails: true }
+          - { case: ascii, user: "Celerp Upgrade", previous: latest, fails: false }
+    name: win-names (${{ matrix.case }})
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: binaries-windows-latest
+          path: ${{ runner.temp }}/candidate
+      - name: Account ${{ matrix.user }}, from ${{ matrix.previous }}
+        shell: pwsh
+        working-directory: electron
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CASE_USER: ${{ matrix.user }}
+          CASE_PREVIOUS: ${{ matrix.previous }}
+          CASE_FAILS: ${{ matrix.fails }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $previous = Join-Path $env:RUNNER_TEMP "previous"
+          # $LASTEXITCODE is unset until a native command runs, so it is read only after gh.
+          $tag = $env:CASE_PREVIOUS
+          if ($tag -eq "latest") { $tag = gh release view --repo $env:GITHUB_REPOSITORY --json tagName --jq .tagName; if ($LASTEXITCODE -ne 0) { $tag = $null } }
+          if (-not $tag) { Write-Host "::error::no release $env:CASE_PREVIOUS to upgrade from"; exit 1 }
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern Celerp-Setup.exe --dir $previous
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not download Celerp-Setup.exe from $tag"; exit 1 }
+          Write-Host "upgrading from $tag"
+          $smoke = @{ Account = "standard"; UserName = $env:CASE_USER; Previous = (Join-Path $previous "Celerp-Setup.exe")
+                      Installer = (Join-Path $env:RUNNER_TEMP "candidate\Celerp-Setup.exe"); Demo = $true
+                      PreviousFails = ($env:CASE_FAILS -eq "true"); NoShortNames = ($env:CASE_USER -notmatch '^[\x20-\x7e]+$') }
+          ./scripts/win-boot-smoke.ps1 @smoke
+      - name: Celerp logs of ${{ matrix.user }}
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ChildItem C:\Users\*\AppData\Roaming\celerp\celerp-data -Recurse -Include *.log -File -EA SilentlyContinue |
+            ForEach-Object { "== $($_.FullName)"; Get-Content -LiteralPath $_.FullName -Tail 120 -Encoding utf8 }
+
+  # One job for the release to wait on: every account in win-names passed.
+  account-names:
+    needs: [setup-matrix, win-names]
+    if: always() && contains(needs.setup-matrix.outputs.matrix, 'windows-latest')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every account name passed
+        run: test "${{ needs.win-names.result }}" = success
 
   # ── Attach the OpenAPI schema as a release asset (tag builds only) ────────
   # The website renders a static API reference from this schema, fetching
@@ -1074,7 +1309,7 @@ jobs:
   # /releases/latest keeps serving the previous complete release: no 404 window
   # during a build, and no partial or untested release.
   publish-release:
-    needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke]
+    needs: [prepare-release, setup-matrix, build, account-names, openapi-asset, upgrade-smoke]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
     # Tags build side by side; only this job queues, so GitHub releases are
     # published one at a time, in the order their runs reach this job (not the
@@ -1164,7 +1399,7 @@ jobs:
   # This is the only signal that e.g. macOS notarization broke (Apple agreement
   # expiry) - after which NO platform ships until it is fixed and the tag re-pushed.
   notify-release-failure:
-    needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke, publish-release]
+    needs: [prepare-release, setup-matrix, build, account-names, openapi-asset, upgrade-smoke, publish-release]
     if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:

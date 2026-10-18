@@ -654,8 +654,10 @@ def test_j6_labels_off_asks_an_admin_and_the_admin_turns_it_on_and_prints(page: 
     _started(c)
     car = _contributed(c, "Owner's car")
     number = _ok(c.get(f"{API}/assets/{car}"))["number"]
-    # The company chooses its own modules: fixed assets and what it needs, not Labels.
+    # The company chooses its own modules: it starts from everything the server loads, so it
+    # turns Labels off.
     _ok(c.post("/companies/me/modules/celerp-fixed-assets/enable"))
+    _ok(c.post("/companies/me/modules/celerp-labels/disable"))
     assert "celerp-labels" not in _ok(c.get("/companies/me"))["settings"]["enabled_modules"]
     owner = page.context.cookies()
 
