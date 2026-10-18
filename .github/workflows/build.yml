@@ -1050,6 +1050,27 @@ jobs:
           $p = Start-Process -FilePath (Join-Path $dir "Uninstall Celerp.exe") -ArgumentList "/S /currentuser _?=$dir" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Fail "uninstall from the update volume exited $($p.ExitCode)" }
           Detach $vhd
+
+          # A setup stopped while copying into a folder whose path has letters outside the
+          # system code page (a Thai account name) is still setup's own: the next setup
+          # cleans it up instead of refusing every later update.
+          $target = Join-Path $env:LOCALAPPDATA "Programs\ทดสอบ\celerp"
+          $p = Start-Process -FilePath $setup -ArgumentList "/S /currentuser /D=$target" -PassThru
+          $n = 0
+          while (-not $p.HasExited -and $n -lt 1000) {
+            $n = @(Get-ChildItem (Join-Path (Split-Path $target) "~Nlerp") -Recurse -File -EA SilentlyContinue).Count
+            Start-Sleep -Milliseconds 100
+          }
+          if ($n -lt 1000) { Fail "the installer into a Thai folder finished (exit $($p.ExitCode)) before it could be stopped" }
+          Stop-Process -Id $p.Id -Force; $p.WaitForExit()
+          $code = Install @("/S", "/currentuser", "/D=$target")
+          if ($code -ne 0) { Fail "install into a Thai folder after a stopped one exited $code" }
+          if ((Siblings (Split-Path $target)).Count) { Fail "install into a Thai folder left $((Siblings (Split-Path $target)) -join ', ')" }
+          $code = Install @("/S", "/currentuser", "/D=$target")
+          if ($code -ne 0) { Fail "update in a Thai folder exited $code" }
+          $p = Start-Process -FilePath (Join-Path $target "Uninstall Celerp.exe") -ArgumentList "/S /currentuser _?=$target" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Fail "uninstall from a Thai folder exited $($p.ExitCode)" }
+          Write-Host "setup stopped in a Thai folder: the next one cleaned up after it, and an update after that replaced the install"
           Write-Host "installer version check OK on Windows"
 
       # An administrator on a PC with UAC off has no standard token to relaunch into,
