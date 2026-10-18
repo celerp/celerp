@@ -485,8 +485,12 @@ async def test_restore_preview_names_destination_and_states_scope(ui, real_engin
     r = await _upload_and_preview(ui, base, data)
     page = _page(r)
     assert re.search(r'<input\b[^>]*name="company_name"[^>]*value="Alpha Trading \(Restored\)"', page), page[:3000]
-    assert "Included: records, settings, attached files." in page
-    assert "Not included: users, passwords, sign-in sessions, connections, share links." in page
+    # What comes and what stays behind read as two short lists.
+    lists = {m[1]: re.findall(r"<li>([^<]+)</li>", m[2])
+             for m in re.finditer(r"<strong>([^<]+)</strong>\s*<ul[^>]*>(.*?)</ul>", page, re.S)}
+    assert lists["Included"] == ["records", "settings", "attached files"]
+    assert lists["Not included"] == ["users", "passwords", "sign-in sessions", "connections", "share links"]
+    assert "These stay with the installation the company copy was made on." in page
 
     r = await ui.post(f"{base}/restore", data={**_hidden(page), "company_name": "Alpha Trading"})
     page = _page(r)
