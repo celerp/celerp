@@ -3047,21 +3047,23 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.remeasure")
         cls = next((c for c in classes if c["id"] == asset.get("class_id")), {})
         field = "fair_value" if op == "revaluation" else "recoverable_amount"
-        notes: list[FT] = [P(t(f"fixed_assets.remeasure_hint.{op}"), cls="settings-hint")]
         if op == "revaluation" and cls.get("measurement_policy") != "revaluation" and not asset.get("left_use"):
-            notes.append(Div(t("fixed_assets.cost_model_hint"), " ",
-                             A(t("fixed_assets.change_to_revaluation"),
-                               href=f"/fixed-assets/classes/{quote(cls.get('id') or '', safe=':')}/revalue",
-                               cls="btn btn--sm btn--secondary"), cls="flash flash--warning"))
-        form = _op_form(ops[op], Input(type="hidden", name="asset_id", value=asset_id), *notes,
-                        _field(t("fixed_assets.measurement_date"),
-                               _input("date", request.query_params.get("date") or setup["today"], type_="date",
-                                      required=True),
-                               t("fixed_assets.measurement_date_hint")),
-                        _field(t(f"fixed_assets.{field}"), _input(field, value, type_="number", step="any", min="0",
-                                                                  required=True)),
-                        _field(t("fixed_assets.basis"), _input("basis", basis, required=True),
-                               t("fixed_assets.basis_hint")))
+            # Revaluing one asset of a cost-model class is refused, so the tab offers what does work.
+            form = Div(P(t("fixed_assets.cost_model_hint"), cls="settings-hint"),
+                       Div(A(t("fixed_assets.change_to_revaluation"),
+                             href=f"/fixed-assets/classes/{quote(cls.get('id') or '', safe=':')}/revalue",
+                             cls="btn btn--primary")), cls=f"settings-card {_STACK}")
+        else:
+            form = _op_form(ops[op], Input(type="hidden", name="asset_id", value=asset_id),
+                            P(t(f"fixed_assets.remeasure_hint.{op}"), cls="settings-hint"),
+                            _field(t("fixed_assets.measurement_date"),
+                                   _input("date", request.query_params.get("date") or setup["today"], type_="date",
+                                          required=True),
+                                   t("fixed_assets.measurement_date_hint")),
+                            _field(t(f"fixed_assets.{field}"), _input(field, value, type_="number", step="any", min="0",
+                                                                      required=True)),
+                            _field(t("fixed_assets.basis"), _input("basis", basis, required=True),
+                                   t("fixed_assets.basis_hint")))
         return await _page(request, crumbs, page_header(t("fixed_assets.remeasure_title", number=_titled(asset))),
                            _left_use_notice(asset), _tabs(f"/fixed-assets/assets/{asset_id}/remeasure", "op", op, ops, "fixed_assets.remeasure_op"),
                            form, title_key="fixed_assets.remeasure")

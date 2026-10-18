@@ -871,6 +871,9 @@ async def test_impair_from_the_asset_page_then_undo_it(owner_ui):
 
     revalue = await owner_ui.get(f"/fixed-assets/assets/{car}/remeasure")
     assert revalue.status_code == 200 and t("fixed_assets.cost_model_hint") in revalue.text
+    # A cost-model class cannot revalue one asset, so the tab offers changing the class, not a form.
+    assert 'name="fair_value"' not in revalue.text and "/op/revalue/review" not in revalue.text
+    assert f'>{t("fixed_assets.change_to_revaluation")}</a>' in revalue.text
     assert "fixed_assets." not in revalue.text
     form = await owner_ui.get(f"/fixed-assets/assets/{car}/remeasure", params={"op": "impairment"})
     assert t("fixed_assets.remeasure_hint.impairment") in form.text and 'name="recoverable_amount"' in form.text
