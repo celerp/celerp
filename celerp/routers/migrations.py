@@ -52,6 +52,7 @@ from celerp.services.auth import (
     request_caller,
     validate_password,
 )
+from celerp.services.business_time import business_timezone
 from celerp.services.permissions import role_has_permission
 from celerp.services.provisioning import create_install_owner, provision_migration_company
 from ui.i18n import t
@@ -82,6 +83,7 @@ class DecisionsIn(BaseModel):
 class StartFromScanIn(BaseModel):
     scan_token: str
     company_name: str
+    timezone: str
 
 
 class StartCompanyStartIn(BaseModel):
@@ -89,6 +91,7 @@ class StartCompanyStartIn(BaseModel):
     password: str
     scan_token: str
     company_name: str
+    timezone: str
 
 
 class FinalizeIn(BaseModel):
@@ -100,6 +103,7 @@ class FinalizeIn(BaseModel):
 class BootstrapStartIn(BaseModel):
     scan_token: str
     company_name: str
+    timezone: str
     name: str
     email: str
     password: str
@@ -187,6 +191,15 @@ def _company_name(value: str, errors: dict) -> str:
     return name
 
 
+def _company_timezone(value: str, errors: dict) -> str:
+    """The moved-in company's timezone, checked as the company settings check it."""
+    try:
+        return business_timezone(value).key
+    except ValueError as exc:
+        errors["timezone"] = str(exc)
+        return ""
+
+
 _EMAIL_MAX = 320  # users.email is String(320)
 
 
@@ -227,12 +240,13 @@ async def _turn_on_modules(plan: migrations.StartPlan) -> bool:
         raise HTTPException(status_code=503, detail=t(MODULES_NOT_SAVED)) from None
 
 
-async def _stage(session: AsyncSession, *, user: User, company_name: str, scan: store.ScanSession,
-                 plan: migrations.StartPlan, awaiting: bool) -> MigrationRun:
+async def _stage(session: AsyncSession, *, user: User, company_name: str, timezone: str,
+                 scan: store.ScanSession, plan: migrations.StartPlan, awaiting: bool) -> MigrationRun:
     """Start, phase one: the staged company and a preparing run holding the scan's claim.
     The caller holds the claim lock and commits."""
     company = await provision_migration_company(session, owner=user, company_name=company_name,
-                                                settings=migrations.staged_settings(plan.modules))
+                                                settings={**migrations.staged_settings(plan.modules),
+                                                          "timezone": timezone})
     return await migrations.create_run(session, company=company, user=user, scan=scan, decisions=plan.decisions,
                                        modules=plan.modules, awaiting=awaiting)
 
@@ -322,12 +336,14 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
         plan = await _prepare(scan)
         errors: dict[str, str] = {}
         company_name = _company_name(payload.company_name, errors)
+        timezone = _company_timezone(payload.timezone, errors)
         name, email = owner_account(payload.name, payload.email, payload.password, errors)
         if errors:
             raise HTTPException(status_code=422, detail=errors)
         awaiting = await _turn_on_modules(plan)
         user = await create_install_owner(session, name=name, email=email, password=payload.password)
-        run = await _stage(session, user=user, company_name=company_name, scan=scan, plan=plan, awaiting=awaiting)
+        run = await _stage(session, user=user, company_name=company_name, timezone=timezone, scan=scan, plan=plan,
+                           awaiting=awaiting)
         run_id = run.id
         # The first owner has no other company, so they are signed in to the staged one;
         # its token reaches the migration routes only. Issuing the tokens commits.
@@ -377,11 +393,12 @@ async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: Aut
             plan = await _prepare(scan)
             errors: dict[str, str] = {}
             company_name = _company_name(payload.company_name, errors)
+            timezone = _company_timezone(payload.timezone, errors)
             if errors:
                 raise HTTPException(status_code=422, detail=errors)
             awaiting = await _turn_on_modules(plan)
-            run = await _stage(session, user=ctx.user, company_name=company_name, scan=scan, plan=plan,
-                               awaiting=awaiting)
+            run = await _stage(session, user=ctx.user, company_name=company_name, timezone=timezone, scan=scan,
+                               plan=plan, awaiting=awaiting)
         elif run.created_by_user_id == ctx.user.id:
             response.status_code = 200
             awaiting = bool(run.source_summary.get("awaiting_modules"))
@@ -453,10 +470,12 @@ async def start_company_start(request: Request, payload: StartCompanyStartIn,
         plan = await _prepare(scan)
         errors: dict[str, str] = {}
         company_name = _company_name(payload.company_name, errors)
+        timezone = _company_timezone(payload.timezone, errors)
         if errors:
             raise HTTPException(status_code=422, detail=errors)
         awaiting = await _turn_on_modules(plan)
-        run = await _stage(session, user=user, company_name=company_name, scan=scan, plan=plan, awaiting=awaiting)
+        run = await _stage(session, user=user, company_name=company_name, timezone=timezone, scan=scan, plan=plan,
+                           awaiting=awaiting)
         run_id = run.id
         tokens = await issue_token_pair(session, user=user, company_id=run.company_id, expected_snonce=None)
     await _claim(session, run_id, payload.scan_token, awaiting=awaiting)

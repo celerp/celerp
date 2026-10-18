@@ -3894,33 +3894,35 @@ async def migration_save_decisions(token: str | None, scan_token: str, decisions
     return _raise(r).json()["scan"]
 
 
-async def migration_bootstrap_start(scan_token: str, company_name: str, name: str, email: str,
+async def migration_bootstrap_start(scan_token: str, company_name: str, timezone: str, name: str, email: str,
                                     password: str, setup_code: str | None = None) -> dict:
     """Create the first owner and company from a scan. Returns tokens and run_id."""
     async with _local_error_mapping():
         async with _local_client(None, timeout=30.0, headers=_setup_code_headers(setup_code)) as c:
             r = await c.post("/migrations/bootstrap/start", json={
-                "scan_token": scan_token, "company_name": company_name,
+                "scan_token": scan_token, "company_name": company_name, "timezone": timezone,
                 "name": name, "email": email, "password": password,
             })
     return _raise(r).json()
 
 
-async def migration_start_company_start(email: str, password: str, scan_token: str, company_name: str) -> dict:
+async def migration_start_company_start(email: str, password: str, scan_token: str, company_name: str,
+                                        timezone: str) -> dict:
     """Start a migration as the company of a login that has none left. Returns tokens and run_id."""
     async with _local_error_mapping():
         async with _local_client(None, timeout=30.0) as c:
             r = await c.post("/migrations/start-company/start", json={
                 "email": email, "password": password, "scan_token": scan_token, "company_name": company_name,
+                "timezone": timezone,
             })
     return _raise(r).json()
 
 
-async def migration_start_from_scan(token: str, scan_token: str, company_name: str) -> dict:
+async def migration_start_from_scan(token: str, scan_token: str, company_name: str, timezone: str) -> dict:
     """Create a new company for the current owner from a scan. Returns tokens and run_id."""
     async with _api_client(token, timeout=30.0) as c:
         return _raise(await c.post("/migrations/start-from-scan", json={
-            "scan_token": scan_token, "company_name": company_name,
+            "scan_token": scan_token, "company_name": company_name, "timezone": timezone,
         })).json()
 
 

@@ -47,6 +47,7 @@ from ui.config import (
 )
 from ui.i18n import doc_type_label, get_lang, role_label, t
 from ui.routes.auth import auth_header, finish_sign_in
+from ui.routes.setup import browser_timezone_field, company_choice_script, setup_timezone
 
 SCAN_COOKIE = "celerp_migration_scan"
 SCAN_TTL_SECONDS = 3600
@@ -767,9 +768,11 @@ async def _review_page(request: Request, mode: WizardMode, entry: dict, *, value
             *(sign_in_fields(values.get("email") or request.cookies.get(EMAIL_COOKIE, ""))
               if mode.start_company else []),
             setup_code_field() if await setup_code_required(mode) else "",
+            browser_timezone_field(),
             Button(t("migration.create_and_migrate"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action=f"{mode.base}/start", cls="auth-form",
         ),
+        company_choice_script(),
         back_link(back),
     )
 
@@ -810,6 +813,7 @@ async def _start(request: Request, mode: WizardMode):
     values["password"] = str(form.get("password", ""))
     values["confirm_password"] = str(form.get("confirm_password", ""))
     setup_code = str(form.get("setup_code", "")).strip() or None
+    timezone = setup_timezone(str(form.get("timezone", "")))
 
     async def review(**feedback):
         scan_token, entry = await _current_scan(request, mode)
@@ -826,15 +830,16 @@ async def _start(request: Request, mode: WizardMode):
             if await setup_code_required(mode) and not setup_code:
                 return await review(error=t("auth.setup_code_required"))
             started = await api.migration_bootstrap_start(
-                token, values["company_name"], values["name"], values["email"], values["password"],
+                token, values["company_name"], timezone, values["name"], values["email"], values["password"],
                 setup_code=setup_code)
         elif mode.start_company:
             if not (values["email"] and values["password"]):
                 return await review(error=t("auth.email_password_required"))
             started = await api.migration_start_company_start(values["email"], values["password"], token,
-                                                               values["company_name"])
+                                                               values["company_name"], timezone)
         else:
-            started = await api.migration_start_from_scan(get_token(request), token, values["company_name"])
+            started = await api.migration_start_from_scan(get_token(request), token, values["company_name"],
+                                                          timezone)
     except APIError as e:
         if e.status == 410:
             return _expired(request, mode, str(e.detail))

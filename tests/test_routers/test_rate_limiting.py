@@ -271,7 +271,7 @@ _ROUTES = {
         "json": {"email": e, "password": p, "upload_token": "t", "plan_fingerprint": "f"}},
     "/migrations/start-company/scan": lambda e, p: {"auth": (e, p), "content": b""},
     "/migrations/start-company/start": lambda e, p: {
-        "json": {"email": e, "password": p, "scan_token": "t", "company_name": "Next Co"}},
+        "json": {"email": e, "password": p, "scan_token": "t", "company_name": "Next Co", "timezone": "UTC"}},
 }
 
 
