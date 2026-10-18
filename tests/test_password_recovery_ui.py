@@ -35,7 +35,6 @@ TERMINAL_STEPS = "Keep Celerp open. Open a terminal on this computer, paste the 
 SETUP_UNAVAILABLE = ("Celerp could not be reached to confirm your email. Check the address carefully; "
                      "you can continue without confirming.")
 STAFF_RESET_DONE = "Password reset. Tell them their new password; their sessions have ended."
-STAFF_ONLY = "Only staff can have their password reset here. Owners use Forgot password on the sign-in page."
 
 
 @asynccontextmanager
@@ -340,13 +339,35 @@ async def test_users_tab_offers_reset_password(client, session, owner_ui):
 
         refused = await owner_ui.post(f"/settings/users/{owner_id}/password",
                                       data={"password": NEW_PW, "confirm": NEW_PW})
-        assert "Change your own password in your profile." in refused.text or STAFF_ONLY in refused.text
+        assert t("users.reset_password_not_self") in refused.text
+        assert re.search(r'<a\b[^>]*href="/settings/general\?tab=password"[^>]*>\s*'
+                         + re.escape(t("settings.change_password")), refused.text), refused.text
 
         saved = await owner_ui.post(f"/settings/users/{staff_id}/password",
                                     data={"password": NEW_PW, "confirm": NEW_PW})
     assert saved.status_code == 200
     assert STAFF_RESET_DONE in saved.text
     assert await _can_sign_in(client, STAFF, NEW_PW)
+
+
+async def test_users_tab_explains_reset_password_to_an_admin(client, session, owner_ui):
+    """An admin who is not an owner sees the same Reset password; saving says only a
+    company owner can set a new password for a team member, and nothing changes."""
+    from ui.app import app as ui_app
+
+    admin_token = await invite_user(client, session, dict(owner_ui.api.headers), "admin@example.com", "admin")
+    await invite_user(client, session, dict(owner_ui.api.headers), STAFF, "operator")
+    users = (await owner_ui.api.get("/companies/me/users")).json()["items"]
+    staff_id = next(u["id"] for u in users if u["email"] == STAFF)
+
+    async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
+                           cookies={"celerp_token": admin_token}) as admin_ui:
+        tab = await admin_ui.get("/settings/general?tab=users")
+        assert f"/settings/users/{staff_id}/password/edit" in tab.text
+        refused = await admin_ui.post(f"/settings/users/{staff_id}/password",
+                                      data={"password": NEW_PW, "confirm": NEW_PW})
+    assert t("users.reset_password_owner_only") in refused.text
+    assert await _can_sign_in(client, STAFF, "userpw123")
 
 
 # --- Setup confirms the owner's email ------------------------------------------------------
@@ -389,6 +410,9 @@ async def test_setup_requires_confirmed_email(client, relay, setup_mocks):
         assert re.search(rf'<input\b[^>]*value="{re.escape(OWNER)}"[^>]*readonly|'
                          rf'<input\b[^>]*readonly[^>]*value="{re.escape(OWNER)}"', form.text)
         _anchor(form.text, "/setup/email")
+        changing = await ui.get("/setup/email")
+        back = re.search(r'<a\b[^>]*href="/setup"[^>]*>([^<]+)</a>', changing.text)
+        assert back and back.group(1).strip() == t("auth.return_to_setup") and "←" not in back.group(1)
 
         r = await ui.post("/setup", data={**_SETUP, "email": "other@example.com"})
         assert (r.status_code, r.headers.get("location")) == (303, "/setup/email")

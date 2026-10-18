@@ -1000,12 +1000,11 @@ def setup_routes(app):
             return P(t("error.session_expired"), cls="cell-error")
         try:
             users = (await api.get_users(token)).get("items", [])
-            is_owner, install_owner_id = await _users_viewer(request, token)
+            _, install_owner_id = await _users_viewer(request, token)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
         user = next((u for u in users if u.get("id") == user_id), {"id": user_id})
-        return _user_actions_cell(user, is_owner=is_owner, install_owner_id=install_owner_id,
-                                  lang=get_lang(request))
+        return _user_actions_cell(user, install_owner_id=install_owner_id, lang=get_lang(request))
 
     @app.post("/settings/users/{user_id}/password")
     async def user_password_post(request: Request, user_id: str):
@@ -1023,7 +1022,9 @@ def setup_routes(app):
         try:
             await api.reset_user_password(token, user_id, password)
         except APIError as e:
-            return _user_password_form(user_id, str(e.detail))
+            from ui.config import get_claims
+            own = user_id == str(get_claims(request).get("sub", ""))
+            return _user_password_form(user_id, str(e.detail), own_row=own)
         try:
             users = (await api.get_users(token)).get("items", [])
             settings = (await api.get_company(token)).get("settings")
@@ -3214,17 +3215,17 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
     )
 
 
-def _user_actions_cell(u: dict, *, is_owner: bool, install_owner_id: str, lang: str = "en") -> FT:
-    """An owner's Reset password, on every row: a row that cannot be reset says why
-    when it is tried. The installation owner's control that hands installation
-    ownership to each other active user."""
+def _user_actions_cell(u: dict, *, install_owner_id: str, lang: str = "en") -> FT:
+    """Reset password, on every row for every viewer: a reset this viewer cannot make
+    says why when it is tried. The installation owner's control that hands
+    installation ownership to each other active user."""
     uid = u.get("id", "")
     name = u.get("name") or u.get("email") or ""
     handover = install_owner_id and uid != install_owner_id and u.get("is_active", True)
     return Td(
         Button(t("recovery.reset_password", lang), cls="btn btn--secondary btn--xs",
                hx_get=f"/settings/users/{uid}/password/edit",
-               hx_target="closest td", hx_swap="outerHTML") if is_owner else "",
+               hx_target="closest td", hx_swap="outerHTML"),
         Button(t("settings.make_install_owner", lang), cls="btn btn--secondary btn--xs",
                hx_post=f"/settings/users/{uid}/installation-owner",
                hx_confirm=t("settings.confirm_make_install_owner", lang, name=name),
@@ -3233,12 +3234,14 @@ def _user_actions_cell(u: dict, *, is_owner: bool, install_owner_id: str, lang: 
     )
 
 
-def _user_password_form(user_id: str, error: str = "") -> FT:
+def _user_password_form(user_id: str, error: str = "", own_row: bool = False) -> FT:
     """The inline form an owner sets a staff member's new password in. Escape and
-    Cancel put the cell back as it was."""
+    Cancel put the cell back as it was. A refusal on the viewer's own row links to the
+    tab where they change their own password."""
+    to_own_tab = A(t("settings.change_password"), href="/settings/general?tab=password") if own_row else ""
     return Td(
         Form(
-            P(error, cls="cell-error") if error else "",
+            P(error, " ", to_own_tab, cls="cell-error") if error else "",
             Input(type="password", name="password", placeholder=t("label.new_password"),
                   autocomplete="new-password", autofocus=True, cls="cell-input"),
             Input(type="password", name="confirm", placeholder=t("label.confirm_password"),
@@ -3259,9 +3262,7 @@ def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en"
                install_owner_id: str = "", notice: FT | str = "") -> FT:
     """The users table and role matrix. The user who owns the installation carries
     a badge for every viewer. ``install_owner_id`` is the viewer's own user id when
-    the viewer owns the installation. Owners and the installation owner get the
-    actions column (_user_actions_cell)."""
-    actions = is_owner or bool(install_owner_id)
+    the viewer owns the installation."""
 
     def _row(u: dict) -> FT:
         uid = u.get("id", "")
@@ -3273,8 +3274,7 @@ def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en"
             _user_display_cell(uid, "email", u.get("email")),
             _user_display_cell(uid, "role", u.get("role")),
             _user_display_cell(uid, "is_active", u.get("is_active", True)),
-            _user_actions_cell(u, is_owner=is_owner, install_owner_id=install_owner_id, lang=lang)
-            if actions else "",
+            _user_actions_cell(u, install_owner_id=install_owner_id, lang=lang),
             cls="data-row",
         )
 
@@ -3284,7 +3284,7 @@ def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en"
         notice,
         Table(
             Thead(Tr(Th(t("th.name", lang)), Th(t("th.email", lang)), Th(t("th.role", lang)), Th(t("th.active", lang)),
-                     Th(t("th.actions", lang)) if actions else "")),
+                     Th(t("th.actions", lang)))),
             Tbody(*[_row(u) for u in users]),
             cls="data-table",
         ),
