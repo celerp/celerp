@@ -1060,7 +1060,6 @@ async def _done(request: Request, mode: WizardMode):
               A(t("company_backup.review_roles"), href=USERS_AND_ROLES, cls="auth-link"), cls="form-hint")
             if created and done["policy"] == "destination" else "",
             await _key_balances(token, company.get("currency")),
-            P(t("company_backup.free_locally"), cls="form-hint"),
             open_company,
             title=_TITLE,
         )
