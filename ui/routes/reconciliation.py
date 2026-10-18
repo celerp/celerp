@@ -27,6 +27,7 @@ from ui.components.table import (
 )
 from ui.config import get_token as _token
 from ui.i18n import t
+from ui.routes.reports import _get_company
 
 
 _MAX_CSV_BYTES = 5 * 1024 * 1024
@@ -577,17 +578,14 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        company = await _get_company(token)
+        currency = company.get("currency", "")
         try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
-            banks_data = await api.get_bank_accounts(token)
-            banks = banks_data.get("items", [])
+            banks = (await api.get_bank_accounts(token)).get("items", [])
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             banks = []
-            currency = ""
-            company = {}
 
         bank_options = [
             Option(f"{b['bank_name']} {b.get('account_number', '')}", value=b["id"])

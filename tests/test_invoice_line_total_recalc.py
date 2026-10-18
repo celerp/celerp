@@ -29,6 +29,7 @@ from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
 from test_helpers import make_test_token
+from test_ui import _mock_get_company  # noqa: F401  (autouse fixture: the company settings)
 
 
 def _authed() -> dict:

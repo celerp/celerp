@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fasthtml.common import to_xml
 
-from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
+from test_ui import _authed, _mock_get_company, ui_client  # noqa: F401  (fixtures)
 from ui import i18n
 from ui.api_client import APIError
 from ui.routes.inventory import _production_block

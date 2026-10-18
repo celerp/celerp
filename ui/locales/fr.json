@@ -612,6 +612,8 @@
   "error.api_unavailable": "Le service d'arrière-plan de Celerp ne fonctionne pas. Redémarrez Celerp ; si cela continue, posez la question sur GitHub Issues ou Discussions.",
   "error.cannot_deactivate_self": "Vous ne pouvez pas désactiver votre propre compte. Demandez à un autre administrateur ou au propriétaire de l'entreprise de le faire.",
   "error.company_name_blank": "Saisissez un nom d'entreprise.",
+  "error.company_settings_unavailable": "Celerp n'a pas pu lire les paramètres de votre entreprise (fuseau horaire et exercice), les dates de cette page ne peuvent donc pas être calculées. Réessayez ; si cela continue, redémarrez Celerp.",
+  "error.company_settings_unavailable_title": "Paramètres de l'entreprise indisponibles",
   "error.days_must_be_number": "Saisissez le nombre de jours sous forme de nombre entier, par exemple 30.",
   "error.days_negative": "Le nombre de jours ne peut pas être inférieur à zéro. Saisissez 0 ou plus.",
   "error.invalid_currency": "{value} n'est pas une devise reconnue par Celerp. Choisissez une devise dans la liste.",

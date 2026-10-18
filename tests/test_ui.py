@@ -20699,3 +20699,47 @@ class TestImportHistoryUndo:
             r = await ui_client.post("/settings/import-history/b-1/undo", cookies=_authed())
         assert r.headers.get("HX-Reswap") == "none"
         assert json.loads(r.headers["HX-Trigger"])["celerpToast"] == {"message": reason, "type": "error"}
+
+
+class TestCompanySettingsUnavailable:
+    """A page that works out today, a date preset or a fiscal year from the company settings
+    says so when those settings cannot be read, with a way to try again, instead of showing
+    dates from a guessed timezone and year start."""
+
+    _down = staticmethod(lambda: AsyncMock(side_effect=APIError(500, "boom")))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("url", [
+        "/reports/sales?preset=this_month",   # operational report
+        "/reports/pnl?preset=this_fy",        # financial report
+        "/docs?type=invoice",                 # document list
+        "/lists",                             # list documents
+        "/docs/d:1",                          # document detail
+        "/contacts/ct:1",                     # contact detail (financial year summary)
+        "/accounting/reconcile/start",        # reconciliation statement date
+    ])
+    async def test_page_says_settings_could_not_be_read(self, ui_client, url):
+        with (
+            patch("ui.api_client.get_company", new=self._down()),
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
+            patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACTS[0])),
+        ):
+            r = await ui_client.get(url, cookies=_authed())
+        assert r.status_code == 503
+        assert "couldn't read your company settings" in r.text
+        assert f'href="{url.replace("&", "&amp;")}"' in r.text or url in r.text
+        assert ">Retry<" in r.text and ">Back<" in r.text
+
+    @pytest.mark.asyncio
+    async def test_fragment_request_gets_the_message_for_the_error_banner(self, ui_client):
+        with patch("ui.api_client.get_company", new=self._down()):
+            r = await ui_client.get("/manufacturing/search", cookies=_authed(), headers={"HX-Request": "true"})
+        assert r.status_code == 503
+        assert r.text.startswith("Celerp couldn't read your company settings")
+
+    @pytest.mark.asyncio
+    async def test_expired_session_still_goes_to_sign_in(self, ui_client):
+        with patch("ui.api_client.get_company", new=AsyncMock(side_effect=APIError(401, "expired"))):
+            r = await ui_client.get("/reports/sales", cookies=_authed())
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/login")

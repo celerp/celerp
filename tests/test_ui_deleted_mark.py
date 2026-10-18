@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from test_ui import _COMPANY, _ITEM, _SCHEMA, _authed, ui_client  # noqa: F401  (ui_client is a fixture)
+from test_ui import _COMPANY, _ITEM, _SCHEMA, _authed, _mock_get_company, ui_client  # noqa: F401  (fixtures)
 
 pytestmark = pytest.mark.asyncio
 

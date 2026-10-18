@@ -34,12 +34,25 @@ def _show_margin(request, settings: dict | None) -> bool:
 # Helpers
 # ---------------------------------------------------------------------------
 
+class CompanySettingsUnavailable(Exception):
+    """The company settings could not be read, so no date that depends on them can be worked out."""
+
+
 async def _get_company(token: str) -> dict:
-    """The company (fiscal year start, timezone, currency, settings); empty on any error."""
+    """The company (fiscal year start, timezone, currency, settings).
+
+    Raises CompanySettingsUnavailable when they cannot be read: today, date presets and
+    fiscal years worked out from a guessed timezone or year start would be wrong. A 401
+    still propagates so the session handling sends the user to sign in.
+    """
     try:
         return await api.get_company(token)
-    except Exception:
-        return {}
+    except APIError as e:
+        if e.status == 401:
+            raise
+        raise CompanySettingsUnavailable() from e
+    except Exception as e:
+        raise CompanySettingsUnavailable() from e
 
 
 async def _company_today(token: str) -> str:

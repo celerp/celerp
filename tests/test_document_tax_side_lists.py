@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
+from test_ui import _authed, _mock_get_company, ui_client  # noqa: F401  (fixtures)
 
 _SALES = [{"name": "Output VAT", "rate": 7.0, "tax_type": "both", "is_default": True}]
 _PURCHASING = [{"name": "Input VAT", "rate": 10.0, "tax_type": "both", "is_default": True}]

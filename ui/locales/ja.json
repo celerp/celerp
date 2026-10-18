@@ -612,6 +612,8 @@
   "error.api_unavailable": "Celerp のバックグラウンドサービスが動作していません。Celerp を再起動してください。繰り返し起こる場合は GitHub Issues または Discussions で質問してください。",
   "error.cannot_deactivate_self": "自分のアカウントは無効化できません。別の管理者か会社のオーナーに依頼してください。",
   "error.company_name_blank": "会社名を入力してください。",
+  "error.company_settings_unavailable": "Celerp が会社の設定（タイムゾーンと会計年度）を読み込めなかったため、ここの日付を計算できません。もう一度お試しください。繰り返し起きる場合は Celerp を再起動してください。",
+  "error.company_settings_unavailable_title": "会社の設定を読み込めません",
   "error.days_must_be_number": "日数を整数で入力してください (例: 30)。",
   "error.days_negative": "日数はゼロ未満にできません。0 以上を入力してください。",
   "error.invalid_currency": "{value} は Celerp が認識できる通貨ではありません。一覧から通貨を選んでください。",

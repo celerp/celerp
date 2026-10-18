@@ -658,6 +658,8 @@
   "error.api_unavailable": "የCelerp የጀርባ አገልግሎት እየሠራ አይደለም። Celerpን እንደገና ያስጀምሩ፤ መከሰቱን ከቀጠለ በGitHub Issues ወይም Discussions ላይ ይጠይቁ።",
   "error.cannot_deactivate_self": "የራስዎን መለያ ማሰናከል አይችሉም። ሌላ አስተዳዳሪ ወይም የኩባንያውን ባለቤት እንዲያደርገው ይጠይቁ።",
   "error.company_name_blank": "የኩባንያ ስም ያስገቡ።",
+  "error.company_settings_unavailable": "Celerp የኩባንያዎን ቅንብሮች (የሰዓት ሰቅ እና የበጀት ዓመት) ማንበብ አልቻለም፣ ስለዚህ እዚህ ያሉትን ቀናት ማስላት አይቻልም። እንደገና ይሞክሩ፤ ከቀጠለ Celerpን እንደገና ያስጀምሩ።",
+  "error.company_settings_unavailable_title": "የኩባንያ ቅንብሮች አይገኙም",
   "error.days_must_be_number": "የቀናቱን ብዛት እንደ ሙሉ ቁጥር ያስገቡ፣ ለምሳሌ 30።",
   "error.days_negative": "የቀናት ብዛት ከዜሮ በታች ሊሆን አይችልም። 0 ወይም ከዚያ በላይ ያስገቡ።",
   "error.invalid_currency": "{value} Celerp የሚያውቀው ምንዛሪ አይደለም። ከዝርዝሩ ምንዛሪ ይምረጡ።",

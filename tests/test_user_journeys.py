@@ -33,6 +33,13 @@ async def ui():
 
 
 @pytest.fixture(autouse=True)
+def _company_settings():
+    """The company settings every page that shows dates reads (timezone, fiscal year)."""
+    with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _fresh_inventory_metadata():
     """Inventory views read their six static getters through one cached snapshot
     (api.get_inventory_metadata). The token is deterministic here, so the snapshot

@@ -29,7 +29,7 @@ from ui.components.phone import phone_input_td, phone_head_items as _phone_head_
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
-from ui.routes.reports import _date_filter_bar, _parse_dates
+from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates
 
 logger = logging.getLogger(__name__)
 
@@ -1175,10 +1175,7 @@ def setup_routes(app):
             vocab = await api.get_contact_tags_vocabulary(token)
         except Exception:
             vocab = []
-        try:
-            company = await api.get_company(token)
-        except Exception:
-            company = {}
+        company = await _get_company(token)
 
         # Live holdings behind the On Memo / Consignment cards. limit=1 because only the
         # scope-wide value_total is needed here; the full list is the click-through.

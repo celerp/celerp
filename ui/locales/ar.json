@@ -612,6 +612,8 @@
   "error.api_unavailable": "خدمة Celerp الخلفية لا تعمل. أعد تشغيل Celerp، وإذا تكرر ذلك فاسأل في GitHub Issues أو Discussions.",
   "error.cannot_deactivate_self": "لا يمكنك تعطيل حسابك بنفسك. اطلب من مسؤول آخر أو من مالك الشركة القيام بذلك.",
   "error.company_name_blank": "أدخل اسم الشركة.",
+  "error.company_settings_unavailable": "تعذّر على Celerp قراءة إعدادات شركتك (المنطقة الزمنية والسنة المالية)، لذلك لا يمكن حساب التواريخ هنا. حاول مرة أخرى؛ وإذا تكرر ذلك، أعد تشغيل Celerp.",
+  "error.company_settings_unavailable_title": "إعدادات الشركة غير متاحة",
   "error.days_must_be_number": "أدخل عدد الأيام كرقم صحيح، مثل 30.",
   "error.days_negative": "لا يمكن أن يكون عدد الأيام أقل من صفر. أدخل 0 أو أكثر.",
   "error.invalid_currency": "{value} ليست عملة يتعرف عليها Celerp. اختر عملة من القائمة.",

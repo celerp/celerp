@@ -612,6 +612,8 @@
   "error.api_unavailable": "บริการเบื้องหลังของ Celerp ไม่ได้ทำงาน รีสตาร์ต Celerp หากยังเกิดขึ้นอีก ให้สอบถามที่ GitHub Issues หรือ Discussions",
   "error.cannot_deactivate_self": "คุณปิดใช้งานบัญชีของตัวเองไม่ได้ ขอให้ผู้ดูแลระบบคนอื่นหรือเจ้าของบริษัทดำเนินการ",
   "error.company_name_blank": "ป้อนชื่อบริษัท",
+  "error.company_settings_unavailable": "Celerp อ่านการตั้งค่าบริษัทของคุณ (เขตเวลาและปีบัญชี) ไม่ได้ จึงคำนวณวันที่ในหน้านี้ไม่ได้ ลองอีกครั้ง หากยังเกิดขึ้นอีก ให้รีสตาร์ท Celerp",
+  "error.company_settings_unavailable_title": "ไม่สามารถอ่านการตั้งค่าบริษัทได้",
   "error.days_must_be_number": "ป้อนจำนวนวันเป็นจำนวนเต็ม เช่น 30",
   "error.days_negative": "จำนวนวันต้องไม่ติดลบ ป้อน 0 ขึ้นไป",
   "error.invalid_currency": "{value} ไม่ใช่สกุลเงินที่ Celerp รู้จัก เลือกสกุลเงินจากรายการ",

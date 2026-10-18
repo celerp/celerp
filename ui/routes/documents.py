@@ -434,7 +434,7 @@ def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kw
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import category_label, doc_type_label, get_lang, refusal_text, t
-from ui.routes.reports import _company_today, _date_filter_bar, _parse_dates, _resolve_preset
+from ui.routes.reports import _company_today, _date_filter_bar, _get_company, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
 
@@ -1514,12 +1514,7 @@ _ICON_GLOBE = (
 
 async def _doc_notes_section_response(token: str, entity_id: str, is_list: bool):
     """Fetch notes and return the rendered notes section (innerHTML target)."""
-    tz = "UTC"
-    try:
-        _co = await api.get_company(token)
-        tz = _co.get("timezone") or "UTC"
-    except Exception:
-        pass
+    tz = (await _get_company(token)).get("timezone") or "UTC"
     try:
         notes = await api.list_list_notes(token, entity_id) if is_list else await api.list_doc_notes(token, entity_id)
     except Exception:
@@ -1556,10 +1551,7 @@ def setup_routes(app):
         view = state.get("view", "")  # "drafts" = drafts-only mode
         page = _page_number(request)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
-        try:
-            company = await api.get_company(token)
-        except Exception:
-            company = {}
+        company = await _get_company(token)
         currency = company.get("currency") or None
         date_from, date_to, preset = await _doc_list_dates(request, state, company)
 
@@ -1631,10 +1623,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         state = _doc_list_state(request)
         page = _page_number(request)
-        try:
-            company = await api.get_company(token)
-        except APIError:
-            company = {}
+        company = await _get_company(token)
         date_from, date_to, preset = await _doc_list_dates(request, state, company)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
@@ -2415,18 +2404,13 @@ celerpUpdateBulkAlloc();
             tc_templates = await api.get_terms_conditions(token)
         except Exception:
             pass
-        # Fetch company timezone for notes display
-        tz: str = "UTC"
-        company_currency: str = "USD"
-        _ident_mode = "sku"
-        _co_settings: dict = {}
+        _co = await _get_company(token)
+        tz: str = _co.get("timezone") or "UTC"
+        company_currency: str = _co.get("currency") or "USD"
+        _ident_mode = _ident_mode_from(_co)
+        _co_settings: dict = _co.get("settings") or {}
         _co_connectors: set[str] = set()
         try:
-            _co = await api.get_company(token)
-            tz = _co.get("timezone") or "UTC"
-            company_currency = _co.get("currency") or "USD"
-            _ident_mode = _ident_mode_from(_co)
-            _co_settings = _co.get("settings") or {}
             _co_connectors = await doc_detail_connectors(_co)
         except Exception:
             pass
@@ -3654,10 +3638,7 @@ celerpUpdateBulkAlloc();
         q = request.query_params.get("q", "")
         method_filter = request.query_params.get("method", "")
         contact_filter = request.query_params.get("contact", "")
-        try:
-            company = await api.get_company(token)
-        except Exception:
-            company = {}
+        company = await _get_company(token)
         date_from, date_to, preset = _parse_dates(request, company)
         currency = company.get("currency") or None
         if not role_has_permission(company.get("settings") or {}, _get_role(request), "view_payments"):
@@ -4229,10 +4210,7 @@ celerpUpdateBulkAlloc();
         list_type = state.get("type", "")
         page = _page_number(request)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
-        try:
-            company = await api.get_company(token)
-        except APIError:
-            company = {}
+        company = await _get_company(token)
         date_from, date_to, preset = await _list_page_dates(request, state, company)
         try:
             lists, filtered_total, summary = await _list_results(token, state, date_from, date_to, page, per_page)
@@ -4298,10 +4276,7 @@ celerpUpdateBulkAlloc();
             return RedirectResponse("/login", status_code=302)
         state = _list_page_state(request)
         page = _page_number(request)
-        try:
-            company = await api.get_company(token)
-        except APIError:
-            company = {}
+        company = await _get_company(token)
         date_from, date_to, preset = await _list_page_dates(request, state, company)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
@@ -4534,16 +4509,12 @@ celerpUpdateBulkAlloc();
         except Exception:
             pass
 
-        # Fetch company timezone for notes display
-        tz: str = "UTC"
-        _ident_mode = "sku"
-        _co_settings: dict = {}
+        _co = await _get_company(token)
+        tz: str = _co.get("timezone") or "UTC"
+        _ident_mode = _ident_mode_from(_co)
+        _co_settings: dict = _co.get("settings") or {}
         _co_connectors: set[str] = set()
         try:
-            _co = await api.get_company(token)
-            tz = _co.get("timezone") or "UTC"
-            _ident_mode = _ident_mode_from(_co)
-            _co_settings = _co.get("settings") or {}
             _co_connectors = await doc_detail_connectors(_co)
         except Exception:
             pass
