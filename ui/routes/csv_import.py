@@ -1483,7 +1483,7 @@ def plan_review_panel(
         row = rows[n - 1]
         bad = {str(e.get("field")): str(e.get("message") or "") for e in by_row.get(n, [])}
         cells = [
-            Td(str(n), cls="cell-ro"),
+            Td(str(n), cls="cell-ro cell--number"),
             Td(Input(type="checkbox", name="exclude", value=str(n), checked=n in excluded,
                      aria_label=t("import.col_exclude"), onchange="htmx.trigger(this.form,'submit')")),
         ]
@@ -1526,7 +1526,7 @@ def plan_review_panel(
                 _upsert_control(upsert_label, checked=upsert, review_action=review_action) if upsert_label else "",
                 _review_decisions(plan),
                 Div(Table(
-                    Thead(Tr(Th(t("import.col_row")), Th(t("import.col_exclude")),
+                    Thead(Tr(Th(t("import.col_row"), cls="cell--number"), Th(t("import.col_exclude")),
                              *[Th(column_label(c, col_labels), cls="cell--number" if c in money_cols else None)
                                for c in shown_cols],
                              Th(t("import.col_problem")))),

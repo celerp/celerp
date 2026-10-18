@@ -1446,6 +1446,49 @@ def test_j21_bill_line_account_is_kept_and_the_finalized_bill_leads_to_registeri
         "href", f"/fixed-assets/assets/{roaster['id']}")
 
 
+# Every column checked against what it holds: a header over figures sits right, over them; any
+# other header is centred; a figure is right-aligned and any other value left. The header grid
+# follows rowspan and colspan, so a column under a grouped header is matched to its own label.
+_MISALIGNED = """table => {
+  const grid = [], heads = [...table.tHead.rows];
+  heads.forEach((row, r) => { let col = 0; grid[r] = grid[r] || [];
+    for (const th of row.cells) {
+      while (grid[r][col]) col++;
+      for (let dr = 0; dr < th.rowSpan; dr++) for (let dc = 0; dc < th.colSpan; dc++) {
+        (grid[r + dr] = grid[r + dr] || [])[col + dc] = th; }
+      col += th.colSpan; } });
+  const own = grid[grid.length - 1] || [], out = [];
+  const figure = /^[-+(]?[^\\d\\s]{0,4}\\s?[\\d,]+(\\.\\d+)?\\)?%?$/;
+  const is = (el, side) => { const a = getComputedStyle(el).textAlign;
+    return a === side || (side === "left" && a === "start") || (side === "right" && a === "end"); };
+  own.forEach((th, i) => {
+    const cells = [...table.tBodies[0].rows].map(r => r.cells[i]).filter(c => c && c.colSpan === 1
+      && !c.querySelector("input, select, button, details") && c.innerText.trim() && c.innerText.trim() !== "--");
+    if (!cells.length) return;
+    const num = cells.every(c => figure.test(c.innerText.trim()));
+    if (th.colSpan === 1 && th.innerText.trim() && !is(th, num ? "right" : "center"))
+      out.push(`header ${th.innerText.trim()}: ${getComputedStyle(th).textAlign}`);
+    cells.forEach(c => { if (!is(c, num ? "right" : "left"))
+      out.push(`${th.innerText.trim()} ${c.innerText.trim()}: ${getComputedStyle(c).textAlign}`); }); });
+  return out; }"""
+
+
+def test_u32_settings_classes_and_the_import_review_align_headers_and_values_by_what_they_hold(
+        page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    page.goto("/settings/fixed-assets")
+    assert page.locator("#fa-classes table").evaluate(_MISALIGNED) == []
+    page.goto("/fixed-assets/import")
+    page.locator("input[type='file']").first.set_input_files(
+        {"name": "register.csv", "mimeType": "text/csv", "buffer": _REGISTER})
+    page.locator("#csv-preview-btn").click()
+    page.get_by_role("button", name="Continue to Preview").click()
+    rows = page.locator("#import-preview table:has-text('Warehouse')")
+    expect(rows).to_be_visible()
+    assert rows.evaluate(_MISALIGNED) == []
+
+
 def test_u30_the_register_follows_its_search_as_it_is_typed(page: Page, fresh_company):
     c = fresh_company
     _started(c)
