@@ -1506,6 +1506,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   text-align: center; padding: 48px 24px; background: var(--c-bg2);
   border: 1px dashed var(--c-border); border-radius: var(--radius);
 }
+/* While a form's review is open, an empty list under it says nothing the review does not. */
+form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .empty-state-cta-msg { font-size: 14px; color: var(--c-text2); margin-bottom: 16px; }
 .empty-state-cta-hint { font-size: 13px; color: var(--c-muted, #888); max-width: 32rem; margin: -8px auto 16px; }
 .empty-state-cta-btn {

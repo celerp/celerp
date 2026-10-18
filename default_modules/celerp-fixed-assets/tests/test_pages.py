@@ -338,6 +338,10 @@ async def test_runs_page_reviews_posts_and_reverses_a_run(owner_ui):
                                  data={"month": "2026-09", "idempotency_key": str(uuid.uuid4())})
     assert "2026-08" in review.text and "2026-09" in review.text and "6400" in review.text
     assert "Delivery car" in review.text, "the Review says which asset each month's figure comes from"
+    # Several months open with what they add up to, and Confirm is offered there and at the end.
+    covered = t("fixed_assets.months_covered", first="2026-08", last="2026-09")
+    assert covered in review.text and review.text.index(covered) < review.text.index("2026-08: ")
+    assert review.text.count("/fixed-assets/op/run/confirm") == 2
     assert await _review_and_confirm(owner_ui, "run", {"month": "2026-09"}) == "/fixed-assets/runs"
 
     page = await owner_ui.get("/fixed-assets/runs")

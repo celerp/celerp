@@ -487,7 +487,18 @@ def _preview(action: str, result: dict, currency: str) -> FT:
                   _lines_table(journals[1].get("lines") or [], result.get("their_currency") or currency)]
     else:
         parts += [_lines_table(je.get("lines") or [], currency) for je in journals]
-    for month in result.get("months") or []:
+    months = result.get("months") or []
+    if len(months) > 1:
+        # A review of several months opens with what it adds up to, and can be confirmed from there.
+        assets = {a["asset_id"] for m in months for a in m["assets"]}
+        parts += [_detail_table([
+            (t("fixed_assets.run_months_covered"),
+             t("fixed_assets.months_covered", first=months[0]["month"], last=months[-1]["month"])),
+            (t("fixed_assets.asset_count"), str(len(assets))),
+            (t("label.total"), _money_td(result.get("total"), currency))])]
+        if not result.get("errors"):
+            parts.append(_step(action, "confirm", t("fixed_assets.confirm"), "btn btn--primary", "closest #fa-preview"))
+    for month in months:
         parts.append(_subhead(f"{month['month']}: {_money(month['total'], currency)}"))
         parts.append(_lines_table(month["lines"], currency) if month["lines"]
                      else P(t("fixed_assets.month_posts_nothing"), cls="form-hint"))
@@ -497,7 +508,7 @@ def _preview(action: str, result: dict, currency: str) -> FT:
             parts.append(_held_table(month["exceptions"], currency))
     if result.get("empty"):
         parts.append(P(t("fixed_assets.nothing_to_depreciate"), cls="form-hint"))
-    elif not journals and not result.get("months"):
+    elif not journals and not months:
         parts.append(P(t("fixed_assets.posts_nothing"), cls="form-hint"))
     # Rows an import would refuse: each named, and nothing to confirm until they are fixed.
     errors = result.get("errors") or []

@@ -1446,6 +1446,26 @@ def test_j21_bill_line_account_is_kept_and_the_finalized_bill_leads_to_registeri
         "href", f"/fixed-assets/assets/{roaster['id']}")
 
 
+def test_u27_a_long_first_run_opens_with_its_summary_and_confirm(page: Page, fresh_company):
+    c = fresh_company
+    _started(c, first="2025-01-01")
+    _contributed(c, "Owner's car", on="2025-01-15")
+    page.goto("/fixed-assets/runs")
+    expect(page.locator(".empty-state-cta")).to_be_visible()
+    page.locator("input[name=month]").fill("2026-06")
+    page.get_by_role("button", name="Review", exact=True).click()
+    preview = page.locator("#fa-preview")
+    expect(preview).to_contain_text("2025-01 to 2026-06")
+    # Months, assets and the total come first, with Confirm in reach before the months below.
+    confirm = preview.get_by_role("button", name="Confirm").first
+    first_month = preview.locator(".form-subtitle").first
+    assert confirm.bounding_box()["y"] < first_month.bounding_box()["y"]
+    expect(page.locator(".empty-state-cta")).to_be_hidden()
+    confirm.click()
+    page.wait_for_url("**/fixed-assets/runs")
+    expect(page.locator("main")).to_contain_text("2026-06")
+
+
 def test_u35_headings_clear_what_is_above_them_values_sit_by_their_labels_and_filter_lines_up(page: Page, fresh_company):
     c = fresh_company
     _started(c)
