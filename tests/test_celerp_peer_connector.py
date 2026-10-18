@@ -383,3 +383,32 @@ async def test_a_key_the_accountant_closed_says_so_on_the_journals_pull(monkeypa
     reason = sync_failure_reason(str(closed.value), "Celerp Accountant")
     assert "revoked or has expired" in reason and "new pairing link" in reason
     assert "GitHub" not in reason and "Web Access" not in reason
+
+
+async def test_a_key_the_accountant_closed_says_so_on_a_push(monkeypatch):
+    from celerp.connectors import sync_runner
+    from ui.routes.settings_connectors import sync_failure_reason
+
+    sent = []
+    async def no_prior_sync(*args):
+        return None
+    async def read_page(company_id, after, since):
+        return [("contact:a", 1, {"name": "A"}), ("contact:b", 1, {"name": "B"})] if not after else []
+    class Client:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def post(self, url, **kwargs):
+            sent.append(kwargs)
+            return SimpleNamespace(status_code=401, json=lambda: {"detail": "Invalid key"})
+    monkeypatch.setattr(sync_runner, "_last_success_watermark", no_prior_sync)
+    monkeypatch.setattr(peer, "_read_page", read_page)
+    monkeypatch.setattr(peer, "RateLimitedClient", Client)
+    with pytest.raises(ValueError) as closed:
+        await peer.CelerpConnector().sync_contacts_out(ConnectorContext(
+            company_id=str(uuid.uuid4()), store_handle="https://firm.example", access_token=KEY))
+    # The key is closed for every record, so the push stops at the first answer and the
+    # records wait for a new key instead of each needing attention.
+    assert len(sent) == 1
+    reason = sync_failure_reason(str(closed.value), "Celerp Accountant")
+    assert "revoked or has expired" in reason and "GitHub" not in reason
