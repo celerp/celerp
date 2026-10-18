@@ -14,7 +14,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.files import files_section, linked_files
 from ui.components.shell import page_header, toast_header
-from ui.components.table import EMPTY, breadcrumbs
+from ui.components.table import EMPTY, breadcrumbs, empty_state_cta
 from ui.config import get_claims, get_role
 from ui.i18n import t
 
@@ -209,7 +209,8 @@ def setup_physical_routes(app) -> None:
             items = (await api.fixed_assets_get(token, "/mine"))["items"]
         except APIError as e:
             return await _refused(request, e, "fixed_assets.mine_title")
-        body = [_mine_card(a) for a in items] or [P(t("fixed_assets.mine_empty"), cls="form-hint")]
+        body = [_mine_card(a) for a in items] or [empty_state_cta(
+            t("fixed_assets.mine_empty"), t("fixed_assets.mine_back"), "/", hint=t("fixed_assets.mine_empty_hint"))]
         return await _page(request, page_header(t("fixed_assets.mine_title")),
                            P(t("fixed_assets.mine_hint"), cls="settings-hint"), *body,
                            title_key="fixed_assets.mine_title", nav="my_assets")

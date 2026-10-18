@@ -847,7 +847,8 @@ def test_a_run_through_a_month_not_ended_offers_the_latest_one_in_one_click(page
     expect(month).to_have_value(latest)
     preview = page.locator("#fa-preview")
     expect(preview).to_contain_text("Owner's car")
-    expect(preview.get_by_role("button", name="Confirm")).to_be_visible()
+    # A review of several months is confirmed from its summary or from its end.
+    expect(preview.get_by_role("button", name="Confirm").last).to_be_visible()
 
 
 def test_j10_revalue_on_a_cost_class_starts_the_class_workflow_and_revalues_it(page: Page, fresh_company):
@@ -1487,6 +1488,19 @@ def test_u32_settings_classes_and_the_import_review_align_headers_and_values_by_
     rows = page.locator("#import-preview table:has-text('Warehouse')")
     expect(rows).to_be_visible()
     assert rows.evaluate(_MISALIGNED) == []
+
+
+def test_u33_opening_balances_fit_a_phone_with_finish_in_reach(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _operate(c, "/assets", {"kind": "opening", "class_id": _classes(c)["Buildings"]["id"], "name": "Warehouse",
+                            "available_date": "2020-01-01", "cost": "250000", "accumulated_depreciation": "40000"})
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto("/fixed-assets/opening")
+    # The page never scrolls sideways; a wide table scrolls inside its own box.
+    assert page.evaluate("document.documentElement.scrollWidth") <= 390
+    finish = page.get_by_role("button", name="Finish").bounding_box()
+    assert finish["x"] >= 0 and finish["x"] + finish["width"] <= 390, finish
 
 
 def test_u30_the_register_follows_its_search_as_it_is_typed(page: Page, fresh_company):

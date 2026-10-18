@@ -301,6 +301,11 @@ async def test_custodian_sees_own_assets_restricted(fa):
     assert 'href="/fixed-assets/mine"' in nav.text
     stranger = await fa.role_headers("viewer")
     assert 'href="/fixed-assets/mine"' not in (await _ui(fa, "GET", "/fixed-assets/mine/nav", stranger)).text
+    # With nothing in their care, the page says how an asset comes to them and leads back.
+    from ui.i18n import t
+    none = (await _ui(fa, "GET", "/fixed-assets/mine", stranger)).text
+    assert t("fixed_assets.mine_empty_hint") in none
+    assert f'href="/" class="empty-state-cta-btn">{t("fixed_assets.mine_back")}' in none
 
 
 async def test_custodian_confirms_and_reports_a_problem(fa):

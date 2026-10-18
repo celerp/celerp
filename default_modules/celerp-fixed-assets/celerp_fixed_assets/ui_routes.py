@@ -1795,11 +1795,11 @@ def _opening_table(accounts: list[dict], currency: str) -> FT:
     rows = [Tr(Td(a["label"]), _money_td(a["ledger"], currency), _money_td(a["registered"], currency),
                *([_money_td(a["importing"], currency)] if importing else []),
                _money_td(a["difference"], currency)) for a in accounts]
-    return Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.recon_ledger")),
-                          _money_th(t("fixed_assets.recon_registered")),
-                          *([_money_th(t("fixed_assets.importing"))] if importing else []),
-                          _money_th(t("fixed_assets.difference")))),
-                 Tbody(*rows), cls="data-table", id="fa-opening-accounts")
+    return Div(Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.recon_ledger")),
+                              _money_th(t("fixed_assets.recon_registered")),
+                              *([_money_th(t("fixed_assets.importing"))] if importing else []),
+                              _money_th(t("fixed_assets.difference")))),
+                     Tbody(*rows), cls="data-table", id="fa-opening-accounts"), cls="table-scroll-wrap")
 
 
 def _opening_actions(state: str | None, cutover: str) -> FT:

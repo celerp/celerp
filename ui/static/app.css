@@ -270,11 +270,11 @@ a:hover { text-decoration: underline; }
 /* Up to tablet width the shared rule holds for every page: no box grows past the screen to
    fit its content (a grid's 1fr track or a flex row otherwise widens to its widest child),
    and a table wider than the screen scrolls sideways inside its own box (a .table-scroll-wrap
-   already is that box), and a form laid out as a row wraps its controls instead.
+   already is that box), and a form or a row of form actions wraps its controls instead.
    min-width only acts on grid and flex children, flex-wrap only on flex rows. */
 @media (max-width: 900px) {
   .main-content :is(div, form, section, article, aside, fieldset, details) { min-width: 0; }
-  .main-content form { flex-wrap: wrap; }
+  .main-content :is(form, .form-actions) { flex-wrap: wrap; }
   .main-content :has(> .data-table:not(.table-scroll-wrap > .data-table)) { overflow-x: auto; }
 }
 
