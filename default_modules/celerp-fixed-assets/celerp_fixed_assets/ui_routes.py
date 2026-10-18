@@ -452,10 +452,8 @@ def _preview(action: str, result: dict, currency: str) -> FT:
                          cls="flash flash--error"))
     return Div(H3(t("fixed_assets.review_title"), cls="section-title"), *parts,
                Input(type="hidden", name="fingerprint", value=result.get("fingerprint", "")),
-               Div(Button(t("fixed_assets.confirm"), type="button", cls="btn btn--primary",
-                          hx_post=f"/fixed-assets/op/{action}/confirm", hx_include="closest form",
-                          hx_target="closest #fa-preview", hx_swap="outerHTML"),
-                   cls="form-actions") if not errors else "",
+               _step(action, "confirm", t("fixed_assets.confirm"), "btn btn--primary", "closest #fa-preview")
+               if not errors else "",
                cls="detail-card section-card", id="fa-preview")
 
 
@@ -604,12 +602,21 @@ def _op_form(action: str, *fields: FT, review_label: str | None = None, actions:
     does it. Targets are relative, so a page can carry several of these forms. ``actions`` sit
     beside Review."""
     return Form(*fields, operation_key_input(),
-                Div(Button(review_label or t("fixed_assets.review"), type="button", cls="btn btn--secondary",
-                           hx_post=f"/fixed-assets/op/{action}/review", hx_include="closest form",
-                           hx_target="next #fa-preview", hx_swap="outerHTML"),
-                    *actions, cls="form-actions"),
+                _step(action, "review", review_label or t("fixed_assets.review"), "btn btn--secondary",
+                      "next #fa-preview", *actions),
                 Div(id="fa-preview"),
                 onsubmit="return false;", cls=f"settings-card {_STACK}")
+
+
+def _step(action: str, step: str, label: str, cls: str, target: str, *actions: FT) -> FT:
+    """The button for one step of an operation (review or confirm) with ``actions`` beside it.
+    While its request runs the button is disabled and the step is named beside it, so a slow
+    answer is not taken for no answer."""
+    return Div(Button(label, type="button", cls=cls, hx_post=f"/fixed-assets/op/{action}/{step}",
+                      hx_include="closest form", hx_target=target, hx_swap="outerHTML",
+                      hx_disabled_elt="this", hx_indicator="closest .form-actions"),
+               *actions, Span(t(f"fixed_assets.working.{step}"), cls="htmx-indicator form-hint"),
+               cls="form-actions")
 
 
 def _amount(form, name: str):
@@ -2351,9 +2358,8 @@ def setup_ui_routes(app) -> None:
             _, currency = await _context(token)
         except APIError as e:
             return Div(await _error_box(request, e),
-                       *([Button(t("fixed_assets.review_again"), type="button", cls="btn btn--secondary",
-                                 hx_post=f"/fixed-assets/op/{action}/review", hx_include="closest form",
-                                 hx_target="closest #fa-preview", hx_swap="outerHTML")] if step == "confirm" else []),
+                       *([_step(action, "review", t("fixed_assets.review_again"), "btn btn--secondary",
+                                "closest #fa-preview")] if step == "confirm" else []),
                        id="fa-preview")
         if step == "review":
             return _preview(action, result, currency)

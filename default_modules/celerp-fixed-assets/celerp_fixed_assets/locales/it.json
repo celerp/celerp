@@ -27,6 +27,8 @@
   "fixed_assets.review_title": "Controlla prima di confermare",
   "fixed_assets.review": "Controlla",
   "fixed_assets.confirm": "Conferma",
+  "fixed_assets.working.review": "Verifica in corso...",
+  "fixed_assets.working.confirm": "Conferma in corso...",
   "fixed_assets.review_again": "Controlla di nuovo",
   "fixed_assets.toast.register": "Aggiunto al registro.",
   "fixed_assets.toast.not_acquisition": "Escluso: non è un acquisto di cespite.",

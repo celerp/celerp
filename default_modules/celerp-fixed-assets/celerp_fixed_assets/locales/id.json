@@ -27,6 +27,8 @@
   "fixed_assets.review_title": "Periksa sebelum mengonfirmasi",
   "fixed_assets.review": "Periksa",
   "fixed_assets.confirm": "Konfirmasi",
+  "fixed_assets.working.review": "Meninjau...",
+  "fixed_assets.working.confirm": "Mengonfirmasi...",
   "fixed_assets.review_again": "Periksa lagi",
   "fixed_assets.toast.register": "Ditambahkan ke daftar aset.",
   "fixed_assets.toast.not_acquisition": "Disisihkan karena bukan pembelian aset.",

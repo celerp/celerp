@@ -801,6 +801,35 @@ def test_j9_stale_move_form_asks_for_a_new_review_and_the_move_succeeds(page: Pa
     expect(page.locator("main")).to_contain_text("North store")
 
 
+def test_a_slow_review_or_confirm_disables_its_button_and_says_it_is_working(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _ok(c.post("/companies/me/locations", json={"name": "North store", "type": "warehouse"}))
+    car = _contributed(c, "Owner's car")
+    page.goto(f"/fixed-assets/assets/{car}/move")
+    page.locator("input[name=date]").fill("2026-02-01")
+    _choose(page, "location_id", "North store")
+    for step, button, working in (("review", page.get_by_role("button", name="Review", exact=True), "Reviewing..."),
+                                  ("confirm", page.locator("#fa-preview").get_by_role("button", name="Confirm"),
+                                   "Confirming...")):
+        held = []
+        page.route(f"**/fixed-assets/op/move/{step}", lambda route: held.append(route))
+        cue = button.locator("xpath=..").get_by_text(working)
+        expect(cue).to_have_css("opacity", "0")
+        button.click()
+        expect(button).to_be_disabled()
+        expect(cue).to_have_css("opacity", "1")
+        if step == "confirm":
+            with page.expect_navigation(url=f"**/fixed-assets/assets/{car}"):
+                held[0].continue_()
+            break
+        held[0].continue_()
+        expect(page.locator("#fa-preview")).to_contain_text("North store")
+        expect(button).to_be_enabled()
+        expect(cue).to_have_css("opacity", "0")
+    expect(page.locator("main")).to_contain_text("North store")
+
+
 def test_j10_revalue_on_a_cost_class_starts_the_class_workflow_and_revalues_it(page: Page, fresh_company):
     c = fresh_company
     _started(c)

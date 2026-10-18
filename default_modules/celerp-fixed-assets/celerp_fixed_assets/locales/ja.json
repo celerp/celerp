@@ -27,6 +27,8 @@
   "fixed_assets.review_title": "確定前に確認",
   "fixed_assets.review": "確認",
   "fixed_assets.confirm": "確定",
+  "fixed_assets.working.review": "確認中...",
+  "fixed_assets.working.confirm": "確定中...",
   "fixed_assets.review_again": "再確認",
   "fixed_assets.toast.register": "台帳に追加しました。",
   "fixed_assets.toast.not_acquisition": "資産の購入ではないとして除外しました。",

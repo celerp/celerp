@@ -27,6 +27,8 @@
   "fixed_assets.review_title": "راجع قبل التأكيد",
   "fixed_assets.review": "مراجعة",
   "fixed_assets.confirm": "تأكيد",
+  "fixed_assets.working.review": "جارٍ المراجعة...",
+  "fixed_assets.working.confirm": "جارٍ التأكيد...",
   "fixed_assets.review_again": "مراجعة مرة أخرى",
   "fixed_assets.toast.register": "أُضيف إلى السجل.",
   "fixed_assets.toast.not_acquisition": "استُبعد لأنه ليس شراء أصل.",

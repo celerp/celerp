@@ -27,6 +27,8 @@
   "fixed_assets.review_title": "Vérifier avant de confirmer",
   "fixed_assets.review": "Vérifier",
   "fixed_assets.confirm": "Confirmer",
+  "fixed_assets.working.review": "Vérification...",
+  "fixed_assets.working.confirm": "Confirmation...",
   "fixed_assets.review_again": "Vérifier à nouveau",
   "fixed_assets.toast.register": "Ajouté au registre.",
   "fixed_assets.toast.not_acquisition": "Écarté : ce n'est pas un achat d'immobilisation.",

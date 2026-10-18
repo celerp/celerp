@@ -27,6 +27,8 @@
   "fixed_assets.review_title": "Confira antes de confirmar",
   "fixed_assets.review": "Conferir",
   "fixed_assets.confirm": "Confirmar",
+  "fixed_assets.working.review": "Revisando...",
+  "fixed_assets.working.confirm": "Confirmando...",
   "fixed_assets.review_again": "Conferir novamente",
   "fixed_assets.toast.register": "Adicionado ao registo.",
   "fixed_assets.toast.not_acquisition": "Posto de lado como não sendo compra de ativo.",

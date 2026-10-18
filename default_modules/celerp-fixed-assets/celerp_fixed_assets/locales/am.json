@@ -27,6 +27,8 @@
   "fixed_assets.review_title": "ከማረጋገጥዎ በፊት ይፈትሹ",
   "fixed_assets.review": "ይፈትሹ",
   "fixed_assets.confirm": "ያረጋግጡ",
+  "fixed_assets.working.review": "በመገምገም ላይ...",
+  "fixed_assets.working.confirm": "በማረጋገጥ ላይ...",
   "fixed_assets.review_again": "እንደገና ይፈትሹ",
   "fixed_assets.toast.register": "ወደ መዝገቡ ታክሏል።",
   "fixed_assets.toast.not_acquisition": "የንብረት ግዢ ስላልሆነ ተለይቷል።",

@@ -27,6 +27,8 @@
   "fixed_assets.review_title": "Kiểm tra trước khi xác nhận",
   "fixed_assets.review": "Kiểm tra",
   "fixed_assets.confirm": "Xác nhận",
+  "fixed_assets.working.review": "Đang xem lại...",
+  "fixed_assets.working.confirm": "Đang xác nhận...",
   "fixed_assets.review_again": "Kiểm tra lại",
   "fixed_assets.toast.register": "Đã thêm vào sổ tài sản.",
   "fixed_assets.toast.not_acquisition": "Đã để riêng vì không phải mua tài sản.",

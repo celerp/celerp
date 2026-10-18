@@ -27,6 +27,8 @@
   "fixed_assets.review_title": "Vor dem Bestätigen prüfen",
   "fixed_assets.review": "Prüfen",
   "fixed_assets.confirm": "Bestätigen",
+  "fixed_assets.working.review": "Wird geprüft...",
+  "fixed_assets.working.confirm": "Wird bestätigt...",
   "fixed_assets.review_again": "Erneut prüfen",
   "fixed_assets.toast.register": "Ins Anlagenverzeichnis aufgenommen.",
   "fixed_assets.toast.not_acquisition": "Als kein Anlagenkauf beiseitegelegt.",

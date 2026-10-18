@@ -27,6 +27,8 @@
   "fixed_assets.review_title": "Check before confirming",
   "fixed_assets.review": "Review",
   "fixed_assets.confirm": "Confirm",
+  "fixed_assets.working.review": "Reviewing...",
+  "fixed_assets.working.confirm": "Confirming...",
   "fixed_assets.review_again": "Review again",
   "fixed_assets.toast.register": "Added to the register.",
   "fixed_assets.toast.not_acquisition": "Set aside as not an asset purchase.",

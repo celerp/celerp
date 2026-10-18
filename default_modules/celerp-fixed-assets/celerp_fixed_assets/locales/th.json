@@ -27,6 +27,8 @@
   "fixed_assets.review_title": "ตรวจสอบก่อนยืนยัน",
   "fixed_assets.review": "ตรวจสอบ",
   "fixed_assets.confirm": "ยืนยัน",
+  "fixed_assets.working.review": "กำลังตรวจทาน...",
+  "fixed_assets.working.confirm": "กำลังยืนยัน...",
   "fixed_assets.review_again": "ตรวจสอบอีกครั้ง",
   "fixed_assets.toast.register": "เพิ่มลงทะเบียนสินทรัพย์แล้ว",
   "fixed_assets.toast.not_acquisition": "แยกไว้ว่าไม่ใช่การซื้อสินทรัพย์แล้ว",
