@@ -115,7 +115,11 @@ def test_status_view_names_records_and_aligns_numbers():
                           created_count=1, updated_count=0, errors=[])
     table = to_xml(_entity_status_table({"documents_out": run}))
     headers = table.split("<thead>")[1].split("</thead>")[0]
-    assert headers.count('class="cell--number"') == 2, headers
+    # Changes are words: their header is a plain label, left like the cells under it;
+    # only Issues stays a number column.
+    assert ">Changes<" in headers and "{" not in headers, headers
+    assert headers.count('class="cell--number"') == 1, headers
+    assert table.count('class="cell--number"') == 2, table
     # Changes read as words, in the table and on the last-sync card alike.
     from ui.routes.settings_connectors import _last_sync_info
     assert "1 added, 0 updated" in table and "+1" not in table
