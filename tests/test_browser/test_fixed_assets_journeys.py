@@ -120,7 +120,7 @@ def test_j1_the_account_picker_offers_only_postable_accounts_and_saves_a_pick(pa
     cell = page.locator(f'td[hx-get="/settings/fixed-assets/classes/{vehicles}/asset_account/edit"]')
 
     # 1200 is a header with accounts under it: no journal line can post to it, so it is not offered.
-    cell.dblclick()
+    cell.click()
     box = page.locator("td.cell--editing .combobox-input").first
     box.click()
     box.fill("1200 ")

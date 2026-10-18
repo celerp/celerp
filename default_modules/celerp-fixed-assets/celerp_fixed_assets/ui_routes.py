@@ -1248,6 +1248,7 @@ def _settings_form(settings: dict, available: dict) -> FT:
     regimes = [r["key"] for r in available["tax_regimes"]] + sorted(chosen - {r["key"] for r in available["tax_regimes"]})
 
     return Form(
+        P(t("fixed_assets.settings_autosave"), cls="settings-hint"),
         _field(t("fixed_assets.run_mode"), Select(
             *[Option(t(f"fixed_assets.run_mode.{m}"), value=m, selected=m == settings.get("run_mode"))
               for m in RUN_MODES], name="run_mode", cls="form-input"), t("fixed_assets.run_mode_hint")),
@@ -1303,9 +1304,11 @@ def _class_cell(cls: dict, field: str, chart: list[dict]) -> FT:
         labels = {value: _rule_label("method", value)}
     elif field.endswith("account"):
         labels = {a["code"]: f"{a['code']} {a['name']}" for a in chart}
+    # A settings table edits on one click, as Celerp's other settings tables do.
     return display_cell(cls["id"], field, value, "text", label_map=labels,
                         cls_extra="cell--number" if field in ("life_months", "residual_percent") else "",
-                        edit_url=f"/settings/fixed-assets/classes/{quote(cls['id'], safe=':')}/{field}/edit")
+                        edit_url=f"/settings/fixed-assets/classes/{quote(cls['id'], safe=':')}/{field}/edit")(
+        hx_trigger="click", title=t("settings.click_to_edit"))
 
 
 def _classes_card(classes: list[dict], chart: list[dict]) -> FT:
@@ -1349,7 +1352,7 @@ def _movement_name(m: dict, by_id: dict[str, dict]) -> str:
     names what it undid."""
     name = t(f"fixed_assets.movement.{m.get('operation')}")
     if m.get("operation") == "undo" and (undone := by_id.get(m.get("reverses"))):
-        return t("fixed_assets.movement_undoes", undo=name, what=_movement_name(undone, by_id))
+        return t("fixed_assets.movement_undoes", what=_movement_name(undone, by_id))
     if m.get("operation") != "run" and (months := sorted(m.get("periods") or {})):
         covered = months[0] if len(months) == 1 else t("fixed_assets.months_covered", first=months[0], last=months[-1])
         return t("fixed_assets.movement_months", what=name, months=covered)

@@ -409,7 +409,10 @@ async def test_u5_the_class_table_names_accounts_and_keeps_row_actions_in_a_menu
     assert f"1210 {chart['1210']}" in row and f"6400 {chart['6400']}" in row, "accounts read as code and name"
     assert 'class="row-menu"' in row and t("fixed_assets.apply_to_assets") in row
     assert "btn btn--sm" not in row, "row actions sit in the row menu, not as buttons widening the table"
-    assert t("label.dblclick_to_edit").split()[0] in t("fixed_assets.classes_hint")
+    # A settings table edits on one click, says so, and the page says its changes save themselves.
+    assert 'hx-trigger="click"' in row and f'title="{t("settings.click_to_edit")}"' in row
+    assert "dblclick" not in row and t("fixed_assets.classes_hint").startswith("Click")
+    assert t("fixed_assets.settings_autosave") in page.text
     assert t("fixed_assets.tax_regimes_hint") not in page.text, "with no regime offered, no hint repeats the statement"
 
     saved = await owner_ui.patch(f"/settings/fixed-assets/classes/{vehicles['id']}/depreciation_account",
@@ -602,9 +605,9 @@ async def test_movements_name_the_months_a_backdated_change_takes_back_and_what_
                  if t("fixed_assets.movement") in [th.get_text(strip=True) for th in tb.select("th")])
     assert [th.get_text(strip=True) for th in table.select("th")][3:5] == [t("fixed_assets.cost"), t("fixed_assets.movement.run")]
     names = [tr.select("td")[2].get_text(strip=True) for tr in table.select("tbody tr")]
-    taken_back = f"{t('fixed_assets.movement.depreciation')} (2026-08 to 2026-09)"
-    assert taken_back in names and f"{t('fixed_assets.movement.undo')}: {taken_back}" in names, names
-    assert f"{t('fixed_assets.movement.undo')}: {t('fixed_assets.movement.disposal')}" in names, names
+    taken_back = f"{t('fixed_assets.movement.depreciation')} for 2026-08 to 2026-09"
+    assert taken_back in names and f"Undone: {taken_back}" in names, names
+    assert f"Undone: {t('fixed_assets.movement.disposal')}" in names, names
 
 
 async def test_dispose_of_several_from_the_register(owner_ui):
