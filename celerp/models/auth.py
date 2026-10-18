@@ -61,8 +61,8 @@ class PasswordReset(Base):
 
 
 class PasswordResetNotice(Base):
-    """A reset its recipient has not been told about yet; taken (deleted) at their next
-    sign-in."""
+    """A reset its recipient has not acknowledged yet; shown at each sign-in until they
+    continue past it."""
 
     __tablename__ = "password_reset_notices"
     __table_args__ = (UniqueConstraint("reset_id", "recipient_id"),)

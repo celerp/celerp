@@ -28,7 +28,7 @@ from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.api_client import migration_staged_run as api_migration_staged_run
 from ui.components.shell import auth_shell, client_scripts, flash, landing_path, page_title, sign_in_fields
-from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies, get_role
+from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies, get_role, get_token
 from ui.i18n import t, get_lang
 from celerp.services import backup_import
 from celerp.services.app_paths import is_app_local_path
@@ -561,6 +561,17 @@ def setup_routes(app):
             cls="auth-card",
         ))
 
+    @app.post("/password-reset-notices/acknowledge")
+    async def acknowledge_reset_notices(request: Request):
+        """Continue from the reset notices: they are not shown again, and the user goes on
+        to where the sign-in was going. Should that not save, they show at the next sign-in."""
+        form = await request.form()
+        try:
+            await api.acknowledge_reset_notices(get_token(request) or "", form.getlist("id"))
+        except APIError:
+            logger.warning("Password reset notices could not be acknowledged", exc_info=True)
+        return RedirectResponse(_safe_next(form.get("next")), status_code=303)
+
 
 # ---------------------------------------------------------------------------
 # Components
@@ -568,12 +579,12 @@ def setup_routes(app):
 
 async def finish_sign_in(request: Request, access_token: str, refresh_token: str, dest: str,
                          status_code: int = 302):
-    """The response that starts a session and goes on to *dest*. The first sign-in after
-    a password reset first shows what was reset, when and how, with Continue to *dest*;
-    each reset is shown once. Should the notices not load, the sign-in goes on without
-    them and they wait for the next one."""
+    """The response that starts a session and goes on to *dest*. A sign-in after a
+    password reset first shows what was reset, when and how, with Continue to *dest*;
+    a reset shows at every sign-in until the user continues past it. Should the notices
+    not load, the sign-in goes on without them and they wait for the next one."""
     try:
-        notices = await api.take_reset_notices(access_token)
+        notices = await api.reset_notices(access_token)
     except APIError:
         logger.warning("Password reset notices could not be loaded at sign-in", exc_info=True)
         notices = []
@@ -607,7 +618,12 @@ def _reset_notices(notices: list[dict], dest: str) -> FT:
     return Div(
         auth_header(t("recovery.notice_title")),
         _above_form(*(P(_line(n), cls="flash flash--warning") for n in notices)),
-        A(t("btn.continue"), href=dest, cls="btn btn--primary btn--full"),
+        Form(
+            *(Input(type="hidden", name="id", value=n["id"]) for n in notices),
+            Input(type="hidden", name="next", value=dest),
+            Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full"),
+            method="post", action="/password-reset-notices/acknowledge",
+        ),
         cls="auth-card",
     )
 

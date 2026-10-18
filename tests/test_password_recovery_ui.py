@@ -308,9 +308,20 @@ async def test_sign_in_after_reset_shows_notice(client, session, ui, site):
     assert r.status_code == 200, (site, r.status_code, r.headers.get("location"))
     assert "Your password was reset on" in r.text and "สมชาย" in r.text
     assert COOKIE_NAME in r.headers.get("set-cookie", "")
-    continue_to = re.search(r'<a\b[^>]*href="([^"]+)"[^>]*>\s*' + re.escape(t("btn.continue")), r.text)
-    assert continue_to and continue_to.group(1) != "/login"
+    assert t("btn.continue") in r.text
+    form = re.search(r'<form[^>]*action="/password-reset-notices/acknowledge"(.*?)</form>', r.text, re.S)
+    fields = re.findall(r'name="(id|next)" value="([^"]*)"', form.group(1))
+    dest = dict(fields)["next"]
+    assert dest != "/login" and [k for k, _ in fields].count("id") == 1
 
+    # A sign-in whose page never arrived, or that left without Continue, shows it again.
+    unseen = await _sign_in_at(site, ui, client)
+    assert unseen.status_code == 200 and "Your password was reset on" in unseen.text, site
+
+    went_on = await ui.post("/password-reset-notices/acknowledge",
+                            data={"id": [v for k, v in fields if k == "id"], "next": dest},
+                            cookies={COOKIE_NAME: unseen.cookies[COOKIE_NAME]})
+    assert (went_on.status_code, went_on.headers["location"]) == (303, dest)
     again = await _sign_in_at(site, ui, client)
     assert again.status_code in (302, 303), site
 

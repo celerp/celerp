@@ -498,26 +498,42 @@ async def recovery_terminal(request: Request) -> dict:
     return {"command": terminal_command() if is_local_person(request) else None}
 
 
-@router.post("/password-reset-notices/take")
-async def take_reset_notices(
+@router.get("/password-reset-notices")
+async def reset_notices(
     user: User = Depends(get_current_user), company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    """The password resets the caller has not been told about yet, newest first; each is
-    told once, timed in the company's timezone. ``own`` marks a reset of the caller's own password."""
+    """The password resets the caller has not acknowledged yet, newest first, timed in the
+    company's timezone. ``own`` marks a reset of the caller's own password. Reading them
+    changes nothing: each stays until it is acknowledged."""
     zone = await company_timezone(session, company_id)
-    reset_ids = (await session.execute(
-        delete(PasswordResetNotice).where(PasswordResetNotice.recipient_id == user.id)
-        .returning(PasswordResetNotice.reset_id))).scalars().all()
     by = aliased(User)
     rows = (await session.execute(
         select(PasswordReset, User, by.name).join(User, User.id == PasswordReset.user_id)
+        .join(PasswordResetNotice, PasswordResetNotice.reset_id == PasswordReset.id)
         .outerjoin(by, by.id == PasswordReset.by_user_id)
-        .where(PasswordReset.id.in_(reset_ids)).order_by(PasswordReset.created_at.desc()))).all()
+        .where(PasswordResetNotice.recipient_id == user.id)
+        .order_by(PasswordReset.created_at.desc()))).all()
+    return [{"id": str(reset.id), "own": subject.id == user.id, "user_name": subject.name,
+             "user_email": subject.email, "method": reset.method, "by_name": by_name, "os_user": reset.os_user,
+             "created_at": reset.created_at.astimezone(zone).isoformat(), "timezone": zone.key}
+            for reset, subject, by_name in rows]
+
+
+class NoticeIds(BaseModel):
+    ids: list[uuid.UUID]
+
+
+@router.post("/password-reset-notices/acknowledge")
+async def acknowledge_reset_notices(
+    payload: NoticeIds, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The caller has seen these resets: their notices are gone. Ids already acknowledged,
+    or not the caller's, change nothing."""
+    await session.execute(delete(PasswordResetNotice).where(
+        PasswordResetNotice.recipient_id == user.id, PasswordResetNotice.reset_id.in_(payload.ids)))
     await session.commit()
-    return [{"own": subject.id == user.id, "user_name": subject.name, "user_email": subject.email,
-             "method": reset.method, "by_name": by_name, "os_user": reset.os_user,
-             "created_at": reset.created_at.astimezone(zone).isoformat(), "timezone": zone.key} for reset, subject, by_name in rows]
+    return {"ok": True}
 
 
 class ChangePasswordBody(BaseModel):

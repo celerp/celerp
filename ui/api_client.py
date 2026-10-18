@@ -541,10 +541,16 @@ async def recovery_terminal() -> str | None:
         return _raise(await c.get("/auth/password-recovery/terminal")).json()["command"]
 
 
-async def take_reset_notices(token: str) -> list[dict]:
-    """The password resets this user has not been told about yet, each handed out once."""
+async def reset_notices(token: str) -> list[dict]:
+    """The password resets this user has not acknowledged yet."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/auth/password-reset-notices/take")).json()
+        return _raise(await c.get("/auth/password-reset-notices")).json()
+
+
+async def acknowledge_reset_notices(token: str, ids: list[str]) -> None:
+    """This user has seen the resets *ids*."""
+    async with _api_client(token) as c:
+        _raise(await c.post("/auth/password-reset-notices/acknowledge", json={"ids": ids}))
 
 
 async def logout(access_token: str | None, refresh_token: str | None = None) -> None:

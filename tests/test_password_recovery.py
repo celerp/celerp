@@ -83,10 +83,22 @@ def _reset(client, email: str, code: str = CODE, password: str = NEW_PW, **kw):
                        json={"email": email, "code": code, "new_password": password}, **kw)
 
 
-async def _take(client, token: str) -> list[dict]:
-    r = await client.post("/auth/password-reset-notices/take", headers=_bearer(token))
+async def _notices(client, token: str) -> list[dict]:
+    r = await client.get("/auth/password-reset-notices", headers=_bearer(token))
     assert r.status_code == 200, r.text
     return r.json()
+
+
+async def _acknowledge(client, token: str, ids: list[str]) -> None:
+    r = await client.post("/auth/password-reset-notices/acknowledge", json={"ids": ids}, headers=_bearer(token))
+    assert r.status_code == 200, r.text
+
+
+async def _seen(client, token: str) -> list[dict]:
+    """The notices, acknowledged as the user continues past them."""
+    notices = await _notices(client, token)
+    await _acknowledge(client, token, [n["id"] for n in notices])
+    return notices
 
 
 # --- The one reset function -------------------------------------------------------
@@ -392,19 +404,32 @@ async def test_terminal_command_renders_real_paths(monkeypatch, config):
 # --- The notice at the next sign-in ------------------------------------------------
 
 
-async def test_reset_notices_take_returns_once(client, session):
+async def test_reset_notices_stay_until_acknowledged(client, session):
+    """Reading the notices changes nothing, so a page that never arrived shows them at the
+    next sign-in; acknowledging removes only the ones named, and repeating it is harmless."""
     from celerp.services.password_reset import reset_password, user_by_email
 
     await _register(client)
     await reset_password(session, await user_by_email(session, OWNER), NEW_PW, method="terminal", os_user="tester")
     token = (await _login(client, OWNER, NEW_PW)).json()["access_token"]
 
-    first = await _take(client, token)
+    first = await _notices(client, token)
     assert [(n["user_email"], n["method"], n["os_user"], n["by_name"]) for n in first] == [
         (OWNER, "terminal", "tester", None)]
     assert first[0]["user_name"] == "Owner Person" and first[0]["created_at"]
-    assert await _take(client, token) == []
-    assert (await client.post("/auth/password-reset-notices/take")).status_code == 401
+    assert await _notices(client, token) == first
+
+    await reset_password(session, await user_by_email(session, OWNER), "third-password-3", method="terminal")
+    token = (await _login(client, OWNER, "third-password-3")).json()["access_token"]
+    both = await _notices(client, token)
+    assert len(both) == 2
+    await _acknowledge(client, token, [first[0]["id"]])
+    assert [n["id"] for n in await _notices(client, token)] == [n["id"] for n in both if n["id"] != first[0]["id"]]
+    await _acknowledge(client, token, [n["id"] for n in both])
+    await _acknowledge(client, token, [n["id"] for n in both])
+    assert await _notices(client, token) == []
+    assert (await client.get("/auth/password-reset-notices")).status_code == 401
+    assert (await client.post("/auth/password-reset-notices/acknowledge", json={"ids": []})).status_code == 401
 
 
 async def test_reset_notice_is_timed_in_the_company_timezone(client, session):
@@ -423,7 +448,7 @@ async def test_reset_notice_is_timed_in_the_company_timezone(client, session):
     assert (await client.patch("/companies/me", headers=_bearer(token),
                                json={"settings": {"timezone": "Asia/Bangkok"}})).status_code == 200
 
-    [notice] = await _take(client, token)
+    [notice] = await _notices(client, token)
     # Already the next day in Bangkok.
     assert (notice["created_at"], notice["timezone"]) == ("2031-04-01T00:30:00+07:00", "Asia/Bangkok")
 
@@ -441,17 +466,17 @@ async def test_reset_notice_reaches_other_owners(client, session):
     staff = await user_by_email(session, STAFF)
     await reset_password(session, staff, NEW_PW, method="terminal")
     staff_token = (await _login(client, STAFF, NEW_PW)).json()["access_token"]
-    assert [n["user_email"] for n in await _take(client, staff_token)] == [STAFF]
-    assert [n["user_email"] for n in await _take(client, owner)] == [STAFF]
-    assert [n["user_email"] for n in await _take(client, second)] == [STAFF]
-    assert await _take(client, viewer) == []
+    assert [n["user_email"] for n in await _seen(client, staff_token)] == [STAFF]
+    assert [n["user_email"] for n in await _seen(client, owner)] == [STAFF]
+    assert [n["user_email"] for n in await _seen(client, second)] == [STAFF]
+    assert await _notices(client, viewer) == []
 
     by = await user_by_email(session, "second-owner@example.com")
     await reset_password(session, await user_by_email(session, STAFF), "third-password1", method="owner", by_user=by)
     staff_token = (await _login(client, STAFF, "third-password1")).json()["access_token"]
-    assert [(n["method"], n["by_name"]) for n in await _take(client, staff_token)] == [("owner", by.name)]
-    assert [n["user_email"] for n in await _take(client, owner)] == [STAFF]
-    assert await _take(client, second) == []
+    assert [(n["method"], n["by_name"]) for n in await _notices(client, staff_token)] == [("owner", by.name)]
+    assert [n["user_email"] for n in await _notices(client, owner)] == [STAFF]
+    assert await _notices(client, second) == []
 
 
 # --- Only recovery asks the relay for codes ------------------------------------------
@@ -500,7 +525,7 @@ async def test_owner_resets_staff_password(client, session):
         (staff.id, "owner", (await _user(session, OWNER)).id),
         (staff.id, "owner", (await _user(session, "second-owner@example.com")).id)]
     token = (await _login(client, STAFF, "third-password1")).json()["access_token"]
-    assert {n["by_name"] for n in await _take(client, token)} == {"Owner Person", "Owner"}
+    assert {n["by_name"] for n in await _notices(client, token)} == {"Owner Person", "Owner"}
 
 
 async def test_staff_reset_refusals(client, session):
