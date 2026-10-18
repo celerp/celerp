@@ -599,7 +599,7 @@ def _reset_notices(notices: list[dict], dest: str) -> FT:
     from ui.components.activity import format_timestamp
 
     def _line(n: dict) -> str:
-        when, how = f"{format_timestamp(n['created_at'])} UTC", _reset_how(n)
+        when, how = f"{format_timestamp(n['created_at'])} {n['timezone']}", _reset_how(n)
         if n["own"]:
             return t("recovery.notice_own", when=when, how=how)
         return t("recovery.notice_other", user=n["user_name"] or n["user_email"], when=when, how=how)

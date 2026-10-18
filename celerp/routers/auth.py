@@ -22,6 +22,7 @@ from celerp.models.auth import PasswordReset, PasswordResetNotice
 from celerp.models.company import Company, User
 from celerp.services import bootstrap, email_codes
 from celerp.services.background import spawn_background
+from celerp.services.business_time import company_timezone
 from celerp.services.email_codes import Outcome
 from celerp.services.password_reset import reset_password, set_password, terminal_command, user_by_email
 from celerp.services.provisioning import provision_additional_company, provision_registered_company
@@ -491,10 +492,12 @@ async def recovery_terminal(request: Request) -> dict:
 
 @router.post("/password-reset-notices/take")
 async def take_reset_notices(
-    user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user), company_id: uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     """The password resets the caller has not been told about yet, newest first; each is
-    told once. ``own`` marks a reset of the caller's own password."""
+    told once, timed in the company's timezone. ``own`` marks a reset of the caller's own password."""
+    zone = await company_timezone(session, company_id)
     reset_ids = (await session.execute(
         delete(PasswordResetNotice).where(PasswordResetNotice.recipient_id == user.id)
         .returning(PasswordResetNotice.reset_id))).scalars().all()
@@ -506,7 +509,7 @@ async def take_reset_notices(
     await session.commit()
     return [{"own": subject.id == user.id, "user_name": subject.name, "user_email": subject.email,
              "method": reset.method, "by_name": by_name, "os_user": reset.os_user,
-             "created_at": reset.created_at.isoformat()} for reset, subject, by_name in rows]
+             "created_at": reset.created_at.astimezone(zone).isoformat(), "timezone": zone.key} for reset, subject, by_name in rows]
 
 
 class ChangePasswordBody(BaseModel):

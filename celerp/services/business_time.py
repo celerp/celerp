@@ -33,15 +33,20 @@ def business_today(timezone_name: str | None) -> date:
     return datetime.now(timezone.utc).astimezone(business_timezone(timezone_name)).date()
 
 
-async def company_today(session, company_id) -> date:
-    """Today's business day for a company, in the timezone its committed settings name."""
+async def company_timezone(session, company_id) -> ZoneInfo:
+    """The business timezone a company's committed settings name."""
     from sqlalchemy import select
 
     from celerp.models.company import Company
 
     settings = (await session.execute(
         select(Company.settings).where(Company.id == company_id))).scalar_one_or_none() or {}
-    return business_today(settings.get("timezone"))
+    return business_timezone(settings.get("timezone"))
+
+
+async def company_today(session, company_id) -> date:
+    """Today's business day for a company, in its business timezone."""
+    return datetime.now(timezone.utc).astimezone(await company_timezone(session, company_id)).date()
 
 
 def business_date_of(recorded: object, timezone_name: str | None) -> str:
