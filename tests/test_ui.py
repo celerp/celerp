@@ -1782,6 +1782,27 @@ class TestAccountingPage:
         assert 'value="45.0"' not in page
 
     @pytest.mark.asyncio
+    async def test_post_again_says_why_the_date_differs_from_the_copied_entry(self, ui_client):
+        """Post again dates the new entry on the first open day; the form says so and names
+        the copied entry's own date, so the change is never silent."""
+        copied = {"ts": "2026-10-18", "source_ts": "2026-09-30", "memo": "Rent", "entries": [
+            {"account": "1000", "debit": 45.0, "credit": 0, "contact": None},
+            {"account": "1000", "debit": 0, "credit": 45.0, "contact": None}]}
+        with patch("ui.api_client.journal_prefill", new=AsyncMock(return_value=copied)), \
+             patch("ui.api_client.get_chart",
+                   new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})), \
+             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})), \
+             patch("ui.api_client.list_contacts",
+                   new=AsyncMock(return_value={"items": [], "total": 0})):
+            r = await ui_client.get("/accounting/journal/new?from=je-1", cookies=_authed())
+            plain = await ui_client.get("/accounting/journal/new", cookies=_authed())
+        page = html.unescape(r.content.decode())
+        assert 'value="2026-10-18"' in page
+        assert ("Dated on the first open day. The entry it copies is dated 2026-09-30; "
+                "change the date if this one belongs elsewhere.") in page
+        assert "first open day" not in html.unescape(plain.content.decode())
+
+    @pytest.mark.asyncio
     async def test_pnl_shortcut_redirects_to_the_report(self, ui_client):
         r = await ui_client.get("/accounting/pnl", cookies=_authed())
         assert r.status_code == 302

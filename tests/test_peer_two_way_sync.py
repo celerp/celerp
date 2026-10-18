@@ -262,6 +262,7 @@ async def test_client_reversal_reaches_the_firm_view(real_client, real_engine, m
     assert page.status_code == 200, page.text
     prefill = page.json()
     assert prefill["memo"] == "Reclass fees" and prefill["ts"] >= (await _today(real_engine, firm_company)).isoformat()
+    assert prefill["source_ts"] == ADJUSTED  # the copied entry's own date, shown beside the new one
     assert len(await _journals(real_engine, firm_company)) == count  # posts nothing
 
     undo = await real_client.post(
