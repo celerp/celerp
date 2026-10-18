@@ -29,12 +29,20 @@ def test_invalid_credentials_names_forgot_password_in_every_locale():
 
 
 @pytest.mark.asyncio
-async def test_bad_reset_link_says_how_to_get_a_new_one(client):
-    r = await client.post("/auth/password-reset/confirm",
-                          json={"token": "totally-wrong-token", "new_password": "newpassword1"})
+async def test_bad_recovery_code_says_how_to_get_a_new_one(client, monkeypatch):
+    from celerp.services import email_codes
+    from celerp.services.email_codes import Outcome
+
+    async def _up():
+        return Outcome.OK
+
+    monkeypatch.setattr(email_codes, "status", _up)
+    monkeypatch.setattr("celerp.routers.auth.RECOVERY_FLOOR_S", 0)
+    r = await client.post("/auth/password-recovery/reset", json={
+        "email": "nobody@example.com", "code": "123456", "new_password": "newpassword1"})
     assert r.status_code == 400
-    assert r.json()["detail"] == t("auth.reset_link_invalid", "en")
-    assert "Forgot password?" in r.json()["detail"]
+    assert r.json()["detail"] == t("recovery.code_refused", "en")
+    assert "Send a new code" in r.json()["detail"]
 
 
 def test_wrong_setup_code_says_where_the_code_is(monkeypatch):

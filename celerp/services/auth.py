@@ -39,6 +39,11 @@ oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error
 # address in this header, so a rate limit counts that visitor rather than the UI itself.
 CALLER_HEADER = "X-Celerp-Caller"
 
+# The Connect gateway sets this on every request it proxies, and the UI server passes
+# it on to the API: a Connect visitor reaches this computer from loopback, like the
+# person at it, and this is what tells them apart.
+CONNECT_HEADER = "X-Celerp-Connect"
+
 ROLE_LEVELS = {"viewer": 1, "operator": 2, "manager": 3, "admin": 4, "owner": 5}
 
 # Legacy role migration: old roles carried in DB state until they are edited.
@@ -150,7 +155,7 @@ class PasswordAttempts:
         *email* names from *caller*; no hash never matches. 429 with Retry-After, and the
         password left unread, while the account or the caller must wait."""
         keys = [(_account(email), FREE_ACCOUNT_FAILURES, auth_hash)]
-        if caller and not _is_loopback(caller):
+        if caller and not is_loopback(caller):
             keys.append((f"caller|{caller}", FREE_CALLER_FAILURES, None))
         now = _clock()
         with self._lock:
@@ -391,7 +396,7 @@ async def signed_request_context(session: AsyncSession) -> AuthContext | None:
     return await validate_access_token(session, token) if isinstance(token, str) else None
 
 
-def _is_loopback(address: str) -> bool:
+def is_loopback(address: str) -> bool:
     try:
         return ip_address(address).is_loopback
     except ValueError:
@@ -417,7 +422,14 @@ def request_caller(request: Request) -> str:
     where it comes from the UI server, so no one reaching the API from elsewhere can name
     an address of their choosing."""
     host = request.client.host if request.client else ""
-    return _counted_as((request.headers.get(CALLER_HEADER) or host) if _is_loopback(host) else host)
+    return _counted_as((request.headers.get(CALLER_HEADER) or host) if is_loopback(host) else host)
+
+
+def is_local_person(request: Request) -> bool:
+    """Whether the request comes from the person at this computer: a loopback caller
+    that did not arrive through Connect. The mark can only take this away, so a caller
+    who sends it gains nothing."""
+    return is_loopback(request_caller(request)) and CONNECT_HEADER not in request.headers
 
 
 async def get_current_user(ctx: AuthContext = Depends(get_auth_context)) -> User:

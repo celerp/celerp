@@ -971,10 +971,12 @@ class GatewayClient:
         # Without it every proxied visitor arrives from loopback, which names no one.
         # The caller header is likewise trusted from loopback as the visitor the UI
         # server names, so a visitor who sets it would choose whose sign-ins they spend.
-        from celerp.services.auth import CALLER_HEADER
+        # The Connect mark is always this gateway's own, never one the visitor sent.
+        from celerp.services.auth import CALLER_HEADER, CONNECT_HEADER
 
-        dropped = {"x-forwarded-for", CALLER_HEADER.lower()}
+        dropped = {"x-forwarded-for", CALLER_HEADER.lower(), CONNECT_HEADER.lower()}
         headers = {k: v for k, v in headers.items() if k.lower() not in dropped}
+        headers[CONNECT_HEADER] = "1"
 
         url = f"http://127.0.0.1:{port}{raw_path}"
         if query:

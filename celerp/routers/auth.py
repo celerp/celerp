@@ -5,18 +5,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
+from celerp.models.auth import PasswordReset, PasswordResetNotice
 from celerp.models.company import Company, User
-from celerp.services import bootstrap
-from celerp.services.password_reset import set_password, user_by_email
+from celerp.services import bootstrap, email_codes
+from celerp.services.background import spawn_background
+from celerp.services.email_codes import Outcome
+from celerp.services.password_reset import reset_password, set_password, terminal_command, user_by_email
 from celerp.services.provisioning import provision_additional_company, provision_registered_company
 from celerp.services.auth import (
     AuthContext,
@@ -31,6 +38,7 @@ from celerp.services.auth import (
     get_current_company_id,
     get_current_user,
     hash_password,
+    is_local_person,
     lock_issuance_company,
     usable_company_link,
     oauth2_scheme_optional,
@@ -155,8 +163,8 @@ limiter = Limiter(key_func=request_caller)
 
 
 async def _note_account(request: Request) -> None:
-    """Counts a password reset request per caller and per account named, so requests for one
-    account never block another. Behind Connect every visitor reaches the UI from the
+    """Counts a recovery or setup code request per caller and per account named, so
+    requests for one account never block another. Behind Connect every visitor reaches the UI from the
     gateway's own address, so the account is what tells them apart. Read from the raw
     body, which the route itself then validates."""
     try:
@@ -395,6 +403,153 @@ async def switch_company(
     # A company switch is a continuation of the current session: pass the snonce
     # it authenticated on so a concurrent revocation cannot be jumped over.
     return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=ctx.snonce)
+
+
+# ── Password recovery and the setup email ────────────────────────────────────
+#
+# The relay emails a code and confirms it (celerp.services.email_codes); this install
+# alone decides whose password changes, matching users exactly as sign-in does. Every
+# request asks the relay whether it is up first, whatever the email, so an answer never
+# depends on whether the email is a user here, and any answer other than a plain yes
+# resets nothing.
+
+# Every recovery reset answers no sooner than this after the relay's status answer:
+# longer than a code check may take, so a user here and an email that is not take the
+# same time.
+RECOVERY_FLOOR_S = 4.0
+_CODE = re.compile(r"[0-9]{6}")
+
+
+class EmailBody(BaseModel):
+    email: str
+
+
+class EmailCodeBody(BaseModel):
+    email: str
+    code: str
+
+
+class RecoveryResetBody(EmailCodeBody):
+    new_password: str
+
+
+def _unavailable() -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": t("recovery.unavailable"), "outcome": "unavailable"})
+
+
+def _code_refused() -> HTTPException:
+    return HTTPException(status_code=400, detail=t("recovery.code_refused"))
+
+
+async def _send_code(email: str | None, purpose: str) -> dict:
+    """Send *email* a code in the background, when the relay is up; the answer is the
+    same whether or not there is an *email* to send to."""
+    if await email_codes.status() is not Outcome.OK:
+        return {"outcome": "unavailable"}
+    if email:
+        spawn_background(email_codes.send(email, purpose))
+    return {"outcome": "sent"}
+
+
+async def _refuse_once_set_up(session: AsyncSession) -> None:
+    if (await session.execute(select(User))).scalars().first() is not None:
+        raise HTTPException(status_code=409, detail=t("setup_email.already_set_up"))
+
+
+@router.post("/password-recovery/send", dependencies=_PER_ACCOUNT)
+@limiter.limit("3/minute", key_func=_account_key)
+async def recovery_send(request: Request, payload: EmailBody, session: AsyncSession = Depends(get_session)) -> dict:
+    """Email a recovery code to the user whose email this is, if there is one here."""
+    user = await user_by_email(session, payload.email)
+    return await _send_code(user.email if user else None, "recovery")
+
+
+@router.post("/password-recovery/reset", dependencies=_PER_ACCOUNT)
+@limiter.limit("10/minute", key_func=_account_key)
+async def recovery_reset(
+    request: Request, payload: RecoveryResetBody, session: AsyncSession = Depends(get_session),
+):
+    """Reset the password of the user whose email this is, when the relay confirms the
+    code it emailed them."""
+    try:
+        validate_password(payload.new_password)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=t("auth.password_too_short"))
+    if not _CODE.fullmatch(payload.code):
+        raise _code_refused()
+    outcome = await email_codes.status()
+    started = time.monotonic()
+    try:
+        if outcome is Outcome.OK:
+            user = await user_by_email(session, payload.email)
+            outcome = await email_codes.verify(user.email, "recovery", payload.code) if user else Outcome.REFUSED
+        if outcome is Outcome.OK:
+            try:
+                await reset_password(session, user, payload.new_password, method="email_code")
+            except Exception:
+                # The relay has spent the code; nothing here changed, so a new code is the way on.
+                await session.rollback()
+                logger.exception("Password reset by emailed code failed")
+                outcome = Outcome.REFUSED
+    finally:
+        await asyncio.sleep(max(0.0, started + RECOVERY_FLOOR_S - time.monotonic()))
+    if outcome is Outcome.UNAVAILABLE:
+        return _unavailable()
+    if outcome is Outcome.REFUSED:
+        raise _code_refused()
+    return {"ok": True}
+
+
+@router.get("/password-recovery/terminal")
+async def recovery_terminal(request: Request) -> dict:
+    """The terminal reset command, for the person at this computer only: it names this
+    computer's folders."""
+    return {"command": terminal_command() if is_local_person(request) else None}
+
+
+@router.post("/password-reset-notices/take")
+async def take_reset_notices(
+    user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    """The password resets the caller has not been told about yet, newest first; each is
+    told once."""
+    reset_ids = (await session.execute(
+        delete(PasswordResetNotice).where(PasswordResetNotice.recipient_id == user.id)
+        .returning(PasswordResetNotice.reset_id))).scalars().all()
+    by = aliased(User)
+    rows = (await session.execute(
+        select(PasswordReset, User, by.name).join(User, User.id == PasswordReset.user_id)
+        .outerjoin(by, by.id == PasswordReset.by_user_id)
+        .where(PasswordReset.id.in_(reset_ids)).order_by(PasswordReset.created_at.desc()))).all()
+    await session.commit()
+    return [{"user_id": str(subject.id), "user_name": subject.name, "user_email": subject.email,
+             "method": reset.method, "by_name": by_name, "os_user": reset.os_user,
+             "created_at": reset.created_at.isoformat()} for reset, subject, by_name in rows]
+
+
+@router.post("/setup-email/send", dependencies=_PER_ACCOUNT)
+@limiter.limit("3/minute", key_func=_account_key)
+async def setup_email_send(request: Request, payload: EmailBody, session: AsyncSession = Depends(get_session)) -> dict:
+    """Email a code confirming the email the first user sets Celerp up with."""
+    await _refuse_once_set_up(session)
+    return await _send_code(payload.email.strip(), "setup")
+
+
+@router.post("/setup-email/verify", dependencies=_PER_ACCOUNT)
+@limiter.limit("10/minute", key_func=_account_key)
+async def setup_email_verify(request: Request, payload: EmailCodeBody, session: AsyncSession = Depends(get_session)):
+    """Whether the code is the one the relay emailed for setting Celerp up."""
+    await _refuse_once_set_up(session)
+    if not _CODE.fullmatch(payload.code):
+        raise _code_refused()
+    outcome = await email_codes.status()
+    if outcome is Outcome.OK:
+        outcome = await email_codes.verify(payload.email.strip(), "setup", payload.code)
+    if outcome is Outcome.UNAVAILABLE:
+        return _unavailable()
+    if outcome is Outcome.REFUSED:
+        raise _code_refused()
+    return {"ok": True}
 
 
 class ChangePasswordBody(BaseModel):
