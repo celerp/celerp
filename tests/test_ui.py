@@ -6082,6 +6082,55 @@ class TestBulkTransferRoute:
         assert b"not allowed" in r.content
 
 
+class TestFilesSectionErrorReplies:
+    """A refused Files-section request is an error reply the section's client shows in its notice;
+    a 200 fragment would be swapped over the whole section."""
+
+    _ROUTES = [
+        ("get", "/items/i1/files/_section", "get_item"),
+        ("get", "/contacts/c1/files/_section", "get_contact"),
+        ("get", "/docs/d1/files/_section", "get_doc"),
+        ("delete", "/items/i1/files/f1", "delete_item_file"),
+        ("delete", "/contacts/c1/files/f1", "delete_contact_file"),
+        ("delete", "/docs/d1/files/f1", "delete_doc_file"),
+        ("post", "/items/i1/files/f1/tag", "tag_item_file"),
+        ("post", "/contacts/c1/files/f1/tag", "tag_contact_file"),
+        ("post", "/docs/d1/files/f1/tag", "tag_doc_file"),
+        ("post", "/items/i1/files/f1/description", "describe_item_file"),
+        ("post", "/contacts/c1/files/f1/description", "patch_contact_file_description"),
+        ("post", "/docs/d1/files/f1/description", "patch_doc_file_description"),
+        ("post", "/items/i1/files", "upload_item_file"),
+        ("post", "/contacts/c1/files", "upload_contact_file"),
+        ("post", "/docs/d1/files", "upload_doc_file"),
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method,url,call", _ROUTES)
+    async def test_a_rejected_session_is_a_401_with_the_sign_in_link(self, ui_client, method, url, call):
+        from ui.api_client import APIError
+        with patch(f"ui.api_client.{call}", new=AsyncMock(side_effect=APIError(401, "Not authenticated"))):
+            r = await ui_client.request(method.upper(), url, cookies=_authed(),
+                                        **({"files": {"file": ("a.pdf", b"%PDF-1.0", "application/pdf")}}
+                                           if url.endswith("/files") else {"data": {"document_tag": "x"}}))
+        assert r.status_code == 401, (url, r.status_code)
+        assert r.headers["content-type"].startswith("text/html")
+        assert '<a href="/login?reason=expired">' in r.text and "files-section-" not in r.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method,url,call", [r for r in _ROUTES if r[0] == "get"])
+    async def test_a_refused_refresh_is_an_error_reply_not_a_paragraph(self, ui_client, method, url, call):
+        from ui.api_client import APIError
+        with patch(f"ui.api_client.{call}", new=AsyncMock(side_effect=APIError(404, "not here"))):
+            r = await ui_client.get(url, cookies=_authed())
+        assert r.status_code == 404 and "not here" in r.text and "files-section-" not in r.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("url", ["/contacts/c1/files", "/docs/d1/files", "/items/i1/files"])
+    async def test_an_upload_without_a_file_is_an_error_reply(self, ui_client, url):
+        r = await ui_client.post(url, data={}, cookies=_authed())
+        assert r.status_code == 400 and "files-section-" not in r.text
+
+
 class TestAttachmentRoutes:
     """Route tests for attachment upload and delete."""
 
@@ -6111,8 +6160,8 @@ class TestAttachmentRoutes:
             data={},
             cookies=_authed(),
         )
-        assert r.status_code == 200
-        assert b"no file" in r.content.lower() or b"file" in r.content.lower()
+        assert r.status_code == 400
+        assert b"no file" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_upload_attachment_unauthenticated(self, ui_client):
@@ -6135,7 +6184,7 @@ class TestAttachmentRoutes:
                 files={"file": ("big.jpg", io.BytesIO(b"data"), "image/jpeg")},
                 cookies=_authed(),
             )
-        assert r.status_code == 200
+        assert r.status_code == 413
         assert b"file too large" in r.content
 
     @pytest.mark.asyncio

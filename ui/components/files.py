@@ -66,9 +66,12 @@ if(!window.celerpFilesFetch){
     // Carry the headers the page sets for its htmx requests, as an htmx request would.
     var headers=Object.assign({'HX-Request':'true'},scope?JSON.parse(scope.getAttribute('hx-headers')):{});
     opts.headers=headers;
+    // The sign-in redirect the app answers an htmx request with: follow it, as htmx does.
+    function go(r){var to=r.headers.get('HX-Redirect');if(to)location.href=to;return !!to;}
     return fetch(url,opts)
-      .then(function(r){return r.ok&&refresh?fetch(refresh,{headers:headers}):r;})
+      .then(function(r){return go(r)||!(r.ok&&refresh)?r:fetch(refresh,{headers:headers});})
       .then(function(r){return r.text().then(function(body){
+        if(go(r)) return;
         if(!r.ok){window.celerpFilesNotice(sid,r.headers.get('Content-Type'),body);return;}
         var cur=document.getElementById('files-section-'+sid);
         if(!cur){location.reload();return;}
@@ -85,6 +88,21 @@ if(!window.celerpFilesFetch){
   });
 }
 """
+
+
+def files_error(body, status: int = 400) -> HTMLResponse:
+    """A refused Files-section request: an error status, so the client leaves the section as it is
+    and shows ``body`` in its notice. Every Files route answers a refusal this way, never with a
+    200 fragment that would be swapped over the section. A 401 says the session ended, with the
+    way to sign in again."""
+    if status == 401:
+        body = (t("error.session_expired"), " ", A(t("btn.sign_in"), href="/login?reason=expired"))
+    return HTMLResponse(to_xml(Div(body, cls="flash flash--error")), status_code=max(status, 400))
+
+
+def files_session_expired() -> HTMLResponse:
+    """The sign-in notice for a Files-section request made without a session."""
+    return files_error("", 401)
 
 
 def _fmt_size(size: int) -> str:

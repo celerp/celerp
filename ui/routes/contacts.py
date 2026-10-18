@@ -21,7 +21,7 @@ from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
 from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
-from ui.components.files import files_section as _shared_files_section, linked_files, _DOCUMENT_TAGS
+from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
 from celerp.services.currencies import CURRENCY_CODES as _CURRENCY_CODES
 from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
@@ -1313,7 +1313,7 @@ def setup_routes(app):
         from ui.routes.settings import _check_permission
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         if (r := await _check_permission(request, "manage_company_settings")):
             return r
         sid = await _resolve_self_contact_id(token)
@@ -1328,7 +1328,7 @@ def setup_routes(app):
                                               str(form.get("description", "")).strip(),
                                               str(form.get("document_tag", "")).strip())
             except APIError as e:
-                return P(str(e.detail), cls="cell-error")
+                return files_error(str(e.detail), e.status)
         return await _company_files_section(token)
 
     @app.get("/finance/company-files/_section")
@@ -1336,7 +1336,7 @@ def setup_routes(app):
                                     tag_filter: str = "", date_from: str = "", date_to: str = "", search: str = ""):
         token = _token(request)
         if not token:
-            return RedirectResponse("/login", status_code=302)
+            return files_session_expired()
         return await _company_files_section(token, page=page, sort_dir=sort_dir, tag_filter=tag_filter,
                                             date_from=date_from, date_to=date_to, search=search)
 
@@ -1949,17 +1949,11 @@ def setup_routes(app):
     async def contact_upload_file(request: Request, contact_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         form = await request.form()
         file = form.get("file")
         if not file or not hasattr(file, "read"):
-            try:
-                contact = await api.get_contact(token, contact_id)
-                docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
-            except APIError:
-                contact = {"entity_id": contact_id}
-                docs_resp = {"items": []}
-            return _files_section(contact, contact_id, docs_resp.get("items", []))
+            return files_error(t("msg.no_file_provided"))
         description = str(form.get("description", "")).strip()
         document_tag = str(form.get("document_tag", "")).strip()
         content = await file.read()
@@ -1970,27 +1964,27 @@ def setup_routes(app):
             contact = await api.get_contact(token, contact_id)
             docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return files_error(str(e.detail), e.status)
         return _files_section(contact, contact_id, docs_resp.get("items", []))
 
     @app.delete("/contacts/{contact_id}/files/{file_id}")
     async def contact_delete_file(request: Request, contact_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         try:
             await api.delete_contact_file(token, contact_id, file_id)
             contact = await api.get_contact(token, contact_id)
             docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return files_error(str(e.detail), e.status)
         return _files_section(contact, contact_id, docs_resp.get("items", []))
 
     @app.post("/contacts/{contact_id}/files/{file_id}/tag")
     async def contact_tag_file(request: Request, contact_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         form = await request.form()
         document_tag = str(form.get("document_tag", "")).strip()
         try:
@@ -1998,14 +1992,14 @@ def setup_routes(app):
             contact = await api.get_contact(token, contact_id)
             docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return files_error(str(e.detail), e.status)
         return _files_section(contact, contact_id, docs_resp.get("items", []))
 
     @app.post("/contacts/{contact_id}/files/{file_id}/description")
     async def contact_patch_file_description(request: Request, contact_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         form = await request.form()
         description = str(form.get("description", "")).strip()
         try:
@@ -2013,20 +2007,20 @@ def setup_routes(app):
             contact = await api.get_contact(token, contact_id)
             docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return files_error(str(e.detail), e.status)
         return _files_section(contact, contact_id, docs_resp.get("items", []))
 
     @app.get("/contacts/{contact_id}/files/_section")
     async def contact_files_section(request: Request, contact_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         qp = request.query_params
         try:
             contact = await api.get_contact(token, contact_id)
             docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return files_error(str(e.detail), e.status)
         return _files_section(contact, contact_id, docs_resp.get("items", []),
             page=int(qp.get("page", "1") or "1"),
             sort_dir=qp.get("sort_dir", "desc"),

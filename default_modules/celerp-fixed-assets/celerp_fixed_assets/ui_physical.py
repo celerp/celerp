@@ -12,7 +12,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.files import files_section, linked_files
+from ui.components.files import files_error, files_section, files_session_expired, linked_files
 from ui.components.shell import page_header, toast_header
 from ui.components.table import EMPTY, breadcrumbs, empty_state_cta
 from ui.config import get_claims, get_role
@@ -21,7 +21,7 @@ from ui.i18n import t
 from celerp_fixed_assets.files import ASSET_FILE_TAGS
 from celerp_fixed_assets.setup import today_in
 from celerp_fixed_assets.ui_routes import (_STACK, _error_box, _error_text, _field, _hx_write, _input, _page,
-                                           _refused, _send, _send_form, _text, _token)
+                                           _refuse_if_switched, _refused, _send, _send_form, _text, _token)
 
 _CHECKS = "/fixed-assets/checks"
 
@@ -133,26 +133,29 @@ def setup_physical_routes(app) -> None:
 
     # ── Files on an asset ────────────────────────────────────────────────────
 
+    async def _files_refusal(request: Request, e: APIError):
+        """An error status, so the Files section on the page is left as it is and shows this in its
+        notice, with the way back when the refusal names one."""
+        return files_error(await _error_box(request, e), e.status)
+
     async def _file_write(request: Request, asset_id: str, method: str, suffix: str, data: dict | None = None,
                           files: dict | None = None):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         try:
             await _send_form(token, method, f"/assets/{quote(asset_id, safe=':')}/files{suffix}", data or {},
                              files=files)
             return await _files_fragment(token, asset_id)
         except APIError as e:
-            # An error status, so the Files section on the page is left as it is and shows this
-            # in its notice, with the way back when the refusal names one.
-            return HTMLResponse(to_xml(await _error_box(request, e)), status_code=e.status if e.status >= 400 else 400)
+            return await _files_refusal(request, e)
 
     @app.post("/fixed-assets/assets/{asset_id}/files")
     async def asset_file_upload(request: Request, asset_id: str):
         form = await request.form()
         file = form.get("file")
         if not hasattr(file, "read"):
-            return P(t("msg.upload_failed"), cls="cell-error")
+            return files_error(t("msg.upload_failed"))
         payload = {"file": (file.filename or "upload", await file.read(), file.content_type or "application/octet-stream")}
         return await _file_write(request, asset_id, "POST", "", {"document_tag": str(form.get("document_tag") or "")},
                                  files=payload)
@@ -178,12 +181,13 @@ def setup_physical_routes(app) -> None:
                                   tag_filter: str = "", date_from: str = "", date_to: str = "", search: str = ""):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         try:
+            await _refuse_if_switched(token)
             return await _files_fragment(token, asset_id, page=page, sort_dir=sort_dir, tag_filter=tag_filter,
                                          date_from=date_from, date_to=date_to, search=search)
         except APIError as e:
-            return P(_error_text(e), cls="cell-error")
+            return await _files_refusal(request, e)
 
     async def _download(request: Request, path: str):
         token = _token(request)

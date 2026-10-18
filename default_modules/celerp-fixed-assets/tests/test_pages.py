@@ -1420,3 +1420,62 @@ async def test_u48_a_missing_permission_links_to_users(owner_ui):
     page = (await owner_ui.get("/fixed-assets")).text
     assert missing_permission_text("view_fixed_assets") in html.unescape(page), page
     assert 'href="/settings/general?tab=users"' in page, page
+
+
+def _says(reply, text: str) -> bool:
+    return text in html.unescape(re.sub(r"<[^>]+>", "", reply.text))
+
+
+async def test_r3_a_files_refresh_after_a_switch_in_another_tab_is_an_error_reply_with_the_way_back(owner_ui, monkeypatch):
+    car = await _managed_car(owner_ui)
+    home, sent = await _switched_away(owner_ui, car, monkeypatch)
+    headers = {"HX-Request": "true", "X-Celerp-Page-Company": home["id"],
+               "HX-Current-URL": f"http://ui/fixed-assets/assets/{car}"}
+    switch = t("fixed_assets.switch_to", company=home["name"])
+    back = f"/switch-company/{home['id']}?next={quote(f'/fixed-assets/assets/{car}', safe='')}"
+    for query in ("search=a", "tag_filter=warranties", "sort_dir=asc", "page=2", "date_from=2026-01-01"):
+        reply = await owner_ui.get(f"/fixed-assets/assets/{car}/files/_section?{query}", headers=headers)
+        assert reply.status_code == 409, (query, reply.status_code)
+        assert reply.headers["content-type"].startswith("text/html"), query
+        assert 'class="flash flash--error"' in reply.text and "files-section-" not in reply.text, query
+        assert f'<a href="{html.escape(back)}">{switch}</a>' in reply.text, (query, reply.text)
+
+
+async def test_r3_a_files_refresh_or_write_with_an_expired_session_is_a_401_with_the_sign_in_link(owner_ui, monkeypatch):
+    import ui.api_client as api
+
+    async def rejected(*args, **kwargs):
+        raise api.APIError(401, "Not authenticated")
+    car = await _managed_car(owner_ui)
+    monkeypatch.setattr(api, "fixed_assets_form", rejected)
+    owner_ui.cookies.set("celerp_token", "expired")
+    base = f"/fixed-assets/assets/{car}/files"
+    replies = {
+        "refresh": await owner_ui.get(f"{base}/_section?search=a", headers={"HX-Request": "true"}),
+        "upload": await owner_ui.post(base, headers={"HX-Request": "true"},
+                                      files={"file": ("a.pdf", b"%PDF-1.0\n", "application/pdf")}),
+        "tag": await owner_ui.post(f"{base}/f1/tag", headers={"HX-Request": "true"}, data={"document_tag": "x"}),
+        "description": await owner_ui.post(f"{base}/f1/description", headers={"HX-Request": "true"}, data={"description": "x"}),
+        "delete": await owner_ui.delete(f"{base}/f1", headers={"HX-Request": "true"}),
+    }
+    for action, reply in replies.items():
+        assert reply.status_code == 401, (action, reply.status_code)
+        assert reply.headers["content-type"].startswith("text/html"), action
+        assert '<a href="/login?reason=expired">' in reply.text and "files-section-" not in reply.text, (action, reply.text)
+
+
+async def test_r3_a_files_request_with_no_session_is_sent_to_sign_in_by_the_page_client(owner_ui):
+    car = await _managed_car(owner_ui)
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert "HX-Redirect" in page.text, "the Files client follows the sign-in redirect instead of swapping its empty body in"
+    owner_ui.cookies.clear()
+    reply = await owner_ui.get(f"/fixed-assets/assets/{car}/files/_section?search=a", headers={"HX-Request": "true"})
+    assert reply.headers["HX-Redirect"].startswith("/login?reason=expired") and reply.text == ""
+
+
+async def test_r3_an_upload_without_a_file_is_an_error_reply_so_the_files_section_stays(owner_ui):
+    car = await _managed_car(owner_ui)
+    reply = await owner_ui.post(f"/fixed-assets/assets/{car}/files", headers={"HX-Request": "true"},
+                                data={"document_tag": "warranties"})
+    assert reply.status_code == 400 and _says(reply, t("msg.upload_failed")), (reply.status_code, reply.text)
+    assert 'class="flash flash--error"' in reply.text
