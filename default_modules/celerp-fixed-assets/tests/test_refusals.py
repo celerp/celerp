@@ -193,11 +193,23 @@ async def test_a_percent_out_of_range_says_what_to_enter(fa: FA):
         assert _message(r) == "Enter a percent disposed of above 0 and up to 100.", r.text
 
 
-async def test_a_stale_review_says_what_may_have_changed_and_to_press_review_again(fa: FA):
+async def test_a_stale_run_names_the_asset_added_since_its_review(fa: FA):
     await _managed_from(fa)
     await _contributed(fa)
     preview = await fa.ok(await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "st"}))
-    await _contributed(fa, name="Second car")
+    second = await _contributed(fa, name="Second car")
+    r = await fa.post("/runs", {"month": "2026-03", "preview": False, "op_key": "st",
+                                "fingerprint": preview["fingerprint"]})
+    assert r.status_code == 409 and _message(r) == (
+        "FA-0002 (Contributed) changed since you reviewed it. Press Review again to see it as it stands now."), r.text
+    assert _params(r)["links"] == [{"label": "FA-0002", "href": f"/fixed-assets/assets/{second}"}]
+
+
+async def test_a_stale_review_with_no_asset_changed_says_what_may_have(fa: FA):
+    await _managed_from(fa)
+    await _contributed(fa)
+    preview = await fa.ok(await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "st"}))
+    await fa.journal("2026-02-10", [{"account": "6400", "debit": 10}, {"account": "1220", "credit": 10}])
     r = await fa.post("/runs", {"month": "2026-03", "preview": False, "op_key": "st",
                                 "fingerprint": preview["fingerprint"]})
     assert r.status_code == 409 and _message(r) == (

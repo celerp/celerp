@@ -790,7 +790,9 @@ def test_j9_stale_move_form_asks_for_a_new_review_and_the_move_succeeds(page: Pa
     _operate(c, f"/assets/{car}/move", {"date": "2026-01-20", "location_id": office})
 
     page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
-    expect(page.locator("#fa-preview .flash--error")).to_contain_text("changed since you reviewed it")
+    stale = page.locator("#fa-preview .flash--error")
+    expect(stale).to_contain_text("FA-0001 (Moved) changed since you reviewed it.")
+    expect(stale.get_by_role("link", name="FA-0001")).to_have_attribute("href", f"/fixed-assets/assets/{car}")
     page.locator("#fa-preview").get_by_role("button", name="Review again").click()
     with page.expect_navigation(url=f"**/fixed-assets/assets/{car}"):
         page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
