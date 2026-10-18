@@ -3651,7 +3651,7 @@
   "connectors.fail_store_changed": "Die {service}-Datensätze dieses Unternehmens stammen aus einem anderen Shop. Verbinden Sie den Shop, aus dem sie stammen, oder verwenden Sie für diesen Shop ein eigenes Unternehmen.",
   "connectors.fail_credentials": "Celerp konnte seine Anmeldedaten für {service} nicht lesen. Verwenden Sie oben Trennen und verbinden Sie {service} dann unter Webzugriff erneut.",
   "connectors.fail_access": "{service} hat den Zugriff von Celerp abgelehnt. Verwenden Sie oben Trennen und verbinden Sie {service} dann unter Webzugriff erneut.",
-  "connectors.fail_key_closed": "Der Schlüssel Ihres Steuerberaters für diese Bücher wurde widerrufen oder ist abgelaufen, daher kommen seine Buchungen nicht mehr an. Bitten Sie Ihren Steuerberater, den Schlüssel zu erneuern oder einen neuen Kopplungslink zu senden: Verwenden Sie oben Trennen und fügen Sie dann den neuen Link ein.",
+  "connectors.fail_key_closed": "Der Schlüssel Ihres Steuerberaters für diese Bücher wurde widerrufen oder ist abgelaufen, daher werden keine Daten mehr zwischen Ihren und seinen Büchern übertragen. Bitten Sie Ihren Steuerberater, den Schlüssel zu erneuern oder einen neuen Kopplungslink zu senden: Verwenden Sie oben Trennen und fügen Sie dann den neuen Link ein.",
   "connectors.fail_rate_limited": "{service} begrenzt, wie schnell Celerp synchronisieren kann. Warten Sie ein paar Minuten und verwenden Sie dann Jetzt synchronisieren.",
   "connectors.fail_unreachable": "Celerp konnte {service} nicht erreichen. Prüfen Sie Ihre Internetverbindung und verwenden Sie dann Jetzt synchronisieren.",
   "connectors.fail_remote": "{service} hatte ein Problem auf seiner Seite. Warten Sie eine Weile und verwenden Sie dann Jetzt synchronisieren.",

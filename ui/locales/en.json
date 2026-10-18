@@ -3651,7 +3651,7 @@
   "connectors.fail_store_changed": "This company's {service} records came from a different store. Connect the store they came from, or use a separate company for this store.",
   "connectors.fail_credentials": "Celerp couldn't read its sign-in details for {service}. Use Disconnect above, then connect {service} again in Web Access.",
   "connectors.fail_access": "{service} refused Celerp's access. Use Disconnect above, then connect {service} again in Web Access.",
-  "connectors.fail_key_closed": "Your accountant's key for these books was revoked or has expired, so their entries no longer arrive. Ask your accountant to renew the key, or to send a new pairing link: use Disconnect above, then paste the new link.",
+  "connectors.fail_key_closed": "Your accountant's key for these books was revoked or has expired, so records no longer pass between your books and theirs. Ask your accountant to renew the key, or to send a new pairing link: use Disconnect above, then paste the new link.",
   "connectors.fail_rate_limited": "{service} is limiting how fast Celerp can sync. Wait a few minutes, then use Sync now.",
   "connectors.fail_unreachable": "Celerp couldn't reach {service}. Check your internet connection, then use Sync now.",
   "connectors.fail_remote": "{service} had a problem on its side. Wait a while, then use Sync now.",

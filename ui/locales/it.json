@@ -3651,7 +3651,7 @@
   "connectors.fail_store_changed": "I record {service} di questa azienda provengono da un altro negozio. Collega il negozio da cui provengono, oppure usa un'azienda separata per questo negozio.",
   "connectors.fail_credentials": "Celerp non è riuscito a leggere i suoi dati di accesso a {service}. Usa Disconnetti qui sopra, poi ricollega {service} in Accesso Web.",
   "connectors.fail_access": "{service} ha rifiutato l'accesso di Celerp. Usa Disconnetti qui sopra, poi ricollega {service} in Accesso Web.",
-  "connectors.fail_key_closed": "La chiave del tuo commercialista per questi libri è stata revocata o è scaduta, quindi le sue registrazioni non arrivano più. Chiedi al tuo commercialista di rinnovare la chiave o di inviare un nuovo link di abbinamento: usa Disconnetti qui sopra, poi incolla il nuovo link.",
+  "connectors.fail_key_closed": "La chiave del tuo commercialista per questi libri è stata revocata o è scaduta, quindi i dati non passano più tra i tuoi libri e i suoi. Chiedi al tuo commercialista di rinnovare la chiave o di inviare un nuovo link di abbinamento: usa Disconnetti qui sopra, poi incolla il nuovo link.",
   "connectors.fail_rate_limited": "{service} sta limitando la velocità di sincronizzazione di Celerp. Attendi qualche minuto, poi usa Sincronizza ora.",
   "connectors.fail_unreachable": "Celerp non è riuscito a raggiungere {service}. Controlla la connessione a internet, poi usa Sincronizza ora.",
   "connectors.fail_remote": "{service} ha avuto un problema dalla sua parte. Attendi un po', poi usa Sincronizza ora.",

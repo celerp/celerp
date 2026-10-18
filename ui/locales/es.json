@@ -3651,7 +3651,7 @@
   "connectors.fail_store_changed": "Los registros de {service} de esta empresa vienen de otra tienda. Conecte la tienda de la que vienen, o use una empresa aparte para esta tienda.",
   "connectors.fail_credentials": "Celerp no pudo leer sus datos de acceso a {service}. Use Desconectar arriba y vuelva a conectar {service} en Acceso web.",
   "connectors.fail_access": "{service} rechazó el acceso de Celerp. Use Desconectar arriba y vuelva a conectar {service} en Acceso web.",
-  "connectors.fail_key_closed": "La clave de su contador para estos libros fue revocada o ha caducado, por lo que sus asientos ya no llegan. Pida a su contador que renueve la clave o que envíe un nuevo enlace de emparejamiento: use Desconectar arriba y luego pegue el nuevo enlace.",
+  "connectors.fail_key_closed": "La clave de su contador para estos libros fue revocada o ha caducado, por lo que los registros ya no pasan entre sus libros y los de su contador. Pida a su contador que renueve la clave o que envíe un nuevo enlace de emparejamiento: use Desconectar arriba y luego pegue el nuevo enlace.",
   "connectors.fail_rate_limited": "{service} está limitando la velocidad de sincronización de Celerp. Espere unos minutos y use Sincronizar ahora.",
   "connectors.fail_unreachable": "Celerp no pudo conectar con {service}. Revise su conexión a internet y use Sincronizar ahora.",
   "connectors.fail_remote": "{service} tuvo un problema por su parte. Espere un rato y use Sincronizar ahora.",

@@ -366,6 +366,13 @@ class _Refused(ValueError):
     """The receiving company refused a record and said why."""
 
 
+class _KeyClosed(ValueError):
+    """The firm no longer accepts this key: it was revoked or has expired."""
+
+    def __init__(self):
+        super().__init__("Accountant's key was revoked or has expired")
+
+
 def _refusal(errors: list) -> str:
     """The receiving company's reason, without the record id it prefixes."""
     if not errors:
@@ -506,6 +513,8 @@ class CelerpConnector(ConnectorBase):
                         }]})
                     if response.status_code == 403 and kind == "journals":
                         return result  # the firm's key does not open journals
+                    if response.status_code == 401:
+                        raise _KeyClosed()
                     if response.status_code != 200:
                         raise ValueError("Receiving installation refused update")
                     body = response.json()
@@ -518,6 +527,8 @@ class CelerpConnector(ConnectorBase):
                                                       revision, None, "")
                     result.record(status)
                 except Exception as exc:
+                    if isinstance(exc, _KeyClosed):
+                        raise  # no record can go until the key is renewed
                     if isinstance(exc, _Refused):
                         await peer_journals.note_delivery(
                             company_id, grant_id, kind, entity_id, revision, str(exc),
@@ -539,7 +550,7 @@ class CelerpConnector(ConnectorBase):
         if response.status_code in closed:
             return None
         if response.status_code == 401:
-            raise ValueError("Accountant's key was revoked or has expired")
+            raise _KeyClosed()
         if response.status_code != 200:
             raise ValueError("Receiving installation needs attention")
         body = response.json()

@@ -3651,7 +3651,7 @@
   "connectors.fail_store_changed": "Les enregistrements {service} de cette entreprise proviennent d'une autre boutique. Connectez la boutique d'origine, ou utilisez une entreprise distincte pour cette boutique.",
   "connectors.fail_credentials": "Celerp n'a pas pu lire ses identifiants de connexion à {service}. Utilisez Déconnecter ci-dessus, puis reconnectez {service} dans Accès Web.",
   "connectors.fail_access": "{service} a refusé l'accès de Celerp. Utilisez Déconnecter ci-dessus, puis reconnectez {service} dans Accès Web.",
-  "connectors.fail_key_closed": "La clé de votre comptable pour ces livres a été révoquée ou a expiré, ses écritures n'arrivent donc plus. Demandez à votre comptable de renouveler la clé ou d'envoyer un nouveau lien d'appairage : utilisez Déconnecter ci-dessus, puis collez le nouveau lien.",
+  "connectors.fail_key_closed": "La clé de votre comptable pour ces livres a été révoquée ou a expiré, les données ne passent donc plus entre vos livres et les siens. Demandez à votre comptable de renouveler la clé ou d'envoyer un nouveau lien d'appairage : utilisez Déconnecter ci-dessus, puis collez le nouveau lien.",
   "connectors.fail_rate_limited": "{service} limite la vitesse de synchronisation de Celerp. Attendez quelques minutes, puis utilisez Synchroniser maintenant.",
   "connectors.fail_unreachable": "Celerp n'a pas pu joindre {service}. Vérifiez votre connexion Internet, puis utilisez Synchroniser maintenant.",
   "connectors.fail_remote": "{service} a rencontré un problème de son côté. Patientez un moment, puis utilisez Synchroniser maintenant.",
