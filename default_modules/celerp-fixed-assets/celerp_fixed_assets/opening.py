@@ -17,6 +17,8 @@ import uuid
 
 from fastapi import HTTPException
 
+from celerp.services.business_time import business_today
+
 from celerp_fixed_assets import projections, runs, setup, sources
 from celerp_fixed_assets.operations import _dec, _move, conflict
 from celerp_fixed_assets.store import _entities, movements_by_asset
@@ -98,7 +100,7 @@ async def finish(session, company_id, user_id, body: dict) -> dict:
                 action="fixed_assets.record_opening_journal"))
     fa = setup.settings_of(company.settings)
     state = None if reopen else OPENING_STATES[1] if keep_open else OPENING_STATES[0]
-    fa["opening"] = {"state": state, "by": str(user_id), "on": setup.today_in(company.settings).isoformat()} if state else None
+    fa["opening"] = {"state": state, "by": str(user_id), "on": business_today(company.settings.get("timezone")).isoformat()} if state else None
     company.settings = {**(company.settings or {}), setup.SETTINGS_KEY: fa}
     await session.flush()
     return {**shown, "state": state}

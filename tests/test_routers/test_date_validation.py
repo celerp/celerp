@@ -155,7 +155,7 @@ def _make_request(from_: str, to_: str):
 def test_parse_dates_swaps_inverted_range():
     from ui.routes.reports import _parse_dates
     req = _make_request("2025-05-01", "2024-05-01")
-    date_from, date_to, preset = _parse_dates(req)
+    date_from, date_to, preset = _parse_dates(req, {})
     assert date_from == "2024-05-01"
     assert date_to == "2025-05-01"
     assert preset == "custom"
@@ -164,7 +164,7 @@ def test_parse_dates_swaps_inverted_range():
 def test_parse_dates_leaves_valid_range_unchanged():
     from ui.routes.reports import _parse_dates
     req = _make_request("2024-01-01", "2024-12-31")
-    date_from, date_to, preset = _parse_dates(req)
+    date_from, date_to, preset = _parse_dates(req, {})
     assert date_from == "2024-01-01"
     assert date_to == "2024-12-31"
 
@@ -172,14 +172,14 @@ def test_parse_dates_leaves_valid_range_unchanged():
 def test_parse_dates_equal_dates_accepted():
     from ui.routes.reports import _parse_dates
     req = _make_request("2024-06-15", "2024-06-15")
-    date_from, date_to, preset = _parse_dates(req)
+    date_from, date_to, preset = _parse_dates(req, {})
     assert date_from == date_to == "2024-06-15"
 
 
 def test_parse_dates_missing_to_accepted():
     from ui.routes.reports import _parse_dates
     req = _make_request("2024-06-01", "")
-    date_from, date_to, preset = _parse_dates(req)
+    date_from, date_to, preset = _parse_dates(req, {})
     assert date_from == "2024-06-01"
     assert date_to == ""
 
@@ -187,6 +187,6 @@ def test_parse_dates_missing_to_accepted():
 def test_parse_dates_missing_from_accepted():
     from ui.routes.reports import _parse_dates
     req = _make_request("", "2024-06-30")
-    date_from, date_to, preset = _parse_dates(req)
+    date_from, date_to, preset = _parse_dates(req, {})
     assert date_to == "2024-06-30"
     assert date_from == ""

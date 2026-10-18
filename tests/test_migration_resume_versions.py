@@ -145,7 +145,7 @@ async def test_journey_upgrade_during_a_stopped_bootstrap_migration(real_client,
     scan_token = r.json()["scan_token"]
     assert (await save_decisions(real_client, scan_token)).status_code == 200
     r = await real_client.post("/migrations/bootstrap/start", headers={"X-Setup-Code": code_config}, json={
-        "scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+        "scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
         "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
     assert r.status_code == 201, r.text
     token, run_id = r.json()["access_token"], r.json()["run_id"]

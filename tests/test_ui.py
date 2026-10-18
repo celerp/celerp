@@ -1159,7 +1159,7 @@ _PNL = {"revenue": {"total": 500, "lines": [{"account_name": "Sales", "amount": 
         "expenses": {"total": 100, "lines": []}, "net_profit": 200}
 _BS = {"assets": {"total": 1000, "lines": [{"account_name": "Cash", "amount": 1000}]},
        "liabilities": {"total": 300, "lines": []}, "equity": {"total": 700, "lines": []}, "balanced": True}
-_AGING = {"lines": [{"contact_name": "Alice", "doc_number": "INV-001", "due_date": "2026-01-15",
+_AGING = {"as_of": "2026-02-24", "lines": [{"contact_name": "Alice", "doc_number": "INV-001", "due_date": "2026-01-15",
           "outstanding": 100, "days_overdue": 40, "bucket": "31-60"}], "buckets": {"31-60": 100}}
 _SALES = {"lines": [{"label": "Alice", "count": 3, "total": 500}], "group_by": "customer", "total": 500}
 _EXPIRING = {"count": 1, "days_threshold": 30, "items": [
@@ -6203,7 +6203,85 @@ class TestCompanyFilesAggregation:
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(side_effect=APIError(503, "down"))), \
              patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1"})):
             r = await ui_client.get("/contacts/c1/tab/documents", cookies=_authed())
-        assert "down" in r.text and "cell-error" in r.text
+        assert "down" in r.text and "documents could not be loaded" in r.text and "Open Documents again" in r.text
+
+
+    @pytest.mark.asyncio
+    async def test_the_contact_page_with_a_failed_contact_read_shows_the_error_not_a_blank_contact(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(503, "down"))):
+            r = await ui_client.get("/contacts/c1", cookies=_authed())
+        assert "down" in r.text and "contact could not be loaded" in r.text and "Select Try again to reload the page" in r.text
+        assert "Reload the page" not in r.text
+        retry = r.text.split("Try again</a>", 1)[0].rsplit("<a ", 1)[1]
+        assert 'href="/contacts/c1"' in retry and "hx-get" not in retry and "btn btn--secondary btn--sm" in retry
+
+    @pytest.mark.asyncio
+    async def test_a_failed_documents_read_keeps_the_contact_page_and_shows_the_notice_in_the_documents_tab(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.list_contact_docs", new=AsyncMock(side_effect=APIError(503, "down"))), \
+             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1", "name": "Acme Trading", "contact_type": "customer"})):
+            r = await ui_client.get("/contacts/c1", cookies=_authed())
+        assert r.status_code == 200
+        assert "Acme Trading" in r.text and "tab-bar" in r.text
+        tab = r.text.split('id="tab-content"', 1)[1]
+        assert "documents, files and totals could not be loaded" in tab and "Select Try again to reload the page" in tab
+        assert "Open Documents again" not in tab and "None yet" not in tab
+        assert "financial-card" not in r.text
+        # Try again is a plain link to the contact page (a full reload, never an htmx swap), and the
+        # Documents tab on this state does the same, so cards, files and documents come back together.
+        retry = tab.split("Try again</a>", 1)[0].rsplit("<a ", 1)[1]
+        assert 'href="/contacts/c1"' in retry and "hx-get" not in retry and "btn btn--secondary btn--sm" in retry
+        docs_tab = r.text.split('id="tab-documents"', 1)[0].rsplit("<a ", 1)[1] + r.text.split('id="tab-documents"', 1)[1].split("</a>", 1)[0]
+        assert 'href="/contacts/c1"' in docs_tab and "hx-get" not in docs_tab
+        assert 'hx-get="/contacts/c1/tab/notes"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_contact_page_whose_documents_loaded_keeps_the_htmx_documents_tab(self, ui_client):
+        with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1", "name": "Acme Trading", "contact_type": "customer"})):
+            r = await ui_client.get("/contacts/c1", cookies=_authed())
+        assert 'hx-get="/contacts/c1/tab/documents"' in r.text and 'href="/contacts/c1"' not in r.text.split('id="tab-content"', 1)[1]
+
+    @pytest.mark.asyncio
+    async def test_a_contact_not_found_shows_the_api_sentence_alone_under_a_heading(self, ui_client):
+        from ui.api_client import APIError
+        sentence = "Celerp couldn't find this contact. It may have been deleted."
+        with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(404, sentence))):
+            r = await ui_client.get("/contacts/c1", cookies=_authed())
+        assert sentence in r.text and "could not be loaded" not in r.text and "Reload the page" not in r.text
+        assert 'class="page-title"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_temporary_contact_failure_keeps_the_wrapper_and_has_a_heading(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(503, "down"))):
+            r = await ui_client.get("/contacts/c1", cookies=_authed())
+        assert "Select Try again to reload the page" in r.text and 'class="page-title"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_contact_with_no_documents_still_shows_none_yet(self, ui_client):
+        with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1", "name": "Acme"})):
+            r = await ui_client.get("/contacts/c1", cookies=_authed())
+        assert r.status_code == 200 and "None yet" in r.text and "could not be loaded" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_failed_company_files_read_says_the_list_could_not_load_and_how_to_retry(self, ui_client):
+        from ui.api_client import APIError
+        with self._patches(list_docs=AsyncMock(side_effect=APIError(503, "down"))):
+            r = await ui_client.get(self._URL, cookies=_authed())
+        assert "down" in r.text and "could not be loaded" in r.text and "Open Files again" in r.text
+
+    @pytest.mark.asyncio
+    async def test_an_upload_with_no_file_says_to_choose_one(self, ui_client):
+        with self._patches():
+            r = await ui_client.post("/finance/company-files", data={}, cookies=_authed())
+        assert "Choose a file to upload." in r.text
 
 
 class TestAttachmentRoutes:
@@ -6236,7 +6314,7 @@ class TestAttachmentRoutes:
             cookies=_authed(),
         )
         assert r.status_code == 400
-        assert b"no file" in r.content.lower()
+        assert b"choose a file" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_upload_attachment_unauthenticated(self, ui_client):
@@ -17757,32 +17835,6 @@ def test_compact_pages_shows_full_count_and_last():
     assert compact_pages(10, 10) == [1, None, 9, 10]
 
 
-@pytest.mark.asyncio
-async def test_forgot_password_no_email_toasts_cli_instruction(ui_client):
-    """Self-hosted (no email transport): the forgot-password link surfaces the CLI-reset
-    instruction as a PERSISTENT toast and keeps the user on the login screen - no page
-    takeover, no false 'check your email'."""
-    import ui.routes.auth as _auth
-    with patch.object(_auth._settings, "gateway_token", ""), patch.object(_auth._settings, "smtp_host", ""):
-        r = await ui_client.get("/forgot-password", headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    trig = r.headers.get("HX-Trigger", "")
-    assert "celerpToast" in trig
-    assert "reset-password" in trig          # the CLI command is in the message
-    assert '"persist": true' in trig          # stays until the user dismisses it
-    assert b"check your email" not in r.content.lower() if r.content else True
-
-
-@pytest.mark.asyncio
-async def test_forgot_password_with_email_redirects_to_form(ui_client):
-    """Email-capable install: the HTMX click full-navigates to the email-reset form."""
-    import ui.routes.auth as _auth
-    with patch.object(_auth._settings, "gateway_token", "tok"), patch.object(_auth._settings, "smtp_host", ""):
-        r = await ui_client.get("/forgot-password", headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert r.headers.get("HX-Redirect") == "/forgot-password"
-
-
 def _split_preview_dict(**over) -> dict:
     """A server-shaped split_preview dict for the item-detail split card tests."""
     d = {
@@ -20881,3 +20933,48 @@ class TestImportHistoryUndo:
             r = await ui_client.post("/settings/import-history/b-1/undo", cookies=_authed())
         assert r.headers.get("HX-Reswap") == "none"
         assert json.loads(r.headers["HX-Trigger"])["celerpToast"] == {"message": reason, "type": "error"}
+
+
+class TestCompanySettingsUnavailable:
+    """A page that works out today, a date preset or a fiscal year from the company settings
+    says so when those settings cannot be read, with a way to try again, instead of showing
+    dates from a guessed timezone and year start."""
+
+    _down = staticmethod(lambda: AsyncMock(side_effect=APIError(500, "boom")))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("url", [
+        "/reports/sales?preset=this_month",   # operational report
+        "/reports/pnl?preset=this_fy",        # financial report
+        "/docs?type=invoice",                 # document list
+        "/lists",                             # list documents
+        "/docs/d:1",                          # document detail
+        "/contacts/ct:1",                     # contact detail (financial year summary)
+        "/accounting/reconcile/start",        # reconciliation statement date
+    ])
+    async def test_page_says_settings_could_not_be_read(self, ui_client, url):
+        with (
+            patch("ui.api_client.get_company", new=self._down()),
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)),
+            patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACTS[0])),
+            patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})),
+        ):
+            r = await ui_client.get(url, cookies=_authed())
+        assert r.status_code == 503
+        assert "couldn't read your company settings" in r.text
+        assert f'href="{url.replace("&", "&amp;")}"' in r.text or url in r.text
+        assert ">Retry<" in r.text and ">Back<" in r.text
+
+    @pytest.mark.asyncio
+    async def test_fragment_request_gets_the_message_for_the_error_banner(self, ui_client):
+        with patch("ui.api_client.get_company", new=self._down()):
+            r = await ui_client.get("/manufacturing/search", cookies=_authed(), headers={"HX-Request": "true"})
+        assert r.status_code == 503
+        assert r.text.startswith("Celerp couldn't read your company settings")
+
+    @pytest.mark.asyncio
+    async def test_expired_session_still_goes_to_sign_in(self, ui_client):
+        with patch("ui.api_client.get_company", new=AsyncMock(side_effect=APIError(401, "expired"))):
+            r = await ui_client.get("/reports/sales", cookies=_authed())
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/login")

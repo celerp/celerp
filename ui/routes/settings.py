@@ -9,7 +9,7 @@ from typing import Any
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 import ui.api_client as api
 from ui.components.icons import import_icon
@@ -986,6 +986,60 @@ def setup_routes(app):
             return P(str(e.detail), cls="cell-error")
         flat = {**company, **(company.get("settings") or {})}
         return _company_display_cell(field, flat.get(field))
+
+    # ── An owner resets a staff member's password ────────────────────
+    # Registered before the field editor, whose path would otherwise take /password/edit.
+    @app.get("/settings/users/{user_id}/password/edit")
+    async def user_password_edit(request: Request, user_id: str):
+        """The form, or, when this viewer cannot reset this member, the reason and who can."""
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        try:
+            await api.can_reset_user_password(token, user_id)
+        except APIError as e:
+            return _user_password_refusal(user_id, str(e.detail), own_row=_is_own_row(request, user_id))
+        return _user_password_form(user_id)
+
+    @app.get("/settings/users/{user_id}/actions")
+    async def user_actions_cell(request: Request, user_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        try:
+            users = (await api.get_users(token)).get("items", [])
+            _, install_owner_id = await _users_viewer(request, token)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        user = next((u for u in users if u.get("id") == user_id), {"id": user_id})
+        return _user_actions_cell(user, install_owner_id=install_owner_id, lang=get_lang(request))
+
+    @app.post("/settings/users/{user_id}/password")
+    async def user_password_post(request: Request, user_id: str):
+        """Set a staff member's new password; their sessions end and they are told at
+        their next sign-in. Undo: reset it again. A refusal shows in the cell; success
+        redraws the users card with what happened."""
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        form = await request.form()
+        password, confirm = str(form.get("password", "")), str(form.get("confirm", ""))
+        if password != confirm:
+            return _user_password_form(user_id, t("settings.passwords_do_not_match"))
+        lang = get_lang(request)
+        try:
+            await api.reset_user_password(token, user_id, password)
+        except APIError as e:
+            return _user_password_form(user_id, str(e.detail), own_row=_is_own_row(request, user_id))
+        try:
+            users = (await api.get_users(token)).get("items", [])
+            settings = (await api.get_company(token)).get("settings")
+            card = await users_tab_for(request, token, users, settings, lang,
+                                       flash(t("users.reset_password_done", lang), "success"))
+        except APIError:
+            # The reset is done; only the redraw failed, so the cell says so.
+            return Td(flash(t("users.reset_password_done", lang), "success"), cls="cell")
+        return HTMLResponse(to_xml(card), headers={"HX-Retarget": "#users-card", "HX-Reswap": "outerHTML"})
 
     # ── Users PATCH endpoints ────────────────────────────────────────
     @app.get("/settings/users/{user_id}/{field}/edit")
@@ -2981,19 +3035,19 @@ def _password_form(error: str = "", success: str = "", lang: str = "en") -> FT:
             Div(
                 Label(t("settings.current_password", lang), fr="current_password"),
                 Input(type="password", name="current_password", id="current_password",
-                      required=True, cls="input", autocomplete="current-password"),
+                      required=True, cls="form-input", autocomplete="current-password"),
                 cls="form-group",
             ),
             Div(
                 Label(t("settings.new_password", lang), fr="new_password"),
                 Input(type="password", name="new_password", id="new_password",
-                      required=True, minlength="8", cls="input", autocomplete="new-password"),
+                      required=True, minlength="8", cls="form-input", autocomplete="new-password"),
                 cls="form-group",
             ),
             Div(
                 Label(t("settings.confirm_password", lang), fr="confirm_password"),
                 Input(type="password", name="confirm_password", id="confirm_password",
-                      required=True, minlength="8", cls="input", autocomplete="new-password"),
+                      required=True, minlength="8", cls="form-input", autocomplete="new-password"),
                 cls="form-group",
             ),
             Button(t("btn.change_password", lang), type="submit", cls="btn btn--primary mt-sm"),
@@ -3167,24 +3221,88 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
     )
 
 
+def _user_actions_cell(u: dict, *, install_owner_id: str, lang: str = "en") -> FT:
+    """Reset password, on every row for every viewer: a reset this viewer cannot make
+    says why as soon as it is clicked. The installation owner's control that hands
+    installation ownership to each other active user."""
+    uid = u.get("id", "")
+    name = u.get("name") or u.get("email") or ""
+    handover = install_owner_id and uid != install_owner_id and u.get("is_active", True)
+    return Td(
+        Button(t("recovery.reset_password", lang), cls="btn btn--secondary btn--xs",
+               hx_get=f"/settings/users/{uid}/password/edit",
+               hx_target="closest td", hx_swap="outerHTML"),
+        Button(t("settings.make_install_owner", lang), cls="btn btn--secondary btn--xs",
+               hx_post=f"/settings/users/{uid}/installation-owner",
+               hx_confirm=t("settings.confirm_make_install_owner", lang, name=name),
+               hx_target="#users-card", hx_swap="outerHTML") if handover else "",
+        cls="cell",
+    )
+
+
+def _is_own_row(request: Request, user_id: str) -> bool:
+    from ui.config import get_claims
+    return user_id == str(get_claims(request).get("sub", ""))
+
+
+def _user_password_error(error: str, own_row: bool) -> FT:
+    """A refusal; on the viewer's own row it links to the tab where they change their own password."""
+    to_own_tab = A(t("settings.change_password"), href="/settings/general?tab=password") if own_row else ""
+    return P(error, " ", to_own_tab, cls="cell-error")
+
+
+_USER_PASSWORD_ESC = ("if(event.key==='Escape'){event.preventDefault();event.stopPropagation();"
+                      "this.querySelector('[data-cancel]').click();}")
+
+
+def _user_password_back(user_id: str, **attrs) -> FT:
+    return Button(t("btn.cancel"), type="button", data_cancel="1", cls="btn btn--secondary btn--xs",
+                  hx_get=f"/settings/users/{user_id}/actions", hx_target="closest td", hx_swap="outerHTML",
+                  **attrs)
+
+
+def _user_password_refusal(user_id: str, error: str, own_row: bool = False) -> FT:
+    """Why this viewer cannot reset this member, in place of the form; Escape and Cancel
+    put the cell back as it was."""
+    return Td(
+        Div(
+            _user_password_error(error, own_row),
+            _user_password_back(user_id, autofocus=True),
+            onkeydown=_USER_PASSWORD_ESC,
+            cls="cell-form",
+        ),
+        cls="cell cell--editing",
+    )
+
+
+def _user_password_form(user_id: str, error: str = "", own_row: bool = False) -> FT:
+    """The inline form an owner sets a staff member's new password in. Escape and
+    Cancel put the cell back as it was."""
+    return Td(
+        Form(
+            _user_password_error(error, own_row) if error else "",
+            Input(type="password", name="password", placeholder=t("label.new_password"),
+                  autocomplete="new-password", autofocus=True, cls="cell-input"),
+            Input(type="password", name="confirm", placeholder=t("label.confirm_password"),
+                  autocomplete="new-password", cls="cell-input"),
+            Div(
+                Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
+                _user_password_back(user_id),
+                cls="inline-form-row",
+            ),
+            hx_post=f"/settings/users/{user_id}/password", hx_target="closest td", hx_swap="outerHTML",
+            onkeydown=_USER_PASSWORD_ESC,
+            cls="cell-form",
+        ),
+        cls="cell cell--editing",
+    )
+
+
 def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en", is_owner: bool = False,
                install_owner_id: str = "", notice: FT | str = "") -> FT:
     """The users table and role matrix. The user who owns the installation carries
     a badge for every viewer. ``install_owner_id`` is the viewer's own user id when
-    the viewer owns the installation: only then does each other active user carry
-    the control that hands installation ownership to them."""
-    def _handover_cell(u: dict) -> FT:
-        uid = u.get("id", "")
-        if uid == install_owner_id or not u.get("is_active", True):
-            return Td(cls="cell")
-        name = u.get("name") or u.get("email") or ""
-        return Td(
-            Button(t("settings.make_install_owner", lang), cls="btn btn--secondary btn--xs",
-                   hx_post=f"/settings/users/{uid}/installation-owner",
-                   hx_confirm=t("settings.confirm_make_install_owner", lang, name=name),
-                   hx_target="#users-card", hx_swap="outerHTML"),
-            cls="cell",
-        )
+    the viewer owns the installation."""
 
     def _row(u: dict) -> FT:
         uid = u.get("id", "")
@@ -3196,17 +3314,17 @@ def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en"
             _user_display_cell(uid, "email", u.get("email")),
             _user_display_cell(uid, "role", u.get("role")),
             _user_display_cell(uid, "is_active", u.get("is_active", True)),
-            _handover_cell(u) if install_owner_id else "",
+            _user_actions_cell(u, install_owner_id=install_owner_id, lang=lang),
             cls="data-row",
         )
 
     role_matrix = _role_permissions_matrix(settings, is_owner, lang)
 
     return Div(
-        notice,
+        Div(notice, cls="mb-md") if notice else "",
         Table(
             Thead(Tr(Th(t("th.name", lang)), Th(t("th.email", lang)), Th(t("th.role", lang)), Th(t("th.active", lang)),
-                     Th(t("th.actions", lang)) if install_owner_id else "")),
+                     Th(t("th.actions", lang)))),
             Tbody(*[_row(u) for u in users]),
             cls="data-table",
         ),
@@ -3221,10 +3339,16 @@ async def users_tab_for(request: Request, token: str, users: list[dict], setting
                         lang: str, notice: FT | str = "") -> FT:
     """_users_tab for the user who asked: the role matrix is editable for an
     owner, and the handover control shows only to the installation owner."""
+    is_owner, install_owner_id = await _users_viewer(request, token)
+    return _users_tab(users, settings, lang=lang, is_owner=is_owner,
+                      install_owner_id=install_owner_id, notice=notice)
+
+
+async def _users_viewer(request: Request, token: str) -> tuple[bool, str]:
+    """Whether the viewer owns the company, and their user id when they own the installation."""
     from ui.config import get_claims
     install_owner_id = str(get_claims(request).get("sub", "")) if await api.installation_owner(token) else ""
-    return _users_tab(users, settings, lang=lang, is_owner=_get_role(request) == "owner",
-                      install_owner_id=install_owner_id, notice=notice)
+    return _get_role(request) == "owner", install_owner_id
 
 
 # The fixed permissions carry no checkboxes; each states in one line why it cannot move.

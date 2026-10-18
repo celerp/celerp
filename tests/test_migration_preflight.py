@@ -90,7 +90,7 @@ async def _bootstrap_start(client, *, company_name: str = "Moved Co"):
     r = await save_decisions(client, scan_token)
     assert r.status_code == 200, r.text
     return await client.post("/migrations/bootstrap/start", headers=_SETUP, json={
-        "scan_token": scan_token, "company_name": company_name, "name": "Owner",
+        "scan_token": scan_token, "company_name": company_name, "timezone": "UTC", "name": "Owner",
         "email": OWNER_EMAIL, "password": OWNER_PASSWORD}), scan_token
 
 
@@ -180,7 +180,7 @@ async def test_repeated_start_while_preparing_reuses_one_run(
     assert r.status_code == 201
     tok = r.json()["access_token"]
     r2 = await real_client.post("/migrations/start-from-scan", headers=auth(tok),
-                                json={"scan_token": scan_token, "company_name": "Moved Co"})
+                                json={"scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC"})
     assert r2.status_code in (200, 404, 409), r2.text
     assert await _state(real_engine) == (1, 1, 1)
 

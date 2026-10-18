@@ -136,8 +136,14 @@ def company_choice_fields(currency: str = "", vertical: str = "") -> list:
             P(t("setup.currency_hint"), cls="form-hint"),
             cls="form-group",
         ),
-        Input(type="hidden", name="timezone", value=""),
+        browser_timezone_field(),
     ]
+
+
+def browser_timezone_field() -> FT:
+    """The timezone the browser reports, filled in by ``company_choice_script`` and stored
+    through ``setup_timezone``: every form that creates a company carries it."""
+    return Input(type="hidden", name="timezone", value="")
 
 
 def company_choice_script() -> FT:

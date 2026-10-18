@@ -29,12 +29,12 @@ def test_invalid_credentials_names_forgot_password_in_every_locale():
 
 
 @pytest.mark.asyncio
-async def test_bad_reset_link_says_how_to_get_a_new_one(client):
-    r = await client.post("/auth/password-reset/confirm",
-                          json={"token": "totally-wrong-token", "new_password": "newpassword1"})
+async def test_bad_recovery_code_says_how_to_get_a_new_one(client):
+    r = await client.post("/auth/password-recovery/reset", json={
+        "email": "nobody@example.com", "handle": "x" * 32, "code": "12345678", "new_password": "newpassword1"})
     assert r.status_code == 400
-    assert r.json()["detail"] == t("auth.reset_link_invalid", "en")
-    assert "Forgot password?" in r.json()["detail"]
+    assert r.json()["detail"] == t("recovery.code_refused", "en")
+    assert "Send a new code" in r.json()["detail"]
 
 
 def test_wrong_setup_code_says_where_the_code_is(monkeypatch):
@@ -71,7 +71,6 @@ def test_dead_password_keys_removed():
     ("auth.import_failed_unreadable", "Refresh the page"),
     ("auth.import_timed_out", "Refresh the page"),
     ("auth.connection_error", "still running"),
-    ("auth.reset_failed", "GitHub"),
     ("auth.email_password_required", "Enter your email and password."),
     ("error.session_expired", "You were signed out."),
     ("error.name_email_password_required", "Enter a name, an email and a password."),

@@ -47,7 +47,7 @@ from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_plac
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.payments import recorded_unmatched, return_unmatched
 from celerp.tax_regimes import default_tax, side_taxes
-from celerp.services.business_time import business_date_at, business_date_of
+from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed, splitting_off
 from celerp.services.document_lines import (
@@ -70,7 +70,7 @@ from celerp.services.payment_terms import company_payment_terms, due_date_for_te
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
 from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS
-from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance, today_iso
+from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
     behavior, scan_behavior, terminal_action, is_money_list,
@@ -1104,11 +1104,13 @@ def _doc_row(r: Projection) -> dict:
 _DOC_FILTER_KEYS = ("doc_type", "status", "due_date", "amount_outstanding", "total", "fulfillment_status", "return_received_items", "received_items")
 
 
-def _doc_filter(f: DocListFilters, today: str):
+async def _doc_filter(session: AsyncSession, company_id: str, f: DocListFilters):
     """The filters that run row by row over displayed rows (``_doc_display``), as one predicate,
-    or None when none is set and every filter is in the SQL WHERE."""
+    or None when none is set and every filter is in the SQL WHERE. The company's day is read only
+    when a filter needs it."""
     checks = []
     if f.overdue_only:
+        today = (await company_today(session, company_id)).isoformat()
         checks.append(lambda x: is_overdue_document(x, today))
     if f.unfulfilled_only:
         checks.append(lambda x: x.get("status") not in ("draft", "void", "closed") and x.get("fulfillment_status") != "fulfilled")
@@ -1177,7 +1179,7 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     # in Python over the SQL-ordered rows, so both paths share one ORDER BY.
     base_where = _doc_sql_where(company_id, f)
     order_by = _doc_sql_order(_doc_sort_field(f), f.dir == "desc")
-    keep = _doc_filter(f, today_iso())
+    keep = await _doc_filter(session, company_id, f)
 
     if keep is not None:
         rows = (await session.execute(select(Projection).where(*base_where).order_by(*order_by))).scalars().all()
@@ -1267,7 +1269,7 @@ async def get_doc_summary(
 
     Totals are in the company currency (``_doc_base_amounts``). A document that cannot be valued
     there is left out of every total and counted in ``unvalued_count``."""
-    today = today_iso()
+    today = (await company_today(session, company_id)).isoformat()
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
     summary_where = _doc_sql_where(company_id, _dc_replace(filters, status=None, status_in=None, exclude_status=None, all_issued=False))
@@ -7960,7 +7962,7 @@ async def export_docs_csv(
     out_cols = resolve_export_cols(cols, _DOC_EXPORT_COLS, _DOC_EXPORT_COLS)
     base_where = _doc_sql_where(company_id, filters)
     order_by = _doc_sql_order(_doc_sort_field(filters), filters.dir == "desc")
-    keep = _doc_filter(filters, today_iso())
+    keep = await _doc_filter(session, company_id, filters)
     # Read only the state keys the exported columns and the row filters need, never whole documents.
     fields = {c for c in out_cols if c != "entity_id"} | (set(_DOC_FILTER_KEYS) if keep else set())
     keys = sorted(fields | {k for field in fields for k in DOC_FIELD_FALLBACKS.get(field, ())})

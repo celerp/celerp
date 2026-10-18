@@ -38,6 +38,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
+from celerp.services.business_time import company_today
+
 from celerp_fixed_assets import fixaccount, runs, setup, sources
 from celerp_fixed_assets.operations import MODULE, _dec, conflict
 from celerp_fixed_assets.projections import fold_movements, money
@@ -223,7 +225,7 @@ async def report(session, company_id, at: str | None = None) -> dict:
 
     fa = await setup.require_managed(session, company_id)
     cut = setup.cutover(fa)
-    at = at or (await setup.business_today(session, company_id)).isoformat()
+    at = at or (await company_today(session, company_id)).isoformat()
     at = setup.day(at, "The reconciliation date").isoformat()
     if at < cut:
         raise setup.unprocessable(f"The reconciliation starts at the cutover {cut}.")
@@ -355,6 +357,6 @@ async def acknowledge(session, company_id, user_id, body: dict) -> dict:
     if _dec(body.get("amount")) != _dec(found["amount"]):
         raise conflict(f"The difference is now {found['amount']}. Review it again.")
     data = {"key": key, "state": state, "amount": found["amount"], "reason": reason or None,
-            "effect": effect or None, "by": str(user_id), "at": (await setup.business_today(session, company_id)).isoformat()}
+            "effect": effect or None, "by": str(user_id), "at": (await company_today(session, company_id)).isoformat()}
     await _emit(session, company_id, user_id, recon_id(key), "fa_recon", "fa.recon.recorded", data)
     return {**found, "state": state, "reason": data["reason"], "effect": data["effect"]}

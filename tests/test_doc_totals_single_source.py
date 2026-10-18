@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, patch
 from celerp.models.projections import Projection
 from test_helpers import make_test_token
 from test_money_stock_and_contact_invariants import _auth_company
+from test_ui import _mock_get_company  # noqa: F401  (autouse fixture: the company settings)
 
 
 def _doc(shipping: float = 0.0) -> dict:

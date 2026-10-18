@@ -9,7 +9,6 @@ recorded 0 stays 0. Imported documents carry their displayed values under older 
 
 from __future__ import annotations
 
-from datetime import date
 from decimal import Decimal
 
 from celerp.services.money import round_money, to_decimal
@@ -71,11 +70,6 @@ OVERDUE_STATUSES: dict[str, frozenset[str]] = {
 
 # Doc types whose overdue state also needs an unpaid balance.
 _BALANCE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "bill"})
-
-
-def today_iso() -> str:
-    """Today's date (server-local, ISO) that due dates are compared against."""
-    return date.today().isoformat()
 
 
 def doc_value(state: dict, field: str):

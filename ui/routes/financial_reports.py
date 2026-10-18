@@ -13,7 +13,6 @@ figures; only the URL sits under /reports.
 from __future__ import annotations
 
 import re
-from datetime import date as _date
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -36,9 +35,10 @@ from ui.components.report_kit import (
 )
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
+from celerp.services.business_time import business_today
 from celerp.services.money import to_decimal
 from ui.routes.reports import (
-    OPERATIONAL_REPORTS, _date_filter_bar, _get_fiscal, _parse_dates,
+    OPERATIONAL_REPORTS, _date_filter_bar, _get_company, _parse_dates,
     _resolve_preset,
 )
 
@@ -293,7 +293,7 @@ LEDGER_ORIGINS = frozenset({"pnl", "balance-sheet", "trial-balance", "general-le
                             "opening-tie-out"})
 
 
-def _ledger_context(request: Request, fy: str) -> tuple[str, str, str, str]:
+def _ledger_context(request: Request, company: dict) -> tuple[str, str, str, str]:
     """Resolve (origin, date_from, date_to, preset) for the ledger drilldown.
 
     Drilldown links from the reports name their originating report in "src" and
@@ -306,7 +306,7 @@ def _ledger_context(request: Request, fy: str) -> tuple[str, str, str, str]:
     if origin in LEDGER_ORIGINS:
         preset = qp.get("preset", "")
         if preset and preset != "custom":
-            d_from, d_to = _resolve_preset(preset, fy)
+            d_from, d_to = _resolve_preset(preset, company)
             return origin, d_from, d_to, preset
         # Drilldown links carry date_from/date_to; the page's own custom-range
         # form submits from/to.
@@ -319,7 +319,7 @@ def _ledger_context(request: Request, fy: str) -> tuple[str, str, str, str]:
         # Drilldown links always encode their view's dates; none means the
         # originating view was unfiltered, so match it with the full history.
         return origin, "", "", "all"
-    d_from, d_to, preset = _parse_dates(request, fy)
+    d_from, d_to, preset = _parse_dates(request, company)
     return "trial-balance", d_from, d_to, preset
 
 
@@ -897,8 +897,7 @@ def _cash_flow_view(data: dict, currency: str | None = None) -> FT:
 def setup_routes(app):
 
     async def _dates(request: Request, token: str):
-        fy = await _get_fiscal(token)
-        return _parse_dates(request, fy)
+        return _parse_dates(request, await _get_company(token))
 
     @app.get("/reports")
     async def reports_index(request: Request):
@@ -929,7 +928,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            company = await api.get_company(token)
+            company = await _get_company(token)
             currency = company.get("currency")
             d_from, d_to, preset = await _dates(request, token)
             params = date_params(d_from, d_to)
@@ -953,10 +952,10 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        as_of = request.query_params.get("as_of", "") or _date.today().isoformat()
         try:
-            company = await api.get_company(token)
+            company = await _get_company(token)
             currency = company.get("currency")
+            as_of = request.query_params.get("as_of", "") or business_today(company.get("timezone")).isoformat()
             data = await api.get_balance_sheet(token, {"as_of": as_of} if as_of else {})
             as_of_form = Form(
                 Label(t("label.as_of_date"), cls="form-label"),
@@ -983,7 +982,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            company = await api.get_company(token)
+            company = await _get_company(token)
             currency = company.get("currency")
             d_from, d_to, preset = await _dates(request, token)
             params = date_params(d_from, d_to)
@@ -1009,7 +1008,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            company = await api.get_company(token)
+            company = await _get_company(token)
             data = await api.get_opening_tie_out(token)
             as_of = data.get("as_of") or ""
             content = Div(
@@ -1030,7 +1029,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            company = await api.get_company(token)
+            company = await _get_company(token)
             currency = company.get("currency")
             d_from, d_to, preset = await _dates(request, token)
             params = date_params(d_from, d_to)
@@ -1059,7 +1058,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            company = await api.get_company(token)
+            company = await _get_company(token)
             currency = company.get("currency")
             d_from, d_to, preset = await _dates(request, token)
             params = date_params(d_from, d_to)
@@ -1084,7 +1083,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            company = await api.get_company(token)
+            company = await _get_company(token)
             currency = company.get("currency")
             d_from, d_to, preset = await _dates(request, token)
             filters = journal_filters(request)
@@ -1122,10 +1121,9 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            fy = await _get_fiscal(token)
-            origin, d_from, d_to, preset = _ledger_context(request, fy)
+            company = await _get_company(token)
+            origin, d_from, d_to, preset = _ledger_context(request, company)
             data = await api.get_ledger(token, account_code, date_params(d_from, d_to))
-            company = await api.get_company(token)
             currency = company.get("currency")
         except APIError as e:
             if e.status == 401:
@@ -1276,7 +1274,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            company = await api.get_company(token)
+            company = await _get_company(token)
             currency = company.get("currency")
             d_from, d_to, preset = await _dates(request, token)
             params = date_params(d_from, d_to)
@@ -1340,7 +1338,7 @@ def setup_routes(app):
     # ── Print ──────────────────────────────────────────────────────────────
 
     async def _print_ctx(request: Request, token: str):
-        company = await api.get_company(token)
+        company = await _get_company(token)
         d_from = request.query_params.get("date_from", "")
         d_to = request.query_params.get("date_to", "")
         return company, company.get("currency"), d_from, d_to
@@ -1365,7 +1363,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         as_of = request.query_params.get("as_of", "")
         try:
-            company = await api.get_company(token)
+            company = await _get_company(token)
             data = await api.get_balance_sheet(token, {"as_of": as_of} if as_of else {})
         except APIError as e:
             return plain_error_response(e)
@@ -1394,7 +1392,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            company = await api.get_company(token)
+            company = await _get_company(token)
             data = await api.get_opening_tie_out(token)
         except APIError as e:
             return plain_error_response(e)
@@ -1483,7 +1481,7 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            currency = (await api.get_company(token)).get("currency")
+            currency = (await _get_company(token)).get("currency")
             data = await api.get_trial_balance(token, date_params(d_from, d_to))
         except APIError as e:
             return plain_error_response(e)
@@ -1502,7 +1500,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            currency = (await api.get_company(token)).get("currency")
+            currency = (await _get_company(token)).get("currency")
             data = await api.get_opening_tie_out(token)
         except APIError as e:
             return plain_error_response(e)
@@ -1519,7 +1517,7 @@ def setup_routes(app):
             d_to = request.query_params.get("date_to", "")
             # One call: the backend buckets summary and detail together, so the
             # export can never disagree with the on-screen general ledger.
-            currency = (await api.get_company(token)).get("currency")
+            currency = (await _get_company(token)).get("currency")
             data = await api.get_general_ledger(
                 token, {**date_params(d_from, d_to), "include_lines": "1"})
         except APIError as e:
@@ -1566,7 +1564,7 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            currency = (await api.get_company(token)).get("currency")
+            currency = (await _get_company(token)).get("currency")
             data = await api.get_cash_flow(token, date_params(d_from, d_to))
         except APIError as e:
             return plain_error_response(e)
@@ -1596,7 +1594,7 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            currency = (await api.get_company(token)).get("currency")
+            currency = (await _get_company(token)).get("currency")
             sections = await _resolve_statements(token, subjects, date_params(d_from, d_to))
         except APIError as e:
             return plain_error_response(e)
@@ -1630,7 +1628,7 @@ def setup_routes(app):
         try:
             d_from = request.query_params.get("date_from", "")
             d_to = request.query_params.get("date_to", "")
-            currency = (await api.get_company(token)).get("currency")
+            currency = (await _get_company(token)).get("currency")
             data = await api.get_pnl(token, date_params(d_from, d_to))
         except APIError as e:
             return plain_error_response(e)
@@ -1657,8 +1655,9 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            as_of = request.query_params.get("as_of", "") or _date.today().isoformat()
-            currency = (await api.get_company(token)).get("currency")
+            company = await _get_company(token)
+            currency = company.get("currency")
+            as_of = request.query_params.get("as_of", "") or business_today(company.get("timezone")).isoformat()
             data = await api.get_balance_sheet(token, {"as_of": as_of})
         except APIError as e:
             return plain_error_response(e)

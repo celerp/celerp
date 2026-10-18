@@ -62,7 +62,7 @@ from starlette.responses import HTMLResponse
 
 # Public paths that don't require auth
 _PUBLIC = {"/login", "/setup", "/logout", "/static", "/health", "/api/labels/preview",
-           "/forgot-password", "/reset-password"}
+           "/forgot-password"}
 
 def _next_qs(req: Request) -> str:
     """'&next=<encoded page>' for a login bounce, so signing back in returns
@@ -484,7 +484,38 @@ app.exception_handlers[500] = ui_500_handler
 
 
 from ui.api_client import APIError as _APIError
+from ui.routes.reports import CompanySettingsUnavailable as _CompanySettingsUnavailable
 from starlette.responses import RedirectResponse as _RR
+
+
+async def ui_company_settings_unavailable_handler(request: Request, exc) -> HTMLResponse:
+    """A page that needs the company's timezone or fiscal year could not read them.
+
+    Say so, with a way to try again, rather than showing dates worked out from a guess.
+    An htmx request gets the message as its error text, which the shell shows in its
+    error banner; the user retries the same action.
+    """
+    from ui.i18n import t
+    message = t("error.company_settings_unavailable")
+    if request.headers.get("hx-request"):
+        return HTMLResponse(message, status_code=503)
+    from ui.components.shell import base_shell, page_header
+    from fasthtml.common import A, Button, Div, P, to_xml
+    page = await base_shell(
+        page_header(t("error.company_settings_unavailable_title")),
+        Div(
+            P(message, cls="flash flash--error"),
+            Div(
+                A(t("btn.retry"), href=str(request.url), cls="btn btn--primary"),
+                Button(t("label.back"), type="button", onclick="history.back()", cls="btn btn--secondary"),
+                cls="flex-row",
+            ),
+            cls="content-area",
+        ),
+        title=t("error.company_settings_unavailable_title"),
+        request=request,
+    )
+    return HTMLResponse(to_xml(page), status_code=503)
 
 
 def _401_redirect(detail: str, request: Request | None = None):
@@ -528,6 +559,7 @@ async def ui_api_error_handler(request: Request, exc: _APIError):
 
 app.exception_handlers[401] = ui_401_handler
 app.exception_handlers[_APIError] = ui_api_error_handler
+app.exception_handlers[_CompanySettingsUnavailable] = ui_company_settings_unavailable_handler
 
 
 _static_dir = os.path.join(os.path.dirname(__file__), "static")

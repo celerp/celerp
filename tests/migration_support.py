@@ -519,6 +519,6 @@ async def migrate_as_owner(client, owner_token: str, spec: dict | None = None,
     r = await save_decisions(client, scan_token, token=owner_token, **decisions)
     assert r.status_code == 200, r.text
     r = await client.post("/migrations/start-from-scan", headers=auth(owner_token),
-                          json={"scan_token": scan_token, "company_name": company_name})
+                          json={"scan_token": scan_token, "company_name": company_name, "timezone": "UTC"})
     assert r.status_code == 201, r.text
     return r.json()["run_id"]

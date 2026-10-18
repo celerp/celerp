@@ -10,6 +10,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
+from celerp.services.business_time import business_today
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.files import files_error, files_section, files_session_expired, linked_files
@@ -19,7 +20,6 @@ from ui.config import get_claims, get_role
 from ui.i18n import t
 
 from celerp_fixed_assets.files import ASSET_FILE_TAGS
-from celerp_fixed_assets.setup import today_in
 from celerp_fixed_assets.ui_routes import (_STACK, _error_box, _error_text, _field, _hx_write, _input, _page,
                                            _refuse_if_switched, _refused, _send, _send_form, _text, _token)
 
@@ -272,7 +272,7 @@ def setup_physical_routes(app) -> None:
         try:
             checks = (await api.fixed_assets_get(token, "/checks"))["items"]
             report = await _not_seen(token, since) if since else None
-            today = today_in(await api.get_company(token))
+            today = business_today((await api.get_company(token)).get("timezone"))
         except APIError as e:
             return await _refused(request, e, title)
         scan = Form(_field(t("fixed_assets.scan_tag"), _input("tag", required=True, autofocus=True, autocomplete="off")),

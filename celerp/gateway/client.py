@@ -966,15 +966,21 @@ class GatewayClient:
         # the same local app), but the original path is forwarded verbatim so the
         # local server performs its own decoding.
         port = self._local_port_for(policy_path)
-        # The local server takes a forwarding address from this machine as the visitor's,
-        # but the one the relay copies names an edge server or whatever the visitor typed.
-        # Without it every proxied visitor arrives from loopback, which names no one.
-        # The caller header is likewise trusted from loopback as the visitor the UI
-        # server names, so a visitor who sets it would choose whose sign-ins they spend.
-        from celerp.services.auth import CALLER_HEADER
+        # Every proxied visitor reaches the local server from loopback, so the gateway names
+        # them in the caller header by the address the relay saw, which the relay sets in the
+        # visitor header after dropping any copy the visitor sent. It passes that on only when
+        # it is one valid address; a visitor without one is still marked as a Connect visitor,
+        # never the person at this computer. Any forwarding, caller, visitor or Connect header
+        # the visitor sent is dropped: the forwarding address the relay copies names an edge
+        # server or whatever the visitor typed.
+        from celerp.services.auth import CALLER_HEADER, CONNECT_HEADER, VISITOR_HEADER, visitor_address
 
-        dropped = {"x-forwarded-for", CALLER_HEADER.lower()}
+        visitor = [v for k, v in headers.items() if k.lower() == VISITOR_HEADER.lower()]
+        dropped = {"x-forwarded-for", CALLER_HEADER.lower(), CONNECT_HEADER.lower(), VISITOR_HEADER.lower()}
         headers = {k: v for k, v in headers.items() if k.lower() not in dropped}
+        headers[CONNECT_HEADER] = "1"
+        if len(visitor) == 1 and (address := visitor_address(visitor[0])):
+            headers[CALLER_HEADER] = address
 
         url = f"http://127.0.0.1:{port}{raw_path}"
         if query:

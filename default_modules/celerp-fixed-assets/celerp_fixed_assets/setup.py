@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
+from celerp.services.business_time import business_today, company_today
 from celerp_fixed_assets.calc import rules
 
 SETTINGS_KEY = "fixed_assets"
@@ -92,7 +93,7 @@ def day(value, field: str) -> date:
 def not_after_today(field: str, value: str, company_settings: dict | None) -> None:
     """Refuses ``value`` (an ISO date) ahead of the company's today, naming that today and the
     time zone that decides it, with the way to the setting."""
-    today = today_in(company_settings).isoformat()
+    today = business_today((company_settings or {}).get("timezone")).isoformat()
     if value > today:
         zone = (company_settings or {}).get("timezone") or "UTC"
         raise refused(422, f"{field} {value} is after the company's today, {today} (time zone {zone}).",
@@ -166,17 +167,6 @@ async def company_settings(session, company_id) -> dict:
                 or {})
 
 
-def today_in(company_settings: dict | None) -> date:
-    """Today in the company's business timezone, which decides every period and due date."""
-    from celerp.services.business_time import business_date_of
-
-    return date.fromisoformat(business_date_of(None, (company_settings or {}).get("timezone")))
-
-
-async def business_today(session, company_id) -> date:
-    return today_in(await company_settings(session, company_id))
-
-
 async def account_labels(session, company_id, codes) -> dict[str, str]:
     """Each account as the user knows it: its code and the chart's name, or the code alone
     when the chart does not hold it."""
@@ -218,7 +208,7 @@ async def first_period(session, company_id, fa: dict) -> dict | None:
         if suggested.day != 1:
             suggested = (suggested.replace(day=28) + timedelta(days=4)).replace(day=1)
     else:
-        suggested = (date.fromisoformat(earliest) if earliest else await business_today(session, company_id)).replace(day=1)
+        suggested = (date.fromisoformat(earliest) if earliest else await company_today(session, company_id)).replace(day=1)
     return {"suggested": suggested.isoformat(),
             "evidence": {"depreciation": booked, "earliest_journal": earliest}}
 

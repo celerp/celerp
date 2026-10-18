@@ -22,6 +22,7 @@ from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.business_time import business_today, company_today
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
 from celerp.services.terms import resolve_document_terms
@@ -126,7 +127,7 @@ def _build_router() -> APIRouter:
 
         state = proj.state
         target_doc_type = "invoice" if state.get("doc_type") == "subscription_invoice" else "purchase_order"
-        today = date.today()
+        today = business_today((company.settings or {}).get("timezone"))
 
         # Resolve contact name from projection
         contact_id = state.get("contact_id")
@@ -267,7 +268,7 @@ def _build_router() -> APIRouter:
         next_run = _next_run_date(
             proj.state.get("frequency", "monthly"),
             proj.state.get("custom_interval_days"),
-            date.today().isoformat(),
+            (await company_today(session, company_id)).isoformat(),
         )
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="doc",
                          event_type="doc.updated", data={"fields_changed": {
@@ -316,7 +317,7 @@ def _build_router() -> APIRouter:
         frequency = proj.state.get("frequency", "monthly")
         if frequency not in VALID_FREQUENCIES:
             raise HTTPException(status_code=422, detail=t("subscriptions.err_frequency_required"))
-        start = proj.state.get("start_date") or date.today().isoformat()
+        start = proj.state.get("start_date") or (await company_today(session, company_id)).isoformat()
         next_run = _next_run_date(frequency, proj.state.get("custom_interval_days"), start)
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="doc",
                          event_type="doc.updated", data={"fields_changed": {

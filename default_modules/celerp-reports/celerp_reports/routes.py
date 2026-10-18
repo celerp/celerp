@@ -15,8 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.business_time import company_today
 from celerp.services.doc_balance import (
-    canonical_doc_type, doc_value, is_awaiting_payment, is_open_credit, is_owed, outstanding_balance, today_iso,
+    canonical_doc_type, doc_value, is_awaiting_payment, is_open_credit, is_owed, outstanding_balance,
 )
 from celerp.services.permissions import require_permission
 
@@ -89,7 +90,7 @@ async def _aging(session: AsyncSession, company_id: uuid.UUID, *, party: str, de
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
 
-    today = date.fromisoformat(today_iso())
+    today = await company_today(session, company_id)
     buckets: dict[str, dict[str, Decimal]] = defaultdict(lambda: {key: Decimal(0) for key, _ in _BUCKETS})
     names: dict[str, str] = {}
 
@@ -531,7 +532,7 @@ async def expiring_items(
         )
     ).scalars().all()
 
-    today = date.today()
+    today = await company_today(session, company_id)
     cutoff = today + timedelta(days=days)
     lines = []
 

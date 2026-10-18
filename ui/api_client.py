@@ -11,7 +11,7 @@ from typing import BinaryIO
 import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
-from celerp.services.auth import CALLER_HEADER
+from celerp.services.auth import CALLER_HEADER, CONNECT_HEADER, connect_caller, is_loopback
 from celerp.services.company_settings import BOOKS_KEYS, GENERAL
 from celerp.tax_regimes import doc_side
 from ui.i18n import current_lang, refusal_text, t
@@ -20,12 +20,21 @@ logger = logging.getLogger(__name__)
 
 # The address of the visitor whose request the UI is serving, as the UI sees it.
 _caller: ContextVar[str | None] = ContextVar("celerp_caller", default=None)
+# Whether that visitor came through Connect, as the gateway marks every request it proxies.
+_via_connect: ContextVar[bool] = ContextVar("celerp_via_connect", default=False)
+_CONNECT_KEY = CONNECT_HEADER.lower().encode()
+_CALLER_KEY = CALLER_HEADER.lower().encode()
 
 
 class CallerMiddleware:
-    """Pure ASGI middleware: records each request's client address, which every call
-    into the local API names in CALLER_HEADER so the API's rate limits count the visitor,
-    never the UI server. Taken from the connection, never from a header the browser sent."""
+    """Pure ASGI middleware: records each request's caller, which every call into the local
+    API names in CALLER_HEADER so the API's rate limits count the visitor, never the UI
+    server. The caller is the connection's address, except for a Connect visitor: they reach
+    the UI from the gateway on this computer, which marks them and names them by the address
+    the relay saw. That name counts only from a loopback peer carrying the mark; a marked
+    request without one valid address is named as the Connect caller, never this computer.
+    The mark is passed on in CONNECT_HEADER; it can only take something away, so another
+    computer that sends it is still named by its own address."""
 
     def __init__(self, app):
         self._app = app
@@ -34,10 +43,17 @@ class CallerMiddleware:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
-        token = _caller.set((scope.get("client") or ("",))[0] or None)
+        peer = (scope.get("client") or ("",))[0] or None
+        headers = scope.get("headers") or ()
+        via_connect = any(key.lower() == _CONNECT_KEY for key, _ in headers)
+        if via_connect and peer and is_loopback(peer):
+            peer = connect_caller([v.decode("latin-1") for k, v in headers if k.lower() == _CALLER_KEY])
+        token = _caller.set(peer)
+        marked = _via_connect.set(via_connect)
         try:
             await self._app(scope, receive, send)
         finally:
+            _via_connect.reset(marked)
             _caller.reset(token)
 
 # The bulk transport carries the handful of long, finite local operations (backup
@@ -212,6 +228,8 @@ def _local_client(
     merged_headers.setdefault("Accept-Language", current_lang())
     if caller := _caller.get():
         merged_headers[CALLER_HEADER] = caller
+    if _via_connect.get():
+        merged_headers[CONNECT_HEADER] = "1"
     if token is not None:
         merged_headers["Authorization"] = f"Bearer {token}"
 
@@ -510,6 +528,39 @@ async def login(email: str, password: str) -> tuple[str, str]:
         r = _raise(await c.post("/auth/login", json={"email": email, "password": password}))
         data = r.json()
         return data["access_token"], data["refresh_token"]
+
+
+async def recovery_send(email: str, handle: str | None = None) -> dict:
+    """{"outcome", "handle"}: the outcome "sent", "unavailable" (no code is coming) or
+    "undeliverable" (no code is ever sent to such an address), the same whether or not the
+    email is a user here, and the handle of the visitor's recovery, which *handle* resends."""
+    async with _anon_api_client(timeout=20.0) as c:
+        return _raise(await c.post("/auth/password-recovery/send", json={"email": email, "handle": handle})).json()
+
+
+async def recovery_reset(email: str, handle: str, code: str, new_password: str) -> None:
+    """Raises APIError: 400 the code was refused, 422 the password, 503 the relay is out of reach."""
+    async with _anon_api_client(timeout=20.0) as c:
+        _raise(await c.post("/auth/password-recovery/reset",
+                            json={"email": email, "handle": handle, "code": code, "new_password": new_password}))
+
+
+async def recovery_terminal() -> str | None:
+    """The terminal reset command, or None when the visitor is not at this computer."""
+    async with _anon_api_client() as c:
+        return _raise(await c.get("/auth/password-recovery/terminal")).json()["command"]
+
+
+async def reset_notices(token: str) -> list[dict]:
+    """The password resets this user has not acknowledged yet."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/auth/password-reset-notices")).json()
+
+
+async def acknowledge_reset_notices(token: str, ids: list[str]) -> None:
+    """This user has seen the resets *ids*."""
+    async with _api_client(token) as c:
+        _raise(await c.post("/auth/password-reset-notices/acknowledge", json={"ids": ids}))
 
 
 async def logout(access_token: str | None, refresh_token: str | None = None) -> None:
@@ -1016,6 +1067,17 @@ async def patch_user(token: str, user_id: str, data: dict) -> dict:
 async def transfer_install_owner(token: str, user_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/companies/me/users/{user_id}/installation-owner")).json()
+
+
+async def can_reset_user_password(token: str, user_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/companies/me/users/{user_id}/password")).json()
+
+
+async def reset_user_password(token: str, user_id: str, new_password: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/companies/me/users/{user_id}/password",
+                                   json={"new_password": new_password})).json()
 
 
 async def get_taxes(token: str) -> list[dict]:
@@ -3853,33 +3915,35 @@ async def migration_save_decisions(token: str | None, scan_token: str, decisions
     return _raise(r).json()["scan"]
 
 
-async def migration_bootstrap_start(scan_token: str, company_name: str, name: str, email: str,
+async def migration_bootstrap_start(scan_token: str, company_name: str, timezone: str, name: str, email: str,
                                     password: str, setup_code: str | None = None) -> dict:
     """Create the first owner and company from a scan. Returns tokens and run_id."""
     async with _local_error_mapping():
         async with _local_client(None, timeout=30.0, headers=_setup_code_headers(setup_code)) as c:
             r = await c.post("/migrations/bootstrap/start", json={
-                "scan_token": scan_token, "company_name": company_name,
+                "scan_token": scan_token, "company_name": company_name, "timezone": timezone,
                 "name": name, "email": email, "password": password,
             })
     return _raise(r).json()
 
 
-async def migration_start_company_start(email: str, password: str, scan_token: str, company_name: str) -> dict:
+async def migration_start_company_start(email: str, password: str, scan_token: str, company_name: str,
+                                        timezone: str) -> dict:
     """Start a migration as the company of a login that has none left. Returns tokens and run_id."""
     async with _local_error_mapping():
         async with _local_client(None, timeout=30.0) as c:
             r = await c.post("/migrations/start-company/start", json={
                 "email": email, "password": password, "scan_token": scan_token, "company_name": company_name,
+                "timezone": timezone,
             })
     return _raise(r).json()
 
 
-async def migration_start_from_scan(token: str, scan_token: str, company_name: str) -> dict:
+async def migration_start_from_scan(token: str, scan_token: str, company_name: str, timezone: str) -> dict:
     """Create a new company for the current owner from a scan. Returns tokens and run_id."""
     async with _api_client(token, timeout=30.0) as c:
         return _raise(await c.post("/migrations/start-from-scan", json={
-            "scan_token": scan_token, "company_name": company_name,
+            "scan_token": scan_token, "company_name": company_name, "timezone": timezone,
         })).json()
 
 

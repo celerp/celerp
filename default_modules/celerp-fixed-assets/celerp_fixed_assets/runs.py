@@ -28,6 +28,7 @@ from datetime import date
 from decimal import Decimal
 
 from celerp.models.projections import Projection
+from celerp.services.business_time import business_today, company_today
 from celerp.services.money import books_currency, round_money
 from celerp_fixed_assets import notices, operations, setup, sources
 from celerp_fixed_assets.calc import rules
@@ -584,7 +585,7 @@ async def run(session, company_id, user_id, body: dict, *, today: date | None = 
     month = _month(body.get("month"))
 
     async def plan(fa):
-        return await plan_run(session, company_id, month, today or await setup.business_today(session, company_id), user_id)
+        return await plan_run(session, company_id, month, today or await company_today(session, company_id), user_id)
 
     async def apply(context, op_key):
         return await _post(session, company_id, user_id, context, op_key, manual=True), operations._effects()
@@ -765,7 +766,7 @@ async def tick(session, company_id, today: date | None = None) -> str | None:
     if books is None:
         return None
     fa = books.fa
-    today = today or setup.today_in(books.settings)
+    today = today or business_today(books.settings.get("timezone"))
     if not uses_module(books.settings, MODULE):
         if fa.get("run_mode") == "post" and not fa.get("auto_post_paused"):
             await _set(session, company_id, auto_post_paused=True)

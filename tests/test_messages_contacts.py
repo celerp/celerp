@@ -23,10 +23,10 @@ async def _headers(client) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_missing_contact_says_refresh_and_choose_again(client):
+async def test_missing_contact_says_it_no_longer_exists_and_to_choose_again(client):
     r = await client.get("/crm/contacts/contact:nope", headers=await _headers(client))
     assert r.status_code == 404
-    assert r.json()["detail"] == t("contacts.err_contact_not_found", "en")
+    assert r.json()["detail"] == "This contact no longer exists. Choose it again from the list."
 
 
 @pytest.mark.asyncio

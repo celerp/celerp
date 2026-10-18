@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio as _asyncio
 import json as _json
 import logging
-from datetime import date, datetime, timezone as _tz
+from datetime import datetime, timezone as _tz
 from urllib.parse import quote_plus as _quote_plus, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -21,14 +21,15 @@ from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
 from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
-from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
+from ui.components.files import files_error, files_error_block, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
+from celerp.services.business_time import business_today
 from celerp.services.currencies import CURRENCY_CODES as _CURRENCY_CODES
 from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
-from ui.routes.reports import _date_filter_bar, _parse_dates
+from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +230,7 @@ def _settings_card(c: dict) -> FT:
     )
 
 
-def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start: str = "01-01",
+def _financial_summary(docs: list[dict], contact_id: str = "", company: dict | None = None,
                        consigned_total: float | None = None, on_memo_total: float | None = None) -> FT:
     """Compute and render financial summary cards from contact docs.
 
@@ -241,10 +242,11 @@ def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start
     hidden from this role), and the card falls back to the document-derived total.
     """
     from ui.routes.reports import _fy_start
-    today = date.today()
+    company = company or {}
+    today = business_today(company.get("timezone"))
     # Reuse the canonical parser: it falls back to Jan 1 on a malformed
     # fiscal_year_start (e.g. "01" with no day) instead of crashing the page.
-    fy_start = _fy_start(fiscal_year_start, today)
+    fy_start = _fy_start(company.get("fiscal_year_start") or "01-01", today)
     fy_start_str = fy_start.isoformat()
 
     invoices = [d for d in docs if d.get("doc_type") == "invoice"]
@@ -437,12 +439,20 @@ def _people_section(contact: dict) -> FT:
     )
 
 
-def _tab_bar(cid: str, active: str = "documents", lead_tabs: list | None = None) -> FT:
+def _reload_contact_link(contact_id: str) -> FT:
+    """Try again: a plain link to the contact page, a full reload (the desktop app has no reload control)."""
+    return A(t("btn.try_again"), href=f"/contacts/{contact_id}", cls="btn btn--secondary btn--sm")
+
+
+def _tab_bar(cid: str, active: str = "documents", lead_tabs: list | None = None, reload_documents: bool = False) -> FT:
     """HTMX-driven tab bar for Documents / Notes / Activity. lead_tabs prepends extra (key, label, href)
-    tabs (e.g. the company's Files tab, which loads a different route than /contacts/{cid}/tab/{key})."""
+    tabs (e.g. the company's Files tab, which loads a different route than /contacts/{cid}/tab/{key}).
+    reload_documents turns the Documents tab into a plain link to the contact page: after a failed
+    documents read only a full page load restores the cards, files and documents together."""
     tabs = list(lead_tabs or []) + [("documents", t("page.documents"), None), ("notes", t("label.notes"), None), ("activity", t("contacts.tab_activity"), None)]
     return Div(
-        *[A(
+        *[A(label, href=f"/contacts/{cid}", cls="tab active", id=f"tab-{key}")
+          if reload_documents and key == "documents" else A(
             label,
             hx_get=(href or f"/contacts/{cid}/tab/{key}"),
             hx_target="#tab-content",
@@ -792,11 +802,14 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
                          back: tuple | None = None, nav_active: str | None = None,
                          title: str | None = None,
                          consigned_total: float | None = None,
-                         on_memo_total: float | None = None) -> FT:
+                         on_memo_total: float | None = None,
+                         docs_error: FT | None = None) -> FT:
     """Shared assembly for the contact detail page. The Company Details page reuses this verbatim with
     show_financials=False / show_delete=False / show_contact_addresses=False (the company is its own
     customer+vendor self-contact, and it has no financial-summary-against-itself) - one page layout, no
-    fork. The only differences are the conditional sections gated by the flags."""
+    fork. The only differences are the conditional sections gated by the flags. ``docs_error`` is the
+    notice for a failed documents read: it replaces the Documents tab and the document-derived
+    financial cards, which would otherwise show figures computed from an empty list."""
     contact_name = contact.get("name", t("contacts.contact_name_fallback"))
     contact_type = contact.get("contact_type", "")
     if back is not None:
@@ -810,7 +823,6 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         nav_active_key = nav_active
     cid = contact.get("entity_id") or contact.get("id") or contact_id
     is_deleted = bool(contact.get("deleted"))
-    fiscal_year_start = company.get("fiscal_year_start") or "01-01"
     page_title = title or contact_name
 
     autofocus_script = (
@@ -854,9 +866,9 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         autofocus_script,
         action_bar,
         delete_btn,
-        *([_financial_summary(docs, contact_id=cid, fiscal_year_start=fiscal_year_start,
+        *([_financial_summary(docs, contact_id=cid, company=company,
                               consigned_total=consigned_total, on_memo_total=on_memo_total)]
-          if show_financials else []),
+          if show_financials and docs_error is None else []),
         Div(
             Div(
                 _contact_info_card(contact),
@@ -872,9 +884,9 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         ),
         *([_addresses_section(contact)] if show_contact_addresses else []),
         *(extra_sections or []),
-        _tab_bar(cid),
+        _tab_bar(cid, reload_documents=docs_error is not None),
         Div(
-            _documents_tab(docs, contact, cid),
+            docs_error if docs_error is not None else _documents_tab(docs, contact, cid),
             id="tab-content",
         ),
         title=f"{page_title} - Celerp",
@@ -1161,23 +1173,35 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         try:
             contact = await api.get_contact(token, contact_id)
-        except (APIError, Exception) as e:
-            if isinstance(e, APIError) and e.status == 401:
+        except APIError as e:
+            if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            contact = {}
+            # A missing contact is final, so the API's own sentence stands alone; only a
+            # temporary failure is worth "reload to try again".
+            body = str(e.detail) if e.status == 404 else (
+                t("msg.contact_load_failed", detail=str(e.detail)), " ", _reload_contact_link(contact_id))
+            return await base_shell(
+                breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.customers"), "/contacts/customers")]),
+                page_header(t("page.contact_detail")),
+                files_error_block(body, e.status),
+                title=page_title("nav.customers"), nav_active="customers", request=request,
+            )
+        docs_error = None
         try:
             docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
             docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
-        except Exception:
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
             docs = []
+            docs_error = files_error_block(
+                (t("msg.contact_documents_load_failed", detail=str(e.detail)), " ", _reload_contact_link(contact_id)),
+                e.status)
         try:
             vocab = await api.get_contact_tags_vocabulary(token)
         except Exception:
             vocab = []
-        try:
-            company = await api.get_company(token)
-        except Exception:
-            company = {}
+        company = await _get_company(token)
 
         # Live holdings behind the On Memo / Consignment cards. limit=1 because only the
         # scope-wide value_total is needed here; the full list is the click-through.
@@ -1195,7 +1219,8 @@ def setup_routes(app):
         )
 
         return await build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id,
-                                          on_memo_total=on_memo_total, consigned_total=consigned_total)
+                                          on_memo_total=on_memo_total, consigned_total=consigned_total,
+                                          docs_error=docs_error)
 
     # ── Company Details (Finance) ─────────────────────────────────────────
     # The company is its own customer+vendor self-contact, so this page is the same contact-detail
@@ -1251,7 +1276,7 @@ def setup_routes(app):
         try:
             files_html = await _company_files_section(token)
         except APIError as e:
-            files_html = Div(str(e.detail), cls="flash flash--error")
+            files_html = files_error_block(t("msg.files_load_failed", detail=str(e.detail)), e.status)
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("settings.company_details"), None)]),
             page_header("🏢 " + t("settings.company_details")),
@@ -1300,7 +1325,7 @@ def setup_routes(app):
         try:
             return await _company_files_section(token, **section_kwargs)
         except APIError as e:
-            return files_error(str(e.detail), e.status)
+            return files_error(t("msg.files_load_failed", detail=str(e.detail)), e.status)
 
     # Company files live as the first tab on the Company Details page (loaded via the _section route
     # below + the POST upload route), so there is no standalone page.
@@ -1353,7 +1378,7 @@ def setup_routes(app):
             docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
             contact = await api.get_contact(token, contact_id)
         except APIError as e:
-            return P(t("error.session_expired") if e.status == 401 else str(e.detail), cls="cell-error")
+            return files_error_block(t("msg.documents_load_failed", detail=str(e.detail)), e.status)
         cid = contact.get("entity_id") or contact.get("id") or contact_id
         # The company self-contact has its own Files tab, so its Documents tab is docs-only (no dup files).
         return _documents_tab(docs, contact, cid, show_files=not contact.get("is_self"))

@@ -42,7 +42,6 @@ what marks the pair settled.
 from __future__ import annotations
 
 import logging
-from datetime import date
 from decimal import Decimal
 
 from fastapi import HTTPException
@@ -163,6 +162,7 @@ async def _post(session, company_id, cn_id: str, note: dict, inv: dict, label: s
     from celerp.events.engine import emit_event
     from celerp.models.company import Company
     from celerp.services import auto_je
+    from celerp.services.business_time import business_today
     from celerp.services.money import to_decimal
 
     company = await session.get(Company, company_id)
@@ -182,7 +182,8 @@ async def _post(session, company_id, cn_id: str, note: dict, inv: dict, label: s
                          idempotency_key=f"credit-note-backfill:{cn_id}:rate", metadata_={SOURCE: True})
         log.info("Earlier %s takes its invoice's rate %s instead of %s", label, rate, note.get("conversion_rate"))
         note = {**note, "conversion_rate": rate, "payments": payments}
-    issued = str(note.get("finalized_at") or note.get("issue_date") or date.today().isoformat())[:10]
+    issued = str(note.get("finalized_at") or note.get("issue_date")
+                 or business_today((company.settings or {}).get("timezone") if company else None).isoformat())[:10]
     open_day = await _open_day(session, company_id, issued)
     memo = (f"Credit note {_number(note, cn_id)} issued {issued}, in a locked period, posted on "
             f"{open_day}") if open_day else None

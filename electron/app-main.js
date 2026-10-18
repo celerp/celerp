@@ -648,6 +648,15 @@ function startApi(dbUrl, cfg) {
     // a fresh process that did not inherit our env. Every start writes it: a restart
     // moves the API to a new port.
     try { fs.writeFileSync(path.join(DATA_DIR, "api-port"), String(apiPort)); } catch { /* non-fatal */ }
+    // Publish the database address too, for the password reset command run from a
+    // terminal: the bundled database also moves port each start. It carries the
+    // database password, so only this account may read it (chmod, because a mode
+    // given to writeFileSync applies only when the file is created).
+    try {
+      const urlFile = path.join(DATA_DIR, "database-url");
+      fs.writeFileSync(urlFile, dbUrl, { mode: 0o600 });
+      fs.chmodSync(urlFile, 0o600);
+    } catch { /* non-fatal: the command then says it cannot reach the database */ }
     const env = {
       ...serverEnv(dbUrl, cfg),
       CELERP_INSTALL_CHANNEL: "electron",

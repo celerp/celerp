@@ -44,7 +44,7 @@ from ui.i18n import t, get_lang
 from ui.routes.documents import _action_error
 from ui.routes.financial_reports import MOVED_TABS, REPORTS, ledger_path, report_nav
 from ui.routes.reports import (
-    _date_filter_bar, _get_fiscal, _page_or_fragment, _parse_dates,
+    _company_today, _date_filter_bar, _page_or_fragment, _parse_dates,
 )
 from celerp.services.money import CURRENCY_DP, DEFAULT_DP, currency_dp
 
@@ -111,8 +111,7 @@ def setup_routes(app):
         try:
             company = await api.get_company(token)
             currency = company.get("currency")
-            fy = await _get_fiscal(token)
-            d_from, d_to, preset = _parse_dates(request, fy)
+            d_from, d_to, preset = _parse_dates(request, company)
             filters = journal_filters(request)
             params = {**_date_params(d_from, d_to), **filters}
             data = await api.get_journal(token, params)
@@ -217,7 +216,7 @@ def setup_routes(app):
         try:
             ts = _date.fromisoformat(request.query_params.get("ts", "")).isoformat()
         except ValueError:
-            ts = _date.today().isoformat()
+            ts = await _company_today(token)
         return await _render_journal_form(
             request, token,
             ts=ts, memo="", lines=[],

@@ -778,6 +778,80 @@ async def transfer_install_owner(
     return {"ok": True}
 
 
+class StaffPasswordBody(BaseModel):
+    new_password: str
+
+
+async def _staff_reset_target(
+    session: AsyncSession, company_id, caller: User, caller_role: str, user_id: uuid.UUID, *, lock: bool,
+) -> User:
+    """The staff member whose password the caller may set, or the refusal that says
+    why not and who can. With lock, the rows are held for the reset that follows."""
+    if caller_role != "owner":
+        raise HTTPException(status_code=403, detail=t("users.reset_password_owner_only"))
+    target_q = select(User).where(User.id == user_id)
+    if lock:
+        # The company, then the user's row, then the memberships: the order patch_user
+        # takes them in, so a role change made at the same moment waits or is seen.
+        await lock_company(session, company_id)
+        target_q = target_q.with_for_update()
+    target = (await session.execute(target_q)).scalar_one_or_none()
+    links = [] if target is None else (await session.execute(
+        select(UserCompany).where(UserCompany.user_id == user_id, UserCompany.is_active.is_(True))
+    )).scalars().all()
+    if not target or not target.is_active or company_id not in {link.company_id for link in links}:
+        raise HTTPException(status_code=404, detail=t("company.err_user_not_found"))
+    if target.id == caller.id:
+        raise HTTPException(status_code=403, detail=t("users.reset_password_not_self"))
+    if target.is_install_owner or any(normalize_role(link.role) == "owner" for link in links):
+        raise HTTPException(status_code=403, detail=t("users.reset_password_not_owners"))
+    if not caller.is_install_owner:
+        owned = set((await session.execute(
+            select(UserCompany.company_id).where(
+                UserCompany.user_id == caller.id, UserCompany.role == "owner", UserCompany.is_active.is_(True))
+        )).scalars())
+        if any(link.company_id not in owned for link in links):
+            raise HTTPException(status_code=403, detail=t("users.reset_password_other_company"))
+    return target
+
+
+@router.get("/me/users/{user_id}/password")
+async def can_reset_user_password(
+    user_id: uuid.UUID,
+    company_id=Depends(get_current_company_id),
+    caller: User = Depends(get_current_user),
+    caller_role: str = Depends(get_current_role),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Whether the caller may set this member's password, answered before they type
+    one: the same refusal the reset itself gives."""
+    await _staff_reset_target(session, company_id, caller, caller_role, user_id, lock=False)
+    return {"ok": True}
+
+
+@router.post("/me/users/{user_id}/password")
+async def reset_user_password(
+    user_id: uuid.UUID,
+    payload: StaffPasswordBody,
+    company_id=Depends(get_current_company_id),
+    caller: User = Depends(get_current_user),
+    caller_role: str = Depends(get_current_role),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """An owner sets a new password for a member of their company who is not an owner;
+    the member's sessions end and they are told who did it at their next sign-in. A
+    member who also works for a company the caller does not own is the installation
+    owner's to reset."""
+    from celerp.services.password_reset import reset_password
+
+    target = await _staff_reset_target(session, company_id, caller, caller_role, user_id, lock=True)
+    try:
+        await reset_password(session, target, payload.new_password, method="owner", by_user=caller)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=t("auth.password_too_short"))
+    return {"ok": True}
+
+
 def _assert_role_assignable(caller_role: str, target_role: str) -> None:
     """A holder of manage_users may not assign a role above their own. The matrix can
     grant manage_users down to any role, so this ceiling is what stops that from
