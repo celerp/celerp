@@ -423,10 +423,12 @@ def setup_routes(app):
 
     # ── Company switcher (HTMX partial) ─────────────────────────────────────
 
-    # The pages a switch may land on; anything else opens the dashboard, so switching is
+    # The pages a switch may land on (listed pages, and any page of the Fixed assets module, which
+    # offers the switch from its own pages); anything else opens the dashboard, so switching is
     # never a general-purpose redirect.
     SWITCH_DESTINATIONS = ("/settings/company-handoff", "/accounting/journal/new", "/settings/users/new",
                            "/settings/accountant-access")
+    SWITCH_PREFIXES = ("/fixed-assets/",)
 
     @app.get("/switch-company/{company_id}")
     async def do_switch_company_get(request: Request, company_id: str):
@@ -446,7 +448,8 @@ def setup_routes(app):
         # A destination keeps its query (Post again names the journal to copy) but is
         # always one of the listed pages on this site.
         destination = _safe_next(request.query_params.get("next"))
-        if urlsplit(destination).path not in SWITCH_DESTINATIONS:
+        path = urlsplit(destination).path
+        if path not in SWITCH_DESTINATIONS and not path.startswith(SWITCH_PREFIXES):
             destination = "/"
         resp = RedirectResponse(destination, status_code=302)
         set_session_cookies(resp, new_access, new_refresh, request)
