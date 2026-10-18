@@ -421,7 +421,7 @@ a:hover { text-decoration: underline; }
 .data-table td.cell--money, .data-table td.cell--number, .cell--number { text-align: right; font-family: var(--font-mono); }
 /* Free text that can run long (an asset's name) wraps at a readable measure instead of
    pushing every column after it out of view. */
-.data-table td.cell--text { white-space: normal; overflow-wrap: anywhere; min-width: 16ch; max-width: 32ch; }
+.data-table td.cell--text { white-space: normal; overflow-wrap: anywhere; max-width: 32ch; }
 th.cell--number { font-family: inherit; }
 .data-table td { padding: 0 10px; height: var(--c-row-h); border-bottom: 1px solid var(--c-border); vertical-align: middle; }
 .data-row:last-child td { border-bottom: none; }
@@ -1601,7 +1601,10 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
      cut off at the edge of its scroll box or card. */
   .table-scroll-wrap, .detail-card { overflow: visible !important; }
   .data-table { width: 100%; }
-  .data-table th, .data-table td:not(.cell--number, .cell--money) { white-space: normal; overflow-wrap: anywhere; }
+  .data-table td:not(.cell--number, .cell--money) { white-space: normal; overflow-wrap: anywhere; }
+  /* A header wraps between its words, never inside one, in a face small enough that the
+     longest header word still fits over its figures. */
+  .data-table th { white-space: normal; overflow-wrap: normal; font-size: 9px; letter-spacing: 0; }
 }
 
 /* Line item checkbox column */

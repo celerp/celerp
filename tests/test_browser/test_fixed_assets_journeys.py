@@ -471,6 +471,62 @@ def test_a_report_printed_from_its_page_prints_every_figure_and_none_of_its_cont
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
 
 
+_SPLIT_WORDS = """t => {
+  const split = [];
+  for (const th of t.querySelectorAll('thead th')) {
+    const walk = document.createTreeWalker(th, NodeFilter.SHOW_TEXT);
+    for (let node = walk.nextNode(); node; node = walk.nextNode()) {
+      for (const m of node.data.matchAll(/\\S+/g)) {
+        const r = document.createRange();
+        r.setStart(node, m.index); r.setEnd(node, m.index + m[0].length);
+        const tops = new Set([...r.getClientRects()].filter(x => x.width > 0).map(x => Math.round(x.top)));
+        if (tops.size > 1) split.push(m[0]);
+      }
+    }
+  }
+  return split;
+}"""
+
+
+def test_printed_column_headers_wrap_between_words_never_inside_one(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    # Six-figure totals, as on the demo company, leave the headers the least room.
+    for name, cost, cls in [("Delivery van", "132000", "Vehicles"), ("Forklift", "124000", "Plant and machinery"),
+                            ("Office fit-out", "118500", "Assets under construction")]:
+        _contributed(c, name, cost=cost, cls=cls)
+    _run(c, "2026-02")
+    page.emulate_media(media="print")
+    page.set_viewport_size({"width": 680, "height": 1000})
+    # The page printed as it stands (the browser's Print), which carries the app's print rules.
+    page.goto("/fixed-assets/reports/schedule?date_from=2026-01-01&date_to=2026-03-31")
+    tables = page.locator("main table.data-table").all()
+    assert tables
+    for table in tables:
+        assert table.evaluate(_SPLIT_WORDS) == [], table.evaluate("t => t.outerHTML.slice(0, 300)")
+    # Whole header words still leave every table inside the page width.
+    assert page.evaluate("document.documentElement.scrollWidth") <= 680
+    page.emulate_media(media="screen")
+
+
+def test_the_register_fits_its_card_at_desktop_width_when_names_are_short(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    # The demo company's register: short names, its longest class and five-figure costs.
+    for name, cost, cls in [("Delivery van", "32000", "Vehicles"), ("Forklift", "24000", "Plant and machinery"),
+                            ("Laptop", "1450", "Computer equipment"),
+                            ("Office fit-out", "18500", "Assets under construction")]:
+        _contributed(c, name, cost=cost, cls=cls)
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.goto("/fixed-assets")
+    box = page.locator("#fa-register").evaluate_handle("t => t.closest('.table-scroll-wrap') || t.parentElement")
+    # Every column, Status last, is inside the card without scrolling.
+    assert box.evaluate("b => b.scrollWidth <= b.clientWidth"), box.evaluate("b => [b.scrollWidth, b.clientWidth]")
+    status = page.locator("#fa-register thead th").last.bounding_box()
+    edge = box.evaluate("b => b.getBoundingClientRect().right")
+    assert status["x"] + status["width"] <= edge + 1, (status, edge)
+
+
 def test_a_long_asset_name_wraps_in_the_register_at_a_readable_measure(page: Page, fresh_company):
     c = fresh_company
     _started(c)
