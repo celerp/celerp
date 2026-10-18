@@ -510,10 +510,14 @@ def setup_routes(app):
         email = str(form.get("email", "")).strip()
         if not email:
             return _recovery(_recovery_start(error=t("auth.email_required")))
+        handle = str(form.get("handle", "")) or None
         try:
-            answer = await api.recovery_send(email, str(form.get("handle", "")) or None)
+            answer = await api.recovery_send(email, handle)
         except APIError as e:
             if e.status == 429:
+                # A refused new code leaves the one already sent usable, so keep its page.
+                if handle:
+                    return _recovery(_recovery_code_form(email, handle, error=e.detail))
                 return _recovery(_recovery_start(email, error=e.detail))
             return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         if answer["outcome"] == "unavailable":

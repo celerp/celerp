@@ -11,7 +11,7 @@ from typing import BinaryIO
 import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
-from celerp.services.auth import CALLER_HEADER, CONNECT_HEADER
+from celerp.services.auth import CALLER_HEADER, CONNECT_HEADER, connect_caller, is_loopback
 from celerp.services.company_settings import BOOKS_KEYS, GENERAL
 from celerp.tax_regimes import doc_side
 from ui.i18n import current_lang, refusal_text, t
@@ -23,15 +23,18 @@ _caller: ContextVar[str | None] = ContextVar("celerp_caller", default=None)
 # Whether that visitor came through Connect, as the gateway marks every request it proxies.
 _via_connect: ContextVar[bool] = ContextVar("celerp_via_connect", default=False)
 _CONNECT_KEY = CONNECT_HEADER.lower().encode()
+_CALLER_KEY = CALLER_HEADER.lower().encode()
 
 
 class CallerMiddleware:
-    """Pure ASGI middleware: records each request's client address, which every call
-    into the local API names in CALLER_HEADER so the API's rate limits count the visitor,
-    never the UI server. Taken from the connection, never from a header the browser sent.
-    Also records the gateway's Connect mark, passed on in CONNECT_HEADER: a Connect
-    visitor reaches the UI from this computer, and the mark is what tells them apart.
-    The mark can only take something away, so a visitor who sends it gains nothing."""
+    """Pure ASGI middleware: records each request's caller, which every call into the local
+    API names in CALLER_HEADER so the API's rate limits count the visitor, never the UI
+    server. The caller is the connection's address, except for a Connect visitor: they reach
+    the UI from the gateway on this computer, which marks them and names them by the address
+    the relay saw. That name counts only from a loopback peer carrying the mark; a marked
+    request without one valid address is named as the Connect caller, never this computer.
+    The mark is passed on in CONNECT_HEADER; it can only take something away, so another
+    computer that sends it is still named by its own address."""
 
     def __init__(self, app):
         self._app = app
@@ -40,8 +43,13 @@ class CallerMiddleware:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
-        token = _caller.set((scope.get("client") or ("",))[0] or None)
-        marked = _via_connect.set(any(key.lower() == _CONNECT_KEY for key, _ in scope.get("headers") or ()))
+        peer = (scope.get("client") or ("",))[0] or None
+        headers = scope.get("headers") or ()
+        via_connect = any(key.lower() == _CONNECT_KEY for key, _ in headers)
+        if via_connect and peer and is_loopback(peer):
+            peer = connect_caller([v.decode("latin-1") for k, v in headers if k.lower() == _CALLER_KEY])
+        token = _caller.set(peer)
+        marked = _via_connect.set(via_connect)
         try:
             await self._app(scope, receive, send)
         finally:

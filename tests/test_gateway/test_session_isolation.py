@@ -412,3 +412,43 @@ async def test_proxy_marks_connect_requests(gw, monkeypatch):
             await gw._handle_proxy_request({"id": "m", "method": "GET", "path": path, "query": "",
                                             "headers": sent, "body_b64": ""})
     assert seen == [["1"]] * 12
+
+
+@pytest.mark.asyncio
+async def test_the_gateway_passes_on_only_the_visitor_address_the_relay_set(gw, monkeypatch):
+    """The relay names each visitor in the visitor header from its own client address. The
+    gateway passes that on to the local server as the caller, and only when it is one valid
+    address that is not this computer's; a caller or visitor header the visitor sent never
+    survives."""
+    from celerp.services.auth import CALLER_HEADER, VISITOR_HEADER
+
+    seen: list = []
+
+    async def _record(scope, receive, send):
+        headers = [(k.decode().lower(), v.decode()) for k, v in scope["headers"]]
+        seen.append(([v for k, v in headers if k == CALLER_HEADER.lower()],
+                     [v for k, v in headers if k == VISITOR_HEADER.lower()]))
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    cases = [
+        ({VISITOR_HEADER: "203.0.113.20"}, ["203.0.113.20"]),
+        ({VISITOR_HEADER.lower(): "2001:db8:5::20"}, ["2001:db8:5::20"]),
+        ({VISITOR_HEADER: "::ffff:198.51.100.3"}, ["198.51.100.3"]),
+        ({VISITOR_HEADER: " 203.0.113.20 "}, ["203.0.113.20"]),
+        ({VISITOR_HEADER: "203.0.113.20", CALLER_HEADER: "192.0.2.1"}, ["203.0.113.20"]),
+        ({CALLER_HEADER: "192.0.2.1"}, []),
+        ({VISITOR_HEADER: ""}, []),
+        ({VISITOR_HEADER: "nonsense"}, []),
+        ({VISITOR_HEADER: "203.0.113.20, 192.0.2.1"}, []),
+        ({VISITOR_HEADER: "127.0.0.1"}, []),
+        ({VISITOR_HEADER: "::1"}, []),
+        ({VISITOR_HEADER: "0.0.0.0"}, []),
+        ({VISITOR_HEADER: "203.0.113.20", VISITOR_HEADER.upper(): "192.0.2.1"}, []),
+    ]
+    _install_asgi_client(monkeypatch, _record)
+    paths = ("/login", "/share/abc")
+    for path in paths:
+        for sent, _ in cases:
+            await gw._handle_proxy_request({"id": "v", "method": "GET", "path": path, "query": "",
+                                            "headers": sent, "body_b64": ""})
+    assert seen == [(named, []) for _ in paths for _, named in cases]

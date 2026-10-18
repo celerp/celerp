@@ -566,3 +566,27 @@ async def test_migrate_bootstrap_never_calls_the_relay(client, relay):
     assert r.headers.get("location") == "/migrations/run-1"
     await settle()
     assert relay.calls == []
+
+
+async def test_a_refused_new_code_keeps_the_code_page_and_its_handle(client, relay, short_floor, ui):
+    """Send a new code refused for too many sends answers the code page with the reason,
+    still holding the visitor's handle, so the code already in the mailbox can still be used."""
+    from celerp.routers import auth as auth_router
+
+    await _register(client)
+    page = await _code_page(ui)
+    handle = _handle(page.text)
+    auth_router.limiter.enabled = True
+    auth_router.limiter._storage.reset()
+    try:
+        for _ in range(3):
+            await _code_page(ui, handle=handle)
+        refused = await ui.post("/forgot-password", data={"email": OWNER, "handle": handle})
+    finally:
+        auth_router.limiter.enabled = False
+        auth_router.limiter._storage.reset()
+    assert refused.status_code == 200
+    assert t("error.rate_limited") in refused.text
+    assert _handle(refused.text) == handle
+    assert (await _reset(ui, refused)).status_code == 303
+    assert await _can_sign_in(client, OWNER, NEW_PW)

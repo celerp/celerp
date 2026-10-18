@@ -17,7 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from celerp.main import app
 from celerp.routers import auth as auth_router
-from celerp.services.auth import CALLER_HEADER
+from celerp.services.auth import CALLER_HEADER, CONNECT_CALLER, CONNECT_HEADER, request_caller
 from email_codes_support import CODE, relay, short_floor  # noqa: F401 - fixtures
 from migration_support import real_client, real_engine  # noqa: F401 - fixtures
 
@@ -135,6 +135,74 @@ async def test_the_ui_names_the_visitor_it_sees_never_one_the_browser_claims():
         assert (await ui.get("/", headers={CALLER_HEADER: "192.0.2.1"})).status_code == 204
     assert sent["caller"] == "198.51.100.7"
     assert api_client._caller.get() is None
+
+
+_VIA = {CONNECT_HEADER: "1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("peer, sent, named", [
+    ("127.0.0.1", {**_VIA, CALLER_HEADER: "203.0.113.20"}, "203.0.113.20"),
+    ("::1", {**_VIA, CALLER_HEADER: "2001:db8:5::20"}, "2001:db8:5::20"),
+    ("127.0.0.1", {**_VIA, CALLER_HEADER: "::ffff:198.51.100.3"}, "198.51.100.3"),
+    ("127.0.0.1", _VIA, CONNECT_CALLER),
+    ("127.0.0.1", {**_VIA, CALLER_HEADER: ""}, CONNECT_CALLER),
+    ("127.0.0.1", {**_VIA, CALLER_HEADER: "nonsense"}, CONNECT_CALLER),
+    ("127.0.0.1", {**_VIA, CALLER_HEADER: "203.0.113.20, 192.0.2.1"}, CONNECT_CALLER),
+    ("127.0.0.1", {**_VIA, CALLER_HEADER: "127.0.0.1"}, CONNECT_CALLER),
+    ("192.168.1.50", {**_VIA, CALLER_HEADER: "203.0.113.20"}, "192.168.1.50"),
+    ("127.0.0.1", {CALLER_HEADER: "203.0.113.20"}, "127.0.0.1"),
+    ("192.168.1.50", {CALLER_HEADER: "203.0.113.20"}, "192.168.1.50"),
+])
+async def test_the_ui_names_a_connect_visitor_by_the_gateways_address_only_from_loopback(peer, sent, named):
+    """A Connect visitor reaches the UI from the gateway on this computer, which names them
+    by the address the relay saw. The UI takes that address only from a loopback peer that
+    carries the Connect mark; a marked request without a valid one is a Connect visitor all
+    the same, never the person at this computer; any other peer is named by its socket."""
+    from ui import api_client
+
+    sent_on = {}
+
+    async def page(scope, receive, send):
+        async with api_client._local_client(None) as c:
+            sent_on["caller"] = c.headers.get(CALLER_HEADER)
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    ui = AsyncClient(transport=ASGITransport(app=api_client.CallerMiddleware(page), client=(peer, 5000)),
+                     base_url="http://ui")
+    async with ui:
+        assert (await ui.get("/", headers=sent)).status_code == 204
+    assert sent_on["caller"] == named
+
+
+def _counted(peer: str, headers: list[tuple[str, str]]) -> str:
+    from starlette.requests import Request
+
+    return request_caller(Request({"type": "http", "client": (peer, 4000),
+                                   "headers": [(k.lower().encode(), v.encode()) for k, v in headers]}))
+
+
+@pytest.mark.parametrize("peer, headers, counted", [
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "203.0.113.20")], "203.0.113.20"),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "2001:db8:5::20")], "2001:db8:5::/64"),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "::ffff:198.51.100.3")], "198.51.100.3"),
+    ("127.0.0.1", [(CONNECT_HEADER, "1")], CONNECT_CALLER),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, CONNECT_CALLER)], CONNECT_CALLER),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "127.0.0.1")], CONNECT_CALLER),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "")], CONNECT_CALLER),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "203.0.113.20, 192.0.2.1")], CONNECT_CALLER),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "203.0.113.20"), (CALLER_HEADER, "192.0.2.1")],
+     CONNECT_CALLER),
+    ("192.0.2.10", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "203.0.113.20")], "192.0.2.10"),
+    ("127.0.0.1", [(CALLER_HEADER, "192.168.1.50")], "192.168.1.50"),
+    ("127.0.0.1", [], "127.0.0.1"),
+])
+def test_the_api_counts_a_connect_visitor_apart_from_the_person_at_this_computer(peer, headers, counted):
+    """Over loopback a Connect-marked request counts as the visitor's address, an IPv6 one
+    by its /64, or as the Connect caller when it names no valid one: never as this computer,
+    which is the person at it."""
+    assert _counted(peer, headers) == counted
 
 
 def _ask(client, path: str, email: str, password: str, caller: str):
@@ -274,8 +342,8 @@ async def test_the_caller_the_ui_names_counts_only_over_loopback(client, clock):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("shared", ["127.0.0.1", "::1"])
 async def test_a_shared_local_address_never_holds_up_another_accounts_sign_in(client, session, clock, shared):
-    """The desktop user, Connect and any proxy on this machine all reach the UI from a
-    loopback address, so it names no one visitor: failures from it never hold up an account
+    """The desktop user and any proxy on this machine reach the UI from a loopback
+    address, so it names no one visitor: failures from it never hold up an account
     with no failures of its own, while each account still slows after its own five."""
     from celerp.services.session_tracker import clear
 

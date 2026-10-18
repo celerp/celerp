@@ -43,6 +43,14 @@ CALLER_HEADER = "X-Celerp-Caller"
 # mark on to the API.
 CONNECT_HEADER = "X-Celerp-Connect"
 
+# The relay names each Connect visitor in this header by the address it saw them from.
+# Mirrors the relay's constant, which is authoritative.
+VISITOR_HEADER = "X-Celerp-Visitor"
+
+# The caller every Connect visitor without a valid address counts as: never the person
+# at this computer, and never an address the visitor chose.
+CONNECT_CALLER = "connect"
+
 ROLE_LEVELS = {"viewer": 1, "operator": 2, "manager": 3, "admin": 4, "owner": 5}
 
 # Legacy role migration: old roles carried in DB state until they are edited.
@@ -108,8 +116,9 @@ def verify_password(plain: str, hashed: str) -> bool:
 # every account, then each further failure doubles the wait from one second up to
 # MAX_WAIT_SECONDS. A key quiet for FORGET_AFTER_SECONDS starts again, and so does an
 # account whose password has changed. A loopback caller
-# names no one visitor (the desktop user, Connect and any proxy on this machine all arrive
-# from it), so it has no budget of its own; the account's budget still holds.
+# names no one visitor (the desktop user and any proxy on this machine arrive from it, while
+# each Connect visitor is named apart), so it has no budget of its own; the account's budget
+# still holds.
 FREE_ACCOUNT_FAILURES = 5
 FREE_CALLER_FAILURES = 20
 MAX_WAIT_SECONDS = 300
@@ -399,26 +408,56 @@ def is_loopback(address: str) -> bool:
         return False
 
 
+def _ip(address: str):
+    """The one IP address *address* names, an IPv4-mapped IPv6 one as its IPv4 address;
+    None when it names anything else."""
+    try:
+        ip = ip_address(address.strip())
+    except ValueError:
+        return None
+    return getattr(ip, "ipv4_mapped", None) or ip
+
+
 def _counted_as(address: str) -> str:
     """The caller an address counts as: an IPv6 address by its /64, which one visitor holds
     whole, so stepping through it is not a new caller each time. A loopback address stays
     itself."""
-    try:
-        ip = ip_address(address)
-    except ValueError:
+    ip = _ip(address)
+    if ip is None:
         return address
-    ip = getattr(ip, "ipv4_mapped", None) or ip
     if ip.version == 6 and not ip.is_loopback:
         return str(ip_network(f"{ip}/64", strict=False))
     return str(ip)
 
 
+def visitor_address(value: str | None) -> str | None:
+    """The address a Connect visitor is named by, from the one value the relay set; None
+    unless it is one valid address that is not this computer's, so no visitor can count as
+    the person at it."""
+    ip = _ip(value) if value else None
+    if ip is None or ip.is_loopback or ip.is_unspecified:
+        return None
+    return str(ip)
+
+
+def connect_caller(values: list[str]) -> str:
+    """The caller a Connect visitor is named as from the address values the request carries:
+    the address when there is exactly one valid one, else the Connect caller every unnamed
+    visitor shares."""
+    return (visitor_address(values[0]) if len(values) == 1 else None) or CONNECT_CALLER
+
+
 def request_caller(request: Request) -> str:
     """The caller a request is counted for. CALLER_HEADER counts only on a loopback request,
-    where it comes from the UI server, so no one reaching the API from elsewhere can name
-    an address of their choosing."""
+    where it comes from the UI server or the Connect gateway, so no one reaching the API from
+    elsewhere can name an address of their choosing. A loopback request with the Connect mark
+    is a visitor, never the person at this computer, whatever address it names."""
     host = request.client.host if request.client else ""
-    return _counted_as((request.headers.get(CALLER_HEADER) or host) if is_loopback(host) else host)
+    if not is_loopback(host):
+        return _counted_as(host)
+    if CONNECT_HEADER in request.headers:
+        return _counted_as(connect_caller(request.headers.getlist(CALLER_HEADER)))
+    return _counted_as(request.headers.get(CALLER_HEADER) or host)
 
 
 def is_local_person(request: Request) -> bool:
