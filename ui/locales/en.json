@@ -217,6 +217,7 @@
   "acct.err_je_not_found": "Celerp couldn't find this journal entry. It may have been voided or removed. Refresh the journal and try again.",
   "acct.post_again_gone": "The entry to post again is no longer in these books, so nothing was filled in.",
   "acct.post_again_back": "Back to {page}",
+  "acct.post_again_date_hint": "Dated on the first open day. The entry it copies is dated {date}; change the date if this one belongs elsewhere.",
   "acct.err_je_not_manual": "This entry was created by a document (such as an invoice or bill), so it can't be voided here. Open that document and void or undo it there.",
   "acct.err_je_from_peer": "{company} sent this journal entry, so only {company} can void it. To correct it here, post a journal entry of your own.",
   "acct.err_je_peer_origin": "Your accountant posted this journal entry, so it can't be voided here. Reverse it instead, and your accountant sees the reversal.",

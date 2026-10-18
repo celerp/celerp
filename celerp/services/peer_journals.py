@@ -761,7 +761,7 @@ async def reverse(session: AsyncSession, company_id: uuid.UUID, actor_id, je_id:
 
 async def prefill(session: AsyncSession, company_id: uuid.UUID, je_id: str) -> dict:
     """A new journal prefilled from one of these books' entries, dated on the first open
-    day from today; nothing is posted."""
+    day from today, with the entry's own date as ``source_ts``; nothing is posted."""
     row = await session.get(Projection, (company_id, je_id))
     if row is None or row.entity_type != "journal_entry":
         raise HTTPException(404, t("acct.err_je_not_found"))
@@ -773,6 +773,7 @@ async def prefill(session: AsyncSession, company_id: uuid.UUID, je_id: str) -> d
     if lock is not None and day <= lock:
         day = lock + timedelta(days=1)
     return {"memo": state.get("memo") or "", "ts": day.isoformat(),
+            "source_ts": str(state.get("ts") or "")[:10],
             "entries": [{"account": l.get("account"), "debit": l.get("debit") or 0,
                          "credit": l.get("credit") or 0, "contact": l.get("contact")}
                         for l in state.get("entries") or []]}

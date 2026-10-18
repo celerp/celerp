@@ -217,6 +217,7 @@
   "acct.err_je_not_found": "Celerp konnte diese Buchung nicht finden. Sie wurde möglicherweise storniert oder entfernt. Aktualisieren Sie das Journal und versuchen Sie es erneut.",
   "acct.post_again_gone": "Die erneut zu buchende Buchung ist nicht mehr in diesen Büchern, daher wurde nichts ausgefüllt.",
   "acct.post_again_back": "Zurück zu {page}",
+  "acct.post_again_date_hint": "Datiert auf den ersten offenen Tag. Die kopierte Buchung ist vom {date}; ändern Sie das Datum, wenn diese Buchung woanders hingehört.",
   "acct.err_je_not_manual": "Diese Buchung wurde von einem Beleg (etwa einer Rechnung oder Eingangsrechnung) erstellt und kann hier nicht storniert werden. Öffnen Sie den Beleg und stornieren oder widerrufen Sie ihn dort.",
   "acct.err_je_from_peer": "{company} hat diesen Buchungssatz gesendet, daher kann nur {company} ihn stornieren. Um ihn hier zu korrigieren, buchen Sie einen eigenen Buchungssatz (journal entry).",
   "acct.err_je_peer_origin": "Ihr Steuerberater hat diesen Buchungssatz gebucht, daher kann er hier nicht storniert werden. Kehren Sie ihn stattdessen um; Ihr Steuerberater sieht die Umkehrung.",

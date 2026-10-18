@@ -217,6 +217,7 @@
   "acct.err_je_not_found": "Celerp no encontró este asiento. Puede que se haya anulado o eliminado. Actualice el diario e inténtelo de nuevo.",
   "acct.post_again_gone": "El asiento que se iba a volver a registrar ya no está en estos libros, así que no se rellenó nada.",
   "acct.post_again_back": "Volver a {page}",
+  "acct.post_again_date_hint": "Fechado en el primer día abierto. El asiento que copia tiene fecha {date}; cambie la fecha si este corresponde a otro día.",
   "acct.err_je_not_manual": "Este asiento lo creó un documento (como una factura o una factura de proveedor), así que no se puede anular aquí. Abra ese documento y anúlelo o deshágalo allí.",
   "acct.err_je_from_peer": "{company} envió este asiento, así que solo {company} puede anularlo. Para corregirlo aquí, registre su propio asiento (journal entry).",
   "acct.err_je_peer_origin": "Su contador registró este asiento, así que no se puede anular aquí. Reviértalo; su contador verá la reversión.",

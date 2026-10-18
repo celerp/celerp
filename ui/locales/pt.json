@@ -217,6 +217,7 @@
   "acct.err_je_not_found": "O Celerp não encontrou este lançamento. Ele pode ter sido estornado ou removido. Atualize o diário e tente novamente.",
   "acct.post_again_gone": "O lançamento a registrar de novo já não está nestes livros, por isso nada foi preenchido.",
   "acct.post_again_back": "Voltar a {page}",
+  "acct.post_again_date_hint": "Datado no primeiro dia aberto. O lançamento copiado tem data {date}; altere a data se este pertencer a outro dia.",
   "acct.err_je_not_manual": "Este lançamento foi criado por um documento (como uma fatura ou conta a pagar), então não pode ser estornado aqui. Abra esse documento e anule-o ou desfaça-o lá.",
   "acct.err_je_from_peer": "{company} enviou este lançamento, então só {company} pode anulá-lo. Para corrigi-lo aqui, registre seu próprio lançamento (journal entry).",
   "acct.err_je_peer_origin": "Seu contador registrou este lançamento, então ele não pode ser anulado aqui. Estorne-o; seu contador verá o estorno.",

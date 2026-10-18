@@ -1766,7 +1766,7 @@ class TestAccountingPage:
     @pytest.mark.parametrize("currency,shown", [("THB", "45.00"), ("JPY", "45")])
     async def test_post_again_shows_amounts_at_the_currency_precision(self, ui_client, currency, shown):
         """Post again fills each amount the way the books show it, not as a raw float."""
-        copied = {"ts": "2026-10-18", "memo": "Rent", "entries": [
+        copied = {"ts": "2026-10-18", "source_ts": "2026-09-30", "memo": "Rent", "entries": [
             {"account": "1000", "debit": 45.0, "credit": 0, "contact": None},
             {"account": "1000", "debit": 0, "credit": 45.0, "contact": None}]}
         with patch("ui.api_client.journal_prefill", new=AsyncMock(return_value=copied)), \

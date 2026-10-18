@@ -217,6 +217,7 @@
   "acct.err_je_not_found": "Celerp n'a pas trouvé cette écriture. Elle a peut-être été annulée ou supprimée. Actualisez le journal et réessayez.",
   "acct.post_again_gone": "L'écriture à repasser n'est plus dans ces livres, donc rien n'a été prérempli.",
   "acct.post_again_back": "Retour à {page}",
+  "acct.post_again_date_hint": "Daté du premier jour ouvert. L'écriture copiée est datée du {date} ; modifiez la date si celle-ci doit être ailleurs.",
   "acct.err_je_not_manual": "Cette écriture a été créée par un document (comme une facture client ou fournisseur), elle ne peut donc pas être annulée ici. Ouvrez ce document et annulez-le depuis celui-ci.",
   "acct.err_je_from_peer": "{company} a envoyé cette écriture, donc seule {company} peut l'annuler. Pour la corriger ici, passez votre propre écriture (journal entry).",
   "acct.err_je_peer_origin": "Votre comptable a passé cette écriture, elle ne peut donc pas être annulée ici. Contrepassez-la plutôt ; votre comptable verra la contrepassation.",
