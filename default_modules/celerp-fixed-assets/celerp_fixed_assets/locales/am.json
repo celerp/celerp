@@ -395,6 +395,7 @@
   "fixed_assets.percent_disposed": "የሚወገደው መቶኛ",
   "fixed_assets.percent_disposed_hint": "ሙሉውን ንብረት ለማስወገድ ባዶ ይተዉት።",
   "fixed_assets.depreciation": "እስከ ማስወገጃው ቀን ያለ የዋጋ ቅናሽ",
+  "fixed_assets.depreciation_taken_back": "ከቀኑ በኋላ የተመዘገበ የእርጅና ቅነሳ፣ የተመለሰ",
   "fixed_assets.carrying_amount": "የሚወገደው የመዝገብ ዋጋ",
   "fixed_assets.leaving.cost": "የሚወጣ ወጪ",
   "fixed_assets.leaving.accumulated_depreciation": "የሚወጣ የተከማቸ የዋጋ ቅናሽ",

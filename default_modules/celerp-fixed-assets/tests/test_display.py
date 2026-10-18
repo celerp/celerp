@@ -113,3 +113,16 @@ async def test_a_partial_disposal_says_it_is_partial_and_what_share_and_cost_it_
     page = _tight((await fa.page(f"/fixed-assets/assets/{car}")).text)
     assert '<h2 class="section-title">Partial disposal (40%)</h2>' in page
     assert re.search(r'<th scope="row">Cost taken off</th><td class="cell--number">\$4,800\.00</td>', page)
+
+
+async def test_depreciation_a_back_dated_disposal_takes_back_reads_as_taken_back(fa: FA):
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    for month in ("2026-02", "2026-03", "2026-04", "2026-05"):
+        await _run(fa, month)
+    review = _tight((await fa.submit("/fixed-assets/op/dispose/review", {
+        "asset_id": car, "date": "2026-03-15", "reason": "scrapped", "idempotency_key": "bd"})).text)
+    taken = re.search(r'<th scope="row">Depreciation after the date, taken back</th><td class="cell--number">'
+                      r'\$([\d,.]+)</td>', review)
+    assert taken and float(taken[1].replace(",", "")) > 0, review
+    assert "Depreciation to the disposal date" not in review

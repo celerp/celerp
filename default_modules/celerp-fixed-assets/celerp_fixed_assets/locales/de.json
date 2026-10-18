@@ -395,6 +395,7 @@
   "fixed_assets.percent_disposed": "Abgehender Prozentsatz",
   "fixed_assets.percent_disposed_hint": "Leer lassen, um die ganze Anlage abzugeben.",
   "fixed_assets.depreciation": "Abschreibung bis zum Abgangsdatum",
+  "fixed_assets.depreciation_taken_back": "Abschreibung nach dem Datum, zurückgenommen",
   "fixed_assets.carrying_amount": "Abgehender Buchwert",
   "fixed_assets.leaving.cost": "Abgehende Anschaffungskosten",
   "fixed_assets.leaving.accumulated_depreciation": "Abgehende kumulierte Abschreibung",

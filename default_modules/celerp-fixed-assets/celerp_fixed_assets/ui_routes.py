@@ -294,7 +294,7 @@ def _preview(action: str, result: dict, currency: str) -> FT:
         part = _part(shares.pop()) if len(shares) == 1 else None
         parts.append(_detail_table([*([(t("fixed_assets.buyer"), result["contact_name"])] if "contact_name" in result else []),
                                     *([(t("fixed_assets.percent_disposed"), part)] if part else []),
-                                    (t("fixed_assets.depreciation"), _money_td(result["depreciation"], currency)),
+                                    _depreciation_row("fixed_assets.depreciation", result["depreciation"], currency),
                                     *[(t(f"fixed_assets.leaving.{k}"), _money_td(result[k], currency))
                                       for k in ("cost", "accumulated_depreciation", "accumulated_impairment")
                                       if k == "cost" or _known(result[k]) != 0],
@@ -403,7 +403,16 @@ def _remeasure_figures(result: dict, currency: str) -> FT:
     """Depreciation brought up to the date, the carrying amount before and after, and where
     the difference goes; a reversal also shows the limit it stops at."""
     keys = _REMEASURED + tuple(k for k in ("reversal", "limit") if k in result)
-    return _detail_table([(t(f"fixed_assets.remeasure.{k}"), _money_td(result[k], currency)) for k in keys])
+    return _detail_table([_depreciation_row(f"fixed_assets.remeasure.{k}", result[k], currency) if k == "depreciation"
+                          else (t(f"fixed_assets.remeasure.{k}"), _money_td(result[k], currency)) for k in keys])
+
+
+def _depreciation_row(label_key: str, value, currency: str) -> tuple[str, FT]:
+    """Depreciation an operation brings up to its date. Below zero it is depreciation the runs after
+    the date had charged, taken back, so it reads as that and as a positive amount."""
+    if (_known(value) or 0) < 0:
+        return t("fixed_assets.depreciation_taken_back"), _money_td(-_known(value), currency)
+    return t(label_key), _money_td(value, currency)
 
 
 def _class_revaluation_preview(result: dict, currency: str) -> list[FT]:

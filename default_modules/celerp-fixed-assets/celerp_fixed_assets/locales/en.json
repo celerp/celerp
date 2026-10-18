@@ -395,6 +395,7 @@
   "fixed_assets.percent_disposed": "Percent disposed of",
   "fixed_assets.percent_disposed_hint": "Leave blank to dispose of the whole asset.",
   "fixed_assets.depreciation": "Depreciation to the disposal date",
+  "fixed_assets.depreciation_taken_back": "Depreciation after the date, taken back",
   "fixed_assets.carrying_amount": "Carrying amount disposed of",
   "fixed_assets.leaving.cost": "Cost taken off",
   "fixed_assets.leaving.accumulated_depreciation": "Accumulated depreciation taken off",

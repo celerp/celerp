@@ -395,6 +395,7 @@
   "fixed_assets.percent_disposed": "除却する割合（%）",
   "fixed_assets.percent_disposed_hint": "空欄にすると資産全体を除却します。",
   "fixed_assets.depreciation": "除却日までの減価償却費",
+  "fixed_assets.depreciation_taken_back": "日付以降の減価償却（取り消し）",
   "fixed_assets.carrying_amount": "除却する帳簿価額",
   "fixed_assets.leaving.cost": "除去する取得原価",
   "fixed_assets.leaving.accumulated_depreciation": "除去する減価償却累計額",

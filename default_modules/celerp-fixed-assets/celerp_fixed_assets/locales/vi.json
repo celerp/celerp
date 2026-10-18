@@ -395,6 +395,7 @@
   "fixed_assets.percent_disposed": "Phần trăm thanh lý",
   "fixed_assets.percent_disposed_hint": "Để trống để thanh lý toàn bộ tài sản.",
   "fixed_assets.depreciation": "Khấu hao đến ngày thanh lý",
+  "fixed_assets.depreciation_taken_back": "Khấu hao sau ngày này, được hoàn lại",
   "fixed_assets.carrying_amount": "Giá trị còn lại thanh lý",
   "fixed_assets.leaving.cost": "Nguyên giá ghi giảm",
   "fixed_assets.leaving.accumulated_depreciation": "Hao mòn lũy kế ghi giảm",

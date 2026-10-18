@@ -395,6 +395,7 @@
   "fixed_assets.percent_disposed": "Persen yang dilepaskan",
   "fixed_assets.percent_disposed_hint": "Kosongkan untuk melepaskan seluruh aset.",
   "fixed_assets.depreciation": "Penyusutan sampai tanggal pelepasan",
+  "fixed_assets.depreciation_taken_back": "Penyusutan setelah tanggal tersebut, dibatalkan",
   "fixed_assets.carrying_amount": "Nilai tercatat yang dilepaskan",
   "fixed_assets.leaving.cost": "Biaya yang dikeluarkan",
   "fixed_assets.leaving.accumulated_depreciation": "Akumulasi penyusutan yang dikeluarkan",

@@ -395,6 +395,7 @@
   "fixed_assets.percent_disposed": "Pourcentage sorti",
   "fixed_assets.percent_disposed_hint": "Laissez vide pour sortir l'immobilisation entière.",
   "fixed_assets.depreciation": "Amortissement jusqu'à la date de sortie",
+  "fixed_assets.depreciation_taken_back": "Amortissement postérieur à la date, repris",
   "fixed_assets.carrying_amount": "Valeur comptable sortie",
   "fixed_assets.leaving.cost": "Coût sorti",
   "fixed_assets.leaving.accumulated_depreciation": "Amortissements cumulés sortis",

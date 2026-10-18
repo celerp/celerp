@@ -395,6 +395,7 @@
   "fixed_assets.percent_disposed": "ร้อยละที่จำหน่าย",
   "fixed_assets.percent_disposed_hint": "เว้นว่างเพื่อจำหน่ายสินทรัพย์ทั้งหมด",
   "fixed_assets.depreciation": "ค่าเสื่อมราคาถึงวันที่จำหน่าย",
+  "fixed_assets.depreciation_taken_back": "ค่าเสื่อมราคาหลังวันที่ ที่กลับรายการ",
   "fixed_assets.carrying_amount": "มูลค่าตามบัญชีที่จำหน่าย",
   "fixed_assets.leaving.cost": "ต้นทุนที่ตัดออก",
   "fixed_assets.leaving.accumulated_depreciation": "ค่าเสื่อมราคาสะสมที่ตัดออก",

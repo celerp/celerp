@@ -395,6 +395,7 @@
   "fixed_assets.percent_disposed": "Percentual baixado",
   "fixed_assets.percent_disposed_hint": "Deixe em branco para baixar o ativo inteiro.",
   "fixed_assets.depreciation": "Depreciação até a data da baixa",
+  "fixed_assets.depreciation_taken_back": "Depreciação após a data, estornada",
   "fixed_assets.carrying_amount": "Valor contábil baixado",
   "fixed_assets.leaving.cost": "Custo baixado",
   "fixed_assets.leaving.accumulated_depreciation": "Depreciação acumulada baixada",

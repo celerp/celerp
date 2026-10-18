@@ -395,6 +395,7 @@
   "fixed_assets.percent_disposed": "Percentuale dismessa",
   "fixed_assets.percent_disposed_hint": "Lascia vuoto per dismettere l'intero cespite.",
   "fixed_assets.depreciation": "Ammortamento fino alla data di dismissione",
+  "fixed_assets.depreciation_taken_back": "Ammortamento successivo alla data, stornato",
   "fixed_assets.carrying_amount": "Valore contabile dismesso",
   "fixed_assets.leaving.cost": "Costo eliminato",
   "fixed_assets.leaving.accumulated_depreciation": "Ammortamento accumulato eliminato",

@@ -395,6 +395,7 @@
   "fixed_assets.percent_disposed": "النسبة المستبعدة",
   "fixed_assets.percent_disposed_hint": "اتركه فارغًا لاستبعاد الأصل كله.",
   "fixed_assets.depreciation": "الإهلاك حتى تاريخ الاستبعاد",
+  "fixed_assets.depreciation_taken_back": "إهلاك ما بعد التاريخ، مُسترد",
   "fixed_assets.carrying_amount": "القيمة الدفترية المستبعدة",
   "fixed_assets.leaving.cost": "التكلفة المستبعدة",
   "fixed_assets.leaving.accumulated_depreciation": "مجمع الإهلاك المستبعد",

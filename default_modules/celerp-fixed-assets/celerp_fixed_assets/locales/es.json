@@ -395,6 +395,7 @@
   "fixed_assets.percent_disposed": "Porcentaje dado de baja",
   "fixed_assets.percent_disposed_hint": "Déjelo en blanco para dar de baja el activo entero.",
   "fixed_assets.depreciation": "Depreciación hasta la fecha de baja",
+  "fixed_assets.depreciation_taken_back": "Amortización posterior a la fecha, revertida",
   "fixed_assets.carrying_amount": "Valor en libros dado de baja",
   "fixed_assets.leaving.cost": "Coste dado de baja",
   "fixed_assets.leaving.accumulated_depreciation": "Amortización acumulada dada de baja",
