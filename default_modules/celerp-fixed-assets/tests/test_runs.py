@@ -561,3 +561,19 @@ async def test_asset_history_query_uses_index(fa):
     compiled = query.compile(dialect=fa.session.bind.dialect, compile_kwargs={"literal_binds": True})
     plan = "\n".join(r[0] for r in (await fa.session.execute(text(f"EXPLAIN {compiled}"))).all())
     assert "ix_projections_asset" in plan, plan
+
+
+async def test_r2_4_the_next_charge_is_the_assets_own_first_month_and_names_what_it_catches_up(fa):
+    """An asset available after the next run month is next charged in its own first month, a
+    full month's charge, not the company's next run at nil; one registered into months already
+    run is charged by the next run with those months caught up, and its page names them."""
+    await _managed_from(fa)
+    later = await _contributed(fa, name="Delivery van", on="2026-08-05")
+    assert (await fa.asset(later))["next_charge"] == {"month": "2026-08", "held": False, "amount": "200.00",
+                                                      "catches_up": []}
+    await _run(fa, "2026-03")
+    back = await _contributed(fa, name="Forklift", on="2026-02-10")
+    assert (await fa.asset(back))["next_charge"] == {"month": "2026-04", "held": False, "amount": "600.00",
+                                                     "catches_up": ["2026-02", "2026-03"]}
+    page = (await fa.page(f"/fixed-assets/assets/{back}")).text
+    assert "(includes 2026-02, 2026-03)" in page

@@ -1285,8 +1285,10 @@ def _depreciation_card(asset: dict, currency: str) -> FT:
                      Span(t("fixed_assets.next_charge_held", month=upcoming["month"]), " ",
                           A(t("fixed_assets.runs_title"), href="/fixed-assets/runs"))))
     elif upcoming:
-        rows.append((t("fixed_assets.next_charge"), " ".join(
-            x for x in (upcoming["month"], _money(upcoming["amount"], currency) if upcoming["amount"] else "") if x)))
+        catches_up = upcoming["catches_up"]
+        rows.append((t("fixed_assets.next_charge"), Span(
+            upcoming["month"], " ", _money(upcoming["amount"], currency),
+            *([" ", t("fixed_assets.next_charge_includes", months=", ".join(catches_up))] if catches_up else []))))
     return Div(H2(t("fixed_assets.depreciation_card"), cls="section-title"), _detail_table(rows),
                cls="detail-card section-card", id="fa-depreciation")
 

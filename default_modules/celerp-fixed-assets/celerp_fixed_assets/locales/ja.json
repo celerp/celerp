@@ -119,6 +119,7 @@
   "fixed_assets.depreciation_card": "減価償却",
   "fixed_assets.next_charge": "次回の償却額",
   "fixed_assets.next_charge_held": "{month}: 保留中です。{month} の実行画面に保留の理由が表示されます。",
+  "fixed_assets.next_charge_includes": "（{months} を含む）",
   "fixed_assets.threshold": "資産計上の基準額",
   "fixed_assets.threshold_hint": "1単位あたりこの金額未満の明細は費用の可能性ありと表示されます。基準を設けない場合は空欄にします。",
   "fixed_assets.first_managed_period": "管理開始月",

@@ -373,20 +373,23 @@ def depreciates(asset: dict, cls: dict | None) -> bool:
 
 
 async def next_charge(session, company_id, asset_id: str, asset: dict) -> dict | None:
-    """What the next run charges the asset: its month and the amount, months it catches up
-    included, or held when something holds the asset then. None when no run charges it."""
+    """What the first run that charges the asset charges it: the run month (the asset's own
+    first month when it starts after the next run), the amount, and the earlier months that
+    amount catches up; or held when something holds the asset then. None when no run charges it."""
     cls = await _state(session, company_id, str(asset.get("class_id") or ""))
     if not depreciates(asset, cls):
         return None
     books = await _books(session, company_id)
-    month = books.next
-    charge = Charge(asset_id, asset, cls, await operations.asset_movements(session, company_id, asset_id), books,
-                    month, month)
+    movements = await operations.asset_movements(session, company_id, asset_id)
+    month = max(books.next, _first(live(movements)) or books.next)
+    charge = Charge(asset_id, asset, cls, movements, books, month, books.next)
     await charge.hold(session, company_id, books, month, {})
     if charge.held(month):
-        return {"month": period_label(month), "held": True, "amount": None}
+        return {"month": period_label(month), "held": True, "amount": None, "catches_up": []}
+    postable = charge.postable()
     return {"month": period_label(month), "held": False,
-            "amount": money(sum((a for _, a in charge.postable()), Decimal(0)), books.currency)}
+            "amount": money(sum((a for _, a in postable), Decimal(0)), books.currency),
+            "catches_up": [period_label(k) for k, _ in postable if k < month]}
 
 
 async def _charges(session, company_id, books: Books, through: int, start: int) -> list[Charge]:

@@ -119,6 +119,7 @@
   "fixed_assets.depreciation_card": "Depreciação",
   "fixed_assets.next_charge": "Próximo encargo",
   "fixed_assets.next_charge_held": "{month}: retido. A execução de {month} indica o que o retém.",
+  "fixed_assets.next_charge_includes": "(inclui {months})",
   "fixed_assets.threshold": "Limite de capitalização",
   "fixed_assets.threshold_hint": "Linhas abaixo deste valor por unidade são marcadas como possíveis despesas. Deixe vazio para não usar limite.",
   "fixed_assets.first_managed_period": "Primeiro mês gerido",

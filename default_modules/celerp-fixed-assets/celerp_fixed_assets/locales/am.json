@@ -119,6 +119,7 @@
   "fixed_assets.depreciation_card": "እርጅና ቅናሽ",
   "fixed_assets.next_charge": "ቀጣይ ክፍያ",
   "fixed_assets.next_charge_held": "{month}: ተይዟል። የ{month} ሂደት ምን እንደያዘው ይዘረዝራል።",
+  "fixed_assets.next_charge_includes": "({months}ን ያካትታል)",
   "fixed_assets.threshold": "የካፒታል ማድረጊያ ወሰን",
   "fixed_assets.threshold_hint": "በአንድ ክፍል ከዚህ መጠን በታች ያሉ መስመሮች ወጪ ሊሆኑ እንደሚችሉ ይጠቆማሉ። ወሰን ካልፈለጉ ባዶ ይተዉት።",
   "fixed_assets.first_managed_period": "የመጀመሪያው የሚተዳደር ወር",

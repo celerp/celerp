@@ -119,6 +119,7 @@
   "fixed_assets.depreciation_card": "ค่าเสื่อมราคา",
   "fixed_assets.next_charge": "ค่าเสื่อมงวดถัดไป",
   "fixed_assets.next_charge_held": "{month}: ถูกระงับ การประมวลผลของ {month} จะแสดงสาเหตุ",
+  "fixed_assets.next_charge_includes": "(รวม {months})",
   "fixed_assets.threshold": "เกณฑ์การบันทึกเป็นสินทรัพย์",
   "fixed_assets.threshold_hint": "รายการที่ต่ำกว่ายอดต่อหน่วยนี้จะถูกระบุว่าอาจเป็นค่าใช้จ่าย เว้นว่างไว้หากไม่ใช้เกณฑ์",
   "fixed_assets.first_managed_period": "เดือนแรกที่จัดการ",

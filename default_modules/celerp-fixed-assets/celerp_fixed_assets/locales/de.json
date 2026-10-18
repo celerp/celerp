@@ -119,6 +119,7 @@
   "fixed_assets.depreciation_card": "Abschreibung",
   "fixed_assets.next_charge": "Nächste Abschreibung",
   "fixed_assets.next_charge_held": "{month}: angehalten. Der Lauf für {month} nennt, was ihn aufhält.",
+  "fixed_assets.next_charge_includes": "(einschließlich {months})",
   "fixed_assets.threshold": "Aktivierungsgrenze",
   "fixed_assets.threshold_hint": "Positionen unter diesem Betrag je Stück werden als mögliche Aufwände markiert. Leer lassen für keine Grenze.",
   "fixed_assets.first_managed_period": "Erster verwalteter Monat",
