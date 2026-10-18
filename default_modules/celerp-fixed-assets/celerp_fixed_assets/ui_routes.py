@@ -824,7 +824,7 @@ def _register_table(items: list[dict], classes: dict[str, str], currency: str) -
     Every row can be ticked: an asset that cannot be disposed of is refused at review with
     the reason, rather than its box going missing."""
     rows = [Tr(Td(Input(type="checkbox", cls="bulk-select", name="selected", value=a["id"]), cls="col-checkbox"),
-               Td(A(a["number"], href=f"/fixed-assets/assets/{a['id']}")), Td(_text(a.get("name"))),
+               Td(A(a["number"], href=f"/fixed-assets/assets/{a['id']}")), Td(_text(a.get("name")), cls="cell--text"),
                Td(_text(classes.get(a.get("class_id")))), Td(_text(a.get("available_date"))),
                *[_money_td(a.get(k), currency) for k in _REGISTER_MONEY],
                Td(t(f"fixed_assets.status.{a.get('status')}")), cls="data-row")

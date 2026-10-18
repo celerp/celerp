@@ -193,7 +193,7 @@ def test_j3_manual_depreciation_is_linked_over_two_assets(page: Page, fresh_comp
     page.locator(f"input[name='share:{car}']").fill("200")
     page.locator(f"input[name='share:{van}']").fill("200")
     page.get_by_role("button", name="Review", exact=True).click()
-    expect(page.locator("#fa-preview .flash--error")).to_contain_text("400.00, not 500.00")
+    expect(page.locator("#fa-preview .flash--error")).to_contain_text("The amounts add up to $400.00, not $500.00.")
     page.locator(f"input[name='share:{van}']").fill("300")
     _review_and_confirm(page)
     page.wait_for_url("**/fixed-assets/intake")
@@ -451,6 +451,39 @@ def test_u50_a_table_wider_than_a_phone_shades_where_more_columns_wait(page: Pag
     page.wait_for_function(f"([t, s]) => ({_SHADE})(t) !== s", arg=[table, start], timeout=5000)
     end = page.evaluate(f"({_SHADE})", table)
     assert "inset" in end, (start, end)
+
+
+def test_a_report_printed_from_its_page_prints_every_figure_and_none_of_its_controls(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _contributed(c, "Delivery van with a name long enough to need more than one line on paper")
+    _run(c, "2026-02")
+    # The content width of an A4 page at 96 dpi with the browser's default margins.
+    page.set_viewport_size({"width": 718, "height": 1000})
+    page.goto("/fixed-assets/reports/schedule?date_from=2026-01-01&date_to=2026-03-31")
+    page.emulate_media(media="print")
+    assert page.locator("main .breadcrumbs").first.is_hidden()
+    assert page.locator("main form[method='get']").first.is_hidden()
+    boxes = page.locator("main .table-scroll-wrap").all()
+    assert boxes
+    for box in boxes:
+        assert box.evaluate("b => b.scrollWidth <= b.clientWidth + 1"), box.evaluate("b => b.outerHTML.slice(0, 300)")
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+
+
+def test_a_long_asset_name_wraps_in_the_register_at_a_readable_measure(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _contributed(c, " ".join(["Refrigerated delivery van with tail lift and rear camera"] * 4))
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.goto("/fixed-assets")
+    name = page.locator("#fa-register tbody tr").first.locator("td").nth(2)
+    # The whole name reads, over several lines, in a column no wider than a readable measure,
+    # so the figures after it stay on screen.
+    assert name.evaluate("e => e.scrollWidth <= e.clientWidth && e.offsetHeight > 2 * parseFloat(getComputedStyle(e).lineHeight)")
+    assert name.bounding_box()["width"] <= 320, name.bounding_box()
+    cost = page.locator("#fa-register thead th", has_text="Cost").first.bounding_box()
+    assert cost["x"] + cost["width"] <= 1440, cost
 
 
 def test_u35_enter_a_bill_stands_below_its_hint_and_clear_of_the_kind_buttons(page: Page, fresh_company):

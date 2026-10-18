@@ -419,6 +419,9 @@ a:hover { text-decoration: underline; }
 .data-table td { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A header over figures sits right, over them, but reads as a label in the headers' face. */
 .data-table td.cell--money, .data-table td.cell--number, .cell--number { text-align: right; font-family: var(--font-mono); }
+/* Free text that can run long (an asset's name) wraps at a readable measure instead of
+   pushing every column after it out of view. */
+.data-table td.cell--text { white-space: normal; overflow-wrap: anywhere; min-width: 16ch; max-width: 32ch; }
 th.cell--number { font-family: inherit; }
 .data-table td { padding: 0 10px; height: var(--c-row-h); border-bottom: 1px solid var(--c-border); vertical-align: middle; }
 .data-row:last-child td { border-bottom: none; }
@@ -957,10 +960,6 @@ th.cell--number { font-family: inherit; }
 .doc-lines--customs th.col-desc,   .doc-lines--customs td.col-desc   { width: 260px; }
 /* Shipment section: all header fields the two printouts need, one visible grid. */
 .shipment-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.25rem 1.5rem; }
-/* All line-table headers are centered. !important + higher specificity beats both the per-column
-   right-align rules and the global `.data-table th.cell--number, .data-table th.cell--right`
-   right-align (the Total header carries cell--number); cell bodies keep their own alignment. */
-.data-table.doc-lines thead th { text-align: center !important; }
 /* input inside editable total cell — fills cell width */
 .doc-lines td.col-total input.line-total { width: 100%; text-align: right; box-sizing: border-box; }
 /* Every line input fills its (percentage-width) cell — the cell-input--xs 80px cap left wasted
@@ -1594,6 +1593,15 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 
   /* Sticky-header spacer row and top-scroll spacer are screen-only scaffolding; never print them as a blank gap */
   .hdr-spacer, .top-scroll-spacer { display: none !important; }
+
+  /* A page printed as it stands prints its figures, not its screen controls: no breadcrumb,
+     no filter or search form, no system banner. */
+  .breadcrumbs, .sys-health-banner, .main-content form[method="get"] { display: none !important; }
+  /* Paper does not scroll: a table fits the page width, its text wrapping, rather than being
+     cut off at the edge of its scroll box or card. */
+  .table-scroll-wrap, .detail-card { overflow: visible !important; }
+  .data-table { width: 100%; }
+  .data-table th, .data-table td:not(.cell--number, .cell--money) { white-space: normal; overflow-wrap: anywhere; }
 }
 
 /* Line item checkbox column */
