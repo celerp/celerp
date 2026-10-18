@@ -287,8 +287,8 @@ def _policy(preview: dict) -> str:
     return (preview.get("scope") or {}).get("role_permissions") or ""
 
 
-def _parts(names) -> str:
-    return ", ".join(t(f"company_backup.part.{n}") for n in names or ())
+def _parts(heading: str, names) -> list:
+    return [Strong(t(heading)), Ul(*(Li(t(f"company_backup.part.{n}")) for n in names or ()), cls="form-hint")]
 
 
 def _scope_lines(preview: dict) -> list:
@@ -297,8 +297,9 @@ def _scope_lines(preview: dict) -> list:
     scope = preview.get("scope") or {}
     if not scope:
         return []
-    lines = [P(t("company_backup.scope_included", items=_parts(scope.get("included"))), cls="form-hint"),
-             P(t("company_backup.scope_excluded", items=_parts(scope.get("excluded"))), cls="form-hint")]
+    lines = [*_parts("company_backup.scope_included", scope.get("included")),
+             *_parts("company_backup.scope_excluded", scope.get("excluded")),
+             P(t("company_backup.scope_excluded_note"), cls="form-hint")]
     if _policy(preview) == "destination" and (preview.get("action") or _CREATE) == _CREATE:
         lines.append(P(t("company_backup.roles_reset"), cls="form-hint"))
     return lines
