@@ -6,6 +6,7 @@ that page offers."""
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import re
 import threading
@@ -16,6 +17,7 @@ from decimal import Decimal as D
 
 import httpx
 import pytest
+from PIL import Image
 from playwright.sync_api import Page, expect
 
 from celerp.accounting_roles import SEEDED_TARGETS
@@ -425,7 +427,19 @@ def test_u46_the_first_use_card_keeps_its_list_inside_and_its_closing_line_apart
     assert closing["y"] - (listed["y"] + listed["height"]) >= 8, (listed, closing)
 
 
-_SHADE = "t => getComputedStyle(document.querySelector(t).parentElement).boxShadow"
+def _edges(page: Page, table: str) -> tuple[float, float]:
+    """How light the left and right edges of a table's scroll box look on screen, along its
+    first row (255 is white): the pixels a person sees, whatever draws them."""
+    box = page.locator(table).evaluate("t => { const r = t.parentElement.getBoundingClientRect(); return [r.x, r.width]; }")
+    row = page.locator(f"{table} tbody tr").first.bounding_box()
+    shot = Image.open(io.BytesIO(page.screenshot(clip={"x": box[0], "y": row["y"] + 2, "width": box[1],
+                                                         "height": max(row["height"] - 4, 1)}))).convert("L")
+    width, height = shot.size
+
+    def strip(x0: int) -> float:
+        pixels = [shot.getpixel((x, y)) for x in range(x0, x0 + 3) for y in range(height)]
+        return sum(pixels) / len(pixels)
+    return strip(2), strip(width - 5)
 
 
 def test_u50_a_table_wider_than_a_phone_shades_where_more_columns_wait(page: Page, fresh_company):
@@ -436,21 +450,36 @@ def test_u50_a_table_wider_than_a_phone_shades_where_more_columns_wait(page: Pag
     # Wide enough for every column, the register is unshaded.
     page.set_viewport_size({"width": 1600, "height": 900})
     page.goto("/fixed-assets")
-    assert page.evaluate(f"({_SHADE})", table) == "none"
+    assert page.locator(table).evaluate("t => t.parentElement.className").find("scroll-more") < 0
     # Narrower, it scrolls in its own box and the page itself never scrolls sideways.
     page.set_viewport_size({"width": 1280, "height": 900})
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     page.set_viewport_size({"width": 390, "height": 844})
     box = page.locator(table).evaluate_handle("t => t.parentElement")
     assert box.evaluate("b => b.scrollWidth > b.clientWidth")
-    # More columns wait to the right: the right edge is shaded.
-    page.wait_for_function(f"t => ({_SHADE})(t).includes('inset')", arg=table, timeout=5000)
-    start = page.evaluate(f"({_SHADE})", table)
+    # More columns wait to the right: the right edge is visibly darker than the left.
+    page.wait_for_function("t => document.querySelector(t).parentElement.classList.contains('scroll-more-right')",
+                           arg=table, timeout=5000)
+    left, right = _edges(page, table)
+    assert right < left - 30, (left, right)
     # Scrolled to the end, the shade moves to the left edge, where the first columns now wait.
     box.evaluate("b => { b.scrollLeft = b.scrollWidth; }")
-    page.wait_for_function(f"([t, s]) => ({_SHADE})(t) !== s", arg=[table, start], timeout=5000)
-    end = page.evaluate(f"({_SHADE})", table)
-    assert "inset" in end, (start, end)
+    page.wait_for_function("t => !document.querySelector(t).parentElement.classList.contains('scroll-more-right')",
+                           arg=table, timeout=5000)
+    left_end, right_end = _edges(page, table)
+    assert left_end < right_end - 30 and right_end > right + 30, (left, right, left_end, right_end)
+
+
+def test_the_register_filter_keeps_its_button_beside_a_field_on_a_phone(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto("/fixed-assets")
+    form = page.locator("main form[action='/fixed-assets']")
+    button = form.locator("button[type=submit]").bounding_box()
+    classes = form.locator(".combobox-wrap").first.bounding_box()
+    assert abs((button["y"] + button["height"] / 2) - (classes["y"] + classes["height"] / 2)) < 4, (button, classes)
+    assert button["x"] > classes["x"] + classes["width"] - 1
 
 
 def test_a_report_printed_from_its_page_prints_every_figure_and_none_of_its_controls(page: Page, fresh_company):

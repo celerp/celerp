@@ -1848,6 +1848,7 @@ _STICKY_HEADER_JS = """
     var max = /auto|scroll/.test(getComputedStyle(box).overflowX) ? box.scrollWidth - box.clientWidth : 0;
     box.classList.toggle('scroll-more-right', max > 1 && box.scrollLeft < max - 1);
     box.classList.toggle('scroll-more-left', max > 1 && box.scrollLeft > 1);
+    box.style.setProperty('--scroll-x', box.scrollLeft + 'px');
   }
   // The box changes width with the window; the table changes width with its rows.
   var sizes = new ResizeObserver(function(entries){

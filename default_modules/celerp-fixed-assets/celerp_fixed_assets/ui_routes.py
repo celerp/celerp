@@ -1103,12 +1103,13 @@ def doc_register_actions(doc: dict) -> FT | None:
 
 
 def _filters(q: str, class_id: str, classes: list[dict]) -> FT:
+    """Search, class and Filter on one row; on a phone Filter wraps with the class, never alone."""
     return Form(
         _input("q", q, type_="search", placeholder=t("fixed_assets.search"), aria_label=t("fixed_assets.search")),
-        _picker("class_id", [(c["id"], c["name"]) for c in classes], class_id, label=t("fixed_assets.class"),
-                empty="fixed_assets.all_classes"),
-        Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary"),
-        method="get", action="/fixed-assets", cls="flex-row mt-md",
+        Div(_picker("class_id", [(c["id"], c["name"]) for c in classes], class_id, label=t("fixed_assets.class"),
+                    empty="fixed_assets.all_classes"),
+            Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary"), cls="flex-row gap-sm"),
+        method="get", action="/fixed-assets", cls="flex-row gap-sm mt-md",
     )
 
 

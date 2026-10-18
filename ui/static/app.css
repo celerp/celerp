@@ -342,13 +342,18 @@ a:hover { text-decoration: underline; }
    The inner table keeps overflow:visible so autocomplete dropdowns can escape. */
 .table-scroll-wrap { overflow-x: auto; width: 100%; }
 /* A table's box scrolled short of either end shades that edge, so columns out of view on a
-   narrow screen are not mistaken for none. The shade is the box's own inset shadow, never a
-   mask: a mask would hide the row menus and tips a table opens past its edge. The shell's
-   scroll-cue script sets the classes. */
-.scroll-more-right { box-shadow: inset -16px 0 12px -12px rgba(26,29,46,0.3); }
-.scroll-more-left { box-shadow: inset 16px 0 12px -12px rgba(26,29,46,0.3); }
-.scroll-more-left.scroll-more-right { box-shadow: inset -16px 0 12px -12px rgba(26,29,46,0.3), inset 16px 0 12px -12px rgba(26,29,46,0.3); }
-@media print { .scroll-more-left, .scroll-more-right { box-shadow: none; } }
+   narrow screen are not mistaken for none. The shade is an overlay drawn above the table (an
+   inset shadow on the box would sit under the table's own background and never show), held
+   at the visible edge by --scroll-x, and it takes no clicks. Never a mask: a mask would hide
+   the row menus and tips a table opens past its edge. The shell's scroll-cue script sets the
+   classes and --scroll-x. */
+.scroll-more-left, .scroll-more-right { position: relative; }
+.scroll-more-left::before, .scroll-more-right::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 20px; z-index: 4; pointer-events: none;
+}
+.scroll-more-left::before { left: var(--scroll-x, 0px); background: linear-gradient(to right, rgba(26,29,46,0.3), transparent); }
+.scroll-more-right::after { right: calc(-1 * var(--scroll-x, 0px)); background: linear-gradient(to left, rgba(26,29,46,0.3), transparent); }
+@media print { .scroll-more-left::before, .scroll-more-right::after { content: none; } }
 /* An empty table's message wraps within the width its scroll box shows, and stays in view,
    rather than running on under the columns scrolled out of sight on a narrow screen. Only an
    empty table's box measures itself (a filled table's box sizes from its rows as before). */
