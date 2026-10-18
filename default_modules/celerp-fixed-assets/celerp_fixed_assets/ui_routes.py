@@ -613,10 +613,15 @@ def _op_form(action: str, *fields: FT, review_label: str | None = None, actions:
     does it. Targets are relative, so a page can carry several of these forms. ``actions`` sit
     beside Review."""
     return Form(*fields, operation_key_input(),
-                _step(action, "review", review_label or t("fixed_assets.review"), "btn btn--secondary",
+                _step(action, "review", review_label or t("fixed_assets.review"), "btn btn--primary",
                       "next #fa-preview", *actions),
                 Div(id="fa-preview"),
                 onsubmit="return false;", cls=f"settings-card {_STACK}")
+
+
+def _titled(asset: dict) -> str:
+    """An asset as an action page's title names it: its number and its name."""
+    return " ".join(filter(None, (asset["number"], asset.get("name"))))
 
 
 def _step(action: str, step: str, label: str, cls: str, target: str, *actions: FT) -> FT:
@@ -2369,7 +2374,7 @@ def setup_ui_routes(app) -> None:
             _, currency = await _context(token)
         except APIError as e:
             return Div(await _error_box(request, e),
-                       *([_step(action, "review", t("fixed_assets.review_again"), "btn btn--secondary",
+                       *([_step(action, "review", t("fixed_assets.review_again"), "btn btn--primary",
                                 "closest #fa-preview")] if step == "confirm" else []),
                        id="fa-preview")
         if step == "review":
@@ -2769,7 +2774,7 @@ def setup_ui_routes(app) -> None:
                         Input(type="hidden", name="field", value=field), *fields,
                         _field(t("fixed_assets.request_note"), _input("reason"), t("fixed_assets.request_hint")),
                         actions=(request_button,))
-        title = t("fixed_assets.correct_title", number=asset["number"])
+        title = t("fixed_assets.correct_title", number=_titled(asset))
         return await _page(request, crumbs, page_header(title), _left_use_notice(asset), tabs, form,
                            title_key="fixed_assets.correct")
 
@@ -2787,7 +2792,7 @@ def setup_ui_routes(app) -> None:
                               (asset["number"], f"/fixed-assets/assets/{asset_id}"), (t("fixed_assets.dispose"), None)])
         form = _op_form("dispose", Input(type="hidden", name="asset_id", value=asset_id),
                         P(t("fixed_assets.dispose_hint"), cls="settings-hint"), *_disposal_fields(asset, setup["today"]))
-        return await _page(request, crumbs, page_header(t("fixed_assets.dispose_title", number=asset["number"])),
+        return await _page(request, crumbs, page_header(t("fixed_assets.dispose_title", number=_titled(asset))),
                            _left_use_notice(asset), form, title_key="fixed_assets.dispose")
 
     @app.get("/fixed-assets/assets/{asset_id}/sell")
@@ -2818,7 +2823,7 @@ def setup_ui_routes(app) -> None:
                             search_url=PARTY_SEARCH_URL, aria_label=t("fixed_assets.buyer")),
                                Span(t("fixed_assets.buyer_hint"), " ",
                                     A(t("fixed_assets.add_contact"), href="/contacts/customers"))))
-        return await _page(request, crumbs, page_header(t("fixed_assets.sell_title", number=asset["number"])),
+        return await _page(request, crumbs, page_header(t("fixed_assets.sell_title", number=_titled(asset))),
                            _left_use_notice(asset), form, title_key="fixed_assets.sell")
 
     async def _asset_crumbs(token: str, asset_id: str, label_key: str) -> tuple[dict, FT]:
@@ -2854,7 +2859,7 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.move")
         form = _op_form("move", Input(type="hidden", name="asset_id", value=asset_id),
                         P(t("fixed_assets.move_hint"), cls="settings-hint"), *fields)
-        return await _page(request, crumbs, page_header(t("fixed_assets.move_title", number=asset["number"])),
+        return await _page(request, crumbs, page_header(t("fixed_assets.move_title", number=_titled(asset))),
                            _left_use_notice(asset), form, title_key="fixed_assets.move")
 
     @app.post("/fixed-assets/move/selected")
@@ -2902,7 +2907,7 @@ def setup_ui_routes(app) -> None:
                         _field(t("fixed_assets.reclassify_date"),
                                _input("date", setup["today"], type_="date", required=True)),
                         _field(t("fixed_assets.to_class"), _picker("class_id", options, label=t("fixed_assets.to_class"))))
-        return await _page(request, crumbs, page_header(t("fixed_assets.reclassify_title", number=asset["number"])),
+        return await _page(request, crumbs, page_header(t("fixed_assets.reclassify_title", number=_titled(asset))),
                            _left_use_notice(asset), form, title_key="fixed_assets.reclassify")
 
     @app.get("/fixed-assets/assets/{asset_id}/transfer")
@@ -2919,7 +2924,7 @@ def setup_ui_routes(app) -> None:
             chart = (await api.get_chart(token)).get("items") or [] if targets else []
         except APIError as e:
             return await _refused(request, e, "fixed_assets.transfer")
-        title = page_header(t("fixed_assets.transfer_title", number=asset["number"]))
+        title = page_header(t("fixed_assets.transfer_title", number=_titled(asset)))
         sell = A(t("fixed_assets.sell"), href=f"/fixed-assets/assets/{asset_id}/sell", cls="btn btn--sm btn--secondary")
         hint = P(t("fixed_assets.transfer_taxable_hint"), " ", sell, cls="settings-hint")
         if not targets:
@@ -2990,7 +2995,7 @@ def setup_ui_routes(app) -> None:
                                                                   required=True)),
                         _field(t("fixed_assets.basis"), _input("basis", basis, required=True),
                                t("fixed_assets.basis_hint")))
-        return await _page(request, crumbs, page_header(t("fixed_assets.remeasure_title", number=asset["number"])),
+        return await _page(request, crumbs, page_header(t("fixed_assets.remeasure_title", number=_titled(asset))),
                            _left_use_notice(asset), _tabs(f"/fixed-assets/assets/{asset_id}/remeasure", "op", op, ops, "fixed_assets.remeasure_op"),
                            form, title_key="fixed_assets.remeasure")
 
@@ -3012,7 +3017,7 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, "fixed_assets.add_to_asset")
         tabs = _tabs(f"/fixed-assets/assets/{asset_id}/add", "kind", kind, kinds, "fixed_assets.add_kind")
-        title = page_header(t("fixed_assets.add_to_asset_title", number=asset["number"]))
+        title = page_header(t("fixed_assets.add_to_asset_title", number=_titled(asset)))
         if kind == "repair":
             body = Div(P(t("fixed_assets.add_hint.repair"), cls="settings-hint"),
                        A(t("fixed_assets.register_from_bills"), href="/fixed-assets/intake", cls="btn btn--primary"),
@@ -3082,7 +3087,7 @@ def setup_ui_routes(app) -> None:
                         _field(t("fixed_assets.available_date"),
                                _input("date", setup["today"], type_="date", required=True)),
                         rows, add_row, P(t("fixed_assets.allocation_hint"), cls="form-hint"))
-        return await _page(request, crumbs, page_header(t("fixed_assets.place_title", number=asset["number"])),
+        return await _page(request, crumbs, page_header(t("fixed_assets.place_title", number=_titled(asset))),
                            form, title_key="fixed_assets.place_in_service")
 
     @app.get("/fixed-assets/assets/{asset_id}/place-in-service/row")

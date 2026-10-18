@@ -11,6 +11,7 @@ from decimal import Decimal
 from urllib.parse import quote
 
 import pytest
+from bs4 import BeautifulSoup
 
 from ui.i18n import doc_type_label, t
 
@@ -1157,6 +1158,16 @@ async def test_u19_u20_every_open_ended_list_is_searchable_and_a_fixed_one_is_a_
     assert searchable(add.text, "source")
     page = await owner_ui.get(f"/fixed-assets/assets/{car}")
     assert re.search(r'<select name="kind"', page.text), "a reminder's kind is one of a fixed few"
+
+
+async def test_an_action_page_names_the_asset_and_review_is_its_main_button(owner_ui):
+    car = await _managed_car(owner_ui)
+    for action, title in (("sell", "Sell"), ("move", "Move"), ("dispose", "Dispose of"), ("add", "Add to"),
+                          ("reclassify", "Reclassify")):
+        soup = BeautifulSoup((await owner_ui.get(f"/fixed-assets/assets/{car}/{action}")).text, "html.parser")
+        assert soup.find("h1").get_text(strip=True) == f"{title} FA-0001 Delivery car", action
+        review = soup.find("button", attrs={"hx-post": re.compile(r"/review$")})
+        assert review.get_text(strip=True) == "Review" and "btn--primary" in review["class"], action
 
 
 async def test_u21_transfer_says_what_it_needs_when_no_company_can_take_the_asset(owner_ui):
