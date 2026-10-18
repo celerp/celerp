@@ -926,12 +926,15 @@ async def test_a_firm_emails_a_client_the_checklist_and_adds_what_arrives(ui, ro
     fake_api.draft_view = {**blank, "uploads": [{"name": "Contacts.csv", "stored_name": "artifact-1"}]}
     ui.cookies.set(DRAFT_COOKIE, "drafttoken0001secretvalue", path="/setup/new-company/migrate")
     r = await ui.post(add)
-    assert r.status_code == 303 and r.headers["location"] == "/setup/new-company/migrate?source=xero"
+    assert r.status_code == 303 and r.headers["location"] == "/setup/new-company/migrate?source=xero&added=1"
     assert fake_api.export_adds == [(arrived["id"], {"draft_token": "drafttoken0001secretvalue"})]
     token = _cookie_value(r, DRAFT_COOKIE)
     ui.cookies.set(DRAFT_COOKIE, token, path="/setup/new-company/migrate")
-    page = _page(await ui.get("/setup/new-company/migrate?source=xero"))
+    added = await ui.get(r.headers["location"])
+    page = _page(added)
     assert "Contacts.csv" in page and '"remove": "artifact-1"' in page        # the files are in the upload
+    assert t("migration.export_request_added") in _visible(added)             # and the page says so
+    assert t("migration.export_request_added") not in _page(await ui.get("/setup/new-company/migrate?source=xero"))
     assert _form_field(fake_api.scan_bodies[-1], "draft") == token
 
     revoked = _page(await ui.post(f"{REQUESTS}/{older['id']}/revoke"))
