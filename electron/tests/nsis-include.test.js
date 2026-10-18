@@ -171,12 +171,34 @@ test("the new version is copied next to the install folder under names of the sa
     expect(prepare).toContain('StrCpy $celerpStage "$celerpParent\\~N$celerpName"');
     expect(prepare).toContain('StrCpy $celerpOld "$celerpParent\\~O$celerpName"');
     expect(prepare).toContain('StrCpy $celerpMarker "$celerpParent\\~S$celerpName"');
-    // only a swap this setup can prove it started is finished or undone
-    expect(prepare.indexOf('${If} ${FileExists} "$celerpMarker"')).toBeLessThan(prepare.indexOf('Rename "$celerpOld" "$INSTDIR"'));
+    // only a swap this setup can prove it started, by a marker it would write, is finished or undone
+    expect(prepare).toContain('StrCpy $celerpMarkerText "${PRODUCT_NAME} setup is replacing $INSTDIR"');
+    expect(prepare.indexOf("${If} $celerpFile == $celerpMarkerText")).toBeLessThan(prepare.indexOf('Rename "$celerpOld" "$INSTDIR"'));
     expect(prepare).toContain('StrCpy $celerpMode "swap"');
     expect(prepare).toContain('StrCpy $celerpMode "fresh"');
     const begin = macro(include(), "celerpBeginCopy");
+    // in UTF-16, so a path with letters outside the code page reads back as written
+    expect(begin).toContain('FileWriteUTF16LE $celerpFile "$celerpMarkerText"');
+    expect(prepare).toContain("FileReadUTF16LE $celerpFind $celerpFile");
     expect(begin).toContain("SetOutPath $celerpStage");
+  });
+
+test("an installed version is never copied over: setup stops instead",
+  function test_nsis_no_direct_copy_over_an_install() {
+    const nsh = include();
+    const stops = /The installed version is as it was\." \/SD IDOK\s*\n\s*SetErrorLevel 2\s*\n\s*Quit/;
+    // siblings it did not make, or any other reason it would copy straight into an install
+    const prepare = macro(nsh, "celerpPrepareReplace");
+    const found = prepare.slice(prepare.indexOf('DetailPrint "Left as found'));
+    expect(found).toMatch(stops);
+    const tail = prepare.slice(prepare.lastIndexOf('${If} $celerpMode == "direct"'));
+    expect(tail).toContain('${AndIf} ${FileExists} "$INSTDIR\\${APP_EXECUTABLE_FILENAME}"');
+    expect(tail).toMatch(stops);
+    // a marker it cannot write
+    const begin = macro(nsh, "celerpBeginCopy");
+    const failed = begin.slice(begin.indexOf("${If} ${Errors}"));
+    expect(failed.indexOf('${If} $celerpMode == "swap"')).toBeLessThan(failed.indexOf('StrCpy $celerpMode "direct"'));
+    expect(failed).toMatch(stops);
   });
 
 test("setup stops before changing anything when a volume is short of space",

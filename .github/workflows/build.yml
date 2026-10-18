@@ -802,7 +802,10 @@ jobs:
       # After them, an update on a nearly full disk (setup's temporary folder on the
       # same disk) is refused before anything changes, and one where the disk fills
       # while it unpacks or while it copies leaves the installed version byte for byte
-      # as it was.
+      # as it was. So does an update that cannot copy into a new folder next to the
+      # install: one that cannot write its marker file there, and one that finds a
+      # folder or marker there that it did not make. It stops, and leaves what it found.
+      # A normal update after them still replaces the install.
       - name: Installer version check (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -996,10 +999,78 @@ jobs:
           FillDuring "while unpacking" { @(Get-ChildItem $tmp -Directory -Filter "ns*.tmp" -EA SilentlyContinue | ForEach-Object { Get-ChildItem (Join-Path $_.FullName "7z-out") -Recurse -File -EA SilentlyContinue }).Count }
           FillDuring "while copying" { @(Get-ChildItem "$vol\~Nlerp" -Recurse -File -EA SilentlyContinue).Count }
 
+          # An update that cannot copy next to the install first stops, and changes nothing.
+          function Refused([string]$what) {
+            $p = Update
+            if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; Fail "$what was still running after 600 s" }
+            if ($p.ExitCode -ne 2) { Fail "$what exited $($p.ExitCode) (want 2)" }
+          }
+          # Its marker file cannot be written: this account may make folders but no files
+          # in the folder that holds the install.
+          $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          icacls "$vol\" /deny "*${me}:(WD)" | Out-Null
+          try { Refused "an update that cannot write its marker" } finally { icacls "$vol\" /remove:d "*$me" | Out-Null }
+          Unchanged "an update that cannot write its marker"
+          Write-Host "update that cannot write its marker: stopped with exit 2, the installed version unchanged byte for byte"
+          # A folder or marker in a sibling's place that setup did not make, alone or with
+          # a marker that is not setup's own.
+          $foreign = "made by something other than setup"
+          $cases = [ordered]@{
+            "a copy folder"            = @("~Nlerp")
+            "an old-version folder"    = @("~Olerp")
+            "a folder in the marker's place" = @("~Slerp")
+            "a marker that is not setup's" = @("~Slerp=file", "~Nlerp")
+          }
+          foreach ($case in $cases.GetEnumerator()) {
+            foreach ($item in $case.Value) {
+              $name, $kind = $item -split "="
+              if ($kind -eq "file") { Set-Content -Encoding Ascii "$vol\$name" $foreign }
+              else { New-Item -ItemType Directory "$vol\$name" | Out-Null; Set-Content -Encoding Ascii "$vol\$name\foreign.txt" $foreign }
+            }
+            Refused "an update that found $($case.Key)"
+            foreach ($item in $case.Value) {
+              $name, $kind = $item -split "="
+              $file = if ($kind -eq "file") { "$vol\$name" } else { "$vol\$name\foreign.txt" }
+              if ((Get-Content $file -Raw -EA SilentlyContinue) -notmatch $foreign) { Fail "an update that found $($case.Key) changed $file" }
+              Remove-Item -Recurse -Force "$vol\$name"
+            }
+            Unchanged "an update that found $($case.Key)"
+            Write-Host "update that found $($case.Key): stopped with exit 2, left it as found, the installed version unchanged byte for byte"
+          }
+          # Nothing in the way: the update replaces the install.
           Remove-Item (Join-Path $dir "celerp-ci-sentinel.txt")
+          $p = Update
+          if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; Fail "the update after the refused ones was still running after 600 s" }
+          if ($p.ExitCode -ne 0) { Fail "the update after the refused ones exited $($p.ExitCode) (want 0)" }
+          python electron/scripts/check_win_bundle.py installed electron/dist/win-unpacked $dir
+          if ($LASTEXITCODE -ne 0) { Fail "the update after the refused ones: the install differs from the build" }
+          if ((Siblings $vol).Count) { Fail "the update after the refused ones left $((Siblings $vol) -join ', ')" }
+          Write-Host "update after the refused ones: replaced the install, nothing left next to it"
+
           $p = Start-Process -FilePath (Join-Path $dir "Uninstall Celerp.exe") -ArgumentList "/S /currentuser _?=$dir" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Fail "uninstall from the update volume exited $($p.ExitCode)" }
           Detach $vhd
+
+          # A setup stopped while copying into a folder whose path has letters outside the
+          # system code page (a Thai account name) is still setup's own: the next setup
+          # cleans it up instead of refusing every later update.
+          $target = Join-Path $env:LOCALAPPDATA "Programs\ทดสอบ\celerp"
+          $p = Start-Process -FilePath $setup -ArgumentList "/S /currentuser /D=$target" -PassThru
+          $n = 0
+          while (-not $p.HasExited -and $n -lt 1000) {
+            $n = @(Get-ChildItem (Join-Path (Split-Path $target) "~Nlerp") -Recurse -File -EA SilentlyContinue).Count
+            Start-Sleep -Milliseconds 100
+          }
+          if ($n -lt 1000) { Fail "the installer into a Thai folder finished (exit $($p.ExitCode)) before it could be stopped" }
+          Stop-Process -Id $p.Id -Force; $p.WaitForExit()
+          $code = Install @("/S", "/currentuser", "/D=$target")
+          if ($code -ne 0) { Fail "install into a Thai folder after a stopped one exited $code" }
+          if ((Siblings (Split-Path $target)).Count) { Fail "install into a Thai folder left $((Siblings (Split-Path $target)) -join ', ')" }
+          $code = Install @("/S", "/currentuser", "/D=$target")
+          if ($code -ne 0) { Fail "update in a Thai folder exited $code" }
+          $p = Start-Process -FilePath (Join-Path $target "Uninstall Celerp.exe") -ArgumentList "/S /currentuser _?=$target" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Fail "uninstall from a Thai folder exited $($p.ExitCode)" }
+          Write-Host "setup stopped in a Thai folder: the next one cleaned up after it, and an update after that replaced the install"
           Write-Host "installer version check OK on Windows"
 
       # An administrator on a PC with UAC off has no standard token to relaunch into,

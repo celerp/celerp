@@ -176,9 +176,12 @@ const { watchForRestart, classifyNavigation, fullRelaunch } = require("./restart
 const { createShutdown } = require("./shutdown");
 const { waitForApi, rebuildProgress, lineSplitter, outputTail } = require("./api-wait");
 // Stops the servers and then the database, once; every way the app exits waits for it.
+// A database that already exited (a failed start) counts as stopped: embedded-postgres stop()
+// would wait for an exit that has already happened.
+const databaseExited = () => pgInstance?.process && (pgInstance.process.exitCode !== null || pgInstance.process.signalCode !== null);
 const lifecycle = createShutdown({
   children: () => [apiProcess, uiProcess],
-  stopDatabase: () => (pgInstance ? pgInstance.stop() : undefined),
+  stopDatabase: () => (pgInstance && !databaseExited() ? pgInstance.stop() : undefined),
 });
 const {
   dbModeDecision,
@@ -285,10 +288,15 @@ function windowsPrivateRoot() {
     { encoding: "utf8", env: { ...process.env, PYTHONIOENCODING: "utf-8" }, timeout: 30000 });
   if (r.status === 0) return r.stdout.trim();
   const reason = (r.stderr || r.error?.message || `exit code ${r.status}`).replace(/^win_restricted_launch:\s*/, "").trim();
+  // The user's own folder that other accounts can open (private_dir_problem) may hold
+  // the database; any other folder there is not Celerp's.
+  const advice = reason.endsWith("can be opened by other accounts")
+    ? "It may hold your database, so do not delete it: ask whoever manages this PC to remove " +
+      "every other account's access to it, then start Celerp again."
+    : "Ask whoever manages this PC to remove that folder, then start Celerp again. Your data is not affected.";
   throw new Error(
     `Celerp keeps its database in a folder under ${parent}, because your Windows account name has ` +
-    `letters the database cannot read, and it cannot use that folder: ${reason}. Ask whoever ` +
-    "manages this PC to remove that folder, then start Celerp again. Your data is not affected.");
+    `letters the database cannot read, and it cannot use that folder: ${reason}. ${advice}`);
 }
 
 let windowsPgPathsCache = null;
@@ -682,6 +690,7 @@ function startApi(dbUrl, cfg) {
     });
     // a server that could not start has no exit to wait for; stop polling its port
     proc.on("error", (e) => { exited = true; reject(e); });
+    proc.on("close", () => apiLog?.end());
     proc.on("exit", (code) => {
       exited = true;
       if (code !== 0 && code !== null) reject(new Error(`API process exited (code ${code}). Full log: ${logFile}\n${output.text()}`));
@@ -720,6 +729,7 @@ function startUi(dbUrl, cfg) {
     let exited = false;
     // a server that could not start has no exit to wait for; stop polling its port
     uiProcess.on("error", (e) => { exited = true; reject(e); });
+    uiProcess.on("close", () => uiLog?.end());
     uiProcess.on("exit", (code) => {
       exited = true;
       if (code !== 0 && code !== null) reject(new Error(`UI process exited (code ${code}). Full log: ${logFile}\n${output.text()}`));
@@ -1032,15 +1042,27 @@ async function _doUninstallDeleteData() {
   // Electron holds open handles on Cache/Code Cache/Network/Persistent State inside
   // userData throughout the process lifetime; deleting userData itself leaves those
   // dirs behind on macOS. DATA_DIR is everything Celerp owns (postgres, modules,
-  // config, JWT secret) and is safe to remove while the process is still running.
-  // On Windows the database may instead sit in the user's private folder under
-  // ProgramData (windowsPgPaths), which goes too.
+  // config, JWT secret); the servers and the database hold files in it open, so
+  // they stop first, and nothing is deleted unless they did. On Windows the
+  // database may instead sit in the user's private folder under ProgramData
+  // (windowsPgPaths), which goes too; when that folder cannot be used it may still
+  // hold the database, so nothing is deleted and the user is told why.
   const dataPaths = [DATA_DIR];
   if (process.platform === "win32" && !IS_DEV) {
+    let privateRoot;
     try {
-      const { privateRoot } = windowsPgPaths();
-      if (privateRoot) dataPaths.push(privateRoot);
-    } catch (err) { console.error("[uninstall] cannot use the private database folder:", err); }
+      ({ privateRoot } = windowsPgPaths());
+    } catch (err) {
+      console.error("[uninstall] cannot use the private database folder:", err);
+      await dialog.showMessageBox(mainWindow, {
+        type: "error",
+        title: "Uninstall and Delete All Data",
+        message: "Nothing was deleted",
+        detail: `${err.message}\n\nCelerp deleted none of your data, because your database may be in that folder.`,
+      });
+      return;
+    }
+    if (privateRoot) dataPaths.push(privateRoot);
   }
   const { response } = await dialog.showMessageBox(mainWindow, {
     type: "warning",
@@ -1054,18 +1076,47 @@ async function _doUninstallDeleteData() {
       dataPaths.map((p) => `• ${p}\n`).join("") + "\n" +
       "This includes your database, configuration, modules, and all business data. " +
       "This cannot be undone.\n\n" +
-      "After quitting, drag Celerp from Applications to Trash to complete removal.",
+      (process.platform === "win32"
+        ? "After quitting, uninstall Celerp in Settings > Apps to complete removal."
+        : "After quitting, drag Celerp from Applications to Trash to complete removal."),
   });
-  if (response === 1) {
-    // A link in the private folder is removed as a link; the program folder it
-    // points to is not followed.
-    for (const p of dataPaths) {
-      try { fs.rmSync(p, { recursive: true, force: true }); }
-      catch (err) { console.error("[uninstall] failed to delete data dir:", err); }
-    }
-    isQuitting = true;
+  if (response !== 1) return;
+  isQuitting = true;
+  if (!(await lifecycle.shutdown())) {
+    await dialog.showMessageBox(mainWindow, {
+      type: "error",
+      title: "Uninstall and Delete All Data",
+      message: "Nothing was deleted",
+      detail:
+        "Celerp could not stop its database, so it deleted none of your data. Restart your " +
+        "computer, open Celerp and choose Delete All Data again.\n\n" +
+        `Details are in the logs in:\n${LOG_DIR}`,
+    });
     app.quit();
+    return;
   }
+  // A link in the private folder is removed as a link; the program folder it
+  // points to is not followed. Windows can briefly hold a file a stopped process
+  // had open, so each removal is retried for a moment.
+  const failed = [];
+  for (const p of dataPaths) {
+    try { fs.rmSync(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+    catch (err) {
+      console.error("[uninstall] failed to delete data dir:", err);
+      failed.push(`• ${p}: ${err.message}`);
+    }
+  }
+  if (failed.length) {
+    await dialog.showMessageBox(mainWindow, {
+      type: "error",
+      title: "Uninstall and Delete All Data",
+      message: "Some Celerp data was not deleted",
+      detail:
+        "Celerp could not delete:\n\n" + failed.join("\n") + "\n\n" +
+        "Close any program that is using these folders, then delete them yourself.",
+    });
+  }
+  app.quit();
 }
 
 /**

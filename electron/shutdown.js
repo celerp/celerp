@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 //
 // Stops the app's servers and then its database, once, before the app exits.
+// Resolves true when every server exited and the database stopped.
 // No Electron imports, so it runs under Jest with real child processes.
 
 "use strict";
@@ -45,10 +46,11 @@ function createShutdown({ children, stopDatabase, graceMs = 5000, databaseMs = 1
     const servers = await Promise.all(children().map((child) => stopChild(child, graceMs)));
     if (servers.includes(false)) log("[shutdown] a server did not exit");
     const database = await bounded(
-      Promise.resolve().then(stopDatabase).then(() => true, (err) => { log(`[shutdown] database stop failed: ${err?.message ?? err}`); return true; }),
+      Promise.resolve().then(stopDatabase).then(() => true, (err) => { log(`[shutdown] database stop failed: ${err?.message ?? err}`); return null; }),
       databaseMs, false);
-    if (!database) log("[shutdown] the database did not stop in time");
+    if (database === false) log("[shutdown] the database did not stop in time");
     stopped = true;
+    return !servers.includes(false) && database === true;
   }
 
   return {
