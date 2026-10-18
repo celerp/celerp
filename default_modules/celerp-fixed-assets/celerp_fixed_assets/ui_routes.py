@@ -1225,9 +1225,13 @@ def doc_register_actions(doc: dict) -> FT | None:
 
 
 def _filters(q: str, class_id: str, classes: list[dict]) -> FT:
-    """Search, class and Filter on one row; on a phone Filter wraps with the class, never alone."""
+    """Search, class and Filter on one row; on a phone Filter wraps with the class, never alone.
+    The list follows the search as it is typed, with the search kept in the address."""
     return Form(
-        _input("q", q, type_="search", placeholder=t("fixed_assets.search"), aria_label=t("fixed_assets.search")),
+        _input("q", q, type_="search", placeholder=t("fixed_assets.search"), aria_label=t("fixed_assets.search"),
+               hx_get="/fixed-assets", hx_trigger="input changed delay:300ms", hx_include="closest form",
+               hx_target="#fa-register-body", hx_select="#fa-register-body", hx_swap="outerHTML",
+               hx_push_url="true"),
         Div(_picker("class_id", [(c["id"], c["name"]) for c in classes], class_id, label=t("fixed_assets.class"),
                     empty="fixed_assets.all_classes"),
             Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary"), cls="flex-row gap-sm"),
@@ -2291,8 +2295,8 @@ def setup_ui_routes(app) -> None:
                            P(t("fixed_assets.register_hint"), cls="settings-hint"), _class_accounts_banner(classes), notice,
                            _attention_card(held) if held else "", _reviews_due_card(due) if due else "",
                            due_soon_card(upkeep_due) if upkeep_due else "",
-                           _filters(q, class_id, [c for c in classes if not c.get("archived")]), body,
-                           title_key="fixed_assets.title")
+                           _filters(q, class_id, [c for c in classes if not c.get("archived")]),
+                           Div(body, id="fa-register-body"), title_key="fixed_assets.title")
 
     @app.post("/fixed-assets/start")
     async def start(request: Request):

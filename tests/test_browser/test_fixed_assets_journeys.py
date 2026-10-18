@@ -1446,6 +1446,22 @@ def test_j21_bill_line_account_is_kept_and_the_finalized_bill_leads_to_registeri
         "href", f"/fixed-assets/assets/{roaster['id']}")
 
 
+def test_u30_the_register_follows_its_search_as_it_is_typed(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _contributed(c, "Delivery van")
+    _contributed(c, "Forklift")
+    page.goto("/fixed-assets")
+    rows = page.locator("main table.data-table tbody tr")
+    expect(rows).to_have_count(2)
+    page.locator("main input[name=q]").press_sequentially("Fork")
+    expect(rows).to_have_count(1)
+    expect(rows.first).to_contain_text("Forklift")
+    expect(page).to_have_url(re.compile(r"[?&]q=Fork"))
+    page.locator("main input[name=q]").fill("")
+    expect(rows).to_have_count(2)
+
+
 def test_u27_a_long_first_run_opens_with_its_summary_and_confirm(page: Page, fresh_company):
     c = fresh_company
     _started(c, first="2025-01-01")
