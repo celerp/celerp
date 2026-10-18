@@ -439,12 +439,20 @@ def _people_section(contact: dict) -> FT:
     )
 
 
-def _tab_bar(cid: str, active: str = "documents", lead_tabs: list | None = None) -> FT:
+def _reload_contact_link(contact_id: str) -> FT:
+    """Try again: a plain link to the contact page, a full reload (the desktop app has no reload control)."""
+    return A(t("btn.try_again"), href=f"/contacts/{contact_id}", cls="btn btn--secondary btn--sm")
+
+
+def _tab_bar(cid: str, active: str = "documents", lead_tabs: list | None = None, reload_documents: bool = False) -> FT:
     """HTMX-driven tab bar for Documents / Notes / Activity. lead_tabs prepends extra (key, label, href)
-    tabs (e.g. the company's Files tab, which loads a different route than /contacts/{cid}/tab/{key})."""
+    tabs (e.g. the company's Files tab, which loads a different route than /contacts/{cid}/tab/{key}).
+    reload_documents turns the Documents tab into a plain link to the contact page: after a failed
+    documents read only a full page load restores the cards, files and documents together."""
     tabs = list(lead_tabs or []) + [("documents", t("page.documents"), None), ("notes", t("label.notes"), None), ("activity", t("contacts.tab_activity"), None)]
     return Div(
-        *[A(
+        *[A(label, href=f"/contacts/{cid}", cls="tab active", id=f"tab-{key}")
+          if reload_documents and key == "documents" else A(
             label,
             hx_get=(href or f"/contacts/{cid}/tab/{key}"),
             hx_target="#tab-content",
@@ -876,7 +884,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         ),
         *([_addresses_section(contact)] if show_contact_addresses else []),
         *(extra_sections or []),
-        _tab_bar(cid),
+        _tab_bar(cid, reload_documents=docs_error is not None),
         Div(
             docs_error if docs_error is not None else _documents_tab(docs, contact, cid),
             id="tab-content",
@@ -1170,7 +1178,8 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             # A missing contact is final, so the API's own sentence stands alone; only a
             # temporary failure is worth "reload to try again".
-            body = str(e.detail) if e.status == 404 else t("msg.contact_load_failed", detail=str(e.detail))
+            body = str(e.detail) if e.status == 404 else (
+                t("msg.contact_load_failed", detail=str(e.detail)), " ", _reload_contact_link(contact_id))
             return await base_shell(
                 breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.customers"), "/contacts/customers")]),
                 page_header(t("page.contact_detail")),
@@ -1184,7 +1193,10 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            docs, docs_error = [], files_error_block(t("msg.documents_load_failed", detail=str(e.detail)), e.status)
+            docs = []
+            docs_error = files_error_block(
+                (t("msg.contact_documents_load_failed", detail=str(e.detail)), " ", _reload_contact_link(contact_id)),
+                e.status)
         try:
             vocab = await api.get_contact_tags_vocabulary(token)
         except Exception:
