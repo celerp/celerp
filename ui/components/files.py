@@ -11,6 +11,7 @@ from __future__ import annotations
 from fasthtml.common import *
 
 from ui.components.attrs import hx_vals
+from ui.components.table import searchable_select
 from ui.i18n import t
 
 # Single source of truth for tag slugs - drives both UI and i18n keys
@@ -190,10 +191,7 @@ def files_section(
     page_files = sorted_files[(page - 1) * FILES_PAGE_SIZE: page * FILES_PAGE_SIZE]
 
     # ── Filter bar ───────────────────────────────────────────────────────────
-    tag_opts = [Option(t("label.all_tags"), value="")] + [
-        Option(_tag_label(slug), value=slug, selected=(slug == tag_filter))
-        for slug in _tags
-    ]
+    tag_opts = [("", t("label.all_tags"))] + [(slug, _tag_label(slug)) for slug in _tags]
 
     next_sort = "asc" if sort_dir == "desc" else "desc"
     sort_arrow = "▼" if sort_dir == "desc" else "▲"
@@ -215,8 +213,10 @@ def files_section(
                   cls="form-input form-input--sm", style="width:130px;", **_hx, hx_trigger="change"),
         ]
     filter_bar = Form(
-        Select(*tag_opts, name="tag_filter", cls="form-input form-input--sm",
-               style=f"width:{'120px' if compact else '160px'};", **_hx, hx_trigger="change"),
+        # Searchable (rule i): the tag list can pass ten.
+        Div(searchable_select("tag_filter", tag_opts, value=tag_filter, placeholder=t("label.all_tags"),
+                              cls_extra="form-input--sm", aria_label=t("label.all_tags"), **_hx, hx_trigger="change"),
+            style=f"width:{'120px' if compact else '160px'};"),
         *date_controls,
         Input(type="search", name="search", value=search, placeholder=t("label.search"),
               cls="form-input form-input--sm", style=f"width:{'130px' if compact else '180px'};",

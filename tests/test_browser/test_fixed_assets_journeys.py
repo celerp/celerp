@@ -213,6 +213,17 @@ def _choose(page: Page, name: str, text: str) -> None:
     page.locator(".combobox-option:visible", has_text=text).first.click()
 
 
+def test_an_asset_files_tag_filter_is_searched_and_refreshes_the_list(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    van = _contributed(c, "Delivery van")
+    page.goto(f"/fixed-assets/assets/{van}")
+    with page.expect_response(lambda r: "/_section" in r.url and "tag_filter=warranties" in r.url):
+        _choose(page, "tag_filter", "Warrant")
+    expect(page.locator(".combobox-wrap:has(input[name='tag_filter']) .combobox-input")).to_have_value(
+        re.compile("Warrant"))
+
+
 def test_j4_locked_date_is_refused_and_the_first_open_date_saves(page: Page, fresh_company):
     c = fresh_company
     _started(c)

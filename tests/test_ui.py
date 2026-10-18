@@ -15824,11 +15824,16 @@ class TestFilesSectionRenders:
         assert "sort=" in html or "▲" in html or "▼" in html or "sort_dir" in html
 
     def test_files_section_filter_bar_has_tag_dropdown(self):
-        """Filter bar must include a tag dropdown select."""
+        """The tag filter is a searchable dropdown (rule i: the tag list can pass ten) that
+        refreshes the section on change and keeps the chosen tag."""
+        from bs4 import BeautifulSoup
         from ui.components.files import files_section
         from fasthtml.common import to_xml
-        html = to_xml(files_section("contact", "c1", []))
-        assert 'name="tag_filter"' in html
+        soup = BeautifulSoup(to_xml(files_section("contact", "c1", [], tag_filter="invoice")), "html.parser")
+        assert soup.select_one("select[name=tag_filter]") is None
+        hidden = soup.select_one(".combobox-wrap input[type=hidden][name=tag_filter]")
+        assert hidden is not None and hidden["value"] == "invoice" and hidden["hx-trigger"] == "change"
+        assert len(hidden.find_parent(class_="combobox-wrap").select(".combobox-option[data-value]")) > 10
 
     def test_files_section_filter_bar_has_date_inputs(self):
         """Filter bar must include from-date and to-date inputs."""
