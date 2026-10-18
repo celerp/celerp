@@ -759,10 +759,15 @@ def changes(movements: list[dict]) -> str:
     return ", ".join(dict.fromkeys(t(f"fixed_assets.movement.{m['operation']}") for m in movements))
 
 
-async def way_back(session, company_id, asset: dict, changed: str, correct: str) -> str:
-    """Why ``asset`` cannot be taken back because it ``changed`` since, and the way back: for a
-    sold or disposed asset, ending that first; otherwise ``correct``, the Correct an active
-    asset offers, said as it reads where the message is shown."""
+def _listed(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+_ENDED = ("sold", "disposed")
+
+
+async def _ended(session, company_id, asset: dict) -> str:
+    """How a sold or disposed asset comes back to where Correct is offered."""
     number = asset["number"]
     sale = asset.get("sale") or {}
     if asset.get("status") == "sold" and sale.get("invoice_id"):
@@ -770,9 +775,32 @@ async def way_back(session, company_id, asset: dict, changed: str, correct: str)
         ref = invoice.get("doc_number") or invoice.get("ref_id") or sale["invoice_id"].removeprefix("doc:")
         return (f"{number} was sold on invoice {ref}. Void that invoice and cancel the sale on {number}'s page, "
                 "then use Correct there.")
-    if asset.get("status") in ("sold", "disposed"):
-        return f"{number} was disposed of. Undo the disposal on its page, then use Correct there."
-    return f"{number} {changed}. {correct}"
+    return f"{number} was disposed of. Undo the disposal on its page, then use Correct there."
+
+
+async def changed_since(session, company_id, changed: list[tuple[str, dict, int]], since: tuple[str, str],
+                        purpose: str, lead: str = "") -> HTTPException:
+    """The refusal for ``changed``, each (asset id, asset, its last movement then), after
+    ``lead``, naming what changed on each asset and the way on its state offers. The assets
+    still in use share one sentence, ``since`` read for one or for several, pointing at their
+    Correct for ``purpose``; a sold or disposed asset is told how to end that first. Each
+    asset is linked where it is named."""
+    changed = sorted(changed, key=lambda c: c[1]["number"])
+    in_use = [(i, a, n) for i, a, n in changed if a.get("status") not in _ENDED]
+    sentences = [lead] if lead else []
+    if in_use:
+        named = []
+        for asset_id, asset, index in in_use:
+            later = [m for m in await asset_movements(session, company_id, asset_id)
+                     if int(m["id"].rsplit(":", 1)[1]) > index]
+            named.append(f"{asset['number']} ({changes(later)})")
+        one = len(in_use) == 1
+        whose = "its" if one else "each one's"
+        sentences.append(f"{_listed(named)} changed {since[0] if one else since[1]}. "
+                         f"Use Correct on {whose} page {purpose}.")
+    sentences += [await _ended(session, company_id, a) for _, a, _ in changed if a.get("status") in _ENDED]
+    return setup.refused(409, " ".join(sentences),
+                         links=[{"label": a["number"], "href": f"/fixed-assets/assets/{i}"} for i, a, _ in changed])
 
 
 async def _undo(session, company_id, user_id, target_keys: list[str], body: dict, *, subject: str | None = None,
@@ -801,24 +829,22 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
                                 for k, v in ((op.get("effects") or {}).get("unchanged") or {}).items()}
         claims = [sources.claim_id(s) for s in effects["claims"]]
         rows = await lock_projections(session, company_id, [*effects["assets"], *claims])
-        assets = [rows[a].state for a in effects["assets"]]
-        moved = [a for a in assets if int(a.get("movement_count") or 0) > 1]
-        changed = [a["number"] for a in moved]
-        if len(changed) == 1:
-            raise conflict(await way_back(session, company_id, moved[0], "has changed since it was registered",
-                                          "Use Correct instead."))
-        if changed:
-            raise conflict(f"These assets have changed since they were added: {', '.join(changed)}. "
-                           "Use Correct on each instead.")
+        created = [(a, rows[a].state, 1) for a in effects["assets"]]
+        moved = [c for c in created if int(c[1].get("movement_count") or 0) > 1]
+        if moved:
+            raise await changed_since(session, company_id, moved, ("since it was registered", "since they were registered"),
+                                      "instead")
         movements = {m: await _state(session, company_id, m) for m in effects["movements"]}
         # Per asset it did not create, the operation's last movement is still the asset's latest.
         last: dict[str, int] = {}
         for m, s in movements.items():
             if s and s.get("asset_id") not in effects.get("assets", []):
                 last[s["asset_id"]] = max(last.get(s["asset_id"], 0), int(m.rsplit(":", 1)[1]))
-        later = [a for a, n in last.items() if (await _state(session, company_id, a) or {}).get("movement_count", 0) > n]
+        later = [(a, asset, n) for a, n in last.items()
+                 if int((asset := await _state(session, company_id, a) or {}).get("movement_count") or 0) > n]
         if later:
-            raise conflict("These assets have changed since. Use Correct instead.")
+            raise await changed_since(session, company_id, later, ("since this was done",) * 2,
+                                      "instead")
         # What the operation left as it was (an asset's movements, a class's version) is still so.
         for entity_id, fields in (effects.get("unchanged") or {}).items():
             now = await _state(session, company_id, entity_id) or {}
@@ -830,7 +856,7 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         if locked:
             raise conflict(f"{locked[0]} is in a locked period, so this can no longer be undone. Use Correct instead.")
         journals = {j: await _state(session, company_id, j) for j in effects.get("journals", [])}
-        shown = {"assets": [{"number": a["number"]} for a in assets],
+        shown = {"assets": [{"number": a["number"]} for _, a, _ in created],
                  "journals": [_reversed_lines(je, books_currency(settings)) for je in journals.values() if je and je.get("status") == "posted"]}
         return shown, {"effects": effects, "movements": movements, "claims": claims}
 

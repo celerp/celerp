@@ -101,16 +101,35 @@ async def _grants_permissions(request: Request) -> bool:
 
 async def _error_box(request: Request, e: APIError):
     """A refusal, with the way to fix it when it names one (its ``href`` and ``action`` label),
-    or a link to each record it names (``links``). A missing permission leads to Users, where
-    it is granted, for a user who can open Users; the refusal tells anyone else who to ask."""
+    or a link to each record it names (``links``), placed where the message first names it. A
+    missing permission leads to Users, where it is granted, for a user who can open Users; the
+    refusal tells anyone else who to ask."""
     params = (e.data or {}).get("params") or {}
     if _missing_permission(e):
         params = ({"href": "/settings/general?tab=users", "action": "fixed_assets.action.open_users"}
                   if await _grants_permissions(request) else {})
     fix = [" ", A(t(params["action"]), href=params["href"])] if params.get("href") and params.get("action") else []
-    for link in params.get("links") or []:
-        fix += [" ", A(link["label"], href=link["href"])]
-    return Div(_error_text(e), *fix, cls="flash flash--error")
+    return Div(*_linked(_error_text(e), params.get("links") or []), *fix, cls="flash flash--error")
+
+
+def _linked(text: str, links: list[dict]) -> list:
+    """``text`` with each link's label made a link where the text first names it; a label the
+    text does not name follows it."""
+    hrefs = {link["label"]: link["href"] for link in links}
+    if not hrefs:
+        return [text]
+    labels = "|".join(re.escape(label) for label in sorted(hrefs, key=len, reverse=True))
+    out, seen = [], set()
+    for piece in re.split(rf"(?<!\w)({labels})(?!\w)", text):
+        if piece in hrefs and piece not in seen:
+            seen.add(piece)
+            out.append(A(piece, href=hrefs[piece]))
+        elif piece:
+            out.append(piece)
+    for label in hrefs:
+        if label not in seen:
+            out += [" ", A(label, href=hrefs[label])]
+    return out
 
 
 def _money(value, currency: str | None) -> FT | str:

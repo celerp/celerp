@@ -1300,13 +1300,13 @@ async def test_u12_undo_registration_of_a_sold_or_disposed_asset_names_the_way_b
     number = (await fa.asset(car))["number"]
     refused = await fa.post(f"/assets/{car}/undo", {"preview": True, "op_key": "u-1"})
     assert refused.status_code == 409
-    detail = refused.json()["detail"]
+    detail = refused.json()["detail"]["message"]
     assert number in detail and await _number(fa, inv) in detail and "Void" in detail and "cancel the sale" in detail
     await fa.ok(await _doc(fa, inv, "void"))
     await fa.operate(f"/assets/{car}/sale/cancel", {}, key="cancel")
     assert (await fa.asset(car))["status"] == "active"
     refused = await fa.post(f"/assets/{car}/undo", {"preview": True, "op_key": "u-2"})
-    assert refused.status_code == 409 and "Use Correct" in refused.json()["detail"]
+    assert refused.status_code == 409 and "Use Correct" in refused.json()["detail"]["message"]
     await fa.operate(f"/assets/{car}/dispose", {"date": "2026-05-25", "reason": "scrapped"}, key="scrap")
     refused = await fa.post(f"/assets/{car}/undo", {"preview": True, "op_key": "u-3"})
-    assert refused.status_code == 409 and "Undo the disposal" in refused.json()["detail"]
+    assert refused.status_code == 409 and "Undo the disposal" in refused.json()["detail"]["message"]

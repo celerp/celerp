@@ -607,17 +607,12 @@ async def reverse(session, company_id, user_id, label: str, body: dict) -> dict:
         for movement_id in record.get("movements") or []:
             mv = await _state(session, company_id, movement_id)
             last[mv["asset_id"]] = max(last.get(mv["asset_id"], 0), int(movement_id.rsplit(":", 1)[1]))
-        changed = []
-        for asset_id, index in sorted(last.items()):
-            asset = await _state(session, company_id, asset_id)
-            if int(asset.get("movement_count") or 0) > index:
-                changed.append((asset["number"], asset_id, asset))
+        changed = [(asset_id, asset, index) for asset_id, index in last.items()
+                   if int((asset := await _state(session, company_id, asset_id)).get("movement_count") or 0) > index]
         if changed:
-            ways = [await operations.way_back(session, company_id, a, "changed since this run",
-                                              "Use Correct on its page to change its depreciation.")
-                    for _, _, a in sorted(changed)]
-            raise setup.refused(409, " ".join([f"The {label} run can no longer be reversed.", *ways]),
-                                links=[{"label": n, "href": f"/fixed-assets/assets/{i}"} for n, i, _ in sorted(changed)])
+            raise await operations.changed_since(session, company_id, changed, ("since this run",) * 2,
+                                                 "to change its depreciation",
+                                                 lead=f"The {label} run can no longer be reversed.")
         journals = [await _state(session, company_id, j) for j in record.get("journal_ids") or []]
         shown = {"month": label, "journals": [operations._reversed_lines(je, books.currency) for je in journals if je]}
         return shown, {"record": record}

@@ -99,29 +99,38 @@ async def test_undo_registration_on_the_asset_page_points_at_its_correct(fa: FA)
     r = await fa.post(f"/assets/{car}/undo", {"preview": True, "op_key": "u"})
     assert r.status_code == 409
     number = (await fa.asset(car))["number"]
-    assert _message(r) == f"{number} has changed since it was registered. Use Correct instead."
+    assert _message(r) == f"{number} (Depreciation) changed since it was registered. Use Correct on its page instead."
+    assert _params(r)["links"] == [{"label": number, "href": f"/fixed-assets/assets/{car}"}]
 
 
 async def test_reverse_run_refusal_gives_each_asset_its_own_way_and_link(fa: FA):
+    """The assets still in use share one sentence naming what changed on each and pointing at
+    their Correct; a sold asset is told how to end the sale first. Each number is a link
+    where the message names it."""
     await _managed_from(fa)
     car = await _contributed(fa)
     van = await _contributed(fa, "Van")
+    bike = await _contributed(fa, "Bike")
     await _run(fa, "2026-03")
     await fa.operate(f"/assets/{car}/impair", {"date": "2026-03-31", "recoverable_amount": "8000"}, key="imp")
+    await fa.operate(f"/assets/{bike}/impair", {"date": "2026-03-31", "recoverable_amount": "9000"}, key="imp2")
     invoice = await _sell(fa, van, on="2026-03-31", price="9000")
     await _finalize(fa, invoice)
     r = await fa.post("/runs/2026-03/reverse", {"preview": True, "op_key": "r"})
     assert r.status_code == 409
-    car_no, van_no = (await fa.asset(car))["number"], (await fa.asset(van))["number"]
+    car_no, van_no, bike_no = [(await fa.asset(a))["number"] for a in (car, van, bike)]
     ref = (await fa.state(invoice))["doc_number"]
     message = _message(r)
-    assert message.startswith("The 2026-03 run can no longer be reversed.")
-    assert f"{car_no} changed since this run. Use Correct on its page to change its depreciation." in message
-    assert f"{van_no} was sold on invoice {ref}." in message
-    assert _params(r)["links"] == [{"label": car_no, "href": f"/fixed-assets/assets/{car}"},
-                                   {"label": van_no, "href": f"/fixed-assets/assets/{van}"}]
+    assert message == (f"The 2026-03 run can no longer be reversed. {car_no} (Impairment) and {bike_no} (Impairment) "
+                       "changed since this run. Use Correct on each one's page to change its depreciation. "
+                       f"{van_no} was sold on invoice {ref}. Void that invoice and cancel the sale on {van_no}'s "
+                       "page, then use Correct there.")
+    assert _params(r)["links"] == [{"label": n, "href": f"/fixed-assets/assets/{a}"}
+                                   for n, a in sorted([(car_no, car), (van_no, van), (bike_no, bike)])]
     page = await fa.submit("/fixed-assets/op/reverse-run/review", {"month": "2026-03", "idempotency_key": "rv"})
-    assert f'href="/fixed-assets/assets/{car}"' in page.text and f'href="/fixed-assets/assets/{van}"' in page.text
+    for asset_id, number in ((car, car_no), (bike, bike_no)):
+        assert f'<a href="/fixed-assets/assets/{asset_id}">{number}</a> (Impairment)' in page.text
+    assert f'<a href="/fixed-assets/assets/{van}">{van_no}</a> was sold' in page.text
 
 
 async def test_undo_disposal_refusal_names_what_changed_and_the_way_on(fa: FA):

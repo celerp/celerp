@@ -239,7 +239,9 @@ async def test_j5_undo_import_refused_naming_changed_assets(fa):
     refused = await _undo(fa, done["batch"]["id"])
     assert refused.status_code == 409
     detail = refused.json()["detail"]
-    assert annex["number"] in detail and warehouse["number"] not in detail and "Correct" in detail
+    assert detail["message"] == (f"{annex['number']} (Opening figures corrected) changed since it was registered. "
+                                 "Use Correct on its page instead.")
+    assert detail["params"]["links"] == [{"label": annex["number"], "href": f"/fixed-assets/assets/{annex['id']}"}]
     assert (await fa.asset(warehouse["id"]))["status"] == "active"
 
 
