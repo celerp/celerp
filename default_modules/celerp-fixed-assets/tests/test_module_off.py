@@ -110,8 +110,11 @@ async def test_s11_records_read_only_while_off(fa):
     told = soup.find(string=t("fixed_assets.turn_on_to_act")).find_parent("form")
     assert told["hx-post"] == "/modules/celerp-fixed-assets/enable" and not told.find_parent(class_="records-read-only")
     assert not soup.select("#fa-read-only button")
-    register = BeautifulSoup((await fa.page("/fixed-assets")).text, "html.parser")
-    assert register.select("#fa-read-only button") and t("fixed_assets.turn_on_to_act") not in register.text
+    # A record page keeps its records to read, so the way on stays in the notice at its top,
+    # even when its cards carry forms of their own.
+    for path in ("/fixed-assets", f"/fixed-assets/assets/{car}"):
+        record = BeautifulSoup((await fa.page(path)).text, "html.parser")
+        assert record.select("#fa-read-only button") and t("fixed_assets.turn_on_to_act") not in record.text, path
     posted = await fa.submit(f"/fixed-assets/assets/{car}/readings", {"month": "2026-01", "reading": "10"})
     assert 'id="fa-read-only"' not in posted.text
     assert (await fa.asset(car))["name"] == "Owner's car"

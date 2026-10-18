@@ -255,6 +255,11 @@ def _detail_table(rows: list[tuple[str, object]]) -> FT:
                          for label, value in rows]), cls="data-table detail-table")
 
 
+def _subhead(text) -> FT:
+    """A heading inside a card or review, under its section title."""
+    return H4(text, cls="form-subtitle")
+
+
 def _more_menu(*items: FT) -> FT:
     """Actions used now and then, behind one More button so the everyday ones stand out; Esc closes it."""
     return Details(Summary(t("fixed_assets.more"), cls="btn btn--secondary"), Div(*items, cls="actions-menu-list"),
@@ -317,9 +322,13 @@ async def _context(token: str) -> tuple[dict, str]:
 
 
 def _acts(content) -> bool:
-    """Whether the page carries an operation form (its #fa-preview), which a read-only page hides."""
+    """Whether the page is an operation form (one with its #fa-preview), which a read-only page
+    hides. A record page that only carries forms inside its cards still has its records to read."""
+    def preview(c) -> bool:
+        return isinstance(c, FT) and c.attrs.get("id") == "fa-preview"
+
     return any(_acts(c) if isinstance(c, (list, tuple)) else
-               isinstance(c, FT) and (c.attrs.get("id") == "fa-preview" or _acts(c.children)) for c in content)
+               preview(c) or isinstance(c, FT) and any(map(preview, c.children)) for c in content)
 
 
 async def _page(request: Request, *content, title_key: str, nav: str = "fixed_assets"):
@@ -473,13 +482,13 @@ def _preview(action: str, result: dict, currency: str) -> FT:
     journals = result.get("journals") or []
     if "their_number" in result:
         parts.append(_transfer_figures(result, currency))
-        parts += [H4(t("fixed_assets.transfer_here")), _lines_table(journals[0].get("lines") or [], currency),
-                  H4(t("fixed_assets.transfer_there", company=result["company"])),
+        parts += [_subhead(t("fixed_assets.transfer_here")), _lines_table(journals[0].get("lines") or [], currency),
+                  _subhead(t("fixed_assets.transfer_there", company=result["company"])),
                   _lines_table(journals[1].get("lines") or [], result.get("their_currency") or currency)]
     else:
         parts += [_lines_table(je.get("lines") or [], currency) for je in journals]
     for month in result.get("months") or []:
-        parts.append(H4(f"{month['month']}: {_money(month['total'], currency)}"))
+        parts.append(_subhead(f"{month['month']}: {_money(month['total'], currency)}"))
         parts.append(_lines_table(month["lines"], currency) if month["lines"]
                      else P(t("fixed_assets.month_posts_nothing"), cls="form-hint"))
         if month["assets"]:
@@ -515,29 +524,29 @@ def _correction_preview(result: dict, currency: str) -> list[FT]:
     if result.get("prior_years"):
         hint = (t("fixed_assets.prior_to_pl", reason=_text(result.get("immaterial_reason")))
                 if result.get("treatment") == "profit_and_loss" else t("fixed_assets.prior_to_equity"))
-        parts += [H4(t("fixed_assets.prior_years_title")), P(hint, cls="form-hint"), _restated_table(
+        parts += [_subhead(t("fixed_assets.prior_years_title")), P(hint, cls="form-hint"), _restated_table(
             result["prior_years"], currency)]
     if result.get("movements"):
-        parts += [H4(t("fixed_assets.movements")), Table(
+        parts += [_subhead(t("fixed_assets.movements")), Table(
             Thead(Tr(Th(t("fixed_assets.movement")), Th(t("fixed_assets.effective_date")),
                      Th(t("fixed_assets.posting_date")))),
             Tbody(*[Tr(Td(t(f"fixed_assets.movement.{m['operation']}")), Td(_text(m.get("effective_date"))),
                        Td(_text(m.get("posting_date")))) for m in result["movements"]]), cls="data-table")]
     if result.get("corrected"):
         # A replaced source: the movements that stay as they posted, and the ones it rewrites.
-        parts += [H4(t("fixed_assets.kept_title")), Table(
+        parts += [_subhead(t("fixed_assets.kept_title")), Table(
             Thead(Tr(Th(t("fixed_assets.movement")), Th(t("fixed_assets.effective_date")),
                      Th(t("fixed_assets.posting_date")))),
             Tbody(*[Tr(Td(t(f"fixed_assets.movement.{m['operation']}")), Td(_text(m.get("effective_date"))),
                        Td(_text(m.get("posting_date")))) for m in sorted(
                 result.get("kept") or [], key=lambda m: m["effective_date"], reverse=True)]), cls="data-table"),
-            H4(t("fixed_assets.corrected_title")), Table(
+            _subhead(t("fixed_assets.corrected_title")), Table(
             Thead(Tr(Th(t("fixed_assets.effective_date")), Th(t("fixed_assets.posting_date")),
                      _money_th(t("fixed_assets.cost")))),
             Tbody(*[Tr(Td(_text(m.get("effective_date"))), Td(_text(m.get("posting_date"))),
                        _money_td(m.get("cost"), currency)) for m in result["corrected"]]), cls="data-table")]
     if result.get("future"):
-        parts += [H4(t("fixed_assets.future_title")), Table(
+        parts += [_subhead(t("fixed_assets.future_title")), Table(
             Thead(Tr(Th(t("fixed_assets.month")), _money_th(t("fixed_assets.amount")))),
             Tbody(*[Tr(Td(f["month"]), _money_td(f["amount"], currency)) for f in result["future"]]),
             cls="data-table")]
@@ -1132,11 +1141,11 @@ def _sale_card(asset: dict, sale: dict, currency: str, today: str) -> FT | str:
     parts.append(_detail_table(rows))
     # A void or deleted invoice will never be finalized, so it has no journal to show.
     if (sale.get("journal") or {}).get("lines") and not (sale.get("invoice_void") or sale.get("draft_deleted")):
-        parts += [H4(t("fixed_assets.sale_journal_" + ("pending" if sale["state"] == "pending" else "posted"))),
+        parts += [_subhead(t("fixed_assets.sale_journal_" + ("pending" if sale["state"] == "pending" else "posted"))),
                   _lines_table(sale["journal"]["lines"], currency)]
     notes = sale.get("credit_notes") or []
     if notes:
-        parts += [H4(t("fixed_assets.credit_notes")), Table(
+        parts += [_subhead(t("fixed_assets.credit_notes")), Table(
             Thead(Tr(Th(t("fixed_assets.number")), Th(t("fixed_assets.date")), Th(t("fixed_assets.credit_kind")),
                      _money_th(t("fixed_assets.amount")))),
             Tbody(*[Tr(Td(A(n["number"], href=_doc_href(n["id"]))), Td(_text(n.get("date"))),
@@ -1156,7 +1165,7 @@ def _sale_card(asset: dict, sale: dict, currency: str, today: str) -> FT | str:
                               review_label=t("fixed_assets.cancel_sale")))
     if "credit" in actions:
         parts.append(_op_form(
-            "sale-credit", hidden, H4(t("fixed_assets.credit_sale")),
+            "sale-credit", hidden, _subhead(t("fixed_assets.credit_sale")),
             P(t("fixed_assets.credit_sale_hint"), cls="settings-hint"),
             _field(t("fixed_assets.credit_kind"),
                    Select(*[Option(t(f"fixed_assets.credit_kind.{k}"), value=k) for k in ("adjust", "returned")],
@@ -1910,7 +1919,7 @@ def _param_inputs(policy: dict, methods: list[dict]) -> list[FT]:
                 inputs.append(_field(t(f"fixed_assets.param.{name}"),
                                      _input(field, current.get(name), type_="number", step="any", min="0")))
         # The plain wrapper carries `hidden`, which the form group's own display would override.
-        groups.append(Div(Div(H4(t("fixed_assets.params_for", method=_rule_label("method", key)), cls="form-subtitle"),
+        groups.append(Div(Div(_subhead(t("fixed_assets.params_for", method=_rule_label("method", key))),
                               *inputs, cls="form-group"), data_method=key, hidden=policy.get("method") != key))
     return groups
 
@@ -2660,10 +2669,12 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, "fixed_assets.recon_title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.recon_title"), None)])
-        when = Form(_field(t("fixed_assets.recon_at"), _input("at", report["at"], type_="date",
-                                                                min=report["cutover"])),
-                    Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary"),
-                    method="get", action="/fixed-assets/reconciliation", cls="flex-row")
+        when = Div(Form(Label(t("fixed_assets.recon_at"), fr="fa-recon-at", cls="form-label"),
+                        Input(type="date", name="at", id="fa-recon-at", value=report["at"], min=report["cutover"],
+                              cls="date-input", onkeydown="if(event.key==='Escape'){this.blur();}"),
+                        Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary btn--sm"),
+                        method="get", action="/fixed-assets/reconciliation", cls="date-custom-form"),
+                   cls="date-filter-bar")
         errors = Div(H3(t("fixed_assets.recon_errors")),
                      Ul(*[Li(t("fixed_assets.recon_error", account=e["label"],
                                 held=_money(e["held"], currency), registered=_money(e["registered"], currency)))

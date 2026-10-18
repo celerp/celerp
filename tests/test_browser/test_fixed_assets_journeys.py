@@ -230,7 +230,7 @@ def test_j4_locked_date_is_refused_and_the_first_open_date_saves(page: Page, fre
     _ok(c.post("/accounting/period-lock", json={"lock_date": "2026-03-31"}))
 
     page.goto("/fixed-assets")
-    page.get_by_role("link", name="Add asset").click()
+    page.locator(".page-header").get_by_role("link", name="Add asset").click()
     page.get_by_role("link", name="Contributed or acquired without a bill").click()
     page.locator("input[name=name]").fill("Owner's car")
     _choose(page, "class_id", "Vehicles")
@@ -1447,3 +1447,28 @@ def test_j21_bill_line_account_is_kept_and_the_finalized_bill_leads_to_registeri
     expect(page.locator("main")).to_contain_text(f"registered as {roaster['number']}")
     expect(page.get_by_role("link", name=roaster["number"])).to_have_attribute(
         "href", f"/fixed-assets/assets/{roaster['id']}")
+
+
+def test_u35_headings_clear_what_is_above_them_values_sit_by_their_labels_and_filter_lines_up(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    _reconciled(page)
+    main = page.locator("main")
+    box, button = main.locator("input[name=at]").bounding_box(), main.get_by_role("button", name="Filter").bounding_box()
+    assert abs((box["y"] + box["height"] / 2) - (button["y"] + button["height"] / 2)) <= 2, (box, button)
+
+    def gap(above, below) -> float:
+        a, b = above.bounding_box(), below.bounding_box()
+        return b["y"] - (a["y"] + a["height"])
+
+    headings = main.locator(".section-title")
+    assert gap(main.locator("#fa-recon-status"), headings.nth(0)) >= 12
+    assert gap(main.locator("#fa-recon-accounts"), headings.nth(1)) >= 12
+
+    page.goto(f"/fixed-assets/assets/{car}")
+    for table in page.locator(".detail-table").all():
+        label, whole = table.locator("th[scope=row]").first.bounding_box(), table.bounding_box()
+        assert label["width"] < whole["width"] / 2, (label, whole)
+    money = page.locator(".detail-table td.cell--number").first
+    assert money.evaluate("e => getComputedStyle(e).textAlign") in ("left", "start")

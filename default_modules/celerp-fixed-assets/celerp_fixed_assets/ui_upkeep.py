@@ -22,7 +22,7 @@ from celerp_fixed_assets.operations import RESPONSIBLE
 from celerp_fixed_assets.upkeep import KINDS, MAINT_EDITABLE, REMINDERS_URL
 from celerp_fixed_assets.ui_routes import (
     _STACK, _context, _error_text, _field, _hx_write, _input, _members, _money_td, _money_th, _page, _picker, _refused,
-    _send, _text, _token)
+    _send, _subhead, _text, _token)
 
 # The reminder fields edited in place, with the editor each one uses.
 _CELLS = {"due": "date", "every_months": "number", "lead_days": "number", RESPONSIBLE: "select", "policy": "text",
@@ -200,7 +200,7 @@ async def upkeep_card(token: str, asset: dict, members: dict[str, str], currency
     return Div(H2(t("fixed_assets.upkeep_title"), cls="section-title"),
                P(t("fixed_assets.upkeep_hint"), cls="settings-hint"),
                _reminders_table(upkeep["reminders"], members, today), _add_reminder_form(asset["id"], members),
-               H4(t("fixed_assets.maintenance_log")),
+               _subhead(t("fixed_assets.maintenance_log")),
                _maintenance_table(asset["id"], upkeep["maintenance"], currency), _add_entry_form(asset["id"], today),
                cls="detail-card section-card", id="fa-upkeep")
 
