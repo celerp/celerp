@@ -87,7 +87,7 @@ a:hover { text-decoration: underline; }
 .auth-header { text-align: center; margin-bottom: 28px; }
 .auth-logo { height: 160px; margin-bottom: 16px; }
 .auth-title { font-size: 20px; font-weight: 600; color: var(--c-text); }
-.auth-subtitle { font-size: 12px; color: var(--c-text2); margin-top: 6px; }
+.auth-subtitle { font-size: 12px; color: var(--c-text2); margin-top: 6px; overflow-wrap: anywhere; }
 .auth-form { display: flex; flex-direction: column; gap: 16px; }
 .auth-footer-text { font-size: 12px; color: var(--c-text2); text-align: center; margin-top: 8px; }
 .auth-link { color: var(--c-accent); }

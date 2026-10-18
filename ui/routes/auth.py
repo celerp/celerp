@@ -637,8 +637,8 @@ def setup_routes(app):
         unavailable = request.query_params.get("reason") == "unavailable"
         return _recovery(Div(
             auth_header(t("recovery.terminal_title")),
-            flash(t("recovery.unavailable"), kind="warning") if unavailable else "",
-            _terminal_block(command),
+            _above_form(flash(t("recovery.unavailable"), kind="warning") if unavailable else "",
+                        _terminal_block(command)),
             P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),
             cls="auth-card",
         ))
@@ -688,7 +688,7 @@ def _reset_notices(notices: list[dict], dest: str) -> FT:
 
     return Div(
         auth_header(t("recovery.notice_title")),
-        *(P(_line(n), cls="flash flash--warning") for n in notices),
+        _above_form(*(P(_line(n), cls="flash flash--warning") for n in notices)),
         A(t("btn.continue"), href=dest, cls="btn btn--primary btn--full"),
         cls="auth-card",
     )
@@ -1124,6 +1124,12 @@ def _recovery_links() -> FT:
     )
 
 
+def _above_form(*parts) -> FT:
+    """The messages a card shows above its form or button, spaced like a form's fields."""
+    parts = [p for p in parts if p]
+    return Div(*parts, cls="auth-form mb-md") if parts else ""
+
+
 def _terminal_block(command: str | None) -> FT:
     """How to reset from a terminal: the command, for the person at this computer, or
     whom to ask, for anyone else, who never sees this computer's folders."""
@@ -1153,8 +1159,7 @@ def _recovery_code_form(email: str, error: str | None = None, terminal: FT = "")
     email is a user here."""
     return Div(
         auth_header(t("recovery.title"), "" if error else t("recovery.code_sent", email=email)),
-        flash(error) if error else "",
-        terminal,
+        _above_form(flash(error) if error else "", terminal),
         Form(
             Input(type="hidden", name="email", value=email),
             _code_field(),
@@ -1207,7 +1212,7 @@ def _setup_email_form(email: str = "", *, error: str | None = None, unreachable:
     """The email to confirm; when Celerp could not be reached, the choice to go on without."""
     return Div(
         auth_header(t("setup_email.title"), t("setup_email.intro")),
-        flash(error) if error else "",
+        _above_form(flash(error) if error else ""),
         Div(flash(t("setup_email.unavailable"), kind="warning"),
             _setup_email_action("skip", t("setup_email.continue_without"), _kept_email(email), primary=False),
             cls="mb-md") if unreachable else "",
@@ -1221,7 +1226,7 @@ def _setup_email_form(email: str = "", *, error: str | None = None, unreachable:
 def _setup_email_code_form(email: str, error: str | None = None) -> FT:
     return Div(
         auth_header(t("setup_email.title"), "" if error else t("setup_email.code_sent", email=email)),
-        flash(error) if error else "",
+        _above_form(flash(error) if error else ""),
         _setup_email_action("verify", t("btn.confirm"), _kept_email(email), _code_field()),
         _setup_email_action("send", t("recovery.send_new_code"), _kept_email(email), primary=False),
         P(A(t("auth.change"), href=SETUP_EMAIL, cls="auth-link"), cls="auth-footer-text"),
