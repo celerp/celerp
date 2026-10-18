@@ -8,7 +8,7 @@ that still reads the server's date or the UTC day answers for the wrong day."""
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -17,28 +17,9 @@ from sqlalchemy import select
 
 from celerp.models.company import Company, User
 from celerp.models.projections import Projection
+from company_today_support import CASES, freeze
 
 pytestmark = pytest.mark.asyncio
-
-CASES = [
-    pytest.param(("Asia/Bangkok", datetime(2031, 3, 31, 20, 0, tzinfo=timezone.utc), date(2031, 4, 1)),
-                 id="company-day-ahead"),
-    pytest.param(("Pacific/Honolulu", datetime(2031, 4, 1, 5, 0, tzinfo=timezone.utc), date(2031, 3, 31)),
-                 id="company-day-behind"),
-]
-
-
-def freeze(monkeypatch, instant: datetime) -> None:
-    """Freeze the one clock every business-day decision reads."""
-    import celerp.services.business_time as business_time
-
-    class Frozen(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return instant.astimezone(tz) if tz is not None else instant.replace(tzinfo=None)
-
-    monkeypatch.setattr(business_time, "datetime", Frozen)
-
 
 @pytest_asyncio.fixture(params=CASES)
 async def co(request, client, session, monkeypatch):
