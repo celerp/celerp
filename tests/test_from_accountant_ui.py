@@ -22,6 +22,8 @@ ITEMS = [
     {"id": "je-2", "memo": "Year-end accrual", "ts": "2026-06-30", "status": "posted", "lines": None,
      "total": 80.0, "reverse_on": "2026-06-30", "reversal": {"id": "je-2r", "ts": "2026-06-30",
                                                              "undo_on": "2026-10-16"}},
+    {"id": "je-1b", "memo": "Q2 accrual", "ts": "2026-04-30", "status": "posted", "lines": "6100 Dr 34.00",
+     "total": 34.0, "reverse_on": "2026-10-16", "locked_through": None, "reversal": None},
     {"id": "je-1", "memo": None, "ts": "2026-03-31", "status": "posted", "lines": "6100 Dr 10.00",
      "total": 10.0, "reverse_on": "2026-03-31", "reversal": None},
     {"id": "je-0", "memo": "Withdrawn", "ts": "2026-02-01", "status": "void", "lines": "", "total": 5.0,
@@ -69,7 +71,10 @@ async def test_section_lists_entries_with_what_each_can_do(monkeypatch):
     # the date shown is the reversal entry's own date, not the day someone reversed it
     assert "Reversal dated 2026-06-30" in html and "/from-accountant/je-2r/reverse" in html
     assert "<td>1200 Dr 30.00</td>" in html  # lines read in the table's own font
-    assert "Undo the reversal of Year-end accrual? The undo posts on 2026-10-16." in html
+    # a locked period moves the posting to today, and the confirm says so before it posts
+    assert ("Undo the reversal of Year-end accrual? 2026-06-30 is in a locked period, "
+            "so the undo posts today, 2026-10-16.") in html
+    assert "Reverse Q2 accrual? 2026-04-30 is in a locked period, so the reversal posts today, 2026-10-16." in html
     assert "Reverse --? The reversal posts on 2026-03-31." in html  # an empty memo shows --
     assert "/from-accountant/je-1/reverse" in html
     assert "Voided by your accountant" in html and "/from-accountant/je-0/" not in html
