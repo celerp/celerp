@@ -3307,6 +3307,7 @@
   "connectors.authorize_opened": "กำลังเปิดหน้าให้สิทธิ์ในแท็บใหม่ ดำเนินการให้เสร็จที่นั่นแล้วกลับมาที่นี่",
   "connectors.back_to_connectors": "กลับไปที่ตัวเชื่อมต่อ",
   "connectors.changes": "เพิ่ม {added} อัปเดต {updated}",
+  "connectors.changes_header": "การเปลี่ยนแปลง",
   "connectors.connect_check_failed": "Celerp เชื่อมต่อกับร้านค้าไม่ได้: {detail} ตรวจสอบที่อยู่และคีย์ของร้านค้า แล้วลองอีกครั้ง",
   "connectors.connect_failed": "Celerp บันทึกการเชื่อมต่อไม่ได้ ลองอีกครั้ง หากยังเกิดขึ้นอีก ให้รีสตาร์ต Celerp",
   "connectors.disable_shopify_sync": "ปิดใช้งานการซิงค์ Shopify",

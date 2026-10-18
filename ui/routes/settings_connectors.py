@@ -555,14 +555,14 @@ def _entity_status_table(runs: dict, lang: str = "en", attention: dict[str, int]
             Td(when),
             Td(_status_badge_for("running" if running else r.status, lang, has_reasons=bool(errs),
                                  attention=attention.get(e, 0))),
-            Td(counts, cls="cell--number"),
+            Td(counts),
             Td(str(len(errs)) if errs else "--", cls="cell--number"),
             cls="data-row",
         ))
     return Table(
         Thead(Tr(Th(t("connectors.entity", lang)), Th(t("connectors.last_sync", lang)),
                  Th(t("connectors.status", lang)),
-                 Th(t("connectors.changes", lang), cls="cell--number"),
+                 Th(t("connectors.changes_header", lang)),
                  Th(t("connectors.issues_header", lang), cls="cell--number"))),
         Tbody(*rows),
         cls="data-table",

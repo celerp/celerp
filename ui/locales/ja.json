@@ -3307,6 +3307,7 @@
   "connectors.authorize_opened": "承認画面が新しいタブで開きます。そこで手続きを完了してから、ここに戻ってください。",
   "connectors.back_to_connectors": "コネクタに戻る",
   "connectors.changes": "追加 {added} 件、更新 {updated} 件",
+  "connectors.changes_header": "変更",
   "connectors.connect_check_failed": "Celerp はストアに接続できませんでした: {detail}。ストアのアドレスとキーを確認して、もう一度お試しください。",
   "connectors.connect_failed": "Celerp は接続を保存できませんでした。もう一度お試しください。繰り返し起きる場合は、Celerp を再起動してください。",
   "connectors.disable_shopify_sync": "Shopify 同期を無効にする",

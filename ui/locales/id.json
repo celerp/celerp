@@ -3307,6 +3307,7 @@
   "connectors.authorize_opened": "Otorisasi sedang dibuka di tab baru. Selesaikan di sana, lalu kembali ke sini.",
   "connectors.back_to_connectors": "Kembali ke konektor",
   "connectors.changes": "{added} ditambahkan, {updated} diperbarui",
+  "connectors.changes_header": "Perubahan",
   "connectors.connect_check_failed": "Celerp tidak dapat terhubung ke toko: {detail}. Periksa alamat dan kunci toko, lalu coba lagi.",
   "connectors.connect_failed": "Celerp tidak dapat menyimpan koneksi. Coba lagi; jika masih terjadi, mulai ulang Celerp.",
   "connectors.disable_shopify_sync": "Nonaktifkan sinkronisasi Shopify",

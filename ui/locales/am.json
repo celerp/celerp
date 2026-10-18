@@ -496,6 +496,7 @@
   "connectors.authorize_opened": "ፈቃድ በአዲስ ትር እየተከፈተ ነው። እዚያ ያጠናቅቁ፣ ከዚያም ወደዚህ ይመለሱ።",
   "connectors.back_to_connectors": "ወደ አገናኞች ተመለስ",
   "connectors.changes": "{added} ታክሏል፣ {updated} ተዘምኗል",
+  "connectors.changes_header": "ለውጦች",
   "connectors.coming_soon": "በቅርቡ ይመጣል",
   "connectors.connect": "አገናኝ",
   "connectors.connect_check_failed": "Celerp ከሱቁ ጋር መገናኘት አልቻለም፦ {detail}። የሱቁን አድራሻና ቁልፎች ያረጋግጡ፣ ከዚያ እንደገና ይሞክሩ።",
