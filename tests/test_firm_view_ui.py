@@ -78,6 +78,16 @@ async def test_rows_show_sync_last_sync_and_attention_in_place(monkeypatch):
     assert html.count(f'href="/migrations/{RUN}"') == 2 and "Continue the move" in html
 
 
+async def test_sync_says_owner_only_where_the_user_cannot_see_it(monkeypatch):
+    """A company the user does not own reads "Owner only" for Sync, so it is never mistaken
+    for a company with sync off; a move with no company yet keeps --."""
+    endpoint, _ = _page(monkeypatch)
+    html = (await endpoint(Request())).body.decode()
+    practice = html[html.index("Firm Practice"):html.index("Fake Co")]
+    assert "<td>Owner only</td>" in practice
+    assert "<td>Owner only</td>" not in html[html.index("Fake Co"):]
+
+
 async def test_filters_round_trip_through_the_url(monkeypatch):
     endpoint, seen = _page(monkeypatch, rows=[])
     response = await endpoint(Request({"q": " demo ", "sync": "off"}))
