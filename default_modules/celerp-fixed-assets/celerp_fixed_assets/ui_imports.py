@@ -27,7 +27,6 @@ from ui.api_client import APIError
 from ui.components.shell import page_header, toast_header
 from celerp.importers.tabular import known_headers
 from ui.components.table import breadcrumbs
-from ui.config import get_token as _token
 from ui.i18n import t
 from ui.routes.csv_import import (
     _rows_to_csv,
@@ -46,7 +45,7 @@ from ui.routes.csv_import import (
 
 from celerp_fixed_assets.imports import COLUMNS, ROW_STATUSES
 from celerp_fixed_assets.ui_routes import (_context, _detail_table, _error_text, _first_period_card, _input, _op_form,
-                                           _opening_table, _page, _refused, _start_panel, _text)
+                                           _opening_table, _page, _refused, _send, _start_panel, _text, _token)
 
 _HOME = "/fixed-assets/import"
 _TITLE = "fixed_assets.import_title"
@@ -139,10 +138,10 @@ def _operation_key(ref: str, rows: list[dict], exclude: list[int]) -> str:
     return f"imp-{digest[:40]}"
 
 
-async def _send(token: str, ref: str, rows: list[dict], draft: dict, **body) -> dict:
+async def _send_rows(token: str, ref: str, rows: list[dict], draft: dict, **body) -> dict:
     setup, _ = await _context(token)
     exclude = _excluded(draft)
-    return await api.fixed_assets_send(token, "POST", "/imports", {
+    return await _send(token, "POST", "/imports", {
         "rows": [{k: v for k, v in r.items() if v} for r in rows], "as_at": setup["settings"]["cutover"],
         "source": draft.get("filename") or "", "exclude": exclude, "op_key": _operation_key(ref, rows, exclude),
         **body})
@@ -172,7 +171,7 @@ async def _review(token: str, ref: str, *, notice: str = "") -> FT:
         return P(t("import.csv_expired"), cls="flash flash--error")
     rows, cols, draft, revision = _draft_rows(loaded)
     try:
-        plan = await _send(token, ref, rows, draft, preview=True)
+        plan = await _send_rows(token, ref, rows, draft, preview=True)
         _, currency = await _context(token)
     except APIError as e:
         return Div(P(_error_text(e), cls="flash flash--error"),
@@ -349,7 +348,7 @@ def setup_import_routes(app) -> None:
             return await _upload_page(request, token, t("import.csv_expired"))
         rows, cols, draft, _ = _draft_rows(loaded)
         try:
-            plan = await _send(token, ref, rows, draft, preview=True)
+            plan = await _send_rows(token, ref, rows, draft, preview=True)
         except APIError as e:
             return await _upload_page(request, token, _error_text(e))
         return plan_error_report_response(rows, cols, plan["errors"], "asset_register_errors.csv")
@@ -382,7 +381,7 @@ def setup_import_routes(app) -> None:
             return P(t("import.csv_expired"), cls="flash flash--error")
         rows, _, draft, _ = _draft_rows(loaded)
         try:
-            result = await _send(token, ref, rows, draft, fingerprint=str(form.get("preview_hash") or ""))
+            result = await _send_rows(token, ref, rows, draft, fingerprint=str(form.get("preview_hash") or ""))
         except APIError as e:
             return await _review(token, ref, notice=_error_text(e))
         import_stage.delete_ref(ref)

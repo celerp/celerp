@@ -807,6 +807,8 @@
   "fixed_assets.transfer_other.not_using": "{company} ยังไม่ได้ใช้สินทรัพย์ถาวร สลับไปที่บริษัทนั้นแล้วเริ่มใช้สินทรัพย์ถาวรที่นั่น",
   "fixed_assets.transfer_other.no_rights": "บทบาทของคุณใน {company} ไม่สามารถจัดการบัญชีและสินทรัพย์ถาวรได้ เจ้าของบริษัทสามารถให้สิทธิ์ทั้งสองแก่บทบาทของคุณได้",
   "fixed_assets.switch_to": "สลับไปที่ {company}",
+  "fixed_assets.switched_company": "หน้านี้เปิดไว้ใน {page} แต่คุณได้สลับไปที่ {now} ในแท็บอื่นแล้ว จึงยังไม่มีการบันทึกใดๆ {switch} เพื่อทำต่อที่นี่ หรือโหลดหน้านี้ใหม่เพื่อทำงานใน {now}",
+  "fixed_assets.switched_company_gone": "หน้านี้เปิดไว้ในบริษัทที่คุณไม่มีสิทธิ์เข้าถึงแล้ว จึงยังไม่มีการบันทึกใดๆ โหลดหน้านี้ใหม่เพื่อทำงานใน {now}",
   "fixed_assets.transfer_date": "วันที่โอน",
   "fixed_assets.transfer_price": "ราคาโอน",
   "fixed_assets.transfer_price_hint": "เป็น {currency} จำนวนที่บริษัทที่เกี่ยวข้องค้างชำระสำหรับสินทรัพย์นี้",

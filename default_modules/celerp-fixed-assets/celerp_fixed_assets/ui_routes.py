@@ -45,7 +45,7 @@ import re
 from contextvars import ContextVar
 from datetime import date
 from decimal import Decimal
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -58,7 +58,7 @@ from ui.components.shell import base_shell, page_header, page_title, toast_heade
 from ui.components.table import (EMPTY, breadcrumbs, bulk_toolbar, display_cell, editable_cell, empty_mark, empty_state_cta,
                                  fmt_money, pagination, party_options, row_menu, searchable_select,
                                  PARTY_PRELOAD, PARTY_SEARCH_URL)
-from ui.config import get_role, get_token as _token
+from ui.config import get_company_id, get_role, get_token
 from ui.i18n import refusal_text, t
 from ui.routes.csv_import import read_tabular_source
 from celerp.importers import tabular
@@ -136,6 +136,45 @@ def _linked(text: str, links: list[dict]) -> list:
 # Set from the setup each page reads: the member's role does not read amounts, so an amount
 # the API withheld reads as hidden, not as nil.
 _amounts_hidden: ContextVar[bool] = ContextVar("fixed_assets_amounts_hidden", default=False)
+# Every request a module page sends carries the company the page was opened in, so a write
+# sent after the session switched company in another tab is refused, never saved in the other
+# company. Set per request from that header: the page's company and where the page is.
+_PAGE_COMPANY = "X-Celerp-Page-Company"
+_switched: ContextVar[tuple[str, str] | None] = ContextVar("fixed_assets_switched", default=None)
+
+
+def _token(request: Request) -> str | None:
+    """The session's token, noting whether the page that sent the request was opened in
+    another company than the session is in now."""
+    page, now = request.headers.get(_PAGE_COMPANY), get_company_id(request)
+    if page and now and page != now:
+        here = urlsplit(request.headers.get("HX-Current-URL") or "")
+        _switched.set((page, here.path + (f"?{here.query}" if here.query else "")))
+    else:
+        _switched.set(None)
+    return get_token(request)
+
+
+async def _send(token: str, method: str, path: str, body: dict) -> dict:
+    """A write to the module's API, refused (nothing saved) when the session switched company
+    in another tab after the page was opened."""
+    if switched := _switched.get():
+        raise await _switched_refusal(token, *switched)
+    return await api.fixed_assets_send(token, method, path, body)
+
+
+async def _switched_refusal(token: str, page_id: str, back: str) -> APIError:
+    """Which company the page was opened in, which one the session is in now, and the way back."""
+    mine = (await api.my_companies(token)).get("items") or []
+    now = next((c["company_name"] for c in mine if c.get("is_current")), "")
+    page = next((c["company_name"] for c in mine if c["company_id"] == page_id), None)
+    if page is None:
+        message = t("fixed_assets.switched_company_gone", now=now)
+        return APIError(409, message, {"message": message, "params": {}})
+    switch = t("fixed_assets.switch_to", company=page)
+    message = t("fixed_assets.switched_company", page=page, now=now, switch=switch)
+    href = f"/switch-company/{quote(page_id)}?{urlencode({'next': back or '/fixed-assets'})}"
+    return APIError(409, message, {"message": message, "params": {"links": [{"label": switch, "href": href}]}})
 
 
 def _left_use_notice(asset: dict) -> FT | str:
@@ -264,6 +303,8 @@ async def _page(request: Request, *content, title_key: str, nav: str = "fixed_as
                    Div(*content, cls="records-read-only"))
     if _amounts_hidden.get():
         content = (Div(t("fixed_assets.amounts_hidden"), cls="flash flash--info", id="fa-amounts-hidden"), *content)
+    if company := get_company_id(request):
+        content = (Div(*content, hx_headers=json.dumps({_PAGE_COMPANY: company}), style="display: contents"),)
     return await base_shell(*content, title=page_title(title_key), nav_active=nav, request=request,
                             company_settings=settings)
 
@@ -1696,7 +1737,7 @@ def _runs_table(items: list[dict], currency: str) -> FT:
 async def _hx_write(token: str, method: str, path: str, body: dict, done: str, said: str) -> Response:
     """A plain write from a small form: on success go to ``done`` with a toast that ``said`` what changed, else say why."""
     try:
-        await api.fixed_assets_send(token, method, path, body)
+        await _send(token, method, path, body)
     except APIError as e:
         return Response(headers=toast_header(_error_text(e), "error", persist=True))
     return Response(headers={"HX-Redirect": done, **toast_header(said)})
@@ -2160,7 +2201,7 @@ def setup_ui_routes(app) -> None:
         if not token:
             return Response(status_code=401)
         try:
-            await api.fixed_assets_send(token, "POST", "/start", {})
+            await _send(token, "POST", "/start", {})
         except APIError as e:
             return Response(headers=toast_header(_error_text(e), "error", persist=True))
         return Response(headers={"HX-Redirect": "/fixed-assets"})
@@ -2306,7 +2347,7 @@ def setup_ui_routes(app) -> None:
         else:
             body["fingerprint"] = str(form.get("fingerprint") or "")
         try:
-            result = await api.fixed_assets_send(token, "POST", path_of(form), body)
+            result = await _send(token, "POST", path_of(form), body)
             _, currency = await _context(token)
         except APIError as e:
             return Div(await _error_box(request, e),
@@ -2484,7 +2525,7 @@ def setup_ui_routes(app) -> None:
         path = f"/assets/{quote(asset_id, safe=':')}"
         try:
             asset = await api.fixed_assets_get(token, path)
-            asset = await api.fixed_assets_send(token, "PATCH", path, {
+            asset = await _send(token, "PATCH", path, {
                 "changes": {field: value}, "previous": {field: asset.get(field)}})
             members = await _members(token) if field == RESPONSIBLE else {}
         except APIError as e:
@@ -2600,7 +2641,7 @@ def setup_ui_routes(app) -> None:
             return Response(status_code=401)
         form = await request.form()
         try:
-            await api.fixed_assets_send(token, "POST", "/opening/finish",
+            await _send(token, "POST", "/opening/finish",
                                         {k: True for k in ("keep_open", "reopen") if form.get(k)})
         except APIError as e:
             return await _error_box(request, e)
@@ -3049,7 +3090,7 @@ def setup_ui_routes(app) -> None:
         if body["outcome"] == "recoverable_amount":
             body["recoverable_amount"] = _amount(form, "recoverable_amount")
         try:
-            done = await api.fixed_assets_send(token, "POST", f"/assets/{quote(asset_id, safe=':')}/reviews", body)
+            done = await _send(token, "POST", f"/assets/{quote(asset_id, safe=':')}/reviews", body)
         except APIError as e:
             return Response(headers=toast_header(_error_text(e), "error", persist=True))
         found = done.get("impairment")
@@ -3300,7 +3341,7 @@ def setup_ui_routes(app) -> None:
         body = {**_correct_body(form), "reason": str(form.get("reason") or "").strip() or None,
                 "op_key": str(form.get(OP_KEY_FIELD) or "")}
         try:
-            saved = await api.fixed_assets_send(token, "POST", f"/assets/{quote(asset_id, safe=':')}/corrections",
+            saved = await _send(token, "POST", f"/assets/{quote(asset_id, safe=':')}/corrections",
                                                 body)
         except APIError as e:
             return Response(headers=toast_header(_error_text(e), "error", persist=True))
@@ -3604,7 +3645,7 @@ def setup_ui_routes(app) -> None:
         if (body.get("run_day") or "").isdigit():
             body["run_day"] = int(body["run_day"])
         try:
-            await api.fixed_assets_send(token, "PATCH", "/settings", body)
+            await _send(token, "PATCH", "/settings", body)
         except APIError as e:
             return Response(headers=toast_header(_error_text(e), "error", persist=True))
         return Response(headers=toast_header(t("fixed_assets.saved")))
@@ -3619,7 +3660,7 @@ def setup_ui_routes(app) -> None:
         if not token:
             return Response(status_code=401)
         try:
-            await api.fixed_assets_send(token, "POST", "/classes", {"name": t("fixed_assets.new_class"),
+            await _send(token, "POST", "/classes", {"name": t("fixed_assets.new_class"),
                                                                     "life_months": 60})
             return await _classes_fragment(token)
         except APIError as e:
@@ -3632,7 +3673,7 @@ def setup_ui_routes(app) -> None:
             return Response(status_code=401)
         form = await request.form()
         try:
-            await api.fixed_assets_send(token, "PATCH", f"/classes/{quote(class_id, safe=':')}",
+            await _send(token, "PATCH", f"/classes/{quote(class_id, safe=':')}",
                                         {"archived": str(form.get("archived")) == "1"})
             return await _classes_fragment(token)
         except APIError as e:
@@ -3694,7 +3735,7 @@ def setup_ui_routes(app) -> None:
         if field == "life_months":
             value = int(raw) if raw.isdigit() else (None if not raw else raw)
         try:
-            cls = await api.fixed_assets_send(token, "PATCH", f"/classes/{quote(class_id, safe=':')}",
+            cls = await _send(token, "PATCH", f"/classes/{quote(class_id, safe=':')}",
                                               {field: value})
         except APIError as e:
             # The editor stays open on the refused row, the reason under it.

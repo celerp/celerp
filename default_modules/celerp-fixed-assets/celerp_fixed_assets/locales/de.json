@@ -807,6 +807,8 @@
   "fixed_assets.transfer_other.not_using": "{company} nutzt die Anlagenbuchhaltung noch nicht. Wechseln Sie dorthin und starten Sie sie dort.",
   "fixed_assets.transfer_other.no_rights": "Ihre Rolle bei {company} darf Buchhaltung und Anlagen dort nicht verwalten. Der Inhaber kann Ihrer Rolle beides geben.",
   "fixed_assets.switch_to": "Zu {company} wechseln",
+  "fixed_assets.switched_company": "Diese Seite wurde in {page} geöffnet, Sie haben aber inzwischen in einem anderen Tab zu {now} gewechselt, daher wurde nichts gespeichert. {switch}, um hier weiterzumachen, oder laden Sie die Seite neu, um in {now} zu arbeiten.",
+  "fixed_assets.switched_company_gone": "Diese Seite wurde in einem Unternehmen geöffnet, auf das Sie keinen Zugriff mehr haben, daher wurde nichts gespeichert. Laden Sie die Seite neu, um in {now} zu arbeiten.",
   "fixed_assets.transfer_date": "Übertragungsdatum",
   "fixed_assets.transfer_price": "Übertragungspreis",
   "fixed_assets.transfer_price_hint": "In {currency}, der Betrag, den das verbundene Unternehmen für die Anlage schuldet.",

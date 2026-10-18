@@ -1175,6 +1175,41 @@ async def test_u21_transfer_says_what_it_needs_when_no_company_can_take_the_asse
     assert f'href="/switch-company/{beta["id"]}"' in page.text, "the step is taken in the other company"
 
 
+async def test_r2_21_a_form_sent_after_a_switch_in_another_tab_saves_nothing_and_offers_the_way_back(owner_ui):
+    car = await _managed_car(owner_ui)
+    home = (await owner_ui.api.get("/companies/me")).json()
+    form_page = await owner_ui.get(f"/fixed-assets/assets/{car}/dispose")
+    sent = {"X-Celerp-Page-Company": home["id"], "HX-Current-URL": f"http://ui/fixed-assets/assets/{car}/dispose"}
+    carried = re.search(r"hx-headers=(['\"])(.+?)\1", form_page.text)
+    assert carried and json.loads(html.unescape(carried.group(2))) == {"X-Celerp-Page-Company": home["id"]}, \
+        "the page carries the company it was opened in"
+
+    # Another tab switches the session to Beta Co.
+    r = await owner_ui.api.post("/companies", json={"name": "Beta Co"})
+    assert r.status_code == 200, r.text
+    owner_ui.cookies.set("celerp_token", r.json()["access_token"])
+    review = await owner_ui.post("/fixed-assets/op/dispose/review", headers=sent, data={
+        "asset_id": car, "date": "2026-10-05", "reason": "scrapped", "idempotency_key": str(uuid.uuid4())})
+    switch = t("fixed_assets.switch_to", company=home["name"])
+    said = t("fixed_assets.switched_company", page=home["name"], now="Beta Co", switch=switch)
+    text = html.unescape(re.sub(r"<[^>]+>", "", review.text))
+    assert said in text, review.text
+    back = f"/switch-company/{home['id']}?next={quote(f'/fixed-assets/assets/{car}/dispose', safe='')}"
+    assert f'<a href="{html.escape(back)}">{switch}</a>' in review.text
+
+    # A small form says the same in its toast; nothing is saved in either company.
+    settled = await owner_ui.post("/fixed-assets/first-period", headers=sent,
+                                  data={"first_managed_period": "2026-09-01"})
+    assert said == _toast(settled)
+    asset = (await owner_ui.api.get(f"{API}/assets/{car}")).json()
+    assert asset["status"] == "active" and not asset.get("left_use")
+    assert (await owner_ui.api.get(f"{API}/setup")).json()["settings"]["first_managed_period"] == "2026-08-01"
+
+    # Switch to the page's company leads back to the page.
+    again = await owner_ui.get(back)
+    assert again.status_code == 302 and again.headers["location"] == f"/fixed-assets/assets/{car}/dispose"
+
+
 async def test_u22_the_buyer_is_a_contact_and_the_result_says_gain_or_loss(owner_ui):
     car = await _managed_car(owner_ui)
     buyer = (await owner_ui.api.get(f"/crm/contacts/{await _buyer(owner_ui)}")).json()

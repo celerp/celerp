@@ -20,7 +20,6 @@ from ui.api_client import APIError
 from ui.components.report_kit import action_bar, csv_amount, csv_response, fname_date, plain_error_response, print_shell
 from ui.components.shell import page_header
 from ui.components.table import EMPTY, breadcrumbs, empty_mark, empty_state_cta
-from ui.config import get_token as _token
 from ui.i18n import t
 
 from celerp_fixed_assets.ui_routes import (
@@ -38,6 +37,7 @@ from celerp_fixed_assets.ui_routes import (
     _refused,
     _restated_table,
     _text,
+    _token,
 )
 
 _BASE = "/fixed-assets/reports"

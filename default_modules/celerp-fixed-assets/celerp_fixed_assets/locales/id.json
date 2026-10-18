@@ -807,6 +807,8 @@
   "fixed_assets.transfer_other.not_using": "{company} belum memakai aset tetap. Beralih ke sana dan mulai aset tetap di sana.",
   "fixed_assets.transfer_other.no_rights": "Peran Anda di {company} tidak dapat mengelola akuntansi dan aset tetap di sana. Pemiliknya dapat memberi peran Anda keduanya.",
   "fixed_assets.switch_to": "Beralih ke {company}",
+  "fixed_assets.switched_company": "Halaman ini dibuka di {page}, tetapi Anda telah beralih ke {now} di tab lain, jadi tidak ada yang disimpan. {switch} untuk melanjutkan di sini, atau muat ulang halaman ini untuk bekerja di {now}.",
+  "fixed_assets.switched_company_gone": "Halaman ini dibuka di perusahaan yang tidak lagi dapat Anda akses, jadi tidak ada yang disimpan. Muat ulang halaman ini untuk bekerja di {now}.",
   "fixed_assets.transfer_date": "Tanggal pengalihan",
   "fixed_assets.transfer_price": "Harga pengalihan",
   "fixed_assets.transfer_price_hint": "Dalam {currency}, jumlah yang terutang oleh perusahaan terkait untuk aset ini.",

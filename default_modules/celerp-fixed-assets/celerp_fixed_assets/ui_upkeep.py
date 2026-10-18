@@ -16,14 +16,13 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import page_header, toast_header
 from ui.components.table import breadcrumbs, display_cell, editable_cell, empty_state_cta
-from ui.config import get_token as _token
 from ui.i18n import t
 
 from celerp_fixed_assets.operations import RESPONSIBLE
 from celerp_fixed_assets.upkeep import KINDS, MAINT_EDITABLE, REMINDERS_URL
 from celerp_fixed_assets.ui_routes import (
     _STACK, _context, _error_text, _field, _hx_write, _input, _members, _money_td, _money_th, _page, _picker, _refused,
-    _text)
+    _send, _text, _token)
 
 # The reminder fields edited in place, with the editor each one uses.
 _CELLS = {"due": "date", "every_months": "number", "lead_days": "number", RESPONSIBLE: "select", "policy": "text",
@@ -306,7 +305,7 @@ def setup_upkeep_routes(app) -> None:
             return P(t("fixed_assets.error"), cls="cell-error")
         form = await request.form()
         try:
-            reminder = await api.fixed_assets_send(token, "PATCH", f"/reminders/{_rid(reminder_id)}",
+            reminder = await _send(token, "PATCH", f"/reminders/{_rid(reminder_id)}",
                                                    {"changes": {field: str(form.get("value", "")).strip() or None}})
             members = await _members(token) if field == RESPONSIBLE else {}
         except APIError as e:
@@ -390,7 +389,7 @@ def setup_upkeep_routes(app) -> None:
             return P(t("fixed_assets.error"), cls="cell-error")
         form = await request.form()
         try:
-            entry = await api.fixed_assets_send(token, "PATCH", f"/maintenance/{_rid(maint_id)}",
+            entry = await _send(token, "PATCH", f"/maintenance/{_rid(maint_id)}",
                                                 {"changes": {field: str(form.get("value", "")).strip() or None}})
         except APIError as e:
             return Td(P(_error_text(e), cls="cell-error"))

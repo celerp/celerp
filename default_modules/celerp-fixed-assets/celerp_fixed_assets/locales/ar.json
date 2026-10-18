@@ -807,6 +807,8 @@
   "fixed_assets.transfer_other.not_using": "{company} لا تستخدم الأصول الثابتة بعد. انتقل إليها وابدأ الأصول الثابتة هناك.",
   "fixed_assets.transfer_other.no_rights": "دورك في {company} لا يتيح إدارة المحاسبة والأصول الثابتة. يمكن لمالكها منح دورك الصلاحيتين.",
   "fixed_assets.switch_to": "الانتقال إلى {company}",
+  "fixed_assets.switched_company": "فُتحت هذه الصفحة في {page}، لكنك انتقلت بعد ذلك إلى {now} في علامة تبويب أخرى، لذا لم يُحفظ شيء. {switch} للمتابعة هنا، أو أعد تحميل هذه الصفحة للعمل في {now}.",
+  "fixed_assets.switched_company_gone": "فُتحت هذه الصفحة في شركة لم يعد لديك وصول إليها، لذا لم يُحفظ شيء. أعد تحميل هذه الصفحة للعمل في {now}.",
   "fixed_assets.transfer_date": "تاريخ التحويل",
   "fixed_assets.transfer_price": "سعر التحويل",
   "fixed_assets.transfer_price_hint": "بعملة {currency}، المبلغ المستحق على الشركة الشقيقة مقابل الأصل.",

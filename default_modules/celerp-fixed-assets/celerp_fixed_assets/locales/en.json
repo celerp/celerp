@@ -807,6 +807,8 @@
   "fixed_assets.transfer_other.not_using": "{company} does not use fixed assets yet. Switch to it and start fixed assets there.",
   "fixed_assets.transfer_other.no_rights": "Your role in {company} cannot manage accounting and fixed assets there. Its owner can give your role both.",
   "fixed_assets.switch_to": "Switch to {company}",
+  "fixed_assets.switched_company": "This page was opened in {page}, but you have since switched to {now} in another tab, so nothing was saved. {switch} to carry on here, or reload this page to work in {now}.",
+  "fixed_assets.switched_company_gone": "This page was opened in a company you no longer have access to, so nothing was saved. Reload this page to work in {now}.",
   "fixed_assets.transfer_date": "Transfer date",
   "fixed_assets.transfer_price": "Transfer price",
   "fixed_assets.transfer_price_hint": "In {currency}, the amount the related company owes for the asset.",

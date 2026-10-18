@@ -1018,6 +1018,16 @@ class TestCompanySwitcher:
         assert "new-token-xyz" in set_cookie
 
     @pytest.mark.asyncio
+    async def test_switch_company_returns_to_a_local_next_and_never_off_site(self, ui_client):
+        """?next= leads back to the page that offered the switch; anything not a local path leads home."""
+        with patch("ui.api_client.switch_company", new=AsyncMock(return_value=("new-token-xyz", "new-refresh-xyz"))):
+            back = await ui_client.get("/switch-company/c2?next=/fixed-assets/assets/a1/dispose", cookies=_authed())
+            away = await ui_client.get("/switch-company/c2?next=//evil.example/x", cookies=_authed())
+            plain = await ui_client.get("/switch-company/c2", cookies=_authed())
+        assert back.headers["location"] == "/fixed-assets/assets/a1/dispose"
+        assert away.headers["location"] == "/" and plain.headers["location"] == "/"
+
+    @pytest.mark.asyncio
     async def test_switch_company_post_without_auth_redirects(self, ui_client):
         """POST /switch-company without cookie → redirect to /login."""
         r = await ui_client.post("/switch-company/c1")

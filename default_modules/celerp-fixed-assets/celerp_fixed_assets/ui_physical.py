@@ -16,12 +16,12 @@ from ui.components.files import files_section, linked_files
 from ui.components.shell import page_header, toast_header
 from ui.components.table import EMPTY, breadcrumbs
 from ui.config import get_claims, get_role
-from ui.config import get_token as _token
 from ui.i18n import t
 
 from celerp_fixed_assets.files import ASSET_FILE_TAGS
 from celerp_fixed_assets.setup import today_in
-from celerp_fixed_assets.ui_routes import _STACK, _error_text, _field, _hx_write, _input, _page, _refused, _text
+from celerp_fixed_assets.ui_routes import (_STACK, _error_text, _field, _hx_write, _input, _page, _refused, _send, _text,
+                                           _token)
 
 _CHECKS = "/fixed-assets/checks"
 
@@ -298,7 +298,7 @@ def setup_physical_routes(app) -> None:
             return Response(status_code=401)
         tag = str((await request.form()).get("tag") or "")
         try:
-            check = await api.fixed_assets_send(token, "POST", "/checks", {"tag": tag})
+            check = await _send(token, "POST", "/checks", {"tag": tag})
             checks = (await api.fixed_assets_get(token, "/checks"))["items"]
         except APIError as e:
             return Response(status_code=204, headers=toast_header(_error_text(e), "error", persist=True))
