@@ -60,15 +60,26 @@ async def test_owner_receives_noncacheable_single_display_and_no_secret_in_listi
         return {"credential": KEY}
     monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
     handler = _endpoints()["/settings/accountant-access/grants"]
-    request = Request({"pairing_code": _code(source), "label": "Client"})
+    request = Request({"pairing_code": _code(source), "label": "Client", "firm": " Firm Practice "})
     response = await handler(request)
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["pragma"] == "no-cache"
     assert KEY.encode() in response.body
     assert b"shown only once" in response.body
-    assert issued == [{"source_company_id": source, "label": "Client",
+    assert issued == [{"source_company_id": source, "label": "Client", "firm": "Firm Practice",
                        "scopes": ["contacts", "products"]}]
+
+
+@pytest.mark.asyncio
+async def test_a_key_needs_the_firm_name_the_client_will_see(monkeypatch):
+    _authenticated(monkeypatch)
+    async def create(token, body):
+        raise AssertionError("Must not reach API")
+    monkeypatch.setattr(api_client, "issue_accountant_peer_grant", create)
+    handler = _endpoints()["/settings/accountant-access/grants"]
+    response = await handler(Request({"pairing_code": _code(str(uuid.uuid4())), "firm": "  "}))
+    assert "Enter your firm's name" in str(response)
 
 
 @pytest.mark.asyncio

@@ -314,3 +314,24 @@ async def test_outbound_run_checks_the_key_once_before_sending(monkeypatch):
     monkeypatch.setattr(CelerpConnector, "before_outbound", before)
     await sync_runner.run_connector_sync(CelerpConnector(), _ctx(str(uuid.uuid4())), SyncDirection.OUTBOUND)
     assert order[0] == "key" and order.count("key") == 1 and len(order) > 2
+
+
+@pytest.mark.asyncio
+async def test_the_client_is_told_the_firm_named_on_the_key(db):
+    """The firm's name comes from the key, never from whichever company the firm had open
+    when it opened the client's copy, which may be another of its clients."""
+    from types import SimpleNamespace
+    from celerp.services.peer_journals import lock_feed
+    factory, target = db
+    async with factory() as s:
+        company = await peer_access.locked_company(s, target)
+        company.settings = {"restored_backup": {"opened_from": "Northwind Traders"}}
+        await s.commit()
+    source = uuid.uuid4()
+    async with factory() as s:
+        _, key = await issue(s, company_id=target, source_company_id=source, label="Client books",
+                             firm="Firm Practice", scopes=frozenset({"documents"}), now=AT)
+        await s.commit()
+    ctx = SimpleNamespace(peer=SimpleNamespace(credential=key, source_company_id=source, scope="documents"))
+    async with factory() as s:
+        assert (await lock_feed(s, ctx))["firm"] == "Firm Practice"
