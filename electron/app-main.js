@@ -288,10 +288,15 @@ function windowsPrivateRoot() {
     { encoding: "utf8", env: { ...process.env, PYTHONIOENCODING: "utf-8" }, timeout: 30000 });
   if (r.status === 0) return r.stdout.trim();
   const reason = (r.stderr || r.error?.message || `exit code ${r.status}`).replace(/^win_restricted_launch:\s*/, "").trim();
+  // The user's own folder that other accounts can open (private_dir_problem) may hold
+  // the database; any other folder there is not Celerp's.
+  const advice = reason.endsWith("can be opened by other accounts")
+    ? "It may hold your database, so do not delete it: ask whoever manages this PC to remove " +
+      "every other account's access to it, then start Celerp again."
+    : "Ask whoever manages this PC to remove that folder, then start Celerp again. Your data is not affected.";
   throw new Error(
     `Celerp keeps its database in a folder under ${parent}, because your Windows account name has ` +
-    `letters the database cannot read, and it cannot use that folder: ${reason}. Ask whoever ` +
-    "manages this PC to remove that folder, then start Celerp again. Your data is not affected.");
+    `letters the database cannot read, and it cannot use that folder: ${reason}. ${advice}`);
 }
 
 let windowsPgPathsCache = null;
