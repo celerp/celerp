@@ -122,6 +122,7 @@ async def test_firm_is_warned_14_days_before_a_key_expires(db):
     assert warning.priority == "high"
     assert warning.action_url == "/settings/accountant-access"
     assert warning.body.startswith("The sync key for Acme Trading expires on 2027-10-12.")
+    assert warning.title == "Sync key for Acme Trading expiring"
     assert warning.i18n["params"] == {"company": "Acme Trading", "date": "2027-10-12"}
 
     # Still standing once the key has expired, saying so.
@@ -130,6 +131,9 @@ async def test_firm_is_warned_14_days_before_a_key_expires(db):
         await s.commit()
     [expired] = await _notices(factory, target)
     assert expired.body.startswith("The sync key for Acme Trading expired on 2027-10-12.")
+    # Its own title, and the expiring notice it replaces is gone (one notice above).
+    assert expired.title == "Sync key for Acme Trading expired"
+    assert expired.i18n["title"] == "notice.peer_key_expiring.expired_title"
 
     # Renewing clears it.
     async with factory() as s:
