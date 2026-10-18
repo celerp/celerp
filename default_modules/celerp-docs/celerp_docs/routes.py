@@ -1104,11 +1104,13 @@ def _doc_row(r: Projection) -> dict:
 _DOC_FILTER_KEYS = ("doc_type", "status", "due_date", "amount_outstanding", "total", "fulfillment_status", "return_received_items", "received_items")
 
 
-def _doc_filter(f: DocListFilters, today: str):
+async def _doc_filter(session: AsyncSession, company_id: str, f: DocListFilters):
     """The filters that run row by row over displayed rows (``_doc_display``), as one predicate,
-    or None when none is set and every filter is in the SQL WHERE."""
+    or None when none is set and every filter is in the SQL WHERE. The company's day is read only
+    when a filter needs it."""
     checks = []
     if f.overdue_only:
+        today = (await company_today(session, company_id)).isoformat()
         checks.append(lambda x: is_overdue_document(x, today))
     if f.unfulfilled_only:
         checks.append(lambda x: x.get("status") not in ("draft", "void", "closed") and x.get("fulfillment_status") != "fulfilled")
@@ -1177,7 +1179,7 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     # in Python over the SQL-ordered rows, so both paths share one ORDER BY.
     base_where = _doc_sql_where(company_id, f)
     order_by = _doc_sql_order(_doc_sort_field(f), f.dir == "desc")
-    keep = _doc_filter(f, (await company_today(session, company_id)).isoformat())
+    keep = await _doc_filter(session, company_id, f)
 
     if keep is not None:
         rows = (await session.execute(select(Projection).where(*base_where).order_by(*order_by))).scalars().all()
@@ -7960,7 +7962,7 @@ async def export_docs_csv(
     out_cols = resolve_export_cols(cols, _DOC_EXPORT_COLS, _DOC_EXPORT_COLS)
     base_where = _doc_sql_where(company_id, filters)
     order_by = _doc_sql_order(_doc_sort_field(filters), filters.dir == "desc")
-    keep = _doc_filter(filters, (await company_today(session, company_id)).isoformat())
+    keep = await _doc_filter(session, company_id, filters)
     # Read only the state keys the exported columns and the row filters need, never whole documents.
     fields = {c for c in out_cols if c != "entity_id"} | (set(_DOC_FILTER_KEYS) if keep else set())
     keys = sorted(fields | {k for field in fields for k in DOC_FIELD_FALLBACKS.get(field, ())})
