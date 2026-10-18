@@ -1155,6 +1155,10 @@ class AccJournalEntryCreated(BaseModel):
     # Read-only history: entries posted before currency and rate moved onto the
     # line carry one pair here for the whole entry. Nothing emits it now.
     fx: AccJournalEntryFx | None = None
+    # A module journal: the record it belongs to (module, entity id, page, label as
+    # posted) and the hash of the request that posted it.
+    source: dict | None = None
+    intent_hash: str | None = None
 
 
 class AccJournalEntryPosted(BaseModel):

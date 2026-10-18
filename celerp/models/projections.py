@@ -12,10 +12,16 @@ from sqlalchemy.orm import Mapped, mapped_column
 from celerp.models.base import Base
 
 
+# The asset a projection belongs to (an asset's movements carry it), as the index on it
+# reads it: a query that filters on this expression uses ix_projections_asset.
+ASSET_ID = sa.literal_column("(projections.state ->> 'asset_id')")
+
+
 class Projection(Base):
     __tablename__ = "projections"
     __table_args__ = (
         PrimaryKeyConstraint("company_id", "entity_id"),
+        sa.Index("ix_projections_asset", "company_id", "entity_type", sa.text("(state ->> 'asset_id')")),
     )
 
     entity_id: Mapped[str] = mapped_column(Text, nullable=False)

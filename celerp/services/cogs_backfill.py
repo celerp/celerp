@@ -35,9 +35,7 @@ from celerp.migrations._data_reconcile import get_meta, set_meta
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.notifications import service as notification_service
-from celerp.services import auto_je
 from celerp.services.account_roles import LotOriginError, line_has_role, line_roles
-from celerp.services.auto_je import compute_doc_cogs
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +101,8 @@ async def legacy_cogs_refusal(session, company_id, doc_id: str, doc_state: dict)
     when this backfill has already run and would have booked the invoice at the
     lot's cost, as it does for every invoice whose lots it can cost exactly.
     """
+    from celerp.services.auto_je import compute_doc_cogs
+
     prefix = f"je:auto:{doc_id}:"
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == company_id,
@@ -184,6 +184,9 @@ async def run_cogs_backfill(session) -> dict:
     compute_doc_cogs over current projections; zero-cost docs post nothing and
     are only counted. Returns aggregate counts; the caller commits.
     """
+    from celerp.services import auto_je
+    from celerp.services.auto_je import compute_doc_cogs
+
     conn = await session.connection()
     already = await conn.run_sync(lambda c: get_meta(c, COGS_BACKFILL_KEY))
     if already:

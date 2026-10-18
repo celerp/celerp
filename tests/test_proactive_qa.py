@@ -244,8 +244,9 @@ class TestFmtMoneyContract:
     def test_fmt_money_negative(self):
         """Negative values should format as negative (e.g. credit notes)."""
         from ui.components.table import fmt_money
-        result = fmt_money(-50.5, "THB")
-        assert "-" in result and "50.50" in result
+        assert fmt_money(-50.5, "USD") == "-$50.50"
+        assert fmt_money(-1234.5, "THB") == "-฿1,234.50"
+        assert fmt_money(-0.001, "USD") == "$0.00", "a figure that rounds to zero carries no sign"
 
     def test_documents_val_money_delegates_tofmt_money(self):
         """documents.format_value('money') must produce same output as _fmt_money."""

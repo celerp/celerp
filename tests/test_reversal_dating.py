@@ -119,10 +119,10 @@ async def test_the_reversal_keeps_the_original_account_roles(client, session, au
     je = await _manual(client, auth)
     await _lock(client, auth)
     assert (await _void(client, auth, je)).status_code == 200
-    from celerp_accounting.routes import _je_rows
+    from celerp.services.ledger_rows import journal_rows
 
     session.expire_all()
-    rows = {eid: state for eid, state, _ in await _je_rows(session, auth["company_id"])}
+    rows = {eid: state for eid, state, _ in await journal_rows(session, auth["company_id"])}
     original, reversal = rows[je], rows[f"{je}:reversal"]
     assert [line.get("account_roles") for line in reversal["entries"]] == [
         line.get("account_roles") for line in original["entries"]]

@@ -21,7 +21,7 @@ from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
 from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
-from ui.components.files import files_section as _shared_files_section, _DOCUMENT_TAGS
+from ui.components.files import files_section as _shared_files_section, linked_files, _DOCUMENT_TAGS
 from celerp.services.business_time import business_today
 from celerp.services.currencies import CURRENCY_CODES as _CURRENCY_CODES
 from ui.components.currency import currency_combobox_td
@@ -142,46 +142,11 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None) -
 
 
 
-def _collect_contact_files(contact: dict, docs: list[dict]) -> list[dict]:
-    """Merge contact-own files with files from related docs.
-
-    Contact files have no linked_ref (shown as '--').
-    Doc files are tagged with linked_ref=doc_number and linked_url=/docs/{id}.
-    File ids are unique across the merged list (dedup by id).
-    """
-    seen: set[str] = set()
-    result: list[dict] = []
-
-    for f in contact.get("files", []):
-        fid = f.get("id", "")
-        if fid not in seen:
-            seen.add(fid)
-            result.append({**f, "linked_ref": "", "linked_url": ""})
-
-    for doc in docs:
-        doc_id = doc.get("entity_id") or doc.get("id") or ""
-        ref = doc.get("ref_id") or doc.get("doc_number") or ""
-        url = f"/docs/{doc_id}" if doc_id else ""
-        for f in doc.get("files", []):
-            fid = f.get("id", "")
-            if fid not in seen:
-                seen.add(fid)
-                # Override download + mutation URLs — file lives under the doc entity.
-                download_url = f"/docs/{doc_id}/files/{fid}/download" if doc_id else ""
-                action_base = f"/docs/{doc_id}/files" if doc_id else ""
-                result.append({**f, "linked_ref": ref, "linked_url": url,
-                                "_download_url": download_url,
-                                "_action_base_url": action_base,
-                                "_no_delete": True})
-
-    return result
-
-
 def _collect_company_files(self_contact: dict, items: list[dict], docs: list[dict]) -> list[dict]:
     """Aggregate a read-only company-wide files view: the company's own documents (self-contact files),
     every inventory item's images, and every document's attachments. Each row keeps the right linked
     ref/url + download/action overrides so it still points back at its owning entity (reuses the same
-    override shape as _collect_contact_files - DRY)."""
+    override shape as linked_files - DRY)."""
     seen: set[str] = set()
     out: list[dict] = []
 
@@ -213,7 +178,7 @@ def _collect_company_files(self_contact: dict, items: list[dict], docs: list[dic
 
 def _files_section(contact: dict, contact_id: str, docs: list[dict] | None = None, **kwargs) -> FT:
     """Wrapper - merges contact-own files with related doc files, then delegates to shared component."""
-    merged = _collect_contact_files(contact, docs or [])
+    merged = linked_files(contact.get("files", []), docs or [])
     return _shared_files_section("contact", contact_id, merged, **kwargs)
 
 

@@ -4086,3 +4086,48 @@ async def company_backup_bootstrap_restore(upload_token: str, name: str, email: 
                 "company_name": company_name,
             })
     return _raise(r).json()
+
+
+# ── Fixed assets ─────────────────────────────────────────────────────────────
+_FIXED_ASSETS_API = "/fixed-assets/api"
+
+
+async def fixed_assets_get(token: str, path: str, params: dict | None = None) -> dict:
+    """Read from the fixed assets API; ``path`` is relative to it."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"{_FIXED_ASSETS_API}{path}", params=params)).json()
+
+
+async def fixed_assets_send(token: str, method: str, path: str, data: dict) -> dict:
+    """Write to the fixed assets API (POST or PATCH); ``path`` is relative to it."""
+    async with _api_client(token) as c:
+        return _raise(await c.request(method, f"{_FIXED_ASSETS_API}{path}", json=data)).json()
+
+
+async def fixed_assets_form(token: str, method: str, path: str, data: dict,
+                            files: dict | None = None) -> dict:
+    """Send a form to the fixed assets API, with files when given ({field: (name, bytes, mime)});
+    a form carrying files goes over the bulk transport."""
+    client = _bulk_api_client if files else _api_client
+    async with client(token) as c:
+        return _raise(await c.request(method, f"{_FIXED_ASSETS_API}{path}", data=data, files=files)).json()
+
+
+async def fixed_assets_download(token: str, path: str, params: dict | None = None) -> httpx.Response:
+    """Fetch a file or an export from the fixed assets API over the bulk transport."""
+    async with _bulk_api_client(token) as c:
+        return _raise(await c.get(f"{_FIXED_ASSETS_API}{path}", params=params))
+
+
+# ── Label sources (records other modules register with celerp-labels) ───────
+
+
+async def label_source(token: str, source: str) -> dict:
+    """A kind of record labels print for: its row keys, preset template and the company's templates that fit."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/api/labels/sources/{source}")).json()
+
+
+async def label_source_rows(token: str, source: str, ids: list[str]) -> list[dict]:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/api/labels/source-rows", params={"source": source, "ids": ",".join(ids)})).json()["rows"]

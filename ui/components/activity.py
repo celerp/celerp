@@ -37,6 +37,15 @@ _EVENT_TYPES: tuple[str, ...] = (
     "item.inventory_account.recorded", "item.inventory_account.moved", "item.consignor_payable.recorded",
     "item.consignment.bought", "item.inventory_on_books.recorded",
     "mfg.order.wip_opened", "mfg.order.wip_unresolved",
+    "fa.class.created", "fa.class.updated", "fa.asset.created", "fa.asset.updated", "fa.asset.status",
+    "fa.asset.financials", "fa.asset.moved", "fa.movement.recorded", "fa.maint.recorded", "fa.maint.status",
+    "fa.asset.exception", "fa.reading.recorded", "fa.skip.recorded", "fa.skip.withdrawn",
+    "fa.correction.requested", "fa.correction.applied", "fa.correction.withdrawn", "fa.correction.undone",
+    "fa.review.recorded", "fa.review.status", "fa.recon.recorded",
+    "fa.taxbook.recorded", "fa.taxyear.recorded", "fa.yearend.recorded",
+    "fa.asset.file_attached", "fa.asset.file_tagged", "fa.asset.file_described", "fa.asset.file_deleted",
+    "fa.asset.confirmed", "fa.asset.problem", "fa.check.recorded", "fa.check.removed",
+    "fa.maint.updated", "fa.reminder.created", "fa.reminder.changed",
     "doc.created", "doc.updated", "doc.finalized", "doc.paid", "doc.voided",
     "doc.sent", "doc.marked_sent", "doc.converted", "doc.converted_to_bill",
     "doc.payment.received", "doc.payment.refunded", "doc.payment.refund_reversed", "doc.payment.stripe_released",
@@ -249,6 +258,18 @@ _SYSTEM_EVENT_TYPES = frozenset({
     "sys.migration.applied",
     "sys.older_stock.placed",
     "sys.older_stock.corrected",
+    # Fixed assets bookkeeping: the movement each one belongs to is the feed entry.
+    "fa.op.recorded",
+    "fa.op.undone",
+    "fa.src.claimed",
+    "fa.src.released",
+    "fa.run.prepared",
+    "fa.run.posted",
+    "fa.run.reversed",
+    "fa.import.recorded",
+    "fa.import.row",
+    # A reminder's notice being sent; the notice itself is what the member sees.
+    "fa.reminder.told",
 })
 
 # metadata_.reason values that mark an event as a mechanical side-effect of a

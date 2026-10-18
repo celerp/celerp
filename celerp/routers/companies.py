@@ -421,12 +421,19 @@ async def patch_books(
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     sent = payload.model_dump(exclude_unset=True)
     settings = dict(company.settings or {})
+    changed = set()
     for key in sorted(BOOKS_KEYS & set(sent)):
         value = await _check_books_change(session, company_id, settings, key, sent[key])
         if settings.get(key) != value:
             settings[key] = value
             record_change(settings, key, user.id)
+            changed.add(key)
     company.settings = settings
+    if "currency" in changed:
+        # Sample records follow the books' currency while the company keeps no books of its own.
+        from celerp.modules.slots import fire_lifecycle
+        await session.flush()
+        await fire_lifecycle("demo_records", session=session, company_id=company_id, user_id=user.id)
     await session.commit()
     return {key: settings.get(key) for key in sorted(BOOKS_KEYS)}
 
@@ -685,17 +692,23 @@ async def delete_location(
         raise HTTPException(status_code=404, detail=t("company.err_location_not_found"))
     if loc.is_default:
         raise HTTPException(status_code=409, detail=t("company.err_location_default"))
-    item_count = (await session.execute(
-        select(_func.count()).where(
+    # Items are counted as items; any other record placed here (a fixed asset) as an asset.
+    counts = dict((await session.execute(
+        select(Projection.entity_type, _func.count()).where(
             Projection.company_id == company_id,
-            Projection.entity_type == "item",
             Projection.location_id == loc_uuid,
-        )
-    )).scalar_one()
+        ).group_by(Projection.entity_type)
+    )).all())
+    item_count = counts.pop("item", 0)
     if item_count > 0:
         raise HTTPException(
             status_code=409,
             detail=t("company.err_location_in_use", count=item_count),
+        )
+    if counts:
+        raise HTTPException(
+            status_code=409,
+            detail=t("company.err_location_has_assets", count=sum(counts.values())),
         )
     await session.delete(loc)
     await session.commit()
@@ -1735,6 +1748,7 @@ async def put_units(
 @router.get("/me/modules")
 async def list_modules(
     company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     """List all installed modules with their enabled state.
@@ -1836,7 +1850,21 @@ async def list_modules(
                 })
         return results
 
-    return await asyncio.to_thread(_scan_modules)
+    modules = await asyncio.to_thread(_scan_modules)
+    # The work an enabled module would leave open, shown beside its Turn off to whoever
+    # may turn it off.
+    from celerp.services.permissions import role_has_permission
+    from celerp.services.turn_off_preflight import outstanding
+    if not role_has_permission(settings_dict, role, "manage_company_settings"):
+        return modules
+    for m in modules:
+        if m["enabled"]:
+            try:
+                m["turn_off"] = await outstanding(session, company_id, m["name"])
+            except Exception:
+                logger.exception("Turn-off preflight failed for %s", m["name"])
+                m["turn_off"] = {"failed": True}
+    return modules
 
 
 @router.post("/me/modules/{module_name}/enable", dependencies=[require_permission("manage_company_settings")])
@@ -1884,6 +1912,7 @@ async def disable_module(
     from celerp.modules.registry import (
         ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled, hold_module_state,
     )
+    from celerp.services.turn_off_preflight import outstanding
 
     if is_core_folded(module_name):
         raise HTTPException(status_code=409, detail=(
@@ -1893,6 +1922,11 @@ async def disable_module(
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    blocking = (await outstanding(session, company_id, module_name))["blocking"]
+    if blocking:
+        raise HTTPException(status_code=409, detail=t(
+            "modules.turn_off_blocked", module=module_label(module_name),
+            items="; ".join(item["label"] for item in blocking)))
     try:
         company.settings = disable_for_company(company.settings, module_name)
     except ModuleStillNeeded as exc:
@@ -2709,14 +2743,18 @@ async def reseed_demo_items(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Replace the untouched demo items with the set for the company's current business type.
+    """Replace the untouched demo items with the set for the company's current business type,
+    and let modules add their own sample records (the demo_records slot).
 
-    Real inventory and demo items the user edited or used are never removed.
+    Real inventory and demo items the user edited or used are never removed. A module whose
+    sample records failed is named in ``failed``, and ``ok`` is then false.
     """
+    from celerp.modules.slots import fire_lifecycle
     from celerp.services.demo import replace_demo_items
 
     company = await locked_company(session, company_id)
     vertical = (company.settings or {}).get("vertical") if company else None
     counts = await replace_demo_items(session, company_id, user.id, vertical)
+    failed = await fire_lifecycle("demo_records", session=session, company_id=company_id, user_id=user.id)
     await session.commit()
-    return {"ok": True, "vertical": vertical, **counts}
+    return {"ok": not failed, "vertical": vertical, "failed": [module for module, _ in failed], **counts}

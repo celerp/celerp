@@ -546,6 +546,26 @@ class TestFindSafeStamp:
         }
         assert find_safe_stamp(revs, sigs_by_rev, inspector, expected_metadata=metadata) == "rev2"
 
+    def test_an_expression_index_does_not_stand_for_a_column_index(self):
+        """A current index over columns plus an expression is a different index from a
+        historical one over the columns alone: it does not make that one expected."""
+        from unittest.mock import MagicMock
+        import sqlalchemy as sa
+        metadata = sa.MetaData()
+        sa.Table("projections", metadata, sa.Column("company_id", sa.String),
+                 sa.Column("entity_type", sa.String), sa.Column("state", sa.JSON),
+                 sa.Index("ix_projections_asset", "company_id", "entity_type",
+                          sa.text("(state ->> 'asset_id')")))
+        inspector = self._make_inspector(("projections", ["company_id", "entity_type", "state"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="projections")],
+            "rev2": [RevisionSignature(rev="rev2", kind="create_index", table="projections",
+                                        extra="ix_projections_company_entity_type",
+                                        columns=("company_id", "entity_type"))],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector, expected_metadata=metadata) == "rev2"
+
 
 class TestRealMigrationsVsSchema:
     """Integration: run the walker against every real migration in the repo

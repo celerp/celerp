@@ -11,16 +11,16 @@ columns are dropped wherever they still exist, so running it again does nothing.
 downgrade puts the columns back empty: a reset link sent before the upgrade does not
 come back.
 
-Revision ID: x2o3p4q5r6s7
-Revises: w1n2o3p4q5r6
+Revision ID: y3p4q5r6s7t8
+Revises: x2o3p4q5r6s7
 Create Date: 2026-10-17
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "x2o3p4q5r6s7"
-down_revision = "w1n2o3p4q5r6"
+revision = "y3p4q5r6s7t8"
+down_revision = "x2o3p4q5r6s7"
 branch_labels = None
 depends_on = None
 

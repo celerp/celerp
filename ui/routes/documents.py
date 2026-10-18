@@ -49,6 +49,8 @@ from ui.components.operation_key import (
 
 from celerp.output.doc_print import (
     INVOICE_LAYOUT_DOC_TYPES as _INVOICE_LAYOUT_DOC_TYPES,
+    input_money,
+    input_rate,
     render_doc_print_html,
 )
 
@@ -254,6 +256,16 @@ def _receive_kind_select(li: dict | None) -> FT:
         onchange="this.dataset.kindSet='1';celerpAutoSave()",
         **({"data-kind-set": "1"} if li is not None else {}),
     )
+
+
+# Line links the page never edits: the credited invoice line, and the asset a line sells or
+# credits. Every save sends them back as stored, so editing a draft keeps its links.
+_CARRIED_LINE_KEYS = ("source_line_id", "asset_id", "asset_returned")
+
+
+def _carried_inputs(li: dict) -> list:
+    return [Input(type="hidden", value="true" if li[k] is True else str(li[k]), data_carry=k)
+            for k in _CARRIED_LINE_KEYS if li.get(k) not in (None, "", False)]
 
 
 def _status_doc(item: dict) -> tuple[str, str] | None:
@@ -2440,6 +2452,13 @@ celerpUpdateBulkAlloc();
                 note_targets = await _credit_target_options(token, doc)
             except APIError:
                 note_targets = []
+        # The invoice or bill a credit or debit note was raised against, named and linked in its header.
+        original: dict | None = None
+        if doc.get("original_doc_id"):
+            try:
+                original = await api.get_doc(token, doc["original_doc_id"])
+            except APIError:
+                original = None
         # Fetch notes for doc (first-class entities)
         doc_notes: list[dict] = []
         try:
@@ -2549,7 +2568,7 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets, original=original),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -6482,8 +6501,22 @@ def _line_tax_rate(li: dict) -> float:
     return float(li.get("tax_rate", 0) or 0)
 
 
+def _line_account_picker(chart_accounts: list | None, value: str) -> FT:
+    """A purchase line's account, saved as soon as one is picked. Blank posts the line to
+    the company's account for its kind (stock or expense)."""
+    return searchable_select(
+        name="account_code",
+        options=[(a.get("code", ""), account_label(a)) for a in (chart_accounts or []) if a.get("code")],
+        value=value,
+        placeholder=t("documents.line_account_default"),
+        cls_extra="cell-input cell-input--xs",
+        allow_custom=True,
+        onchange="celerpAutoSave()",
+    )
+
+
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
-                connected_connectors: set[str] | None = None, note_targets: list | None = None) -> FT:
+                connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -7370,20 +7403,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             li_allow_splitting = "1" if _allow_split else ""
             account_cell = None
             if doc_type in ("purchase_order", "bill"):
-                _acct_list = chart_accounts or []
-                _acct_opts = [(a.get("code", ""), account_label(a)) for a in _acct_list if a.get("code")]
-                # Blank posts the line to the company's account for its kind (stock or expense).
-                account_cell = Td(
-                    searchable_select(
-                        name="account_code",
-                        options=_acct_opts,
-                        value=li.get("account_code") or "",
-                        placeholder=t("documents.line_account_default"),
-                        cls_extra="cell-input cell-input--xs",
-                        allow_custom=True,
-                    ),
-                    cls="col-account",
-                )
+                account_cell = Td(_line_account_picker(chart_accounts, li.get("account_code") or ""), cls="col-account")
 
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
             _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
@@ -7507,7 +7527,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     cells.append(Td(_qty_input, cls="col-qty"))
                     cells.append(Td(_unit_span, cls="col-unit"))
             cells.extend([
-                Td(Input(type="number", value=str(price), step="any",
+                Td(Input(type="number", value=input_rate(price, currency), step="any",
                          data_name="unit_price", oninput="celerpFieldEdited(this)",
                          onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-unit-price"),
@@ -7520,7 +7540,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if account_cell:
                 cells.append(account_cell)
             cells.extend([
-                Td(Input(type="number", value=str(round(line_tot, 2)), step="0.01",
+                Td(Input(type="number", value=input_money(line_tot, currency), step="0.01",
                          cls="cell-input line-total",
                          oninput="celerpLineTotalInput(this)",
                          onblur="celerpUpdateTotals(); celerpAutoSave()",
@@ -7529,6 +7549,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    None if pol["customs"] else Input(type="hidden", value=li.get("hs_code", "") or "", data_name="hs_code"),
                    Input(type="hidden", value=li_entity_id, data_name="entity_id"),
                    Input(type="hidden", value=li.get("line_id") or "", data_name="line_id"),
+                   *_carried_inputs(li),
                    Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
                    Input(type="hidden", value=str(li.get("item_quantity") or _meta.get("quantity") or qty), data_name="item_quantity"),
                    cls="cell--number col-total"),
@@ -7627,12 +7648,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(_tax_select(), cls="col-tax"),
             ])
             if doc_type in ("purchase_order", "bill"):
-                _acct_opts = [(a.get("code", ""), account_label(a)) for a in (chart_accounts or []) if a.get("code")]
-                cells.append(Td(
-                    searchable_select(name="account_code", options=_acct_opts, value="",
-                                      placeholder=t("documents.line_account_default"), cls_extra="cell-input cell-input--xs", allow_custom=True),
-                    cls="col-account",
-                ))
+                cells.append(Td(_line_account_picker(chart_accounts, ""), cls="col-account"))
             cells.extend([
                 Td(Input(type="number", value="0", step="0.01",
                          cls="cell-input line-total",
@@ -8655,7 +8671,7 @@ function celerpUpdateTotals() {{
             lineTot = gross - discAmt;
             grossSub += gross;
             totalDiscount += discAmt;
-            if (totalEl && totalEl !== document.activeElement) totalEl.value = lineTot.toFixed(2);
+            if (totalEl && totalEl !== document.activeElement) totalEl.value = lineTot.toFixed(_CELERP_CDP);
         }}
         sub += lineTot;
         const rate = _celerpTaxRate(row);
@@ -8915,6 +8931,8 @@ function _celerpCollectLines() {{
         const barcode = row.querySelector('[data-name="barcode"]')?.value || null;
         const piecesEl = row.querySelector('[data-name="pieces"]');
         const pieces = piecesEl && piecesEl.value !== '' ? parseFloat(piecesEl.value) : null;
+        const carried = {{}};
+        for (const el of row.querySelectorAll('input[data-carry]')) carried[el.dataset.carry] = el.value === 'true' ? true : el.value;
         const weightEl = row.querySelector('[data-name="weight"]');
         const weight = weightEl && weightEl.value !== '' ? parseFloat(weightEl.value) : null;
         if (_celerpRowHasContent(row)) {{
@@ -8944,6 +8962,7 @@ function _celerpCollectLines() {{
                          ...(accountCode ? {{account_code: accountCode}} : {{}}),
                          ...(pieces !== null ? {{pieces}} : {{}}),
                          ...(weight !== null ? {{weight}} : {{}}),
+                         ...carried,
                          allow_splitting: allowSplitting}});
         }}
     }}
@@ -10112,7 +10131,7 @@ async function celerpCsvImport(input, entityId) {{
             id="pay-setup-hint",
         ) if (share_enabled and not payments_on and not suppress_doc_actions
               and doc_type in ("invoice", "proforma") and not is_draft and _pay_due > 0) else "",
-        # Metadata bar: Doc ID | Reference | Issue date | Due date
+        # Metadata bar: Doc ID | Reference | Original (credit and debit notes) | Issue date | Due date
         # For subscription templates: show Frequency + Next Issue Date instead of Issue/Due date
         Div(
             Div(Div(t("doc.doc"), cls="meta-label"),
@@ -10125,6 +10144,10 @@ async function celerpCsvImport(input, entityId) {{
                 else _cell("ref_id", ref),
                 cls="meta-cell"),
             Div(Div(t("doc.reference"), cls="meta-label"), _cell("reference", doc.get("reference")), cls="meta-cell"),
+            (Div(Div(t("doc.original_label", doc_type=doc_type_label(original.get("doc_type", ""))), cls="meta-label"),
+                 A(original.get("ref_id") or original.get("doc_number") or doc["original_doc_id"],
+                   href=doc_href(doc["original_doc_id"])),
+                 cls="meta-cell") if original else ""),
             Div(Div(t("th.frequency") if _is_sub_template else t("doc.issue_date"), cls="meta-label"),
                 _cell("frequency", doc.get("frequency", "").capitalize()) if _is_sub_template else _cell("issue_date", issue_date_value),
                 cls="meta-cell"),

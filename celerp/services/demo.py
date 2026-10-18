@@ -22,6 +22,9 @@ from celerp.services.terms import DEFAULT_TERMS_CONDITIONS as _DEFAULT_TERMS_CON
 
 _DEMO_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")  # sentinel, not a real user
 
+# The ledger source every demo record is written with, core's and modules' alike.
+DEMO_SOURCE = "demo"
+
 # Generic demo items (no vertical / blank vertical)
 # Prices use price list names as keys (e.g. "Retail", "Wholesale", "Cost").
 # These are emitted as item.pricing.set events during seeding.
@@ -1596,13 +1599,19 @@ _SAMPLE_STOCK = "sample-stock"
 
 async def has_own_books(session: AsyncSession, company_id: uuid.UUID) -> bool:
     """True once the company has posted a journal entry of its own, any entry other
-    than the sample stock setup booked or the removal of those samples. An entry posted
-    and later voided was posted: its void keeps it in the books."""
+    than the sample stock setup booked, the removal of those samples, or the entry of
+    a sample document a module seeded (a document created with DEMO_SOURCE). An
+    entry posted and later voided was posted: its void keeps it in the books."""
     import sqlalchemy as sa
+    from sqlalchemy.orm import aliased
     from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
 
+    created = aliased(LedgerEntry)
     operation = sa.func.coalesce(LedgerEntry.metadata_["operation"].as_string(), "")
+    doc_id = sa.func.coalesce(LedgerEntry.metadata_["doc_id"].as_string(), "")
+    sample_docs = sa.select(created.entity_id).where(
+        created.company_id == company_id, created.event_type == "doc.created", created.source == DEMO_SOURCE)
     return (await session.scalar(sa.select(Projection.entity_id).join(LedgerEntry, sa.and_(
         LedgerEntry.company_id == Projection.company_id, LedgerEntry.entity_id == Projection.entity_id,
         LedgerEntry.event_type == "acc.journal_entry.created",
@@ -1611,6 +1620,7 @@ async def has_own_books(session: AsyncSession, company_id: uuid.UUID) -> bool:
         Projection.entity_type == "journal_entry",
         Projection.state["status"].as_string().in_(("posted", "void")),
         operation != _SAMPLE_STOCK,
+        doc_id.not_in(sample_docs),
     ).limit(1))) is not None
 
 
@@ -1623,7 +1633,7 @@ async def demo_item_ids(session: AsyncSession, company_id: uuid.UUID) -> list[st
         sa.select(LedgerEntry.entity_id).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_type == "item",
-            LedgerEntry.source == "demo",
+            LedgerEntry.source == DEMO_SOURCE,
         ).distinct()
     )).scalars().all())
 
@@ -1639,7 +1649,7 @@ async def _not_sample_fixtures(session: AsyncSession, company_id: uuid.UUID, ent
         sa.select(LedgerEntry.entity_id).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_id.in_(entity_ids),
-            LedgerEntry.source != "demo",
+            LedgerEntry.source != DEMO_SOURCE,
             LedgerEntry.event_type.not_in((RECORDED, KEPT)),
         ).distinct()
     )).scalars().all())
@@ -1775,13 +1785,14 @@ async def seed_demo_items(
     vertical: str | None = None,
     default_location_id: uuid.UUID | None = None,
 ) -> None:
-    """Seed vertical-aware demo items and default price lists in company settings.
+    """Seed default price lists in company settings, the modules' own sample records (the
+    demo_records slot) and then vertical-aware demo items, so the items are the newest activity.
 
     A demo SKU already held by an item is skipped, so seeding never duplicates a SKU.
     The stock seeded is booked as opening stock (lot_origin.recognize_opening_lots)."""
+    from celerp.modules.slots import fire_lifecycle
     from celerp.projections.engine import ProjectionEngine
     from celerp.services.company_lock import locked_company
-    from celerp.services.lot_origin import recognize_opening_lots
 
     # Seed default price lists into company settings if not already set
     company = await locked_company(session, company_id)
@@ -1801,8 +1812,16 @@ async def seed_demo_items(
         if "terms_conditions" not in settings:
             settings["terms_conditions"] = terms_conditions_for(vertical)
         company.settings = settings
-    if not ProjectionEngine.replayable("item.created"):
-        return  # starter items are written only through the loaded Inventory module
+    await fire_lifecycle("demo_records", session=session, company_id=company_id, user_id=actor_id)
+    # Starter items are written only through the loaded Inventory module.
+    if ProjectionEngine.replayable("item.created"):
+        await _seed_items(session, company_id, actor_id, vertical, default_location_id)
+
+
+async def _seed_items(session: AsyncSession, company_id: uuid.UUID, actor_id: uuid.UUID,
+                      vertical: str | None, default_location_id: uuid.UUID | None) -> None:
+    from celerp.services.lot_origin import recognize_opening_lots
+
     items = _VERTICAL_ITEMS.get(vertical or "", _GENERIC_ITEMS) if vertical else _GENERIC_ITEMS
     taken = await _skus_in_use(session, company_id, [data["sku"] for data in items])
     seeded: list[str] = []
@@ -1848,7 +1867,7 @@ async def seed_demo_items(
             data=payload,
             actor_id=actor_id,
             location_id=default_location_id,
-            source="demo",
+            source=DEMO_SOURCE,
             idempotency_key=f"demo:item:{company_id}:{sku}",
         )
         seeded.append(entry.entity_id)

@@ -21,7 +21,7 @@ from celerp.db import create_tables, engine, lifecycle_engine, mask_db_credentia
 from celerp.inventory_codes import CodeConflictError
 from celerp.projections.engine import UnhandledEventsError
 from celerp.services.account_roles import PostingRoleError
-from celerp.services.auto_je import UnbalancedJournalEntry
+from celerp.services.journal_accounts import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 load_cloud_config()
 load_backup_config()
@@ -272,6 +272,9 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
                 failed = [Failure(SAVING_STEP, f"{type(exc).__name__}: {exc}")]
         if failed:
             return await _hold_back(app, HeldBack(tuple(failed)))
+        # Every module has started: the journals modules post are fixed from here on.
+        from celerp.services.module_journals import freeze_operation_types
+        freeze_operation_types()
 
     # One-time backfill: stamp the status→document pairing on items sold, memo'd,
     # or consigned in before that field shipped, so their inventory status links
@@ -608,6 +611,9 @@ async def _serve(_app: FastAPI, held):
             # alerts disabled or no reorder points set).
             asyncio.create_task(reorder_alert_loop()),
         ]
+        # Modules' own background loops (the background_loop slot), on the same rule.
+        from celerp.modules.slots import get as _get_slot, resolve_handler as _resolve
+        background += [asyncio.create_task(_resolve(c["handler"])()) for c in _get_slot("background_loop")]
 
     # Update checks: reports the last update attempt once, then checks hourly and,
     # when automatic updates are on, installs overnight in the owner's time zone.

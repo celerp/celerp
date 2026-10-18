@@ -394,16 +394,18 @@ def test_source_identical_allowlist_has_no_stale_entries():
 # ---------------------------------------------------------------------------
 # Bundled module catalogs: release-complete locales are keyset-exact
 #
-# celerp-labels is a first-party bundled module. Every locale declared
+# celerp-labels and celerp-fixed-assets are first-party bundled modules. Every locale declared
 # release-complete must ship the module's full keyset, exactly - no missing and
 # no extra keys - the same bar as the central catalogs. Partial module catalogs
 # are only acceptable for third-party modules explicitly allowed to be partial,
-# which the bundled celerp-labels is not.
+# which the bundled modules are not.
 # ---------------------------------------------------------------------------
 
 _BUNDLED_MODULE_LOCALE_DIRS = [
     Path(__file__).parent.parent
     / "default_modules" / "celerp-labels" / "celerp_labels" / "locales",
+    Path(__file__).parent.parent
+    / "default_modules" / "celerp-fixed-assets" / "celerp_fixed_assets" / "locales",
 ]
 
 
