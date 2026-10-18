@@ -114,7 +114,7 @@ async def test_import_auto_je_no_payment_synthesis(client):
     token = await _register(client)
     entity_id = f"doc:unit-{uuid.uuid4().hex[:8]}"
 
-    with patch("celerp_docs.routes.auto_je.create_for_doc_payment", new_callable=AsyncMock) as mock_pay:
+    with patch("celerp.services.auto_je.create_for_doc_payment", new_callable=AsyncMock) as mock_pay:
         r = await client.post("/docs/import", headers=_h(token), json={
             "entity_id": entity_id,
             "event_type": "doc.created",

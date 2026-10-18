@@ -42,7 +42,7 @@ from ui.routes.csv_import import (
     validation_result,
 )
 from ui.i18n import t, get_lang
-from celerp.services.auto_je import IMPORTED_ISSUE_STATUSES, imported_issue_kind
+from celerp.services.auto_je import IMPORTED_ISSUE_STATUSES
 
 
 _DOC_IMPORT_SPEC = CsvImportSpec(
@@ -151,6 +151,8 @@ def _status_refusal(data: dict, treatment: str) -> str | None:
     that way). A paid or part-paid document recorded now is refused: the file does not say
     when or into which account the payment was made, so the import could only book the whole
     total as still owed, or a payment that never happened."""
+    from celerp.services.auto_je import imported_issue_kind
+
     doc_type = data["doc_type"]
     allowed = _FILE_STATUSES.get(doc_type)
     if allowed is None:
@@ -210,6 +212,8 @@ async def _treatment_choice(token: str, rows: list[dict], form=None) -> FT | str
     """Per document that posts (a bill, invoice or credit note), newest first, how it enters
     the books: what the user already chose when the review is shown again (``form``),
     otherwise pre-filled from the company's opening balance date. Empty when none posts."""
+    from celerp.services.auto_je import imported_issue_kind
+
     docs = [d for d in _group_documents(rows).values()
             if imported_issue_kind(d) in ("bill", "invoice", "credit_note")]
     if not docs:

@@ -282,7 +282,10 @@ def _metadata_has_index(metadata, sig: RevisionSignature, *, unique_only: bool =
             continue
         if sig.extra and index.name == sig.extra:
             return True
-        if wanted and tuple(col.name for col in index.columns) == wanted:
+        # An index over an expression lists only its plain columns here, so it would
+        # match a different index over those columns alone.
+        plain = len(index.expressions) == len(index.columns)
+        if wanted and plain and tuple(col.name for col in index.columns) == wanted:
             return True
     if unique_only:
         from sqlalchemy import UniqueConstraint

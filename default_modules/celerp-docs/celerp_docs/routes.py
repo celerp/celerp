@@ -36,7 +36,6 @@ from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy
 from celerp_docs.doc_money import document_money, money_from_lines
 from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
 from celerp_docs.taxes import TaxApplication
-from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
 from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
@@ -128,6 +127,12 @@ class LineItem(BaseModel):
     attributes: dict | None = None
     # Purchasing: the chart account the line posts to; checked when the bill is finalized.
     account_code: str | None = None
+    # Selling a fixed asset: the asset the line sells (an invoice) or credits (a credit note).
+    asset_id: str | None = None
+    # A credit note line that takes the sold asset back onto the books.
+    asset_returned: bool | None = None
+    # A credit note line: the invoice line it credits.
+    source_line_id: str | None = None
 
     @model_validator(mode="after")
     def _resolve_entity_id(self) -> "LineItem":
@@ -1695,6 +1700,8 @@ async def create_doc(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    from celerp.services import auto_je
+
     idem_key = payload.idempotency_key or str(uuid.uuid4())
     digest = _request_digest("doc", None, None, payload.model_dump(mode="json", exclude={"idempotency_key"}))
     if payload.idempotency_key:
@@ -1859,6 +1866,8 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
                           *, scan_runs: list[dict] | None = None) -> dict:
     """Apply a document edit without committing, so an import can make it part of a larger unit.
     Only the document scan passes `scan_runs`, the scan ledger no caller may patch."""
+    from celerp.services import auto_je
+
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
@@ -2248,6 +2257,8 @@ async def _invoiced_elsewhere(session, company_id, entity_id: str, locked: dict[
     invoice that ships them takes that cost with them (auto_je.reconcile_doc_cogs), so
     another invoice may name them, and its finalize costs only the units still free
     (auto_je.doc_lot_pool). Cost never recorded cannot move, so those goods stay refused."""
+    from celerp.services import auto_je
+
     in_stock = {eid for eid, p in locked.items()
                 if str(p.state.get("status") or "").lower() in ("available", "reserved")}
     if not in_stock:
@@ -2329,6 +2340,8 @@ async def _shared_lots(session, company_id, entity_id: str, state: dict) -> list
     (auto_je.other_invoices_naming), more than the lot holds for all of them:
     ``[{sku, lot_id, docs: [invoice numbers]}]``. Only one of them can ship such a lot.
     Enough units for every invoice is nothing to tell."""
+    from celerp.services import auto_je
+
     want: dict[str, float] = {}
     for li in state.get("line_items") or []:
         lot = str(line_item_id(li) or "")
@@ -2365,6 +2378,8 @@ async def finalize_document(
     commit: bool = True,
 ) -> dict:
     """Finalize with caller-owned transaction support for domain integrations."""
+    from celerp.services import auto_je
+
     # Company before the doc row: finalizing may draw the next invoice or bill number, and an
     # invoice's recognized COGS reads lot costs that a cost correction may be rewriting.
     _company = await locked_company(session, company_id)
@@ -2539,6 +2554,8 @@ async def finalize_doc(
 
 @router.post("/{entity_id}/void")
 async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    from celerp.services import auto_je
+
     preview = await _get_doc(session, company_id, entity_id)
     linked = (str(preview.state.get("original_doc_id") or "")
               if preview.state.get("doc_type") == "debit_note" and preview.state.get("source_return") else "")
@@ -2633,6 +2650,8 @@ async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: d
     A credit note can stop standing only while the invoice still holds the goods it gave
     up: goods that left stock since cannot be set aside again. What the invoice is owed
     follows the credit note too (_credit_note_owed)."""
+    from celerp.services import auto_je
+
     state = state or {}
     if state.get("doc_type") == "credit_note" and state.get("original_doc_id"):
         cn_id, cn_state = doc_id, state
@@ -2947,6 +2966,8 @@ async def close_credit_on_void_invoice(session, company_id, user_id, cn_id: str)
     (refuse_on_void_invoice); the credit note reads closed with ``released`` on record. Shared by every place a credit note meets a void invoice:
     the import of either document and the settlement of earlier credit notes. Running it again
     changes nothing."""
+    from celerp.services import auto_je
+
     row = await session.get(Projection, {"company_id": company_id, "entity_id": cn_id}, populate_existing=True)
     note = (row.state if row else None) or {}
     if note.get("status") in (None, "draft", "void"):
@@ -2983,6 +3004,8 @@ async def settle_imported_credit(session, company_id, user_id, entity_id: str, d
     (auto_je.void_imported_used) once its invoice comes in and takes it off its own
     balance. One whose invoice is void is then closed (close_credit_on_void_invoice). A credit
     note the opening balances hold (OPENING_BALANCES) books nothing of it."""
+    from celerp.services import auto_je
+
     if data.get("doc_type") == "credit_note" and data.get("original_doc_id"):
         pairs = [(str(data["original_doc_id"]), entity_id)]
     elif data.get("doc_type") == "invoice":
@@ -3142,6 +3165,8 @@ async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = D
 
 @router.post("/{entity_id}/revert-to-draft")
 async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    from celerp.services import auto_je
+
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("revert-to-draft", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.reverted_to_draft",
@@ -3331,6 +3356,8 @@ async def renumber_doc(
 
 @router.post("/{entity_id}/unvoid")
 async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    from celerp.services import auto_je
+
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("unvoid", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.unvoided",
@@ -3610,6 +3637,8 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     already holds them - an online payment keeps the books its payment page opened with,
     while they still match the company's and the document's (_books_still_kept); otherwise
     they are the company's and the document's now."""
+    from celerp.services import auto_je
+
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
@@ -3800,6 +3829,8 @@ async def imported_payment_books(session, company_id, entity_id: str, row: Proje
     the document's rate (auto_je.create_for_imported_paid), so undoing it puts that back
     and never touches the bank. A refund of it is cash paid out here, so it goes through
     the bank (posted_books)."""
+    from celerp.services import auto_je
+
     indexes = (await auto_je.imported_payment_indexes(session, company_id, entity_id)).get(entity_id, set())
     if payment.get("index") not in indexes:
         return None
@@ -3819,6 +3850,8 @@ async def _books_from_entry(session, company_id, entity_id: str, row: Projection
     its entries in the company's currency, so the payment's entry is read in it. A
     Stripe payment posted at one rate on both sides: its own, or the document's when it
     carried none. The books are the ones whose lines are exactly the entry's."""
+    from celerp.services import auto_je
+
     company = await session.get(Company, company_id)
     base = books_currency((company.settings or {}) if company else {})
     entry = await session.get(Projection, (company_id, f"je:auto:{entity_id}:pay:{payment.get('index')}"))
@@ -3861,6 +3894,8 @@ async def apply_payment_refund(session, company_id, entity_id: str, row: Project
     a refund Stripe reports (``payments.receive_refund``). 422/409 when the payment
     cannot give that much back; the caller commits. Returns the event, flagged
     ``was_deduped`` when *idempotency_key* already recorded it."""
+    from celerp.services import auto_je
+
     _reject_if_closed(row.state, "refund a payment")
     if row.state.get("doc_type") == "credit_note":
         await refuse_on_void_invoice(session, company_id, row.state)
@@ -3914,6 +3949,7 @@ async def reverse_payment_refund(session, company_id, entity_id: str, row: Proje
     *books*. Undoing the latest refund mirrors its entry; undoing an earlier one still
     leaves the books at what the refunds left in place convert to. The caller commits.
     Returns the event, flagged ``was_deduped`` when *idempotency_key* already recorded it."""
+    from celerp.services import auto_je
     from celerp.services.je_keys import je_idempotency_key, unminted_payment_key
     index, number = payment.get("index"), refund["refund_number"]
     amount = to_decimal(refund["amount"])
@@ -3992,6 +4028,8 @@ class VoidPaymentBody(BaseModel):
 
 @router.post("/{entity_id}/void-payment")
 async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    from celerp.services import auto_je
+
     preview = await _get_doc(session, company_id, entity_id)
     candidate = next((p for p in preview.state.get("payments", [])
                       if p.get("index") == payload.payment_index), None)
@@ -4180,6 +4218,7 @@ async def delete_payment(
     Blocked if the payment JE has been reconciled in a closed reconciliation session.
     If reconciled in an open session, the JE is automatically un-matched first.
     """
+    from celerp.services import auto_je
     from celerp_accounting.models import ReconciliationSession, BankStatementLine  # noqa: PLC0415
 
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -4345,11 +4384,11 @@ class ApplyToInvoiceBody(BaseModel):
 @dataclass(frozen=True)
 class _NoteApplication:
     """How one kind of credit note is applied: the documents it settles, the payment method
-    the settled side records, the entry it posts, and the refusals worded for its parties."""
+    the settled side records, the kind of entry it posts, and the refusals worded for its
+    parties."""
     targets: tuple[str, ...]
     target_method: str
     kind: str  # "cn" or "dn": the application's JE id and idempotency keys
-    post: Callable
     finalize_first: str
     wrong_target: str
     target_not_payable: str
@@ -4361,13 +4400,13 @@ class _NoteApplication:
 
 _NOTE_APPLICATIONS: dict[str, _NoteApplication] = {
     "credit_note": _NoteApplication(
-        ("invoice",), "credit_note", "cn", auto_je.create_for_cn_application,
+        ("invoice",), "credit_note", "cn",
         "documents.err_credit_note_finalize_apply", "documents.err_apply_target_invoice",
         "documents.err_apply_invoice_not_payable", "documents.err_apply_contact_mismatch",
         "documents.err_apply_currency_mismatch", "documents.err_apply_over_credit",
         "documents.err_apply_over_invoice"),
     "debit_note": _NoteApplication(
-        ("bill", "purchase_order"), "supplier_credit", "dn", auto_je.create_for_dn_application,
+        ("bill", "purchase_order"), "supplier_credit", "dn",
         "documents.err_supplier_credit_finalize_apply", "documents.err_apply_target_bill",
         "documents.err_apply_bill_not_payable", "documents.err_apply_supplier_mismatch",
         "documents.err_apply_bill_currency_mismatch", "documents.err_apply_over_supplier_credit",
@@ -4386,6 +4425,8 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
     A replayed idempotency key returns the recorded application, marked was_deduped,
     without writing anything; with ``request`` the replay must also carry the same
     request digest. The invoice-side event is keyed as a step of the same key."""
+    from celerp.services import auto_je
+
     # Lock both docs FOR UPDATE in one ordered batch: the doc-row lock is the single
     # serializer, so two concurrent applications sharing docs acquire them in the same
     # order (no deadlock) and each re-reads the other's committed state before allocating
@@ -4485,7 +4526,8 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
         actor_id=actor_id, location_id=None, source=source,
         idempotency_key=idempotency_key, metadata_={"request": request} if request is not None else {},
     )
-    await how.post(
+    post = auto_je.create_for_cn_application if how.kind == "cn" else auto_je.create_for_dn_application
+    await post(
         session, company_id=company_id, user_id=actor_id,
         doc_id=target_doc_id, note_id=entity_id, amount=amount,
         payment_index=payment_idx, payment_date=payment_date,
@@ -4539,6 +4581,8 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
     # Lock the credit note row FOR UPDATE and validate against that fresh read: the
     # doc-row lock is the single serializer, so a concurrent application/refund on this
     # credit note is ordered at the row and cannot mint a colliding index.
+    from celerp.services import auto_je
+
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("credit-note-refund", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.received",
@@ -4806,6 +4850,8 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
     the line's price, since the bill books the line. ``before`` is the purchase units of the
     line received ahead of these goods.
     """
+    from celerp.services import auto_je
+
     lines = doc.get("line_items") or []
     if not 0 <= it.po_line_index < len(lines):
         return None
@@ -4911,6 +4957,8 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
     account / Cr payables), a bill's capitalises its landed cost. Writes doc.received and
     answers what the receipt did; the caller checks the document may receive and commits.
     Shared by the receive route and an import that records its goods now."""
+    from celerp.services import auto_je
+
     entity_id = row.entity_id
     doc_type = row.state.get("doc_type")
     location_uuid = await require_company_location(session, company_id, payload.location_id)
@@ -5424,6 +5472,8 @@ async def _capitalise_landed_received(session: AsyncSession, company_id, user_id
     and the lots split off it since did with them (_freight_since_receipt). A lot already
     carrying this bill's landed cost is left as it is, so a bill finalized again takes nothing
     twice."""
+    from celerp.services import auto_je
+
     received = state.get("received_items") or []
     if not received:
         return
@@ -6025,6 +6075,8 @@ async def _imported_receipt_held(session: AsyncSession, company_id, doc_id: str)
     """Whether the document was imported holding goods already received, with the opening
     balances carrying them (auto_je.imported_document): opening stock, not something a receipt
     here brought in, so no undo of a receipt, void or revert takes it back."""
+    from celerp.services import auto_je
+
     imported = await auto_je.imported_document(session, company_id, doc_id)
     return imported is not None and bool(imported.snapshot.get("received_items"))
 
@@ -6086,6 +6138,8 @@ class _BillCharges:
     @staticmethod
     def owed(state: dict, rate, currency: str) -> auto_je.BillOwed:
         """What the bill owes, for taking a return off it (auto_je.BillOwed)."""
+        from celerp.services import auto_je
+
         total = round_money(state.get("total", 0) or 0, str(state.get("currency") or currency))
         return auto_je.BillOwed(whole=total, base=to_base(total, rate, currency),
                                 credited=to_decimal(state.get("returned_credit") or 0))
@@ -6094,6 +6148,8 @@ class _BillCharges:
 async def _bill_charge_rates(session: AsyncSession, company_id, doc_id: str, state: dict) -> _BillCharges | None:
     """What a finalized bill charged for its goods (_BillCharges); None for any other document,
     whose returns take off what was charged for the goods and nothing more."""
+    from celerp.services import auto_je
+
     if state.get("doc_type") != "bill" or not state.get("finalized"):
         return None
     lines = state.get("line_items") or []
@@ -6629,6 +6685,8 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, 
 async def return_consignment_items(entity_id: str, payload: ReturnBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("fulfill_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Send received goods back to the supplier, named either by lot (``items``) or by document
     line (``lines``, a stock quantity per line, taken from that line's lots on the server)."""
+    from celerp.services import auto_je
+
     # The company first: a return on a paid document numbers the supplier credit note it raises.
     # Then the document: a return takes goods off the lots it reads, so it waits for any receipt
     # or cost change in flight and reads what that one committed.
@@ -7057,6 +7115,8 @@ async def _undo_supplier_return(session, company_id, user_id, note_id: str, note
     reversed, the goods are back on their lots as they were before it, and the document
     holds them again and owes what it did. Each step is keyed to the return and the note,
     so a retry repeats none of them."""
+    from celerp.services import auto_je
+
     key = str(note["source_return"])
     doc_id = str(note.get("original_doc_id") or "")
     await _get_doc(session, company_id, doc_id, for_update=True)
@@ -7660,6 +7720,8 @@ def import_treatment(entity_id: str, data: dict, *, post_ledger: bool) -> str | 
     it says otherwise, and a purchase order with nothing received posts nothing either
     way. A staged migration (no ``post_ledger``) posts what its reconciliation contract
     says, so it needs no choice. None when the document posts nothing."""
+    from celerp.services import auto_je
+
     given = data.get("import_treatment")
     number = str(data.get("doc_number") or data.get("ref_id") or entity_id.removeprefix("doc:"))
     if given is not None and given not in IMPORT_TREATMENTS:
@@ -7695,6 +7757,8 @@ def _import_metadata(source_ts: str | None, data: dict, *, post_ledger: bool, re
     digest of the record as sent (import_digest), the treatment it was imported with
     (auto_je.IMPORT_TREATMENT) and, for a purchase order or bill whose value the opening
     balances hold, that they hold it (auto_je.IMPORTED_OPENING)."""
+    from celerp.services import auto_je
+
     meta: dict = {auto_je.IMPORTED_SNAPSHOT: True, "request": request}
     if treatment:
         meta[auto_je.IMPORT_TREATMENT] = treatment
@@ -7714,6 +7778,8 @@ def imported_booked_now(data: dict) -> tuple[dict, list[dict]]:
     (``lot_quantity_added``, as imported_opening_snapshot marks them) are refused (422):
     the receipt would bring them in a second time, so only the opening balances can hold
     them."""
+    from celerp.services import auto_je
+
     received = list(data.get("received_items") or [])
     held = next((x for x in received if "lot_quantity_added" in x), None)
     if held is not None:
@@ -7757,6 +7823,8 @@ async def imported_opening_snapshot(session: AsyncSession, company_id, data: dic
     balances do not hold). A purchase order or bill also has each stock line it received
     marked with what that line holds in the lot it names, as a receipt marks what it added,
     so a return takes the goods back off that lot. A snapshot not issued is returned as it is."""
+    from celerp.services import auto_je
+
     kind = auto_je.imported_issue_kind(data)
     if kind in ("invoice", "credit_note", "bill") and not data.get("finalized"):
         data = {**data, "finalized": True}
@@ -7822,6 +7890,8 @@ async def _import_auto_je(session: AsyncSession, company_id, user, role: str, se
     settlement date/rate are separate facts the snapshot cannot supply. A document the
     opening balances hold (OPENING_BALANCES) is not booked here at all.
     """
+    from celerp.services import auto_je
+
     kind = auto_je.imported_issue_kind(data)
     if kind == "invoice":
         await auto_je.create_for_doc_finalized(
@@ -9975,6 +10045,8 @@ async def _fulfill_lines_impl(
     reserved again. Another line's hold is never shipped. A shortage on any line refuses the
     whole request. Inbound doc types (bill, consignment_in) must use POST /receive instead.
     """
+    from celerp.services import auto_je
+
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     doc_type = state.get("doc_type", "")
@@ -10259,6 +10331,8 @@ async def _expand_invoice_line_allocations(
     session, company_id, doc_id: str, doc_state: dict,
     item_ids: list[str], fetched: dict[str, Projection],
 ) -> set[int]:
+    from celerp.services import auto_je
+
     requested_indices: set[int] = set()
     for item_eid in list(item_ids):
         idx = await auto_je.doc_line_of_lot(session, company_id, doc_id, doc_state, item_eid, fetched[item_eid].state or {})
@@ -10302,6 +10376,8 @@ async def _reverse_whole_lines(
     Shared by revert-lines (Set as available on sold/memo lines) and reserve-lines
     (Set as reserved on a line this doc already shipped: reverse, then reserve).
     """
+    from celerp.services import auto_je
+
     reversed_line_indices: set[int] = set()
     if doc_type == "invoice" and to_revert:
         reversed_line_indices = await _expand_invoice_line_allocations(
@@ -10419,6 +10495,8 @@ async def _lots_out(session, company_id, entity_id: str, state: dict,
                     lots: Iterable[Projection]) -> tuple[dict[str, Projection], dict[str, int | None]]:
     """The lots this document has out (sold or on memo), and the line whose shipment sent
     each, None where nothing records it."""
+    from celerp.services import auto_je
+
     out = {p.entity_id: p for p in lots
            if p.state.get("status_doc_id") == entity_id and p.state.get("status") in ("memo_out", "sold")}
     line_of = {eid: await auto_je.doc_line_of_lot(session, company_id, entity_id, state, eid, p.state)
@@ -10663,6 +10741,8 @@ async def _reserve_lines_impl(
     stock and held again in the same request. Every line is planned before anything
     changes, so a shortage or refusal on one line changes nothing on any line.
     """
+    from celerp.services import auto_je
+
     company_id = row.company_id
     state = row.state
     line_items = state.get("line_items", [])
@@ -10951,6 +11031,8 @@ def _returned_lot_origin(ref: dict, quantity: float) -> dict:
 def _shipped_unit_cost(lot: dict) -> float:
     """What one unit of a sold lot cost as it shipped (auto_je.lot_cost_of_sale): the
     cost a return of it comes back at, never what its stock left behind costs now."""
+    from celerp.services import auto_je
+
     quantity = float(lot.get("quantity") or 0)
     return auto_je.lot_cost_of_sale(lot) / quantity if quantity > 0 else float(lot.get("cost_price") or 0)
 
@@ -11017,6 +11099,7 @@ async def receive_return(
     - Case 2: No original_doc_id -> query sold inventory by SKU (LIFO), use those values.
     Creates new inventory items (status=available) and a reversing COGS JE.
     """
+    from celerp.services import auto_je
     from celerp_inventory.routes import flatten_item
 
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -11310,6 +11393,8 @@ async def undo_receive_return(
     Deletes all inventory items created by the return and reverses the COGS JE.
     Clears return_received_items on the CN projection.
     """
+    from celerp.services import auto_je
+
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("doc_type") != "credit_note":
@@ -11581,6 +11666,8 @@ async def undo_receive(
     already returned to the supplier keep the receipt in place: undoing it would orphan the
     posted return. Undoing a receipt already undone reports that instead of failing.
     """
+    from celerp.services import auto_je
+
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("doc_type") != "bill":
@@ -12559,6 +12646,8 @@ async def adjust_audit(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Apply a finalized audit against fresh, locked inventory state."""
+    from celerp.services import auto_je
+
     at = datetime.now(timezone.utc).isoformat()  # one business day for the whole adjustment
     await lock_company(session, company_id)  # before the audit and item row locks (lock order)
     row = await _get_audit(session, company_id, entity_id, for_update=True)
@@ -12669,6 +12758,8 @@ async def undo_audit_adjust(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Undo only while stock still equals the quantity this audit applied."""
+    from celerp.services import auto_je
+
     await lock_company(session, company_id)  # before the audit and item row locks (lock order)
     row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != CLOSED or row.state.get("result") != "stock_adjusted":
@@ -12924,6 +13015,7 @@ async def write_off_stock(
     permanent disposal record. Lines with no quantity entered are skipped and reported; a line with a
     quantity but an invalid account/item/quantity rejects the whole action. Reversible via
     undo-write-off."""
+    from celerp.services import auto_je
     from celerp_inventory.routes import split_off_child
     at = datetime.now(timezone.utc).isoformat()  # one business day for the whole write-off
     # Row-lock the list for the whole transaction: this terminal moves ledger value, so a second
@@ -13090,6 +13182,8 @@ async def undo_write_off(
     child lot is NOT re-merged into its parent - it returns as its own available lot, so quantity is
     conserved (parent remainder + restored child = the original). Reopens the list (closed -> finalized)
     so it can be re-run."""
+    from celerp.services import auto_je
+
     # Lock the projection: undo reads each disposed line, restores its lot, and writes the line_items
     # array back (read-modify-write), so it must serialize against a concurrent re-run/undo.
     row = await _get_writeoff(session, company_id, entity_id, for_update=True)

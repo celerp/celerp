@@ -48,7 +48,59 @@ item_lineage_guard {"handler": "module.path:function"} naming
                    with exactly those keyword arguments on every live item event, after
                    it is applied and before its effects are booked; raising refuses the
                    event
-search_provider    Contributes rows to the global search bar. Exactly one descriptor
+demo_records       {"handler": "module.path:function"} naming
+                   `async def handler(*, session, company_id, user_id) -> None`, called
+                   with exactly those keyword arguments whenever a company's demo data
+                   is seeded or seeded again, or its books' currency changes: the module adds
+                   its own sample records, once, and only while the company keeps no books of
+                   its own, and keeps them in the books' currency. Filled by Celerp's
+                   own modules only (FIRST_PARTY_SLOTS)
+background_loop    {"handler": "module.path:function"} naming `async def handler() -> None`,
+                   started once as a background task after every start that brings the
+                   stored records current, never while they are held back. It runs for the
+                   life of the process and decides itself which companies it serves
+                   (uses_module). Filled by Celerp's own modules only (FIRST_PARTY_SLOTS)
+doc_asset_lines    {"handler": "module.path:function"} naming
+                   `async def handler(*, session, company_id, user_id, doc_id, doc, change)
+                   -> None`, called with exactly those keyword arguments when a document
+                   carrying asset lines is written ("write"), when a write takes asset
+                   lines off a draft ("unlink", with ``doc`` holding the lines taken
+                   off), and when it posts or reverses
+                   ("finalize", "credit", "void", "revert", "unvoid"), inside the same
+                   transaction; raising refuses the document action. Called whether or not the company uses the module, so
+                   the module decides what it still allows. Filled by Celerp's own
+                   modules only (FIRST_PARTY_SLOTS)
+fixed_asset_rules  {"kind", "key", "handler": "module.path:Name"}: a country rule for
+                   fixed assets, read by celerp-fixed-assets. kind is "method",
+                   "convention", "tax_regime" or "statutory_report"; handler names a
+                   class or function returning the rule object, whose interface that
+                   module documents (celerp_fixed_assets.calc.rules). A rule applies to
+                   a company only while it uses the contributing module
+label_source       {"entity_type", "handler", "permission", "label_key", "keys", "preset"}:
+                   records other than items that celerp-labels can print a label for.
+                   handler names `async def handler(*, session, company_id, ids) -> list[dict]`,
+                   called with exactly those keyword arguments, returning one row per id it
+                   found (the row's "id" plus a value for every name in "keys"); permission
+                   gates who may print them; preset is the label template offered for
+                   creation when the company has none whose fields the rows can fill (its
+                   fields' labels are i18n keys, translated when the template is created)
+import_target      {"kind", "handler", "href"}: a file of records a module imports that
+                   no core import page holds. kind names what the file is
+                   ("fixed_asset_register"); href is the module's own import page, where
+                   core's import page for that kind sends a company that uses the module;
+                   handler names `async def handler(*, session, company_id, user_id, rows,
+                   as_at, source, body) -> dict`, called with exactly those keyword
+                   arguments: rows a list of dicts keyed by the module's column names,
+                   body the module's own options (preview, exclusions, confirmation)
+turn_off_preflight {"handler": "module.path:function"} naming
+                   `async def handler(*, session, company_id) -> dict`, called with exactly
+                   those keyword arguments when the module is about to be turned off for a
+                   company (under the company lock) and when the modules page lists it.
+                   It returns {"blocking": [...], "listed": [...]}, each item
+                   {"label", "href"}: blocking items refuse turning off, naming them;
+                   listed items are shown beside Turn off and kept. Filled by Celerp's own
+                   modules only (FIRST_PARTY_SLOTS)
+search_provider   Contributes rows to the global search bar. Exactly one descriptor
                    dict per module: {"handler", "result_key", "permission"}. handler
                    names an in-module "module.path:function" resolved and validated
                    async at load, invoked as
@@ -60,16 +112,22 @@ search_provider    Contributes rows to the global search bar. Exactly one descri
 Every slot entry is checked before any of its module's code runs
 (celerp.modules.loader): an entry is a dict; every key its slot reads has the
 type it is read as (nav "key" text, "group" text or None, "order" a number;
-send_to_targets "doc_type" and catalog_channel "id" non-empty text, catalog_channel
-"can_create" true or false; category_schema "category" non-empty text and
+send_to_targets "doc_type", catalog_channel "id", label_source "entity_type" and
+import_target "kind" non-empty text, label_source "keys" a list of text and "preset"
+a dict, catalog_channel "can_create" true or false; category_schema "category" non-empty text and
 "fields" a list of field definitions; bulk_action "action_type" "htmx" or
 "navigate"; "label" and "label_key" text); a "permission" (or catalog_channel
 "write_permission"), when present, is a key from the permission registry; a
-"requires_connector", when set, is a connector id; nav "href" / "settings_href"
-and bulk_action "form_action" (required) are app-local paths; and every callable
-an entry names is the module's own code, async exactly where core awaits it,
+"requires_connector", when set, is a connector id; nav "href" / "settings_href" /
+"probe_href", bulk_action "form_action" and import_target "href" (both required) are
+app-local paths; and every
+callable an entry names is the module's own code, async exactly where core awaits it,
 and takes exactly the keyword arguments core passes where the slot names them
-(inventory_in_production, item_lineage_guard).
+(inventory_in_production, item_lineage_guard, demo_records, doc_asset_lines,
+label_source, import_target, turn_off_preflight). A nav entry with a "probe_href" is shown only when that page,
+loaded with the sidebar, answers with the link: for an entry whose audience
+depends on the records themselves (the assets in a member's care), not on a
+permission.
 
 Whether a company uses a module is one rule, celerp.modules.registry.uses_module.
 item_action, pricing_action, doc_detail_actions, doc_detail_badges, bulk_action,
@@ -100,11 +158,14 @@ SLOT_NAMES = frozenset({
     "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
     "projection_handler", "on_company_created", "on_modules_ready", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
+    "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
+    "import_target", "turn_off_preflight",
 })
 
 # Slots only Celerp's own (first-party) modules may fill; admission refuses any
 # other module that fills one.
-FIRST_PARTY_SLOTS = frozenset({"inventory_in_production"})
+FIRST_PARTY_SLOTS = frozenset({"inventory_in_production", "demo_records", "background_loop",
+                               "doc_asset_lines", "turn_off_preflight"})
 
 # projection_handler prefixes core handles itself: system events (registered at
 # startup, celerp.main) and the core-folded connectors' declared prefixes.
@@ -135,9 +196,10 @@ def resolve_handler(dotted: str) -> Callable:
     return getattr(mod, func_name)
 
 
-# Slots whose handler core calls on every item write or upgrade: a contribution without a
+# Slots whose handler core calls directly: a contribution without a
 # "module.path:function" handler would fail every such call, so it is refused here.
-_HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard"})
+_HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard", "demo_records",
+                            "doc_asset_lines", "label_source", "import_target", "turn_off_preflight"})
 
 
 def check(slot: str, contribution: dict) -> None:

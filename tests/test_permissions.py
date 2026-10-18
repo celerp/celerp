@@ -1100,9 +1100,14 @@ class TestNavPermissions:
         from celerp.services.permissions import _PERMISSIONS_BY_KEY
         return _PERMISSIONS_BY_KEY[key].default_role
 
+    # Finance pages below manager, and why they show no money there.
+    _FINANCE_NAV_BELOW_MANAGER = {
+        "fixed_assets": "the register shows money only with view_financial_reports",
+    }
+
     def test_finance_nav_requires_manager(self):
         for item in self._load_nav_items():
-            if item.get("group") == "Finance":
+            if item.get("group") == "Finance" and item.get("key") not in self._FINANCE_NAV_BELOW_MANAGER:
                 perm = item.get("permission")
                 assert perm, f"Finance nav item {item.get('key')} must declare a permission"
                 assert self._default_role(perm) == "manager", (

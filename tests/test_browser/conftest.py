@@ -29,7 +29,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 # whose ENABLED_MODULES pins the module list.
 _ALL_MODULES = (
     "celerp-accounting,celerp-ai,celerp-connectors,celerp-contacts,celerp-sales-funnel,celerp-dashboard,celerp-docs,celerp-inventory,"
-    "celerp-labels,celerp-manufacturing,celerp-reports,celerp-subscriptions,celerp-verticals"
+    "celerp-fixed-assets,celerp-labels,celerp-manufacturing,celerp-reports,celerp-subscriptions,celerp-verticals"
 )
 
 # Per-xdist-worker ports so the browser suite can SHARD with `-n` (each worker boots its own API +

@@ -370,7 +370,8 @@ async def _module_refusal(request: Request, module: str) -> Response | None:
         )
         return HTMLResponse(to_xml(page), status_code=exc.status)
     settings = company.get("settings")
-    if uses_module(settings, module):
+    from celerp.modules.loader import reads_when_off
+    if uses_module(settings, module) or reads_when_off(request.scope, module):
         return None
     if request.headers.get("hx-request"):
         # The full page at this same address is the refusal that says the module is off.

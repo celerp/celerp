@@ -38,7 +38,6 @@ from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, 
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services import auto_je
 from celerp.services.account_roles import consignor_of, is_consigned, lineage, new_lot_account, party_key
 from celerp.services.company_lock import lock_projections
 from celerp.services.lot_origin import RETIRED
@@ -137,6 +136,8 @@ def _gave_up_value(state: dict) -> bool:
 
 
 async def _plan(session, company_id, state: dict) -> _Plan:
+    from celerp.services import auto_je
+
     lines = state.get("line_items") or []
     receipts = [x for x in state.get("received_items") or [] if (x.get("receive_as") or "stock") == "stock"]
     roots = list(state.get("received_item_ids") or [])
@@ -255,6 +256,8 @@ def _back(groups: list[_Group], of: dict[str, _Group], line_sku) -> dict[str, De
 def _bill_lines(state: dict, kept: dict[int, Decimal], currency: str) -> tuple[list[dict], list[int], bool]:
     """The bill's lines for what was kept, the consignment line each came from, and
     whether any differs from the consignment's."""
+    from celerp.services import auto_je
+
     out: list[dict] = []
     source: list[int] = []
     changed = False
@@ -365,6 +368,8 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
                           base_currency: str) -> str:
     """Create the vendor bill for an issued consignment and make every lot it bought the
     company's own (module docstring). Returns the bill's id."""
+    from celerp.services import auto_je
+
     plan = await _plan(session, company_id, state)
     await lock_projections(session, company_id, plan.docs)
     await lock_projections(session, company_id, plan.lots)
@@ -475,6 +480,8 @@ async def _bought(session, company_id, user_id, row: Projection, cost: Decimal, 
                   consignment_id: str, bill_id: str, allocations: dict) -> None:
     """Make one lot the company's own at ``cost``; every invoice line that has it
     allocated and not shipped is repriced by the change."""
+    from celerp.services import auto_je
+
     state = row.state or {}
     qty = float(state.get("quantity") or 0)
     change = float(cost) / qty - auto_je.lot_unit_cost(state)
@@ -493,6 +500,8 @@ async def _bought(session, company_id, user_id, row: Projection, cost: Decimal, 
 
 async def _rehome_returned(session, company_id, user_id, bill_id: str, group: _Group,
                            costs: dict[str, Decimal], account: str, day: str) -> None:
+    from celerp.services import auto_je
+
     created = (await _created(session, company_id, [group.returned])).get(group.returned) or {}
     payable = created.get(CONSIGNOR_PAYABLE_FIELD)
     if not payable:

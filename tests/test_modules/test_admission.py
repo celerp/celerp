@@ -386,6 +386,22 @@ def _case_in_production_not_first_party(base, marker, monkeypatch):
                              ), "is filled by Celerp's own modules only"
 
 
+def _case_turn_off_preflight_not_first_party(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"turn_off_preflight": {"handler": "{inner}.off:preflight"}},
+                             code={"off.py": "async def preflight(*, session, company_id):\n    return {}\n"}
+                             ), "is filled by Celerp's own modules only"
+
+
+def _case_readable_when_off_not_bool(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, readable_when_off="yes"), "must be true or false"
+
+
+def _case_readable_when_off_not_first_party(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker, readable_when_off=True
+                             ), "Only Celerp's own modules stay readable"
+
+
 _PROJECT = {"proj.py": "def apply(state, event_type, data):\n    return state\n"}
 
 
@@ -838,6 +854,9 @@ async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
     _case_lineage_guard_wrong_arity,
     _case_in_production_wrong_arity,
     _case_in_production_not_first_party,
+    _case_turn_off_preflight_not_first_party,
+    _case_readable_when_off_not_bool,
+    _case_readable_when_off_not_first_party,
     _case_projection_prefix_twice,
     _case_projection_prefixes_overlap,
     _case_projection_prefix_is_cores,
@@ -2858,6 +2877,10 @@ for pkg in packages():
         if protected(info.name) or ".migrations.versions." in info.name:
             continue
         for name, value in vars(importlib.import_module(info.name)).items():
+            # A package binds each imported submodule under its own name; that is the
+            # protected module's own address, which admission refuses by name.
+            if isinstance(value, types.ModuleType) and value.__name__ == f"{info.name}.{name}":
+                continue
             if any(protected(source) for source in sources(value, set())):
                 held.append(f"{info.name}.{name}")
 print("\\n".join(held))

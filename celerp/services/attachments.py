@@ -624,6 +624,15 @@ FILE_ATTACHED_EVENTS = {
 }
 
 
+def register_file_attached_event(entity_type: str, event_type: str) -> None:
+    """Let a module's entity type hold files: ``event_type`` attaches one to it.
+
+    A type already registered is refused, so a module never redirects another's files."""
+    if entity_type in FILE_ATTACHED_EVENTS and FILE_ATTACHED_EVENTS[entity_type] != event_type:
+        raise ValueError(f"Files on {entity_type!r} are already attached by {FILE_ATTACHED_EVENTS[entity_type]!r}.")
+    FILE_ATTACHED_EVENTS[entity_type] = event_type
+
+
 def item_file_role(
     existing_files: list[dict], mime: str, *, as_hero: bool = False, document_tag: str | None = None
 ) -> tuple[bool, str | None]:
