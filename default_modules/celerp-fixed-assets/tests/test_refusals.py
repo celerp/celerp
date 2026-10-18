@@ -203,3 +203,48 @@ async def test_a_stale_review_says_what_may_have_changed_and_to_press_review_aga
     assert r.status_code == 409 and _message(r) == (
         "An asset, account or posting on this review changed since you reviewed it. "
         "Press Review again to see it as it stands now."), r.text
+
+
+async def test_forms_on_an_asset_out_of_use_say_its_state_and_the_way_back_before_any_field(fa: FA):
+    """Every operation on a disposed, sold or undone asset refuses on the asset's state first,
+    however empty the form, naming how it left use and the way back with a link to it; its
+    form pages say the same above the form, and Revalue offers no class change for it."""
+    from test_disposal import _dispose
+    from test_files_tags import _registered_van
+
+    await _managed_from(fa)
+    printer = await _contributed(fa, name="Printer")
+    await _dispose(fa, printer, "2026-03-20")
+    car = await _contributed(fa)
+    invoice = await _sell(fa, car, on="2026-04-10")
+    await _finalize(fa, invoice)
+    van, _ = await _registered_van(fa)
+    await fa.operate(f"/assets/{van}/undo", {}, key="undo-van")
+    numbers = {a: (await fa.asset(a))["number"] for a in (printer, car, van)}
+    left = {
+        printer: f"{numbers[printer]} was disposed of on 2026-03-20{{so}}. Undo the disposal on its page first.",
+        car: f"{numbers[car]} was sold on 2026-04-10{{so}}. Void its invoice and cancel the sale on its page first.",
+        van: f"{numbers[van]}'s registration was undone{{so}}. Its bill line is back in Register from bills, "
+             "to register it again."}
+    cannot = {"sell": "it cannot be sold", "dispose": "it cannot be disposed of", "move": "it cannot be moved",
+              "add": "nothing can be added to it", "revalue": "it cannot be remeasured",
+              "impair": "it cannot be remeasured", "reclassify": "it cannot be reclassified",
+              "correct": "it cannot be corrected"}
+    for asset_id, text in left.items():
+        links = [{"label": numbers[asset_id], "href": f"/fixed-assets/assets/{asset_id}"}]
+        if asset_id == van:
+            links.append({"label": "Register from bills", "href": "/fixed-assets/intake"})
+        for op, clause in cannot.items():
+            r = await fa.post(f"/assets/{asset_id}/{op}", {"preview": True, "op_key": f"x-{op}"})
+            assert (op, r.status_code, _message(r)) == (op, 409, text.format(so=f", so {clause}")), r.text
+            assert _params(r)["links"] == links
+        assert (await fa.asset(asset_id))["left_use"] == {"message": text.format(so=""), "links": links}
+        for form in ("sell", "dispose", "move", "add", "remeasure", "reclassify", "correct"):
+            page = html.unescape((await fa.page(f"/fixed-assets/assets/{asset_id}/{form}")).text)
+            assert 'id="fa-left-use"' in page, (form, asset_id)
+            assert f'<a href="/fixed-assets/assets/{asset_id}">{numbers[asset_id]}</a>' in page, form
+        page = (await fa.page(f"/fixed-assets/assets/{asset_id}/remeasure")).text
+        assert "Change class to revaluation" not in page
+    r = await fa.post("/move", {"asset_ids": [printer], "preview": True, "op_key": "x-many"})
+    assert _message(r) == left[printer].format(so=", so it cannot be moved")
+    assert (await fa.asset(await _contributed(fa, name="Bike")))["left_use"] is None

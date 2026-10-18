@@ -38,6 +38,7 @@ from celerp_fixed_assets.operations import (
     _run,
     asset_movements,
     conflict,
+    in_use,
     reverse_move,
 )
 from celerp_fixed_assets.store import _emit, _state
@@ -168,6 +169,11 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
     await _lock_in_order(session, company_id, theirs)
 
     async def plan(fa):
+        row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
+        if row is None or row.entity_type != "fa_asset":
+            raise HTTPException(status_code=404, detail="No such asset.")
+        asset = row.state
+        in_use(asset_id, asset, "it cannot be transferred")
         day = _date(body.get("date"), "The transfer date")
         _, their_settings = await locked_authority(session, theirs, user_id, KEYS)
         our_name, their_name = await _name(session, company_id), await _name(session, theirs)
@@ -182,10 +188,6 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         if their_books.lock is not None and date.fromisoformat(day) <= their_books.lock:
             raise conflict(f"{day} is in a locked period in {their_name}. Transfer on or after "
                            f"{(their_books.lock + timedelta(days=1)).isoformat()}.")
-        row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
-        if row is None or row.entity_type != "fa_asset":
-            raise HTTPException(status_code=404, detail="No such asset.")
-        asset = row.state
         await sales.refuse_waiting(session, company_id, asset_id, asset)
         receivable = str(body.get("receivable_account") or "")
         payable = str(body.get("payable_account") or "")

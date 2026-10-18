@@ -12,7 +12,7 @@ import uuid
 from fastapi import HTTPException
 
 from celerp_fixed_assets import setup
-from celerp_fixed_assets.operations import _date, _effects, _run, conflict
+from celerp_fixed_assets.operations import _date, _effects, _run, in_use
 from celerp_fixed_assets.store import _emit
 
 KEYS = ("manage_fixed_assets",)
@@ -98,15 +98,15 @@ async def move(session, company_id, user_id, body: dict, asset_ids=None) -> dict
     """Move one or more assets to a location, to a custodian, or both, from a date."""
 
     async def plan(fa):
+        assets = await _locked_assets(session, company_id, asset_ids if asset_ids is not None else body.get("asset_ids"))
+        for asset_id, asset in assets:
+            in_use(asset_id, asset, "it cannot be moved")
         day = _date(body.get("date"), "The move date")
         location = await _location(session, company_id, body.get("location_id"))
         custodian = await _custodian(session, company_id, body.get("custodian"))
         if location is None and custodian is None:
             raise setup.unprocessable("Choose a location or a custodian to move to.")
-        assets = await _locked_assets(session, company_id, asset_ids if asset_ids is not None else body.get("asset_ids"))
         for _, asset in assets:
-            if asset.get("status") in _GONE:
-                raise setup.unprocessable(f"{asset['number']} is no longer on the books, so it cannot be moved.")
             last = (asset.get("placements") or [{}])[-1].get("date")
             if last and day < last:
                 raise setup.unprocessable(f"{asset['number']} was last moved on {last}. Date the move on or after it.")
@@ -135,11 +135,10 @@ async def undo_move(session, company_id, user_id, asset_id: str, body: dict) -> 
 
     async def plan(fa):
         ((_, asset),) = await _locked_assets(session, company_id, [asset_id])
+        in_use(asset_id, asset, "its move cannot be undone")
         placements = asset.get("placements") or []
         if not placements:
             raise setup.unprocessable(f"{asset['number']} has not been moved.")
-        if asset.get("status") in _GONE:
-            raise conflict(f"{asset['number']} is no longer on the books, so its move cannot be undone.")
         latest = placements[-1]
         shown = {"assets": [{"id": asset_id, "number": asset["number"], "name": asset.get("name")}],
                  "date": latest["date"], **await _placed(session, latest["previous"]),

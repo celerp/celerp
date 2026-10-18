@@ -29,6 +29,7 @@ from celerp.services.permissions import get_current_company_settings, require_pe
 
 from celerp_fixed_assets import files, setup
 from celerp_fixed_assets.moves import _GONE, _locked_assets, member_name
+from celerp_fixed_assets.operations import in_use
 from celerp_fixed_assets.store import _emit, _entities, _state
 from celerp_fixed_assets.views import money_shown, readable
 
@@ -131,7 +132,7 @@ async def _live_asset(session, company_id, asset_id: str) -> dict:
     if not state.get("number"):
         raise HTTPException(status_code=404, detail="No such asset.")
     if state.get("status") in _GONE:
-        raise setup.unprocessable(f"{state['number']} is no longer on the books.")
+        in_use(asset_id, state, "no upkeep is kept for it")
     return state
 
 

@@ -39,6 +39,7 @@ from celerp_fixed_assets.operations import (
     _run,
     asset_movements,
     conflict,
+    in_use,
 )
 from celerp_fixed_assets.store import _emit, _entities, _state
 from fastapi import HTTPException
@@ -96,12 +97,11 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
     """Add an improvement or a replacement part to an asset."""
 
     async def plan(fa):
+        asset = await _locked_asset(session, company_id, asset_id)
+        in_use(asset_id, asset, "nothing can be added to it")
         kind = body.get("kind")
         if kind not in KINDS:
             raise setup.unprocessable("Choose what is added: an improvement or a replacement part.")
-        asset = await _locked_asset(session, company_id, asset_id)
-        if asset.get("status") != "active":
-            raise conflict(f"{asset['number']} is not in use, so nothing can be added to it.")
         cls = await setup.get_class(session, company_id, asset.get("class_id"))
         books = await runs._books(session, company_id)
         currency = books.currency

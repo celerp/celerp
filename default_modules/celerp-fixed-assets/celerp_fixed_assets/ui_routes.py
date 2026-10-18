@@ -138,6 +138,14 @@ def _linked(text: str, links: list[dict]) -> list:
 _amounts_hidden: ContextVar[bool] = ContextVar("fixed_assets_amounts_hidden", default=False)
 
 
+def _left_use_notice(asset: dict) -> FT | str:
+    """An asset no longer in use says so, and the way back, above any form opened on it."""
+    left = asset.get("left_use")
+    if not left:
+        return ""
+    return Div(*_linked(refusal_text(left["message"]), left["links"]), cls="flash flash--warning", id="fa-left-use")
+
+
 def _money(value, currency: str | None) -> FT | str:
     if value in (None, ""):
         return Span(t("fixed_assets.amount_hidden"), cls="cell-empty") if _amounts_hidden.get() else empty_mark()
@@ -2675,7 +2683,8 @@ def setup_ui_routes(app) -> None:
                         _field(t("fixed_assets.request_note"), _input("reason"), t("fixed_assets.request_hint")),
                         actions=(request_button,))
         title = t("fixed_assets.correct_title", number=asset["number"])
-        return await _page(request, crumbs, page_header(title), tabs, form, title_key="fixed_assets.correct")
+        return await _page(request, crumbs, page_header(title), _left_use_notice(asset), tabs, form,
+                           title_key="fixed_assets.correct")
 
     @app.get("/fixed-assets/assets/{asset_id}/dispose")
     async def dispose_page(request: Request, asset_id: str):
@@ -2692,7 +2701,7 @@ def setup_ui_routes(app) -> None:
         form = _op_form("dispose", Input(type="hidden", name="asset_id", value=asset_id),
                         P(t("fixed_assets.dispose_hint"), cls="settings-hint"), *_disposal_fields(asset, setup["today"]))
         return await _page(request, crumbs, page_header(t("fixed_assets.dispose_title", number=asset["number"])),
-                           form, title_key="fixed_assets.dispose")
+                           _left_use_notice(asset), form, title_key="fixed_assets.dispose")
 
     @app.get("/fixed-assets/assets/{asset_id}/sell")
     async def sell_page(request: Request, asset_id: str):
@@ -2723,7 +2732,7 @@ def setup_ui_routes(app) -> None:
                                Span(t("fixed_assets.buyer_hint"), " ",
                                     A(t("fixed_assets.add_contact"), href="/contacts/customers"))))
         return await _page(request, crumbs, page_header(t("fixed_assets.sell_title", number=asset["number"])),
-                           form, title_key="fixed_assets.sell")
+                           _left_use_notice(asset), form, title_key="fixed_assets.sell")
 
     async def _asset_crumbs(token: str, asset_id: str, label_key: str) -> tuple[dict, FT]:
         asset = await api.fixed_assets_get(token, f"/assets/{quote(asset_id, safe=':')}")
@@ -2759,7 +2768,7 @@ def setup_ui_routes(app) -> None:
         form = _op_form("move", Input(type="hidden", name="asset_id", value=asset_id),
                         P(t("fixed_assets.move_hint"), cls="settings-hint"), *fields)
         return await _page(request, crumbs, page_header(t("fixed_assets.move_title", number=asset["number"])),
-                           form, title_key="fixed_assets.move")
+                           _left_use_notice(asset), form, title_key="fixed_assets.move")
 
     @app.post("/fixed-assets/move/selected")
     async def move_selected(request: Request):
@@ -2786,7 +2795,7 @@ def setup_ui_routes(app) -> None:
         form = _op_form("move", *[Input(type="hidden", name="asset_ids", value=a["id"]) for a in assets],
                         P(t("fixed_assets.move_hint"), cls="settings-hint"), listed, *fields)
         return await _page(request, crumbs, page_header(t("fixed_assets.move_several_title", n=len(assets))),
-                           form if assets else P(t("label.select_rows_first"), cls="form-hint"),
+                           *[_left_use_notice(a) for a in assets], form if assets else P(t("label.select_rows_first"), cls="form-hint"),
                            title_key="fixed_assets.move")
 
     @app.get("/fixed-assets/assets/{asset_id}/reclassify")
@@ -2807,7 +2816,7 @@ def setup_ui_routes(app) -> None:
                                _input("date", setup["today"], type_="date", required=True)),
                         _field(t("fixed_assets.to_class"), _picker("class_id", options, label=t("fixed_assets.to_class"))))
         return await _page(request, crumbs, page_header(t("fixed_assets.reclassify_title", number=asset["number"])),
-                           form, title_key="fixed_assets.reclassify")
+                           _left_use_notice(asset), form, title_key="fixed_assets.reclassify")
 
     @app.get("/fixed-assets/assets/{asset_id}/transfer")
     async def transfer_page(request: Request, asset_id: str, company: str = ""):
@@ -2827,7 +2836,7 @@ def setup_ui_routes(app) -> None:
         sell = A(t("fixed_assets.sell"), href=f"/fixed-assets/assets/{asset_id}/sell", cls="btn btn--sm btn--secondary")
         hint = P(t("fixed_assets.transfer_taxable_hint"), " ", sell, cls="settings-hint")
         if not targets:
-            return await _page(request, crumbs, title, P(t("fixed_assets.transfer_hint"), cls="settings-hint"), hint,
+            return await _page(request, crumbs, title, _left_use_notice(asset), P(t("fixed_assets.transfer_hint"), cls="settings-hint"), hint,
                                _transfer_needs(reachable["others"]), title_key="fixed_assets.transfer")
         target = next((x for x in targets if x["company_id"] == company), targets[0])
         tabs = _field(t("fixed_assets.transfer_to"), Div(
@@ -2858,7 +2867,7 @@ def setup_ui_routes(app) -> None:
                           _picker("payable_account", [(a["code"], f"{a['code']} {a['name']}") for a in target["accounts"]],
                                   label=t("fixed_assets.payable_account", company=target["name"])),
                           t("fixed_assets.payable_hint"))]
-        return await _page(request, crumbs, title, tabs, _op_form("transfer", *fields),
+        return await _page(request, crumbs, title, _left_use_notice(asset), tabs, _op_form("transfer", *fields),
                            title_key="fixed_assets.transfer")
 
     @app.get("/fixed-assets/assets/{asset_id}/remeasure")
@@ -2880,7 +2889,7 @@ def setup_ui_routes(app) -> None:
         cls = next((c for c in classes if c["id"] == asset.get("class_id")), {})
         field = "fair_value" if op == "revaluation" else "recoverable_amount"
         notes: list[FT] = [P(t(f"fixed_assets.remeasure_hint.{op}"), cls="settings-hint")]
-        if op == "revaluation" and cls.get("measurement_policy") != "revaluation":
+        if op == "revaluation" and cls.get("measurement_policy") != "revaluation" and not asset.get("left_use"):
             notes.append(Div(t("fixed_assets.cost_model_hint"), " ",
                              A(t("fixed_assets.change_to_revaluation"),
                                href=f"/fixed-assets/classes/{quote(cls.get('id') or '', safe=':')}/revalue",
@@ -2895,7 +2904,7 @@ def setup_ui_routes(app) -> None:
                         _field(t("fixed_assets.basis"), _input("basis", basis, required=True),
                                t("fixed_assets.basis_hint")))
         return await _page(request, crumbs, page_header(t("fixed_assets.remeasure_title", number=asset["number"])),
-                           _tabs(f"/fixed-assets/assets/{asset_id}/remeasure", "op", op, ops, "fixed_assets.remeasure_op"),
+                           _left_use_notice(asset), _tabs(f"/fixed-assets/assets/{asset_id}/remeasure", "op", op, ops, "fixed_assets.remeasure_op"),
                            form, title_key="fixed_assets.remeasure")
 
     @app.get("/fixed-assets/assets/{asset_id}/add")
@@ -2921,7 +2930,8 @@ def setup_ui_routes(app) -> None:
             body = Div(P(t("fixed_assets.add_hint.repair"), cls="settings-hint"),
                        A(t("fixed_assets.register_from_bills"), href="/fixed-assets/intake", cls="btn btn--primary"),
                        cls="settings-card")
-            return await _page(request, crumbs, title, tabs, body, title_key="fixed_assets.add_to_asset")
+            return await _page(request, crumbs, title, _left_use_notice(asset), tabs, body,
+                               title_key="fixed_assets.add_to_asset")
         fields: list[FT] = [Input(type="hidden", name="asset_id", value=asset_id),
                             Input(type="hidden", name="kind", value=kind),
                             P(t(f"fixed_assets.add_hint.{kind}"), cls="settings-hint")]
@@ -2948,7 +2958,7 @@ def setup_ui_routes(app) -> None:
                        _field(t("fixed_assets.old_part_estimate"), _input("estimate", type_="number", step="any",
                                                                           min="0"),
                               t("fixed_assets.old_part_estimate_hint"))]
-        return await _page(request, crumbs, title, tabs, _op_form("add-to-asset", *fields),
+        return await _page(request, crumbs, title, _left_use_notice(asset), tabs, _op_form("add-to-asset", *fields),
                            title_key="fixed_assets.add_to_asset")
 
     def _allocation_row(n: int, classes: list[dict]) -> FT:

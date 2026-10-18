@@ -42,6 +42,7 @@ from celerp_fixed_assets.operations import (
     asset_movements,
     catch_up,
     conflict,
+    in_use,
     label_lines,
     reverse_move,
 )
@@ -291,12 +292,13 @@ async def sell(session, company_id, user_id, asset_id: str, body: dict) -> dict:
     """Sell an asset: a draft invoice for it, which completes the sale when it is finalized."""
 
     async def plan(fa):
+        asset = await _asset(session, company_id, asset_id)
+        in_use(asset_id, asset, "it cannot be sold")
         day = _date(body.get("date"), "The sale date")
         books = await runs._books(session, company_id)
         currency = books.currency
         price = _money_in(body.get("price"), "The price", currency, positive=True)
         buyer = await _buyer(session, company_id, body.get("contact_id"))
-        asset = await _asset(session, company_id, asset_id)
         await refuse_waiting(session, company_id, asset_id, asset)
         item = await _plan(session, company_id, books, asset_id, asset, day, price)
         shown = {"number": asset["number"], "name": asset["name"], "date": day, "price": money(price, currency),

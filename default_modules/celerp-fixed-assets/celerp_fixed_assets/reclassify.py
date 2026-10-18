@@ -20,7 +20,7 @@ from celerp_fixed_assets import disposal, projections, runs, setup
 from celerp_fixed_assets.calc.periods import month_index, period_label
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
-    _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, catch_up, conflict)
+    _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, catch_up, conflict, in_use)
 from celerp_fixed_assets.store import _emit
 
 _AD, _IMP = "accumulated_depreciation", "accumulated_impairment"
@@ -44,13 +44,12 @@ async def reclassify(session, company_id, user_id, asset_id: str, body: dict) ->
     from celerp_fixed_assets import sales
 
     async def plan(fa):
-        day = _date(body.get("date"), "The reclassification date")
         row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
         if row is None or row.entity_type != "fa_asset":
             raise HTTPException(status_code=404, detail="No such asset.")
         asset = row.state
-        if asset.get("status") != "active":
-            raise conflict(f"{asset['number']} is not in use, so it cannot be reclassified.")
+        in_use(asset_id, asset, "it cannot be reclassified")
+        day = _date(body.get("date"), "The reclassification date")
         await sales.refuse_waiting(session, company_id, asset_id, asset)
         old = await setup.get_class(session, company_id, asset.get("class_id"))
         new = await setup.get_class(session, company_id, body.get("class_id"))

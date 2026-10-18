@@ -245,4 +245,6 @@ async def test_disposed_asset_refuses_another_disposal(fa):
     await _dispose(fa, car, "2026-05-20")
     r = await fa.post(f"/assets/{car}/dispose", {"date": "2026-06-01", "reason": "lost", "preview": True,
                                                  "op_key": "again"})
-    assert r.status_code == 409 and "Disposed on 2026-05-20" in r.json()["detail"]
+    number = (await fa.asset(car))["number"]
+    assert r.status_code == 409 and r.json()["detail"]["message"] == (
+        f"{number} was disposed of on 2026-05-20, so it cannot be disposed of. Undo the disposal on its page first.")

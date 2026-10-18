@@ -258,6 +258,12 @@ async def create_asset(body: dict = Body(...), company_id=Depends(get_current_co
     return await _write(session, operations.create_asset, company_id, user.id, body)
 
 
+def _left_use(asset_id: str, state: dict) -> dict | None:
+    """How an asset no longer in use left it and the way back, as its forms say it first."""
+    message = operations.left_use(state)
+    return None if message is None else {"message": message, "links": operations.left_use_links(asset_id, state)}
+
+
 @router.get("/assets/{asset_id}", dependencies=_VIEW)
 async def get_asset(asset_id: str, company_id=Depends(get_current_company_id), money: bool = _MONEY,
                     session: AsyncSession = Depends(get_session)) -> dict:
@@ -265,6 +271,7 @@ async def get_asset(asset_id: str, company_id=Depends(get_current_company_id), m
     return {**asset_out(asset_id, state, money=money),
             **views.readable(await remeasure.asset_facts(session, company_id, asset_id, state), money),
             "undoable": await additions.undoable(session, company_id, asset_id),
+            "left_use": _left_use(asset_id, state),
             "next_charge": views.readable(await runs.next_charge(session, company_id, asset_id, state), money)}
 
 

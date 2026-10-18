@@ -46,6 +46,39 @@ def conflict(message: str) -> HTTPException:
     return HTTPException(status_code=409, detail=message)
 
 
+def left_use(asset: dict, cannot: str | None = None) -> str | None:
+    """How an asset no longer in use left it and the way back, or None while it is in use.
+    ``cannot`` ("it cannot be sold") says what that stops."""
+    status, number = asset.get("status"), asset["number"]
+    if status == "active":
+        return None
+    day = (asset.get("disposal") or {}).get("date")
+    so = f", so {cannot}" if cannot else ""
+    if status == "sold":
+        return f"{number} was sold on {day}{so}. Void its invoice and cancel the sale on its page first."
+    if status == "disposed":
+        return f"{number} was disposed of on {day}{so}. Undo the disposal on its page first."
+    if status == "undone":
+        again = ("Its bill line is back in Register from bills, to register it again." if asset.get("sources")
+                 else "Register it again to bring it back.")
+        return f"{number}'s registration was undone{so}. {again}"
+    return f"{number} is not in use{so}."
+
+
+def left_use_links(asset_id: str, asset: dict) -> list[dict]:
+    """The pages ``left_use`` names."""
+    links = [{"label": asset["number"], "href": f"/fixed-assets/assets/{asset_id}"}]
+    if asset.get("status") == "undone" and asset.get("sources"):
+        links.append({"label": "Register from bills", "href": "/fixed-assets/intake"})
+    return links
+
+
+def in_use(asset_id: str, asset: dict, cannot: str) -> None:
+    """Refuse an operation on an asset no longer in use, before anything else on its form."""
+    if (message := left_use(asset, cannot)) is not None:
+        raise setup.refused(409, message, links=left_use_links(asset_id, asset))
+
+
 # ── Shared pieces ────────────────────────────────────────────────────────────
 
 

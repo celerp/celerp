@@ -35,6 +35,7 @@ from celerp_fixed_assets.operations import (
     catch_up,
     changes,
     conflict,
+    in_use,
     reverse_move,
 )
 from celerp_fixed_assets.store import _emit, _state
@@ -152,10 +153,7 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     ``proceeds`` in from its ``clearing`` account (posted for ``clearing_role``, when it
     serves one), and they count toward the gain."""
     currency = books.currency
-    if asset.get("status") in ("disposed", "sold"):
-        raise conflict(f"{asset['number']}: Disposed on {asset['disposal']['date']}.")
-    if asset.get("status") != "active":
-        raise conflict(f"{asset['number']} is not in use, so it cannot be disposed of.")
+    in_use(asset_id, asset, "it cannot be disposed of")
     live = projections.live(movements)
     check_date(books, asset, live, day, **({"what": "sale", "verb": "Date the sale"} if clearing_role else {}))
     cost = _dec(asset.get("cost"))
@@ -256,6 +254,12 @@ async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str]
         asset_ids = list(dict.fromkeys(asset_ids))
 
     async def plan(fa):
+        rows = await lock_projections(session, company_id, asset_ids)
+        for asset_id in asset_ids:
+            row = rows.get(asset_id)
+            if row is None or row.entity_type != "fa_asset":
+                raise HTTPException(status_code=404, detail="No such asset.")
+            in_use(asset_id, row.state, "it cannot be disposed of")
         day = _date(body.get("date"), "The disposal date")
         reason = body.get("reason")
         if reason not in REASONS:
@@ -263,13 +267,10 @@ async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str]
         note = str(body.get("note") or "").strip() or None
         if reason == "other" and not note:
             raise setup.unprocessable("Say why the asset is disposed of.")
-        rows = await lock_projections(session, company_id, asset_ids)
         books = await runs._books(session, company_id)
         items = []
         for asset_id in asset_ids:
-            row = rows.get(asset_id)
-            if row is None or row.entity_type != "fa_asset":
-                raise HTTPException(status_code=404, detail="No such asset.")
+            row = rows[asset_id]
             await sales.refuse_waiting(session, company_id, asset_id, row.state)
             cls = await setup.get_class(session, company_id, row.state.get("class_id"))
             share, quantity = (Decimal(1), _dec(row.state.get("quantity"))) if bulk else _share(row.state, body)

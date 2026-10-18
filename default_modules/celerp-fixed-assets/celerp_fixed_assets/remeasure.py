@@ -44,6 +44,7 @@ from celerp_fixed_assets.operations import (
     _run,
     asset_movements,
     catch_up,
+    in_use,
 )
 from celerp_fixed_assets.store import _emit, _entities, _state
 from fastapi import HTTPException
@@ -122,8 +123,7 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
     fair value for a revaluation and the recoverable amount for an impairment or its reversal."""
     from celerp.services.module_journals import JournalLine
 
-    if asset.get("status") != "active":
-        raise HTTPException(status_code=409, detail=f"{asset['number']} is not in use, so it cannot be remeasured.")
+    in_use(asset_id, asset, "it cannot be remeasured")
     disposal.check_date(books, asset, projections.live(movements), day, what="measurement", verb="Measure")
     currency = books.currency
     at = _position(books, asset, movements, day)
@@ -267,8 +267,9 @@ async def remeasure(session, company_id, user_id, asset_id: str, body: dict, ope
     field = "fair_value" if operation == "revaluation" else "recoverable_amount"
 
     async def plan(fa):
-        day = _date(body.get("date"), "The measurement date")
         asset, cls = await _asset_and_class(session, company_id, asset_id)
+        in_use(asset_id, asset, "it cannot be remeasured")
+        day = _date(body.get("date"), "The measurement date")
         if operation == "revaluation":
             if setup.measurement(cls) != "revaluation":
                 count = len(await class_assets(session, company_id, cls["id"]))
@@ -447,8 +448,7 @@ async def record_review(session, company_id, user_id, asset_id: str, body: dict)
     if row is None or row.entity_type != "fa_asset":
         raise HTTPException(status_code=404, detail="No such asset.")
     asset = row.state
-    if asset.get("status") != "active":
-        raise HTTPException(status_code=409, detail=f"{asset['number']} is not in use, so it is not reviewed.")
+    in_use(asset_id, asset, "it is not reviewed")
     day = _date(body.get("date"), "The review date")
     setup.not_after_today("The review date", day, settings)
     if day < (asset.get("available_date") or day):

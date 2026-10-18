@@ -27,7 +27,7 @@ from celerp_fixed_assets import notices, projections, reclassify, runs, setup, s
 from celerp_fixed_assets.calc.periods import fiscal_year_start_index, month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
     MODULE, _claim, _date, _dec, _intent_hash, _journal_view, _lines, _money_in, _move, _op_key, _open_line, _post,
-    _reversed_lines, _run, _same_intent, asset_movements, conflict)
+    _reversed_lines, _run, _same_intent, asset_movements, conflict, in_use)
 from celerp_fixed_assets.store import _emit, _entities, _state
 from celerp_fixed_assets.projections import BUCKETS, money, said
 
@@ -445,8 +445,7 @@ async def _open(session, company_id, asset_id: str) -> tuple[dict, list[dict]]:
     row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
     if row is None or row.entity_type != "fa_asset":
         raise HTTPException(status_code=404, detail="No such asset.")
-    if row.state.get("status") != "active":
-        raise conflict(f"{row.state['number']} is not in use, so it cannot be corrected.")
+    in_use(asset_id, row.state, "it cannot be corrected")
     from celerp_fixed_assets import sales
 
     await sales.refuse_waiting(session, company_id, asset_id, row.state)
@@ -473,8 +472,8 @@ async def _posting_day(session, company_id, books: runs.Books, original: str, ch
 
 async def plan(session, company_id, asset_id: str, body: dict, fa: dict) -> tuple[dict, dict]:
     """What the correction posts and changes, as the preview shows it, and what applying it needs."""
-    changes, classification, default, reason = _classify(body)
     asset, movements = await _open(session, company_id, asset_id)
+    changes, classification, default, reason = _classify(body)
     cls = await setup.get_class(session, company_id, asset.get("class_id"))
     books = await runs._books(session, company_id)
     live = projections.live(movements)
