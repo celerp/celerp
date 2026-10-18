@@ -196,6 +196,30 @@ async def test_a_missing_permission_on_a_print_reads_as_on_screen_without_a_link
         assert "tab=users" not in page, path
 
 
+async def test_a_print_is_refused_for_exactly_who_its_screen_refuses(fa: FA):
+    """The print fetches what its screen fetches, so the same roles reach each: the schedule and
+    the other reports need financial reports, and the year end, a checklist whose amounts the
+    role's money setting hides, needs only fixed assets."""
+    from celerp.services.permissions import missing_permission_text
+    from celerp_fixed_assets.ui_reports import REPORTS
+
+    await _managed_from(fa)
+    refusals = [missing_permission_text(p) for p in ("view_fixed_assets", "view_financial_reports")]
+    pages = [f"/fixed-assets/reports/{r.key}" for r in REPORTS] + ["/fixed-assets/year-end"]
+    for role in ("viewer", "operator", "manager", "owner"):
+        headers = await fa.role_headers(role) if role != "owner" else fa.h
+        for path in pages:
+            refused = []
+            for url in (path, f"{path}/print"):
+                page = html.unescape((await fa.page(url, headers=headers)).text)
+                refused.append(next((r for r in refusals if r in page), None))
+            assert refused[0] == refused[1], (role, path, refused)
+    operator = await fa.role_headers("operator")
+    for path, refusal in (("/fixed-assets/reports/schedule/print", refusals[1]), ("/fixed-assets/year-end/print", None)):
+        page = html.unescape((await fa.page(path, headers=operator)).text)
+        assert (refusal in page) if refusal else not any(r in page for r in refusals), path
+
+
 async def test_an_unknown_run_or_class_names_no_crumb_it_does_not_have(fa: FA):
     await _managed_from(fa)
     run = (await fa.page("/fixed-assets/runs/soon")).text
