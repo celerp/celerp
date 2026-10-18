@@ -5992,6 +5992,7 @@
   "notice.peer_key_rejected.body": "The sync key was rejected. Ask {firm} for a new pairing link.",
   "accountant_access.renew": "Renew key",
   "notice.peer_key_expiring.title": "Sync key for {company} expiring",
+  "notice.peer_key_expiring.expired_title": "Sync key for {company} expired",
   "notice.peer_key_expiring.body": "The sync key for {company} expires on {date}. Press Renew key in Company-to-company access so sync does not stop.",
   "notice.peer_key_expiring.expired": "The sync key for {company} expired on {date}. Sync from {company} has stopped until you press Renew key in Company-to-company access.",
   "notice.peer_key_expiring_here.title": "Sync key expiring",

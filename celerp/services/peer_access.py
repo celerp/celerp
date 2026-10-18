@@ -312,20 +312,23 @@ async def notify_expiring(session: AsyncSession, company_id: uuid.UUID,
         CompanyPeerGrant.expires_at))).scalars().all()
     due = [row for row in rows
            if row.revoked_at is None and _instant(row.expires_at) <= when + RENEW_WITHIN]
+    # Each state has its own title, which is also the standing notice's identity.
+    states = {"body": f"{EXPIRY_NOTICE}.title", "expired": f"{EXPIRY_NOTICE}.expired_title"}
     standing = set()
     for row in due:
         params = {"company": row.label, "date": _instant(row.expires_at).date().isoformat()}
-        body = f"{EXPIRY_NOTICE}.{'expired' if _instant(row.expires_at) <= when else 'body'}"
-        title = t(f"{EXPIRY_NOTICE}.title", "en", **params)
+        state = "expired" if _instant(row.expires_at) <= when else "body"
+        title = t(states[state], "en", **params)
         standing.add(title)
         await notification_service.notify_standing(
-            session, company_id, "integrations", title, t(body, "en", **params),
+            session, company_id, "integrations", title, t(f"{EXPIRY_NOTICE}.{state}", "en", **params),
             action_url="/settings/accountant-access",
-            i18n={"title": f"{EXPIRY_NOTICE}.title", "body": body, "params": params})
+            i18n={"title": states[state], "body": f"{EXPIRY_NOTICE}.{state}", "params": params})
     for row in rows:
-        title = t(f"{EXPIRY_NOTICE}.title", "en", company=row.label)
-        if title not in standing:
-            await notification_service.clear_standing(session, company_id, "integrations", title)
+        for key in states.values():
+            title = t(key, "en", company=row.label)
+            if title not in standing:
+                await notification_service.clear_standing(session, company_id, "integrations", title)
 
 
 async def expiry_warning_loop(interval_seconds: int = 3600) -> None:

@@ -5992,6 +5992,7 @@
   "notice.peer_key_rejected.body": "رُفض مفتاح المزامنة. اطلب من {firm} رابط اقتران جديدًا.",
   "accountant_access.renew": "تجديد المفتاح",
   "notice.peer_key_expiring.title": "مفتاح المزامنة لـ {company} على وشك الانتهاء",
+  "notice.peer_key_expiring.expired_title": "انتهت صلاحية مفتاح المزامنة لـ {company}",
   "notice.peer_key_expiring.body": "ينتهي مفتاح المزامنة لـ {company} في {date}. اضغط تجديد المفتاح في الوصول بين الشركات حتى لا تتوقف المزامنة.",
   "notice.peer_key_expiring.expired": "انتهى مفتاح المزامنة لـ {company} في {date}، لذا توقفت المزامنة من {company}. اضغط تجديد المفتاح في الوصول بين الشركات.",
   "notice.peer_key_expiring_here.title": "مفتاح المزامنة على وشك الانتهاء",

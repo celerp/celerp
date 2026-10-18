@@ -5992,6 +5992,7 @@
   "notice.peer_key_rejected.body": "Khóa đồng bộ bị từ chối. Hãy xin {firm} một liên kết ghép nối mới.",
   "accountant_access.renew": "Gia hạn khóa",
   "notice.peer_key_expiring.title": "Khóa đồng bộ cho {company} sắp hết hạn",
+  "notice.peer_key_expiring.expired_title": "Khóa đồng bộ cho {company} đã hết hạn",
   "notice.peer_key_expiring.body": "Khóa đồng bộ cho {company} hết hạn vào {date}. Nhấn Gia hạn khóa trong Truy cập giữa các công ty để đồng bộ không bị dừng.",
   "notice.peer_key_expiring.expired": "Khóa đồng bộ cho {company} đã hết hạn vào {date}, nên đồng bộ từ {company} đã dừng. Nhấn Gia hạn khóa trong Truy cập giữa các công ty.",
   "notice.peer_key_expiring_here.title": "Khóa đồng bộ sắp hết hạn",

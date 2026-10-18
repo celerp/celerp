@@ -5992,6 +5992,7 @@
   "notice.peer_key_rejected.body": "Der Synchronisierungsschlüssel wurde abgelehnt. Bitten Sie {firm} um einen neuen Kopplungslink.",
   "accountant_access.renew": "Schlüssel erneuern",
   "notice.peer_key_expiring.title": "Synchronisierungsschlüssel für {company} läuft ab",
+  "notice.peer_key_expiring.expired_title": "Synchronisierungsschlüssel für {company} abgelaufen",
   "notice.peer_key_expiring.body": "Der Synchronisierungsschlüssel für {company} läuft am {date} ab. Klicken Sie unter Zugriff zwischen Unternehmen auf Schlüssel erneuern, damit die Synchronisierung nicht stoppt.",
   "notice.peer_key_expiring.expired": "Der Synchronisierungsschlüssel für {company} ist am {date} abgelaufen, die Synchronisierung von {company} ist gestoppt. Klicken Sie unter Zugriff zwischen Unternehmen auf Schlüssel erneuern.",
   "notice.peer_key_expiring_here.title": "Synchronisierungsschlüssel läuft ab",

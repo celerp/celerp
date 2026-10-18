@@ -5992,6 +5992,7 @@
   "notice.peer_key_rejected.body": "Kunci sinkronisasi ditolak. Minta tautan pemasangan baru kepada {firm}.",
   "accountant_access.renew": "Perbarui kunci",
   "notice.peer_key_expiring.title": "Kunci sinkronisasi untuk {company} akan kedaluwarsa",
+  "notice.peer_key_expiring.expired_title": "Kunci sinkronisasi untuk {company} sudah kedaluwarsa",
   "notice.peer_key_expiring.body": "Kunci sinkronisasi untuk {company} kedaluwarsa pada {date}. Tekan Perbarui kunci di Akses antarperusahaan agar sinkronisasi tidak berhenti.",
   "notice.peer_key_expiring.expired": "Kunci sinkronisasi untuk {company} kedaluwarsa pada {date}, sehingga sinkronisasi dari {company} berhenti. Tekan Perbarui kunci di Akses antarperusahaan.",
   "notice.peer_key_expiring_here.title": "Kunci sinkronisasi akan kedaluwarsa",

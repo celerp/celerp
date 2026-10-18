@@ -5992,6 +5992,7 @@
   "notice.peer_key_rejected.body": "የማመሳሰያ ቁልፉ ተቀባይነት አላገኘም። ከ{firm} አዲስ የማጣመሪያ አገናኝ ይጠይቁ።",
   "accountant_access.renew": "ቁልፉን አድስ",
   "notice.peer_key_expiring.title": "የ{company} የማመሳሰያ ቁልፍ ጊዜው ሊያልፍ ነው",
+  "notice.peer_key_expiring.expired_title": "የ{company} የማመሳሰያ ቁልፍ ጊዜው አልፏል",
   "notice.peer_key_expiring.body": "የ{company} የማመሳሰያ ቁልፍ በ{date} ጊዜው ያልፋል። ማመሳሰሉ እንዳይቆም በኩባንያዎች መካከል መዳረሻ ውስጥ ቁልፉን አድስ ይጫኑ።",
   "notice.peer_key_expiring.expired": "የ{company} የማመሳሰያ ቁልፍ በ{date} ጊዜው አልፏል፣ ስለዚህ ከ{company} ማመሳሰል ቆሟል። በኩባንያዎች መካከል መዳረሻ ውስጥ ቁልፉን አድስ ይጫኑ።",
   "notice.peer_key_expiring_here.title": "የማመሳሰያ ቁልፍ ጊዜው ሊያልፍ ነው",

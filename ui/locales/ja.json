@@ -5992,6 +5992,7 @@
   "notice.peer_key_rejected.body": "同期キーが拒否されました。{firm} に新しいペアリングリンクを依頼してください。",
   "accountant_access.renew": "キーを更新",
   "notice.peer_key_expiring.title": "{company} の同期キーの期限が近づいています",
+  "notice.peer_key_expiring.expired_title": "{company} の同期キーの期限が切れました",
   "notice.peer_key_expiring.body": "{company} の同期キーは {date} に期限切れになります。同期が止まらないよう、会社間アクセスで「キーを更新」を押してください。",
   "notice.peer_key_expiring.expired": "{company} の同期キーは {date} に期限切れになり、{company} からの同期は停止しました。会社間アクセスで「キーを更新」を押してください。",
   "notice.peer_key_expiring_here.title": "同期キーの期限が近づいています",

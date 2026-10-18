@@ -5992,6 +5992,7 @@
   "notice.peer_key_rejected.body": "La chiave di sincronizzazione è stata rifiutata. Chiedi a {firm} un nuovo link di abbinamento.",
   "accountant_access.renew": "Rinnova chiave",
   "notice.peer_key_expiring.title": "La chiave di sincronizzazione di {company} sta per scadere",
+  "notice.peer_key_expiring.expired_title": "La chiave di sincronizzazione di {company} è scaduta",
   "notice.peer_key_expiring.body": "La chiave di sincronizzazione di {company} scade il {date}. Premi Rinnova chiave in Accesso tra aziende perché la sincronizzazione non si fermi.",
   "notice.peer_key_expiring.expired": "La chiave di sincronizzazione di {company} è scaduta il {date}, quindi la sincronizzazione da {company} si è fermata. Premi Rinnova chiave in Accesso tra aziende.",
   "notice.peer_key_expiring_here.title": "La chiave di sincronizzazione sta per scadere",

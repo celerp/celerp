@@ -5992,6 +5992,7 @@
   "notice.peer_key_rejected.body": "La clé de synchronisation a été refusée. Demandez à {firm} un nouveau lien d'appairage.",
   "accountant_access.renew": "Renouveler la clé",
   "notice.peer_key_expiring.title": "La clé de synchronisation de {company} expire bientôt",
+  "notice.peer_key_expiring.expired_title": "La clé de synchronisation de {company} a expiré",
   "notice.peer_key_expiring.body": "La clé de synchronisation de {company} expire le {date}. Cliquez sur Renouveler la clé dans Accès entre entreprises pour que la synchronisation continue.",
   "notice.peer_key_expiring.expired": "La clé de synchronisation de {company} a expiré le {date} : la synchronisation depuis {company} est arrêtée. Cliquez sur Renouveler la clé dans Accès entre entreprises.",
   "notice.peer_key_expiring_here.title": "La clé de synchronisation expire bientôt",

@@ -5992,6 +5992,7 @@
   "notice.peer_key_rejected.body": "A chave de sincronização foi recusada. Peça a {firm} um novo link de pareamento.",
   "accountant_access.renew": "Renovar chave",
   "notice.peer_key_expiring.title": "A chave de sincronização de {company} vai expirar",
+  "notice.peer_key_expiring.expired_title": "A chave de sincronização de {company} expirou",
   "notice.peer_key_expiring.body": "A chave de sincronização de {company} expira em {date}. Clique em Renovar chave em Acesso entre empresas para a sincronização não parar.",
   "notice.peer_key_expiring.expired": "A chave de sincronização de {company} expirou em {date}, então a sincronização de {company} parou. Clique em Renovar chave em Acesso entre empresas.",
   "notice.peer_key_expiring_here.title": "A chave de sincronização vai expirar",

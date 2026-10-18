@@ -5992,6 +5992,7 @@
   "notice.peer_key_rejected.body": "คีย์ซิงค์ถูกปฏิเสธ โปรดขอลิงก์จับคู่ใหม่จาก {firm}",
   "accountant_access.renew": "ต่ออายุคีย์",
   "notice.peer_key_expiring.title": "คีย์ซิงค์ของ {company} ใกล้หมดอายุ",
+  "notice.peer_key_expiring.expired_title": "คีย์ซิงค์ของ {company} หมดอายุแล้ว",
   "notice.peer_key_expiring.body": "คีย์ซิงค์ของ {company} หมดอายุวันที่ {date} กด ต่ออายุคีย์ ในการเข้าถึงระหว่างบริษัท เพื่อไม่ให้การซิงค์หยุด",
   "notice.peer_key_expiring.expired": "คีย์ซิงค์ของ {company} หมดอายุเมื่อวันที่ {date} การซิงค์จาก {company} จึงหยุดแล้ว กด ต่ออายุคีย์ ในการเข้าถึงระหว่างบริษัท",
   "notice.peer_key_expiring_here.title": "คีย์ซิงค์ใกล้หมดอายุ",
