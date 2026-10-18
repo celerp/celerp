@@ -376,6 +376,14 @@ async def test_users_tab_offers_reset_password(client, session, owner_ui):
     assert await _can_sign_in(client, STAFF, NEW_PW)
 
 
+async def test_change_password_tab_fields_look_like_every_other_form(owner_ui):
+    """The tab an owner is sent to for their own password styles its fields as the shared form fields."""
+    html = (await owner_ui.get("/settings/general?tab=password")).text
+    for name in ("current_password", "new_password", "confirm_password"):
+        field = re.search(rf'<input\b[^>]*name="{name}"[^>]*>', html)
+        assert field and re.search(r'class="[^"]*\bform-input\b', field.group(0)), name
+
+
 async def test_users_tab_explains_reset_password_to_an_admin(client, session, owner_ui):
     """An admin who is not an owner sees the same Reset password; saving says only a
     company owner can set a new password for a team member, and nothing changes."""
