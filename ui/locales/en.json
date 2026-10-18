@@ -4012,6 +4012,7 @@
   "migration.export_not_ready": "The set is not ready to analyze yet. Fix the files named below; the ones already received are kept.",
   "migration.export_no_checklist": "This source is read from one file, so it has no list of files to export.",
   "migration.export_request_add": "Add to upload",
+  "migration.export_request_added": "The client's files are added to the upload. They are listed under Uploaded so far.",
   "migration.export_request_client": "Client",
   "migration.export_request_files": "Files",
   "migration.export_request_not_found": "Export request not found.",

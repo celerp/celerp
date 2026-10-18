@@ -4012,6 +4012,7 @@
   "migration.export_not_ready": "Il set non è ancora pronto per l'analisi. Correggi i file indicati sotto; quelli già ricevuti restano.",
   "migration.export_no_checklist": "Questa fonte si legge da un solo file, quindi non ha un elenco di file da esportare.",
   "migration.export_request_add": "Aggiungi al caricamento",
+  "migration.export_request_added": "I file del cliente sono stati aggiunti al caricamento. Sono elencati in Caricato finora.",
   "migration.export_request_client": "Cliente",
   "migration.export_request_files": "File",
   "migration.export_request_not_found": "Richiesta di esportazione non trovata.",

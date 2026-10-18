@@ -4012,6 +4012,7 @@
   "migration.export_not_ready": "L'ensemble n'est pas encore prêt à être analysé. Corrigez les fichiers indiqués ci-dessous ; ceux déjà reçus sont conservés.",
   "migration.export_no_checklist": "Cette source est lue depuis un seul fichier, elle n'a donc pas de liste de fichiers à exporter.",
   "migration.export_request_add": "Ajouter au téléversement",
+  "migration.export_request_added": "Les fichiers du client sont ajoutés à l'envoi. Ils figurent sous Envoyé jusqu'ici.",
   "migration.export_request_client": "Nom du client",
   "migration.export_request_files": "Fichiers",
   "migration.export_request_not_found": "Demande d'export introuvable.",

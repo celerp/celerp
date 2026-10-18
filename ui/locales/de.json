@@ -4012,6 +4012,7 @@
   "migration.export_not_ready": "Der Satz kann noch nicht analysiert werden. Korrigieren Sie die unten genannten Dateien; bereits erhaltene bleiben erhalten.",
   "migration.export_no_checklist": "Diese Quelle wird aus einer Datei gelesen und hat daher keine Exportliste.",
   "migration.export_request_add": "Zum Upload hinzufügen",
+  "migration.export_request_added": "Die Dateien des Mandanten wurden dem Upload hinzugefügt. Sie stehen unter Bisher hochgeladen.",
   "migration.export_request_client": "Mandant",
   "migration.export_request_files": "Dateien",
   "migration.export_request_not_found": "Exportanfrage nicht gefunden.",

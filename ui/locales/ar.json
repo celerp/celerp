@@ -4012,6 +4012,7 @@
   "migration.export_not_ready": "المجموعة غير جاهزة للتحليل بعد. أصلح الملفات المذكورة أدناه؛ تبقى الملفات المستلمة محفوظة.",
   "migration.export_no_checklist": "يُقرأ هذا المصدر من ملف واحد، لذا ليس له قائمة ملفات للتصدير.",
   "migration.export_request_add": "إضافة إلى الرفع",
+  "migration.export_request_added": "أُضيفت ملفات العميل إلى الرفع. تجدها ضمن ما رُفع حتى الآن.",
   "migration.export_request_client": "العميل",
   "migration.export_request_files": "الملفات",
   "migration.export_request_not_found": "لم يُعثر على طلب التصدير.",

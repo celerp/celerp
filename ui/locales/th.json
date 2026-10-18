@@ -4012,6 +4012,7 @@
   "migration.export_not_ready": "ชุดไฟล์ยังวิเคราะห์ไม่ได้ แก้ไขไฟล์ที่ระบุด้านล่าง ไฟล์ที่ได้รับแล้วยังเก็บไว้",
   "migration.export_no_checklist": "แหล่งข้อมูลนี้อ่านจากไฟล์เดียว จึงไม่มีรายการไฟล์ที่ต้องส่งออก",
   "migration.export_request_add": "เพิ่มไปยังการอัปโหลด",
+  "migration.export_request_added": "เพิ่มไฟล์ของลูกค้าเข้าในการอัปโหลดแล้ว ดูได้ในส่วนอัปโหลดแล้ว",
   "migration.export_request_client": "ลูกค้า",
   "migration.export_request_files": "ไฟล์",
   "migration.export_request_not_found": "ไม่พบคำขอส่งออก",

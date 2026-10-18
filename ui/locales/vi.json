@@ -4012,6 +4012,7 @@
   "migration.export_not_ready": "Bộ tệp chưa sẵn sàng để phân tích. Hãy sửa các tệp nêu bên dưới; các tệp đã nhận vẫn được giữ.",
   "migration.export_no_checklist": "Nguồn này được đọc từ một tệp nên không có danh sách tệp cần xuất.",
   "migration.export_request_add": "Thêm vào tải lên",
+  "migration.export_request_added": "Các tệp của khách hàng đã được thêm vào lần tải lên. Chúng có trong mục Đã tải lên.",
   "migration.export_request_client": "Khách hàng",
   "migration.export_request_files": "Tệp",
   "migration.export_request_not_found": "Không tìm thấy yêu cầu xuất.",

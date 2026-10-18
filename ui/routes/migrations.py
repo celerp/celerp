@@ -402,7 +402,7 @@ def _checklist_panel(mode: WizardMode, source: str, checklist: dict | None, erro
 
 async def _source_page(request: Request, mode: WizardMode, *, selected: str = "", prepared_by: str = "",
                        error: str | None = None, back: str | None = None, email: str = "",
-                       draft: dict | None = None):
+                       draft: dict | None = None, notice: str | None = None):
     sources, sources_error = await _sources()
     swap = {"hx_target": "#export-checklist", "hx_swap": "outerHTML"}
     code_required = await setup_code_required(mode)
@@ -467,6 +467,7 @@ async def _source_page(request: Request, mode: WizardMode, *, selected: str = ""
         P(t("migration.start_company_hint"), cls="form-hint") if mode.start_company else "",
         flash(error) if error and not draft else "",
         flash(sources_error) if sources_error else "",
+        flash(notice, "success") if notice else "",
         upload,
         # A client can send their export files by link instead; loaded after the page,
         # since it asks the cloud for the requests sent.
@@ -538,8 +539,9 @@ async def _choose_source(request: Request, mode: WizardMode):
         except APIError as e:
             resp = await _source_page(request, mode, selected=source, prepared_by=prepared_by, error=str(e.detail))
             return _with_draft(resp, request, mode, None) if e.status == 410 else resp
+        notice = t("migration.export_request_added") if q.get("added") == "1" else None
         resp = await _source_page(request, mode, selected=source, prepared_by=prepared_by, back=back,
-                                  draft=result.get("checklist"))
+                                  draft=result.get("checklist"), notice=notice)
         return _with_draft(resp, request, mode, result.get("draft_token"))
     resp = await _source_page(request, mode, selected=source, prepared_by=prepared_by, back=back)
     return _with_cleared_scan(resp, request, mode) if clear else resp
@@ -830,7 +832,7 @@ async def _add_request_files(request: Request, mode: WizardMode):
     except APIError as e:
         return await _source_page(request, mode, error=str(e.detail))
     if "draft_token" in result:
-        resp = RedirectResponse(f"{mode.base}?{urlencode({'source': source})}", status_code=303)
+        resp = RedirectResponse(f"{mode.base}?{urlencode({'source': source, 'added': '1'})}", status_code=303)
         _set_cookie(resp, DRAFT_COOKIE, result["draft_token"], mode, request)
         return resp
     resp = RedirectResponse(f"{mode.base}/coverage", status_code=303)

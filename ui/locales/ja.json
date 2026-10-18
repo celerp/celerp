@@ -4012,6 +4012,7 @@
   "migration.export_not_ready": "このセットはまだ分析できません。下に示したファイルを修正してください。受信済みのファイルは保持されます。",
   "migration.export_no_checklist": "このソースは1つのファイルから読み込むため、エクスポートするファイルの一覧はありません。",
   "migration.export_request_add": "アップロードに追加",
+  "migration.export_request_added": "クライアントのファイルをアップロードに追加しました。「アップロード済み」に表示されています。",
   "migration.export_request_client": "クライアント",
   "migration.export_request_files": "ファイル",
   "migration.export_request_not_found": "エクスポート依頼が見つかりません。",

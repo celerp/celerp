@@ -4012,6 +4012,7 @@
   "migration.export_not_ready": "Set belum siap dianalisis. Perbaiki file yang disebut di bawah; file yang sudah diterima tetap disimpan.",
   "migration.export_no_checklist": "Sumber ini dibaca dari satu file, jadi tidak ada daftar file untuk diekspor.",
   "migration.export_request_add": "Tambahkan ke unggahan",
+  "migration.export_request_added": "File klien sudah ditambahkan ke unggahan. File tersebut tercantum di Sudah diunggah.",
   "migration.export_request_client": "Klien",
   "migration.export_request_files": "File",
   "migration.export_request_not_found": "Permintaan ekspor tidak ditemukan.",

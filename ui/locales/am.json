@@ -4012,6 +4012,7 @@
   "migration.export_not_ready": "ስብስቡ ገና ለመተንተን ዝግጁ አይደለም። ከታች የተጠቀሱትን ፋይሎች ያስተካክሉ፤ የደረሱት ይቀመጣሉ።",
   "migration.export_no_checklist": "ይህ ምንጭ ከአንድ ፋይል ይነበባል፤ ስለዚህ የሚወጡ ፋይሎች ዝርዝር የለውም።",
   "migration.export_request_add": "ወደ ስቀላው አክል",
+  "migration.export_request_added": "የደንበኛው ፋይሎች ወደ ስቀላው ታክለዋል። እስካሁን የተሰቀሉ በሚለው ስር ተዘርዝረዋል።",
   "migration.export_request_client": "ደንበኛ",
   "migration.export_request_files": "ፋይሎች",
   "migration.export_request_not_found": "የፋይል ጥያቄው አልተገኘም።",

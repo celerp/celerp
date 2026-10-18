@@ -4012,6 +4012,7 @@
   "migration.export_not_ready": "O conjunto ainda não pode ser analisado. Corrija os arquivos indicados abaixo; os já recebidos são mantidos.",
   "migration.export_no_checklist": "Esta origem é lida de um único arquivo, então não tem lista de arquivos a exportar.",
   "migration.export_request_add": "Adicionar ao envio",
+  "migration.export_request_added": "Os arquivos do cliente foram adicionados ao envio. Eles aparecem em Enviado até agora.",
   "migration.export_request_client": "Cliente",
   "migration.export_request_files": "Arquivos",
   "migration.export_request_not_found": "Pedido de exportação não encontrado.",

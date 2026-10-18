@@ -934,8 +934,8 @@ async def test_a_firm_emails_a_client_the_checklist_and_adds_what_arrives(ui, ro
     page = _page(added)
     assert "Contacts.csv" in page and '"remove": "artifact-1"' in page        # the files are in the upload
     assert t("migration.export_request_added") in _visible(added)             # and the page says so
-    assert t("migration.export_request_added") not in _page(await ui.get("/setup/new-company/migrate?source=xero"))
     assert _form_field(fake_api.scan_bodies[-1], "draft") == token
+    assert t("migration.export_request_added") not in _page(await ui.get("/setup/new-company/migrate?source=xero"))
 
     revoked = _page(await ui.post(f"{REQUESTS}/{older['id']}/revoke"))
     assert revoked.startswith('<div id="export-requests"') and older["status"] == "revoked"
