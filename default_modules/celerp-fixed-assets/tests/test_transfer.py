@@ -164,7 +164,9 @@ async def test_move_validates_and_checks_roles(fa):
     assert (await refused({"location_id": yard}, await fa.role_headers("viewer"))).status_code == 403
 
 
-async def test_move_stale_form_asks_to_review_again(fa):
+async def test_move_stale_form_names_the_move_and_asks_to_review_again(fa):
+    """Reviewed in one tab, the asset moved in another: confirming the first review names
+    the asset and the move, linked to the asset, and saves nothing."""
     await _managed_from(fa)
     car = await _contributed(fa)
     yard, dock = await _location(fa, "Yard"), await _location(fa, "Dock")
@@ -173,7 +175,10 @@ async def test_move_stale_form_asks_to_review_again(fa):
     await _move(fa, car, date="2026-02-01", location_id=dock)
     stale = await fa.post(f"/assets/{car}/move", {**body, "preview": False, "op_key": "a",
                                                   "fingerprint": preview["fingerprint"]})
-    assert stale.status_code == 409 and "Review again" in stale.json()["detail"]
+    assert stale.status_code == 409 and stale.json()["detail"] == {
+        "message": "FA-0001 (Moved) changed since you reviewed it. Press Review again to see it as it stands now.",
+        "params": {"links": [{"label": "FA-0001", "href": f"/fixed-assets/assets/{car}"}]}}, stale.text
+    assert (await fa.asset(car))["location_id"] == dock
     await _move(fa, car, **body)
     assert (await fa.asset(car))["location_id"] == yard
 

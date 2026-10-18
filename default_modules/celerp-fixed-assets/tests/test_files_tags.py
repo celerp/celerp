@@ -213,7 +213,8 @@ async def test_u49_the_first_print_tag_prints_on_the_shipped_asset_tag(fa):
 
     # It is the company's own template, kept once and editable in Labels, beside the usual presets.
     names = [tpl["name"] for tpl in (await fa.client.get("/api/labels/templates", headers=fa.h)).json()["items"]]
-    assert names.count(t("fixed_assets.asset_tags")) == 1, names
+    # Named like the presets beside it: what it is, then its size.
+    assert names.count(f"{t('fixed_assets.asset_tag')} (50x25)") == 1, names
     assert {p["name"] for p in PRESET_TEMPLATES} <= set(names), names
 
 
@@ -301,6 +302,11 @@ async def test_custodian_sees_own_assets_restricted(fa):
     assert 'href="/fixed-assets/mine"' in nav.text
     stranger = await fa.role_headers("viewer")
     assert 'href="/fixed-assets/mine"' not in (await _ui(fa, "GET", "/fixed-assets/mine/nav", stranger)).text
+    # With nothing in their care, the page says how an asset comes to them and leads back.
+    from ui.i18n import t
+    none = (await _ui(fa, "GET", "/fixed-assets/mine", stranger)).text
+    assert t("fixed_assets.mine_empty_hint") in none
+    assert f'href="/" class="empty-state-cta-btn">{t("fixed_assets.mine_back")}' in none
 
 
 async def test_custodian_confirms_and_reports_a_problem(fa):
@@ -425,6 +431,23 @@ async def test_u40_a_repeat_scan_the_same_day_keeps_one_check_each_with_the_asse
     await fa.ok(await fa.client.delete(f"/fixed-assets/api/checks/{first['id']}", headers=fa.h))
     anew = await fa.ok(await fa.client.post("/fixed-assets/api/checks", headers=fa.h, json={"tag": "TAG-1"}))
     assert anew["id"] != first["id"] and "already" not in anew
+
+
+async def test_u40_a_repeat_scan_says_so_as_a_notice_not_a_success(fa):
+    import json
+
+    from ui.i18n import t
+
+    await _managed_from(fa, "2026-01-01")
+    car = await _contributed(fa)
+    await _tag(fa, car, "TAG-1")
+    number = (await fa.asset(car))["number"]
+    toasts = []
+    for _ in range(2):
+        r = await _ui(fa, "POST", "/fixed-assets/checks", fa.h, data={"tag": "TAG-1"})
+        toasts.append(json.loads(r.headers["HX-Trigger"])["celerpToast"])
+    assert toasts == [{"message": t("fixed_assets.check_recorded", number=number), "type": "success"},
+                      {"message": t("fixed_assets.check_already", number=number), "type": "info"}], toasts
 
 
 async def test_f09_check_waits_for_a_tag_being_moved(committed_engine):

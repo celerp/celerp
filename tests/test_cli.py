@@ -457,7 +457,8 @@ def test_start_migrates_before_launching(tmp_path, valid_cfg):
     with patch("celerp.cli._migrate_to_head", side_effect=lambda url: order.append(url)), \
          patch("celerp.cli.subprocess.Popen", side_effect=lambda *a, **k: order.append("spawn")), \
          patch("celerp.cli._wait_ready", side_effect=RuntimeError("stop here")), \
-         patch("celerp.cli._config_path", return_value=tmp_path / "config.toml"):
+         patch("celerp.cli._config_path", return_value=tmp_path / "config.toml"), \
+         patch("signal.signal"):  # else the test process is left ignoring SIGTERM, and so is every child a later test spawns
         with pytest.raises(RuntimeError):
             _start(cfg)
     assert order[0] == cfg["database"]["url"], "migrated before anything was spawned"
@@ -481,7 +482,7 @@ def test_start_locks_before_owning_embedded_database(valid_cfg):
     ), patch(
         "celerp.cli._supervise",
         side_effect=lambda cfg, held: order.append("supervise"),
-    ):
+    ), patch("signal.signal"):
         _start(valid_cfg)
 
     assert order == ["lock", ("database", True), "supervise", "unlock"]

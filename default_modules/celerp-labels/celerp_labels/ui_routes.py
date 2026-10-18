@@ -1181,8 +1181,9 @@ def _printable_label_sheet(
 <head>
 <meta charset="utf-8">
 <title>Print Labels</title>
+<link rel="stylesheet" href="/static/app.css">
 <style>
-body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
+body {{ font-family: sans-serif; margin: 0; padding: 1rem; background: #fff; min-height: 0; }}
 .label-sheet {{ display: flex; flex-wrap: wrap; gap: 0; }}
 .label-item {{
   position: relative;
@@ -1198,7 +1199,7 @@ body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
 .label-field {{ position: absolute; overflow: hidden; white-space: nowrap; line-height: 1.2; }}
 .label-field--barcode svg, .label-field--qr svg {{ display: block; }}
 .bc-human {{ font-family: monospace; font-size: 9px; display: block; text-align: center; }}
-.no-print {{ margin-bottom: 1rem; }}
+.no-print {{ display: flex; gap: 8px; margin-bottom: 1rem; }}
 @media print {{
   .no-print {{ display: none; }}
   body {{ padding: 0; margin: 0; }}
@@ -1208,8 +1209,8 @@ body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
 </head>
 <body>
 <div class="no-print">
-  <button onclick="window.print()" style="padding:8px 16px;cursor:pointer;font-size:14px;">🖨 Print</button>
-  <a href="{html_escape(back_url)}" style="padding:8px 16px;cursor:pointer;font-size:14px;margin-left:8px;">Back</a>
+  <button type="button" class="btn btn--primary" onclick="window.print()">{html_escape(t("btn.print"))}</button>
+  <a href="{html_escape(back_url)}" class="btn btn--secondary">{html_escape(t("label.back"))}</a>
 </div>
 <div class="label-sheet">{"".join(label_rows)}</div>
 <script>window.onload = function() {{ window.print(); }};</script>

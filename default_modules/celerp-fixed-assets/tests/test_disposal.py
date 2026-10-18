@@ -30,6 +30,11 @@ async def _disposal_journal(fa: FA, asset_id: str) -> dict:
     key = f"je:mod:celerp-fixed-assets:asset:{asset_id.removeprefix('fa:asset:')}:disposal:"
     found = [je for je in await fa.module_journals() if je["entity_id"].startswith(key)]
     assert len(found) == 1, found
+    # Each account moves one way: depreciation brought up to date is netted, not posted in and out.
+    sides: dict[str, set] = {}
+    for e in found[0]["entries"]:
+        sides.setdefault(e["account"], set()).add("debit" if D(str(e.get("debit") or 0)) else "credit")
+    assert all(len(s) == 1 for s in sides.values()), found[0]["entries"]
     return found[0]
 
 
@@ -45,7 +50,7 @@ async def test_dispose_posts_depreciation_to_date_and_derecognizes(fa):
     await _dispose(fa, car, "2026-05-20")
     je = await _disposal_journal(fa, car)
     assert je["ts"][:10] == "2026-05-20"
-    assert _lines(je) == {"6400": (D("200"), D(0)), "1220": (D("800"), D("200")), "1210": (D(0), D("12000")),
+    assert _lines(je) == {"6400": (D("200"), D(0)), "1220": (D("600"), D(0)), "1210": (D(0), D("12000")),
                           "6980": (D("11200"), D(0))}
     got = await fa.asset(car)
     assert got["status"] == "disposed" and got["disposal"]["date"] == "2026-05-20"
@@ -103,7 +108,7 @@ async def test_partial_dispose_by_percentage_splits_pro_rata_and_depreciates_on(
     je = await _disposal_journal(fa, car)
     # July for the kept three quarters (150); the quarter disposed of charged 50 a month
     # through June and nothing in July, so 300 of accumulated depreciation goes with it.
-    assert _lines(je) == {"6400": (D("150"), D(0)), "1220": (D("300"), D("150")), "1210": (D(0), D("3000")),
+    assert _lines(je) == {"6400": (D("150"), D(0)), "1220": (D("150"), D(0)), "1210": (D(0), D("3000")),
                           "6980": (D("2700"), D(0))}
     got = await fa.asset(car)
     assert got["status"] == "active"
@@ -145,6 +150,11 @@ async def test_u1_partial_dispose_after_impairment_takes_its_share_of_both(fa):
     await _impair(fa, car, "2026-06-30", "8550")
     before = {code: await fa.balance(code) for code in ("1210", "1220", "6400", "6980")}
     await _dispose(fa, car, "2026-07-10", percent="25")
+    # The depreciation and the impairment that leave are each their own line; the depreciation
+    # line is net of July's 118.75 charged on what stays, so the account moves one way.
+    je = await _disposal_journal(fa, car)
+    assert [D(str(e["debit"])) for e in je["entries"] if e["account"] == "1220" and D(str(e.get("debit") or 0))] \
+        == [D("300") - D("118.75"), D("562.50")], je["entries"]
     got = await fa.asset(car)
     assert D(got["cost"]) == D("9000")
     assert D(got["accumulated_depreciation"]) == D("1018.75")

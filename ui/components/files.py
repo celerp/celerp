@@ -11,6 +11,7 @@ from __future__ import annotations
 from fasthtml.common import *
 
 from ui.components.attrs import hx_vals
+from ui.components.table import searchable_select
 from ui.i18n import t
 
 # Single source of truth for tag slugs - drives both UI and i18n keys
@@ -45,6 +46,63 @@ _ITEM_TAGS: tuple[str, ...] = (
 
 # Page size for file list pagination
 FILES_PAGE_SIZE = 20
+
+
+# Shared by every files section on a page; defined once. A write that is refused (an error status)
+# is not swapped over the section: its reply is shown in the section's notice, whose list and
+# upload controls stay as they were. An htmx write that errors is shown the same way.
+FILES_JS = """
+if(!window.celerpFilesFetch){
+  window.celerpFilesNotice=function(sid,type,body){
+    var n=document.getElementById('files-notice-'+sid);
+    if(!n) return;
+    n.textContent='';
+    if((type||'').indexOf('text/html')===0) n.innerHTML=body;
+    else n.textContent=body.trim().length&&body.length<=300?body.trim():window.__shellI18n.requestFailed;
+  };
+  window.celerpFilesFetch=function(sid,url,opts,refresh){
+    var sec=document.getElementById('files-section-'+sid);
+    var scope=sec&&sec.closest('[hx-headers]');
+    // Carry the headers the page sets for its htmx requests, as an htmx request would.
+    var headers=Object.assign({'HX-Request':'true'},scope?JSON.parse(scope.getAttribute('hx-headers')):{});
+    opts.headers=headers;
+    // The sign-in redirect the app answers an htmx request with: follow it, as htmx does.
+    function go(r){var to=r.headers.get('HX-Redirect');if(to)location.href=to;return !!to;}
+    return fetch(url,opts)
+      .then(function(r){return go(r)||!(r.ok&&refresh)?r:fetch(refresh,{headers:headers});})
+      .then(function(r){return r.text().then(function(body){
+        if(go(r)) return;
+        if(!r.ok){window.celerpFilesNotice(sid,r.headers.get('Content-Type'),body);return;}
+        var cur=document.getElementById('files-section-'+sid);
+        if(!cur){location.reload();return;}
+        cur.outerHTML=body;
+        var ns=document.getElementById('files-section-'+sid);
+        if(ns&&window.htmx) htmx.process(ns);
+        if(window._celerpDZ&&window._celerpDZ[sid]) window._celerpDZ[sid]();
+      });});
+  };
+  document.addEventListener('htmx:responseError',function(e){
+    var target=e.detail&&e.detail.target, xhr=e.detail&&e.detail.xhr;
+    if(target&&xhr&&(target.id||'').indexOf('files-section-')===0)
+      window.celerpFilesNotice(target.id.slice(14),xhr.getResponseHeader('Content-Type'),xhr.responseText);
+  });
+}
+"""
+
+
+def files_error(body, status: int = 400) -> HTMLResponse:
+    """A refused Files-section request: an error status, so the client leaves the section as it is
+    and shows ``body`` in its notice. Every Files route answers a refusal this way, never with a
+    200 fragment that would be swapped over the section. A 401 says the session ended, with the
+    way to sign in again."""
+    if status == 401:
+        body = (t("error.session_expired"), " ", A(t("btn.sign_in"), href="/login?reason=expired"))
+    return HTMLResponse(to_xml(Div(body, cls="flash flash--error")), status_code=max(status, 400))
+
+
+def files_session_expired() -> HTMLResponse:
+    """The sign-in notice for a Files-section request made without a session."""
+    return files_error("", 401)
 
 
 def _fmt_size(size: int) -> str:
@@ -190,10 +248,7 @@ def files_section(
     page_files = sorted_files[(page - 1) * FILES_PAGE_SIZE: page * FILES_PAGE_SIZE]
 
     # ── Filter bar ───────────────────────────────────────────────────────────
-    tag_opts = [Option(t("label.all_tags"), value="")] + [
-        Option(_tag_label(slug), value=slug, selected=(slug == tag_filter))
-        for slug in _tags
-    ]
+    tag_opts = [("", t("label.all_tags"))] + [(slug, _tag_label(slug)) for slug in _tags]
 
     next_sort = "asc" if sort_dir == "desc" else "desc"
     sort_arrow = "▼" if sort_dir == "desc" else "▲"
@@ -215,8 +270,10 @@ def files_section(
                   cls="form-input form-input--sm", style="width:130px;", **_hx, hx_trigger="change"),
         ]
     filter_bar = Form(
-        Select(*tag_opts, name="tag_filter", cls="form-input form-input--sm",
-               style=f"width:{'120px' if compact else '160px'};", **_hx, hx_trigger="change"),
+        # Searchable (rule i): the tag list can pass ten.
+        Div(searchable_select("tag_filter", tag_opts, value=tag_filter, placeholder=t("label.all_tags"),
+                              cls_extra="form-input--sm", aria_label=t("label.all_tags"), **_hx, hx_trigger="change"),
+            style=f"width:{'120px' if compact else '160px'};"),
         *date_controls,
         Input(type="search", name="search", value=search, placeholder=t("label.search"),
               cls="form-input form-input--sm", style=f"width:{'130px' if compact else '180px'};",
@@ -281,15 +338,11 @@ def files_section(
         # When actions target a different entity, refresh via base_url/_section after mutation
         cross_entity = file_action_base != base_url
 
-        def _refresh_section_js() -> str:
-            """JS snippet: re-fetch the section after a cross-entity mutation."""
-            return (
-                f"fetch('{base_url}/_section')"
-                f".then(function(r){{return r.text();}}).then(function(html){{"
-                f"var sec=document.getElementById('files-section-{sid}');"
-                f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
-                f"}});"
-            )
+        def _write_js(url: str, method: str, body: str) -> str:
+            """JS snippet: send a file write, then show the section it answers with, or (for a
+            cross-entity write) the section re-read from this entity."""
+            refresh = f"'{base_url}/_section'" if cross_entity else "null"
+            return f"celerpFilesFetch('{sid}','{url}',{{method:'{method}',body:{body}}},{refresh});"
 
         # The Excel funnel reads this explicit value (the tag's display label) rather than the cell's
         # textContent, which for the editable <select> would be every option concatenated.
@@ -307,8 +360,7 @@ def files_section(
                         cls="form-input form-input--xs file-tag-select",
                         onchange=(
                             f"(function(sel){{var fd=new FormData();fd.append('document_tag',sel.value);"
-                            f"fetch('{file_action_base}/{fid}/tag',{{method:'PATCH',body:fd}})"
-                            f".then(function(){{" + _refresh_section_js() + f"}})}})this"
+                            + _write_js(f"{file_action_base}/{fid}/tag", "PATCH", "fd") + "})(this)"
                         ),
                     ),
                     data_filter_value=_tag_fv,
@@ -331,21 +383,9 @@ def files_section(
                           data_filter_value=_tag_fv)
 
         if can_describe:
-            _desc_fetch_then = (
-                _refresh_section_js() if cross_entity else
-                f".then(function(r){{return r.text();}}).then(function(html){{"
-                f"var sec=document.getElementById('files-section-{sid}');"
-                f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
-                f"}})"
-            )
             _desc_fetch = (
                 f"var fd=new FormData();fd.append('description',inp.value);"
-                f"fetch('{file_action_base}/{fid}/description',{{method:'POST',body:fd}})"
-                + (_refresh_section_js() if cross_entity else
-                   f".then(function(r){{return r.text();}}).then(function(html){{"
-                   f"var sec=document.getElementById('files-section-{sid}');"
-                   f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
-                   f"}});")
+                + _write_js(f"{file_action_base}/{fid}/description", "POST", "fd")
             )
             desc_cell = Td(
                 Span(
@@ -514,18 +554,9 @@ def files_section(
       var fd=new FormData(); fd.append('file',file);
       var txt=zone.querySelector('.file-drop-text');
       if(txt) txt.textContent=zone.dataset.uploadingText;
-      fetch('{base_url}',{{method:'POST',headers:{{'HX-Request':'true'}},body:fd}})
-        .then(function(r){{if(!r.ok) throw new Error(zone.dataset.uploadFailedText); return r.text();}})
-        .then(function(html){{
-          var sec=document.getElementById('files-section-{sid}');
-          if(sec){{
-            sec.outerHTML=html;
-            var ns=document.getElementById('files-section-{sid}');
-            if(ns&&window.htmx) htmx.process(ns);
-            if(window._celerpDZ['{sid}']) window._celerpDZ['{sid}']();
-          }} else location.reload();
-        }})
-        .catch(function(e){{if(txt) txt.textContent=zone.dataset.dropText; alert(e.message);}});
+      celerpFilesFetch('{sid}','{base_url}',{{method:'POST',body:fd}},null)
+        .catch(function(e){{alert(zone.dataset.uploadFailedText);}})
+        .then(function(){{if(txt&&document.body.contains(zone)) txt.textContent=zone.dataset.dropText;}});
     }}
     zone.addEventListener('click',function(e){{
       if(e.target===zone||e.target.closest('.file-drop-text,.file-drop-icon,.file-drop-hint')) inp.click();
@@ -573,7 +604,13 @@ def files_section(
     if can_upload:
         children.append(upload_zone)
 
+    # A refused write leaves the section as it is and says why in the notice (celerpFilesFetch, and
+    # the htmx error handler in FILES_JS); data-quiet-error stops the shell's general error toast.
     return Div(
-        *children,
+        children[0],
+        Div(id=f"files-notice-{sid}", cls="files-notice"),
+        *children[1:],
+        Script(FILES_JS),
         id=f"files-section-{sid}",
+        data_quiet_error="1",
     )

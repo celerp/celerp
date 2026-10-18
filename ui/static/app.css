@@ -270,11 +270,11 @@ a:hover { text-decoration: underline; }
 /* Up to tablet width the shared rule holds for every page: no box grows past the screen to
    fit its content (a grid's 1fr track or a flex row otherwise widens to its widest child),
    and a table wider than the screen scrolls sideways inside its own box (a .table-scroll-wrap
-   already is that box), and a form laid out as a row wraps its controls instead.
+   already is that box), and a form or a row of form actions wraps its controls instead.
    min-width only acts on grid and flex children, flex-wrap only on flex rows. */
 @media (max-width: 900px) {
   .main-content :is(div, form, section, article, aside, fieldset, details) { min-width: 0; }
-  .main-content form { flex-wrap: wrap; }
+  .main-content :is(form, .form-actions) { flex-wrap: wrap; }
   .main-content :has(> .data-table:not(.table-scroll-wrap > .data-table)) { overflow-x: auto; }
 }
 
@@ -332,6 +332,8 @@ a:hover { text-decoration: underline; }
 
 /* ─── Flash messages ──────────────────────────────────────────────────── */
 .flash { padding: 8px 12px; border-radius: var(--radius); font-size: 12px; }
+/* A notice with more after it keeps clear of it. */
+.flash:not(:last-child) { margin-bottom: 12px; }
 .flash--error { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color: var(--c-red); }
 .flash--warning { background: rgba(234,179,8,0.15); border: 1px solid rgba(234,179,8,0.3); color: #92710a; }
 .flash--success { background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.3); color: var(--c-green); }
@@ -648,6 +650,8 @@ th.cell--number { font-family: inherit; }
 /* ─── Quick links ─────────────────────────────────────────────────────── */
 .quick-links-section { margin-top: 8px; }
 .section-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--c-text2); }
+/* A heading after a table, a line of text, a list or a form keeps the gap a card leaves. */
+:is(.table-scroll-wrap, .data-table, p, ul, form) + :is(.section-title, .form-subtitle) { margin-top: 20px; }
 .quick-links-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
 .quick-link-card {
   background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius);
@@ -664,12 +668,14 @@ th.cell--number { font-family: inherit; }
 .detail-table td { padding: 8px 14px; border-bottom: 1px solid var(--c-border); }
 /* Headers share the cells' horizontal padding so labels aren't flush against the inputs below. */
 .detail-table th { padding: 8px 14px; }
-/* A row's label reads as a label, not as a column header. */
-.detail-table th[scope="row"] { text-align: left; text-transform: none; letter-spacing: normal; font-size: 12px; font-weight: 500; white-space: normal; }
+/* A row's label reads as a label, not as a column header, and its column is as wide as the
+   longest label, so each value sits next to what it is, however wide the card. */
+.detail-table th[scope="row"] { text-align: left; text-transform: none; letter-spacing: normal; font-size: 12px; font-weight: 500; width: 1%; white-space: nowrap; }
+@media (max-width: 768px) { .detail-table th[scope="row"] { width: 40%; white-space: normal; } }
 .detail-table tr:last-child td { border-bottom: none; }
-.detail-table .cell--number,
-.detail-table .cell-number,
-.detail-table .cell-money { text-align: left; font-family: inherit; }
+.detail-table td.cell--number,
+.detail-table td.cell-number,
+.detail-table td.cell-money { text-align: left; font-family: inherit; }
 
 /* Manufacturing recipe tab */
 /* minmax(0,…) lets columns shrink below their content width so the wide materials
@@ -1500,6 +1506,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   text-align: center; padding: 48px 24px; background: var(--c-bg2);
   border: 1px dashed var(--c-border); border-radius: var(--radius);
 }
+/* While a form's review is open, an empty list under it says nothing the review does not. */
+form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .empty-state-cta-msg { font-size: 14px; color: var(--c-text2); margin-bottom: 16px; }
 .empty-state-cta-hint { font-size: 13px; color: var(--c-muted, #888); max-width: 32rem; margin: -8px auto 16px; }
 .empty-state-cta-btn {
@@ -1509,6 +1517,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   cursor: pointer; text-decoration: none; transition: background 0.1s;
 }
 .empty-state-cta-btn:hover { background: var(--c-accent2); text-decoration: none; color: #fff; }
+.empty-state-cta-actions { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; }
 
 /* ─── Activity feed ───────────────────────────────────────────────────── */
 .activity-feed { margin-bottom: 24px; }
@@ -2307,7 +2316,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .payment-form-section .form-row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: end; }
 .payment-form-section .form-group { flex: 1; min-width: 140px; max-width: 220px; }
 .payment-form-section .form-card { padding: 0; border: none; background: none; }
-.form-subtitle { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.5rem; }
+/* A subheading sits a step below the section title it belongs to. */
+.form-subtitle { font-size: 13px; font-weight: 600; margin-bottom: 0.5rem; }
 .payment-voided td { text-decoration: line-through; opacity: 0.6; }
 .payment-voided .badge--void { text-decoration: none; opacity: 1; }
 .void-inline { display: inline; }

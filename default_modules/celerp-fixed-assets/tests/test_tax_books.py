@@ -318,7 +318,9 @@ async def test_u4_with_no_tax_regime_to_choose_every_tax_surface_says_so_and_how
     await _managed_from(fa)
     for path in _TAX_SURFACES:
         text = (await fa.page(path)).text
-        assert t("fixed_assets.no_tax_regime") in text and t("fixed_assets.no_tax_regime_install") in text, path
+        # The settings page, where a regime is chosen, says it appears there rather than naming itself.
+        install = "no_tax_regime_install_here" if path == "/settings/fixed-assets" else "no_tax_regime_install"
+        assert t("fixed_assets.no_tax_regime") in text and t(f"fixed_assets.{install}") in text, path
         assert 'href="/modules"' in text and 'name="regime"' not in text, path
 
 
@@ -333,3 +335,4 @@ async def test_u4_with_a_regime_to_choose_the_tax_surfaces_link_the_choice(fa, z
     settings = (await fa.page("/settings/fixed-assets")).text
     assert 'id="fa-tax-regimes"' in settings and 'value="zz_asset"' in settings
     assert t("fixed_assets.no_tax_regime_install") not in settings
+    assert t("fixed_assets.no_tax_regime_install_here") not in settings

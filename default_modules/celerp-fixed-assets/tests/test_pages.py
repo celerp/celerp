@@ -11,6 +11,7 @@ from decimal import Decimal
 from urllib.parse import quote
 
 import pytest
+from bs4 import BeautifulSoup
 
 from ui.i18n import doc_type_label, t
 
@@ -216,6 +217,9 @@ async def test_confirm_the_first_period_then_reconcile_and_finish_opening(owner_
     await owner_ui.post("/fixed-assets/start")
     page = await owner_ui.get("/fixed-assets")
     assert page.status_code == 200 and t("fixed_assets.first_period_title") in page.text
+    # The card names the period it means, never "this month" beside a suggestion for another one.
+    card = BeautifulSoup(page.text, "html.parser").find("h3", string=t("fixed_assets.first_period_title")).parent
+    assert "this month" not in card.get_text(" "), card.get_text(" ")
     suggested = (await owner_ui.api.get(f"{API}/setup")).json()["first_period"]["suggested"]
     confirmed = await owner_ui.post("/fixed-assets/first-period", data={"first_managed_period": suggested})
     assert confirmed.headers.get("HX-Redirect") == "/fixed-assets", confirmed.headers
@@ -337,6 +341,10 @@ async def test_runs_page_reviews_posts_and_reverses_a_run(owner_ui):
                                  data={"month": "2026-09", "idempotency_key": str(uuid.uuid4())})
     assert "2026-08" in review.text and "2026-09" in review.text and "6400" in review.text
     assert "Delivery car" in review.text, "the Review says which asset each month's figure comes from"
+    # Several months open with what they add up to, and Confirm is offered there and at the end.
+    covered = t("fixed_assets.months_covered", first="2026-08", last="2026-09")
+    assert covered in review.text and review.text.index(covered) < review.text.index("2026-08: ")
+    assert review.text.count("/fixed-assets/op/run/confirm") == 2
     assert await _review_and_confirm(owner_ui, "run", {"month": "2026-09"}) == "/fixed-assets/runs"
 
     page = await owner_ui.get("/fixed-assets/runs")
@@ -408,7 +416,10 @@ async def test_u5_the_class_table_names_accounts_and_keeps_row_actions_in_a_menu
     assert f"1210 {chart['1210']}" in row and f"6400 {chart['6400']}" in row, "accounts read as code and name"
     assert 'class="row-menu"' in row and t("fixed_assets.apply_to_assets") in row
     assert "btn btn--sm" not in row, "row actions sit in the row menu, not as buttons widening the table"
-    assert t("label.dblclick_to_edit").split()[0] in t("fixed_assets.classes_hint")
+    # A settings table edits on one click, says so, and the page says its changes save themselves.
+    assert 'hx-trigger="click"' in row and f'title="{t("settings.click_to_edit")}"' in row
+    assert "dblclick" not in row and t("fixed_assets.classes_hint").startswith("Click")
+    assert t("fixed_assets.settings_autosave") in page.text
     assert t("fixed_assets.tax_regimes_hint") not in page.text, "with no regime offered, no hint repeats the statement"
 
     saved = await owner_ui.patch(f"/settings/fixed-assets/classes/{vehicles['id']}/depreciation_account",
@@ -526,6 +537,32 @@ async def test_correct_an_asset_then_the_corrections_pages_and_report(owner_ui):
     assert "fixed_assets." not in apply.text
 
 
+async def test_every_class_page_roots_its_breadcrumb_at_fixed_assets(owner_ui):
+    await _managed_car(owner_ui)
+    vehicles = next(c for c in (await owner_ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == "Vehicles")
+    for page in ("fix-account", "revalue", "apply"):
+        soup = BeautifulSoup((await owner_ui.get(f"/fixed-assets/classes/{vehicles['id']}/{page}")).text, "html.parser")
+        links = [(a.get_text(strip=True), a["href"]) for a in soup.select(".breadcrumbs .breadcrumb-link")]
+        assert links[:2] == [(t("fixed_assets.title"), "/fixed-assets"),
+                             (t("fixed_assets.settings_title"), "/settings/fixed-assets")], page
+
+
+async def test_an_empty_page_names_what_its_button_does(owner_ui):
+    await owner_ui.post("/fixed-assets/start")
+
+    def buttons(page) -> list[tuple[str, str]]:
+        soup = BeautifulSoup(page.text, "html.parser")
+        return [(a.get_text(strip=True), a["href"]) for a in soup.select(".empty-state-cta a")]
+
+    assert buttons(await owner_ui.get("/fixed-assets")) == [
+        (t("fixed_assets.register_from_bills"), "/fixed-assets/intake"),
+        (t("fixed_assets.add_asset"), "/fixed-assets/assets/new")]
+    for path in ("/fixed-assets/reviews", "/fixed-assets/corrections", f"/fixed-assets/assets/{uuid.uuid4()}"):
+        assert buttons(await owner_ui.get(path)) == [(t("fixed_assets.view_all"), "/fixed-assets")], path
+    assert buttons(await owner_ui.get("/fixed-assets/runs/2020-01")) == [
+        (t("fixed_assets.view_runs"), "/fixed-assets/runs")]
+
+
 async def test_u1_dispose_review_lists_what_leaves_the_books(owner_ui):
     car = await _managed_car(owner_ui)
     review = await owner_ui.post("/fixed-assets/op/dispose/review", data={
@@ -563,6 +600,21 @@ async def test_dispose_from_the_asset_page_and_undo_it(owner_ui):
     await _review_and_confirm(owner_ui, "undo-disposal", {"asset_id": car})
     page = await owner_ui.get(href)
     assert disposal_card not in page.text and t("fixed_assets.status.active") in page.text
+
+
+async def test_movements_name_the_months_a_backdated_change_takes_back_and_what_an_undo_undid(owner_ui):
+    car = await _managed_car(owner_ui)
+    await _review_and_confirm(owner_ui, "run", {"month": "2026-09"})
+    await _review_and_confirm(owner_ui, "dispose", {"asset_id": car, "date": "2026-08-20", "reason": "scrapped"})
+    await _review_and_confirm(owner_ui, "undo-disposal", {"asset_id": car})
+    soup = BeautifulSoup((await owner_ui.get(f"/fixed-assets/assets/{car}")).text, "html.parser")
+    table = next(tb for tb in soup.select("table.data-table")
+                 if t("fixed_assets.movement") in [th.get_text(strip=True) for th in tb.select("th")])
+    assert [th.get_text(strip=True) for th in table.select("th")][3:5] == [t("fixed_assets.cost"), t("fixed_assets.movement.run")]
+    names = [tr.select("td")[2].get_text(strip=True) for tr in table.select("tbody tr")]
+    taken_back = f"{t('fixed_assets.movement.depreciation')} for 2026-08 to 2026-09"
+    assert taken_back in names and f"Undone: {taken_back}" in names, names
+    assert f"Undone: {t('fixed_assets.movement.disposal')}" in names, names
 
 
 async def test_dispose_of_several_from_the_register(owner_ui):
@@ -826,6 +878,9 @@ async def test_impair_from_the_asset_page_then_undo_it(owner_ui):
 
     revalue = await owner_ui.get(f"/fixed-assets/assets/{car}/remeasure")
     assert revalue.status_code == 200 and t("fixed_assets.cost_model_hint") in revalue.text
+    # A cost-model class cannot revalue one asset, so the tab offers changing the class, not a form.
+    assert 'name="fair_value"' not in revalue.text and "/op/revalue/review" not in revalue.text
+    assert f'>{t("fixed_assets.change_to_revaluation")}</a>' in revalue.text
     assert "fixed_assets." not in revalue.text
     form = await owner_ui.get(f"/fixed-assets/assets/{car}/remeasure", params={"op": "impairment"})
     assert t("fixed_assets.remeasure_hint.impairment") in form.text and 'name="recoverable_amount"' in form.text
@@ -834,12 +889,19 @@ async def test_impair_from_the_asset_page_then_undo_it(owner_ui):
             "idempotency_key": str(uuid.uuid4())}
     review = await owner_ui.post("/fixed-assets/op/impair/review", data=data)
     assert t("fixed_assets.remeasure.new_carrying_amount") in review.text and "fixed_assets." not in review.text
+    # A loss reads as a loss at its size, as a disposal's does, never as a minus.
+    rows = {tr.th.get_text(strip=True): tr.td.get_text(strip=True)
+            for tr in BeautifulSoup(review.text, "html.parser").select(".detail-table tr")}
+    loss = rows[t("fixed_assets.remeasure.loss")]
+    assert loss[0] != "-" and Decimal(re.sub(r"[^\d.]", "", loss)) > 0, rows
+    assert t("fixed_assets.remeasure.profit_or_loss") not in rows, rows
     href = await _review_and_confirm(owner_ui, "impair", data)
     assert href == f"/fixed-assets/assets/{car}"
     page = await owner_ui.get(href)
     assert t("fixed_assets.movement.impairment") in page.text and t("fixed_assets.undo_latest") in page.text
     movements = page.text.split(f">{t('fixed_assets.movements')}<", 1)[1]
-    assert t("fixed_assets.accumulated_impairment") in movements, "the impairment shows in the movements"
+    assert f'>{t("fixed_assets.movement_column.accumulated_impairment")}</th>' in movements, \
+        "the impairment shows in the movements"
     assert "fixed_assets." not in page.text
 
     await _review_and_confirm(owner_ui, "undo-latest", {"asset_id": car})
@@ -985,8 +1047,14 @@ async def test_reports_index_schedule_page_print_and_csv(owner_ui):
     await _car(owner_ui, "Owner's car")
     index = await owner_ui.get("/fixed-assets/reports")
     assert index.status_code == 200 and "fixed_assets." not in index.text
+    cards = BeautifulSoup(index.text, "html.parser").select(".quick-links-grid > a.quick-link-card")
     for path in ("schedule", "register", "depreciation", "disposals", "prior-period-adjustments"):
-        assert f'href="/fixed-assets/reports/{path}' in index.text, path
+        assert f"/fixed-assets/reports/{path}" in [a["href"] for a in cards], path
+    # Each card says what its report holds in short sentences, read at a glance.
+    for card in cards:
+        hint = card.get_text(" ", strip=True).removeprefix(card.find(["h2", "h3", "h4", "strong"]).get_text(strip=True))
+        long = [s for s in re.split(r"(?<=[.:])\s+", hint.strip()) if len(s.split()) > 20]
+        assert not long, (card["href"], long)
     page = await owner_ui.get("/fixed-assets/reports/schedule", params=params)
     assert page.status_code == 200 and "12,000.00" in page.text and "fixed_assets." not in page.text
     assert 'cell--number' in page.text and "date_from=2025-01-01" in page.text
@@ -1159,6 +1227,16 @@ async def test_u19_u20_every_open_ended_list_is_searchable_and_a_fixed_one_is_a_
     assert re.search(r'<select name="kind"', page.text), "a reminder's kind is one of a fixed few"
 
 
+async def test_an_action_page_names_the_asset_and_review_is_its_main_button(owner_ui):
+    car = await _managed_car(owner_ui)
+    for action, title in (("sell", "Sell"), ("move", "Move"), ("dispose", "Dispose of"), ("add", "Add to"),
+                          ("reclassify", "Reclassify")):
+        soup = BeautifulSoup((await owner_ui.get(f"/fixed-assets/assets/{car}/{action}")).text, "html.parser")
+        assert soup.find("h1").get_text(strip=True) == f"{title} FA-0001 Delivery car", action
+        review = soup.find("button", attrs={"hx-post": re.compile(r"/review$")})
+        assert review.get_text(strip=True) == "Review" and "btn--primary" in review["class"], action
+
+
 async def test_u21_transfer_says_what_it_needs_when_no_company_can_take_the_asset(owner_ui):
     car = await _managed_car(owner_ui)
     alone = await owner_ui.get(f"/fixed-assets/assets/{car}/transfer")
@@ -1173,6 +1251,123 @@ async def test_u21_transfer_says_what_it_needs_when_no_company_can_take_the_asse
     page = await owner_ui.get(f"/fixed-assets/assets/{car}/transfer")
     assert t("fixed_assets.transfer_other.not_using", company="Beta Co") in page.text
     assert f'href="/switch-company/{beta["id"]}"' in page.text, "the step is taken in the other company"
+
+
+async def test_r2_21_a_form_sent_after_a_switch_in_another_tab_saves_nothing_and_offers_the_way_back(owner_ui):
+    car = await _managed_car(owner_ui)
+    home = (await owner_ui.api.get("/companies/me")).json()
+    form_page = await owner_ui.get(f"/fixed-assets/assets/{car}/dispose")
+    sent = {"X-Celerp-Page-Company": home["id"], "HX-Current-URL": f"http://ui/fixed-assets/assets/{car}/dispose"}
+    carried = re.search(r"hx-headers=(['\"])(.+?)\1", form_page.text)
+    assert carried and json.loads(html.unescape(carried.group(2))) == {"X-Celerp-Page-Company": home["id"]}, \
+        "the page carries the company it was opened in"
+
+    # Another tab switches the session to Beta Co.
+    r = await owner_ui.api.post("/companies", json={"name": "Beta Co"})
+    assert r.status_code == 200, r.text
+    owner_ui.cookies.set("celerp_token", r.json()["access_token"])
+    review = await owner_ui.post("/fixed-assets/op/dispose/review", headers=sent, data={
+        "asset_id": car, "date": "2026-10-05", "reason": "scrapped", "idempotency_key": str(uuid.uuid4())})
+    switch = t("fixed_assets.switch_to", company=home["name"])
+    said = t("fixed_assets.switched_company", page=home["name"], now="Beta Co", switch=switch)
+    text = html.unescape(re.sub(r"<[^>]+>", "", review.text))
+    assert said in text, review.text
+    back = f"/switch-company/{home['id']}?next={quote(f'/fixed-assets/assets/{car}/dispose', safe='')}"
+    assert f'<a href="{html.escape(back)}">{switch}</a>' in review.text
+
+    # A small form says the same in its toast; nothing is saved in either company.
+    settled = await owner_ui.post("/fixed-assets/first-period", headers=sent,
+                                  data={"first_managed_period": "2026-09-01"})
+    assert said == _toast(settled)
+    asset = (await owner_ui.api.get(f"{API}/assets/{car}")).json()
+    assert asset["status"] == "active" and not asset.get("left_use")
+    assert (await owner_ui.api.get(f"{API}/setup")).json()["settings"]["first_managed_period"] == "2026-08-01"
+
+    # Switch to the page's company leads back to the page.
+    again = await owner_ui.get(back)
+    assert again.status_code == 302 and again.headers["location"] == f"/fixed-assets/assets/{car}/dispose"
+
+
+async def _switched_away(ui, car: str, monkeypatch) -> tuple[dict, list]:
+    """The page's company, after another tab switched the session to Beta Co; every file
+    form sent to the API from then on is recorded, not sent."""
+    import ui.api_client as api
+
+    home = (await ui.api.get("/companies/me")).json()
+    r = await ui.api.post("/companies", json={"name": "Beta Co"})
+    assert r.status_code == 200, r.text
+    ui.cookies.set("celerp_token", r.json()["access_token"])
+    sent: list = []
+
+    async def recorded(*args, **kwargs):
+        sent.append(args)
+        return {}
+    monkeypatch.setattr(api, "fixed_assets_form", recorded)
+    return home, sent
+
+
+async def test_r2_21_a_file_sent_after_a_switch_in_another_tab_is_refused_and_never_sent(owner_ui, monkeypatch):
+    car = await _managed_car(owner_ui)
+    entry = await owner_ui.api.post(f"{API}/assets/{car}/maintenance", json={"date": "2026-10-01", "work": "Brake pads"})
+    assert entry.status_code == 200, entry.text
+    home, sent = await _switched_away(owner_ui, car, monkeypatch)
+    switch = t("fixed_assets.switch_to", company=home["name"])
+    said = t("fixed_assets.switched_company", page=home["name"], now="Beta Co", switch=switch)
+    headers = {"HX-Request": "true", "X-Celerp-Page-Company": home["id"],
+               "HX-Current-URL": f"http://ui/fixed-assets/assets/{car}"}
+    pdf = {"file": ("receipt.pdf", b"%PDF-1.0\n", "application/pdf")}
+
+    upload = await owner_ui.post(f"/fixed-assets/assets/{car}/files", headers=headers, files=pdf)
+    assert said in html.unescape(re.sub(r"<[^>]+>", "", upload.text)), upload.text
+    receipt = await owner_ui.post(f"/fixed-assets/maintenance/{entry.json()['id']}/files", headers=headers, files=pdf)
+    assert _toast(receipt) == said
+    problem = await owner_ui.post(f"/fixed-assets/mine/{car}/problems", headers=headers, data={"text": "Dent"},
+                                  files={"photo": ("dent.png", b"\x89PNG", "image/png")})
+    assert _toast(problem) == said
+    assert sent == [], "nothing reaches the API in either company"
+
+
+async def test_r2_21_a_refused_file_write_is_an_error_reply_with_the_way_back_so_the_files_section_stays(owner_ui, monkeypatch):
+    car = await _managed_car(owner_ui)
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert f'id="files-section-{car.replace(":", "-")}"' in page.text and "files-notice-" in page.text
+    assert "data-quiet-error" in page.text and "celerpFilesFetch" in page.text
+    home, sent = await _switched_away(owner_ui, car, monkeypatch)
+    headers = {"HX-Request": "true", "X-Celerp-Page-Company": home["id"],
+               "HX-Current-URL": f"http://ui/fixed-assets/assets/{car}"}
+    base = f"/fixed-assets/assets/{car}/files"
+    switch = t("fixed_assets.switch_to", company=home["name"])
+    back = f"/switch-company/{home['id']}?next={quote(f'/fixed-assets/assets/{car}', safe='')}"
+    replies = {
+        "upload": await owner_ui.post(base, headers=headers, files={"file": ("a.pdf", b"%PDF-1.0\n", "application/pdf")}),
+        "tag": await owner_ui.post(f"{base}/f1/tag", headers=headers, data={"document_tag": "warranties"}),
+        "description": await owner_ui.post(f"{base}/f1/description", headers=headers, data={"description": "x"}),
+        "delete": await owner_ui.delete(f"{base}/f1", headers=headers),
+    }
+    for action, reply in replies.items():
+        assert reply.status_code == 409, (action, reply.status_code)
+        assert reply.headers["content-type"].startswith("text/html"), action
+        assert f'<a href="{html.escape(back)}">{switch}</a>' in reply.text, (action, reply.text)
+    assert sent == [], "nothing reaches the API in either company"
+
+
+async def test_r2_21_a_valuer_report_sent_after_a_switch_in_another_tab_is_refused_and_never_sent(owner_ui, monkeypatch):
+    car = await _managed_car(owner_ui)
+    class_id = (await owner_ui.api.get(f"{API}/assets/{car}")).json()["class_id"]
+    page = BeautifulSoup((await owner_ui.get(f"/fixed-assets/classes/{class_id}/revalue")).text, "html.parser")
+    action = page.find("form", attrs={"action": re.compile(r"/revalue/report")})["action"]
+    home, sent = await _switched_away(owner_ui, car, monkeypatch)
+
+    # A plain form carries no page headers: the company the page was opened in rides on its address.
+    here = f"http://ui/fixed-assets/classes/{class_id}/revalue"
+    report = await owner_ui.post(action, headers={"Referer": here},
+                                 files={"file": ("valuation.pdf", b"%PDF-1.0\n", "application/pdf")})
+    switch = t("fixed_assets.switch_to", company=home["name"])
+    said = t("fixed_assets.switched_company", page=home["name"], now="Beta Co", switch=switch)
+    assert said in html.unescape(re.sub(r"<[^>]+>", "", report.text)), report.text
+    back = f"/switch-company/{home['id']}?next={quote(f'/fixed-assets/classes/{class_id}/revalue', safe='')}"
+    assert f'<a href="{html.escape(back)}">{switch}</a>' in report.text
+    assert sent == [], "nothing reaches the API in either company"
 
 
 async def test_u22_the_buyer_is_a_contact_and_the_result_says_gain_or_loss(owner_ui):
@@ -1225,3 +1420,62 @@ async def test_u48_a_missing_permission_links_to_users(owner_ui):
     page = (await owner_ui.get("/fixed-assets")).text
     assert missing_permission_text("view_fixed_assets") in html.unescape(page), page
     assert 'href="/settings/general?tab=users"' in page, page
+
+
+def _says(reply, text: str) -> bool:
+    return text in html.unescape(re.sub(r"<[^>]+>", "", reply.text))
+
+
+async def test_r3_a_files_refresh_after_a_switch_in_another_tab_is_an_error_reply_with_the_way_back(owner_ui, monkeypatch):
+    car = await _managed_car(owner_ui)
+    home, sent = await _switched_away(owner_ui, car, monkeypatch)
+    headers = {"HX-Request": "true", "X-Celerp-Page-Company": home["id"],
+               "HX-Current-URL": f"http://ui/fixed-assets/assets/{car}"}
+    switch = t("fixed_assets.switch_to", company=home["name"])
+    back = f"/switch-company/{home['id']}?next={quote(f'/fixed-assets/assets/{car}', safe='')}"
+    for query in ("search=a", "tag_filter=warranties", "sort_dir=asc", "page=2", "date_from=2026-01-01"):
+        reply = await owner_ui.get(f"/fixed-assets/assets/{car}/files/_section?{query}", headers=headers)
+        assert reply.status_code == 409, (query, reply.status_code)
+        assert reply.headers["content-type"].startswith("text/html"), query
+        assert 'class="flash flash--error"' in reply.text and "files-section-" not in reply.text, query
+        assert f'<a href="{html.escape(back)}">{switch}</a>' in reply.text, (query, reply.text)
+
+
+async def test_r3_a_files_refresh_or_write_with_an_expired_session_is_a_401_with_the_sign_in_link(owner_ui, monkeypatch):
+    import ui.api_client as api
+
+    async def rejected(*args, **kwargs):
+        raise api.APIError(401, "Not authenticated")
+    car = await _managed_car(owner_ui)
+    monkeypatch.setattr(api, "fixed_assets_form", rejected)
+    owner_ui.cookies.set("celerp_token", "expired")
+    base = f"/fixed-assets/assets/{car}/files"
+    replies = {
+        "refresh": await owner_ui.get(f"{base}/_section?search=a", headers={"HX-Request": "true"}),
+        "upload": await owner_ui.post(base, headers={"HX-Request": "true"},
+                                      files={"file": ("a.pdf", b"%PDF-1.0\n", "application/pdf")}),
+        "tag": await owner_ui.post(f"{base}/f1/tag", headers={"HX-Request": "true"}, data={"document_tag": "x"}),
+        "description": await owner_ui.post(f"{base}/f1/description", headers={"HX-Request": "true"}, data={"description": "x"}),
+        "delete": await owner_ui.delete(f"{base}/f1", headers={"HX-Request": "true"}),
+    }
+    for action, reply in replies.items():
+        assert reply.status_code == 401, (action, reply.status_code)
+        assert reply.headers["content-type"].startswith("text/html"), action
+        assert '<a href="/login?reason=expired">' in reply.text and "files-section-" not in reply.text, (action, reply.text)
+
+
+async def test_r3_a_files_request_with_no_session_is_sent_to_sign_in_by_the_page_client(owner_ui):
+    car = await _managed_car(owner_ui)
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert "HX-Redirect" in page.text, "the Files client follows the sign-in redirect instead of swapping its empty body in"
+    owner_ui.cookies.clear()
+    reply = await owner_ui.get(f"/fixed-assets/assets/{car}/files/_section?search=a", headers={"HX-Request": "true"})
+    assert reply.headers["HX-Redirect"].startswith("/login?reason=expired") and reply.text == ""
+
+
+async def test_r3_an_upload_without_a_file_is_an_error_reply_so_the_files_section_stays(owner_ui):
+    car = await _managed_car(owner_ui)
+    reply = await owner_ui.post(f"/fixed-assets/assets/{car}/files", headers={"HX-Request": "true"},
+                                data={"document_tag": "warranties"})
+    assert reply.status_code == 400 and _says(reply, t("msg.upload_failed")), (reply.status_code, reply.text)
+    assert 'class="flash flash--error"' in reply.text

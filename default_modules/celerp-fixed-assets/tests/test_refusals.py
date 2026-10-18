@@ -145,6 +145,31 @@ async def test_undo_disposal_refusal_names_what_changed_and_the_way_on(fa: FA):
                            "longer be undone. Use Correct to change its figures.")
 
 
+
+async def test_the_asset_page_says_why_each_undo_would_be_refused_beside_its_button(fa: FA):
+    from bs4 import BeautifulSoup
+    from ui.i18n import t
+
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    await fa.operate(f"/assets/{car}/dispose", {"date": "2026-02-10", "reason": "lost", "percent": "40"}, key="pd")
+    await _run(fa, "2026-03")
+    number = (await fa.asset(car))["number"]
+    soup = BeautifulSoup((await fa.page(f"/fixed-assets/assets/{car}")).text, "html.parser")
+    told = {form.select_one("button[hx-post]")["hx-post"].split("/")[3]:
+            [w.get_text(" ", strip=True) for w in form.select(".flash--warning")]
+            for form in soup.select("form") if form.select(".flash--warning")}
+    assert told["undo-disposal"] == [f"{number} has changed since it was disposed of (Depreciation), so the disposal "
+                                     "can no longer be undone. Use Correct to change its figures."], told
+    assert told["undo-asset"] == [f"{number} (Depreciation recalculated, Disposed of, Depreciation) changed since it was registered. "
+                                  "Use Correct on its page instead."], told
+    assert t("fixed_assets.undo_disposal") in soup.text and t("fixed_assets.undo") in soup.text
+
+    fresh = await _contributed(fa, name="Van")
+    page = await fa.page(f"/fixed-assets/assets/{fresh}")
+    assert "flash--warning" not in page.text and t("fixed_assets.undo") in page.text
+
+
 _HOME_CRUMB = '<a href="/fixed-assets" class="breadcrumb-link">'
 
 
@@ -162,13 +187,57 @@ async def test_a_missing_permission_on_a_print_reads_as_on_screen_without_a_link
 
     await _managed_from(fa)
     viewer = await fa.role_headers("viewer")
-    for path in ("/fixed-assets/reports/schedule", "/fixed-assets/reports/schedule/print",
-                 "/fixed-assets/year-end/print"):
+    for path, key in (("/fixed-assets/reports/schedule", "view_fixed_assets"),
+                      ("/fixed-assets/reports/schedule/print", "view_fixed_assets"),
+                      ("/fixed-assets/year-end/print", "view_fixed_assets"),
+                      ("/fixed-assets/checks/not-seen/print", "check_fixed_assets")):
         r = await fa.page(path, headers=viewer)
         page = html.unescape(r.text)
-        assert missing_permission_text("view_fixed_assets") in page, path
+        assert missing_permission_text(key) in page, path
         assert _HOME_CRUMB in r.text, path
         assert "tab=users" not in page, path
+
+
+async def test_a_print_is_refused_for_exactly_who_its_screen_refuses(fa: FA):
+    """The print fetches what its screen fetches, so the same roles reach each: the schedule and
+    the other reports need financial reports, and the year end, a checklist whose amounts the
+    role's money setting hides, needs only fixed assets."""
+    from celerp.services.permissions import missing_permission_text
+    from celerp_fixed_assets.ui_reports import REPORTS
+
+    await _managed_from(fa)
+    refusals = [missing_permission_text(p) for p in ("view_fixed_assets", "view_financial_reports")]
+    pages = [f"/fixed-assets/reports/{r.key}" for r in REPORTS] + ["/fixed-assets/year-end"]
+    for role in ("viewer", "operator", "manager", "owner"):
+        headers = await fa.role_headers(role) if role != "owner" else fa.h
+        for path in pages:
+            refused = []
+            for url in (path, f"{path}/print"):
+                page = html.unescape((await fa.page(url, headers=headers)).text)
+                refused.append(next((r for r in refusals if r in page), None))
+            assert refused[0] == refused[1], (role, path, refused)
+    operator = await fa.role_headers("operator")
+    for path, refusal in (("/fixed-assets/reports/schedule/print", refusals[1]), ("/fixed-assets/year-end/print", None)):
+        page = html.unescape((await fa.page(path, headers=operator)).text)
+        assert (refusal in page) if refusal else not any(r in page for r in refusals), path
+
+
+async def test_every_print_is_a_document_under_the_core_report_header_without_the_app_around_it(fa: FA):
+    from bs4 import BeautifulSoup
+    from celerp_fixed_assets.ui_reports import REPORTS
+    from ui.i18n import t
+
+    await _managed_from(fa)
+    await _contributed(fa)
+    company = (await fa.client.get("/companies/me", headers=fa.h)).json()["name"]
+    prints = {f"/fixed-assets/reports/{r.key}/print": r.title_key for r in REPORTS}
+    prints |= {"/fixed-assets/year-end/print": "fixed_assets.year_end_title",
+               "/fixed-assets/checks/not-seen/print": "fixed_assets.not_seen_title"}
+    for path, title in prints.items():
+        soup = BeautifulSoup((await fa.page(path, since="2026-01-01")).text, "html.parser")
+        header = soup.select_one(".report-header")
+        assert header and company in header.text and t(title) in header.text, path
+        assert not soup.select(".breadcrumb, nav, input, select, .btn"), path
 
 
 async def test_an_unknown_run_or_class_names_no_crumb_it_does_not_have(fa: FA):
@@ -193,11 +262,23 @@ async def test_a_percent_out_of_range_says_what_to_enter(fa: FA):
         assert _message(r) == "Enter a percent disposed of above 0 and up to 100.", r.text
 
 
-async def test_a_stale_review_says_what_may_have_changed_and_to_press_review_again(fa: FA):
+async def test_a_stale_run_names_the_asset_added_since_its_review(fa: FA):
     await _managed_from(fa)
     await _contributed(fa)
     preview = await fa.ok(await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "st"}))
-    await _contributed(fa, name="Second car")
+    second = await _contributed(fa, name="Second car")
+    r = await fa.post("/runs", {"month": "2026-03", "preview": False, "op_key": "st",
+                                "fingerprint": preview["fingerprint"]})
+    assert r.status_code == 409 and _message(r) == (
+        "FA-0002 (Contributed) changed since you reviewed it. Press Review again to see it as it stands now."), r.text
+    assert _params(r)["links"] == [{"label": "FA-0002", "href": f"/fixed-assets/assets/{second}"}]
+
+
+async def test_a_stale_review_with_no_asset_changed_says_what_may_have(fa: FA):
+    await _managed_from(fa)
+    await _contributed(fa)
+    preview = await fa.ok(await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "st"}))
+    await fa.journal("2026-02-10", [{"account": "6400", "debit": 10}, {"account": "1220", "credit": 10}])
     r = await fa.post("/runs", {"month": "2026-03", "preview": False, "op_key": "st",
                                 "fingerprint": preview["fingerprint"]})
     assert r.status_code == 409 and _message(r) == (

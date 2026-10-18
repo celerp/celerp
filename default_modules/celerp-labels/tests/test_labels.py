@@ -1239,3 +1239,17 @@ async def test_label_print_strips_costs_for_ungranted_role(client: AsyncClient, 
     r_granted = await client.post(f"/api/labels/print/{item_id}?template_id={tid}", headers=op_h)
     assert r_granted.status_code == 200
     assert b"123.45" in _pdf_text(r_granted.content)
+
+
+@pytest.mark.asyncio
+async def test_a_third_party_label_source_with_only_the_required_keys_gets_its_template(session, auth, ids):
+    """The label_source contract requires entity_type, label_key, keys and preset; a preset
+    with only its fields is named after the kind, with no size it never gave."""
+    from celerp_labels.routes import _source_templates
+    from ui.i18n import t
+
+    entry = {"entity_type": "x_widget", "label_key": "label.name", "keys": ["name"],
+             "preset": {"fields": [{"key": "name", "label": "label.name", "type": "text"}]}}
+    (template,) = await _source_templates(session, ids["company_id"], entry)
+    assert template["name"] == t("label.name")
+    assert [f["key"] for f in template["fields"]] == ["name"]

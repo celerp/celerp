@@ -251,7 +251,7 @@ def test_batch_limit_says_remove_some():
     ("ai.upload_failed", "Try again"),
     ("search.partial", "may be incomplete"),
     ("msg.upload_failed", "internet connection"),
-    ("shell.request_failed", "Refresh the page"),
+    ("shell.request_failed", "Try again"),
     ("shell.network_error", "still running"),
     ("shell.update_check_failed", "internet connection"),
     ("shell.update_result_rollback_failed", "GitHub Issues or Discussions"),
