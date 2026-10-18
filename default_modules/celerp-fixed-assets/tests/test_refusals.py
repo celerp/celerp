@@ -187,11 +187,13 @@ async def test_a_missing_permission_on_a_print_reads_as_on_screen_without_a_link
 
     await _managed_from(fa)
     viewer = await fa.role_headers("viewer")
-    for path in ("/fixed-assets/reports/schedule", "/fixed-assets/reports/schedule/print",
-                 "/fixed-assets/year-end/print"):
+    for path, key in (("/fixed-assets/reports/schedule", "view_fixed_assets"),
+                      ("/fixed-assets/reports/schedule/print", "view_fixed_assets"),
+                      ("/fixed-assets/year-end/print", "view_fixed_assets"),
+                      ("/fixed-assets/checks/not-seen/print", "check_fixed_assets")):
         r = await fa.page(path, headers=viewer)
         page = html.unescape(r.text)
-        assert missing_permission_text("view_fixed_assets") in page, path
+        assert missing_permission_text(key) in page, path
         assert _HOME_CRUMB in r.text, path
         assert "tab=users" not in page, path
 
@@ -218,6 +220,24 @@ async def test_a_print_is_refused_for_exactly_who_its_screen_refuses(fa: FA):
     for path, refusal in (("/fixed-assets/reports/schedule/print", refusals[1]), ("/fixed-assets/year-end/print", None)):
         page = html.unescape((await fa.page(path, headers=operator)).text)
         assert (refusal in page) if refusal else not any(r in page for r in refusals), path
+
+
+async def test_every_print_is_a_document_under_the_core_report_header_without_the_app_around_it(fa: FA):
+    from bs4 import BeautifulSoup
+    from celerp_fixed_assets.ui_reports import REPORTS
+    from ui.i18n import t
+
+    await _managed_from(fa)
+    await _contributed(fa)
+    company = (await fa.client.get("/companies/me", headers=fa.h)).json()["name"]
+    prints = {f"/fixed-assets/reports/{r.key}/print": r.title_key for r in REPORTS}
+    prints |= {"/fixed-assets/year-end/print": "fixed_assets.year_end_title",
+               "/fixed-assets/checks/not-seen/print": "fixed_assets.not_seen_title"}
+    for path, title in prints.items():
+        soup = BeautifulSoup((await fa.page(path, since="2026-01-01")).text, "html.parser")
+        header = soup.select_one(".report-header")
+        assert header and company in header.text and t(title) in header.text, path
+        assert not soup.select(".breadcrumb, nav, input, select, .btn"), path
 
 
 async def test_an_unknown_run_or_class_names_no_crumb_it_does_not_have(fa: FA):

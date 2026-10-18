@@ -332,7 +332,7 @@ def setup_physical_routes(app) -> None:
 
     @app.get(f"{_CHECKS}/not-seen/print")
     async def not_seen_print(request: Request, since: str = ""):
-        from ui.components.report_kit import plain_error_response, print_shell
+        from ui.components.report_kit import print_shell
 
         token = _token(request)
         if not token:
@@ -341,6 +341,6 @@ def setup_physical_routes(app) -> None:
             items = await _not_seen(token, since)
             company = await api.get_company(token)
         except APIError as e:
-            return plain_error_response(e)
+            return await _refused(request, e, "fixed_assets.checks_title")
         return print_shell(company, t("fixed_assets.not_seen_title"), t("fixed_assets.not_seen_since_date", date=since),
                            _not_seen_table(items))
