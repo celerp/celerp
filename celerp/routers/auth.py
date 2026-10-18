@@ -194,9 +194,8 @@ async def authenticate(session: AsyncSession, email: str, password: str, caller:
     auth_hash = user.auth_hash if user else None
     if not password_attempts.check(email, password, auth_hash, caller):
         raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
-    # A legacy hash moves to the current scheme now; a legacy password shorter than
-    # the policy keeps its hash until the user changes it. The new hash replaces only
-    # the one just checked: a password changed meanwhile stands and this sign-in fails.
+    # A password stored the older way is stored the current way now, unless it is shorter
+    # than the policy. A password changed meanwhile stands and this sign-in fails.
     if password_needs_rehash(user.auth_hash) and len(password) >= MIN_PASSWORD_LENGTH:
         upgraded = hash_password(password)
         replaced = await session.execute(
@@ -416,14 +415,9 @@ async def switch_company(
 # ── Password recovery ────────────────────────────────────────────────────────
 #
 # The relay emails a code and confirms it (celerp.services.email_codes); this install
-# alone decides whose password changes, matching users exactly as sign-in does. Every
-# request asks the relay whether it is up first, whatever the email, so an answer never
-# depends on whether the email is a user here, and any answer other than a plain yes
-# resets nothing.
+# matches the email to a user exactly as sign-in does.
 
-# Every recovery send and reset answers no sooner than this after the relay's status
-# answer: longer than a relay call may take, so a user here and an email that is not
-# take the same time.
+# Every recovery send and reset answers at the same pace, no sooner than this.
 RECOVERY_FLOOR_S = 4.0
 _CODE = re.compile(r"[0-9]{6}")
 
@@ -445,16 +439,14 @@ def _code_refused() -> HTTPException:
 @router.post("/password-recovery/send", dependencies=_PER_ACCOUNT)
 @limiter.limit("3/minute", key_func=_account_key)
 async def recovery_send(request: Request, payload: EmailBody, session: AsyncSession = Depends(get_session)) -> dict:
-    """Email a recovery code to the user whose email this is, if there is one here; the
-    answer is the same, and comes as late, whether or not there is. "unavailable" says no
-    code is coming: the relay is down, or it could not deliver this one."""
+    """Email a recovery code to the user whose email this is, if there is one here.
+    "unavailable" says no code is coming: the relay is down, or it could not deliver it."""
     if await email_codes.status() is not Outcome.OK:
         return {"outcome": "unavailable"}
     started = time.monotonic()
     try:
         user = await user_by_email(session, payload.email)
-        # The relay refuses a send when this email has had its codes for now; the last one
-        # still stands, so that answers as sent.
+        # A send the relay turns down for now answers as sent: the last code still stands.
         sent = await email_codes.send(user.email) if user else Outcome.OK
     finally:
         await asyncio.sleep(max(0.0, started + RECOVERY_FLOOR_S - time.monotonic()))

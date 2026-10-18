@@ -395,10 +395,8 @@ async def test_a_proxied_visitor_can_never_name_the_caller_the_api_counts(gw, mo
 
 @pytest.mark.asyncio
 async def test_proxy_marks_connect_requests(gw, monkeypatch):
-    """A visitor through Connect reaches this computer from the gateway on loopback, like
-    the person at it. The gateway marks every request it proxies so the recovery page
-    never shows a remote visitor this computer's folders, and drops whatever mark the
-    visitor sent, in any spelling, so the mark is always the gateway's own."""
+    """The gateway marks every request it proxies, whatever the visitor sent, so the
+    recovery page never shows a remote visitor this computer's folders."""
     from celerp.services.auth import CONNECT_HEADER
 
     seen: list = []

@@ -108,9 +108,8 @@ async def issue_token_pair(
       never jump onto the newer generation (F2).
     - A fresh credential (register, password login, force-login, setup-code and
       password-authenticated restores and migration starts) passes
-      ``expected_snonce=None`` and mints on whatever the locked row holds, provided
-      the password *user* was loaded with is still the stored one. A password changed
-      after the caller checked it refuses the sign-in with a neutral 401.
+      ``expected_snonce=None``. A password changed after the caller checked it refuses
+      the sign-in.
 
     Holding the lock across the read-check-mint-register-commit window is what
     serializes issuance against ``invalidate_sessions``/``invalidate_all_sessions``.

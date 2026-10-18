@@ -39,9 +39,8 @@ oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error
 # address in this header, so a rate limit counts that visitor rather than the UI itself.
 CALLER_HEADER = "X-Celerp-Caller"
 
-# The Connect gateway sets this on every request it proxies, and the UI server passes
-# it on to the API: a Connect visitor reaches this computer from loopback, like the
-# person at it, and this is what tells them apart.
+# The Connect gateway marks every request it proxies, and the UI server passes the
+# mark on to the API.
 CONNECT_HEADER = "X-Celerp-Connect"
 
 ROLE_LEVELS = {"viewer": 1, "operator": 2, "manager": 3, "admin": 4, "owner": 5}
@@ -121,8 +120,7 @@ _clock = time.monotonic
 @dataclass
 class _Tally:
     free: int
-    # The hash an account's failures were counted against: a new password, set by
-    # this process or any other, starts the count again.
+    # The password the account's failures were counted against; a new one starts the count again.
     auth_hash: str | None = None
     failures: int = 0
     last_failure: float = 0.0
@@ -181,8 +179,6 @@ class PasswordAttempts:
 
     def _tally(self, key: str, free: int, auth_hash: str | None, now: float) -> _Tally:
         tally = self._tallies.get(key)
-        # An attempt that names no user (the email typed another way) leaves the hash
-        # alone, so alternating spellings cannot restart the count.
         changed = None not in (auth_hash, tally and tally.auth_hash) and tally.auth_hash != auth_hash
         if tally is None or now - tally.last_failure >= FORGET_AFTER_SECONDS or changed:
             tally = self._tallies[key] = _Tally(free, auth_hash)
@@ -426,9 +422,7 @@ def request_caller(request: Request) -> str:
 
 
 def is_local_person(request: Request) -> bool:
-    """Whether the request comes from the person at this computer: a loopback caller
-    that did not arrive through Connect. The mark can only take this away, so a caller
-    who sends it gains nothing."""
+    """Whether the request comes from the person at this computer rather than through Connect."""
     return is_loopback(request_caller(request)) and CONNECT_HEADER not in request.headers
 
 

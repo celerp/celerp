@@ -3,11 +3,8 @@
 
 """Codes the Celerp relay emails and confirms, for password recovery.
 
-The relay only sends a code to an address and says whether a code is the one it
-sent, for this installation (named by its instance id). It never
-learns which users this installation has and links nothing. Only a plain yes is OK:
-anything else the relay says, or failing to say anything in time, never resets a
-password.
+The relay sends a code to an address and says whether a code is the one it sent,
+for this installation (named by its instance id).
 """
 
 from __future__ import annotations

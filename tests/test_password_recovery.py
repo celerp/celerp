@@ -3,11 +3,7 @@
 """Password recovery: one reset function for every way a password is reset, the
 emailed code the Celerp relay sends and confirms, the terminal command for the
 person at this computer, an owner's reset of a staff password, and the notice the
-next sign-in shows.
-
-The relay only confirms a code. This install decides whose password changes, from
-its own users and exactly as sign-in matches them, and every answer from the relay
-other than a plain yes ends in no reset."""
+next sign-in shows."""
 from __future__ import annotations
 
 import asyncio
@@ -175,8 +171,7 @@ async def test_recovery_fails_closed(client, session, relay, short_floor, failur
 
 async def test_recovery_send_is_enumeration_neutral(client, session, relay, short_floor):
     """A user of this install and an email that is not get the same answer at the same
-    pace, and the second is never named to the relay; the code is with the relay before
-    the answer comes. The reset answers the same way for both."""
+    pace, and only the user is sent a code. The reset answers the same way for both."""
     await _register(client)
 
     answers, took = [], []
@@ -202,9 +197,8 @@ async def test_recovery_send_is_enumeration_neutral(client, session, relay, shor
 
 
 async def test_recovery_send_says_when_no_code_is_coming(client, session, relay, short_floor):
-    """The relay is up but cannot deliver the code: the answer says none is coming. The
-    relay's limit on codes for an email answers as sent, as an email that is not a user
-    here does."""
+    """The relay is up but cannot deliver the code: the answer says none is coming. A
+    send the relay turns down for now answers as sent."""
     await _register(client)
     relay.send_status = 503
     assert (await _send(client, OWNER)).json() == {"outcome": "unavailable"}
@@ -351,9 +345,7 @@ async def test_recovery_terminal_command_only_for_loopback(client):
 
 
 async def test_recovery_terminal_command_not_for_connect_visitor(client):
-    """A visitor through Connect reaches this computer from the gateway on loopback, so
-    the gateway's mark is what tells them apart: marked, no command, at the API and
-    on the page."""
+    """A visitor through Connect is not shown the command, at the API or on the page."""
     from celerp.services.auth import CONNECT_HEADER
     from ui.app import app as ui_app
 
