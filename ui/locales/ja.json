@@ -493,6 +493,7 @@
   "connectors.direction": "同期方向",
   "connectors.disconnect": "接続を解除",
   "connectors.disconnect_confirm": "接続を解除しますか？Celerp はこのサービスとの同期を停止し、保存していたサインイン情報を削除します。",
+  "connectors.peer_needs_connect": "Accountant Sync には Celerp Connect が必要です。Connect を入手してから、もう一度お試しください。",
   "connectors.peer_disconnect_confirm": "会計士との接続を解除しますか？この会社は会計士の会社へのデータ送信と、会計士の仕訳の受け取りを停止します。会計士がすでに持っているデータは会計士の会社に残ります。再度接続するには、会計士に新しいペアリングリンクを依頼してください。",
   "connectors.disconnect_failed": "接続の解除や変更は行われていません。{detail}",
   "connectors.disconnect_anyway": "それでも接続を解除",

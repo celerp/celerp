@@ -493,6 +493,7 @@
   "connectors.direction": "اتجاه المزامنة",
   "connectors.disconnect": "قطع الاتصال",
   "connectors.disconnect_confirm": "هل تريد قطع الاتصال؟ يتوقف Celerp عن المزامنة مع هذه الخدمة ويحذف بيانات الدخول التي حفظها لها.",
+  "connectors.peer_needs_connect": "يحتاج Accountant Sync إلى Celerp Connect. احصل على Connect ثم حاول مرة أخرى.",
   "connectors.peer_disconnect_confirm": "هل تريد قطع الاتصال بمحاسبك؟ تتوقف هذه الشركة عن إرسال السجلات إلى شركة المحاسب وعن استلام قيوده. ما لديه بالفعل يبقى في شركته. للاتصال مجددًا، اطلب من محاسبك رابط اقتران جديدًا.",
   "connectors.disconnect_failed": "لم يتم قطع اتصال أي شيء أو تغييره. {detail}",
   "connectors.disconnect_anyway": "قطع الاتصال على أي حال",

@@ -35,6 +35,11 @@ router = APIRouter(
     tags=["connectors"],
     dependencies=[Depends(get_current_user), Depends(_require_session)],
 )
+# Leaving a connection never needs Connect.
+open_router = APIRouter(
+    prefix="/connectors", tags=["connectors"],
+    dependencies=[Depends(get_current_user)],
+)
 local_router = APIRouter(
     prefix="/connector-items", tags=["connectors"],
     dependencies=[Depends(get_current_user)],
@@ -474,7 +479,7 @@ async def store_credentials(
     return {"ok": True}
 
 
-@router.delete("/{connector_name}/credentials")
+@open_router.delete("/{connector_name}/credentials")
 async def revoke_credentials(
     connector_name: str,
     company_id: Annotated[str, Depends(get_current_company_id)],
@@ -513,8 +518,11 @@ async def revoke_credentials(
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    # The accountant connection is this company's own: when the relay cannot be
+    # reached to drop its copy of the key, it disconnects anyway.
     if failure := await _revoke_remote(
-        session, company_id, connector_name, webhook_ids, force=force
+        session, company_id, connector_name, webhook_ids, force=force,
+        best_effort=connector_name == "celerp",
     ):
         return failure
 
@@ -537,10 +545,11 @@ async def revoke_credentials(
 
 async def _revoke_remote(
     session: AsyncSession, company_id: str, connector_name: str,
-    webhook_ids: list[str], *, force: bool,
+    webhook_ids: list[str], *, force: bool, best_effort: bool = False,
 ) -> dict | None:
     """Disconnect the connector remotely. Returns the failure response, with
-    the local transaction rolled back, or None when it is disconnected."""
+    the local transaction rolled back, or None when it is disconnected. With
+    `best_effort`, a cleanup that cannot be confirmed is logged, not refused."""
     from celerp.connectors.remote_state import (
         ConnectorRemoteCleanupError,
         ConnectorRemoteStateChangedError,
@@ -555,6 +564,9 @@ async def _revoke_remote(
         await session.rollback()
         return {"ok": False, "error": "connection_changed", "detail": str(exc)}
     except ConnectorRemoteCleanupError as exc:
+        if best_effort:
+            log.warning("%s remote cleanup unconfirmed; disconnecting locally", connector_name)
+            return None
         await session.rollback()
         return {"ok": False, "error": "relay_error", "detail": str(exc)}
     return None
@@ -785,4 +797,5 @@ async def set_item_sync(
 def setup_api_routes(app) -> None:
     """Called by the module loader to register connector routes."""
     app.include_router(router)
+    app.include_router(open_router)
     app.include_router(local_router)

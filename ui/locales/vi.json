@@ -493,6 +493,7 @@
   "connectors.direction": "Hướng đồng bộ",
   "connectors.disconnect": "Ngắt kết nối",
   "connectors.disconnect_confirm": "Ngắt kết nối? Celerp ngừng đồng bộ với dịch vụ này và xóa thông tin đăng nhập đã lưu cho nó.",
+  "connectors.peer_needs_connect": "Accountant Sync cần Celerp Connect. Hãy đăng ký Connect rồi thử lại.",
   "connectors.peer_disconnect_confirm": "Ngắt kết nối với kế toán viên? Công ty này ngừng gửi dữ liệu đến công ty của kế toán viên và ngừng nhận bút toán của họ. Những gì họ đã có vẫn ở lại công ty của họ. Để kết nối lại, hãy xin kế toán viên một liên kết ghép nối mới.",
   "connectors.disconnect_failed": "Không có gì bị ngắt kết nối hay thay đổi. {detail}",
   "connectors.disconnect_anyway": "Vẫn ngắt kết nối",

@@ -493,6 +493,7 @@
   "connectors.direction": "ทิศทางการซิงก์",
   "connectors.disconnect": "ตัดการเชื่อมต่อ",
   "connectors.disconnect_confirm": "ตัดการเชื่อมต่อหรือไม่ Celerp จะหยุดซิงค์กับบริการนี้และลบข้อมูลการลงชื่อเข้าใช้ที่บันทึกไว้",
+  "connectors.peer_needs_connect": "Accountant Sync ต้องใช้ Celerp Connect สมัคร Connect แล้วลองอีกครั้ง",
   "connectors.peer_disconnect_confirm": "ตัดการเชื่อมต่อกับนักบัญชีหรือไม่ บริษัทนี้จะหยุดส่งข้อมูลไปยังบริษัทของนักบัญชีและหยุดรับรายการของนักบัญชี ข้อมูลที่นักบัญชีมีอยู่แล้วยังอยู่ในบริษัทของนักบัญชี หากต้องการเชื่อมต่ออีกครั้ง ให้ขอลิงก์จับคู่ใหม่จากนักบัญชี",
   "connectors.disconnect_failed": "ไม่มีการตัดการเชื่อมต่อหรือเปลี่ยนแปลงใดๆ {detail}",
   "connectors.disconnect_anyway": "ยกเลิกการเชื่อมต่อต่อไป",

@@ -535,6 +535,7 @@
   "connectors.disable_shopify_sync": "Disable Shopify sync",
   "connectors.disconnect": "Disconnect",
   "connectors.disconnect_confirm": "Disconnect? Celerp stops syncing with this service and deletes the sign-in it saved for it.",
+  "connectors.peer_needs_connect": "Accountant Sync needs Celerp Connect. Get Connect, then try again.",
   "connectors.peer_disconnect_confirm": "Disconnect from your accountant? This company stops sending records to the accountant's company and stops taking their entries. What they already have stays in their company. To connect again, ask your accountant for a new pairing link.",
   "connectors.disconnect_failed": "Nothing was disconnected or changed. {detail}",
   "connectors.disconnect_anyway": "Disconnect anyway",

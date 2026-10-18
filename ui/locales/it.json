@@ -493,6 +493,7 @@
   "connectors.direction": "Direzione di sincronizzazione",
   "connectors.disconnect": "Disconnetti",
   "connectors.disconnect_confirm": "Disconnettere? Celerp smette di sincronizzarsi con questo servizio ed elimina l'accesso salvato per esso.",
+  "connectors.peer_needs_connect": "Accountant Sync richiede Celerp Connect. Attiva Connect, poi riprova.",
   "connectors.peer_disconnect_confirm": "Disconnettere dal tuo commercialista? Questa azienda smette di inviare dati all'azienda del commercialista e di ricevere le sue registrazioni. Ciò che ha già resta nella sua azienda. Per ricollegarti, chiedi al tuo commercialista un nuovo link di abbinamento.",
   "connectors.disconnect_failed": "Non è stato disconnesso né modificato nulla. {detail}",
   "connectors.disconnect_anyway": "Disconnetti comunque",

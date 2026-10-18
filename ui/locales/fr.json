@@ -493,6 +493,7 @@
   "connectors.direction": "Direction de synchronisation",
   "connectors.disconnect": "Déconnecter",
   "connectors.disconnect_confirm": "Déconnecter ? Celerp cesse de synchroniser avec ce service et supprime la connexion qu'il avait enregistrée pour lui.",
+  "connectors.peer_needs_connect": "Accountant Sync nécessite Celerp Connect. Obtenez Connect, puis réessayez.",
   "connectors.peer_disconnect_confirm": "Se déconnecter de votre comptable ? Cette société cesse d'envoyer des données à la société du comptable et de recevoir ses écritures. Ce qu'il a déjà reste dans sa société. Pour vous reconnecter, demandez à votre comptable un nouveau lien d'appairage.",
   "connectors.disconnect_failed": "Rien n'a été déconnecté ni modifié. {detail}",
   "connectors.disconnect_anyway": "Déconnecter quand même",

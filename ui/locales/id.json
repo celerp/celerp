@@ -493,6 +493,7 @@
   "connectors.direction": "Arah sinkronisasi",
   "connectors.disconnect": "Putuskan",
   "connectors.disconnect_confirm": "Putuskan? Celerp berhenti menyinkronkan dengan layanan ini dan menghapus info masuk yang disimpannya.",
+  "connectors.peer_needs_connect": "Accountant Sync memerlukan Celerp Connect. Dapatkan Connect, lalu coba lagi.",
   "connectors.peer_disconnect_confirm": "Putuskan dari akuntan Anda? Perusahaan ini berhenti mengirim data ke perusahaan akuntan dan berhenti menerima entri mereka. Data yang sudah mereka miliki tetap di perusahaan mereka. Untuk terhubung lagi, minta tautan pemasangan baru kepada akuntan Anda.",
   "connectors.disconnect_failed": "Tidak ada yang diputuskan atau diubah. {detail}",
   "connectors.disconnect_anyway": "Tetap putuskan",

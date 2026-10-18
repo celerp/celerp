@@ -1020,6 +1020,23 @@ def _entitlement_cta(lang: str = "en") -> FT:
     )
 
 
+def _connect_required(platform: str, exc: Exception, lang: str) -> FT | None:
+    """Accountant Sync's answer when this installation has no Connect session: what
+    it needs and the way to get it, in place of the session gate's own advice."""
+    from ui.api_client import APIError
+    if platform != "celerp" or not (
+        isinstance(exc, APIError) and exc.status == 401 and "Connect" in str(exc.detail)
+    ):
+        return None
+    from ui.components.cloud_gate import commercial_cta
+    href, label = commercial_cta("subscribe", "cloud", t("btn.get_connect", lang), lang)
+    return Div(
+        P(t("connectors.peer_needs_connect", lang), cls="settings-hint"),
+        A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"),
+        cls="flash flash--warning connector-entitlement-cta",
+    )
+
+
 async def _awaiting_reconnect(company_id: str) -> list[str]:
     """Connectors this company lost when it was deactivated and has not reconnected."""
     from celerp.connectors.ownership import connectors_awaiting_reconnect
@@ -1619,7 +1636,11 @@ def setup_routes(app):
                 )
             except ConnectorOwnershipError as exc:
                 await session.rollback()
-                return Span(str(exc), cls="flash flash--warning")
+                # Nothing is swapped, so the buttons stay; the reason is a toast.
+                from starlette.responses import Response
+                from ui.components.shell import toast_header
+                return Response(headers={**toast_header(str(exc), "error", persist=True),
+                                         "HX-Reswap": "none"})
             config.direction = direction
             await session.commit()
         if request.query_params.get("detail"):
@@ -1742,7 +1763,8 @@ def setup_routes(app):
         try:
             await _kickoff_connector_sync(company_id, platform, token)
         except APIError as exc:
-            return Span(f"✗ {refusal_text(exc.detail) or exc.detail}", cls="flash flash--warning")
+            return (_connect_required(platform, exc, lang)
+                    or Span(f"✗ {refusal_text(exc.detail) or exc.detail}", cls="flash flash--warning"))
         except Exception as exc:
             return Span(f"✗ {exc}", cls="flash flash--warning")
 
@@ -1980,7 +2002,7 @@ def setup_routes(app):
                 token, platform, consumer_key, consumer_secret, store_url)
         except Exception as exc:
             return Div(
-                Span(f"✗ {exc}", cls="flash flash--warning"),
+                _connect_required(platform, exc, lang) or Span(f"✗ {exc}", cls="flash flash--warning"),
                 id=f"connector-card-{platform}",
                 cls="connector-card",
             )

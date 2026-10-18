@@ -510,6 +510,7 @@
   "connectors.disable_shopify_sync": "የShopify ማመሳሰልን አሰናክል",
   "connectors.disconnect": "ግንኙነት አቋርጥ",
   "connectors.disconnect_confirm": "ይቋረጥ? ሴለርፕ ከዚህ አገልግሎት ጋር ማመሳሰል ያቆማል፣ ለእሱ ያስቀመጠውን መግቢያም ይሰርዛል።",
+  "connectors.peer_needs_connect": "Accountant Sync Celerp Connect ያስፈልገዋል። Connect ያግኙ፣ ከዚያ እንደገና ይሞክሩ።",
   "connectors.peer_disconnect_confirm": "ከሂሳብ ባለሙያዎ ጋር ያለው ግንኙነት ይቋረጥ? ይህ ኩባንያ ወደ ሂሳብ ባለሙያው ኩባንያ መረጃ መላክ ያቆማል፣ ግቤቶቻቸውንም መቀበል ያቆማል። ያላቸው መረጃ በኩባንያቸው ውስጥ ይቆያል። እንደገና ለመገናኘት ከሂሳብ ባለሙያዎ አዲስ የማጣመሪያ አገናኝ ይጠይቁ።",
   "connectors.disconnect_failed": "ምንም አልተቋረጠም ወይም አልተቀየረም። {detail}",
   "connectors.disconnect_anyway": "ቢሆንም አቋርጥ",
