@@ -1854,6 +1854,42 @@ async def _refuse_fixed_consignor(session: AsyncSession, company_id, entity_id: 
             "owed to them."))
 
 
+# Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
+_FINALIZED_EDITABLE_FIELDS = frozenset({
+    "description", "customer_note", "internal_note",
+    "shipping_attn", "contact_shipping_address", "ref_id",
+    "line_items",  # partial: only description/account_code per line
+    # Contact snapshot fields - stored on doc, no JE impact
+    "contact_id", "contact_name", "contact_company_name", "contact_billing_address",
+    "contact_phone", "contact_email", "contact_tax_id", "payment_terms",
+    "accounting_sync_excluded",
+})
+_LI_FINALIZED_EDITABLE = frozenset({"description", "account_code"})
+
+
+def assert_finalized_edit(state: dict, fields_changed: dict) -> None:
+    """Refuse (409) a change to a finalized document beyond its corrective fields, and a line
+    change beyond each line's description and account."""
+    if set(fields_changed) - _FINALIZED_EDITABLE_FIELDS:
+        _assert_doc_editable(state)
+    if "line_items" not in fields_changed:
+        return
+    existing_by_idx = {i: li for i, li in enumerate(state.get("line_items") or [])}
+    for i, incoming in enumerate(fields_changed["line_items"].get("new") or []):
+        original = existing_by_idx.get(i, {})
+        for k, v in incoming.items():
+            if k in _LI_FINALIZED_EDITABLE:
+                continue
+            orig_v = original.get(k)
+            if k == "line_id" and not orig_v:
+                continue  # a legacy line is given its id on its first save
+            if v != orig_v:
+                raise HTTPException(
+                    status_code=409,
+                    detail=t("documents.err_line_field_finalized", field=k, line=i + 1),
+                )
+
+
 def _assert_doc_editable(state: dict) -> None:
     """Refuse a structural edit of a document past draft, naming the way back to an editable state."""
     status = state.get("status") or "final"
@@ -1887,17 +1923,6 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     digest, idem_key = _patch_identity("doc", entity_id, payload)
     if (done := await _find_patch_replay(session, company_id, idem_key, "doc.updated", entity_id, digest)) is not None:
         return done
-    # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
-    _FINALIZED_EDITABLE_FIELDS = {
-        "description", "customer_note", "internal_note",
-        "shipping_attn", "contact_shipping_address", "ref_id",
-        "line_items",  # partial: only description/account_code per line
-        # Contact snapshot fields - stored on doc, no JE impact
-        "contact_id", "contact_name", "contact_company_name", "contact_billing_address",
-        "contact_phone", "contact_email", "contact_tax_id", "payment_terms",
-        "accounting_sync_excluded",
-    }
-    _LI_FINALIZED_EDITABLE = {"description", "account_code"}
     # The selected contact is locked before the document, the order merge and delete use.
     contact = await _lock_selected_contact(session, company_id, settings, role, new_contact_id) if selecting else None
     # Locked load so the version check and the emit are one compare-and-set, as for lists.
@@ -1940,27 +1965,10 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         await _assert_sales_line_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)
     is_draft = row.state.get("status") == "draft"
     if not is_draft:
-        locked_fields = set(fields_changed) - _FINALIZED_EDITABLE_FIELDS
-        if locked_fields:
-            _assert_doc_editable(row.state)
-        # Guard: line_items patch on finalized doc may only touch _LI_FINALIZED_EDITABLE fields
+        assert_finalized_edit(row.state, fields_changed)
         if "line_items" in fields_changed:
             incoming_lis = (fields_changed["line_items"].get("new") or [])
-            existing_lis = row.state.get("line_items") or []
-            existing_by_idx = {i: li for i, li in enumerate(existing_lis)}
-            for i, incoming in enumerate(incoming_lis):
-                original = existing_by_idx.get(i, {})
-                for k, v in incoming.items():
-                    if k in _LI_FINALIZED_EDITABLE:
-                        continue
-                    orig_v = original.get(k)
-                    if k == "line_id" and not orig_v:
-                        continue  # a legacy line is given its id on its first save
-                    if v != orig_v:
-                        raise HTTPException(
-                            status_code=409,
-                            detail=t("documents.err_line_field_finalized", field=k, line=i + 1),
-                        )
+            existing_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
             if row.state.get("doc_type") in _BILL_POSTED:
                 # A line moved to another account posts there if the bill is reverted and finalized again.
                 await require_line_destinations(session, company_id, [
@@ -7699,7 +7707,8 @@ def _assert_doc_import_permissions(settings: dict, role: str, data: dict) -> Non
 
 # Lifecycle state is owned by dedicated document operations, and the type and
 # number are established by the original create; import-upsert rewrites neither.
-_DOC_IMPORT_UPSERT_EXCLUDED = LIFECYCLE_OWNED_FIELDS | {"doc_type", "ref_id"}
+# import_treatment says how a new record is booked; an update cannot book it again.
+_DOC_IMPORT_UPSERT_EXCLUDED = LIFECYCLE_OWNED_FIELDS | {"doc_type", "ref_id", "import_treatment"}
 
 
 def _doc_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:

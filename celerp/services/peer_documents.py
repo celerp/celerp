@@ -47,6 +47,10 @@ _ISSUED_STATUSES = frozenset({
 })
 
 
+ISSUED_IN_COPY = ("The accountant's copy of this document is already issued, so this change was not "
+                  "copied. Nothing is needed in your books; ask your accountant if their copy should change.")
+
+
 def requires_stock_movement(data: dict) -> bool:
     """An issued document needing stock operations cannot be copied as a GL-only update."""
     from celerp.services.units import is_non_stock_line
@@ -230,6 +234,12 @@ async def receive_document(
         return "skipped" if target_status == "void" else "updated"
     if source_status == "draft" and target_status not in (None, "draft"):
         raise HTTPException(409, "Previously issued document requires reconciliation")
+    if target is not None and target_status != "draft":
+        from celerp_docs.routes import _doc_import_fields_changed, assert_finalized_edit
+        try:
+            assert_finalized_edit(target.state or {}, _doc_import_fields_changed(target.state or {}, incoming))
+        except HTTPException as exc:
+            raise HTTPException(409, ISSUED_IN_COPY) from exc
     if source_status != "draft" and target_status == "draft":
         # Update its draft fields before the canonical finalization posts the books.
         incoming["status"] = "draft"
@@ -243,7 +253,8 @@ async def receive_document(
     ):
         # The import's own reason, such as a locked period, tells the owner what to change.
         message = outcome.records[0].message if len(outcome.records) == 1 else None
-        raise HTTPException(409, message_text(message) if message else "Receiving document needs review")
+        raise HTTPException(409, message_text(message).removeprefix(f"{claim.target_id}: ")
+                            if message else "Receiving document needs review")
     if source_status != "draft" and target_status == "draft":
         await finalize_document(claim.target_id, str(grant.company_id),
                                 SimpleNamespace(id=member.id), session, commit=False)
