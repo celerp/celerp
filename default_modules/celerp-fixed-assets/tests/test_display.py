@@ -98,7 +98,7 @@ async def test_a_move_review_says_what_stays_and_the_undo_review_where_the_asset
     undo = await fa.submit("/fixed-assets/op/undo-move/review", {"asset_id": car, "idempotency_key": "um"})
     undo = _tight(undo.text)
     assert "<td>Owner's car</td>" in undo
-    assert '<th scope="row">Location</th><td>North store, back to --</td>' in undo
+    assert '<th scope="row">Location</th><td>North store, back to no location</td>' in undo
     assert '<th scope="row">Custodian</th><td>Unchanged</td>' in undo
 
 

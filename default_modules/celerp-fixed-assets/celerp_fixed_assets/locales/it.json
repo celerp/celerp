@@ -773,6 +773,8 @@
   "fixed_assets.more": "Altro",
   "fixed_assets.unchanged": "Invariato",
   "fixed_assets.back_to": "{now}, torna a {was}",
+  "fixed_assets.no_location": "nessuna sede",
+  "fixed_assets.no_custodian": "nessun custode",
   "fixed_assets.location": "Ubicazione",
   "fixed_assets.custodian": "Assegnatario",
   "fixed_assets.custodian_name": "Assegnatario non utente",

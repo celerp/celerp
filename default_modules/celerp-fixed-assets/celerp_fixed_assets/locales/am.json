@@ -773,6 +773,8 @@
   "fixed_assets.more": "ተጨማሪ",
   "fixed_assets.unchanged": "አልተቀየረም",
   "fixed_assets.back_to": "{now}፣ ወደ {was} ይመለሳል",
+  "fixed_assets.no_location": "ቦታ የለም",
+  "fixed_assets.no_custodian": "ጠባቂ የለም",
   "fixed_assets.location": "ቦታ",
   "fixed_assets.custodian": "ተረካቢ",
   "fixed_assets.custodian_name": "ተጠቃሚ ያልሆነ ተረካቢ",

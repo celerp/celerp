@@ -295,12 +295,16 @@ async def _refused(request: Request, e: APIError, title_key: str):
 
 def _placement(result: dict, key: str) -> str:
     """What a move or its undo does to the asset's location or custodian: a move leaves a field it is not
-    given unchanged; an undo names where the asset is and where it goes back to."""
+    given unchanged; an undo names where the asset is and where it goes back to, "no location"
+    when it had none."""
     to = (result.get(key) or {}).get("name")
     if "moved_from" not in result:
         return _text(to) if result.get(key) else t("fixed_assets.unchanged")
     now = (result["moved_from"].get(key) or {}).get("name")
-    return t("fixed_assets.unchanged") if now == to else t("fixed_assets.back_to", now=_text(now), was=_text(to))
+    if now == to:
+        return t("fixed_assets.unchanged")
+    none = t(f"fixed_assets.no_{key}")
+    return t("fixed_assets.back_to", now=now or none[:1].upper() + none[1:], was=to or none)
 
 
 def _preview(action: str, result: dict, currency: str) -> FT:

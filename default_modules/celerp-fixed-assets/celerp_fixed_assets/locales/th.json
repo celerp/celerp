@@ -773,6 +773,8 @@
   "fixed_assets.more": "เพิ่มเติม",
   "fixed_assets.unchanged": "ไม่เปลี่ยน",
   "fixed_assets.back_to": "{now} กลับไปเป็น {was}",
+  "fixed_assets.no_location": "ไม่มีสถานที่",
+  "fixed_assets.no_custodian": "ไม่มีผู้ดูแล",
   "fixed_assets.location": "สถานที่",
   "fixed_assets.custodian": "ผู้รับผิดชอบ",
   "fixed_assets.custodian_name": "ผู้รับผิดชอบที่ไม่ใช่ผู้ใช้",

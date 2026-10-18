@@ -773,6 +773,8 @@
   "fixed_assets.more": "Mehr",
   "fixed_assets.unchanged": "Unverändert",
   "fixed_assets.back_to": "{now}, zurück zu {was}",
+  "fixed_assets.no_location": "kein Standort",
+  "fixed_assets.no_custodian": "kein Verantwortlicher",
   "fixed_assets.location": "Standort",
   "fixed_assets.custodian": "Verantwortliche Person",
   "fixed_assets.custodian_name": "Verantwortliche Person ohne Benutzerkonto",

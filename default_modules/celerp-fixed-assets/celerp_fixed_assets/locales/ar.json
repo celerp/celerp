@@ -773,6 +773,8 @@
   "fixed_assets.more": "المزيد",
   "fixed_assets.unchanged": "بدون تغيير",
   "fixed_assets.back_to": "{now}، ويعود إلى {was}",
+  "fixed_assets.no_location": "بلا موقع",
+  "fixed_assets.no_custodian": "بلا أمين عهدة",
   "fixed_assets.location": "الموقع",
   "fixed_assets.custodian": "المسؤول",
   "fixed_assets.custodian_name": "مسؤول ليس مستخدمًا",

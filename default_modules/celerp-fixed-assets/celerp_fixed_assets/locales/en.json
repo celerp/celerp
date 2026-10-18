@@ -773,6 +773,8 @@
   "fixed_assets.more": "More",
   "fixed_assets.unchanged": "Unchanged",
   "fixed_assets.back_to": "{now}, back to {was}",
+  "fixed_assets.no_location": "no location",
+  "fixed_assets.no_custodian": "no custodian",
   "fixed_assets.location": "Location",
   "fixed_assets.custodian": "Custodian",
   "fixed_assets.custodian_name": "Custodian who is not a user",

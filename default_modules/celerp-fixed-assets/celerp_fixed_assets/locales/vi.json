@@ -773,6 +773,8 @@
   "fixed_assets.more": "Thêm",
   "fixed_assets.unchanged": "Không đổi",
   "fixed_assets.back_to": "{now}, trở lại {was}",
+  "fixed_assets.no_location": "không có vị trí",
+  "fixed_assets.no_custodian": "không có người giữ",
   "fixed_assets.location": "Địa điểm",
   "fixed_assets.custodian": "Người quản lý",
   "fixed_assets.custodian_name": "Người quản lý không phải người dùng",
