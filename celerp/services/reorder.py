@@ -26,7 +26,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.services.doc_balance import doc_value, is_overdue_document, outstanding_balance, today_iso
+from celerp.services.business_time import business_today
+from celerp.services.doc_balance import doc_value, is_overdue_document, outstanding_balance
 
 log = logging.getLogger(__name__)
 
@@ -169,7 +170,7 @@ async def _detect_expiring(session: AsyncSession, company) -> list[dict]:
     """In-stock items whose ``expires_at`` falls within the company's window."""
     from datetime import date
 
-    cutoff = date.today() + timedelta(days=_EXPIRING_WINDOW_DAYS)
+    cutoff = business_today((company.settings or {}).get("timezone")) + timedelta(days=_EXPIRING_WINDOW_DAYS)
     rows = await _projections(session, company, "item")
     out: list[dict] = []
     for r in rows:
@@ -193,7 +194,7 @@ async def _detect_expiring(session: AsyncSession, company) -> list[dict]:
 
 async def _detect_overdue(session: AsyncSession, company) -> list[dict]:
     """Overdue invoices (``is_overdue_document``) with what each still owes."""
-    today = today_iso()
+    today = business_today((company.settings or {}).get("timezone")).isoformat()
     rows = await _projections(session, company, "doc")
     out: list[dict] = []
     for r in rows:

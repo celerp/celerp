@@ -28,6 +28,22 @@ def business_date_at(instant: datetime, timezone_name: str | None) -> str:
     return instant.astimezone(business_timezone(timezone_name)).date().isoformat()
 
 
+def business_today(timezone_name: str | None) -> date:
+    """Today's calendar day in an IANA business timezone: the day every "today" decision uses."""
+    return datetime.now(timezone.utc).astimezone(business_timezone(timezone_name)).date()
+
+
+async def company_today(session, company_id) -> date:
+    """Today's business day for a company, in the timezone its committed settings name."""
+    from sqlalchemy import select
+
+    from celerp.models.company import Company
+
+    settings = (await session.execute(
+        select(Company.settings).where(Company.id == company_id))).scalar_one_or_none() or {}
+    return business_today(settings.get("timezone"))
+
+
 def business_date_of(recorded: object, timezone_name: str | None) -> str:
     """The business day of an operation, as YYYY-MM-DD.
 
@@ -37,7 +53,7 @@ def business_date_of(recorded: object, timezone_name: str | None) -> str:
     ValueError, with a message for the user, for an unusable timezone or an unreadable date.
     """
     if not recorded:
-        return business_date_at(datetime.now(timezone.utc), timezone_name)
+        return business_today(timezone_name).isoformat()
     raw = str(recorded)
     try:
         instant = datetime.fromisoformat(raw.replace("Z", "+00:00")) if "T" in raw else None

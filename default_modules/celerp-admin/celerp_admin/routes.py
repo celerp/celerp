@@ -304,7 +304,7 @@ async def _check_missing_jes(
                     }
                     missing.append(detail)
                     if not _waits_on_sale(detail, sale) \
-                            and not await _blocked(detail, state, _payment_day(state, pay), payment=pay) \
+                            and not await _blocked(detail, state, _payment_day(state, pay, settings.get("timezone")), payment=pay) \
                             and fix and await _repaired(detail, lambda: _emit_payment_je(
                         session, company_id, user_id, entity_id,
                         float(pay.get("amount") or 0), state,
@@ -325,7 +325,7 @@ async def _check_missing_jes(
                     }
                     missing.append(detail)
                     if not _waits_on_sale(detail, sale) \
-                            and not await _blocked(detail, state, _payment_day(state, None)) \
+                            and not await _blocked(detail, state, _payment_day(state, None, settings.get("timezone"))) \
                             and fix and await _repaired(detail, lambda: _emit_payment_je(
                         session, company_id, user_id, entity_id,
                         amount_paid, state, payment_index=0,
@@ -678,13 +678,13 @@ async def _emit_finalize_je(
     )
 
 
-def _payment_day(state: dict, payment: dict | None) -> str:
+def _payment_day(state: dict, payment: dict | None, timezone_name: str | None) -> str:
     """The date a repaired payment entry posts on: the payment's own date, else the
-    document's issue or creation date, else today."""
-    from datetime import date
+    document's issue or creation date, else the company's today."""
+    from celerp.services.business_time import business_today
 
     return str((payment or {}).get("payment_date") or state.get("issue_date") or state.get("created_at")
-               or date.today().isoformat())[:10]
+               or business_today(timezone_name).isoformat())[:10]
 
 
 async def _emit_payment_je(
@@ -713,7 +713,7 @@ async def _emit_payment_je(
         amount=amount, payment_index=payment_index,
         bank_account_code=payment.get("bank_account"),
         doc_type=state.get("doc_type", "invoice"),
-        payment_date=_payment_day(state, payment),
+        payment_date=_payment_day(state, payment, company.settings.get("timezone") if company else None),
         base_currency=base_currency,
         doc_rate=float(document_rate),
         settlement_rate=float(settlement_rate),

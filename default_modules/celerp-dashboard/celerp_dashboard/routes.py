@@ -13,7 +13,8 @@ from celerp.db import get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.lot_origin import RETIRED, held_value
-from celerp.services.doc_balance import is_awaiting_payment, is_overdue_document, outstanding_balance, today_iso
+from celerp.services.business_time import business_today
+from celerp.services.doc_balance import is_awaiting_payment, is_overdue_document, outstanding_balance
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role
 from celerp.services.permissions import get_current_company_settings
 from celerp.services.reorder import is_below_reorder
@@ -31,7 +32,7 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
     deals = [r for r in rows if r.entity_type == "deal"]
     subscriptions = [r for r in rows if r.entity_type == "doc" and r.state.get("doc_type") in {"subscription_invoice", "subscription_po"}]
 
-    now = today_iso()
+    now = business_today(settings.get("timezone")).isoformat()
     month_prefix = now[:7]  # "YYYY-MM"
     year_prefix = now[:4]   # "YYYY"
 
