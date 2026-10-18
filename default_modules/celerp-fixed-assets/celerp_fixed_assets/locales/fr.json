@@ -247,6 +247,7 @@
   "fixed_assets.action.fix_account": "Corriger le compte de comptabilisation",
   "fixed_assets.action.open_users": "Ouvrir Utilisateurs",
   "fixed_assets.action.open_run": "Ouvrir l'exécution",
+  "fixed_assets.action.review_through": "Vérifier jusqu'à {value}",
   "fixed_assets.action.review_source": "Vérifier la source",
   "fixed_assets.action.enter_reading": "Saisir le relevé",
   "fixed_assets.action.skip": "Sauté",

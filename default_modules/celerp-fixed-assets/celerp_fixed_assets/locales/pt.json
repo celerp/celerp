@@ -247,6 +247,7 @@
   "fixed_assets.action.fix_account": "Corrigir a conta de lançamento",
   "fixed_assets.action.open_users": "Abrir Usuários",
   "fixed_assets.action.open_run": "Abrir a execução",
+  "fixed_assets.action.review_through": "Conferir até {value}",
   "fixed_assets.action.review_source": "Rever a origem",
   "fixed_assets.action.enter_reading": "Informar a leitura",
   "fixed_assets.action.skip": "Pulado",

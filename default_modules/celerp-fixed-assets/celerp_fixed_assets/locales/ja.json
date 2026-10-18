@@ -247,6 +247,7 @@
   "fixed_assets.action.fix_account": "計上勘定を修正",
   "fixed_assets.action.open_users": "ユーザーを開く",
   "fixed_assets.action.open_run": "実行を開く",
+  "fixed_assets.action.review_through": "{value}まで確認",
   "fixed_assets.action.review_source": "元の取引を確認",
   "fixed_assets.action.enter_reading": "使用量を入力",
   "fixed_assets.action.skip": "スキップ済み",

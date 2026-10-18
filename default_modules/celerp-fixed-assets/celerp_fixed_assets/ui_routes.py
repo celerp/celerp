@@ -110,7 +110,18 @@ async def _error_box(request: Request, e: APIError):
         params = ({"href": "/settings/general?tab=users", "action": "fixed_assets.action.open_users"}
                   if await _grants_permissions(request) else {})
     fix = [" ", A(t(params["action"]), href=params["href"])] if params.get("href") and params.get("action") else []
+    if params.get("fill"):
+        fix += [" ", _fill_button(params["fill"])]
     return Div(*_linked(_error_text(e), params.get("links") or []), *fix, cls="flash flash--error")
+
+
+def _fill_button(fill: dict) -> FT:
+    """The value a refusal names as the one that works (``fill``: its form ``field``, ``value``
+    and ``action`` label), one click away: it fills the field and reviews again."""
+    script = (f"const f = this.closest('form'); f.elements[{json.dumps(fill['field'])}].value = "
+              f"{json.dumps(fill['value'])}; f.querySelector('[hx-post$=\"/review\"]').click();")
+    return Button(t(fill["action"], value=fill["value"]), type="button", cls="btn btn--sm btn--secondary",
+                  onclick=script)
 
 
 def _linked(text: str, links: list[dict]) -> list:

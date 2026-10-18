@@ -247,6 +247,7 @@
   "fixed_assets.action.fix_account": "የመመዝገቢያ ሂሳብ አስተካክል",
   "fixed_assets.action.open_users": "ተጠቃሚዎችን ክፈት",
   "fixed_assets.action.open_run": "ሂደቱን ክፈት",
+  "fixed_assets.action.review_through": "እስከ {value} ይፈትሹ",
   "fixed_assets.action.review_source": "ምንጩን ገምግም",
   "fixed_assets.action.enter_reading": "ንባቡን አስገባ",
   "fixed_assets.action.skip": "ተዘሏል",

@@ -247,6 +247,7 @@
   "fixed_assets.action.fix_account": "Sửa tài khoản ghi sổ",
   "fixed_assets.action.open_users": "Mở Người dùng",
   "fixed_assets.action.open_run": "Mở lần chạy",
+  "fixed_assets.action.review_through": "Kiểm tra đến {value}",
   "fixed_assets.action.review_source": "Xem lại nguồn",
   "fixed_assets.action.enter_reading": "Nhập chỉ số",
   "fixed_assets.action.skip": "Bỏ qua",

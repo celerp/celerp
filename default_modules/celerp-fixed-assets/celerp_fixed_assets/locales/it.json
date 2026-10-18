@@ -247,6 +247,7 @@
   "fixed_assets.action.fix_account": "Correggi il conto di registrazione",
   "fixed_assets.action.open_users": "Apri Utenti",
   "fixed_assets.action.open_run": "Apri l'esecuzione",
+  "fixed_assets.action.review_through": "Controlla fino a {value}",
   "fixed_assets.action.review_source": "Verifica l'origine",
   "fixed_assets.action.enter_reading": "Inserisci la lettura",
   "fixed_assets.action.skip": "Saltato",

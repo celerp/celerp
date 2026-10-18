@@ -247,6 +247,7 @@
   "fixed_assets.action.fix_account": "Perbaiki akun posting",
   "fixed_assets.action.open_users": "Buka Pengguna",
   "fixed_assets.action.open_run": "Buka proses",
+  "fixed_assets.action.review_through": "Periksa sampai {value}",
   "fixed_assets.action.review_source": "Tinjau sumber",
   "fixed_assets.action.enter_reading": "Masukkan pembacaan",
   "fixed_assets.action.skip": "Dilewati",

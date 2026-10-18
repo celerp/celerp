@@ -247,6 +247,7 @@
   "fixed_assets.action.fix_account": "تصحيح حساب الترحيل",
   "fixed_assets.action.open_users": "فتح المستخدمين",
   "fixed_assets.action.open_run": "فتح العملية",
+  "fixed_assets.action.review_through": "مراجعة حتى {value}",
   "fixed_assets.action.review_source": "مراجعة المصدر",
   "fixed_assets.action.enter_reading": "إدخال القراءة",
   "fixed_assets.action.skip": "متخطّى",

@@ -247,6 +247,7 @@
   "fixed_assets.action.fix_account": "Corregir la cuenta de registro",
   "fixed_assets.action.open_users": "Abrir Usuarios",
   "fixed_assets.action.open_run": "Abrir la ejecución",
+  "fixed_assets.action.review_through": "Revisar hasta {value}",
   "fixed_assets.action.review_source": "Revisar el origen",
   "fixed_assets.action.enter_reading": "Introducir la lectura",
   "fixed_assets.action.skip": "Omitido",

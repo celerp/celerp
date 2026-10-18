@@ -830,6 +830,26 @@ def test_a_slow_review_or_confirm_disables_its_button_and_says_it_is_working(pag
     expect(page.locator("main")).to_contain_text("North store")
 
 
+def test_a_run_through_a_month_not_ended_offers_the_latest_one_in_one_click(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _contributed(c, "Owner's car")
+    page.goto("/fixed-assets/runs")
+    month = page.locator("input[name=month]")
+    latest = month.input_value()
+    year, number = map(int, latest.split("-"))
+    current = f"{year + 1}-01" if number == 12 else f"{year}-{number + 1:02d}"
+    month.fill(current)
+    page.get_by_role("button", name="Review", exact=True).click()
+    refusal = page.locator("#fa-preview .flash--error")
+    expect(refusal).to_contain_text(f"{current} has not ended yet.")
+    refusal.get_by_role("button", name=f"Review through {latest}").click()
+    expect(month).to_have_value(latest)
+    preview = page.locator("#fa-preview")
+    expect(preview).to_contain_text("Owner's car")
+    expect(preview.get_by_role("button", name="Confirm")).to_be_visible()
+
+
 def test_j10_revalue_on_a_cost_class_starts_the_class_workflow_and_revalues_it(page: Page, fresh_company):
     c = fresh_company
     _started(c)

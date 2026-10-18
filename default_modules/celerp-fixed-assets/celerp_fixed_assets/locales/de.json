@@ -247,6 +247,7 @@
   "fixed_assets.action.fix_account": "Buchungskonto korrigieren",
   "fixed_assets.action.open_users": "Benutzer öffnen",
   "fixed_assets.action.open_run": "Lauf öffnen",
+  "fixed_assets.action.review_through": "Bis {value} prüfen",
   "fixed_assets.action.review_source": "Quelle prüfen",
   "fixed_assets.action.enter_reading": "Zählerstand erfassen",
   "fixed_assets.action.skip": "Übersprungen",

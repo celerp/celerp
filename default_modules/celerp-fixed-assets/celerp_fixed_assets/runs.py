@@ -440,7 +440,10 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
         raise setup.refused(409, f"Depreciation for {label} is already posted. Open its run to see it or reverse it.",
                             href=f"/fixed-assets/runs/{label}", action="fixed_assets.action.open_run")
     if _end(month) >= today:
-        raise setup.unprocessable(f"{label} has not ended yet. Depreciation runs for a month once it has ended.")
+        last = period_label(month_index(today) - 1)
+        raise setup.refused(422, f"{label} has not ended yet. Depreciation runs for a month once it has ended, so "
+                                 f"the latest you can run through is {last}.",
+                            fill={"field": "month", "value": last, "action": "fixed_assets.action.review_through"})
     if month < books.first:
         raise setup.unprocessable(f"{label} is before the first managed period.")
     if books.locked(month):
