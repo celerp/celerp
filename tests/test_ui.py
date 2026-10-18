@@ -38,6 +38,7 @@ from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
 from ui.i18n import t
 from celerp.services.permissions import missing_permission_text
+from email_codes_support import confirm_setup_email, setup_email_api_stub
 from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
 
@@ -387,7 +388,9 @@ class TestAuthRouting:
         with (
             patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=False)),
             patch("ui.api_client.setup_code_required", new=AsyncMock(return_value=False)),
+            setup_email_api_stub(),
         ):
+            await confirm_setup_email(ui_client, "owner@example.com")
             r = await ui_client.get("/setup")
         assert r.status_code == 200
         assert r.content  # non-empty HTML
@@ -17586,32 +17589,6 @@ def test_compact_pages_shows_full_count_and_last():
     assert compact_pages(5, 10) == [1, None, 4, 5, 6, None, 10]
     assert compact_pages(9, 10) == [1, None, 8, 9, 10]
     assert compact_pages(10, 10) == [1, None, 9, 10]
-
-
-@pytest.mark.asyncio
-async def test_forgot_password_no_email_toasts_cli_instruction(ui_client):
-    """Self-hosted (no email transport): the forgot-password link surfaces the CLI-reset
-    instruction as a PERSISTENT toast and keeps the user on the login screen - no page
-    takeover, no false 'check your email'."""
-    import ui.routes.auth as _auth
-    with patch.object(_auth._settings, "gateway_token", ""), patch.object(_auth._settings, "smtp_host", ""):
-        r = await ui_client.get("/forgot-password", headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    trig = r.headers.get("HX-Trigger", "")
-    assert "celerpToast" in trig
-    assert "reset-password" in trig          # the CLI command is in the message
-    assert '"persist": true' in trig          # stays until the user dismisses it
-    assert b"check your email" not in r.content.lower() if r.content else True
-
-
-@pytest.mark.asyncio
-async def test_forgot_password_with_email_redirects_to_form(ui_client):
-    """Email-capable install: the HTMX click full-navigates to the email-reset form."""
-    import ui.routes.auth as _auth
-    with patch.object(_auth._settings, "gateway_token", "tok"), patch.object(_auth._settings, "smtp_host", ""):
-        r = await ui_client.get("/forgot-password", headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert r.headers.get("HX-Redirect") == "/forgot-password"
 
 
 def _split_preview_dict(**over) -> dict:

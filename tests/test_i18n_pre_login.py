@@ -29,8 +29,9 @@ _NOT_WORDS = {"Celerp", "••••••••"}
 
 
 class _Shown(HTMLParser):
-    """Every text node and labelling attribute a visitor reads; scripts, styles and
-    aria-hidden decoration (an icon beside a title) are not read."""
+    """Every text node and labelling attribute a visitor reads; scripts, styles,
+    aria-hidden decoration (an icon beside a title) and code (a command typed as
+    shown) are not read as language."""
 
     def __init__(self):
         super().__init__()
@@ -40,7 +41,7 @@ class _Shown(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if self._hidden and self._hidden[-1][0] == tag:
             self._hidden[-1][1] += 1
-        elif tag in ("script", "style") or ("aria-hidden", "true") in attrs:
+        elif tag in ("script", "style", "code") or ("aria-hidden", "true") in attrs:
             self._hidden.append([tag, 1])
         if not self._hidden:
             self.shown.update(v.strip() for k, v in attrs if k in _ATTRS and v and v.strip())
@@ -89,10 +90,10 @@ def _unreachable(*_a, **_k):
 async def _render(ui, lang: str, before_setup: bool) -> dict[str, str]:
     h = {"Accept-Language": lang}
     if before_setup:
-        pages = {url: (await ui.get(url, headers=h)) for url in ("/setup", "/setup/import-backup")}
+        pages = {url: (await ui.get(url, headers=h)) for url in ("/setup/email", "/setup/import-backup")}
     else:
         pages = {url: (await ui.get(url, headers=h)) for url in
-                 ("/login", "/forgot-password", "/reset-password?token=x", "/setup/start-company")}
+                 ("/login", "/forgot-password", "/forgot-password/terminal", "/setup/start-company")}
         pages["sign-in error"] = await ui.post("/login", headers=h, data={"email": "pre@test.example",
                                                                          "password": "not-the-password"})
     for name, r in pages.items():
@@ -111,13 +112,6 @@ async def _english_left(ui, before_setup: bool) -> dict[tuple[str, str], list[st
     return left
 
 
-@pytest.fixture
-def _email_install():
-    from ui.routes import auth
-    with patch.object(auth._settings, "smtp_host", "smtp.test.example"):
-        yield
-
-
 @pytest.mark.asyncio
 async def test_first_run_screens_read_in_every_language(client):
     with patch("ui.api_client._local_client", _in_process):
@@ -126,7 +120,7 @@ async def test_first_run_screens_read_in_every_language(client):
 
 
 @pytest.mark.asyncio
-async def test_sign_in_screens_read_in_every_language(client, _email_install):
+async def test_sign_in_screens_read_in_every_language(client):
     r = await client.post("/auth/register", json={"company_name": "Pre Co", "email": "pre@test.example",
                                                   "name": "Pre", "password": "pwvalid1"})
     assert r.status_code == 200, r.text

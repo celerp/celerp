@@ -8253,7 +8253,6 @@
 "tests/test_messages_auth_login.py::test_auth_messages_say_what_to_do[auth.import_timed_out-Refresh the page]": 0.003,
 "tests/test_messages_auth_login.py::test_auth_messages_say_what_to_do[auth.install_owner_required-Only the installation owner]": 0.002,
 "tests/test_messages_auth_login.py::test_auth_messages_say_what_to_do[auth.password_too_short-at least 8 characters]": 0.002,
-"tests/test_messages_auth_login.py::test_auth_messages_say_what_to_do[auth.reset_failed-GitHub]": 0.002,
 "tests/test_messages_auth_login.py::test_auth_messages_say_what_to_do[auth.server_error-GitHub]": 0.002,
 "tests/test_messages_auth_login.py::test_auth_messages_say_what_to_do[auth.setup_code_required-setup-code]": 0.003,
 "tests/test_messages_auth_login.py::test_auth_messages_say_what_to_do[error.maintenance-Wait a minute]": 0.002,

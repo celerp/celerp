@@ -79,7 +79,6 @@ def test_dead_password_keys_removed():
     ("auth.import_failed_unreadable", "Refresh the page"),
     ("auth.import_timed_out", "Refresh the page"),
     ("auth.connection_error", "still running"),
-    ("auth.reset_failed", "GitHub"),
     ("auth.email_password_required", "Enter your email and password."),
     ("error.session_expired", "You were signed out."),
     ("error.name_email_password_required", "Enter a name, an email and a password."),

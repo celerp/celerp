@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from contextlib import contextmanager
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -93,3 +94,22 @@ async def settle() -> None:
     """Let the background sends the app started finish."""
     from celerp.services import background
     await asyncio.gather(*list(background._BG_TASKS), return_exceptions=True)
+
+
+@contextmanager
+def setup_email_api_stub():
+    """The app's setup email answers, for UI tests that stub the API: a code is sent,
+    and the code typed back is accepted."""
+    with patch("ui.api_client.setup_email_send", new=AsyncMock(return_value="sent")), \
+         patch("ui.api_client.setup_email_verify", new=AsyncMock(return_value=None)):
+        yield
+
+
+async def confirm_setup_email(ui, email: str) -> None:
+    """Confirm *email* on first-run setup's email step, so the session of the UI
+    client *ui* may go on to /setup with it."""
+    sent = await ui.post("/setup/email", data={"action": "send", "email": email})
+    assert sent.status_code == 200 and re.search(r'<input\b[^>]*name="code"', sent.text), sent.text
+    await settle()
+    r = await ui.post("/setup/email", data={"action": "verify", "email": email, "code": CODE})
+    assert (r.status_code, r.headers.get("location")) == (303, "/setup"), r.text

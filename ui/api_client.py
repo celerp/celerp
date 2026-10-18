@@ -11,7 +11,7 @@ from typing import BinaryIO
 import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
-from celerp.services.auth import CALLER_HEADER
+from celerp.services.auth import CALLER_HEADER, CONNECT_HEADER
 from celerp.services.company_settings import BOOKS_KEYS, GENERAL
 from celerp.tax_regimes import doc_side
 from ui.i18n import current_lang, refusal_text, t
@@ -20,12 +20,18 @@ logger = logging.getLogger(__name__)
 
 # The address of the visitor whose request the UI is serving, as the UI sees it.
 _caller: ContextVar[str | None] = ContextVar("celerp_caller", default=None)
+# Whether that visitor came through Connect, as the gateway marks every request it proxies.
+_via_connect: ContextVar[bool] = ContextVar("celerp_via_connect", default=False)
+_CONNECT_KEY = CONNECT_HEADER.lower().encode()
 
 
 class CallerMiddleware:
     """Pure ASGI middleware: records each request's client address, which every call
     into the local API names in CALLER_HEADER so the API's rate limits count the visitor,
-    never the UI server. Taken from the connection, never from a header the browser sent."""
+    never the UI server. Taken from the connection, never from a header the browser sent.
+    Also records the gateway's Connect mark, passed on in CONNECT_HEADER: a Connect
+    visitor reaches the UI from this computer, and the mark is what tells them apart.
+    The mark can only take something away, so a visitor who sends it gains nothing."""
 
     def __init__(self, app):
         self._app = app
@@ -35,9 +41,11 @@ class CallerMiddleware:
             await self._app(scope, receive, send)
             return
         token = _caller.set((scope.get("client") or ("",))[0] or None)
+        marked = _via_connect.set(any(key.lower() == _CONNECT_KEY for key, _ in scope.get("headers") or ()))
         try:
             await self._app(scope, receive, send)
         finally:
+            _via_connect.reset(marked)
             _caller.reset(token)
 
 # The bulk transport carries the handful of long, finite local operations (backup
@@ -212,6 +220,8 @@ def _local_client(
     merged_headers.setdefault("Accept-Language", current_lang())
     if caller := _caller.get():
         merged_headers[CALLER_HEADER] = caller
+    if _via_connect.get():
+        merged_headers[CONNECT_HEADER] = "1"
     if token is not None:
         merged_headers["Authorization"] = f"Bearer {token}"
 
@@ -510,6 +520,42 @@ async def login(email: str, password: str) -> tuple[str, str]:
         r = _raise(await c.post("/auth/login", json={"email": email, "password": password}))
         data = r.json()
         return data["access_token"], data["refresh_token"]
+
+
+async def recovery_send(email: str) -> str:
+    """"sent" or "unavailable": the same answer whether or not the email is a user here."""
+    async with _anon_api_client() as c:
+        return _raise(await c.post("/auth/password-recovery/send", json={"email": email})).json()["outcome"]
+
+
+async def recovery_reset(email: str, code: str, new_password: str) -> None:
+    """Raises APIError: 400 the code was refused, 422 the password, 503 the relay is out of reach."""
+    async with _anon_api_client(timeout=20.0) as c:
+        _raise(await c.post("/auth/password-recovery/reset",
+                            json={"email": email, "code": code, "new_password": new_password}))
+
+
+async def recovery_terminal() -> str | None:
+    """The terminal reset command, or None when the visitor is not at this computer."""
+    async with _anon_api_client() as c:
+        return _raise(await c.get("/auth/password-recovery/terminal")).json()["command"]
+
+
+async def setup_email_send(email: str) -> str:
+    async with _anon_api_client() as c:
+        return _raise(await c.post("/auth/setup-email/send", json={"email": email})).json()["outcome"]
+
+
+async def setup_email_verify(email: str, code: str) -> None:
+    """Raises APIError: 400 the code was refused, 503 the relay is out of reach."""
+    async with _anon_api_client() as c:
+        _raise(await c.post("/auth/setup-email/verify", json={"email": email, "code": code}))
+
+
+async def take_reset_notices(token: str) -> list[dict]:
+    """The password resets this user has not been told about yet, each handed out once."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/auth/password-reset-notices/take")).json()
 
 
 async def logout(access_token: str | None, refresh_token: str | None = None) -> None:
@@ -1016,6 +1062,12 @@ async def patch_user(token: str, user_id: str, data: dict) -> dict:
 async def transfer_install_owner(token: str, user_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/companies/me/users/{user_id}/installation-owner")).json()
+
+
+async def reset_user_password(token: str, user_id: str, new_password: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/companies/me/users/{user_id}/password",
+                                   json={"new_password": new_password})).json()
 
 
 async def get_taxes(token: str) -> list[dict]:

@@ -73,6 +73,21 @@ def _idle_logout_js() -> str:
     return _IDLE_LOGOUT_JS.replace("__IDLE_MIN__", str(effective_idle_logout_minutes()))
 
 # Minimal client-side JS: Esc to cancel edit, row menu toggle, close menus on outside click, searchable combobox
+# Escape exits a plain form field, on every page including the sign-in and setup pages,
+# which load no other script. Runs after the field's own handlers (this listener is on
+# the document), leaves any Escape they consumed alone, defers to an open edit cell's
+# own restore, and skips searchable selects, whose own Escape and blur handling
+# restores the committed choice.
+ESC_BLURS_FIELD = """
+document.addEventListener('keydown', function (e) {
+  if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('.cell--editing')) return;
+  var field = e.target;
+  if (field && field.matches && field.matches('input, textarea, select') && !field.closest('.combobox-wrap')) {
+    field.blur();
+  }
+});
+"""
+
 _CLIENT_JS = """
 function _copiedFeedback(btn, restoreLabel) {
   btn.textContent = window.__shellI18n.copied;
@@ -217,14 +232,6 @@ document.addEventListener('keydown', function(e) {
       var b = p.parentElement.querySelector('.global-search-help');
       if (b) b.setAttribute('aria-expanded', 'false');
     });
-    /* Escape exits a plain form field. Runs after the field's own handlers (this listener
-       is on the document), leaves any Escape they consumed alone, and skips searchable
-       selects, whose own Escape and blur handling restores the committed choice. */
-    var field = e.target;
-    if (!e.defaultPrevented && field && field.matches && field.matches('input, textarea, select')
-        && !field.closest('.combobox-wrap')) {
-      field.blur();
-    }
   }
 });
 /* Select-based edit cells revert on blur via their own onblur handler (blur_restore_js in
@@ -2001,6 +2008,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         *_favicon_links(),
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         *client_scripts(lang),
+        Script(ESC_BLURS_FIELD),
         Script(_idle_logout_js()),
         Script(_HEALTH_BANNER_JS),
         Script(_POLL_CONTROLLER_JS),
@@ -2693,11 +2701,29 @@ def auth_shell(*content, title: str = "Celerp") -> FT:
             Title(title),
             *_favicon_links(),
             Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
+            Script(ESC_BLURS_FIELD),
         ),
         Body(
             Div(*content, cls="auth-container"),
             cls="auth-body",
         ),
+    )
+
+
+def sign_in_fields(email: str = "", *, autofocus: bool = False) -> tuple[FT, ...]:
+    """The email and password fields every sign-in form uses, and the way to recover a
+    password. The browser checks nothing: a field it refuses blocks the submit with no
+    message the desktop app shows, so every check is the server's, which answers it."""
+    return (
+        Div(Label(t("label.email"), For="email", cls="form-label"),
+            Input(type="text", inputmode="email", autocomplete="email", id="email", name="email", value=email,
+                  placeholder=t("account.email_placeholder"), autofocus=autofocus, cls="form-input"),
+            cls="form-group"),
+        Div(Label(t("label.password"), For="password", cls="form-label"),
+            Input(type="password", id="password", name="password", autocomplete="current-password",
+                  placeholder="••••••••", cls="form-input"),
+            cls="form-group"),
+        P(A(t("auth.forgot_password"), href="/forgot-password", cls="auth-link"), cls="auth-footer-text"),
     )
 
 

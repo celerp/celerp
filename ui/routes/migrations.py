@@ -35,7 +35,7 @@ from celerp.accounting_roles import account_label
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.posting_accounts import NEW_ACCOUNT, account_picker
-from ui.components.shell import auth_shell, client_scripts, flash, page_title
+from ui.components.shell import auth_shell, client_scripts, flash, page_title, sign_in_fields
 from ui.components.activity import fmt_qty
 from ui.components.table import EMPTY, display_enum, fmt_money, searchable_select
 from ui.config import (
@@ -44,10 +44,9 @@ from ui.config import (
     get_role,
     get_token,
     session_cookie_secure,
-    set_session_cookies,
 )
 from ui.i18n import doc_type_label, get_lang, role_label, t
-from ui.routes.auth import auth_header
+from ui.routes.auth import SETUP_EMAIL, auth_header, confirmed_setup_email, finish_sign_in, setup_email_refusal
 
 SCAN_COOKIE = "celerp_migration_scan"
 SCAN_TTL_SECONDS = 3600
@@ -304,18 +303,6 @@ def _source_request_form() -> FT:
         method="get", action=SOURCE_REQUEST_URL, target="_blank", rel="noopener",
         cls="auth-form mt-md",
     )
-
-
-def sign_in_fields(email: str) -> list:
-    """The email and password of a login with no company, which every step that acts checks."""
-    return [
-        Div(Label(t("label.email"), For="email", cls="form-label"),
-            Input(type="email", id="email", name="email", value=email, required=True, cls="form-input"),
-            cls="form-group"),
-        Div(Label(t("label.password"), For="password", cls="form-label"),
-            Input(type="password", id="password", name="password", required=True, cls="form-input"),
-            cls="form-group"),
-    ]
 
 
 def _credentials(form) -> tuple[str, str] | None:
@@ -725,18 +712,23 @@ async def _save_decisions(request: Request, mode: WizardMode):
 # Step 4: review and start
 # ---------------------------------------------------------------------------
 
-def account_fields(values: dict) -> list:
+def account_fields(values: dict, *, confirmed_email: str | None = None) -> list:
+    """The first owner's account. A *confirmed_email* is shown fixed, with Change to go
+    back to the step that confirmed it."""
     fields = [
         ("name", "label.your_name", "text"),
         ("email", "label.email", "email"),
         ("password", "label.password", "password"),
         ("confirm_password", "label.confirm_password", "password"),
     ]
+    fixed = {"email": confirmed_email} if confirmed_email else {}
     return [
         Div(
             Label(t(label), For=name, cls="form-label"),
-            Input(type=kind, id=name, name=name, cls="form-input",
-                  value=values.get(name, "") if kind != "password" else None),
+            Input(type=kind, id=name, name=name, cls="form-input", readonly=name in fixed,
+                  value=fixed.get(name, values.get(name, "")) if kind != "password" else None),
+            P(A(t("auth.change"), href=SETUP_EMAIL, cls="auth-link"), cls="form-hint")
+            if name in fixed else "",
             cls="form-group",
         )
         for name, label, kind in fields
@@ -776,7 +768,7 @@ async def _review_page(request: Request, mode: WizardMode, entry: dict, *, value
                 field_error(errors, "company_name"),
                 cls="form-group",
             ),
-            *(account_fields(values) if mode.bootstrap else []),
+            *(account_fields(values, confirmed_email=confirmed_setup_email(request)) if mode.bootstrap else []),
             *(sign_in_fields(values.get("email") or request.cookies.get(EMAIL_COOKIE, ""))
               if mode.start_company else []),
             setup_code_field() if await setup_code_required(mode) else "",
@@ -823,6 +815,8 @@ async def _start(request: Request, mode: WizardMode):
     values["password"] = str(form.get("password", ""))
     values["confirm_password"] = str(form.get("confirm_password", ""))
     setup_code = str(form.get("setup_code", "")).strip() or None
+    if mode.bootstrap and (refused := setup_email_refusal(request, values["email"])) is not None:
+        return refused
 
     async def review(**feedback):
         scan_token, entry = await _current_scan(request, mode)
@@ -854,12 +848,14 @@ async def _start(request: Request, mode: WizardMode):
         if isinstance(e.detail, dict):
             return await review(errors=e.detail)
         return await review(error=str(e.detail))
-    resp = RedirectResponse(f"/migrations/{started['run_id']}", status_code=303)
+    dest = f"/migrations/{started['run_id']}"
     if api_token(request, mode) is None:
         # The first owner, or a login with no company, has no working session yet. A
         # company-mode start keeps the current session: the new company is opened only
         # after the migration finishes.
-        set_session_cookies(resp, started["access_token"], started["refresh_token"], request)
+        resp = await finish_sign_in(request, started["access_token"], started["refresh_token"], dest, 303)
+    else:
+        resp = RedirectResponse(dest, status_code=303)
     _clear_scan_cookie(resp, mode, request)
     return resp
 

@@ -9,7 +9,7 @@ from typing import Any
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 import ui.api_client as api
 from ui.components.icons import import_icon
@@ -986,6 +986,53 @@ def setup_routes(app):
             return P(str(e.detail), cls="cell-error")
         flat = {**company, **(company.get("settings") or {})}
         return _company_display_cell(field, flat.get(field))
+
+    # ── An owner resets a staff member's password ────────────────────
+    # Registered before the field editor, whose path would otherwise take /password/edit.
+    @app.get("/settings/users/{user_id}/password/edit")
+    async def user_password_edit(request: Request, user_id: str):
+        return _user_password_form(user_id)
+
+    @app.get("/settings/users/{user_id}/actions")
+    async def user_actions_cell(request: Request, user_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        try:
+            users = (await api.get_users(token)).get("items", [])
+            is_owner, install_owner_id = await _users_viewer(request, token)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        user = next((u for u in users if u.get("id") == user_id), {"id": user_id})
+        return _user_actions_cell(user, is_owner=is_owner, install_owner_id=install_owner_id,
+                                  lang=get_lang(request))
+
+    @app.post("/settings/users/{user_id}/password")
+    async def user_password_post(request: Request, user_id: str):
+        """Set a staff member's new password; their sessions end and they are told at
+        their next sign-in. Undo: reset it again. A refusal shows in the cell; success
+        redraws the users card with what happened."""
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        form = await request.form()
+        password, confirm = str(form.get("password", "")), str(form.get("confirm", ""))
+        if password != confirm:
+            return _user_password_form(user_id, t("settings.passwords_do_not_match"))
+        lang = get_lang(request)
+        try:
+            await api.reset_user_password(token, user_id, password)
+        except APIError as e:
+            return _user_password_form(user_id, str(e.detail))
+        try:
+            users = (await api.get_users(token)).get("items", [])
+            settings = (await api.get_company(token)).get("settings")
+            card = await users_tab_for(request, token, users, settings, lang,
+                                       flash(t("users.reset_password_done", lang), "success"))
+        except APIError:
+            # The reset is done; only the redraw failed, so the cell says so.
+            return Td(flash(t("users.reset_password_done", lang), "success"), cls="cell")
+        return HTMLResponse(to_xml(card), headers={"HX-Retarget": "#users-card", "HX-Reswap": "outerHTML"})
 
     # ── Users PATCH endpoints ────────────────────────────────────────
     @app.get("/settings/users/{user_id}/{field}/edit")
@@ -3167,24 +3214,54 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
     )
 
 
+def _user_actions_cell(u: dict, *, is_owner: bool, install_owner_id: str, lang: str = "en") -> FT:
+    """An owner's Reset password, on every row: a row that cannot be reset says why
+    when it is tried. The installation owner's control that hands installation
+    ownership to each other active user."""
+    uid = u.get("id", "")
+    name = u.get("name") or u.get("email") or ""
+    handover = install_owner_id and uid != install_owner_id and u.get("is_active", True)
+    return Td(
+        Button(t("recovery.reset_password", lang), cls="btn btn--secondary btn--xs",
+               hx_get=f"/settings/users/{uid}/password/edit",
+               hx_target="closest td", hx_swap="outerHTML") if is_owner else "",
+        Button(t("settings.make_install_owner", lang), cls="btn btn--secondary btn--xs",
+               hx_post=f"/settings/users/{uid}/installation-owner",
+               hx_confirm=t("settings.confirm_make_install_owner", lang, name=name),
+               hx_target="#users-card", hx_swap="outerHTML") if handover else "",
+        cls="cell",
+    )
+
+
+def _user_password_form(user_id: str, error: str = "") -> FT:
+    """The inline form an owner sets a staff member's new password in. Escape and
+    Cancel put the cell back as it was."""
+    return Td(
+        Form(
+            P(error, cls="cell-error") if error else "",
+            Input(type="password", name="password", placeholder=t("label.new_password"),
+                  autocomplete="new-password", autofocus=True, cls="cell-input"),
+            Input(type="password", name="confirm", placeholder=t("label.confirm_password"),
+                  autocomplete="new-password", cls="cell-input"),
+            Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
+            Button(t("btn.cancel"), type="button", data_cancel="1", cls="btn btn--secondary btn--xs",
+                   hx_get=f"/settings/users/{user_id}/actions", hx_target="closest td", hx_swap="outerHTML"),
+            hx_post=f"/settings/users/{user_id}/password", hx_target="closest td", hx_swap="outerHTML",
+            onkeydown=("if(event.key==='Escape'){event.preventDefault();event.stopPropagation();"
+                       "this.querySelector('[data-cancel]').click();}"),
+            cls="inline-form-row",
+        ),
+        cls="cell cell--editing",
+    )
+
+
 def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en", is_owner: bool = False,
                install_owner_id: str = "", notice: FT | str = "") -> FT:
     """The users table and role matrix. The user who owns the installation carries
     a badge for every viewer. ``install_owner_id`` is the viewer's own user id when
-    the viewer owns the installation: only then does each other active user carry
-    the control that hands installation ownership to them."""
-    def _handover_cell(u: dict) -> FT:
-        uid = u.get("id", "")
-        if uid == install_owner_id or not u.get("is_active", True):
-            return Td(cls="cell")
-        name = u.get("name") or u.get("email") or ""
-        return Td(
-            Button(t("settings.make_install_owner", lang), cls="btn btn--secondary btn--xs",
-                   hx_post=f"/settings/users/{uid}/installation-owner",
-                   hx_confirm=t("settings.confirm_make_install_owner", lang, name=name),
-                   hx_target="#users-card", hx_swap="outerHTML"),
-            cls="cell",
-        )
+    the viewer owns the installation. Owners and the installation owner get the
+    actions column (_user_actions_cell)."""
+    actions = is_owner or bool(install_owner_id)
 
     def _row(u: dict) -> FT:
         uid = u.get("id", "")
@@ -3196,7 +3273,8 @@ def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en"
             _user_display_cell(uid, "email", u.get("email")),
             _user_display_cell(uid, "role", u.get("role")),
             _user_display_cell(uid, "is_active", u.get("is_active", True)),
-            _handover_cell(u) if install_owner_id else "",
+            _user_actions_cell(u, is_owner=is_owner, install_owner_id=install_owner_id, lang=lang)
+            if actions else "",
             cls="data-row",
         )
 
@@ -3206,7 +3284,7 @@ def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en"
         notice,
         Table(
             Thead(Tr(Th(t("th.name", lang)), Th(t("th.email", lang)), Th(t("th.role", lang)), Th(t("th.active", lang)),
-                     Th(t("th.actions", lang)) if install_owner_id else "")),
+                     Th(t("th.actions", lang)) if actions else "")),
             Tbody(*[_row(u) for u in users]),
             cls="data-table",
         ),
@@ -3221,10 +3299,16 @@ async def users_tab_for(request: Request, token: str, users: list[dict], setting
                         lang: str, notice: FT | str = "") -> FT:
     """_users_tab for the user who asked: the role matrix is editable for an
     owner, and the handover control shows only to the installation owner."""
+    is_owner, install_owner_id = await _users_viewer(request, token)
+    return _users_tab(users, settings, lang=lang, is_owner=is_owner,
+                      install_owner_id=install_owner_id, notice=notice)
+
+
+async def _users_viewer(request: Request, token: str) -> tuple[bool, str]:
+    """Whether the viewer owns the company, and their user id when they own the installation."""
     from ui.config import get_claims
     install_owner_id = str(get_claims(request).get("sub", "")) if await api.installation_owner(token) else ""
-    return _users_tab(users, settings, lang=lang, is_owner=_get_role(request) == "owner",
-                      install_owner_id=install_owner_id, notice=notice)
+    return _get_role(request) == "owner", install_owner_id
 
 
 # The fixed permissions carry no checkboxes; each states in one line why it cannot move.

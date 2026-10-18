@@ -512,7 +512,7 @@ async def take_reset_notices(
     user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     """The password resets the caller has not been told about yet, newest first; each is
-    told once."""
+    told once. ``own`` marks a reset of the caller's own password."""
     reset_ids = (await session.execute(
         delete(PasswordResetNotice).where(PasswordResetNotice.recipient_id == user.id)
         .returning(PasswordResetNotice.reset_id))).scalars().all()
@@ -522,7 +522,7 @@ async def take_reset_notices(
         .outerjoin(by, by.id == PasswordReset.by_user_id)
         .where(PasswordReset.id.in_(reset_ids)).order_by(PasswordReset.created_at.desc()))).all()
     await session.commit()
-    return [{"user_id": str(subject.id), "user_name": subject.name, "user_email": subject.email,
+    return [{"own": subject.id == user.id, "user_name": subject.name, "user_email": subject.email,
              "method": reset.method, "by_name": by_name, "os_user": reset.os_user,
              "created_at": reset.created_at.isoformat()} for reset, subject, by_name in rows]
 

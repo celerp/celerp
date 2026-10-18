@@ -62,7 +62,7 @@ from starlette.responses import HTMLResponse
 
 # Public paths that don't require auth
 _PUBLIC = {"/login", "/setup", "/logout", "/static", "/health", "/api/labels/preview",
-           "/forgot-password", "/reset-password"}
+           "/forgot-password"}
 
 def _next_qs(req: Request) -> str:
     """'&next=<encoded page>' for a login bounce, so signing back in returns

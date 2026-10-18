@@ -18,7 +18,7 @@ import logging
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError, bootstrap_status
@@ -27,12 +27,11 @@ from ui.api_client import start_company as api_start_company
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.api_client import migration_staged_run as api_migration_staged_run
-from ui.components.shell import auth_shell, client_scripts, flash, landing_path, page_title, toast_header
+from ui.components.shell import auth_shell, client_scripts, flash, landing_path, page_title, sign_in_fields
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies, get_role
 from ui.i18n import t, get_lang
 from celerp.services import backup_import
 from celerp.services.app_paths import is_app_local_path
-from celerp.config import settings as _settings
 from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
 
 
@@ -42,6 +41,25 @@ logger = logging.getLogger(__name__)
 START_COMPANY = "/setup/start-company"
 START_COMPANY_RESTORE = f"{START_COMPANY}/restore-backup"
 START_COMPANY_MIGRATE = f"{START_COMPANY}/migrate"
+
+# The first owner confirms their email before the account is made. The signed session
+# holds the email setup may use, and the email Celerp could not be reached to confirm.
+SETUP_EMAIL = "/setup/email"
+_CONFIRMED = "setup_email"
+_UNREACHABLE = "setup_email_unreachable"
+
+
+def confirmed_setup_email(request: Request) -> str | None:
+    return request.session.get(_CONFIRMED)
+
+
+def setup_email_refusal(request: Request, email: str | None = None) -> RedirectResponse | None:
+    """The way back to the email step when first-run setup may not go on, else None:
+    no email confirmed yet, or *email* is not the confirmed one."""
+    confirmed = confirmed_setup_email(request)
+    if confirmed is None or (email is not None and email != confirmed):
+        return RedirectResponse(SETUP_EMAIL, status_code=303)
+    return None
 
 
 def auth_header(title: str, subtitle: str = "") -> FT:
@@ -125,6 +143,8 @@ def setup_routes(app):
             notice = flash(t("auth.signed_out_idle"), kind="warning")
         elif reason == "password-changed":
             notice = flash(t("settings.password_changed"), kind="success")
+        elif reason == "password-reset":
+            notice = flash(t("recovery.reset_done"), kind="success")
         elif request.query_params.get("imported"):
             notice = flash(t("auth.backup_restored_signin"), kind="success")
         else:
@@ -160,9 +180,7 @@ def setup_routes(app):
             return auth_shell(_login_form(email=email, error=_sign_in_error(e), next_url=nxt), title=page_title("btn.sign_in"))
         except Exception as e:
             return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
-        resp = RedirectResponse(nxt, status_code=302)
-        set_session_cookies(resp, access_token, refresh_token, request)
-        return resp
+        return await finish_sign_in(request, access_token, refresh_token, nxt)
 
     @app.post("/login-force")
     async def login_force_submit(request: Request):
@@ -180,9 +198,7 @@ def setup_routes(app):
             return auth_shell(_login_form(email=email, error=_sign_in_error(e), next_url=nxt), title=page_title("btn.sign_in"))
         except Exception as e:
             return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
-        resp = RedirectResponse(nxt, status_code=302)
-        set_session_cookies(resp, access_token, refresh_token, request)
-        return resp
+        return await finish_sign_in(request, access_token, refresh_token, nxt)
 
     @app.get(START_COMPANY)
     async def start_company_page(request: Request):
@@ -206,21 +222,80 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 409 and e.detail == "direct_connection_limit":
                 return _fail(t("auth.direct_connection_gate_body"))
-            return _fail(e.detail if isinstance(e.detail, str) else t("auth.server_error", e=e.detail))
+            return _fail(_sign_in_error(e) if e.status == 401 or isinstance(e.detail, str)
+                         else t("auth.server_error", e=e.detail))
         except Exception as e:
             return _fail(t("auth.server_error", e=e))
-        resp = RedirectResponse("/setup/company", status_code=302)
-        set_session_cookies(resp, access_token, refresh_token, request)
-        return resp
+        return await finish_sign_in(request, access_token, refresh_token, "/setup/company")
 
     # ── Bootstrap wizard: first-admin + company setup ───────────────────────
+
+    def _setup_email_step(*content) -> FT:
+        return auth_shell(*content, title=page_title("setup_email.title"))
+
+    @app.get(SETUP_EMAIL)
+    async def setup_email_page(request: Request):
+        if (gate := await _unbootstrapped_gate(request)) is not None:
+            return gate
+        confirmed = confirmed_setup_email(request)
+        return _setup_email_step(_setup_email_form(confirmed or "", back=confirmed is not None))
+
+    @app.post(SETUP_EMAIL)
+    async def setup_email_submit(request: Request):
+        if (gate := await _unbootstrapped_gate(request)) is not None:
+            return gate
+        form = await request.form()
+        action = str(form.get("action", ""))
+        email = str(form.get("email", "")).strip()
+        if action == "skip":
+            # Only an email Celerp could not be reached to confirm may go on unconfirmed.
+            if email and request.session.get(_UNREACHABLE) == email:
+                request.session[_CONFIRMED] = email
+                return RedirectResponse("/setup", status_code=303)
+            return RedirectResponse(SETUP_EMAIL, status_code=303)
+        if action == "verify":
+            try:
+                await api.setup_email_verify(email, str(form.get("code", "")).strip())
+            except APIError as e:
+                if _relay_unavailable(e):
+                    request.session[_UNREACHABLE] = email
+                    return _setup_email_step(_setup_email_form(email, unreachable=True))
+                if e.status == 409:
+                    return RedirectResponse("/login", status_code=303)
+                if e.status in (400, 422, 429):
+                    error = t("setup_email.code_refused") if e.status == 400 else str(e.detail)
+                    return _setup_email_step(_setup_email_code_form(email, error=error))
+                return _setup_email_step(_api_error_page(str(e.detail)))
+            request.session.pop(_UNREACHABLE, None)
+            request.session[_CONFIRMED] = email
+            return RedirectResponse("/setup", status_code=303)
+        # Sending a code starts over: the email setup may use is the one confirmed next.
+        request.session.pop(_CONFIRMED, None)
+        request.session.pop(_UNREACHABLE, None)
+        if not email:
+            return _setup_email_step(_setup_email_form(error=t("auth.email_required")))
+        try:
+            outcome = await api.setup_email_send(email)
+        except APIError as e:
+            if e.status == 409:
+                return RedirectResponse("/login", status_code=303)
+            if e.status in (422, 429):
+                return _setup_email_step(_setup_email_form(email, error=str(e.detail)))
+            return _setup_email_step(_api_error_page(str(e.detail)))
+        if outcome == "unavailable":
+            request.session[_UNREACHABLE] = email
+            return _setup_email_step(_setup_email_form(email, unreachable=True))
+        return _setup_email_step(_setup_email_code_form(email))
 
     @app.get("/setup")
     async def setup_page(request: Request):
         if (gate := await _unbootstrapped_gate(request)) is not None:
             return gate
+        if (refused := setup_email_refusal(request)) is not None:
+            return refused
         from ui.api_client import setup_code_required as _code_req
-        return await _setup_page(request, {}, code_required=await _code_req())
+        return await _setup_page(request, {"email": confirmed_setup_email(request)},
+                                 code_required=await _code_req())
 
     @app.get("/setup/import-backup")
     async def setup_import_page(request: Request):
@@ -358,6 +433,8 @@ def setup_routes(app):
         async def _fail(msg: str, field: str):
             return await _setup_page(request, values, code_required=code_required, error=msg, error_field=field)
 
+        if (refused := setup_email_refusal(request, values["email"])) is not None:
+            return refused
         missing = next((f for f in ("company_name", "name", "email") if not values[f]), None)
         if missing or not password:
             return await _fail(t("settings.all_fields_required"), missing or "password")
@@ -387,9 +464,7 @@ def setup_routes(app):
             # The retry page shows a fixed message; the reason stays in the server log.
             logger.exception("First-run setup could not apply the business type")
             nxt = "/setup/company?failed=1"
-        resp = RedirectResponse(nxt, status_code=302)
-        set_session_cookies(resp, access_token, refresh_token, request)
-        return resp
+        return await finish_sign_in(request, access_token, refresh_token, nxt)
 
     # ── Post-login landing ──────────────────────────────────────────────────
 
@@ -495,69 +570,119 @@ def setup_routes(app):
         except Exception:
             return JSONResponse({"overall": "degraded", "api": "unreachable"}, status_code=503)
 
-    # ── Password reset ───────────────────────────────────────────────────────
+    # ── Password recovery ────────────────────────────────────────────────────
+    # Plain forms and links, no script: these pages work wherever the sign-in page does.
+
+    def _recovery(*content) -> FT:
+        return auth_shell(*content, title=page_title("recovery.title"))
 
     @app.get("/forgot-password")
-    async def forgot_password_page(request: Request):
-        # Email-capable installs (SMTP or the paid relay) get the email-reset form. A
-        # self-hosted install with no email transport resets via the CLI *by design*:
-        # a browser on localhost can't prove machine ownership, but running the CLI does.
-        # Rather than take the user to a full page, we surface the instruction as a
-        # persistent toast and keep them on the login screen (clicked via HTMX).
-        has_email = bool(_settings.gateway_token or _settings.smtp_host)
-        is_htmx = request.headers.get("HX-Request") == "true"
-        if not has_email:
-            if is_htmx:
-                msg = t("auth.reset_password_cli")
-                return Response("", headers=toast_header(msg, "info", persist=True))
-            # Direct URL entry with no JS: send back to login (the link there toasts).
-            return RedirectResponse("/login", status_code=302)
-        if is_htmx:
-            # HTMX click on an email-capable install: full-navigate to render the form.
-            return Response("", headers={"HX-Redirect": "/forgot-password"})
-        return auth_shell(_forgot_password_form(), title=page_title("page.forgot_password"))
+    async def recovery_page(request: Request):
+        return _recovery(_recovery_start())
 
     @app.post("/forgot-password")
-    async def forgot_password_submit(request: Request):
-        form = await request.form()
-        email = str(form.get("email", "")).strip()
+    async def recovery_send(request: Request):
+        email = str((await request.form()).get("email", "")).strip()
+        if not email:
+            return _recovery(_recovery_start(error=t("auth.email_required")))
         try:
-            async with api._local_client(timeout=5.0, follow_redirects=False) as c:
-                await c.post("/auth/password-reset/request", json={"email": email})
-        except Exception:
-            pass
-        return auth_shell(
-            _forgot_password_sent(),
-            title=page_title("page.forgot_password"),
-        )
+            outcome = await api.recovery_send(email)
+        except APIError as e:
+            if e.status == 429:
+                return _recovery(_recovery_start(email, error=e.detail))
+            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
+        if outcome == "unavailable":
+            return RedirectResponse(_TERMINAL_UNAVAILABLE, status_code=303)
+        return _recovery(_recovery_code_form(email))
 
-    @app.get("/reset-password")
-    async def reset_password_page(request: Request):
-        token = request.query_params.get("token", "")
-        return auth_shell(_reset_password_form(token=token), title=page_title("page.reset_password"))
-
-    @app.post("/reset-password")
-    async def reset_password_submit(request: Request):
+    @app.post("/forgot-password/reset")
+    async def recovery_reset(request: Request):
         form = await request.form()
-        token = str(form.get("token", ""))
-        new_password = str(form.get("new_password", ""))
-        confirm = str(form.get("confirm_password", ""))
-        if new_password != confirm:
-            return auth_shell(_reset_password_form(token=token, error=t("settings.passwords_do_not_match")), title=page_title("page.reset_password"))
+        email, code = str(form.get("email", "")).strip(), str(form.get("code", "")).strip()
+        password, confirm = str(form.get("password", "")), str(form.get("confirm", ""))
+        if password != confirm:
+            return _recovery(_recovery_code_form(email, error=t("settings.passwords_do_not_match")))
         try:
-            async with api._local_client(timeout=5.0, follow_redirects=False) as c:
-                r = await c.post("/auth/password-reset/confirm", json={"token": token, "new_password": new_password})
-            if r.status_code == 200:
-                return RedirectResponse("/login", status_code=302)
-            detail = api.error_text(r, t("auth.reset_failed"))
-            return auth_shell(_reset_password_form(token=token, error=detail), title=page_title("page.reset_password"))
-        except Exception as e:
-            return auth_shell(_reset_password_form(token=token, error=t("auth.server_error", e=e)), title=page_title("page.reset_password"))
+            await api.recovery_reset(email, code, password)
+        except APIError as e:
+            if _relay_unavailable(e):
+                return RedirectResponse(_TERMINAL_UNAVAILABLE, status_code=303)
+            if e.status == 400:
+                try:
+                    command = await api.recovery_terminal()
+                except APIError:
+                    command = None
+                return _recovery(_recovery_code_form(email, error=e.detail, terminal=_terminal_block(command)))
+            if e.status in (422, 429):
+                return _recovery(_recovery_code_form(email, error=e.detail))
+            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
+        return RedirectResponse("/login?reason=password-reset", status_code=303)
+
+    @app.get("/forgot-password/terminal")
+    async def recovery_terminal(request: Request):
+        try:
+            command = await api.recovery_terminal()
+        except APIError as e:
+            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
+        unavailable = request.query_params.get("reason") == "unavailable"
+        return _recovery(Div(
+            auth_header(t("recovery.terminal_title")),
+            flash(t("recovery.unavailable"), kind="warning") if unavailable else "",
+            _terminal_block(command),
+            P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),
+            cls="auth-card",
+        ))
 
 
 # ---------------------------------------------------------------------------
 # Components
 # ---------------------------------------------------------------------------
+
+async def finish_sign_in(request: Request, access_token: str, refresh_token: str, dest: str,
+                         status_code: int = 302):
+    """The response that starts a session and goes on to *dest*. The first sign-in after
+    a password reset first shows what was reset, when and how, with Continue to *dest*;
+    each reset is shown once. Should the notices not load, the sign-in goes on without
+    them and they wait for the next one."""
+    try:
+        notices = await api.take_reset_notices(access_token)
+    except APIError:
+        logger.warning("Password reset notices could not be loaded at sign-in", exc_info=True)
+        notices = []
+    if notices:
+        resp = HTMLResponse(to_xml(auth_shell(_reset_notices(notices, dest),
+                                              title=page_title("recovery.notice_title"))))
+    else:
+        resp = RedirectResponse(dest, status_code=status_code)
+    set_session_cookies(resp, access_token, refresh_token, request)
+    return resp
+
+
+def _reset_how(notice: dict) -> str:
+    if notice["method"] == "owner":
+        return t("recovery.how_owner", name=notice.get("by_name") or "--")
+    if notice["method"] == "terminal":
+        return (t("recovery.how_terminal_user", os_user=notice["os_user"]) if notice.get("os_user")
+                else t("recovery.how_terminal"))
+    return t("recovery.how_email_code")
+
+
+def _reset_notices(notices: list[dict], dest: str) -> FT:
+    from ui.components.activity import format_timestamp
+
+    def _line(n: dict) -> str:
+        when, how = f"{format_timestamp(n['created_at'])} UTC", _reset_how(n)
+        if n["own"]:
+            return t("recovery.notice_own", when=when, how=how)
+        return t("recovery.notice_other", user=n["user_name"] or n["user_email"], when=when, how=how)
+
+    return Div(
+        auth_header(t("recovery.notice_title")),
+        *(P(_line(n), cls="flash flash--warning") for n in notices),
+        A(t("btn.continue"), href=dest, cls="btn btn--primary btn--full"),
+        cls="auth-card",
+    )
+
 
 def _sign_in_error(e: APIError) -> str:
     """Refused credentials read in the visitor's language; any other refusal shows the API's own message."""
@@ -573,17 +698,8 @@ def _login_form(email: str = "", error: str | None = None, notice: str = "", nex
             # Carries the page the user was bounced from, so signing back in
             # returns there instead of the dashboard.
             Input(type="hidden", name="next", value=next_url) if next_url != "/" else "",
-            Div(Label(t("label.email"), For="email", cls="form-label"),
-                Input(type="email", id="email", name="email", value=email,
-                      placeholder=t("account.email_placeholder"), required=True, autofocus=True, cls="form-input"),
-                cls="form-group"),
-            Div(Label(t("label.password"), For="password", cls="form-label"),
-                Input(type="password", id="password", name="password",
-                      placeholder="••••••••", required=True, cls="form-input"),
-                cls="form-group"),
+            *sign_in_fields(email, autofocus=True),
             Button(t("btn.sign_in"), type="submit", cls="btn btn--primary btn--full"),
-            P(A(t("auth.forgot_password"), href="/forgot-password", hx_get="/forgot-password",
-                hx_swap="none", cls="auth-link"), cls="auth-footer-text"),
             method="post", action="/login", cls="auth-form",
         ),
         cls="auth-card",
@@ -598,13 +714,7 @@ def _start_company_form(email: str = "", company_name: str = "", error: str | No
         P(t("setup.start_company_explain"), cls="form-hint"),
         Form(
             flash(error) if error else "",
-            Div(Label(t("label.email"), For="email", cls="form-label"),
-                Input(type="email", id="email", name="email", value=email,
-                      required=True, autofocus=True, cls="form-input"),
-                cls="form-group"),
-            Div(Label(t("label.password"), For="password", cls="form-label"),
-                Input(type="password", id="password", name="password", required=True, cls="form-input"),
-                cls="form-group"),
+            *sign_in_fields(email, autofocus=True),
             Div(Label(t("label.company_name"), For="company_name", cls="form-label"),
                 Input(type="text", id="company_name", name="company_name", value=company_name,
                       required=True, cls="form-input"),
@@ -740,14 +850,15 @@ def _setup_form(
     # Text fields whose error is shown under the field rather than at the top.
     at_field: list[str] = []
 
-    def _text(label_key: str, name: str, *, type: str = "text", autocomplete: str, hint: str = "") -> FT:
+    def _text(label_key: str, name: str, *, type: str = "text", autocomplete: str, hint: FT = "",
+              readonly: bool = False) -> FT:
         bad = bool(error) and error_field == name
         if bad:
             at_field.append(name)
         return Div(
             Label(t(label_key), For=name, cls="form-label"),
             Input(type=type, id=name, name=name, value=v.get(name, "") if type != "password" else "",
-                  required=True, autocomplete=autocomplete, cls="form-input",
+                  required=True, readonly=readonly, autocomplete=autocomplete, cls="form-input",
                   aria_invalid="true" if bad else None, aria_describedby=f"{name}-error" if bad else None,
                   # The first field takes focus on a fresh page; after an error the
                   # script focuses the field the error is about.
@@ -760,7 +871,9 @@ def _setup_form(
     texts = (
         _text("label.company_name", "company_name", autocomplete="organization"),
         _text("label.your_name", "name", autocomplete="name"),
-        _text("label.email", "email", type="email", autocomplete="email"),
+        # The email confirmed at the step before; Change goes back to it.
+        _text("label.email", "email", type="email", autocomplete="email", readonly=True,
+              hint=A(t("auth.change"), href=SETUP_EMAIL, cls="auth-link")),
         _text("label.password", "password", type="password", autocomplete="new-password",
               hint=t("setup.password_hint", n=MIN_PASSWORD_LENGTH)),
         _text("label.confirm_password", "confirm_password", type="password", autocomplete="new-password"),
@@ -971,50 +1084,136 @@ def _company_picker_panel(companies: list[dict]) -> FT:
     return Div(*company_items, cls="company-picker")
 
 
-def _forgot_password_form(error: str | None = None) -> FT:
+_TERMINAL_UNAVAILABLE = "/forgot-password/terminal?reason=unavailable"
+
+
+def _relay_unavailable(e: APIError) -> bool:
+    """The API could not reach the relay, as opposed to the API itself being out of reach."""
+    return e.status == 503 and (e.data or {}).get("outcome") == "unavailable"
+
+
+def _email_field(email: str = "") -> FT:
+    return Div(Label(t("label.email"), For="email", cls="form-label"),
+               Input(type="text", inputmode="email", autocomplete="email", id="email", name="email",
+                     value=email, placeholder=t("account.email_placeholder"), autofocus=not email,
+                     cls="form-input"),
+               cls="form-group")
+
+
+def _code_field() -> FT:
+    return Div(Label(t("recovery.code_label"), For="code", cls="form-label"),
+               Input(type="text", inputmode="numeric", autocomplete="one-time-code", id="code", name="code",
+                     maxlength="6", autofocus=True, cls="form-input"),
+               cls="form-group")
+
+
+def _recovery_links() -> FT:
     return Div(
-        auth_header(t("auth.forgot_password"), t("auth.enter_your_email_and_well_send_a_reset_link")),
+        P(A(t("recovery.use_terminal"), href="/forgot-password/terminal", cls="auth-link"), cls="auth-alt-action"),
+        P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),
+    )
+
+
+def _terminal_block(command: str | None) -> FT:
+    """How to reset from a terminal: the command, for the person at this computer, or
+    whom to ask, for anyone else, who never sees this computer's folders."""
+    if not command:
+        return P(t("recovery.terminal_ask"), cls="form-hint")
+    return Div(P(t("recovery.terminal_steps"), cls="form-hint"),
+               Pre(Code(command), cls="error-detail-box mt-sm"))
+
+
+def _recovery_start(email: str = "", error: str | None = None) -> FT:
+    return Div(
+        auth_header(t("recovery.title"), t("recovery.intro")),
         Form(
             flash(error) if error else "",
-            Div(Label(t("th.email"), For="email", cls="form-label"),
-                Input(type="email", id="email", name="email",
-                      placeholder=t("account.email_placeholder"), required=True, autofocus=True, cls="form-input"),
-                cls="form-group"),
-            Button(t("btn.send_reset_link"), type="submit", cls="btn btn--primary btn--full"),
-            P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),
+            P(t("recovery.consent"), cls="form-hint"),
+            _email_field(email),
+            Button(t("recovery.send_code"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action="/forgot-password", cls="auth-form",
         ),
+        _recovery_links(),
         cls="auth-card",
     )
 
 
-def _forgot_password_sent() -> FT:
+def _recovery_code_form(email: str, error: str | None = None, terminal: FT = "") -> FT:
+    """The code from the email and the new password. The same page whether or not the
+    email is a user here."""
     return Div(
-        auth_header(t("page.check_your_email"), t("auth.if_that_email_exists_youll_receive_a_reset_link_sh")),
-        Div(
-            A(t("auth.back_to_login"), href="/login", cls="btn btn--primary"),
-            cls="text-center mt-md",
-        ),
-        cls="auth-card",
-    )
-
-
-def _reset_password_form(token: str = "", error: str | None = None) -> FT:
-    return Div(
-        auth_header(t("page.reset_your_password"), t("auth.enter_your_new_password_below")),
+        auth_header(t("recovery.title"), "" if error else t("recovery.code_sent", email=email)),
+        flash(error) if error else "",
+        terminal,
         Form(
-            flash(error) if error else "",
-            Input(type="hidden", name="token", value=token),
-            Div(Label(t("label.new_password"), For="new_password", cls="form-label"),
-                Input(type="password", id="new_password", name="new_password",
-                      placeholder=t("auth.ph_min_8_chars"), required=True, autofocus=True, cls="form-input"),
+            Input(type="hidden", name="email", value=email),
+            _code_field(),
+            Div(Label(t("label.new_password"), For="password", cls="form-label"),
+                Input(type="password", id="password", name="password", autocomplete="new-password",
+                      cls="form-input"),
                 cls="form-group"),
-            Div(Label(t("label.confirm_password"), For="confirm_password", cls="form-label"),
-                Input(type="password", id="confirm_password", name="confirm_password",
-                      placeholder="••••••••", required=True, cls="form-input"),
+            Div(Label(t("label.confirm_password"), For="confirm", cls="form-label"),
+                Input(type="password", id="confirm", name="confirm", autocomplete="new-password",
+                      cls="form-input"),
                 cls="form-group"),
-            Button(t("btn.set_new_password"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action="/reset-password", cls="auth-form",
+            Button(t("recovery.reset_password"), type="submit", cls="btn btn--primary btn--full"),
+            method="post", action="/forgot-password/reset", cls="auth-form",
         ),
+        Form(
+            Input(type="hidden", name="email", value=email),
+            Button(t("recovery.send_new_code"), type="submit", cls="btn btn--secondary btn--full"),
+            method="post", action="/forgot-password", cls="auth-form mt-sm",
+        ),
+        P(A(t("auth.change"), href="/forgot-password", cls="auth-link"), cls="auth-footer-text"),
+        _recovery_links(),
+        cls="auth-card",
+    )
+
+
+def _setup_email_action(action: str, label: str, *fields, primary: bool = True) -> FT:
+    return Form(
+        Input(type="hidden", name="action", value=action),
+        *fields,
+        Button(label, type="submit", cls=f"btn btn--{'primary' if primary else 'secondary'} btn--full"),
+        method="post", action=SETUP_EMAIL, cls="auth-form",
+    )
+
+
+def _kept_email(email: str) -> FT:
+    return Input(type="hidden", name="email", value=email)
+
+
+def _setup_email_links(back: bool = False) -> FT:
+    """Restoring a backup needs no confirmed email: the owner's email comes from the backup."""
+    from ui.routes.company_backup import BOOTSTRAP as RESTORE
+    return Div(
+        P(A(t("auth.restore_backup_btn"), href=RESTORE.base, cls="auth-link"), cls="auth-alt-action"),
+        P(A(t("auth.return_to_setup"), href="/setup", cls="auth-link"), cls="auth-footer-text") if back else "",
+    )
+
+
+def _setup_email_form(email: str = "", *, error: str | None = None, unreachable: bool = False,
+                      back: bool = False) -> FT:
+    """The email to confirm; when Celerp could not be reached, the choice to go on without."""
+    return Div(
+        auth_header(t("setup_email.title"), t("setup_email.intro")),
+        flash(error) if error else "",
+        Div(flash(t("setup_email.unavailable"), kind="warning"),
+            _setup_email_action("skip", t("setup_email.continue_without"), _kept_email(email), primary=False),
+            cls="mb-md") if unreachable else "",
+        _setup_email_action("send", t("recovery.send_code"),
+                            P(t("recovery.consent"), cls="form-hint"), _email_field(email)),
+        _setup_email_links(back),
+        cls="auth-card",
+    )
+
+
+def _setup_email_code_form(email: str, error: str | None = None) -> FT:
+    return Div(
+        auth_header(t("setup_email.title"), "" if error else t("setup_email.code_sent", email=email)),
+        flash(error) if error else "",
+        _setup_email_action("verify", t("btn.confirm"), _kept_email(email), _code_field()),
+        _setup_email_action("send", t("recovery.send_new_code"), _kept_email(email), primary=False),
+        P(A(t("auth.change"), href=SETUP_EMAIL, cls="auth-link"), cls="auth-footer-text"),
         cls="auth-card",
     )

@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from celerp.main import app as api_app
 from celerp.models.company import User
-from email_codes_support import CODE, relay, settle, short_floor  # noqa: F401 - fixtures
+from email_codes_support import CODE, confirm_setup_email, relay, settle, short_floor  # noqa: F401 - fixtures
 from test_helpers import invite_user
 from ui.i18n import t
 
@@ -121,6 +121,29 @@ async def test_recovery_pages_back_to_sign_in(client, session, relay, short_floo
     for name, r in pages.items():
         assert r.status_code == 200, (name, r.status_code)
         _anchor(r.text, "/login")
+
+
+async def test_recovery_without_an_email_asks_for_it(relay):
+    """Send code with the email left empty stays on the first form and asks for the
+    email; nothing goes to Celerp."""
+    async with _ui() as ui:
+        r = await ui.post("/forgot-password", data={"email": "  "})
+    assert r.status_code == 200
+    assert t("auth.email_required") in r.text
+    assert re.search(r'<form\b[^>]*action="/forgot-password"', r.text)
+    assert not re.search(r'<input\b[^>]*name="code"', r.text)
+    assert relay.calls == []
+
+
+async def test_recovery_code_page_names_the_email_and_offers_change(client, relay):
+    """The code page says which email the code went to, so a mistyped email shows,
+    and Change goes back to the first form to type it again."""
+    async with _ui() as ui:
+        r = await ui.post("/forgot-password", data={"email": "typo@example.com"})
+        await settle()
+    assert r.status_code == 200
+    assert t("recovery.code_sent", email="typo@example.com") in r.text
+    assert re.search(rf'<a\b[^>]*href="/forgot-password"[^>]*>{t("auth.change")}</a>', r.text)
 
 
 async def test_recovery_refusal_shows_terminal_command(client, session, relay, short_floor):
@@ -345,14 +368,6 @@ async def _bootstrapped(client) -> bool:
     return (await client.get("/auth/bootstrap-status")).json()["bootstrapped"]
 
 
-async def _confirm(ui, email: str = OWNER) -> None:
-    sent = await ui.post("/setup/email", data={"action": "send", "email": email})
-    assert sent.status_code == 200 and re.search(r'<input\b[^>]*name="code"', sent.text), sent.text
-    await settle()
-    r = await ui.post("/setup/email", data={"action": "verify", "email": email, "code": CODE})
-    assert (r.status_code, r.headers.get("location")) == (303, "/setup"), r.text
-
-
 async def test_setup_requires_confirmed_email(client, relay, setup_mocks):
     """The first owner confirms their email before the account is made: setup goes to
     the email step first, refuses an email other than the confirmed one, and shows the
@@ -368,7 +383,7 @@ async def test_setup_requires_confirmed_email(client, relay, setup_mocks):
 
         wrong = await ui.post("/setup/email", data={"action": "verify", "email": OWNER, "code": "000000"})
         assert wrong.status_code == 200 and "/setup/email" in wrong.text
-        await _confirm(ui)
+        await confirm_setup_email(ui, OWNER)
         form = await ui.get("/setup")
         assert form.status_code == 200
         assert re.search(rf'<input\b[^>]*value="{re.escape(OWNER)}"[^>]*readonly|'
@@ -416,7 +431,7 @@ async def test_migrate_bootstrap_requires_confirmed_email(client, relay):
         async with _ui(cookies={SCAN_COOKIE: "scan-1"}) as ui:
             r = await ui.post("/setup/migrate/start", data=form)
             assert (r.status_code, r.headers.get("location")) == (303, "/setup/email")
-            await _confirm(ui)
+            await confirm_setup_email(ui, OWNER)
             r = await ui.post("/setup/migrate/start", data={**form, "email": "other@example.com"})
             assert (r.status_code, r.headers.get("location")) == (303, "/setup/email")
             start.assert_not_awaited()

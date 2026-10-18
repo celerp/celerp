@@ -20,7 +20,6 @@ from enum import Enum
 import httpx
 
 from celerp.config import ensure_instance_id
-from celerp.gateway import state
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +48,8 @@ def _outcome(response: httpx.Response, *, refused: tuple[int, ...]) -> Outcome:
 
 
 async def _call(method: str, path: str, body: dict | None = None, *, refused: tuple[int, ...] = ()) -> Outcome:
+    from celerp.gateway import state
+
     url = f"{state.relay_http_url()}/email-codes/{path}"
 
     async def _op(client: httpx.AsyncClient) -> Outcome:
