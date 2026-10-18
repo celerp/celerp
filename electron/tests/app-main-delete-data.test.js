@@ -40,7 +40,7 @@ afterEach(() => {
 // A packaged Windows app whose user data and private database folder hold real
 // files, with its servers running and a database that records what was on disk
 // when it was asked to stop.
-async function installed({ stopDatabase = async () => {}, confirm = 1 } = {}) {
+async function installed({ stopDatabase = async () => {}, confirm = 1, exitedDatabase = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-delete-"));
   scratch.push(root);
   const userData = path.join(root, "userData");
@@ -84,6 +84,15 @@ async function installed({ stopDatabase = async () => {}, confirm = 1 } = {}) {
       await stopDatabase();
     }),
   };
+  if (exitedDatabase) {
+    // embedded-postgres stop() on a server that already exited: it waits for an exit event
+    // that has already happened.
+    database.process = exitedDatabase;
+    database.stop.mockImplementation(() => new Promise((resolve) => {
+      exitedDatabase.on("exit", resolve);
+      exitedDatabase.kill("SIGINT");
+    }));
+  }
   loaded.setServices(api, ui, database);
   const deleteAll = () => loaded.handlers["uninstall-delete-data"]();
   return { root, dataDir, privateRoot, programData, program, api, ui, database, log, shown, app, deleteAll };
@@ -141,6 +150,17 @@ test("a folder that cannot be deleted is shown to the user, and the rest is stil
     } finally {
       errors.mockRestore();
     }
+  });
+
+test("a database that already exited (a failed start) does not stop Delete All Data",
+  async function test_delete_all_data_after_the_database_exited() {
+    const crashed = spawn(process.execPath, ["-e", "process.exit(1)"]);
+    await new Promise((resolve) => crashed.once("exit", resolve));
+    const { dataDir, privateRoot, api, ui, shown, deleteAll } = await installed({ exitedDatabase: crashed });
+    await deleteAll();
+    expect([alive(api), alive(ui)]).toEqual([false, false]);
+    expect([fs.existsSync(dataDir), fs.existsSync(privateRoot)]).toEqual([false, false]);
+    expect(shown).toHaveLength(1);
   });
 
 test("cancelling stops nothing and deletes nothing",

@@ -176,9 +176,12 @@ const { watchForRestart, classifyNavigation, fullRelaunch } = require("./restart
 const { createShutdown } = require("./shutdown");
 const { waitForApi, rebuildProgress, lineSplitter, outputTail } = require("./api-wait");
 // Stops the servers and then the database, once; every way the app exits waits for it.
+// A database that already exited (a failed start) counts as stopped: embedded-postgres stop()
+// would wait for an exit that has already happened.
+const databaseExited = () => pgInstance?.process && (pgInstance.process.exitCode !== null || pgInstance.process.signalCode !== null);
 const lifecycle = createShutdown({
   children: () => [apiProcess, uiProcess],
-  stopDatabase: () => (pgInstance ? pgInstance.stop() : undefined),
+  stopDatabase: () => (pgInstance && !databaseExited() ? pgInstance.stop() : undefined),
 });
 const {
   dbModeDecision,
