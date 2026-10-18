@@ -703,7 +703,7 @@ def _connector_detail_body(
         t("connectors.disconnect", lang),
         cls="btn btn--sm btn--outline btn--danger", style="margin-left:8px;",
         hx_delete=f"/settings/connectors/{cid}/disconnect?redirect=1",
-        hx_confirm=t("connectors.disconnect_confirm", lang),
+        hx_confirm=_disconnect_confirm(cid, lang),
         hx_target=f"#connector-disconnect-result-{cid}",
         hx_swap="innerHTML",
     )
@@ -725,8 +725,16 @@ def _connector_detail_body(
     )
 
 
+def _disconnect_confirm(platform: str, lang: str, *, anyway: bool = False) -> str:
+    """What a Disconnect asks before it goes. The accountant connection has no store and
+    no webhooks, so it asks in its own words."""
+    key = "disconnect_anyway_confirm" if anyway else "disconnect_confirm"
+    return t(f"connectors.{'peer_' if platform == 'celerp' else ''}{key}", lang)
+
+
 def _disconnect_failed(
-    result: dict, lang: str, *, force: bool, retry: str, target: str, swap: str, **wrapper,
+    result: dict, lang: str, *, platform: str, force: bool, retry: str, target: str, swap: str,
+    **wrapper,
 ) -> FT:
     """The outcome of a disconnect that changed nothing. Unless it was already
     forced, it offers to disconnect anyway, with a warning."""
@@ -739,7 +747,7 @@ def _disconnect_failed(
             hx_delete=retry,
             hx_target=target,
             hx_swap=swap,
-            hx_confirm=t("connectors.disconnect_anyway_confirm", lang),
+            hx_confirm=_disconnect_confirm(platform, lang, anyway=True),
         )]),
         **wrapper,
     )
@@ -832,7 +840,7 @@ def _connector_card(
                 hx_delete=f"/settings/connectors/{cid}/disconnect",
                 hx_target=f"#connector-card-{cid}",
                 hx_swap="outerHTML",
-                hx_confirm=t("connectors.disconnect_confirm", lang),
+                hx_confirm=_disconnect_confirm(cid, lang),
             ),
             cls="connector-action-area",
         )
@@ -861,7 +869,7 @@ def _connector_card(
                 hx_delete=f"/settings/connectors/{cid}/disconnect",
                 hx_target=f"#connector-card-{cid}",
                 hx_swap="outerHTML",
-                hx_confirm=t("connectors.disconnect_confirm", lang),
+                hx_confirm=_disconnect_confirm(cid, lang),
             )] if c.get("local_claim") else []),
             cls="connector-action-area",
         )
@@ -926,7 +934,7 @@ def _connector_card(
                 hx_delete=f"/settings/connectors/{cid}/disconnect",
                 hx_target=f"#connector-card-{cid}",
                 hx_swap="outerHTML",
-                hx_confirm=t("connectors.disconnect_confirm", lang),
+                hx_confirm=_disconnect_confirm(cid, lang),
             )
             if config is not None else None
         )
@@ -1655,12 +1663,12 @@ def setup_routes(app):
             # replaces the connector's card.
             if request.query_params.get("redirect"):
                 return _disconnect_failed(
-                    revoke_result, lang, force=force,
+                    revoke_result, lang, platform=platform, force=force,
                     retry=f"/settings/connectors/{platform}/disconnect?force=1&redirect=1",
                     target=f"#connector-disconnect-result-{platform}", swap="innerHTML",
                 )
             return _disconnect_failed(
-                revoke_result, lang, force=force,
+                revoke_result, lang, platform=platform, force=force,
                 retry=f"/settings/connectors/{platform}/disconnect?force=1",
                 target=f"#connector-card-{platform}", swap="outerHTML",
                 id=f"connector-card-{platform}", cls="connector-card",
@@ -1701,7 +1709,7 @@ def setup_routes(app):
             result = {"ok": False, "detail": str(exc)}
         if not result.get("ok"):
             return _disconnect_failed(
-                result, lang, force=force,
+                result, lang, platform=platform, force=force,
                 retry=f"/settings/connectors/{platform}/reset?force=1",
                 target=f"#connector-card-{platform}", swap="outerHTML",
                 id=f"connector-card-{platform}", cls="connector-card",

@@ -124,3 +124,20 @@ def test_status_view_names_records_and_aligns_numbers():
     from ui.routes.settings_connectors import _last_sync_info
     assert "1 added, 0 updated" in table and "+1" not in table
     assert "1 added, 0 updated" in to_xml(_last_sync_info(run))
+
+
+def test_disconnect_confirms_say_what_happens_in_plain_words():
+    """The accountant connection has no store and no webhooks, so its Disconnect asks in
+    its own words; no confirm talks about tokens."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import _disconnect_confirm, _disconnect_failed
+
+    for platform in ("celerp", "shopify"):
+        for anyway in (False, True):
+            assert "token" not in _disconnect_confirm(platform, "en", anyway=anyway).lower()
+    peer = _disconnect_confirm("celerp", "en") + _disconnect_confirm("celerp", "en", anyway=True)
+    assert "accountant" in peer and "store" not in peer and "webhook" not in peer
+    assert "store" in _disconnect_confirm("shopify", "en", anyway=True)
+    failed = to_xml(_disconnect_failed({"ok": False}, "en", platform="celerp", force=False,
+                                       retry="/r", target="#t", swap="innerHTML"))
+    assert "webhook" not in failed and "accountant" in failed
