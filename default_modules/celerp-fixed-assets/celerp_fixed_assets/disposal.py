@@ -185,8 +185,10 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     accumulated = cls["accumulated_depreciation_account"]
     from celerp.services.module_journals import JournalLine
 
-    lines = _lines(expense, accumulated, depreciation) if depreciation else []
-    lines += accumulated_lines(accumulated, gone_ad, gone_imp, "debit")
+    # The depreciation brought up to date lands on the accumulated account and leaves it in the
+    # same journal, so that account moves once, by what leaves net of the catch-up.
+    lines = [JournalLine(account=expense, **_side(depreciation, "debit"))] if depreciation else []
+    lines += accumulated_lines(accumulated, gone_ad - depreciation, gone_imp, "debit")
     if proceeds:
         lines.append(JournalLine(account=clearing, debit=proceeds, role=clearing_role))
     lines.append(JournalLine(account=cls["asset_account"], credit=gone_cost))
@@ -208,13 +210,19 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
             "currency": books.currency}
 
 
+def _side(amount: Decimal, side: str) -> dict:
+    """``amount`` on ``side`` ("debit" or "credit"), on the other side when negative."""
+    return {side: amount} if amount > 0 else {"credit" if side == "debit" else "debit": -amount}
+
+
 def accumulated_lines(account: str, depreciation: Decimal, impairment: Decimal, side: str) -> list:
     """The accumulated depreciation and impairment a share of an asset takes off (``side``
     "debit") or brings back ("credit"). Impairment sits on the accumulated account beside
-    depreciation; each moves on its own line, so the journal reads as the review does."""
+    depreciation; each moves on its own line, so the journal reads as the review does. A
+    negative amount moves on the other side."""
     from celerp.services.module_journals import JournalLine
 
-    return [JournalLine(account=account, **{side: v}) for v in (depreciation, impairment) if v]
+    return [JournalLine(account=account, **_side(v, side)) for v in (depreciation, impairment) if v]
 
 
 async def record(session, company_id, user_id, item: dict, day: str, reason: str, note: str | None,
