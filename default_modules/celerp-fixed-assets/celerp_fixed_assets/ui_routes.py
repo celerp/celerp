@@ -1309,21 +1309,34 @@ def _classes_card(classes: list[dict], chart: list[dict]) -> FT:
     )
 
 
+def _movement_name(m: dict, by_id: dict[str, dict]) -> str:
+    """A movement as the history names it. Depreciation brought up to date or taken back by a
+    dated operation names the months it covers, which can be months already charged; an undo
+    names what it undid."""
+    name = t(f"fixed_assets.movement.{m.get('operation')}")
+    if m.get("operation") == "undo" and (undone := by_id.get(m.get("reverses"))):
+        return t("fixed_assets.movement_undoes", undo=name, what=_movement_name(undone, by_id))
+    if m.get("operation") != "run" and (months := sorted(m.get("periods") or {})):
+        covered = months[0] if len(months) == 1 else t("fixed_assets.months_covered", first=months[0], last=months[-1])
+        return t("fixed_assets.movement_months", what=name, months=covered)
+    return name
+
+
 def _movements_table(items: list[dict], currency: str) -> FT:
-    """Each movement's change to cost and accumulated depreciation, and to accumulated
-    impairment once any movement has touched it. A column the movement does not change
-    reads as empty."""
+    """Each movement's change to cost and depreciation, and to impairment once any movement
+    has touched it. A column the movement does not change reads as empty."""
     if not items:
         return P(t("fixed_assets.no_movements"), cls="form-hint")
     columns = ["cost", "accumulated_depreciation"]
     if any(Decimal(str((m.get("amounts") or {}).get("accumulated_impairment") or 0)) for m in items):
         columns.append("accumulated_impairment")
-    rows = [Tr(Td(_text(m.get("posting_date"))), Td(_text(m.get("effective_date"))),
-               Td(t(f"fixed_assets.movement.{m.get('operation')}")),
+    by_id = {m["id"]: m for m in items if m.get("id")}
+    rows = [Tr(Td(_text(m.get("posting_date"))), Td(_text(m.get("effective_date"))), Td(_movement_name(m, by_id)),
                *[_money_td(_known((m.get("amounts") or {}).get(c)) or None, currency) for c in columns])
             for m in items]
     return Table(Thead(Tr(Th(t("fixed_assets.posting_date")), Th(t("fixed_assets.effective_date")),
-                          Th(t("fixed_assets.movement")), *[_money_th(t(f"fixed_assets.{c}")) for c in columns])),
+                          Th(t("fixed_assets.movement")),
+                          *[_money_th(t(f"fixed_assets.movement_column.{c}")) for c in columns])),
                  Tbody(*rows), cls="data-table")
 
 

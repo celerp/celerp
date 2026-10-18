@@ -592,6 +592,21 @@ async def test_dispose_from_the_asset_page_and_undo_it(owner_ui):
     assert disposal_card not in page.text and t("fixed_assets.status.active") in page.text
 
 
+async def test_movements_name_the_months_a_backdated_change_takes_back_and_what_an_undo_undid(owner_ui):
+    car = await _managed_car(owner_ui)
+    await _review_and_confirm(owner_ui, "run", {"month": "2026-09"})
+    await _review_and_confirm(owner_ui, "dispose", {"asset_id": car, "date": "2026-08-20", "reason": "scrapped"})
+    await _review_and_confirm(owner_ui, "undo-disposal", {"asset_id": car})
+    soup = BeautifulSoup((await owner_ui.get(f"/fixed-assets/assets/{car}")).text, "html.parser")
+    table = next(tb for tb in soup.select("table.data-table")
+                 if t("fixed_assets.movement") in [th.get_text(strip=True) for th in tb.select("th")])
+    assert [th.get_text(strip=True) for th in table.select("th")][3:5] == [t("fixed_assets.cost"), t("fixed_assets.movement.run")]
+    names = [tr.select("td")[2].get_text(strip=True) for tr in table.select("tbody tr")]
+    taken_back = f"{t('fixed_assets.movement.depreciation')} (2026-08 to 2026-09)"
+    assert taken_back in names and f"{t('fixed_assets.movement.undo')}: {taken_back}" in names, names
+    assert f"{t('fixed_assets.movement.undo')}: {t('fixed_assets.movement.disposal')}" in names, names
+
+
 async def test_dispose_of_several_from_the_register(owner_ui):
     car = await _managed_car(owner_ui)
     vehicles = next(c for c in (await owner_ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == "Vehicles")
@@ -866,7 +881,8 @@ async def test_impair_from_the_asset_page_then_undo_it(owner_ui):
     page = await owner_ui.get(href)
     assert t("fixed_assets.movement.impairment") in page.text and t("fixed_assets.undo_latest") in page.text
     movements = page.text.split(f">{t('fixed_assets.movements')}<", 1)[1]
-    assert t("fixed_assets.accumulated_impairment") in movements, "the impairment shows in the movements"
+    assert f'>{t("fixed_assets.movement_column.accumulated_impairment")}</th>' in movements, \
+        "the impairment shows in the movements"
     assert "fixed_assets." not in page.text
 
     await _review_and_confirm(owner_ui, "undo-latest", {"asset_id": car})
