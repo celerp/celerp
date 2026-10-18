@@ -335,8 +335,8 @@ def _ui_owner_patches():
 
 @pytest.mark.asyncio
 async def test_celerp_connector_returns_to_the_accounting_tab():
-    """The accountant connector is not in the relay's catalog; its way back, and
-    where a finished disconnect lands, is its own Accounting Sync tab."""
+    """The accountant connector's way back, and where a finished disconnect lands,
+    is its own Accounting tab."""
     from httpx import ASGITransport, AsyncClient
     from test_helpers import make_test_token
     from ui.app import app as ui_app
@@ -378,8 +378,34 @@ async def test_connector_refusals_show_the_reason_without_the_status_code():
                                      cookies={"celerp_token": token})
 
     for html in (gone.text, sync.text):
-        assert "No active Celerp Connect session." in html
         assert "API 401" not in html
+    assert "No active Celerp Connect session." in gone.text
+    # Sync stays behind Connect, and the refusal says so in the connector's own words.
+    assert "Accountant Sync needs Celerp Connect" in sync.text
+    assert "Get Celerp Connect" in sync.text
+    assert "isn't connected" not in sync.text
+
+
+@pytest.mark.asyncio
+async def test_accountant_pairing_refused_without_connect_offers_connect():
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui.api_client import APIError
+    from ui.app import app as ui_app
+
+    token = make_test_token(role="owner")
+    refused = AsyncMock(side_effect=APIError(401, "No active Celerp Connect session."))
+    with _ui_owner_patches(), patch("ui.api_client.store_connector_credentials", refused), \
+            patch("celerp.services.peer_access.parse_pairing_link",
+                  return_value=("https://firm.example", "key")):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
+            paired = await client.post("/settings/connectors/celerp/connect-apikey",
+                                       data={"pairing_link": "cpl.x.y"},
+                                       cookies={"celerp_token": token})
+
+    assert "Accountant Sync needs Celerp Connect" in paired.text
+    assert "Get Celerp Connect" in paired.text
+    assert "API 401" not in paired.text
 
 
 def _card_html(catalog: list[dict], config=None, awaiting=None, category="accounting"):
@@ -698,3 +724,25 @@ async def test_mark_reconciled_route_is_woocommerce_only(reconcile_ui):
     assert r.status_code == 200
     assert "flash--warning" in r.text
     setter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_direction_keeps_the_buttons_and_says_why():
+    import json
+    from httpx import ASGITransport, AsyncClient
+    from celerp.connectors.ownership import ConnectorOwnershipError
+    from test_helpers import make_test_token
+    from ui.app import app as ui_app
+
+    token = make_test_token(role="owner")
+    refused = AsyncMock(side_effect=ConnectorOwnershipError("Another company holds this connection."))
+    with _ui_owner_patches(), patch("celerp.connectors.ownership.lock_connector_operation", refused):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
+            r = await client.post("/settings/connectors/celerp/direction?detail=1",
+                                  data={"direction": "outbound"}, cookies={"celerp_token": token})
+
+    # Nothing is swapped, so the toggle stays where it was, and the reason is a toast.
+    assert r.headers.get("HX-Reswap") == "none"
+    toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
+    assert toast["message"] == "Another company holds this connection."
+    assert toast["type"] == "error"
