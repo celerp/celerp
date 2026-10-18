@@ -136,6 +136,9 @@ class BackupResult:
     archive_digest: str | None = None
     # Where the safety archive of the replaced installation was saved.
     safety_archive: str | None = None
+    # A recovery that failed after it started ended every session (or left the
+    # installation closed): the page must sign in again to see anything.
+    session_ended: bool = False
 
 
 def _parse_key(b64_key: str) -> bytes:
@@ -375,6 +378,17 @@ def check_backup_dump(dump_path: Path, database_url: str,
     _check_extensions(sorted({match[1] for match in map(_EXTENSION_ENTRY.match, lines) if match}),
                       database_url, source)
     _check_server_objects(dump_path, database_url, source)
+
+
+_HISTORY_ROWS = re.compile(r"^COPY public\.alembic_version \(version_num\) FROM stdin;\n(.*?)^\\\.$", re.M | re.S)
+
+
+def recorded_migrations(dump_path: Path) -> list[str]:
+    """The migration revisions a pg_dump archive records in its ``alembic_version`` table;
+    empty when it has none, as a database built without migrations has."""
+    script = _text(_run_tool([_find_pg_tool("pg_restore"), "--data-only", "-t", "alembic_version", "-f", "-",
+                              dump_path.name], None, timeout=60, cwd=dump_path.parent))
+    return [row for match in _HISTORY_ROWS.findall(script) for row in match.splitlines() if row]
 
 
 # pg_dump writes a policy's roles, unless it is for PUBLIC, as quoted identifiers after TO.

@@ -88,37 +88,41 @@ def _restore_flash(result, base_msg: str) -> Response:
     once the server is back, which lands on sign-in; otherwise offer the
     sign-in link directly.
     """
-    from fasthtml.common import A, Div, Script, to_xml
-    from ui.components.shell import RESTART_POLL_JS
+    from fasthtml.common import Div, Script
+    from ui.components.shell import RESTART_POLL_JS, restore_outcome_parts
 
-    from celerp.services.backup_import import SESSION_ENDED_HEADER
-
-    parts = [base_msg, *result.warnings]
-    if result.safety_archive:
-        parts.append(t("system_recovery.safety_saved", path=result.safety_archive))
+    parts = restore_outcome_parts(base_msg, result.warnings, result.safety_archive)
     kind = "warning" if result.warnings else "success"
     if result.restart_scheduled:
         parts.append(t("settings.restarting_automatically"))
-        body = Div(
-            Div(" ".join(parts), cls=f"flash flash--{kind}"),
-            Script(RESTART_POLL_JS),
-            id="backup-flash",
-        )
-    else:
-        parts.append(t("system_recovery.signed_out"))
-        body = Div(
-            Div(" ".join(parts), cls=f"flash flash--{kind}"),
-            A(t("btn.sign_in"), href="/login", cls="btn btn--primary mt-sm"),
-            id="backup-flash",
-        )
-    return Response(content=to_xml(body), media_type="text/html",
+        return _signed_out(Div(" ".join(parts), cls=f"flash flash--{kind}"), Script(RESTART_POLL_JS))
+    parts.append(t("system_recovery.signed_out"))
+    return _signed_out(Div(" ".join(parts), cls=f"flash flash--{kind}"))
+
+
+def _signed_out(message, follow=None) -> Response:
+    """The answer to a recovery that ended every session: *message*, then *follow*
+    (default: the sign-in link), with SESSION_ENDED_HEADER for the UI to drop the
+    browser's session cookies."""
+    from fasthtml.common import A, Div, to_xml
+
+    from celerp.services.backup_import import SESSION_ENDED_HEADER
+    if follow is None:
+        follow = A(t("btn.sign_in"), href="/login", cls="btn btn--primary mt-sm")
+    return Response(content=to_xml(Div(message, follow, id="backup-flash")), media_type="text/html",
                     headers={SESSION_ENDED_HEADER: "1"})
 
 
 def _recovery_response(result, success_msg: str) -> Response:
-    """The page's answer to a recovery: restored, waiting for confirmation, or failed."""
+    """The page's answer to a recovery: restored, waiting for confirmation, or failed.
+    A failure after the recovery started has ended every session; its outcome is also
+    shown on the owner's first page after signing in again."""
+    from fasthtml.common import Div
     if result.needs_confirmation:
         return _confirm_without_safety(result)
+    if result.session_ended:
+        return _signed_out(Div(f"{result.error} {t('system_recovery.failed_signed_out')}",
+                               cls="flash flash--error"))
     if not result.ok:
         return _flash(result.error or t("error.restore_failed_unknown"), "error")
     return _restore_flash(result, success_msg)
@@ -258,9 +262,14 @@ async def export_local() -> FileResponse:
         path = await export_full()
     except RuntimeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    # export_full writes a temp archive (delete=False); remove it once the response is
-    # sent so multi-GB exports don't pile up in the temp dir.
-    return FileResponse(path=str(path), filename=path.name, media_type="application/gzip",
+    return _archive_download(path, f"{datetime.now():%Y-%m-%d-%H%M}")
+
+
+def _archive_download(path: Path, label: str) -> FileResponse:
+    """Serve a temp backup archive under a backup's name (never the temp file's) and
+    remove it once sent, so multi-GB exports don't pile up in the temp dir."""
+    return FileResponse(path=str(path), filename=f"celerp-backup-{label}.celerp-backup",
+                        media_type="application/gzip",
                         background=BackgroundTask(path.unlink, missing_ok=True))
 
 
@@ -272,8 +281,7 @@ async def export_cloud(backup_id: str) -> FileResponse:
         path = await reassemble_snapshot(backup_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return FileResponse(path=str(path), filename=path.name, media_type="application/gzip",
-                        background=BackgroundTask(path.unlink, missing_ok=True))
+    return _archive_download(path, backup_id)
 
 
 @router.post("/import")
@@ -288,15 +296,13 @@ async def import_backup(
     tmp_path = await _spool_upload(file)
     try:
         try:
-            meta = validate_archive(tmp_path)
+            validate_archive(tmp_path)
         except ValueError as exc:
             return _flash(str(exc), "error")
 
         await session.close()
         result = await run_recovery(tmp_path)
-        return _recovery_response(
-            result, t("system_recovery.imported", company=meta.company_name or "unknown"),
-        )
+        return _recovery_response(result, t("system_recovery.imported"))
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -344,7 +350,7 @@ async def import_backup_bootstrap(
     tmp_path = await _spool_upload(file)
     try:
         try:
-            meta = validate_archive(tmp_path)
+            validate_archive(tmp_path)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -368,7 +374,6 @@ async def import_backup_bootstrap(
 
         return {
             "ok": True,
-            "company_name": meta.company_name,
             "warnings": result.warnings,
             "restart_scheduled": result.restart_scheduled,
         }

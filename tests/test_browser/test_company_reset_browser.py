@@ -16,6 +16,7 @@ import pytest
 
 from ui.i18n import t
 
+from .conftest import wait_for_landing
 from .test_company_backup_browser import _WAIT_MS, _add_user, _client, _db, _session_company, _token_for
 from .test_migration_journeys_browser import _start_additional, held_runner  # noqa: F401 - fixture
 from .test_migration_wizard_browser import _run_id, _through_review, _upload
@@ -77,7 +78,7 @@ def test_reset_dialog_needs_the_exact_name_and_shows_refusals_inside(page, fresh
     page.locator('#company-reset-modal button:has-text("Skip - continue")').click()
     page.locator("#company-reset-confirm-input").fill(renamed)
     page.locator("#company-reset-confirm-btn").click()
-    page.wait_for_url(re.compile(r"/(\?.*)?$|/dashboard"), timeout=_WAIT_MS)
+    wait_for_landing(page, timeout=_WAIT_MS)
     assert _companies_named(renamed) == 0
     assert _session_company(page.context) != source["id"]
 

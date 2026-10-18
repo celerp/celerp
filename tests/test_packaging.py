@@ -93,9 +93,9 @@ def test_built_wheel_includes_first_party_lock(tmp_path):
         names = zf.namelist()
     assert any(n.endswith("default_modules/first_party.lock.json") for n in names), (
         f"lock missing from wheel; sample: {names[:20]}")
-    tracked = subprocess.run(["git", "ls-files", "ui/static"], cwd=str(REPO_ROOT),
+    tracked = subprocess.run(["git", "ls-files", "ui/static", "celerp/output/fonts"], cwd=str(REPO_ROOT),
                              capture_output=True, text=True, check=True).stdout.split()
-    assert tracked and not set(tracked) - set(names), f"static files missing from wheel: {sorted(set(tracked) - set(names))}"
+    assert tracked and not set(tracked) - set(names), f"static files or PDF fonts missing from wheel: {sorted(set(tracked) - set(names))}"
 
 
 def test_no_default_module_declares_migrations():

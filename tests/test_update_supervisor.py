@@ -519,3 +519,66 @@ def test_a_server_that_ignores_the_stop_is_killed(tmp_path):
         _start({**CFG, "database": dict(CFG["database"])})
     assert stopped.value.code == 0
     assert [p.name for p in spawned] == ["api", "ui"] and all(p.killed for p in spawned)
+
+
+def test_a_stop_while_the_supervisor_checks_on_the_api_stops_both_servers(tmp_path):
+    """The supervisor checks on the API every half second, and Popen.poll holds the
+    process's wait lock while it does. A SIGTERM handled inside that check must
+    still stop both servers promptly: waiting on the API from the handler would wait
+    on a lock the interrupted check never gets to release, so `celerp start` hung
+    and the UI was never asked to stop."""
+    import signal
+    import subprocess
+    import sys
+    import threading
+    import time
+
+    from celerp.cli import _start
+
+    handlers: dict = {}
+    spawned: list[subprocess.Popen] = []
+    real_popen, real_sleep = subprocess.Popen, time.sleep
+    stopped = threading.Event()
+
+    def popen(cmd, env, **kwargs):
+        proc = real_popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        spawned.append(proc)
+        return proc
+
+    def stop_during_the_check(seconds):
+        # time.sleep is patched for every caller; only the supervisor's first
+        # pause between checks delivers the stop.
+        if stopped.is_set():
+            return real_sleep(seconds)
+        stopped.set()
+        with spawned[0]._waitpid_lock:  # as Popen.poll holds it around waitpid
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    outcome: dict = {}
+
+    def supervise():
+        try:
+            _start({**CFG, "database": dict(CFG["database"])})
+        except SystemExit as exc:
+            outcome["code"] = exc.code
+
+    with (
+        patch("subprocess.Popen", side_effect=popen),
+        patch("celerp.cli._read_config", return_value=CFG),
+        patch("celerp.cli._config_to_env", return_value={}),
+        patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
+        patch("celerp.cli._migrate_to_head"),
+        patch("celerp.cli._wait_ready"),
+        patch("celerp.cli.time.sleep", side_effect=stop_during_the_check),
+        patch("signal.signal", side_effect=lambda sig, handler: handlers.__setitem__(sig, handler)),
+    ):
+        try:
+            supervisor = threading.Thread(target=supervise, daemon=True)
+            supervisor.start()
+            supervisor.join(timeout=10)
+            assert not supervisor.is_alive(), "celerp start did not stop on SIGTERM"
+            assert outcome == {"code": 0}
+            assert len(spawned) == 2 and all(p.poll() is not None for p in spawned)
+        finally:
+            for proc in spawned:
+                proc.kill()

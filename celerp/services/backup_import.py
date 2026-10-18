@@ -26,6 +26,7 @@ from pathlib import Path, PurePosixPath
 
 from ui.i18n import t
 
+from celerp.config_store import fsync_dir
 from celerp.modules.importer import ModuleImportError, _validate_name_chars
 
 log = logging.getLogger(__name__)
@@ -59,7 +60,6 @@ class ImportMeta:
     celerp_version: str
     pg_version: str
     created_at: str
-    company_name: str
     # Modules the source system had enabled at export time. Empty for old
     # backups (pre-2026-06-04). Used by the install pass to surface
     # missing modules to the user before they reach a broken dashboard.
@@ -130,7 +130,6 @@ def validate_archive(path: Path) -> ImportMeta:
         celerp_version=meta_data.get("celerp_version") or "unknown",
         pg_version=meta_data.get("pg_version", "unknown"),
         created_at=meta_data.get("created_at", "unknown"),
-        company_name=meta_data.get("company_name", "unknown"),
         enabled_modules=modules,
     )
 
@@ -227,10 +226,13 @@ def _is_protected_module_dir(
 
 
 RESTORE_NOTICE_FILE = "restore-notice.json"
+# The outcome of a recovery that failed after it started, kept for the installation
+# owner's first signed-in page: every session ended with it (take_recovery_failure).
+RECOVERY_FAILURE_FILE = "recovery-failure.json"
 
 
-# Response header on a successful whole-installation restore: every session
-# ended with it, so the UI drops the browser's session cookies.
+# Response header on a whole-installation restore that ended every session, so the
+# UI drops the browser's session cookies.
 SESSION_ENDED_HEADER = "X-Session-Ended"
 
 
@@ -269,6 +271,18 @@ _STAGING_ID = re.compile(r"[0-9a-f]{32}")
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _reason(exc: Exception) -> str:
+    """The failure as a person reads it: a file error names its folders as written,
+    not as Python quotes them (doubled backslashes on Windows)."""
+    if isinstance(exc, OSError) and exc.strerror:
+        if exc.filename is None:
+            return exc.strerror
+        if exc.filename2 is None:
+            return f"{exc.strerror}: {exc.filename}"
+        return f"{exc.strerror}: {exc.filename} -> {exc.filename2}"
+    return str(exc) or repr(exc)
 
 
 def _rename(src: Path, dst: Path) -> None:
@@ -397,6 +411,28 @@ def _stage_members(archive: Path, root: Path) -> None:
         raise ValueError(t("error.restore_incomplete"))
 
 
+def _refuse_unrecorded_history(dump: Path) -> None:
+    """ValueError for a dump whose migration history is missing or names a revision this
+    copy does not have: its schema can then only be guessed, and a wrong guess fails the
+    recovery after the installation has been replaced. A Celerp install records its
+    history from its first start."""
+    from alembic.script import ScriptDirectory
+    from alembic.util import CommandError
+    from celerp.alembic_config import build_alembic_config
+    from celerp.services.backup import recorded_migrations
+    revisions = recorded_migrations(dump)
+    if not revisions:
+        raise ValueError(t("system_recovery.no_migration_history"))
+    script = ScriptDirectory.from_config(build_alembic_config())
+    for revision in revisions:
+        try:
+            known = script.get_revision(revision) is not None
+        except CommandError:
+            known = False
+        if not known:
+            raise ValueError(t("system_recovery.unknown_migration", revision=revision))
+
+
 def _prepare_sync(path: Path) -> PreparedRecovery:
     from celerp.config import settings
     from celerp.services.backup import check_backup_dump, write_restore_script
@@ -410,6 +446,7 @@ def _prepare_sync(path: Path) -> PreparedRecovery:
         digest = _sha256(root / _STAGED_ARCHIVE)
         _stage_members(root / _STAGED_ARCHIVE, root)
         check_backup_dump(root / _STAGED_DUMP, settings.database_url)
+        _refuse_unrecorded_history(root / _STAGED_DUMP)
         try:
             write_restore_script(root / _STAGED_DUMP, root / _STAGED_SCRIPT)
         except RuntimeError as exc:
@@ -482,7 +519,7 @@ async def make_safety_archive() -> SafetyResult:
         if partial is not None:
             partial.unlink(missing_ok=True)
         log.warning("Safety archive failed: %s", exc)
-        return SafetyResult(ok=False, error=str(exc) or repr(exc))
+        return SafetyResult(ok=False, error=_reason(exc))
 
 
 async def _cloud_safety_snapshot() -> None:
@@ -574,20 +611,20 @@ def _missing_module_warnings(modules: list[str]) -> list[str]:
     return [missing_modules_sentence(missing)]
 
 
-def _write_restore_notice(company_name: str | None, warnings: list[str],
-                          safety_archive: str | None, restart_scheduled: bool) -> None:
-    """Persist a one-shot restore notice for the login page.
+def _write_restore_notice(warnings: list[str], safety_archive: str | None,
+                          restart_scheduled: bool) -> None:
+    """Persist a one-shot restore notice for the installation owner's next signed-in page.
 
     The post-restore restart can replace the page that showed the result (the
     desktop shell reloads the window to the respawned server), so the outcome and
-    any warnings must survive it; the login page renders and then clears this file.
+    any warnings must survive it. The login page, which anyone can open, only says
+    that a backup was restored; the warnings and the safety copy's path wait for
+    the owner, whose page shows and then clears this file.
     """
-    from celerp.config import settings
     try:
-        path = settings.data_dir / RESTORE_NOTICE_FILE
+        path = _restore_notice_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({
-            "company_name": company_name,
             "warnings": warnings,
             "safety_archive": safety_archive,
             "restart_scheduled": restart_scheduled,
@@ -679,8 +716,7 @@ def _failed(error: str, **kw):
     return BackupResult(ok=False, size_bytes=0, error=error, **kw)
 
 
-def _commit_failure(exc: Exception, safety_archive: str | None, restored: bool) -> str:
-    detail = (str(exc) or repr(exc)).rstrip(".")
+def _commit_failure(detail: str, safety_archive: str | None, restored: bool) -> str:
     if restored:
         return (f"System Recovery did not complete: {detail}. The installation was put back "
                 f"as it was before, from the safety archive {safety_archive}; connections to "
@@ -713,13 +749,21 @@ def _mark_recovery_started(target: Path, connectors: list[dict]) -> None:
     """Durably record that the installation is being replaced, what *target* archive
     brings it back to a whole state if the replacement does not finish, and the
     *connectors* whose remote state must be revoked before it is replaced. The marker
-    records this copy's version: an older copy never finishes a newer copy's recovery."""
+    records this copy's version: an older copy never finishes a newer copy's recovery.
+    The outcome of an earlier recovery, success or failure, is dropped: what the owner
+    reads after signing in is this recovery's."""
     from celerp.migrations.compatibility import running_version
     _write_marker({"target": str(target), "connectors": connectors, "celerp_version": running_version()})
+    _failure_path().unlink(missing_ok=True)
+    _restore_notice_path().unlink(missing_ok=True)
 
 
 def _write_marker(state: dict) -> None:
-    path = _marker_path()
+    _write_durably(_marker_path(), state)
+
+
+def _write_durably(path: Path, state: dict) -> None:
+    """Write *state* as JSON to *path* so that it survives a crash once this returns."""
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(path.name + ".partial")
     with partial.open("w") as out:
@@ -727,22 +771,74 @@ def _write_marker(state: dict) -> None:
         out.flush()
         os.fsync(out.fileno())
     partial.replace(path)
-    _fsync_dir(path.parent)
+    fsync_dir(path.parent, strict=True)
+
+
+def _failure_path() -> Path:
+    from celerp.config import settings
+    return settings.data_dir / RECOVERY_FAILURE_FILE
+
+
+def _keep_recovery_failure(message: str, detail: str | None = None) -> None:
+    """Keep *message*, the outcome of a recovery that failed after it started, for
+    the installation owner's next signed-in page. *detail* is the failure itself,
+    for the start that later finishes or undoes the recovery to report again. A
+    copy that cannot be kept is logged; the recovery's own result stands."""
+    try:
+        _write_durably(_failure_path(), {"message": message, "detail": detail})
+    except OSError:
+        log.exception("The outcome of the failed System Recovery could not be kept")
+
+
+def recovery_failure_waiting() -> bool:
+    return _failure_path().is_file()
+
+
+def _take(path: Path) -> dict | None:
+    """Read and remove the one-shot JSON notice at *path*; None when there is none.
+
+    The file is claimed by an atomic rename before it is read, so of two pages
+    loading at once exactly one shows it.
+    """
+    claimed = path.with_name(f"{path.name}.{uuid.uuid4().hex}.taken")
+    try:
+        os.replace(path, claimed)
+    except OSError:
+        return None
+    try:
+        notice = json.loads(claimed.read_text())
+    except (OSError, ValueError):
+        return None
+    finally:
+        claimed.unlink(missing_ok=True)
+    return notice if isinstance(notice, dict) else None
+
+
+def take_recovery_failure() -> str | None:
+    """The kept outcome of the last recovery, when it failed after it started; read once."""
+    message = (_take(_failure_path()) or {}).get("message")
+    return message if isinstance(message, str) else None
+
+
+def _restore_notice_path() -> Path:
+    from celerp.config import settings
+    return settings.data_dir / RESTORE_NOTICE_FILE
+
+
+def restore_notice_waiting() -> bool:
+    return _restore_notice_path().is_file()
+
+
+def take_restore_notice() -> dict | None:
+    """The one-shot notice of the last successful recovery (_write_restore_notice)."""
+    return _take(_restore_notice_path())
 
 
 def _mark_recovery_finished() -> None:
     from celerp.config import settings
     _marker_path().unlink(missing_ok=True)
     (settings.data_dir / RECOVERY_SAFETY_DIR / UNFINISHED_RECOVERY_ARCHIVE).unlink(missing_ok=True)
-    _fsync_dir(_marker_path().parent)
-
-
-def _fsync_dir(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    fsync_dir(_marker_path().parent, strict=True)
 
 
 def _keep_for_retry(prepared: PreparedRecovery) -> Path:
@@ -820,8 +916,27 @@ async def finish_incomplete_recovery() -> None:
         async with _recovery_locks():
             await _replace_from(target)
         log.info("Unfinished System Recovery completed from %s", target)
+        _report_finished_at_start(target)
     except Exception:
         log.exception("Unfinished System Recovery could not be completed; Celerp stays unavailable")
+
+
+def _report_finished_at_start(target: Path) -> None:
+    """Keep, as the outcome of a recovery that failed or was cut off by a stop, what
+    the start that just resolved it did: put the installation back, or finish
+    restoring the backup."""
+    try:
+        detail = json.loads(_failure_path().read_text()).get("detail")
+    except (OSError, ValueError, AttributeError):
+        detail = None
+    detail = detail or "Celerp stopped before the recovery finished"
+    if target.name == UNFINISHED_RECOVERY_ARCHIVE:
+        message = (f"System Recovery did not complete: {detail}. Celerp finished restoring the "
+                   "backup when Celerp started again; connections to other services must be "
+                   "connected again and everyone must sign in again.")
+    else:
+        message = _commit_failure(detail, str(target), restored=True)
+    _keep_recovery_failure(message, detail)
 
 
 async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | None):
@@ -855,14 +970,19 @@ async def commit_recovery(prepared: PreparedRecovery, safety_archive: Path | Non
                     restored = True
                 except Exception:
                     log.exception("The installation could not be put back from %s", safety_archive)
-            return _failed(_commit_failure(exc, safety, restored), safety_archive=safety)
+            detail = _reason(exc).rstrip(".")
+            message = _commit_failure(detail, safety, restored)
+            # Every session has ended, or the installation stays closed until a start
+            # resolves the recovery: the page that started it may never show this.
+            _keep_recovery_failure(message, detail)
+            return _failed(message, safety_archive=safety, session_ended=True)
         _mark_recovery_finished()
         # Celerp Cloud learns of the restore now; until it has, no company can be reset,
         # and the reconciliation at start and every few minutes keeps trying.
         from celerp.services.payments import reconcile_payments
         await reconcile_payments()
         warnings = _missing_module_warnings(modules)
-        _write_restore_notice(prepared.meta.company_name, warnings, safety, restart_scheduled)
+        _write_restore_notice(warnings, safety, restart_scheduled)
         return BackupResult(ok=True, size_bytes=prepared.files[_STAGED_DUMP], warnings=warnings,
                             restart_scheduled=restart_scheduled, safety_archive=safety)
     finally:
@@ -873,7 +993,7 @@ def _start_failed(prepared: PreparedRecovery, exc: Exception):
     """The recovery locks could not be taken or the safety step broke: nothing was restored."""
     log.exception("System Recovery failed before the restore began")
     _remove_staging(prepared.root)
-    return _failed(f"System Recovery did not start: {str(exc) or repr(exc)}")
+    return _failed(f"System Recovery did not start: {_reason(exc)}")
 
 
 @asynccontextmanager
@@ -923,7 +1043,7 @@ async def _prepare_or_fail(path: Path):
         return None, _failed(str(exc))
     except Exception as exc:
         log.exception("Recovery archive could not be staged")
-        return None, _failed(f"The backup could not be prepared for restoring: {str(exc) or repr(exc)}")
+        return None, _failed(f"The backup could not be prepared for restoring: {_reason(exc)}")
 
 
 async def run_recovery(path: Path):

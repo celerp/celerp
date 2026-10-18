@@ -925,6 +925,12 @@ def _progress_fragment(run: dict, error: str | None = None) -> FT:
     phases = run.get("phases") or []
     polling = {"hx_get": f"/migrations/{run['id']}", "hx_trigger": "every 2s", "hx_swap": "outerHTML"} \
         if status in _ACTIVE_STATUSES or run.get("preparing") else {}
+    if run.get("preparing"):
+        # Preparing ends in the restart the notice below announces. Polls that fail
+        # while the servers are down must not raise the shell's error alert: this
+        # page has no in-page error box, and a native alert freezes the window so
+        # it cannot follow the restart to the new servers.
+        polling["data-quiet-error"] = "1"
     return Div(
         flash(error) if error else "",
         P(_badge(t(f"migration.status.{status}"), _PHASE_BADGE.get(

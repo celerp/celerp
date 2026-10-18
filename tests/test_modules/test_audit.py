@@ -166,7 +166,6 @@ class TestBackupExportWritesEnabledModules:
             "celerp_version": __version__,
             "pg_version": "16",
             "created_at": "2026-06-04T00:00:00Z",
-            "company_name": "Round-trip Co",
             "enabled_modules": ["celerp-inventory", "celerp-fulfillment"],
         }
         with tarfile.open(archive_path, "w:gz") as tar:
@@ -180,5 +179,5 @@ class TestBackupExportWritesEnabledModules:
             tar.addfile(info2, io.BytesIO(dump_bytes))
 
         parsed = validate_archive(archive_path)
-        assert parsed.company_name == "Round-trip Co"
+        assert parsed.created_at == "2026-06-04T00:00:00Z"
         assert parsed.enabled_modules == ["celerp-inventory", "celerp-fulfillment"]

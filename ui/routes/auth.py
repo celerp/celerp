@@ -27,9 +27,10 @@ from ui.api_client import start_company as api_start_company
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.api_client import migration_staged_run as api_migration_staged_run
-from ui.components.shell import auth_shell, client_scripts, flash, page_title, toast_header
-from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies
+from ui.components.shell import auth_shell, client_scripts, flash, landing_path, page_title, toast_header
+from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies, get_role
 from ui.i18n import t, get_lang
+from celerp.services import backup_import
 from celerp.services.app_paths import is_app_local_path
 from celerp.config import settings as _settings
 from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
@@ -51,34 +52,6 @@ def auth_header(title: str, subtitle: str = "") -> FT:
         P(subtitle, cls="auth-subtitle") if subtitle else "",
         cls="auth-header",
     )
-
-
-def _consume_restore_notice() -> dict | None:
-    """Read and clear the one-shot restore notice the importer persists.
-
-    The post-restore restart replaces whatever page showed the import result, so
-    the outcome and any warnings are re-shown here, on the first login page after
-    the restart, where the user cannot miss them."""
-    from celerp.services.backup_import import RESTORE_NOTICE_FILE
-    path = _settings.data_dir / RESTORE_NOTICE_FILE
-    try:
-        if not path.is_file():
-            return None
-        notice = json.loads(path.read_text())
-        path.unlink(missing_ok=True)
-        return notice if isinstance(notice, dict) else None
-    except Exception:
-        return None
-
-
-def _restore_notice_message(notice: dict) -> str:
-    """One readable sentence block for the post-restore login banner."""
-    company = notice.get("company_name") or "backup"
-    parts = [t("auth.restore_notice_message", company=company)]
-    parts.extend(str(w) for w in notice.get("warnings") or [])
-    if notice.get("safety_archive"):
-        parts.append(t("system_recovery.safety_saved", path=notice["safety_archive"]))
-    return " ".join(parts)
 
 
 def setup_routes(app):
@@ -129,7 +102,15 @@ def setup_routes(app):
             by_ip = str(_ip.ip_address(by_ip_raw)) if by_ip_raw else ""
         except ValueError:
             by_ip = ""
-        if deactivated:
+        # A recovery ends every session, so the page that ran it arrives here as
+        # an eviction; its outcome is the true reason and is shown first. Anyone can
+        # open this page, so it only says what happened: the details name server
+        # paths and wait for the owner's first signed-in page (shell).
+        if backup_import.restore_notice_waiting():
+            notice = flash(t("auth.backup_restored_signin"), kind="success")
+        elif backup_import.recovery_failure_waiting():
+            notice = flash(t("auth.recovery_failed_signin"))
+        elif deactivated:
             notice = flash(t("auth.company_deactivated"))
         elif reason == "evicted":
             ip_note = t("auth.evicted_from_ip", ip=by_ip) if by_ip else ""
@@ -144,9 +125,6 @@ def setup_routes(app):
             notice = flash(t("auth.signed_out_idle"), kind="warning")
         elif reason == "password-changed":
             notice = flash(t("settings.password_changed"), kind="success")
-        elif (restore_notice := _consume_restore_notice()) is not None:
-            notice = flash(_restore_notice_message(restore_notice),
-                           kind="warning" if restore_notice.get("warnings") else "success")
         elif request.query_params.get("imported"):
             notice = flash(t("auth.backup_restored_signin"), kind="success")
         else:
@@ -174,7 +152,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 409 and e.detail == "direct_connection_limit":
                 return auth_shell(
-                    _direct_connection_gate(email, password),
+                    _direct_connection_gate(email, password, nxt),
                     title=page_title("btn.sign_in"),
                 )
             if e.status == 401 and e.detail == NO_COMPANY:
@@ -365,9 +343,9 @@ def setup_routes(app):
         except APIError as e:
             return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         if bootstrapped:
-            # A second submit after setup finished: the signed-in owner goes on to the
-            # dashboard, anyone else signs in.
-            return RedirectResponse("/dashboard" if request.cookies.get(COOKIE_NAME) else "/login",
+            # A second submit after setup finished: the signed-in owner goes on to their
+            # first page, anyone else signs in.
+            return RedirectResponse("/" if request.cookies.get(COOKIE_NAME) else "/login",
                                     status_code=302)
         form = await request.form()
         values = {k: str(form.get(k, "")).strip() for k in _SETUP_KEPT_FIELDS}
@@ -424,7 +402,7 @@ def setup_routes(app):
         # Validate token - stale cookies (e.g. after init --force) must not
         # skip setup when the DB has been wiped.
         try:
-            await api_get_company(token)
+            co = await api_get_company(token)
         except APIError as e:
             if e.status == 401:
                 bootstrapped = await bootstrap_status()
@@ -435,9 +413,9 @@ def setup_routes(app):
                 return RedirectResponse("/setup", status_code=302)
             elif e.status == 403 and (staged := await _staged_run_redirect(token)):
                 return staged
-            # Any other API error: let them through to dashboard (transient failure)
-            return RedirectResponse("/dashboard", status_code=302)
-        return RedirectResponse("/dashboard", status_code=302)
+            # Any other API error is transient: let them through to their first page
+            return RedirectResponse(landing_path({}, get_role(request)), status_code=302)
+        return RedirectResponse(landing_path(co.get("settings") or {}, get_role(request)), status_code=302)
 
     # ── Company switcher (HTMX partial) ─────────────────────────────────────
 
@@ -888,8 +866,9 @@ document.querySelector('#restore-btn').closest('form').addEventListener('submit'
     )
 
 
-def _direct_connection_gate(email: str, password: str) -> FT:
-    """Shown when a second user tries to log in without relay connected."""
+def _direct_connection_gate(email: str, password: str, next_url: str) -> FT:
+    """Shown when a second user tries to log in without relay connected. Signing
+    the other user out lands on next_url, where the sign-in itself would have."""
     from celerp.gateway.state import (
         build_public_acquisition_url,
         get_commercial_mode,
@@ -940,6 +919,7 @@ def _direct_connection_gate(email: str, password: str) -> FT:
                 Form(
                     Input(type="hidden", name="email", value=email),
                     Input(type="hidden", name="password", value=password),
+                    Input(type="hidden", name="next", value=next_url),
                     Button(t("btn.continue_sign_out_the_other_user"),
                            type="submit",
                            cls="btn btn--secondary"),

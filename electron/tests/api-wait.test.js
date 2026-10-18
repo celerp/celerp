@@ -80,6 +80,14 @@ test("reads the rebuild progress the API logs", () => {
   expect(rebuildProgress("INFO:celerp.modules.loader:Module 'x': API routes registered")).toBeNull();
 });
 
+// A fresh install replays an empty ledger and logs "0 of 0"; there is nothing to
+// update, so nothing is shown.
+test("an empty rebuild has no progress to show", () => {
+  expect(rebuildProgress("INFO:celerp.projections.engine:Rebuilding records: 0 of 0 ledger entries")).toBeNull();
+  expect(rebuildProgress("INFO:celerp.projections.engine:Rebuilding records: 0 of 12 ledger entries"))
+    .toEqual({ done: 0, total: 12 });
+});
+
 test("a progress line split across two output chunks is still read whole", () => {
   const seen = [];
   const feed = lineSplitter((line) => { const p = rebuildProgress(line); if (p) seen.push(p); });

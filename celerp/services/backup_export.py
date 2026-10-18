@@ -104,7 +104,6 @@ async def archive_meta() -> dict:
     """meta.json of a full backup."""
     import datetime
 
-    from celerp.config import read_config
     from celerp.db import get_session_ctx
     from celerp.migrations.compatibility import running_version
     from celerp.modules.registry import load_set
@@ -115,6 +114,5 @@ async def archive_meta() -> dict:
         "celerp_version": running_version(),
         "pg_version": _pg_version(),
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "company_name": read_config().get("company", {}).get("name", "unknown"),
         "enabled_modules": enabled_modules,
     }

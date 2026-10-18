@@ -548,6 +548,23 @@ async def test_backup_carries_enabled_module_state(real_engine, real_client, tmp
     assert get_enabled(await _bk_settings(real_engine, new)) == set(enabled)
 
 
+async def test_backup_of_a_company_that_never_chose_carries_the_modules_it_uses(real_engine, real_client, tmp_path,
+                                                                               monkeypatch):
+    """A company that never chose its modules uses every module the installation loads,
+    and a server can load them from ENABLED_MODULES with no list in its config file. The
+    backup records those modules, so the company restored from it has them on."""
+    from celerp.modules.registry import get_enabled
+    _bk_local(monkeypatch, tmp_path)
+    monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
+    loaded = ["celerp-inventory", "celerp-labels"]
+    monkeypatch.setenv("ENABLED_MODULES", ",".join(loaded))
+    _, _, tok = await _bk_setup(real_engine, settings={"currency": "THB"})
+    data = await download(real_client, tok)
+    assert sorted(manifest(data)["modules"]["enabled"]) == loaded
+    new = await _bk_restore_new(real_client, tok, data)
+    assert get_enabled(await _bk_settings(real_engine, new)) == set(loaded)
+
+
 async def test_backup_carries_portable_state_only(real_engine, real_client, tmp_path, monkeypatch):
     """A backup holds the manifest, one member per portable table and attachment files, and
     the company's settings without installation or person keys."""

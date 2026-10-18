@@ -1,17 +1,28 @@
 diff --git a/dist/index.js b/dist/index.js
-index ccfe17a..9cdf669 100644
+index ccfe17a..573b2f6 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -34,6 +34,8 @@ const defaults = {
+@@ -34,6 +34,10 @@ const defaults = {
      persistent: true,
      initdbFlags: [],
      postgresFlags: [],
 +    // Command words put before the postgres binary, e.g. a program that runs it as its child.
 +    launcher: [],
++    // The postgres program to run in place of the platform package's own.
++    postgresBinary: '',
      createPostgresUser: false,
      onLog: console.log,
      onError: console.error,
-@@ -171,13 +173,16 @@ class EmbeddedPostgres {
+@@ -160,7 +164,7 @@ class EmbeddedPostgres {
+      */
+     start() {
+         return __awaiter(this, void 0, void 0, function* () {
+-            const { postgres } = yield bin;
++            const postgres = this.options.postgresBinary || (yield bin).postgres;
+             // Optionally retrieve the uid and gid
+             const permissionIds = yield this.getUidAndGid()
+                 .catch(() => {
+@@ -171,13 +175,16 @@ class EmbeddedPostgres {
              yield new Promise((resolve, reject) => {
                  var _a;
                  // Spawn a postgres server
