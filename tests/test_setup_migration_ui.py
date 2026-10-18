@@ -1705,3 +1705,10 @@ async def test_a_refused_run_action_keeps_its_reason_through_the_polls(ui, fake_
     polled = soup.find(id="migration-progress")
     assert polled is not None and polled.get("hx-trigger") == "every 2s"
     assert reason in soup.get_text() and reason not in polled.get_text()
+
+
+def test_xero_attachments_gate_says_what_signing_in_is_for():
+    """The sign-in gate on the attachments step says what signing in does, with no sales line."""
+    from ui.routes.account import _GATE_BENEFIT_KEYS
+    text = t(_GATE_BENEFIT_KEYS["xero-attachments"])
+    assert "Xero" in text and "free" not in text.lower()

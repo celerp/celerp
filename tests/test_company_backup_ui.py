@@ -1345,7 +1345,7 @@ async def test_restore_success_shows_reconciled_totals(ui, real_engine, real_cli
         r = await ui.post(f"{base}/restore", data=_hidden(preview))
         restored_tok = _cookie(r, "celerp_token")
         page = _page(await _follow(ui, r))
-        assert "Free to use locally with no time limit." in page
+        assert "Free to use locally" not in page  # a work screen, not sales copy
         # A trial balance is not one amount: the row names the figure it shows.
         for label, figure in zip(("Total debits on the trial balance", "Owed to you", "You owe"),
                                  await _key_totals(real_client, restored_tok)):
