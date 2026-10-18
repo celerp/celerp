@@ -4597,7 +4597,10 @@ async def get_period_lock(
 ) -> dict:
     from celerp.models.company import Company
     company = await session.get(Company, company_id)
-    settings = company.settings or {}
+    return _period_lock_state(company.settings or {})
+
+
+def _period_lock_state(settings: dict) -> dict:
     return {
         "lock_date": settings.get("lock_date"),
         "lock_date_set_by": settings.get("lock_date_set_by"),
@@ -4819,11 +4822,7 @@ async def set_period_lock(
     company = await locked_company(session, company_id)  # placing rolled back expires the row
     settings = company.settings
     await session.commit()
-    return {
-        "lock_date": settings.get("lock_date"),
-        "lock_date_set_by": settings.get("lock_date_set_by"),
-        "lock_date_set_at": settings.get("lock_date_set_at"),
-    }
+    return _period_lock_state(settings)
 
 
 @router.post("/close-year")
