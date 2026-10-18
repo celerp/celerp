@@ -79,7 +79,9 @@
 ; installed path gets longer (a Program Files install may sit at the 259 character
 ; limit). A marker file next to them records that a swap is under way, so the next
 ; setup can finish or undo one that was stopped, and never touches folders it did
-; not make.
+; not make. An installed version is only ever replaced this way: when setup cannot
+; write its marker, or finds a sibling folder or marker it did not make, it stops
+; and leaves the installed version and what it found as they were.
 ;
 ; Before anything is changed, setup checks that every volume it writes to has room
 ; for what it writes there, and stops with a message saying so if one does not.
@@ -94,6 +96,7 @@
   Var celerpStage
   Var celerpOld
   Var celerpMarker
+  Var celerpMarkerText
   Var celerpParent
   Var celerpName
   Var celerpTry
@@ -176,7 +179,16 @@
     StrCpy $celerpStage "$celerpParent\~N$celerpName"
     StrCpy $celerpOld "$celerpParent\~O$celerpName"
     StrCpy $celerpMarker "$celerpParent\~S$celerpName"
-    ${If} ${FileExists} "$celerpMarker"
+    StrCpy $celerpMarkerText "${PRODUCT_NAME} setup is replacing $INSTDIR"
+    ; Only a marker this setup would write is setup's own (a folder cannot be read).
+    StrCpy $celerpFile ""
+    ClearErrors
+    FileOpen $celerpFind "$celerpMarker" r
+    ${IfNot} ${Errors}
+      FileRead $celerpFind $celerpFile
+      FileClose $celerpFind
+    ${EndIf}
+    ${If} $celerpFile == $celerpMarkerText
       ${If} ${FileExists} "$celerpOld\*.*"
         ; setup itself creates $INSTDIR empty when it starts
         ${DirState} "$INSTDIR" $celerpTry
@@ -196,7 +208,12 @@
     ${If} ${FileExists} "$celerpMarker"
     ${OrIf} ${FileExists} "$celerpStage"
     ${OrIf} ${FileExists} "$celerpOld"
-      DetailPrint "Left as found: $celerpStage, $celerpOld"
+      DetailPrint "Left as found: $celerpMarker, $celerpStage, $celerpOld"
+      ${If} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+        MessageBox MB_OK|MB_ICONEXCLAMATION "${PRODUCT_NAME} setup replaces the installed version through new folders next to $INSTDIR, and found $celerpStage, $celerpOld or $celerpMarker there, which it did not make. Move them somewhere else, then run setup again. The installed version is as it was." /SD IDOK
+        SetErrorLevel 2
+        Quit
+      ${EndIf}
     ${ElseIf} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
       StrCpy $celerpMode "swap"
     ${Else}
@@ -205,6 +222,12 @@
         StrCpy $celerpMode "fresh"
       ${EndIf}
     ${EndIf}
+  ${EndIf}
+  ${If} $celerpMode == "direct"
+  ${AndIf} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "${PRODUCT_NAME} setup cannot replace the installed version in $INSTDIR safely. Install into another folder, or uninstall ${PRODUCT_NAME} first (your data is kept). The installed version is as it was." /SD IDOK
+    SetErrorLevel 2
+    Quit
   ${EndIf}
 !macroend
 
@@ -292,16 +315,29 @@
   !endif
 !macroend
 
-; Starts the copy: into the new sibling folder, or into $INSTDIR in direct mode.
+; Starts the copy: into the new sibling folder, or into $INSTDIR in direct mode. A
+; replacement goes ahead only with its marker written and no sibling in its way; an
+; install into an empty folder can do without them.
 !macro celerpBeginCopy
   ${If} $celerpMode != "direct"
     CreateDirectory "$celerpParent"
     ClearErrors
-    FileOpen $celerpFile "$celerpMarker" w
+    ${If} ${FileExists} "$celerpMarker"
+    ${OrIf} ${FileExists} "$celerpStage"
+    ${OrIf} ${FileExists} "$celerpOld"
+      SetErrors
+    ${Else}
+      FileOpen $celerpFile "$celerpMarker" w
+    ${EndIf}
     ${If} ${Errors}
+      ${If} $celerpMode == "swap"
+        MessageBox MB_OK|MB_ICONEXCLAMATION "${PRODUCT_NAME} setup could not start a new folder next to $INSTDIR to replace the installed version. Check that you can create files in $celerpParent, then run setup again. The installed version is as it was." /SD IDOK
+        SetErrorLevel 2
+        Quit
+      ${EndIf}
       StrCpy $celerpMode "direct"
     ${Else}
-      FileWrite $celerpFile "${PRODUCT_NAME} setup is replacing $INSTDIR"
+      FileWrite $celerpFile "$celerpMarkerText"
       FileClose $celerpFile
     ${EndIf}
   ${EndIf}
