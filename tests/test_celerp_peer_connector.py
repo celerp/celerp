@@ -380,7 +380,7 @@ async def test_a_key_the_accountant_closed_says_so_on_the_journals_pull(monkeypa
     with pytest.raises(ValueError) as closed:
         await peer.CelerpConnector().sync_journals(ConnectorContext(
             company_id=str(uuid.uuid4()), store_handle="https://firm.example", access_token=KEY))
-    reason = sync_failure_reason(str(closed.value), "Celerp Accountant")
+    reason = sync_failure_reason(str(closed.value), "Accountant Sync")
     assert "revoked or has expired" in reason and "new pairing link" in reason
     assert "GitHub" not in reason and "Web Access" not in reason
 
@@ -410,5 +410,20 @@ async def test_a_key_the_accountant_closed_says_so_on_a_push(monkeypatch):
     # The key is closed for every record, so the push stops at the first answer and the
     # records wait for a new key instead of each needing attention.
     assert len(sent) == 1
-    reason = sync_failure_reason(str(closed.value), "Celerp Accountant")
+    reason = sync_failure_reason(str(closed.value), "Accountant Sync")
     assert "revoked or has expired" in reason and "GitHub" not in reason
+
+
+def test_the_connector_is_called_accountant_sync_everywhere():
+    """The firm tells the client to open Accountant Sync, so the client's page, the
+    notices and every locale use that one name."""
+    import json
+    from pathlib import Path
+
+    from celerp.connectors.registry import service_name
+
+    assert service_name("celerp") == "Accountant Sync"
+    for path in Path("ui/locales").glob("*.json"):
+        text = path.read_text(encoding="utf-8")
+        assert "Celerp Accountant" not in text, path.name
+        assert "Accountant Sync" in json.loads(text)["accountant_access.copy_now"], path.name

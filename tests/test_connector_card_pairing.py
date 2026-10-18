@@ -49,7 +49,7 @@ def _endpoint(path, method="POST"):
 
 def _celerp_card(**kw):
     return to_xml(routes._connector_card(
-        {"id": "celerp", "name": "Celerp Accountant", "auth_type": "api_key",
+        {"id": "celerp", "name": "Accountant Sync", "auth_type": "api_key",
          "category": "accounting", "entities": ["contacts"], **kw},
         None, "", "", lang="en"))
 
