@@ -1566,14 +1566,13 @@ def _error_block(error: dict | None) -> FT | str:
                cls="flash flash--error")
 
 
-def _progress_fragment(run: dict, error: str | None = None) -> FT:
+def _progress_fragment(run: dict) -> FT:
     status = run.get("status", "")
     phases = run.get("phases") or []
     active = status in _ACTIVE_STATUSES or run.get("preparing")
     polling = {"hx_get": f"/migrations/{run['id']}", "hx_trigger": "every 2s", "hx_swap": "outerHTML"} \
         if active else {}
     return Div(
-        flash(error) if error else "",
         P(t("migration.progress_subtitle"), cls="form-hint") if active else "",
         P(_badge(t(f"migration.status.{status}"), _PHASE_BADGE.get(
             {"completed": "done", "failed": "failed", "running": "running"}.get(status, ""), "badge--inactive"))),
@@ -1610,11 +1609,13 @@ async def _load_run(request: Request, run_id: str):
 
 
 def _progress_page(request: Request, run: dict, error: str | None = None):
+    # A refusal sits outside the polled block so the next poll does not drop it.
     return wizard_page(
         request,
         _steps(5),
         auth_header(t("migration.progress_title", company=run.get("company_name", ""))),
-        _progress_fragment(run, error),
+        flash(error) if error else "",
+        _progress_fragment(run),
         P(t("migration.retention" if run.get("status") == "ready" else "migration.retention_started"),
           cls="form-hint"),
     )
