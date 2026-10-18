@@ -411,7 +411,7 @@ async def started_run_id(session: AsyncSession, claim: str, user_id: uuid.UUID) 
 
 
 def _illegal(action: str, run: MigrationRun) -> MigrationError:
-    return MigrationError(409, t(f"migration.err_cannot_{action}", status=t(f"migration.status.{run.status}")))
+    return MigrationError(409, t(f"migration.err_cannot_{action}"))
 
 
 def staged_settings(modules: Sequence[str]) -> dict:
