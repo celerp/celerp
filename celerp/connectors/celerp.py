@@ -382,7 +382,7 @@ def _refusal(errors: list) -> str:
 
 class CelerpConnector(ConnectorBase):
     name = "celerp"
-    display_name = "Celerp Accountant"
+    display_name = "Accountant Sync"
     direction = SyncDirection.BOTH
     category = ConnectorCategory.ACCOUNTING
     # Fetched from the accountant before anything is sent: its journals, then its lock
