@@ -22,7 +22,7 @@ class FormData(dict):
 class Request:
     def __init__(self, data=None):
         self.state = SimpleNamespace()
-        self._form = FormData({"address": "https://firm.example.com", **(data or {})})
+        self._form = FormData({"address": "https://firm.example.com", "firm": "Firm Practice", **(data or {})})
     async def form(self):
         return self._form
 
@@ -213,7 +213,7 @@ async def test_documents_scope_can_be_granted_without_contact_permission(monkeyp
         "scopes": ["documents"],
     }))
     assert response.status_code == 200
-    assert seen == [{"source_company_id": source, "label": "Finance documents only",
+    assert seen == [{"source_company_id": source, "label": "Finance documents only", "firm": "Firm Practice",
                      "scopes": ["documents"]}]
     assert response.headers["cache-control"] == "no-store"
 
@@ -266,14 +266,14 @@ async def test_pairing_code_carries_company_id(monkeypatch):
     issue = _endpoints()["/settings/accountant-access/grants"]
     response = await issue(Request({"pairing_code": code, "label": ""}))
     assert response.status_code == 200
-    assert seen == [{"source_company_id": str(source), "label": "Acme Trading Co.",
+    assert seen == [{"source_company_id": str(source), "label": "Acme Trading Co.", "firm": "Firm Practice",
                      "scopes": ["contacts", "products"]}]
 
     response = await issue(Request({"pairing_code": str(source), "label": "Client"}))
     assert "Check the pairing code" in to_xml(response)
     assert len(seen) == 1
 
-    page = routes._grant_form("en")
+    page = routes._grant_form("en", "")
     # Keys last one year; there is no expiry to choose.
     assert 'name="lifetime_days"' not in to_xml(page)
     html = to_xml(page)
@@ -299,7 +299,7 @@ async def test_scopes_derived_from_entities(monkeypatch):
     assert {"sync_journals", "sync_period_lock"} <= set(vars(CelerpConnector))
     assert set(typing.get_args(Scope)) == SCOPES == set(ENTITY_SCOPE.values())
 
-    html = to_xml(routes._grant_form("en"))
+    html = to_xml(routes._grant_form("en", ""))
     for scope in SCOPES:
         assert f'value="{scope}"' in html
     # A second click while the first is issuing would issue a second, unseen key.

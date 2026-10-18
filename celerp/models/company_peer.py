@@ -18,6 +18,8 @@ class CompanyPeerGrant(Base):
     source_company_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), nullable=False)
     token_hash: Mapped[str] = mapped_column(sa.String(64), nullable=False, unique=True)
     label: Mapped[str] = mapped_column(sa.String(128), nullable=False)
+    # The firm's name as the client sees it on the journals and lock dates sent with this key.
+    firm: Mapped[str] = mapped_column(sa.String(160), nullable=False)
     scopes: Mapped[list] = mapped_column(sa.JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     expires_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)

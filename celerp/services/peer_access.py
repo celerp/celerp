@@ -198,9 +198,10 @@ def key_ids(credential: object) -> tuple[uuid.UUID, uuid.UUID]:
 
 
 async def issue(session: AsyncSession, *, company_id: uuid.UUID, source_company_id: uuid.UUID,
-                label: str, scopes: frozenset[str],
+                label: str, firm: str, scopes: frozenset[str],
                 now: datetime | None = None) -> tuple[CompanyPeerGrant, str]:
     if (not isinstance(label, str) or not 1 <= len(label.strip()) <= 128 or
+            not isinstance(firm, str) or not 1 <= len(firm.strip()) <= 160 or
             not scopes or not scopes <= SCOPES):
         raise HTTPException(422, "Invalid integration grant")
     when = now or datetime.now(timezone.utc)
@@ -213,7 +214,7 @@ async def issue(session: AsyncSession, *, company_id: uuid.UUID, source_company_
     credential = f"cp1.{company_id}.{grant_id}.{raw}"
     grant = CompanyPeerGrant(
         id=grant_id, company_id=company_id, source_company_id=source_company_id,
-        label=label.strip(), scopes=sorted(scopes),
+        label=label.strip(), firm=firm.strip(), scopes=sorted(scopes),
         token_hash=hashlib.sha256(credential.encode()).hexdigest(),
         created_at=when, expires_at=when + KEY_LIFETIME,
     )

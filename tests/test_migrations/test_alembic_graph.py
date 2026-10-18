@@ -45,12 +45,12 @@ RELEASE_HEAD = "o2d3e4f5a6b7"
 # the index on the asset a projection belongs to, then company peer grants, then removing
 # per-user API keys, then the firm view's key last use and refused records, then the
 # revisions two-way sync sent or declined, then the account links two-way sync keeps,
-# then the attachments a Xero migration fetches.
+# then the attachments a Xero migration fetches, then the firm name a company key carries.
 RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1", "t7i8j9k0l1m2",
                  "u8j9k0l1m2n3", "c7f1a2b3d4e5", "d8e9f0a1b2c3", "e9f0a1b2c3d4", "v0m1n2o3p4q5",
                  "w1n2o3p4q5r6", "x2o3p4q5r6s7", "x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9",
                  "a5t6u7v8w9x0", "b6u7v8w9x0y1", "c7v8w9x0y1z2", "d8w9x0y1z2a3",
-                 "e9x0y1z2a3b4"]
+                 "e9x0y1z2a3b4", "f0y1z2a3b4c5"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.
@@ -113,9 +113,9 @@ def test_peer_downgrade_preserves_persisted_records(table):
                 if table == "company_peer_grants":
                     conn.execute(text(
                         "INSERT INTO company_peer_grants "
-                        "(id, company_id, source_company_id, token_hash, label, scopes, "
+                        "(id, company_id, source_company_id, token_hash, label, firm, scopes, "
                         "created_at, expires_at) VALUES "
-                        "(:id, :company, :source, :digest, 'Firm', '[\"contacts\"]', "
+                        "(:id, :company, :source, :digest, 'Firm', 'Firm', '[\"contacts\"]', "
                         "now(), now() + interval '1 day')"), {
                             "id": str(uuid.uuid4()), "company": company_id,
                             "source": str(uuid.uuid4()), "digest": "a" * 64,

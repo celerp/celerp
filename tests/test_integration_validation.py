@@ -412,7 +412,7 @@ def test_company_key_keeps_the_firms_copy_in_step_both_ways(installs, client_com
         async with _client(installs, "client") as client, _client(installs, "firm") as firm:
             tok, firm_tok = client_company["tok"], firm_copy["tok"]
             granted = await firm.post("/company-peers/grants", headers=auth(firm_tok), json={
-                "source_company_id": client_company["company_id"], "label": "Demo Trading",
+                "source_company_id": client_company["company_id"], "label": "Demo Trading", "firm": "Firm Practice",
                 "scopes": ["contacts", "products", "documents", "inventory", "journals"]})
             assert granted.status_code == 201, granted.text
             await _connect(client, tok, pairing_link(FIRM_ADDRESS, granted.json()["credential"]))

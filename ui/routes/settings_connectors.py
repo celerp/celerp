@@ -1257,10 +1257,13 @@ async def _from_accountant_section(token: str, lang: str, error: str | None = No
     return _from_accountant(items, lang, error)
 
 
-def _grant_form(lang: str) -> FT:
+def _grant_form(lang: str, firm: str) -> FT:
     from celerp.config import settings
     from celerp.services.peer_access import SCOPE_ORDER
     return Form(
+        Label(t("accountant_access.firm", lang)),
+        Input(name="firm", maxlength="160", value=firm, cls="form-input"),
+        P(t("accountant_access.firm_hint", lang), cls="form-hint"),
         Label(t("accountant_access.pairing_code", lang)),
         Input(name="pairing_code", type="text", maxlength="1024", cls="form-input"),
         Label(t("accountant_access.address", lang)),
@@ -1403,7 +1406,7 @@ def setup_routes(app):
 
     @app.get("/settings/accountant-access")
     async def accountant_access_page(request: Request):
-        from ui.api_client import APIError, accountant_peer_grants, role_from_company
+        from ui.api_client import APIError, accountant_peer_grants, company_backup_sender, role_from_company
         from ui.components.shell import base_shell, page_header
         from ui.security import not_permitted_redirect
         token = _token(request)
@@ -1422,6 +1425,11 @@ def setup_routes(app):
             notice = P(str(exc), cls="flash flash--warning")
         else:
             notice = ""
+        # The firm name starts as the one this installation last sent a company copy with.
+        try:
+            firm = (await company_backup_sender(token)).get("firm_name") or ""
+        except APIError:
+            firm = ""
         return await base_shell(
             page_header(
                 t("accountant_access.title", lang),
@@ -1432,7 +1440,7 @@ def setup_routes(app):
             P(t("accountant_access.description", lang)),
             P(t("accountant_access.direction_warning", lang), cls="settings-hint"),
             P(t("accountant_access.source_help", lang)),
-            _grant_form(lang),
+            _grant_form(lang, firm),
             Div(id="accountant-access-result"),
             notice,
             H3(t("accountant_access.active_grants", lang)),
@@ -1456,6 +1464,9 @@ def setup_routes(app):
                         cls="flash flash--warning")
         if not form.getlist("scopes"):
             return Span(t("accountant_access.no_scopes", lang), cls="flash flash--warning")
+        firm = str(form.get("firm") or "").strip()
+        if not 1 <= len(firm) <= 160:
+            return Span(t("accountant_access.firm_missing", lang), cls="flash flash--warning")
         try:
             source, source_name = parse_pairing_code(form.get("pairing_code"))
             source_id = str(source)
@@ -1468,7 +1479,7 @@ def setup_routes(app):
                         cls="flash flash--warning")
         try:
             issued = await api.issue_accountant_peer_grant(token, {
-                "source_company_id": source_id, "label": label,
+                "source_company_id": source_id, "label": label, "firm": firm,
                 "scopes": scopes,
             })
         except api.APIError as exc:

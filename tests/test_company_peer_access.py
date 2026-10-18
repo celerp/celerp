@@ -35,7 +35,7 @@ async def test_issue_verify_and_revoke(db):
     source = uuid.uuid4()
     async with factory() as s:
         grant, key = await issue(s, company_id=target, source_company_id=source,
-                                 label="Client books", scopes=frozenset({"contacts"}), now=AT)
+                                 label="Client books", firm="Firm Practice", scopes=frozenset({"contacts"}), now=AT)
         gid = grant.id
         await s.commit()
         assert key not in repr(grant)
@@ -67,7 +67,7 @@ async def test_unrelated_company_and_malformed_keys(db):
     source = uuid.uuid4()
     async with factory() as s:
         _, key = await issue(s, company_id=target, source_company_id=source,
-                             label="A", scopes=frozenset({"contacts"}), now=AT)
+                             label="A", firm="Firm Practice", scopes=frozenset({"contacts"}), now=AT)
         await s.commit()
     bad = [None, "", "x" + key, key + "z", key.upper(), key[:-1] + "%",
            key.replace(str(target), str(uuid.uuid4())), key[:-1] + "/", key + "?x=1"]
@@ -83,13 +83,16 @@ async def test_active_grant_capacity_and_scope_validation(db):
     async with factory() as s:
         for _ in range(5):
             await issue(s, company_id=target, source_company_id=uuid.uuid4(),
-                        label="A", scopes=frozenset({"contacts"}), now=AT)
+                        label="A", firm="Firm Practice", scopes=frozenset({"contacts"}), now=AT)
         with pytest.raises(HTTPException, match="Too many"):
             await issue(s, company_id=target, source_company_id=uuid.uuid4(),
-                        label="A", scopes=frozenset({"contacts"}), now=AT)
+                        label="A", firm="Firm Practice", scopes=frozenset({"contacts"}), now=AT)
         with pytest.raises(HTTPException):
             await issue(s, company_id=target, source_company_id=uuid.uuid4(),
-                        label="A", scopes=frozenset({"administration"}), now=AT)
+                        label="A", firm="Firm Practice", scopes=frozenset({"administration"}), now=AT)
+        with pytest.raises(HTTPException, match="Invalid"):
+            await issue(s, company_id=target, source_company_id=uuid.uuid4(),
+                        label="A", firm="  ", scopes=frozenset({"contacts"}), now=AT)
         await s.rollback()
 
 
@@ -99,7 +102,8 @@ def test_unimplemented_peer_operations_cannot_be_pre_authorized():
 
     assert SCOPES == frozenset({"contacts", "products", "documents", "inventory", "journals"})
     target = uuid.uuid4()
-    common = {"source_company_id": target, "label": "Reviewed contact-only access"}
+    common = {"source_company_id": target, "label": "Reviewed contact-only access",
+              "firm": "Firm Practice"}
     assert GrantRequest(**common, scopes={"contacts"}).scopes == {"contacts"}
     assert GrantRequest(**common, scopes={"products", "contacts"}).scopes == {"products", "contacts"}
     assert GrantRequest(**common, scopes={"documents"}).scopes == {"documents"}
@@ -116,7 +120,7 @@ async def test_product_peer_scope_is_separate_from_contact_authority(db):
     source = uuid.uuid4()
     async with factory() as session:
         _, key = await issue(session, company_id=target,
-                             source_company_id=source, label="Product catalog",
+                             source_company_id=source, label="Product catalog", firm="Firm Practice",
                              scopes=frozenset({"products"}), now=AT)
         await session.commit()
     async with factory() as session:
@@ -138,7 +142,7 @@ async def test_inventory_scope_does_not_grant_financial_document_authority(db):
     source = uuid.uuid4()
     async with factory() as session:
         _, key = await issue(session, company_id=target, source_company_id=source,
-                             label="Physical counts", scopes=frozenset({"inventory"}), now=AT)
+                             label="Physical counts", firm="Firm Practice", scopes=frozenset({"inventory"}), now=AT)
         await session.commit()
     async with factory() as session:
         grant = await authenticate(session, key, source_company_id=source,

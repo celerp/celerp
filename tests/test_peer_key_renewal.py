@@ -35,7 +35,7 @@ async def db():
 
 async def _issued(factory, target, source, *, label="Client books", when=AT):
     async with factory() as s:
-        grant, key = await issue(s, company_id=target, source_company_id=source, label=label,
+        grant, key = await issue(s, company_id=target, source_company_id=source, label=label, firm="Firm Practice",
                                  scopes=frozenset({"contacts", "documents"}), now=when)
         await s.commit()
     return grant, key

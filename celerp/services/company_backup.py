@@ -1753,10 +1753,6 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     "source_company_name": m["company"]["name"],
                     "restored_at": datetime.now(timezone.utc).isoformat(),
                     **({"provenance": m["provenance"]} if m.get("provenance") else {}),
-                    # The firm a client's copy was opened from, named when its journals reach the client.
-                    **({"opened_from": opener.name} if retain_peer_identities and current_company_id
-                       and (opener := await session.get(Company, uuid.UUID(str(current_company_id))))
-                       else {}),
                     "team_policy_carried": plan.role_permissions == "source" or replacing is not None,
                 }
                 # The carried team keeps what its roles may do in the current company.

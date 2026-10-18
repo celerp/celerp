@@ -62,7 +62,7 @@ async def _second_firm(real_client, real_engine, tok: str, client_company: str) 
     assert opened.status_code == 201, opened.text
     second_tok = await token(real_engine, accountant, opened.json()["company_id"])
     granted = await real_client.post("/company-peers/grants", json={
-        "source_company_id": client_company, "label": "Demo Trading",
+        "source_company_id": client_company, "label": "Demo Trading", "firm": "Second Practice",
         "scopes": ["contacts", "products", "documents", "inventory", "journals"]},
         headers=auth(second_tok))
     assert granted.status_code == 201, granted.text

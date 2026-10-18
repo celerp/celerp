@@ -83,7 +83,7 @@ async def _pair_journals(real_client, real_engine):
     """The paired companies, with the key also opening journals and the lock date."""
     tok, firm_tok, client_company, _, contacts = await _paired(real_client, real_engine)
     granted = await real_client.post("/company-peers/grants", json={
-        "source_company_id": client_company, "label": "Demo Trading",
+        "source_company_id": client_company, "label": "Demo Trading", "firm": "Firm Practice",
         "scopes": ["contacts", "products", "documents", "inventory", "journals"]},
         headers=auth(firm_tok))
     assert granted.status_code == 201, granted.text

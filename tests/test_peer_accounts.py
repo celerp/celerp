@@ -115,7 +115,7 @@ async def _paired_without_copy(client, engine, *, client_name: str, books_name: 
     assert made.status_code == 200, made.text
     books_tok = made.json()["access_token"]
     granted = await client.post("/company-peers/grants", json={
-        "source_company_id": _company_of(tok), "label": client_name, "scopes": SCOPES},
+        "source_company_id": _company_of(tok), "label": client_name, "firm": "Firm Practice", "scopes": SCOPES},
         headers=auth(books_tok))
     assert granted.status_code == 201, granted.text
     return tok, books_tok, granted.json()["credential"], contacts, firm_user, firm_tok
@@ -218,7 +218,7 @@ async def test_first_pairing_without_a_copy_waits_for_the_review(real_client, re
                                         headers=auth(firm_tok))
     books_tok = books_made.json()["access_token"]
     granted = await real_client.post("/company-peers/grants", json={
-        "source_company_id": client_company, "label": "Demo Trading", "scopes": SCOPES},
+        "source_company_id": client_company, "label": "Demo Trading", "firm": "Firm Practice", "scopes": SCOPES},
         headers=auth(books_tok))
     credential = granted.json()["credential"]
     await _add(real_client, tok, "6150", "Courier")
@@ -430,7 +430,7 @@ async def test_a_posting_role_line_crosses_as_the_role(real_client, real_engine,
         {"code": "4000", "name": "Sales", "account_type": "revenue"}]}, headers=auth(books_tok))
     assert r.status_code == 200, r.text
     granted = await real_client.post("/company-peers/grants", json={
-        "source_company_id": client_company, "label": "Demo Trading", "scopes": SCOPES},
+        "source_company_id": client_company, "label": "Demo Trading", "firm": "Firm Practice", "scopes": SCOPES},
         headers=auth(books_tok))
     other_key = granted.json()["credential"]
     receivable = await _post_journal(real_client, tok, ADJUSTED, 15.0, "Debtor reclass",

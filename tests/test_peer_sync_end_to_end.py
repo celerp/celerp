@@ -89,7 +89,7 @@ async def _paired(real_client, real_engine, before_copy=None):
     firm_tok = await token(real_engine, accountant, firm_company)
     client_company = _company_of(tok)
     granted = await real_client.post("/company-peers/grants", json={
-        "source_company_id": client_company, "label": "Demo Trading",
+        "source_company_id": client_company, "label": "Demo Trading", "firm": "Firm Practice",
         "scopes": ["contacts", "products", "documents", "inventory"]}, headers=auth(firm_tok))
     assert granted.status_code == 201, granted.text
     return tok, firm_tok, client_company, granted.json()["credential"], contacts
@@ -234,7 +234,7 @@ async def test_peer_key_refused_outside_its_routes(real_client, real_engine):
         r = await real_client.request(method, path, headers=headers, json={})
         assert r.status_code == 403, (method, path, r.status_code, r.text)
     narrow = await real_client.post("/company-peers/grants", json={
-        "source_company_id": client_company, "label": "Contacts only", "scopes": ["contacts"]},
+        "source_company_id": client_company, "label": "Contacts only", "firm": "Firm Practice", "scopes": ["contacts"]},
         headers=auth(firm_tok))
     assert narrow.status_code == 201, narrow.text
     r = await real_client.post("/docs/import/batch", json={"records": []}, headers={

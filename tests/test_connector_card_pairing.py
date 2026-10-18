@@ -149,12 +149,13 @@ async def test_issue_result_shows_pairing_link(monkeypatch):
     monkeypatch.setattr(api_client, "accountant_peer_grants", grants)
     monkeypatch.setattr(settings, "celerp_public_url", ADDRESS)
 
-    form = to_xml(routes._grant_form("en"))
+    form = to_xml(routes._grant_form("en", "Firm Practice"))
     assert 'name="address"' in form and f'value="{ADDRESS}"' in form
+    assert 'name="firm"' in form and 'value="Firm Practice"' in form
 
     issue = _endpoint("/settings/accountant-access/grants")
     code = pairing_code(uuid.uuid4(), "Client")
-    response = await issue(Request({"pairing_code": code, "label": "", "address": ADDRESS}))
+    response = await issue(Request({"pairing_code": code, "label": "", "address": ADDRESS, "firm": "Firm Practice"}))
     body = response.body.decode()
     link = re.search(r'id="issued-pairing-link"[^>]*>([^<]+)<', body).group(1)
     assert parse_pairing_link(link) == (ADDRESS, KEY)

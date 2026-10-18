@@ -26,6 +26,7 @@ Scope = Literal[peer_access.SCOPE_ORDER]
 class GrantRequest(BaseModel):
     source_company_id: uuid.UUID
     label: str = Field(min_length=1, max_length=128)
+    firm: str = Field(min_length=1, max_length=160)
     scopes: set[Scope] = Field(min_length=1, max_length=len(peer_access.SCOPES))
 
 
@@ -50,7 +51,7 @@ async def create_peer_grant(body: GrantRequest, ctx: AuthContext = Depends(user_
                             session: AsyncSession = Depends(get_session)):
     row, secret = await peer_access.issue(
         session, company_id=ctx.company_id, source_company_id=body.source_company_id,
-        scopes=frozenset(body.scopes), label=body.label)
+        scopes=frozenset(body.scopes), label=body.label, firm=body.firm)
     await session.commit()
     return {**_public(row), "credential": secret}
 

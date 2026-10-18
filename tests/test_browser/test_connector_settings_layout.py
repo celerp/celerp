@@ -37,7 +37,7 @@ def test_sync_direction_stands_off_sync_now(browser):
 def test_the_pairing_form_stands_off_its_neighbours(browser):
     from ui.routes.settings_connectors import _grant_form
 
-    body = to_xml(Div(P("Ask your client for the pairing code.", id="above"), _grant_form("en"),
+    body = to_xml(Div(P("Ask your client for the pairing code.", id="above"), _grant_form("en", ""),
                       Div(id="accountant-access-result"), H3("Client access keys", id="below")))
     above, below = _gaps(browser, body, """() => {
         const box = s => document.querySelector(s).getBoundingClientRect();

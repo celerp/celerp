@@ -50,13 +50,6 @@ _SWAPPED = {"debit": "credit", "credit": "debit", "fx_debit": "fx_credit", "fx_c
 
 # ---- shared ----------------------------------------------------------------------------
 
-def firm_name(company: Company) -> str:
-    """The firm's name: the company its client's copy was opened from, else the copy's own."""
-    restored = (company.settings or {}).get("restored_backup") or {}
-    opened_from = restored.get("opened_from") if isinstance(restored, dict) else None
-    return opened_from if isinstance(opened_from, str) and opened_from.strip() else company.name
-
-
 def local_id(firm_company: uuid.UUID, firm_journal: str) -> str:
     """The client's id for a journal of the firm's: the same on every run."""
     return "je:peer:" + str(uuid.uuid5(uuid.NAMESPACE_URL, f"celerp-peer-journal:{firm_company}:{firm_journal}"))
@@ -174,7 +167,6 @@ async def journal_feed(session: AsyncSession, ctx, after: str = "") -> dict:
     contact the client does not hold is held back with the reason. Each entry carries
     the firm's accounts its lines name, with their parents, for the client to place."""
     grant = await _caller_grant(session, ctx)
-    company = await session.get(Company, grant.company_id)
     if not isinstance(after, str) or len(after) > 512:
         raise HTTPException(422, "Invalid journal cursor")
     mapped = select(CompanyPeerIdentity.target_entity_id).where(
@@ -214,7 +206,7 @@ async def journal_feed(session: AsyncSession, ctx, after: str = "") -> dict:
                       "entries": entries, "held": held, "accounts": accounts})
     peer_access.mark_used(grant)
     await session.commit()
-    return {"firm": firm_name(company), "items": items,
+    return {"firm": grant.firm, "items": items,
             "next": rows[-1][0] if len(rows) == _PAGE else None}
 
 
@@ -226,7 +218,7 @@ async def lock_feed(session: AsyncSession, ctx) -> dict:
     lock = (company.settings or {}).get("lock_date")
     expires = grant.expires_at if grant.expires_at.tzinfo else grant.expires_at.replace(tzinfo=timezone.utc)
     await session.commit()
-    return {"lock_date": lock if isinstance(lock, str) else None, "firm": firm_name(company),
+    return {"lock_date": lock if isinstance(lock, str) else None, "firm": grant.firm,
             "expires_at": expires.isoformat()}
 
 
