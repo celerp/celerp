@@ -113,6 +113,9 @@ async def test_an_earlier_lock_from_a_second_firm_never_opens_the_first_firms_pe
     reversed_ = await real_client.post(f"/accounting/journal-entries/{local}/reverse", headers=auth(tok))
     assert reversed_.status_code == 200, reversed_.text
     assert reversed_.json()["ts"] > "2026-06-30", reversed_.json()
+    moved = await real_client.post("/accounting/period-lock", json={"lock_date": "2026-02-28"}, headers=auth(tok))
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["firm_lock"] == lock["firm_lock"], "the page keeps naming the firm after Update"
 
 
 async def test_each_firm_moves_the_client_lock_forward_once(real_client, real_engine, monkeypatch):
