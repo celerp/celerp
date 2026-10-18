@@ -407,6 +407,27 @@ async def test_reset_notices_take_returns_once(client, session):
     assert (await client.post("/auth/password-reset-notices/take")).status_code == 401
 
 
+async def test_reset_notice_is_timed_in_the_company_timezone(client, session):
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update
+
+    from celerp.models.auth import PasswordReset
+    from celerp.services.password_reset import reset_password, user_by_email
+
+    await _register(client)
+    await reset_password(session, await user_by_email(session, OWNER), NEW_PW, method="terminal")
+    await session.execute(update(PasswordReset).values(created_at=datetime(2031, 3, 31, 17, 30, tzinfo=timezone.utc)))
+    await session.commit()
+    token = (await _login(client, OWNER, NEW_PW)).json()["access_token"]
+    assert (await client.patch("/companies/me", headers=_bearer(token),
+                               json={"settings": {"timezone": "Asia/Bangkok"}})).status_code == 200
+
+    [notice] = await _take(client, token)
+    # Already the next day in Bangkok.
+    assert (notice["created_at"], notice["timezone"]) == ("2031-04-01T00:30:00+07:00", "Asia/Bangkok")
+
+
 async def test_reset_notice_reaches_other_owners(client, session):
     """The installation owner and every owner of the user's companies hear of a reset;
     other members do not, and an owner who did the reset is not told what they did."""

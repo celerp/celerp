@@ -315,6 +315,26 @@ async def test_sign_in_after_reset_shows_notice(client, session, ui, site):
     assert again.status_code in (302, 303), site
 
 
+async def test_reset_notice_shows_the_company_local_time(client, session, ui):
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update
+
+    from celerp.models.auth import PasswordReset
+    from celerp.services.password_reset import reset_password, user_by_email
+
+    await _register(client)
+    await reset_password(session, await user_by_email(session, OWNER), NEW_PW, method="terminal")
+    await session.execute(update(PasswordReset).values(created_at=datetime(2031, 3, 31, 17, 30, tzinfo=timezone.utc)))
+    await session.commit()
+    token = (await client.post("/auth/login", json={"email": OWNER, "password": NEW_PW})).json()["access_token"]
+    await client.patch("/companies/me", headers={"Authorization": f"Bearer {token}"},
+                       json={"settings": {"timezone": "Asia/Bangkok"}})
+
+    r = await _sign_in_at("sign-in", ui, client)
+    assert "2031-04-01 00:30 Asia/Bangkok" in r.text and " UTC" not in r.text
+
+
 # --- Settings > Users ------------------------------------------------------------------
 
 
