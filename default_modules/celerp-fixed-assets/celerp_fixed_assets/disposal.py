@@ -299,6 +299,39 @@ async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str]
                       plan=plan, apply=apply)
 
 
+def _latest_disposal(movements: list[dict]) -> dict | None:
+    disposals = [m for m in projections.live(movements) if m.get("operation") == "disposal"]
+    return disposals[-1] if disposals else None
+
+
+async def undo_refusal(session, company_id, asset: dict, movements: list[dict]) -> HTTPException | None:
+    """Why Undo disposal would refuse the asset's latest disposal, with the way on, or None
+    when it can be undone (or there is none). The undo checks this, and the asset page shows
+    it beside the button before it is pressed."""
+    latest = _latest_disposal(movements)
+    if latest is None:
+        return None
+    if latest.get("reason") == "replaced":
+        return conflict(f"{asset['number']} left the books when its replacement was added. Undo the replacement "
+                        "on the asset it belongs to instead.")
+    if latest.get("reason") == "transferred":
+        return conflict(f"{asset['number']} was transferred to {latest['target']['company_name']}. Undo the "
+                        "transfer with Undo latest instead.")
+    if latest.get("reason") == "sold":
+        from celerp_fixed_assets.sales import doc_number
+
+        invoice = doc_number(await _state(session, company_id, latest["invoice_id"]), latest["invoice_id"])
+        return conflict(f"{asset['number']} was sold on invoice {invoice}. Void or credit that invoice instead.")
+    since = [m for m in movements if int(m["id"].rsplit(":", 1)[1]) > int(latest["id"].rsplit(":", 1)[1])]
+    if since:
+        return conflict(f"{asset['number']} has changed since it was disposed of ({changes(since)}), so the "
+                        "disposal can no longer be undone. Use Correct to change its figures.")
+    books = await runs._books(session, company_id)
+    if books.lock is not None and date.fromisoformat(latest["effective_date"]) <= books.lock:
+        return conflict(f"{latest['effective_date']} is locked, so this disposal can no longer be undone.")
+    return None
+
+
 async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
     """Undo an asset's latest disposal while nothing has happened to it since and its date is open."""
     from celerp.services.company_lock import lock_projections
@@ -310,29 +343,13 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
             raise HTTPException(status_code=404, detail="No such asset.")
         asset = row.state
         movements = await asset_movements(session, company_id, asset_id)
-        disposals = [m for m in projections.live(movements) if m.get("operation") == "disposal"]
-        if not disposals:
+        latest = _latest_disposal(movements)
+        if latest is None:
             raise setup.unprocessable(f"{asset['number']} has no disposal to undo.")
-        latest = disposals[-1]
-        if latest.get("reason") == "replaced":
-            raise conflict(f"{asset['number']} left the books when its replacement was added. Undo the replacement "
-                           "on the asset it belongs to instead.")
-        if latest.get("reason") == "transferred":
-            raise conflict(f"{asset['number']} was transferred to {latest['target']['company_name']}. Undo the "
-                           "transfer with Undo latest instead.")
-        if latest.get("reason") == "sold":
-            from celerp_fixed_assets.sales import doc_number
-
-            invoice = doc_number(await _state(session, company_id, latest["invoice_id"]), latest["invoice_id"])
-            raise conflict(f"{asset['number']} was sold on invoice {invoice}. Void or credit that invoice instead.")
-        since = [m for m in movements if int(m["id"].rsplit(":", 1)[1]) > int(latest["id"].rsplit(":", 1)[1])]
-        if since:
-            raise conflict(f"{asset['number']} has changed since it was disposed of ({changes(since)}), so the "
-                           "disposal can no longer be undone. Use Correct to change its figures.")
+        if refusal := await undo_refusal(session, company_id, asset, movements):
+            raise refusal
         books = await runs._books(session, company_id)
         day = latest["effective_date"]
-        if books.lock is not None and date.fromisoformat(day) <= books.lock:
-            raise conflict(f"{day} is locked, so this disposal can no longer be undone.")
         je = await _state(session, company_id, latest["journal_id"])
         shown = {"number": asset["number"], "date": day,
                  "journals": [_reversed_lines(je, books.currency)] if je and je.get("status") == "posted" else []}

@@ -145,6 +145,31 @@ async def test_undo_disposal_refusal_names_what_changed_and_the_way_on(fa: FA):
                            "longer be undone. Use Correct to change its figures.")
 
 
+
+async def test_the_asset_page_says_why_each_undo_would_be_refused_beside_its_button(fa: FA):
+    from bs4 import BeautifulSoup
+    from ui.i18n import t
+
+    await _managed_from(fa)
+    car = await _contributed(fa)
+    await fa.operate(f"/assets/{car}/dispose", {"date": "2026-02-10", "reason": "lost", "percent": "40"}, key="pd")
+    await _run(fa, "2026-03")
+    number = (await fa.asset(car))["number"]
+    soup = BeautifulSoup((await fa.page(f"/fixed-assets/assets/{car}")).text, "html.parser")
+    told = {form.select_one("button[hx-post]")["hx-post"].split("/")[3]:
+            [w.get_text(" ", strip=True) for w in form.select(".flash--warning")]
+            for form in soup.select("form") if form.select(".flash--warning")}
+    assert told["undo-disposal"] == [f"{number} has changed since it was disposed of (Depreciation), so the disposal "
+                                     "can no longer be undone. Use Correct to change its figures."], told
+    assert told["undo-asset"] == [f"{number} (Depreciation recalculated, Disposed of, Depreciation) changed since it was registered. "
+                                  "Use Correct on its page instead."], told
+    assert t("fixed_assets.undo_disposal") in soup.text and t("fixed_assets.undo") in soup.text
+
+    fresh = await _contributed(fa, name="Van")
+    page = await fa.page(f"/fixed-assets/assets/{fresh}")
+    assert "flash--warning" not in page.text and t("fixed_assets.undo") in page.text
+
+
 _HOME_CRUMB = '<a href="/fixed-assets" class="breadcrumb-link">'
 
 

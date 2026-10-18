@@ -928,8 +928,7 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         created = [(a, rows[a].state, 1) for a in effects["assets"]]
         moved = [c for c in created if int(c[1].get("movement_count") or 0) > 1]
         if moved:
-            raise await changed_since(session, company_id, moved, ("since it was registered", "since they were registered"),
-                                      "instead")
+            raise await changed_since(session, company_id, moved, _SINCE_REGISTERED, "instead")
         movements = {m: await _state(session, company_id, m) for m in effects["movements"]}
         # Per asset it did not create, the operation's last movement is still the asset's latest.
         last: dict[str, int] = {}
@@ -992,6 +991,17 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
 
     return await _run(session, company_id, user_id, body, op_type="undo", keys=("manage_accounting",),
                       plan=plan, apply=apply)
+
+
+_SINCE_REGISTERED = ("since it was registered", "since they were registered")
+
+
+async def registration_refusal(session, company_id, asset_id: str, asset: dict) -> HTTPException | None:
+    """Why Undo registration would refuse the asset, with the way on, or None while nothing has
+    happened to it since it was registered. The asset page shows it beside the button."""
+    if int(asset.get("movement_count") or 0) > 1:
+        return await changed_since(session, company_id, [(asset_id, asset, 1)], _SINCE_REGISTERED, "instead")
+    return None
 
 
 async def undo_asset(session, company_id, user_id, asset_id: str, body: dict) -> dict:

@@ -109,10 +109,25 @@ async def _error_box(request: Request, e: APIError):
     if _missing_permission(e):
         params = ({"href": "/settings/general?tab=users", "action": "fixed_assets.action.open_users"}
                   if await _grants_permissions(request) else {})
+    return _refusal_box(_error_text(e), params)
+
+
+def _refusal_box(text: str, params: dict, cls: str = "flash flash--error") -> FT:
+    """A refusal's text with its links and its way on (``href`` and ``action``, or ``fill``)."""
     fix = [" ", A(t(params["action"]), href=params["href"])] if params.get("href") and params.get("action") else []
     if params.get("fill"):
         fix += [" ", _fill_button(params["fill"])]
-    return Div(*_linked(_error_text(e), params.get("links") or []), *fix, cls="flash flash--error")
+    return Div(*_linked(text, params.get("links") or []), *fix, cls=cls)
+
+
+def _undo_refused(asset: dict, kind: str) -> tuple:
+    """Why the asset's undo of ``kind`` would be refused now, said beside its button before it
+    is pressed. The button stays, so the way to undo is still known when it cannot be used."""
+    detail = (asset.get("undo_refused") or {}).get(kind)
+    if not detail:
+        return ()
+    params = (detail.get("params") or {}) if isinstance(detail, dict) else {}
+    return (_refusal_box(refusal_text(detail), params, "flash flash--warning"),)
 
 
 def _fill_button(fill: dict) -> FT:
@@ -1073,7 +1088,7 @@ def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | st
     # A transfer is undone in both companies at once, through Undo latest.
     undo = "" if target else _op_form("undo-disposal", Input(type="hidden", name="asset_id", value=asset["id"]),
                                       P(t("fixed_assets.undo_disposal_hint"), cls="settings-hint"),
-                                      review_label=t("fixed_assets.undo_disposal"))
+                                      *_undo_refused(asset, "disposal"), review_label=t("fixed_assets.undo_disposal"))
     title = t("fixed_assets.partial_disposal_title", share=part) if part else t("fixed_assets.disposal_title")
     return Div(H2(title, cls="section-title"),
                _detail_table(rows), undo, cls="detail-card section-card", id=f"fa-disposal-{asset_id}")
@@ -2478,7 +2493,7 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (asset["number"], None)])
         undo = _op_form("undo-asset", Input(type="hidden", name="asset_id", value=asset_id),
-                        P(t("fixed_assets.undo_hint"), cls="settings-hint"),
+                        P(t("fixed_assets.undo_hint"), cls="settings-hint"), *_undo_refused(asset, "registration"),
                         review_label=t("fixed_assets.undo"))
         extra: list[FT] = []
         if asset.get("status") == "physical":
