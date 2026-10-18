@@ -217,6 +217,9 @@ async def test_confirm_the_first_period_then_reconcile_and_finish_opening(owner_
     await owner_ui.post("/fixed-assets/start")
     page = await owner_ui.get("/fixed-assets")
     assert page.status_code == 200 and t("fixed_assets.first_period_title") in page.text
+    # The card names the period it means, never "this month" beside a suggestion for another one.
+    card = BeautifulSoup(page.text, "html.parser").find("h3", string=t("fixed_assets.first_period_title")).parent
+    assert "this month" not in card.get_text(" "), card.get_text(" ")
     suggested = (await owner_ui.api.get(f"{API}/setup")).json()["first_period"]["suggested"]
     confirmed = await owner_ui.post("/fixed-assets/first-period", data={"first_managed_period": suggested})
     assert confirmed.headers.get("HX-Redirect") == "/fixed-assets", confirmed.headers
@@ -1047,6 +1050,11 @@ async def test_reports_index_schedule_page_print_and_csv(owner_ui):
     cards = BeautifulSoup(index.text, "html.parser").select(".quick-links-grid > a.quick-link-card")
     for path in ("schedule", "register", "depreciation", "disposals", "prior-period-adjustments"):
         assert f"/fixed-assets/reports/{path}" in [a["href"] for a in cards], path
+    # Each card says what its report holds in short sentences, read at a glance.
+    for card in cards:
+        hint = card.get_text(" ", strip=True).removeprefix(card.find(["h2", "h3", "h4", "strong"]).get_text(strip=True))
+        long = [s for s in re.split(r"(?<=[.:])\s+", hint.strip()) if len(s.split()) > 20]
+        assert not long, (card["href"], long)
     page = await owner_ui.get("/fixed-assets/reports/schedule", params=params)
     assert page.status_code == 200 and "12,000.00" in page.text and "fixed_assets." not in page.text
     assert 'cell--number' in page.text and "date_from=2025-01-01" in page.text

@@ -7,7 +7,7 @@ Flow:
   upload (drag-and-drop zone) -> column mapping (optional) -> validate (server-side)
     -> errors: inline-fix panel with editable error cells, fill-down tools,
                error navigation, progress bar, and row numbers
-    -> clean:  confirm panel with summary card, data preview table, and "Import All N Rows"
+    -> clean:  confirm panel with summary card, data preview table, and "Import All N Rows" ("Import 1 Row")
 
 Step indicator tracks progress: Upload -> [Map Columns] -> Review -> Import.
 
@@ -217,6 +217,11 @@ async def resolve_import_csv(token: str, form) -> str:
 # ---------------------------------------------------------------------------
 # Column mapping
 # ---------------------------------------------------------------------------
+
+
+def _import_rows_label(n: int) -> str:
+    """The import button, read right for one row."""
+    return t("import.import_one_row") if n == 1 else t("import.import_all_rows", n=n)
 
 
 def import_back_link(home: str) -> Any:
@@ -1364,7 +1369,7 @@ def _confirm_panel(
                 upsert_control,
                 Button(
                     import_icon(),
-                    t("import.import_all_rows", n=n),
+                    _import_rows_label(n),
                     cls="btn btn--primary",
                     type="submit",
                     hx_post=confirm_action,
@@ -1538,7 +1543,7 @@ def plan_review_panel(
                 Div(
                     Button(t("import.btn_recheck"), type="submit", cls="btn btn--secondary", hx_disabled_elt="this")
                     if errors else "",
-                    Button(import_icon(), t("import.import_all_rows", n=ready), type="button", cls="btn btn--primary",
+                    Button(import_icon(), _import_rows_label(ready), type="button", cls="btn btn--primary",
                            hx_post=confirm_action, hx_target="#import-preview", hx_swap="outerHTML",
                            hx_disabled_elt="this", hx_indicator="#import-spinner")
                     if not errors else "",

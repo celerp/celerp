@@ -1286,7 +1286,7 @@ def _settings_form(settings: dict, available: dict) -> FT:
             Input(type="hidden", name="tax_regimes:flag", value="1"),
             *[Label(Input(type="checkbox", name="tax_regimes", value=k, checked=k in chosen), _rule_label("tax_regime", k),
                     cls="settings-toggle") for k in regimes] or [
-                P(t("fixed_assets.no_tax_regime"), " ", t("fixed_assets.no_tax_regime_install"), " ",
+                P(t("fixed_assets.no_tax_regime"), " ", t("fixed_assets.no_tax_regime_install_here"), " ",
                   A(t("fixed_assets.open_modules"), href="/modules"), cls="form-hint")], id="fa-tax-regimes"),
                # With none offered, the statement above already says where a regime comes from.
                t("fixed_assets.tax_regimes_hint") if regimes else None),

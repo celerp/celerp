@@ -274,7 +274,7 @@ def test_j5_bad_import_rows_are_fixed_in_the_grid_and_imported(page: Page, fresh
         review.locator(f"input[name=exclude][value='{n}']").check()
         expect(review.locator("tr.import-row--excluded")).to_have_count(done, timeout=20000)
     with page.expect_navigation(url="**/fixed-assets/imports/**"):
-        review.get_by_role("button", name="Import All 1 Rows").click()
+        review.get_by_role("button", name="Import 1 Row").click()
     expect(page.locator("#fa-import-imported tbody tr")).to_have_count(1)
 
     page.locator("input[name='v.2.class']").fill("Buildings")
@@ -995,7 +995,7 @@ def test_j14_import_with_the_module_off_turns_it_on_and_imports(page: Page, fres
     page.locator("#csv-preview-btn").click()
     page.get_by_role("button", name="Continue to Preview").click()
     with page.expect_navigation(url="**/fixed-assets/imports/**"):
-        page.locator("#import-preview").get_by_role("button", name="Import All 1 Rows").click()
+        page.locator("#import-preview").get_by_role("button", name="Import 1 Row").click()
     expect(page.locator("#fa-import-imported tbody tr")).to_have_count(1)
     assert [a["name"] for a in _ok(c.get(f"{API}/assets"))["items"]] == ["Warehouse"]
 
@@ -1488,6 +1488,23 @@ def test_u32_settings_classes_and_the_import_review_align_headers_and_values_by_
     rows = page.locator("#import-preview table:has-text('Warehouse')")
     expect(rows).to_be_visible()
     assert rows.evaluate(_MISALIGNED) == []
+
+
+def test_u39_a_done_toast_steps_aside_for_the_next_action(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    _operate(c, f"/assets/{car}/sell", {"date": "2026-05-20", "price": "10000", "contact_id": _buyer(c)})
+    page.goto(f"/fixed-assets/assets/{car}")
+    page.get_by_role("button", name="Cancel the sale").click()
+    with page.expect_navigation():
+        page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
+    done = page.locator(".toast-container .toast", has_text="Sale cancelled.")
+    expect(done).to_have_count(1)
+    # The next action on the same page answers on its own, without the last one's toast beside it.
+    with page.expect_response(lambda r: r.request.method == "POST" and "/fixed-assets/" in r.url):
+        page.get_by_role("button", name="Undo registration").click()
+    expect(done).to_have_count(0)
 
 
 def test_u33_opening_balances_fit_a_phone_with_finish_in_reach(page: Page, fresh_company):

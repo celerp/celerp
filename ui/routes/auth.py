@@ -149,6 +149,9 @@ def setup_routes(app):
                            kind="warning" if restore_notice.get("warnings") else "success")
         elif request.query_params.get("imported"):
             notice = flash(t("auth.backup_restored_signin"), kind="success")
+        elif nxt != "/":
+            # Sent here from a page that needs a signed-in user: say so, not just "Sign in".
+            notice = flash(t("auth.sign_in_to_continue"), kind="info")
         else:
             notice = ""
         resp = auth_shell(_login_form(notice=notice, next_url=nxt), title=page_title("btn.sign_in"))

@@ -157,7 +157,7 @@ def _duplicates_card(duplicates: list[dict]) -> FT | str:
 
 def _review_extra(plan: dict, currency: str) -> FT:
     counts = plan.get("counts") or {}
-    return Div(P(t("fixed_assets.import_as_at", cutover=plan["as_at"]), cls="settings-hint"),
+    return Div(P(t("fixed_assets.import_rows_as_at", cutover=plan["as_at"]), cls="settings-hint"),
                P(t("fixed_assets.history_count", n=counts["history"]), cls="settings-hint") if counts.get("history")
                else "",
                _duplicates_card(plan.get("duplicates") or []),

@@ -344,6 +344,8 @@ class TestAuthRouting:
         with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
             page = await ui_client.get("/login?next=%2Fdocs%2Fdoc%3AINV-1%3Fpage%3D2")
         assert 'name="next" value="/docs/doc:INV-1?page=2"' in page.text
+        # It says why the sign-in page opened instead of the page asked for.
+        assert t("auth.sign_in_to_continue") in page.text
         with patch("ui.routes.auth.api_login", new=AsyncMock(return_value=("tok", "ref"))):
             r = await ui_client.post("/login", data={
                 "email": "a@b.c", "password": "pwvalid1", "next": "/docs/doc:INV-1?page=2"})
@@ -366,6 +368,7 @@ class TestAuthRouting:
             r = await ui_client.get("/login")
         assert r.status_code == 200
         assert b"sign in" in r.content.lower() or b"login" in r.content.lower()
+        assert t("auth.sign_in_to_continue") not in r.text
 
     @pytest.mark.asyncio
     async def test_login_redirects_to_setup_when_not_bootstrapped(self, ui_client):
@@ -7655,7 +7658,7 @@ class TestCsvImportHelpers:
             error_report_action="/x/errors",
             back_href="/x",
         ))
-        assert "Import All" in html
+        assert "Import 1 Row" in html
         assert "rows ready" in html or "1" in html
 
     def test_validation_result_errors_shows_download_button(self):
@@ -7745,7 +7748,7 @@ class TestInventoryImportFlow:
             r = await _inventory_import_with_mapping(ui_client, csv_bytes)
         assert r.status_code == 200
         # Unknown location is not a validation error - it gets auto-created at confirm
-        assert b"Import All" in r.content
+        assert b"Import 1 Row" in r.content
 
     @pytest.mark.asyncio
     async def test_import_preview_missing_location_column_accepted(self, ui_client):
@@ -7755,7 +7758,7 @@ class TestInventoryImportFlow:
             r = await _inventory_import_with_mapping(ui_client, csv_bytes)
         assert r.status_code == 200
         # No location_name column is fine - default location resolved at confirm
-        assert b"Import All" in r.content
+        assert b"Import 1 Row" in r.content
 
     @pytest.mark.asyncio
     async def test_import_preview_clean_shows_import_button(self, ui_client):
@@ -7764,7 +7767,7 @@ class TestInventoryImportFlow:
         with patch("ui.api_client.get_locations", new=AsyncMock(return_value=_LOCATIONS_RESP)):
             r = await _inventory_import_with_mapping(ui_client, csv_bytes)
         assert r.status_code == 200
-        assert b"Import All" in r.content
+        assert b"Import 1 Row" in r.content
         assert b"import-preview" in r.content
 
     @pytest.mark.asyncio
@@ -7930,7 +7933,7 @@ class TestInventoryImportFlow:
             ["name", "type"],
         )
         assert r.status_code == 200
-        assert b"Import All" in r.content
+        assert b"Import 1 Row" in r.content
 
     @pytest.mark.asyncio
     async def test_locations_preview_errors_shows_download(self, ui_client):
@@ -7968,7 +7971,7 @@ class TestInventoryImportFlow:
             ["name", "rate", "tax_type", "is_default", "description"],
         )
         assert r.status_code == 200
-        assert b"Import All" in r.content
+        assert b"Import 1 Row" in r.content
 
     @pytest.mark.asyncio
     async def test_taxes_errors_download(self, ui_client):
@@ -7993,7 +7996,7 @@ class TestInventoryImportFlow:
             ["name", "days", "description"],
         )
         assert r.status_code == 200
-        assert b"Import All" in r.content
+        assert b"Import 1 Row" in r.content
 
     @pytest.mark.asyncio
     async def test_terms_errors_download(self, ui_client):
@@ -8663,7 +8666,7 @@ class TestCsvImportUxErrorTable:
         """When rows are all valid, must show Import All, not error table."""
         rows = [{"sku": "S1", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = self._html(rows)
-        assert "Import All" in html
+        assert "Import 1 Row" in html
         assert "csvFillColumn" not in html  # no inline-fix JS
         assert "cell-edit" not in html  # no editable cells
 
@@ -13565,7 +13568,7 @@ class TestCsvImportSellByValidation:
             "Got fix-errors panel but sell_by=piece should be valid against unit 'piece'. "
             f"Response: {r2.text[:800]}"
         )
-        assert b"Import All" in r2.content or b"import-confirm" in r2.content, (
+        assert b"Import 1 Row" in r2.content or b"import-confirm" in r2.content, (
             f"Expected confirm panel. Got: {r2.text[:800]}"
         )
 

@@ -55,7 +55,7 @@ PLUGIN_MANIFEST = {
             "label_key": "fixed_assets.asset_tags",
             "keys": ["number", "tag", "name", "class", "location", "in_service", "barcode"],
             "preset": {
-                "name": "Asset tag",
+                "name": "fixed_assets.asset_tag",
                 "format": "50x25mm",
                 "orientation": "portrait",
                 "fields": [

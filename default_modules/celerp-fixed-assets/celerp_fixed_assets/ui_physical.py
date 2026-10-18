@@ -304,8 +304,9 @@ def setup_physical_routes(app) -> None:
         except APIError as e:
             return Response(status_code=204, headers=toast_header(_error_text(e), "error", persist=True))
         return Response(to_xml(_checks_list(checks, str(get_claims(request).get("sub", "")))),
-                        headers=toast_header(t("fixed_assets.check_already" if check.get("already")
-                                               else "fixed_assets.check_recorded", number=check["number"])))
+                        headers=toast_header(t("fixed_assets.check_already", number=check["number"]), "info")
+                        if check.get("already")
+                        else toast_header(t("fixed_assets.check_recorded", number=check["number"])))
 
     @app.delete(f"{_CHECKS}/{{check_id}}")
     async def remove_check(request: Request, check_id: str):

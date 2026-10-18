@@ -304,7 +304,8 @@ def _fitting(rows: list[LabelTemplate], keys: set[str]) -> list[dict]:
 async def _source_templates(session: AsyncSession, company_id: uuid.UUID, entry: dict) -> list[dict]:
     """The company's templates whose every field the source's rows carry, oldest first. Like
     the default presets, the kind's own template (its preset, in the reader's language) is
-    added on first read, so its first labels print at once and it can be edited in Labels."""
+    added on first read, so its first labels print at once and it can be edited in Labels. It is
+    named like the presets beside it: what it is, then its size."""
     from ui.i18n import t as translate
 
     keys = set(entry["keys"])
@@ -315,7 +316,7 @@ async def _source_templates(session: AsyncSession, company_id: uuid.UUID, entry:
     preset = entry["preset"]
     fields = [{**f, "label": translate(f["label"]) if f.get("label") else ""} for f in preset.get("fields") or []]
     session.add(LabelTemplate(id=uuid.uuid4(), company_id=company_id, **TemplateCreate(
-        **{**preset, "name": translate(entry["label_key"]), "fields": fields}).model_dump()))
+        **{**preset, "name": f"{translate(preset['name'])} ({preset['format'].removesuffix('mm')})", "fields": fields}).model_dump()))
     await session.commit()
     return _fitting(await _templates(session, company_id), keys)
 
