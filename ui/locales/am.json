@@ -1580,7 +1580,7 @@
   "recovery.how_terminal_user": "በዚህ ኮምፒውተር ላይ ካለ ተርሚናል (የኮምፒውተር ተጠቃሚ {os_user})",
   "recovery.how_owner": "በ{name}",
   "users.reset_password_done": "የይለፍ ቃሉ ዳግም ተጀምሯል። አዲሱን የይለፍ ቃል ለሰውየው ይንገሩ፤ ክፍለ ጊዜዎቻቸው ተዘግተዋል።",
-  "users.reset_password_owner_only": "ለቡድን አባል አዲስ የይለፍ ቃል ማዘጋጀት የሚችለው የኩባንያ ባለቤት ብቻ ነው።",
+  "users.reset_password_owner_only": "ለቡድን አባል አዲስ የይለፍ ቃል ማዘጋጀት የሚችለው የኩባንያ ባለቤት ብቻ ነው። የይለፍ ቃሉን እንዲያዘጋጅ የኩባንያ ባለቤትን ይጠይቁ።",
   "users.reset_password_not_self": "የራስዎን የይለፍ ቃል በቅንብሮች ውስጥ ባለው «የይለፍ ቃል ቀይር» ትር ላይ ይቀይሩ።",
   "users.reset_password_not_owners": "እዚህ ዳግም ሊጀመር የሚችለው የሰራተኞች የይለፍ ቃል ብቻ ነው። ባለቤቶች በመግቢያ ገጹ ላይ \"የይለፍ ቃል ረሱ?\" ይጠቀማሉ።",
   "users.reset_password_other_company": "ይህ ሰው እርስዎ ባለቤት ላልሆኑበት ኩባንያም ይሰራል። የጭነቱን ባለቤት የይለፍ ቃላቸውን ዳግም እንዲያስጀምር ይጠይቁ።",

@@ -1474,7 +1474,7 @@
   "recovery.how_terminal_user": "このコンピューターのターミナルから (コンピューターのユーザー {os_user})",
   "recovery.how_owner": "{name} によって",
   "users.reset_password_done": "パスワードをリセットしました。新しいパスワードを本人に伝えてください。本人のセッションはすべて終了しました。",
-  "users.reset_password_owner_only": "チームメンバーの新しいパスワードを設定できるのは会社のオーナーだけです。",
+  "users.reset_password_owner_only": "チームメンバーの新しいパスワードを設定できるのは会社のオーナーだけです。会社のオーナーにパスワードのリセットを依頼してください。",
   "users.reset_password_not_self": "ご自身のパスワードは、設定の「パスワードを変更」タブで変更してください。",
   "users.reset_password_not_owners": "ここでリセットできるのはスタッフのパスワードだけです。オーナーはサインインページの「パスワードをお忘れですか？」を使ってください。",
   "users.reset_password_other_company": "この人は、あなたがオーナーではない会社にも所属しています。インストールのオーナーにパスワードのリセットを依頼してください。",

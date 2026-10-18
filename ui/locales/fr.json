@@ -1474,7 +1474,7 @@
   "recovery.how_terminal_user": "depuis un terminal sur cet ordinateur (utilisateur de l'ordinateur {os_user})",
   "recovery.how_owner": "par {name}",
   "users.reset_password_done": "Mot de passe réinitialisé. Communiquez-lui son nouveau mot de passe ; ses sessions ont été fermées.",
-  "users.reset_password_owner_only": "Seul un propriétaire de l'entreprise peut définir un nouveau mot de passe pour un membre de l'équipe.",
+  "users.reset_password_owner_only": "Seul un propriétaire de l'entreprise peut définir un nouveau mot de passe pour un membre de l'équipe. Demandez à un propriétaire de l'entreprise de réinitialiser son mot de passe.",
   "users.reset_password_not_self": "Modifiez votre propre mot de passe dans l'onglet « Changer le mot de passe » des Paramètres.",
   "users.reset_password_not_owners": "Seul le mot de passe du personnel peut être réinitialisé ici. Les propriétaires utilisent « Mot de passe oublié ? » sur la page de connexion.",
   "users.reset_password_other_company": "Cette personne travaille aussi pour une entreprise dont vous n'êtes pas propriétaire. Demandez au propriétaire de l'installation de réinitialiser son mot de passe.",

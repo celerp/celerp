@@ -363,7 +363,7 @@ async def test_reset_notice_shows_the_company_local_time(client, session, ui):
 async def test_users_tab_offers_reset_password(client, session, owner_ui):
     """Owners see Reset password on every row; it opens a form in the cell that Escape
     and Cancel close, and saving it resets the staff member's password and says what
-    happened. A row that cannot be reset answers why in the cell."""
+    happened. A row that cannot be reset answers why in the cell as soon as it is clicked."""
     await invite_user(client, session, dict(owner_ui.api.headers), STAFF, "operator")
     users = (await owner_ui.api.get("/companies/me/users")).json()["items"]
     staff_id = next(u["id"] for u in users if u["email"] == STAFF)
@@ -379,6 +379,11 @@ async def test_users_tab_offers_reset_password(client, session, owner_ui):
         assert "cell--editing" in form.text and "Escape" in form.text
         assert re.search(r'<input\b[^>]*type="password"[^>]*name="password"|'
                          r'<input\b[^>]*name="password"[^>]*type="password"', form.text)
+
+        own = await owner_ui.get(f"/settings/users/{owner_id}/password/edit")
+        assert t("users.reset_password_not_self") in own.text and 'name="password"' not in own.text
+        assert re.search(r'<a\b[^>]*href="/settings/general\?tab=password"', own.text), own.text
+        assert "Escape" in own.text and f"/settings/users/{owner_id}/actions" in own.text
 
         mismatch = await owner_ui.post(f"/settings/users/{staff_id}/password",
                                        data={"password": NEW_PW, "confirm": "other-password1"})
@@ -407,8 +412,9 @@ async def test_change_password_tab_fields_look_like_every_other_form(owner_ui):
 
 
 async def test_users_tab_explains_reset_password_to_an_admin(client, session, owner_ui):
-    """An admin who is not an owner sees the same Reset password; saving says only a
-    company owner can set a new password for a team member, and nothing changes."""
+    """An admin who is not an owner sees the same Reset password; clicking it says at
+    once that only a company owner can set a new password and to ask one, with no form
+    to fill. A reset sent anyway is refused the same way, and nothing changes."""
     from ui.app import app as ui_app
 
     admin_token = await invite_user(client, session, dict(owner_ui.api.headers), "admin@example.com", "admin")
@@ -420,6 +426,9 @@ async def test_users_tab_explains_reset_password_to_an_admin(client, session, ow
                            cookies={"celerp_token": admin_token}) as admin_ui:
         tab = await admin_ui.get("/settings/general?tab=users")
         assert f"/settings/users/{staff_id}/password/edit" in tab.text
+        clicked = await admin_ui.get(f"/settings/users/{staff_id}/password/edit")
+        assert t("users.reset_password_owner_only") in clicked.text
+        assert 'name="password"' not in clicked.text and f"/settings/users/{staff_id}/actions" in clicked.text
         refused = await admin_ui.post(f"/settings/users/{staff_id}/password",
                                       data={"password": NEW_PW, "confirm": NEW_PW})
     assert t("users.reset_password_owner_only") in refused.text

@@ -1474,7 +1474,7 @@
   "recovery.how_terminal_user": "in einem Terminal auf diesem Computer (Computerbenutzer {os_user})",
   "recovery.how_owner": "von {name}",
   "users.reset_password_done": "Passwort zurückgesetzt. Teilen Sie der Person das neue Passwort mit; ihre Sitzungen wurden beendet.",
-  "users.reset_password_owner_only": "Nur ein Firmeninhaber kann ein neues Passwort für ein Teammitglied festlegen.",
+  "users.reset_password_owner_only": "Nur ein Firmeninhaber kann ein neues Passwort für ein Teammitglied festlegen. Bitten Sie einen Firmeninhaber, das Passwort zurückzusetzen.",
   "users.reset_password_not_self": "Ändern Sie Ihr eigenes Passwort im Tab „Passwort ändern“ in den Einstellungen.",
   "users.reset_password_not_owners": "Hier können nur Passwörter von Mitarbeitenden zurückgesetzt werden. Inhaber verwenden \"Passwort vergessen?\" auf der Anmeldeseite.",
   "users.reset_password_other_company": "Diese Person arbeitet auch für eine Firma, die Ihnen nicht gehört. Bitten Sie den Inhaber der Installation, das Passwort zurückzusetzen.",

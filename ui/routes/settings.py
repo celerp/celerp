@@ -991,6 +991,14 @@ def setup_routes(app):
     # Registered before the field editor, whose path would otherwise take /password/edit.
     @app.get("/settings/users/{user_id}/password/edit")
     async def user_password_edit(request: Request, user_id: str):
+        """The form, or, when this viewer cannot reset this member, the reason and who can."""
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        try:
+            await api.can_reset_user_password(token, user_id)
+        except APIError as e:
+            return _user_password_refusal(user_id, str(e.detail), own_row=_is_own_row(request, user_id))
         return _user_password_form(user_id)
 
     @app.get("/settings/users/{user_id}/actions")
@@ -1022,9 +1030,7 @@ def setup_routes(app):
         try:
             await api.reset_user_password(token, user_id, password)
         except APIError as e:
-            from ui.config import get_claims
-            own = user_id == str(get_claims(request).get("sub", ""))
-            return _user_password_form(user_id, str(e.detail), own_row=own)
+            return _user_password_form(user_id, str(e.detail), own_row=_is_own_row(request, user_id))
         try:
             users = (await api.get_users(token)).get("items", [])
             settings = (await api.get_company(token)).get("settings")
@@ -3217,7 +3223,7 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
 
 def _user_actions_cell(u: dict, *, install_owner_id: str, lang: str = "en") -> FT:
     """Reset password, on every row for every viewer: a reset this viewer cannot make
-    says why when it is tried. The installation owner's control that hands
+    says why as soon as it is clicked. The installation owner's control that hands
     installation ownership to each other active user."""
     uid = u.get("id", "")
     name = u.get("name") or u.get("email") or ""
@@ -3234,27 +3240,58 @@ def _user_actions_cell(u: dict, *, install_owner_id: str, lang: str = "en") -> F
     )
 
 
+def _is_own_row(request: Request, user_id: str) -> bool:
+    from ui.config import get_claims
+    return user_id == str(get_claims(request).get("sub", ""))
+
+
+def _user_password_error(error: str, own_row: bool) -> FT:
+    """A refusal; on the viewer's own row it links to the tab where they change their own password."""
+    to_own_tab = A(t("settings.change_password"), href="/settings/general?tab=password") if own_row else ""
+    return P(error, " ", to_own_tab, cls="cell-error")
+
+
+_USER_PASSWORD_ESC = ("if(event.key==='Escape'){event.preventDefault();event.stopPropagation();"
+                      "this.querySelector('[data-cancel]').click();}")
+
+
+def _user_password_back(user_id: str, **attrs) -> FT:
+    return Button(t("btn.cancel"), type="button", data_cancel="1", cls="btn btn--secondary btn--xs",
+                  hx_get=f"/settings/users/{user_id}/actions", hx_target="closest td", hx_swap="outerHTML",
+                  **attrs)
+
+
+def _user_password_refusal(user_id: str, error: str, own_row: bool = False) -> FT:
+    """Why this viewer cannot reset this member, in place of the form; Escape and Cancel
+    put the cell back as it was."""
+    return Td(
+        Div(
+            _user_password_error(error, own_row),
+            _user_password_back(user_id, autofocus=True),
+            onkeydown=_USER_PASSWORD_ESC,
+            cls="cell-form",
+        ),
+        cls="cell cell--editing",
+    )
+
+
 def _user_password_form(user_id: str, error: str = "", own_row: bool = False) -> FT:
     """The inline form an owner sets a staff member's new password in. Escape and
-    Cancel put the cell back as it was. A refusal on the viewer's own row links to the
-    tab where they change their own password."""
-    to_own_tab = A(t("settings.change_password"), href="/settings/general?tab=password") if own_row else ""
+    Cancel put the cell back as it was."""
     return Td(
         Form(
-            P(error, " ", to_own_tab, cls="cell-error") if error else "",
+            _user_password_error(error, own_row) if error else "",
             Input(type="password", name="password", placeholder=t("label.new_password"),
                   autocomplete="new-password", autofocus=True, cls="cell-input"),
             Input(type="password", name="confirm", placeholder=t("label.confirm_password"),
                   autocomplete="new-password", cls="cell-input"),
             Div(
                 Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
-                Button(t("btn.cancel"), type="button", data_cancel="1", cls="btn btn--secondary btn--xs",
-                       hx_get=f"/settings/users/{user_id}/actions", hx_target="closest td", hx_swap="outerHTML"),
+                _user_password_back(user_id),
                 cls="inline-form-row",
             ),
             hx_post=f"/settings/users/{user_id}/password", hx_target="closest td", hx_swap="outerHTML",
-            onkeydown=("if(event.key==='Escape'){event.preventDefault();event.stopPropagation();"
-                       "this.querySelector('[data-cancel]').click();}"),
+            onkeydown=_USER_PASSWORD_ESC,
             cls="cell-form",
         ),
         cls="cell cell--editing",

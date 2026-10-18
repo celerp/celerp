@@ -1703,7 +1703,7 @@
   "recovery.how_terminal_user": "from a terminal on this computer (computer user {os_user})",
   "recovery.how_owner": "by {name}",
   "users.reset_password_done": "Password reset. Tell them their new password; their sessions have ended.",
-  "users.reset_password_owner_only": "Only a company owner can set a new password for a team member.",
+  "users.reset_password_owner_only": "Only a company owner can set a new password for a team member. Ask a company owner to reset their password.",
   "users.reset_password_not_self": "Change your own password on the Change Password tab in Settings.",
   "users.reset_password_not_owners": "Only staff can have their password reset here. Owners use Forgot password on the sign-in page.",
   "users.reset_password_other_company": "This person also works for a company you do not own. Ask the installation owner to reset their password.",

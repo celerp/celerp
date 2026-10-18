@@ -1474,7 +1474,7 @@
   "recovery.how_terminal_user": "em um terminal neste computador (usuário do computador {os_user})",
   "recovery.how_owner": "por {name}",
   "users.reset_password_done": "Senha redefinida. Informe a nova senha à pessoa; as sessões dela foram encerradas.",
-  "users.reset_password_owner_only": "Somente um proprietário da empresa pode definir uma nova senha para um membro da equipe.",
+  "users.reset_password_owner_only": "Somente um proprietário da empresa pode definir uma nova senha para um membro da equipe. Peça a um proprietário da empresa para redefinir a senha.",
   "users.reset_password_not_self": "Altere sua própria senha na aba \"Alterar senha\" das Configurações.",
   "users.reset_password_not_owners": "Aqui só é possível redefinir a senha da equipe. Proprietários usam \"Esqueceu sua senha?\" na página de login.",
   "users.reset_password_other_company": "Esta pessoa também trabalha para uma empresa da qual você não é proprietário. Peça ao proprietário da instalação para redefinir a senha dela.",

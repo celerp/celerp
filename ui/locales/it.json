@@ -1474,7 +1474,7 @@
   "recovery.how_terminal_user": "da un terminale su questo computer (utente del computer {os_user})",
   "recovery.how_owner": "da {name}",
   "users.reset_password_done": "Password reimpostata. Comunica la nuova password alla persona; le sue sessioni sono state chiuse.",
-  "users.reset_password_owner_only": "Solo un proprietario dell'azienda può impostare una nuova password per un membro del team.",
+  "users.reset_password_owner_only": "Solo un proprietario dell'azienda può impostare una nuova password per un membro del team. Chiedi a un proprietario dell'azienda di reimpostare la sua password.",
   "users.reset_password_not_self": "Cambia la tua password nella scheda «Cambia password» delle Impostazioni.",
   "users.reset_password_not_owners": "Qui si può reimpostare solo la password del personale. I proprietari usano \"Password dimenticata?\" nella pagina di accesso.",
   "users.reset_password_other_company": "Questa persona lavora anche per un'azienda di cui non sei proprietario. Chiedi al proprietario dell'installazione di reimpostare la sua password.",

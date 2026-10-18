@@ -1060,6 +1060,11 @@ async def transfer_install_owner(token: str, user_id: str) -> dict:
         return _raise(await c.post(f"/companies/me/users/{user_id}/installation-owner")).json()
 
 
+async def can_reset_user_password(token: str, user_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/companies/me/users/{user_id}/password")).json()
+
+
 async def reset_user_password(token: str, user_id: str, new_password: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/companies/me/users/{user_id}/password",

@@ -1474,7 +1474,7 @@
   "recovery.how_terminal_user": "từ terminal trên máy tính này (người dùng máy tính {os_user})",
   "recovery.how_owner": "bởi {name}",
   "users.reset_password_done": "Đã đặt lại mật khẩu. Hãy báo cho người đó mật khẩu mới; các phiên của họ đã kết thúc.",
-  "users.reset_password_owner_only": "Chỉ chủ sở hữu công ty mới có thể đặt mật khẩu mới cho thành viên trong nhóm.",
+  "users.reset_password_owner_only": "Chỉ chủ sở hữu công ty mới có thể đặt mật khẩu mới cho thành viên trong nhóm. Hãy nhờ chủ sở hữu công ty đặt lại mật khẩu.",
   "users.reset_password_not_self": "Đổi mật khẩu của chính bạn tại thẻ \"Đổi mật khẩu\" trong Cài đặt.",
   "users.reset_password_not_owners": "Tại đây chỉ có thể đặt lại mật khẩu của nhân viên. Chủ sở hữu dùng \"Quên mật khẩu?\" trên trang đăng nhập.",
   "users.reset_password_other_company": "Người này cũng làm việc cho một công ty mà bạn không sở hữu. Hãy nhờ chủ sở hữu bản cài đặt đặt lại mật khẩu cho họ.",

@@ -541,7 +541,8 @@ async def test_owner_resets_staff_password(client, session):
 
 
 async def test_staff_reset_refusals(client, session):
-    """Each refusal says why and changes nothing: an owner, the installation owner,
+    """Each refusal says why, the same when asked before a password is typed, and
+    changes nothing: an owner, the installation owner,
     yourself, a member of a company the caller does not own, someone outside the
     company, and a caller who is not an owner."""
     owner = (await _register(client))["access_token"]
@@ -570,14 +571,19 @@ async def test_staff_reset_refusals(client, session):
         (owner, uuid.uuid4(), 404),                     # no such user
     ]
     for token, target, status in cases:
+        asked = await client.get(f"/companies/me/users/{target}/password", headers=_bearer(token))
         r = await _staff_reset(client, token, target)
         assert r.status_code == status, (target, r.text)
         assert isinstance(r.json()["detail"], str) and r.json()["detail"], r.text
+        assert (asked.status_code, asked.json()) == (r.status_code, r.json()), (target, asked.text)
     r = await _staff_reset(client, owner, ids[STAFF], "short")
     assert r.status_code == 422 and "8" in r.json()["detail"], r.text
     assert {e: await _hash(session, e) for e in ids} == hashes
 
     # The installation owner owns every company the staff member is in.
+    asked = await client.get(f"/companies/me/users/{ids[STAFF]}/password", headers=_bearer(owner))
+    assert (asked.status_code, asked.json()) == (200, {"ok": True})
+    assert {e: await _hash(session, e) for e in ids} == hashes
     assert (await _staff_reset(client, owner, ids[STAFF])).status_code == 200
 
 

@@ -1474,7 +1474,7 @@
   "recovery.how_terminal_user": "dari terminal di komputer ini (pengguna komputer {os_user})",
   "recovery.how_owner": "oleh {name}",
   "users.reset_password_done": "Kata sandi diatur ulang. Beri tahu orang tersebut kata sandi barunya; semua sesinya telah diakhiri.",
-  "users.reset_password_owner_only": "Hanya pemilik perusahaan yang dapat menetapkan kata sandi baru untuk anggota tim.",
+  "users.reset_password_owner_only": "Hanya pemilik perusahaan yang dapat menetapkan kata sandi baru untuk anggota tim. Minta pemilik perusahaan untuk mengatur ulang kata sandinya.",
   "users.reset_password_not_self": "Ubah kata sandi Anda sendiri di tab Ganti Kata Sandi pada Pengaturan.",
   "users.reset_password_not_owners": "Di sini hanya kata sandi staf yang dapat diatur ulang. Pemilik menggunakan \"Lupa kata sandi?\" di halaman masuk.",
   "users.reset_password_other_company": "Orang ini juga bekerja untuk perusahaan yang bukan milik Anda. Minta pemilik instalasi untuk mengatur ulang kata sandinya.",
