@@ -537,6 +537,22 @@ async def test_every_class_page_roots_its_breadcrumb_at_fixed_assets(owner_ui):
                              (t("fixed_assets.settings_title"), "/settings/fixed-assets")], page
 
 
+async def test_an_empty_page_names_what_its_button_does(owner_ui):
+    await owner_ui.post("/fixed-assets/start")
+
+    def buttons(page) -> list[tuple[str, str]]:
+        soup = BeautifulSoup(page.text, "html.parser")
+        return [(a.get_text(strip=True), a["href"]) for a in soup.select(".empty-state-cta a")]
+
+    assert buttons(await owner_ui.get("/fixed-assets")) == [
+        (t("fixed_assets.register_from_bills"), "/fixed-assets/intake"),
+        (t("fixed_assets.add_asset"), "/fixed-assets/assets/new")]
+    for path in ("/fixed-assets/reviews", "/fixed-assets/corrections", f"/fixed-assets/assets/{uuid.uuid4()}"):
+        assert buttons(await owner_ui.get(path)) == [(t("fixed_assets.view_all"), "/fixed-assets")], path
+    assert buttons(await owner_ui.get("/fixed-assets/runs/2020-01")) == [
+        (t("fixed_assets.view_runs"), "/fixed-assets/runs")]
+
+
 async def test_u1_dispose_review_lists_what_leaves_the_books(owner_ui):
     car = await _managed_car(owner_ui)
     review = await owner_ui.post("/fixed-assets/op/dispose/review", data={
@@ -996,8 +1012,9 @@ async def test_reports_index_schedule_page_print_and_csv(owner_ui):
     await _car(owner_ui, "Owner's car")
     index = await owner_ui.get("/fixed-assets/reports")
     assert index.status_code == 200 and "fixed_assets." not in index.text
+    cards = BeautifulSoup(index.text, "html.parser").select(".quick-links-grid > a.quick-link-card")
     for path in ("schedule", "register", "depreciation", "disposals", "prior-period-adjustments"):
-        assert f'href="/fixed-assets/reports/{path}' in index.text, path
+        assert f"/fixed-assets/reports/{path}" in [a["href"] for a in cards], path
     page = await owner_ui.get("/fixed-assets/reports/schedule", params=params)
     assert page.status_code == 200 and "12,000.00" in page.text and "fixed_assets." not in page.text
     assert 'cell--number' in page.text and "date_from=2025-01-01" in page.text

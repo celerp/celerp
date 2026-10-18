@@ -1509,6 +1509,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   cursor: pointer; text-decoration: none; transition: background 0.1s;
 }
 .empty-state-cta-btn:hover { background: var(--c-accent2); text-decoration: none; color: #fff; }
+.empty-state-cta-actions { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; }
 
 /* ─── Activity feed ───────────────────────────────────────────────────── */
 .activity-feed { margin-bottom: 24px; }

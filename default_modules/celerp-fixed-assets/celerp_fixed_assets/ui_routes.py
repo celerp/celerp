@@ -295,6 +295,12 @@ async def _context(token: str) -> tuple[dict, str]:
     return setup, currency
 
 
+def _acts(content) -> bool:
+    """Whether the page carries an operation form (its #fa-preview), which a read-only page hides."""
+    return any(_acts(c) if isinstance(c, (list, tuple)) else
+               isinstance(c, FT) and (c.attrs.get("id") == "fa-preview" or _acts(c.children)) for c in content)
+
+
 async def _page(request: Request, *content, title_key: str, nav: str = "fixed_assets"):
     """A module page. While the company has the module turned off its records stay readable
     here, read-only, under a banner that says so."""
@@ -307,11 +313,18 @@ async def _page(request: Request, *content, title_key: str, nav: str = "fixed_as
     if not uses_module(settings, MODULE):
         from ui.routes.modules_page import turn_on_action
 
-        way_on = turn_on_action(get_role(request), settings, MODULE, t("fixed_assets.turn_on_records"),
-                                t("fixed_assets.ask_admin_records"),
-                                str(request.url.replace(scheme="", netloc="")))
+        back = str(request.url.replace(scheme="", netloc=""))
+        if _acts(content):
+            # Its actions are hidden, so the page says where they went and offers the way on there.
+            way_on = ""
+            hidden = (turn_on_action(get_role(request), settings, MODULE, t("fixed_assets.turn_on_to_act"),
+                                     t("fixed_assets.ask_admin_to_act"), back, primary=True),)
+        else:
+            way_on = turn_on_action(get_role(request), settings, MODULE, t("fixed_assets.turn_on_records"),
+                                    t("fixed_assets.ask_admin_records"), back)
+            hidden = ()
         content = (Div(t("fixed_assets.records_read_only"), way_on, cls="flash flash--warning", id="fa-read-only"),
-                   Div(*content, cls="records-read-only"))
+                   Div(*content, cls="records-read-only"), *hidden)
     if _amounts_hidden.get():
         content = (Div(t("fixed_assets.amounts_hidden"), cls="flash flash--info", id="fa-amounts-hidden"), *content)
     if company := get_company_id(request):
@@ -329,7 +342,7 @@ async def _refused(request: Request, e: APIError, title_key: str):
     crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
                           *([(t(title_key), None)] if title_key != "fixed_assets.title" else [])])
     if e.status == 404:
-        body = empty_state_cta(_error_text(e), t("fixed_assets.title"), "/fixed-assets")
+        body = empty_state_cta(_error_text(e), t("fixed_assets.view_all"), "/fixed-assets")
     else:
         body = await _error_box(request, e)
     if (e.data or {}).get("message_key") == "fixed_assets.not_managed":
@@ -2205,7 +2218,9 @@ def setup_ui_routes(app) -> None:
                        ("fixed_assets.import_register", "/fixed-assets/import"))]))
         if not found["items"] and not params:
             body = Div(empty_state_cta(t("fixed_assets.empty"), t("fixed_assets.register_from_bills"),
-                                       "/fixed-assets/intake", hint=t("fixed_assets.empty_hint")))
+                                       "/fixed-assets/intake", hint=t("fixed_assets.empty_hint"),
+                                       more=(A(t("fixed_assets.add_asset"), href="/fixed-assets/assets/new",
+                                               cls="btn btn--secondary"),)))
         elif not found["items"]:
             body = P(t("fixed_assets.no_match"), cls="form-hint")
         else:
@@ -2241,7 +2256,7 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.intake_title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.intake_title"), None)])
         if not items:
-            body = empty_state_cta(t("fixed_assets.intake_empty"), t("fixed_assets.title"), "/fixed-assets")
+            body = empty_state_cta(t("fixed_assets.intake_empty"), t("fixed_assets.view_all"), "/fixed-assets")
         else:
             # A depreciation line is not an asset: it is linked to the assets it depreciated.
             rows = [Tr(Td(_text(ln.get("date"))),
@@ -2293,7 +2308,7 @@ def setup_ui_routes(app) -> None:
                       *[x for i, link in enumerate(links) for x in ((", ", link) if i else (link,))]),
                     cls="detail-card section-card"), title_key="fixed_assets.line_title")
             return await _page(request, crumbs, page_header(t("fixed_assets.line_title")),
-                               empty_state_cta(t("fixed_assets.line_gone"), t("fixed_assets.intake_title"),
+                               empty_state_cta(t("fixed_assets.line_gone"), t("fixed_assets.view_lines"),
                                                "/fixed-assets/intake"),
                                title_key="fixed_assets.line_title")
         summary = Div(P(Strong(_text(line.get("description"))), " ",
@@ -2710,7 +2725,7 @@ def setup_ui_routes(app) -> None:
         if record is None:
             crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.runs_title"), None)])
             return await _page(request, crumbs, page_header(t("fixed_assets.runs_title")),
-                               empty_state_cta(t("fixed_assets.run_missing"), t("fixed_assets.runs_title"),
+                               empty_state_cta(t("fixed_assets.run_missing"), t("fixed_assets.view_runs"),
                                                "/fixed-assets/runs"),
                                title_key="fixed_assets.runs_title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
@@ -3151,7 +3166,7 @@ def setup_ui_routes(app) -> None:
                 for r in items]
         body = (Table(Thead(Tr(Th(t("fixed_assets.number")), Th(t("fixed_assets.name")), Th(t("fixed_assets.due")),
                                Th(""))), Tbody(*rows), cls="data-table") if rows
-                else empty_state_cta(t("fixed_assets.reviews_empty"), t("fixed_assets.title"), "/fixed-assets"))
+                else empty_state_cta(t("fixed_assets.reviews_empty"), t("fixed_assets.view_all"), "/fixed-assets"))
         return await _page(request, crumbs, page_header(t("fixed_assets.reviews_due_title")),
                            P(t("fixed_assets.reviews_due_hint"), cls="settings-hint"), body,
                            title_key="fixed_assets.reviews_due_title")
@@ -3174,7 +3189,7 @@ def setup_ui_routes(app) -> None:
                               *([(cls["name"], None)] if cls else []), (t("fixed_assets.action.fix_account"), None)])
         if cls is None:
             return await _page(request, crumbs, page_header(t("fixed_assets.action.fix_account")),
-                               empty_state_cta(t("fixed_assets.class_missing"), t("fixed_assets.settings_title"),
+                               empty_state_cta(t("fixed_assets.class_missing"), t("fixed_assets.view_classes"),
                                                "/settings/fixed-assets"), title_key="fixed_assets.action.fix_account")
         postable = {a["code"] for a in _postable(chart)}
         fields = ("asset_account", "accumulated_depreciation_account", "depreciation_account")
@@ -3232,7 +3247,7 @@ def setup_ui_routes(app) -> None:
             return await _page(request, crumbs, page_header(t("fixed_assets.revalue_class")),
                                empty_state_cta(t("fixed_assets.class_missing" if cls is None
                                                  else "fixed_assets.revalue_class_empty"),
-                                               t("fixed_assets.settings_title"), "/settings/fixed-assets"),
+                                               t("fixed_assets.view_classes"), "/settings/fixed-assets"),
                                title_key="fixed_assets.revalue_class")
         rows = [Tr(Td(A(a["number"], href=f"/fixed-assets/assets/{a['id']}")), Td(_text(a.get("name"))),
                    _money_td(a.get("nbv"), currency),
@@ -3385,7 +3400,7 @@ def setup_ui_routes(app) -> None:
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.corrections_title"), None)])
         waiting = sum(1 for r in items if r.get("state") == "requested")
         body = (_corrections_table(items) if items
-                else empty_state_cta(t("fixed_assets.corrections_empty"), t("fixed_assets.title"), "/fixed-assets",
+                else empty_state_cta(t("fixed_assets.corrections_empty"), t("fixed_assets.view_all"), "/fixed-assets",
                                      hint=t("fixed_assets.corrections_empty_hint")))
         report = A(t("fixed_assets.ppa_title"), href="/fixed-assets/reports/prior-period-adjustments",
                    cls="btn btn--secondary")
@@ -3486,7 +3501,7 @@ def setup_ui_routes(app) -> None:
                               *([(cls["name"], None)] if cls else [])])
         if cls is None:
             return await _page(request, crumbs, page_header(t("fixed_assets.apply_to_assets")),
-                               empty_state_cta(t("fixed_assets.class_missing"), t("fixed_assets.settings_title"),
+                               empty_state_cta(t("fixed_assets.class_missing"), t("fixed_assets.view_classes"),
                                                "/settings/fixed-assets"),
                                title_key="fixed_assets.apply_to_assets")
         form = _op_form("apply-class", Input(type="hidden", name="class_id", value=class_id),

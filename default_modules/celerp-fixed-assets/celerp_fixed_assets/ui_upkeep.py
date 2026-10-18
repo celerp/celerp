@@ -417,7 +417,7 @@ def setup_upkeep_routes(app) -> None:
         body = (Table(Thead(Tr(Th(t("fixed_assets.number")), Th(t("fixed_assets.name")),
                                Th(t("fixed_assets.reminder_kind")), Th(t("fixed_assets.reminder_detail")),
                                Th(t("fixed_assets.due")), Th(""))), Tbody(*rows), cls="data-table") if rows
-                else empty_state_cta(t("fixed_assets.reminders_empty"), t("fixed_assets.title"), "/fixed-assets"))
+                else empty_state_cta(t("fixed_assets.reminders_empty"), t("fixed_assets.view_all"), "/fixed-assets"))
         return await _page(request, crumbs, page_header(t("fixed_assets.due_soon_title")),
                            P(t("fixed_assets.due_soon_hint"), cls="settings-hint"), body,
                            title_key="fixed_assets.due_soon_title")

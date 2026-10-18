@@ -510,6 +510,11 @@ def _register_routes(app, report: Report) -> None:
                            title_key=report.title_key)
 
 
+def _card(name: str, href: str, hint: str) -> FT:
+    """A report on the index: the whole card opens it, as on the app's own Reports page."""
+    return A(Strong(name), P(hint, cls="quick-link-desc"), href=href, cls="quick-link-card")
+
+
 def setup_report_routes(app) -> None:
     """The reports index and every report's page, print view and CSV."""
 
@@ -518,16 +523,14 @@ def setup_report_routes(app) -> None:
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        items = [Div(A(t(r.title_key), href=f"{_BASE}/{r.key}", cls="section-title"),
-                     P(t(r.hint_key), cls="settings-hint"), cls="detail-card section-card") for r in REPORTS]
+        items = [_card(t(r.title_key), f"{_BASE}/{r.key}", t(r.hint_key)) for r in REPORTS]
         try:
             forms = (await api.fixed_assets_get(token, "/setup"))["rules"]["statutory_reports"]
         except APIError:
             forms = []
-        items += [Div(A(f["label"], href=f"{_BASE}/{STATUTORY.key}/{f['key']}", cls="section-title"),
-                      P(t(STATUTORY.hint_key), cls="settings-hint"), cls="detail-card section-card") for f in forms]
+        items += [_card(f["label"], f"{_BASE}/{STATUTORY.key}/{f['key']}", t(STATUTORY.hint_key)) for f in forms]
         return await _page(request, _crumbs(None), page_header(t("fixed_assets.reports_title")),
-                           P(t("fixed_assets.reports_hint"), cls="settings-hint"), *items,
+                           P(t("fixed_assets.reports_hint"), cls="settings-hint"), Div(*items, cls="quick-links-grid"),
                            title_key="fixed_assets.reports_title")
 
     for report in (*REPORTS, STATUTORY):
