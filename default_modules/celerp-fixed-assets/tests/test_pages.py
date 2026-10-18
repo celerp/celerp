@@ -1327,6 +1327,30 @@ async def test_r2_21_a_file_sent_after_a_switch_in_another_tab_is_refused_and_ne
     assert sent == [], "nothing reaches the API in either company"
 
 
+async def test_r2_21_a_refused_file_write_is_an_error_reply_with_the_way_back_so_the_files_section_stays(owner_ui, monkeypatch):
+    car = await _managed_car(owner_ui)
+    page = await owner_ui.get(f"/fixed-assets/assets/{car}")
+    assert f'id="files-section-{car.replace(":", "-")}"' in page.text and "files-notice-" in page.text
+    assert "data-quiet-error" in page.text and "celerpFilesFetch" in page.text
+    home, sent = await _switched_away(owner_ui, car, monkeypatch)
+    headers = {"HX-Request": "true", "X-Celerp-Page-Company": home["id"],
+               "HX-Current-URL": f"http://ui/fixed-assets/assets/{car}"}
+    base = f"/fixed-assets/assets/{car}/files"
+    switch = t("fixed_assets.switch_to", company=home["name"])
+    back = f"/switch-company/{home['id']}?next={quote(f'/fixed-assets/assets/{car}', safe='')}"
+    replies = {
+        "upload": await owner_ui.post(base, headers=headers, files={"file": ("a.pdf", b"%PDF-1.0\n", "application/pdf")}),
+        "tag": await owner_ui.post(f"{base}/f1/tag", headers=headers, data={"document_tag": "warranties"}),
+        "description": await owner_ui.post(f"{base}/f1/description", headers=headers, data={"description": "x"}),
+        "delete": await owner_ui.delete(f"{base}/f1", headers=headers),
+    }
+    for action, reply in replies.items():
+        assert reply.status_code == 409, (action, reply.status_code)
+        assert reply.headers["content-type"].startswith("text/html"), action
+        assert f'<a href="{html.escape(back)}">{switch}</a>' in reply.text, (action, reply.text)
+    assert sent == [], "nothing reaches the API in either company"
+
+
 async def test_r2_21_a_valuer_report_sent_after_a_switch_in_another_tab_is_refused_and_never_sent(owner_ui, monkeypatch):
     car = await _managed_car(owner_ui)
     class_id = (await owner_ui.api.get(f"{API}/assets/{car}")).json()["class_id"]

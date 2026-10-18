@@ -8,7 +8,7 @@ from urllib.parse import quote, urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -20,8 +20,8 @@ from ui.i18n import t
 
 from celerp_fixed_assets.files import ASSET_FILE_TAGS
 from celerp_fixed_assets.setup import today_in
-from celerp_fixed_assets.ui_routes import (_STACK, _error_text, _field, _hx_write, _input, _page, _refused, _send,
-                                           _send_form, _text, _token)
+from celerp_fixed_assets.ui_routes import (_STACK, _error_box, _error_text, _field, _hx_write, _input, _page,
+                                           _refused, _send, _send_form, _text, _token)
 
 _CHECKS = "/fixed-assets/checks"
 
@@ -143,7 +143,9 @@ def setup_physical_routes(app) -> None:
                              files=files)
             return await _files_fragment(token, asset_id)
         except APIError as e:
-            return P(_error_text(e), cls="cell-error")
+            # An error status, so the Files section on the page is left as it is and shows this
+            # in its notice, with the way back when the refusal names one.
+            return HTMLResponse(to_xml(await _error_box(request, e)), status_code=e.status if e.status >= 400 else 400)
 
     @app.post("/fixed-assets/assets/{asset_id}/files")
     async def asset_file_upload(request: Request, asset_id: str):
