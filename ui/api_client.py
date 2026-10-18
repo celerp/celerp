@@ -522,18 +522,19 @@ async def login(email: str, password: str) -> tuple[str, str]:
         return data["access_token"], data["refresh_token"]
 
 
-async def recovery_send(email: str) -> str:
-    """"sent", "unavailable" (no code is coming) or "undeliverable" (no code is ever sent to
-    such an address): the same answer whether or not the email is a user here."""
+async def recovery_send(email: str, handle: str | None = None) -> dict:
+    """{"outcome", "handle"}: the outcome "sent", "unavailable" (no code is coming) or
+    "undeliverable" (no code is ever sent to such an address), the same whether or not the
+    email is a user here, and the handle of the visitor's recovery, which *handle* resends."""
     async with _anon_api_client(timeout=20.0) as c:
-        return _raise(await c.post("/auth/password-recovery/send", json={"email": email})).json()["outcome"]
+        return _raise(await c.post("/auth/password-recovery/send", json={"email": email, "handle": handle})).json()
 
 
-async def recovery_reset(email: str, code: str, new_password: str) -> None:
+async def recovery_reset(email: str, handle: str, code: str, new_password: str) -> None:
     """Raises APIError: 400 the code was refused, 422 the password, 503 the relay is out of reach."""
     async with _anon_api_client(timeout=20.0) as c:
         _raise(await c.post("/auth/password-recovery/reset",
-                            json={"email": email, "code": code, "new_password": new_password}))
+                            json={"email": email, "handle": handle, "code": code, "new_password": new_password}))
 
 
 async def recovery_terminal() -> str | None:

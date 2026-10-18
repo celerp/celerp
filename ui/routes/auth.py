@@ -506,20 +506,21 @@ def setup_routes(app):
 
     @app.post("/forgot-password")
     async def recovery_send(request: Request):
-        email = str((await request.form()).get("email", "")).strip()
+        form = await request.form()
+        email = str(form.get("email", "")).strip()
         if not email:
             return _recovery(_recovery_start(error=t("auth.email_required")))
         try:
-            outcome = await api.recovery_send(email)
+            answer = await api.recovery_send(email, str(form.get("handle", "")) or None)
         except APIError as e:
             if e.status == 429:
                 return _recovery(_recovery_start(email, error=e.detail))
             return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
-        if outcome == "unavailable":
+        if answer["outcome"] == "unavailable":
             return RedirectResponse(_TERMINAL_UNAVAILABLE, status_code=303)
-        if outcome == "undeliverable":
+        if answer["outcome"] == "undeliverable":
             return RedirectResponse(_TERMINAL_UNDELIVERABLE, status_code=303)
-        return _recovery(_recovery_code_form(email))
+        return _recovery(_recovery_code_form(email, answer["handle"]))
 
     @app.get("/forgot-password/reset")
     async def recovery_reset_page(request: Request):
@@ -529,11 +530,12 @@ def setup_routes(app):
     async def recovery_reset(request: Request):
         form = await request.form()
         email, code = str(form.get("email", "")).strip(), str(form.get("code", "")).strip()
+        handle = str(form.get("handle", ""))
         password, confirm = str(form.get("password", "")), str(form.get("confirm", ""))
         if password != confirm:
-            return _recovery(_recovery_code_form(email, error=t("settings.passwords_do_not_match")))
+            return _recovery(_recovery_code_form(email, handle, error=t("settings.passwords_do_not_match")))
         try:
-            await api.recovery_reset(email, code, password)
+            await api.recovery_reset(email, handle, code, password)
         except APIError as e:
             if _relay_unavailable(e):
                 return RedirectResponse(_TERMINAL_UNAVAILABLE, status_code=303)
@@ -542,9 +544,9 @@ def setup_routes(app):
                     command = await api.recovery_terminal()
                 except APIError:
                     command = None
-                return _recovery(_recovery_code_form(email, error=e.detail, terminal=_terminal_block(command)))
+                return _recovery(_recovery_code_form(email, handle, error=e.detail, terminal=_terminal_block(command)))
             if e.status in (422, 429):
-                return _recovery(_recovery_code_form(email, error=e.detail))
+                return _recovery(_recovery_code_form(email, handle, error=e.detail))
             return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         return RedirectResponse("/login?reason=password-reset", status_code=303)
 
@@ -1051,7 +1053,7 @@ def _email_field(email: str = "") -> FT:
 def _code_field() -> FT:
     return Div(Label(t("recovery.code_label"), For="code", cls="form-label"),
                Input(type="text", inputmode="numeric", autocomplete="one-time-code", id="code", name="code",
-                     maxlength="6", autofocus=True, cls="form-input"),
+                     maxlength="8", autofocus=True, cls="form-input"),
                cls="form-group")
 
 
@@ -1092,14 +1094,16 @@ def _recovery_start(email: str = "", error: str | None = None) -> FT:
     )
 
 
-def _recovery_code_form(email: str, error: str | None = None, terminal: FT = "") -> FT:
+def _recovery_code_form(email: str, handle: str, error: str | None = None, terminal: FT = "") -> FT:
     """The code from the email and the new password. The same page whether or not the
-    email is a user here."""
+    email is a user here. Both forms carry the visitor's recovery *handle*, so the reset
+    and Send a new code act on their own recovery only."""
+    held = (Input(type="hidden", name="email", value=email), Input(type="hidden", name="handle", value=handle))
     return Div(
         auth_header(t("recovery.title"), "" if error else t("recovery.code_sent", email=email)),
         _above_form(flash(error) if error else "", terminal),
         Form(
-            Input(type="hidden", name="email", value=email),
+            *held,
             _code_field(),
             Div(Label(t("label.new_password"), For="password", cls="form-label"),
                 Input(type="password", id="password", name="password", autocomplete="new-password",
@@ -1113,7 +1117,7 @@ def _recovery_code_form(email: str, error: str | None = None, terminal: FT = "")
             method="post", action="/forgot-password/reset", cls="auth-form",
         ),
         Form(
-            Input(type="hidden", name="email", value=email),
+            *held,
             Button(t("recovery.send_new_code"), type="submit", cls="btn btn--secondary btn--full"),
             method="post", action="/forgot-password", cls="auth-form mt-sm",
         ),

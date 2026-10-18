@@ -70,13 +70,27 @@ async def _refreshes(client, refresh: str) -> bool:
     return (await client.post("/auth/token/refresh", json={"refresh_token": refresh})).status_code == 200
 
 
-def _send(client, email: str, **kw):
-    return client.post("/auth/password-recovery/send", json={"email": email}, **kw)
+def _send(client, email: str, handle: str | None = None, **kw):
+    return client.post("/auth/password-recovery/send",
+                       json={"email": email} | ({"handle": handle} if handle else {}), **kw)
 
 
-def _reset(client, email: str, code: str = CODE, password: str = NEW_PW, **kw):
+async def _start(client, email: str, **kw) -> str:
+    """A new recovery of *email*: the handle the requester holds it by."""
+    r = await _send(client, email, **kw)
+    assert r.json()["outcome"] == "sent", r.text
+    return r.json()["handle"]
+
+
+def _reset(client, email: str, handle: str, code: str = CODE, password: str = NEW_PW, **kw):
     return client.post("/auth/password-recovery/reset",
-                       json={"email": email, "code": code, "new_password": password}, **kw)
+                       json={"email": email, "handle": handle, "code": code, "new_password": password}, **kw)
+
+
+def _as(address: str) -> dict:
+    """The headers of a request the UI makes for a visitor at *address*."""
+    return {"headers": {CALLER_HEADER: address}}
+
 
 
 async def _notices(client, token: str) -> list[dict]:
@@ -154,15 +168,13 @@ async def test_recovery_fails_closed(client, session, relay, short_floor, failur
 
     send = await _send(client, OWNER)
     assert (send.status_code, send.json()) == (200, {"outcome": "unavailable"}), send.text
-    reset = await _reset(client, OWNER)
-    assert reset.status_code == 503 and reset.json()["outcome"] == "unavailable", reset.text
 
     # Up when the code was sent, failing when it is checked.
     relay.failure = None
-    assert (await _send(client, OWNER)).json() == {"outcome": "sent"}
+    handle = await _start(client, OWNER)
     await settle()
     relay.failure = failure
-    reset = await _reset(client, OWNER)
+    reset = await _reset(client, OWNER, handle)
     assert reset.status_code == 503 and reset.json()["outcome"] == "unavailable", reset.text
 
     assert await _hash(session, OWNER) == before
@@ -179,17 +191,18 @@ async def test_recovery_send_is_enumeration_neutral(client, session, relay, shor
         started = time.monotonic()
         answers.append(await _send(client, email))
         took.append(time.monotonic() - started)
-    assert [(r.status_code, r.json()) for r in answers] == [(200, {"outcome": "sent"})] * 2
+    assert [(r.status_code, sorted(r.json()), r.json()["outcome"]) for r in answers] == \
+        [(200, ["handle", "outcome"], "sent")] * 2
     assert min(took) >= short_floor
     assert relay.sent_to() == [OWNER]
     assert relay.paths().count("/email-codes/status") == 2
 
     relay.calls.clear()
     started = time.monotonic()
-    wrong = await _reset(client, OWNER, code="000000")
+    wrong = await _reset(client, OWNER, answers[0].json()["handle"], code="00000000")
     local_took = time.monotonic() - started
     started = time.monotonic()
-    foreign = await _reset(client, "nobody@example.com")
+    foreign = await _reset(client, "nobody@example.com", answers[1].json()["handle"])
     foreign_took = time.monotonic() - started
     assert (wrong.status_code, wrong.json()) == (foreign.status_code, foreign.json())
     assert min(local_took, foreign_took) >= short_floor
@@ -201,12 +214,12 @@ async def test_recovery_send_says_when_no_code_is_coming(client, session, relay,
     so; an email that is not a user still answers as sent."""
     await _register(client)
     relay.send_status = 503
-    assert (await _send(client, OWNER)).json() == {"outcome": "unavailable"}
-    assert (await _send(client, "nobody@example.com")).json() == {"outcome": "sent"}
+    assert (await _send(client, OWNER)).json()["outcome"] == "unavailable"
+    assert (await _send(client, "nobody@example.com")).json()["outcome"] == "sent"
 
     for status in (422, 429):
         relay.send_status = status
-        assert (await _send(client, OWNER)).json() == {"outcome": "unavailable"}
+        assert (await _send(client, OWNER)).json()["outcome"] == "unavailable"
 
 
 async def test_recovery_send_undeliverable_address_answers_alike(client, session, relay, short_floor):
@@ -214,9 +227,9 @@ async def test_recovery_send_undeliverable_address_answers_alike(client, session
     user here, and never reaches the relay."""
     await _register(client, "admin@localhost")
     for email in ("admin@localhost", "nobody@localhost", "no-at-sign", "a b@example.com"):
-        assert (await _send(client, email)).json() == {"outcome": "undeliverable"}, email
+        assert (await _send(client, email)).json()["outcome"] == "undeliverable", email
     assert relay.calls == []
-    assert (await _send(client, OWNER)).json() == {"outcome": "sent"}
+    assert (await _send(client, OWNER)).json()["outcome"] == "sent"
 
 
 async def test_recovery_matches_users_exactly_as_sign_in(client, session, relay, short_floor):
@@ -231,10 +244,10 @@ async def test_recovery_matches_users_exactly_as_sign_in(client, session, relay,
     for email in (OWNER.upper(), f" {OWNER}", f"{OWNER} ", STAFF):
         assert (await _login(client, email, "userpw123" if email == STAFF else OLD_PW)).status_code == 401
         relay.calls.clear()
-        assert (await _send(client, email)).json() == {"outcome": "sent"}
+        handle = await _start(client, email)
         await settle()
         assert relay.sent_to() == [], email
-        assert (await _reset(client, email)).status_code == 400, email
+        assert (await _reset(client, email, handle)).status_code == 400, email
         assert "/email-codes/verify" not in relay.paths(), email
 
     relay.calls.clear()
@@ -249,9 +262,9 @@ async def test_recovery_reset_resets_only_the_matching_user(client, session, rel
     await _staff(client, session, tokens["access_token"])
     owner_before = await _hash(session, OWNER)
 
-    assert (await _send(client, STAFF)).json() == {"outcome": "sent"}
+    handle = await _start(client, STAFF)
     await settle()
-    r = await _reset(client, STAFF)
+    r = await _reset(client, STAFF, handle)
     assert (r.status_code, r.json()) == (200, {"ok": True}), r.text
 
     assert (await _login(client, STAFF, NEW_PW)).status_code == 200
@@ -266,18 +279,19 @@ async def test_recovery_reset_wrong_code_is_generic(client, session, relay, shor
     await _register(client)
     before = await _hash(session, OWNER)
     generic = t("recovery.code_refused")
-    await _send(client, OWNER)
+    handle = await _start(client, OWNER)
     await settle()
 
-    answers = [await _reset(client, OWNER, code="000000"),
-               await _reset(client, "nobody@example.com"),
-               await _reset(client, OWNER, code="12ab56"),
-               await _reset(client, OWNER, code="")]
-    assert [(r.status_code, r.json()["detail"]) for r in answers] == [(400, generic)] * 4
+    answers = [await _reset(client, OWNER, handle, code="00000000"),
+               await _reset(client, "nobody@example.com", handle),
+               await _reset(client, OWNER, handle, code="12ab5678"),
+               await _reset(client, OWNER, handle, code=CODE[:6]),
+               await _reset(client, OWNER, handle, code="")]
+    assert [(r.status_code, r.json()["detail"]) for r in answers] == [(400, generic)] * 5
     assert await _hash(session, OWNER) == before
 
-    assert (await _reset(client, OWNER)).status_code == 200
-    used = await _reset(client, OWNER, password="another-password1")
+    assert (await _reset(client, OWNER, handle)).status_code == 200
+    used = await _reset(client, OWNER, handle, password="another-password1")
     assert (used.status_code, used.json()["detail"]) == (400, generic)
     assert (await _login(client, OWNER, NEW_PW)).status_code == 200
 
@@ -306,9 +320,9 @@ async def test_recovery_reset_never_touches_connect_state(client, session, relay
     links_before = [(m.company_id, m.role, m.is_active) for m in (await session.execute(
         select(UserCompany).where(UserCompany.user_id == user.id))).scalars()]
 
-    await _send(client, OWNER)
+    handle = await _start(client, OWNER)
     await settle()
-    assert (await _reset(client, OWNER)).status_code == 200
+    assert (await _reset(client, OWNER, handle)).status_code == 200
 
     await session.refresh(user)
     assert {f: getattr(user, f) for f in fields} == user_before
@@ -325,7 +339,7 @@ async def test_recovery_reset_never_touches_connect_state(client, session, relay
 async def test_recovery_reset_validates_password_before_relay(client, session, relay, short_floor):
     await _register(client)
     before = await _hash(session, OWNER)
-    r = await _reset(client, OWNER, password="short")
+    r = await _reset(client, OWNER, "any-handle", password="short")
     assert r.status_code == 422, r.text
     assert "8" in r.json()["detail"]
     assert relay.calls == []
@@ -497,20 +511,25 @@ async def test_reset_notice_reaches_other_owners(client, session):
 
 
 async def test_recovery_attempt_secret_ties_send_to_verify(client, session, relay, short_floor, caplog):
-    """Each address's recovery carries one secret that only this install holds: its sends
-    and its verify name the same one, another address has its own, and it never shows in
-    an answer or a log."""
+    """Each recovery carries one secret that only this install holds: a resend under its
+    handle and its verify name the same one, a send without the handle starts another, and
+    it never shows in an answer or a log."""
     caplog.set_level("DEBUG")
     tokens = await _register(client)
     await _staff(client, session, tokens["access_token"])
-    answers = [await _send(client, OWNER), await _send(client, OWNER), await _send(client, STAFF)]
-    answers.append(await _reset(client, OWNER))
+    answers = [await _send(client, OWNER)]
+    handle = answers[0].json()["handle"]
+    answers += [await _send(client, OWNER, handle), await _send(client, STAFF)]
+    answers.append(await _reset(client, OWNER, handle))
+    assert answers[1].json()["handle"] == handle
     assert [r.status_code for r in answers] == [200, 200, 200, 200], [r.text for r in answers]
     assert (await _login(client, OWNER, NEW_PW)).status_code == 200
 
     sends = relay.attempts("/email-codes/send", OWNER)
     assert len(sends) == 2 and len(set(sends)) == 1
     assert relay.attempts("/email-codes/verify", OWNER) == sends[:1]
+    other = await _start(client, OWNER)
+    assert other != handle and relay.attempts("/email-codes/send", OWNER)[-1] != sends[0]
     staff = relay.attempts("/email-codes/send", STAFF)
     assert len(staff) == 1 and staff[0] != sends[0]
     for secret in (sends[0], staff[0]):
@@ -519,11 +538,12 @@ async def test_recovery_attempt_secret_ties_send_to_verify(client, session, rela
 
 
 async def test_recovery_after_a_code_is_used_starts_a_new_attempt(client, relay, short_floor):
-    """A code that reset the password ends its attempt; the next request has a new secret."""
+    """A code that reset the password ends its attempt, even for a resend under its handle."""
     await _register(client)
-    await _send(client, OWNER)
-    assert (await _reset(client, OWNER)).status_code == 200
-    await _send(client, OWNER)
+    handle = await _start(client, OWNER)
+    assert (await _reset(client, OWNER, handle)).status_code == 200
+    assert (await _reset(client, OWNER, handle, password="another-password1")).status_code == 400
+    assert await _start(client, OWNER, handle=handle) != handle
     first, second = relay.attempts("/email-codes/send", OWNER)
     assert first != second
 
@@ -533,9 +553,11 @@ async def test_recovery_attempt_expires_with_its_code(client, relay, short_floor
     from celerp.services import email_codes
     await _register(client)
     monkeypatch.setattr(email_codes, "ATTEMPT_TTL_S", 0.0)
-    await _send(client, OWNER)
-    assert (await _reset(client, OWNER)).status_code == 400
-    await _send(client, OWNER)
+    handle = await _start(client, OWNER)
+    verifies = relay.paths().count("/email-codes/verify")
+    assert (await _reset(client, OWNER, handle)).status_code == 400
+    assert relay.paths().count("/email-codes/verify") == verifies
+    assert await _start(client, OWNER, handle=handle) != handle
     first, second = relay.attempts("/email-codes/send", OWNER)
     assert first != second
 
@@ -546,13 +568,65 @@ async def test_recovery_lost_attempt_is_a_wrong_or_expired_code(client, session,
     from celerp.services import email_codes
     await _register(client)
     before = await _hash(session, OWNER)
-    await _send(client, OWNER)
+    handle = await _start(client, OWNER)
     email_codes._attempts.clear()
-    r = await _reset(client, OWNER)
+    r = await _reset(client, OWNER, handle)
     assert (r.status_code, r.json()["detail"]) == (400, t("recovery.code_refused")), r.text
     assert await _hash(session, OWNER) == before
-    await _send(client, OWNER)
-    assert (await _reset(client, OWNER)).status_code == 200
+    assert (await _reset(client, OWNER, await _start(client, OWNER))).status_code == 200
+
+
+# --- Each recovery belongs to its requester ------------------------------------------
+
+STRANGER, PERSON = "198.51.100.7", "203.0.113.20"
+
+
+async def test_stranger_cannot_use_up_a_persons_recovery(client, session, relay, short_floor):
+    """A stranger who starts recovery for a person's email and guesses until refused uses
+    up only their own attempt: the person then starts recovery, gets their own handle and
+    resets with their code."""
+    await _register(client)
+    before = await _hash(session, OWNER)
+    stranger = await _start(client, OWNER, **_as(STRANGER))
+    guesses = [await _reset(client, OWNER, stranger, code=f"{n:08d}", **_as(STRANGER)) for n in range(6)]
+    assert [r.status_code for r in guesses] == [400] * 6
+    assert await _hash(session, OWNER) == before
+    assert (await _reset(client, OWNER, stranger, **_as(STRANGER))).status_code == 400
+
+    person = await _start(client, OWNER, **_as(PERSON))
+    assert person != stranger
+    assert (await _reset(client, OWNER, person, **_as(PERSON))).status_code == 200
+    assert (await _login(client, OWNER, NEW_PW)).status_code == 200
+
+
+async def test_reset_with_a_handle_not_for_this_recovery_never_asks_the_relay(client, session, relay, short_floor):
+    """Another address's handle, a made-up one and an expired one are refused as a wrong or
+    expired code, without a word to the relay."""
+    tokens = await _register(client)
+    await _staff(client, session, tokens["access_token"])
+    staff = await _start(client, STAFF)
+    await _start(client, OWNER)
+    await settle()
+    relay.calls.clear()
+    generic = (400, t("recovery.code_refused"))
+    for handle in (staff, "x" * 32, ""):
+        r = await _reset(client, OWNER, handle)
+        assert (r.status_code, r.json()["detail"]) == generic, handle
+    assert relay.calls == []
+    assert (await _reset(client, STAFF, staff)).status_code == 200
+
+
+async def test_an_older_yes_leaves_a_newer_recovery_alone(client, relay, short_floor):
+    """Two recoveries of one email: the first one's code resetting the password leaves the
+    second one's attempt in place, so its code still works."""
+    await _register(client)
+    first = await _start(client, OWNER, **_as(STRANGER))
+    second = await _start(client, OWNER, **_as(PERSON))
+    assert (await _reset(client, OWNER, first, **_as(STRANGER))).status_code == 200
+    r = await _reset(client, OWNER, second, password="another-password1", **_as(PERSON))
+    assert r.status_code == 200, r.text
+    assert (await _login(client, OWNER, "another-password1")).status_code == 200
+
 
 
 # --- Only recovery asks the relay for codes ------------------------------------------
@@ -566,7 +640,7 @@ async def test_only_recovery_asks_the_relay_for_codes(client, relay):
     await _register(client)
     await settle()
     assert relay.calls == []
-    assert (await _send(client, OWNER)).json() == {"outcome": "sent"}
+    assert (await _send(client, OWNER)).json()["outcome"] == "sent"
     await settle()
     assert [sorted(body) for path, body in relay.calls if path == "/email-codes/send"] == [["attempt", "email", "instance_id"]]
 

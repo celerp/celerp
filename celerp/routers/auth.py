@@ -158,29 +158,9 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
 
 from slowapi import Limiter
 
-# Module-level limiter for the sign-in and setup routes, counted per caller.
+# Module-level limiter for the sign-in, setup and recovery routes, counted per caller.
 # Tests reset this via conftest: celerp.routers.auth.limiter._storage.reset()
 limiter = Limiter(key_func=request_caller)
-
-
-async def _note_account(request: Request) -> None:
-    """Counts a recovery or setup code request per caller and per account named, so
-    requests for one account never block another. Behind Connect every visitor reaches the UI from the
-    gateway's own address, so the account is what tells them apart. Read from the raw
-    body, which the route itself then validates."""
-    try:
-        body = await request.json()
-    except ValueError:
-        body = None
-    account = body.get("email") if isinstance(body, dict) else None
-    request.state.account_key = f"{request_caller(request)}|{str(account or '').strip().lower()}"
-
-
-def _account_key(request: Request) -> str:
-    return request.state.account_key
-
-
-_PER_ACCOUNT = [Depends(_note_account)]
 
 
 # A sign-in picks again only when a company it picked was removed meanwhile.
@@ -419,15 +399,18 @@ async def switch_company(
 
 # Every recovery send and reset answers at the same pace, no sooner than this.
 RECOVERY_FLOOR_S = 4.0
-_CODE = re.compile(r"[0-9]{6}")
+_CODE = re.compile(r"[0-9]{8}")
 
 
-class EmailBody(BaseModel):
+class RecoverySendBody(BaseModel):
     email: str
+    # The requester's recovery from an earlier send, to resend its code; none starts one.
+    handle: str | None = None
 
 
 class RecoveryResetBody(BaseModel):
     email: str
+    handle: str
     code: str
     new_password: str
 
@@ -436,44 +419,52 @@ def _code_refused() -> HTTPException:
     return HTTPException(status_code=400, detail=t("recovery.code_refused"))
 
 
-@router.post("/password-recovery/send", dependencies=_PER_ACCOUNT)
-@limiter.limit("3/minute", key_func=_account_key)
-async def recovery_send(request: Request, payload: EmailBody, session: AsyncSession = Depends(get_session)) -> dict:
-    """Email a recovery code to the user whose email this is, if there is one here.
+# Per requester; the hourly limit leaves most of the relay's mail allowance for this
+# install (60 an hour per network) to everyone else.
+@router.post("/password-recovery/send")
+@limiter.limit("3/minute;20/hour")
+async def recovery_send(
+    request: Request, payload: RecoverySendBody, session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Email a recovery code to the user whose email this is, if there is one here, and
+    answer the handle the requester holds this recovery by, alike for any address.
     "unavailable" says no code is coming: the relay is down, or it could not deliver it.
     "undeliverable" says the relay never mails such an address, for any address alike."""
     if not email_codes.mailable(payload.email):
         return {"outcome": "undeliverable"}
     if await email_codes.status() is not Outcome.OK:
         return {"outcome": "unavailable"}
+    attempt = email_codes.attempt(payload.email, payload.handle)
     started = time.monotonic()
     try:
         user = await user_by_email(session, payload.email)
-        sent = await email_codes.send(user.email) if user else Outcome.OK
+        sent = await email_codes.send(user.email, attempt) if user else Outcome.OK
     finally:
         await asyncio.sleep(max(0.0, started + RECOVERY_FLOOR_S - time.monotonic()))
-    return {"outcome": "unavailable" if sent is Outcome.UNAVAILABLE else "sent"}
+    return {"outcome": "unavailable" if sent is Outcome.UNAVAILABLE else "sent", "handle": attempt.handle}
 
 
-@router.post("/password-recovery/reset", dependencies=_PER_ACCOUNT)
-@limiter.limit("10/minute", key_func=_account_key)
+@router.post("/password-recovery/reset")
+@limiter.limit("10/minute")
 async def recovery_reset(
     request: Request, payload: RecoveryResetBody, session: AsyncSession = Depends(get_session),
 ):
     """Reset the password of the user whose email this is, when the relay confirms the
-    code it emailed them."""
+    code it emailed them for the requester's recovery. A handle that holds no live
+    recovery of this email has no right code and never reaches the relay."""
     try:
         validate_password(payload.new_password)
     except ValueError:
         raise HTTPException(status_code=422, detail=t("auth.password_too_short"))
-    if not _CODE.fullmatch(payload.code):
+    attempt = email_codes.live(payload.handle, payload.email)
+    if attempt is None or not _CODE.fullmatch(payload.code):
         raise _code_refused()
     outcome = await email_codes.status()
     started = time.monotonic()
     try:
         if outcome is Outcome.OK:
             user = await user_by_email(session, payload.email)
-            outcome = await email_codes.verify(user.email, payload.code) if user else Outcome.REFUSED
+            outcome = await email_codes.verify(user.email, attempt, payload.code) if user else Outcome.REFUSED
         if outcome is Outcome.OK:
             try:
                 await reset_password(session, user, payload.new_password, method="email_code")

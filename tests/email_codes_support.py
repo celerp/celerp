@@ -1,9 +1,9 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """A stand-in for the Celerp relay's /email-codes endpoints, for the app's password
-recovery tests. It issues one known code per email and attempt secret, refuses a send or
-verify without a well-formed secret as the relay does, records every call, and can be
-switched to each way the relay fails."""
+recovery tests. It keeps one code per email and attempt secret, good for 5 guesses as the
+relay's is, refuses a send or verify without a well-formed secret as the relay does, records
+every call, and can be switched to each way the relay fails."""
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +16,10 @@ import httpx
 import pytest
 
 RELAY = "https://relay.test"
-CODE = "246810"
+CODE = "24681012"
+
+# Wrong guesses an attempt's code takes before it is used up.
+GUESSES = 5
 
 # Each way the relay can fail to answer, as the app sees it.
 FAILURES = ("down", "timeout", "404", "405", "500", "bad-json")
@@ -28,7 +31,8 @@ ATTEMPT = re.compile(r"[A-Za-z0-9_-]{32,128}")
 class FakeRelay:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
-        self.issued: dict[tuple[str, str], str] = {}
+        # (email, attempt) -> wrong guesses its code has left.
+        self.issued: dict[tuple[str, str], int] = {}
         self.failure: str | None = None
         # The answer to a send other than a plain yes, meaning no code is coming.
         self.send_status: int | None = None
@@ -63,13 +67,18 @@ class FakeRelay:
         if path == "/email-codes/send":
             if self.send_status is not None:
                 return httpx.Response(self.send_status, json={"detail": "no"})
-            self.issued[(body["email"], body["attempt"])] = CODE
+            self.issued.setdefault((body["email"], body["attempt"]), GUESSES)
             return httpx.Response(200, json={"ok": True})
         if path == "/email-codes/verify":
             key = (body["email"], body["attempt"])
-            if self.issued.get(key) == body.get("code"):
+            if key not in self.issued:
+                return httpx.Response(400, json={"detail": "code_refused"})
+            if body.get("code") == CODE:
                 del self.issued[key]
                 return httpx.Response(200, json={"ok": True})
+            self.issued[key] -= 1
+            if not self.issued[key]:
+                del self.issued[key]
             return httpx.Response(400, json={"detail": "code_refused"})
         return httpx.Response(404, json={"detail": "Not Found"})
 

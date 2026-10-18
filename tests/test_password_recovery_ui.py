@@ -76,6 +76,27 @@ def _anchor(html: str, href: str) -> str:
     return match.group(0)
 
 
+def _handle(html: str) -> str:
+    """The recovery handle a code page holds in its reset form."""
+    form = re.search(r'<form\b[^>]*action="/forgot-password/reset".*?</form>', html, re.S)
+    assert form, "no reset form"
+    match = re.search(r'<input\b[^>]*name="handle"[^>]*value="([^"]+)"', form.group(0))
+    assert match and 'type="hidden"' in match.group(0), "no handle in the reset form"
+    return match.group(1)
+
+
+async def _code_page(ui, email: str = OWNER, handle: str = ""):
+    r = await ui.post("/forgot-password", data={"email": email, "handle": handle})
+    assert r.status_code == 200 and re.search(r'<input\b[^>]*name="code"', r.text), r.text
+    return r
+
+
+def _reset(ui, page, code: str = CODE, password: str = NEW_PW, confirm: str = NEW_PW, email: str = OWNER):
+    """The reset form of *page* submitted, its hidden fields as the page holds them."""
+    return ui.post("/forgot-password/reset", data={
+        "email": email, "handle": _handle(page.text), "code": code, "password": password, "confirm": confirm})
+
+
 # --- Recovery pages ---------------------------------------------------------------
 
 
@@ -107,10 +128,8 @@ async def test_recovery_pages_back_to_sign_in(client, session, relay, short_floo
     """Every recovery page has the way back to sign in."""
     await _register(client)
     async with _ui() as ui:
-        pages = {"start": await ui.get("/forgot-password"),
-                 "code": await ui.post("/forgot-password", data={"email": OWNER}),
-                 "refused": await ui.post("/forgot-password/reset", data={
-                     "email": OWNER, "code": "000000", "password": NEW_PW, "confirm": NEW_PW}),
+        pages = {"start": await ui.get("/forgot-password"), "code": await _code_page(ui)}
+        pages |= {"refused": await _reset(ui, pages["code"], code="00000000"),
                  "terminal": await ui.get("/forgot-password/terminal"),
                  "unavailable": await ui.get("/forgot-password/terminal?reason=unavailable")}
     async with _ui("192.0.2.10") as lan:
@@ -125,10 +144,9 @@ async def test_recovery_pages_never_show_the_attempt_secret(client, relay, short
     cookie carries it."""
     await _register(client)
     async with _ui() as ui:
-        pages = [await ui.post("/forgot-password", data={"email": OWNER}),
-                 await ui.post("/forgot-password", data={"email": OWNER}),
-                 await ui.post("/forgot-password/reset", data={
-                     "email": OWNER, "code": CODE, "password": NEW_PW, "confirm": NEW_PW})]
+        pages = [await _code_page(ui)]
+        pages.append(await _code_page(ui, handle=_handle(pages[0].text)))
+        pages.append(await _reset(ui, pages[1]))
     secrets = set(relay.attempts("/email-codes/send", OWNER) + relay.attempts("/email-codes/verify", OWNER))
     assert len(secrets) == 1, secrets
     secret = secrets.pop()
@@ -186,45 +204,79 @@ async def test_recovery_refusal_shows_terminal_command(client, session, relay, s
     await _register(client)
     before = await _hash(session, OWNER)
     async with _ui() as ui:
-        sent = await ui.post("/forgot-password", data={"email": OWNER})
-        assert sent.status_code == 200 and re.search(r'<input\b[^>]*name="code"', sent.text)
+        sent = await _code_page(ui)
         await settle()
-        for email, code in ((OWNER, "000000"), ("nobody@example.com", CODE)):
-            r = await ui.post("/forgot-password/reset", data={
-                "email": email, "code": code, "password": NEW_PW, "confirm": NEW_PW})
+        for email, code in ((OWNER, "00000000"), ("nobody@example.com", CODE)):
+            r = await _reset(ui, sent, code=code, email=email)
             assert r.status_code == 200, r.text
             assert CODE_REFUSED in r.text
-            assert f'value="{email}"' in r.text
+            assert f'value="{email}"' in r.text and _handle(r.text) == _handle(sent.text)
             assert sys.executable in r.text and TERMINAL_STEPS in r.text
     async with _ui("192.0.2.10") as lan:
-        r = await lan.post("/forgot-password/reset", data={
-            "email": OWNER, "code": "000000", "password": NEW_PW, "confirm": NEW_PW})
+        r = await _reset(lan, await _code_page(lan), code="00000000")
         assert CODE_REFUSED in r.text and "celerp reset-password" in r.text
         assert sys.executable not in r.text
     assert await _hash(session, OWNER) == before
 
     async with _ui() as ui:
         calls = len(relay.calls)
-        mismatch = await ui.post("/forgot-password/reset", data={
-            "email": OWNER, "code": CODE, "password": NEW_PW, "confirm": "other-password1"})
+        mismatch = await _reset(ui, sent, confirm="other-password1")
         assert t("settings.passwords_do_not_match") in mismatch.text
         assert len(relay.calls) == calls
-        done = await ui.post("/forgot-password/reset", data={
-            "email": OWNER, "code": CODE, "password": NEW_PW, "confirm": NEW_PW})
+        done = await _reset(ui, mismatch)
     assert (done.status_code, done.headers["location"]) == (303, "/login?reason=password-reset")
     assert await _can_sign_in(client, OWNER, NEW_PW)
+
+
+async def test_recovery_code_page_holds_its_own_attempt(client, relay, short_floor):
+    """The code page holds the visitor's recovery in a hidden field: Send a new code
+    resends under it, and Change starts another."""
+    await _register(client)
+    async with _ui() as ui:
+        page = await _code_page(ui)
+        handle = _handle(page.text)
+        resend = re.search(r'<form\b[^>]*action="/forgot-password"[^>]*>.*?</form>', page.text, re.S).group(0)
+        assert re.search(rf'<input\b[^>]*type="hidden"[^>]*name="handle"[^>]*value="{handle}"', resend)
+        assert _handle((await _code_page(ui, handle=handle)).text) == handle
+        assert _handle((await _code_page(ui)).text) != handle
+    first, again, other = relay.attempts("/email-codes/send", OWNER)
+    assert first == again != other
+
+
+async def test_stranger_on_the_form_cannot_use_up_a_persons_recovery(client, session, relay, short_floor):
+    """Through the plain forms: a stranger who starts recovery for a person's email and
+    guesses until refused leaves the person's own recovery working."""
+    await _register(client)
+    before = await _hash(session, OWNER)
+    async with _ui("198.51.100.7") as stranger:
+        page = await _code_page(stranger)
+        for n in range(6):
+            page = await _reset(stranger, page, code=f"{n:08d}")
+            assert CODE_REFUSED in page.text
+    assert await _hash(session, OWNER) == before
+    async with _ui("203.0.113.20") as person:
+        page = await _code_page(person)
+        done = await _reset(person, page)
+    assert (done.status_code, done.headers["location"]) == (303, "/login?reason=password-reset")
+    assert await _can_sign_in(client, OWNER, NEW_PW)
+
+
+async def test_recovery_code_field_takes_eight_digits(client, relay):
+    async with _ui() as ui:
+        page = await _code_page(ui, "typo@example.com")
+    assert re.search(r'<input\b[^>]*name="code"[^>]*maxlength="8"', page.text)
 
 
 async def test_recovery_unavailable_goes_to_terminal(client, session, relay, short_floor):
     """With the relay out of reach no code is sent and the visitor is taken to the
     terminal command, told why."""
     await _register(client)
-    relay.failure = "down"
     async with _ui() as ui:
+        sent = await _code_page(ui)
+        relay.failure = "down"
         r = await ui.post("/forgot-password", data={"email": OWNER})
         assert (r.status_code, r.headers["location"]) == (303, "/forgot-password/terminal?reason=unavailable")
-        r = await ui.post("/forgot-password/reset", data={
-            "email": OWNER, "code": CODE, "password": NEW_PW, "confirm": NEW_PW})
+        r = await _reset(ui, sent)
         assert (r.status_code, r.headers["location"]) == (303, "/forgot-password/terminal?reason=unavailable")
         page = await ui.get("/forgot-password/terminal?reason=unavailable")
     assert sys.executable in page.text and TERMINAL_STEPS in page.text

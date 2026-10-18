@@ -18,7 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from celerp.main import app
 from celerp.routers import auth as auth_router
 from celerp.services.auth import CALLER_HEADER
-from email_codes_support import relay  # noqa: F401 - fixture
+from email_codes_support import CODE, relay, short_floor  # noqa: F401 - fixtures
 from migration_support import real_client, real_engine  # noqa: F401 - fixtures
 
 
@@ -29,6 +29,9 @@ def limits_on():
     yield
     auth_router.limiter.enabled = False
     auth_router.limiter._storage.reset()
+
+
+SEND, RESET = "/auth/password-recovery/send", "/auth/password-recovery/reset"
 
 
 async def _register(client, email: str) -> None:
@@ -76,13 +79,40 @@ async def test_rate_limit_exceeded_handler_returns_429(client):
 
 
 @pytest.mark.asyncio
-async def test_recovery_send_rate_limited_per_account(client, limits_on, relay):
-    """Recovery codes for one account are limited without holding up another's."""
-    send = "/auth/password-recovery/send"
-    for _ in range(3):
-        assert (await client.post(send, json={"email": "a@test.example"})).status_code == 200
-    assert (await client.post(send, json={"email": "a@test.example"})).status_code == 429
-    assert (await client.post(send, json={"email": "b@test.example"})).status_code == 200
+async def test_recovery_limits_count_each_requester(client, limits_on, relay, short_floor):
+    """Recovery sends and resets are limited per requester: a stranger who reaches the
+    limits for a person's email leaves the person free to recover."""
+    await _register(client, "a@test.example")
+    stranger, person = {CALLER_HEADER: "198.51.100.7"}, {CALLER_HEADER: "203.0.113.20"}
+
+    def reset(handle, code, headers):
+        return client.post(RESET, json={"email": "a@test.example", "handle": handle, "code": code,
+                                        "new_password": "pwvalid2"}, headers=headers)
+
+    sends = [await client.post(SEND, json={"email": "a@test.example"}, headers=stranger) for _ in range(4)]
+    assert [r.status_code for r in sends] == [200, 200, 200, 429]
+    guesses = [await reset(sends[0].json()["handle"], "00000000", stranger) for _ in range(11)]
+    assert [r.status_code for r in guesses] == [400] * 10 + [429]
+
+    sent = await client.post(SEND, json={"email": "a@test.example"}, headers=person)
+    assert sent.status_code == 200, sent.text
+    assert (await reset(sent.json()["handle"], CODE, person)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_one_requester_cannot_use_the_installs_mail(client, limits_on, relay, short_floor, monkeypatch):
+    """One requester's sends, however spaced, stop well inside the relay's mail allowance
+    for this install (60 an hour per network)."""
+    import limits.storage.memory
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(limits.storage.memory.time, "time", lambda: now[0])
+    sent = 0
+    for n in range(60):
+        r = await client.post(SEND, json={"email": f"n{n}@test.example"}, headers={CALLER_HEADER: "198.51.100.7"})
+        sent += r.status_code == 200
+        now[0] += 60
+    assert 0 < sent <= 20
 
 
 @pytest.mark.asyncio
