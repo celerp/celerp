@@ -47,6 +47,14 @@ def _authenticated(monkeypatch, *, role="owner"):
     monkeypatch.setattr(routes, "_check_permission", permission)
     monkeypatch.setattr(routes, "get_lang", lambda request: "en")
     monkeypatch.setattr(api_client, "role_from_company", lambda data: data["current_role"])
+    import ui.components.shell
+    import ui.config
+    monkeypatch.setattr(ui.config, "get_role", lambda request: role)
+
+    async def shell(*content, **kwargs):
+        from fasthtml.common import Div
+        return Div(*content)
+    monkeypatch.setattr(ui.components.shell, "base_shell", shell)
 
 
 @pytest.mark.asyncio
@@ -99,6 +107,29 @@ async def test_member_cannot_issue_or_revoke_company_keys(monkeypatch):
     assert (await ends["/settings/accountant-access/grants/{grant_id}/revoke"](
         request, str(uuid.uuid4()))).status_code == 403
     assert (await ends["/settings/accountant-access"](request)).status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["admin", "manager", "viewer"])
+async def test_a_non_owner_is_refused_in_place_and_told_whom_to_ask(monkeypatch, role):
+    """Accountant access is the owner's: anyone else stays on a page that says so, names the
+    owner and leads back, instead of bouncing to the dashboard."""
+    _authenticated(monkeypatch, role=role)
+
+    async def users(token):
+        return {"items": [{"name": "Pat Owner", "email": "pat@example.com", "role": "owner", "is_active": True}]}
+    monkeypatch.setattr(api_client, "get_users", users)
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Must not reach API")
+    monkeypatch.setattr(api_client, "accountant_peer_grants", forbidden)
+    response = await _endpoints()["/settings/accountant-access"](Request())
+    assert response.status_code == 403
+    page = response.body.decode()
+    assert "Only the company owner can issue and manage pairing links." in page
+    assert "Ask Pat Owner to do it, or to make you the owner." in page
+    assert 'href="/settings/cloud?tab=accounting"' in page
+    assert "Client access keys" not in page
 
 
 def _grants(now):

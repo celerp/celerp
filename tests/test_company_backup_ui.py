@@ -1379,20 +1379,28 @@ async def test_copies_page_shows_the_cloud_refusal(ui, real_engine, monkeypatch)
     assert t("company_backup.handoffs_unavailable") in page and "Could not confirm" not in page
 
 
-@pytest.mark.parametrize("path", ["/settings/company-handoff", "/settings/company-handoffs",
-                                  "/settings/saved-copies"])
-async def test_a_non_owner_is_refused_under_the_company_copies_heading(ui, real_engine, monkeypatch, path):
+@pytest.mark.parametrize("path, heading", [("/settings/company-handoff", "Company copies"),
+                                           ("/settings/company-handoffs", "Company copies"),
+                                           ("/settings/saved-copies", "Saved copies")])
+async def test_a_non_owner_is_refused_under_the_page_heading_and_told_whom_to_ask(
+        ui, real_engine, monkeypatch, path, heading):
     """Send, the copies list and saved copies refuse a non-owner under their own heading, not the
-    open-a-copy one."""
+    open-a-copy one, and name the owner to ask."""
     import ui.routes.migrations as migrations
+    import ui.api_client as api
     _, _, tok = await _setup(real_engine)
     ui.cookies.set("celerp_token", tok)
     monkeypatch.setattr(migrations, "get_role", lambda request: "admin")
+
+    async def users(token):
+        return {"items": [{"name": "Pat Owner", "email": "pat@example.com", "role": "owner", "is_active": True}]}
+    monkeypatch.setattr(api, "get_users", users)
     r = await ui.get(path)
     assert r.status_code == 403, r.text
     page = _page(r)
     assert "Only the company owner can make, send or open a company copy." in page
-    assert '<h1 class="auth-title">Company copies</h1>' in page
+    assert "Ask Pat Owner to do it, or to make you the owner." in page
+    assert f'<h1 class="auth-title">{heading}</h1>' in page
     assert "Open a company copy" not in page
 
 

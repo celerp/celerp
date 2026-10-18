@@ -942,6 +942,31 @@ async def test_a_firm_emails_a_client_the_checklist_and_adds_what_arrives(ui, ro
     assert "Revoked" in revoked
 
 
+async def test_the_owner_only_refusal_names_the_owner_and_says_what_to_ask(ui, router, monkeypatch):
+    """A non-owner learns who the owner is and what to ask them; with no list of users the
+    refusal still says to ask the company owner."""
+    import ui.api_client as api
+
+    async def users(token):
+        return {"items": [
+            {"name": "Pat Owner", "email": "pat@example.com", "role": "owner", "is_active": True},
+            {"name": "", "email": "sam@example.com", "role": "owner", "is_active": True},
+            {"name": "Gone Owner", "email": "gone@example.com", "role": "owner", "is_active": False},
+            {"name": "Ada Admin", "email": "ada@example.com", "role": "admin", "is_active": True}]}
+    monkeypatch.setattr(api, "get_users", users)
+    _owner(ui, "admin")
+    page = _page(await ui.get("/setup/new-company/migrate"))
+    assert "Only the company owner can move a company into Celerp." in page
+    assert "Ask Pat Owner, sam@example.com to move it, or to make you the owner." in page
+    assert "Gone Owner" not in page and "Ada Admin" not in page
+
+    async def refused(token):
+        raise api.APIError(500, "down")
+    monkeypatch.setattr(api, "get_users", refused)
+    page = _page(await ui.get("/setup/new-company/migrate"))
+    assert "Ask the company owner to move it, or to make you the owner." in page
+
+
 async def test_only_the_owner_asks_for_exports_and_failures_are_said(ui, router, fake_api, monkeypatch):
     _export_set_sources(monkeypatch)
     for role in ("admin", "viewer"):
