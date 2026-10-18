@@ -546,10 +546,9 @@ def test_a_stop_while_the_supervisor_checks_on_the_api_stops_both_servers(tmp_pa
         return proc
 
     def stop_during_the_check(seconds):
-        # time.sleep is patched for the whole process, so any thread left running
-        # by an earlier test in this worker sleeps through it too; only the
-        # supervisor's first pause between checks delivers the stop.
-        if stopped.is_set() or threading.current_thread() is not supervisor:
+        # time.sleep is patched for every caller; only the supervisor's first
+        # pause between checks delivers the stop.
+        if stopped.is_set():
             return real_sleep(seconds)
         stopped.set()
         with spawned[0]._waitpid_lock:  # as Popen.poll holds it around waitpid
@@ -563,8 +562,6 @@ def test_a_stop_while_the_supervisor_checks_on_the_api_stops_both_servers(tmp_pa
         except SystemExit as exc:
             outcome["code"] = exc.code
 
-    supervisor = threading.Thread(target=supervise, daemon=True)
-
     with (
         patch("subprocess.Popen", side_effect=popen),
         patch("celerp.cli._read_config", return_value=CFG),
@@ -576,6 +573,7 @@ def test_a_stop_while_the_supervisor_checks_on_the_api_stops_both_servers(tmp_pa
         patch("signal.signal", side_effect=lambda sig, handler: handlers.__setitem__(sig, handler)),
     ):
         try:
+            supervisor = threading.Thread(target=supervise, daemon=True)
             supervisor.start()
             supervisor.join(timeout=10)
             assert not supervisor.is_alive(), "celerp start did not stop on SIGTERM"
