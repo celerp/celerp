@@ -315,8 +315,13 @@ async def _source_templates(session: AsyncSession, company_id: uuid.UUID, entry:
     await _seed_presets(session, company_id)
     preset = entry["preset"]
     fields = [{**f, "label": translate(f["label"]) if f.get("label") else ""} for f in preset.get("fields") or []]
+    # The contract requires neither a name nor a size: a preset without a name is named after
+    # its kind, and one without a size is not named with one.
+    name = translate(preset.get("name") or entry["label_key"])
+    if size := preset.get("format"):
+        name = f"{name} ({size.removesuffix('mm')})"
     session.add(LabelTemplate(id=uuid.uuid4(), company_id=company_id, **TemplateCreate(
-        **{**preset, "name": f"{translate(preset['name'])} ({preset['format'].removesuffix('mm')})", "fields": fields}).model_dump()))
+        **{**preset, "name": name, "fields": fields}).model_dump()))
     await session.commit()
     return _fitting(await _templates(session, company_id), keys)
 
