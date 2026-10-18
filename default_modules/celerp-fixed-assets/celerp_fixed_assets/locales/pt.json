@@ -632,6 +632,8 @@
   "fixed_assets.recon_action.ledger": "Corrigir o lançamento",
   "fixed_assets.recon_fix_from": "A data está num período bloqueado, por isso a correção fica com a data de {day}.",
   "fixed_assets.permission.manage_accounting": "Requer Gerir contabilidade",
+  "fixed_assets.amount_hidden": "Oculto",
+  "fixed_assets.amounts_hidden": "Os valores estão ocultos para a sua função. Um administrador pode conceder Ver relatórios financeiros em Utilizadores.",
   "fixed_assets.opening_title": "Saldos de abertura",
   "fixed_assets.opening_hint": "O que o razão e o registro têm em cada conta de ativos no corte {cutover}. Lance a abertura ou adicione os ativos iniciais que faltam até as diferenças serem zero, ou mantenha-as em aberto.",
   "fixed_assets.opening_finish": "Concluir saldos de abertura",

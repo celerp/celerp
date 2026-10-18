@@ -69,11 +69,13 @@ async def _asset(session, company_id, asset_id: str) -> dict:
 
 @router.get("/setup", dependencies=_VIEW)
 async def get_setup(company_settings: dict = Depends(get_current_company_settings),
-                    company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+                    company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session),
+                    money: bool = _MONEY) -> dict:
     fa = setup.settings_of(company_settings)
     first = await setup.first_period(session, company_id, fa) if fa.get("started") else None
     return {"started": bool(fa.get("started")), "settings": setup.view(fa), "first_period": first,
-            "rules": setup.rules_view(company_settings), "today": setup.today_in(company_settings).isoformat()}
+            "rules": setup.rules_view(company_settings), "today": setup.today_in(company_settings).isoformat(),
+            "money_shown": money}
 
 
 @router.post("/start", dependencies=_ACCOUNTING)

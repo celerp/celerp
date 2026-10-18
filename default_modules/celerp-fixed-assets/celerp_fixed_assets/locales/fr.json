@@ -632,6 +632,8 @@
   "fixed_assets.recon_action.ledger": "Corriger l'écriture",
   "fixed_assets.recon_fix_from": "Sa date tombe dans une période verrouillée, la correction est donc datée du {day}.",
   "fixed_assets.permission.manage_accounting": "Nécessite Gérer la comptabilité",
+  "fixed_assets.amount_hidden": "Masqué",
+  "fixed_assets.amounts_hidden": "Les montants sont masqués pour votre rôle. Un administrateur peut accorder Voir les rapports financiers dans Utilisateurs.",
   "fixed_assets.opening_title": "Soldes d'ouverture",
   "fixed_assets.opening_hint": "Ce que le grand livre et le registre portent sur chaque compte d'immobilisations à la date de bascule {cutover}. Saisissez l'écriture d'ouverture ou ajoutez les immobilisations manquantes jusqu'à ce que les écarts soient nuls, ou gardez-les ouverts.",
   "fixed_assets.opening_finish": "Terminer les soldes d'ouverture",

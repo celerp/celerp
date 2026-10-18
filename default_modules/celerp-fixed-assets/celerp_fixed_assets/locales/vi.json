@@ -632,6 +632,8 @@
   "fixed_assets.recon_action.ledger": "Sửa bút toán",
   "fixed_assets.recon_fix_from": "Ngày của nó nằm trong kỳ đã khóa, nên bản sửa được ghi ngày {day}.",
   "fixed_assets.permission.manage_accounting": "Cần quyền Quản lý kế toán",
+  "fixed_assets.amount_hidden": "Đã ẩn",
+  "fixed_assets.amounts_hidden": "Số tiền được ẩn đối với vai trò của bạn. Quản trị viên có thể cấp quyền Xem báo cáo tài chính trong Người dùng.",
   "fixed_assets.opening_title": "Số dư đầu kỳ",
   "fixed_assets.opening_hint": "Số liệu của sổ cái và sổ đăng ký trên từng tài khoản tài sản tại ngày chuyển đổi {cutover}. Ghi bút toán đầu kỳ hoặc thêm tài sản đầu kỳ còn thiếu cho đến khi chênh lệch bằng không, hoặc để chúng mở.",
   "fixed_assets.opening_finish": "Hoàn tất số dư đầu kỳ",

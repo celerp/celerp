@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from contextvars import ContextVar
 from datetime import date
 from decimal import Decimal
 from urllib.parse import quote, urlencode
@@ -132,8 +133,15 @@ def _linked(text: str, links: list[dict]) -> list:
     return out
 
 
+# Set from the setup each page reads: the member's role does not read amounts, so an amount
+# the API withheld reads as hidden, not as nil.
+_amounts_hidden: ContextVar[bool] = ContextVar("fixed_assets_amounts_hidden", default=False)
+
+
 def _money(value, currency: str | None) -> FT | str:
-    return empty_mark() if value in (None, "") else fmt_money(float(value), currency)
+    if value in (None, ""):
+        return Span(t("fixed_assets.amount_hidden"), cls="cell-empty") if _amounts_hidden.get() else empty_mark()
+    return fmt_money(float(value), currency)
 
 
 def _known(value) -> Decimal | None:
@@ -218,6 +226,7 @@ def _input(name: str, value="", type_: str = "text", **attrs) -> FT:
 async def _context(token: str) -> tuple[dict, str]:
     """The fixed assets setup and the company currency."""
     setup = await api.fixed_assets_get(token, "/setup")
+    _amounts_hidden.set(not setup["money_shown"])
     from celerp.services.money import books_currency
 
     currency = ""
@@ -245,6 +254,8 @@ async def _page(request: Request, *content, title_key: str, nav: str = "fixed_as
                                 str(request.url.replace(scheme="", netloc="")))
         content = (Div(t("fixed_assets.records_read_only"), way_on, cls="flash flash--warning", id="fa-read-only"),
                    Div(*content, cls="records-read-only"))
+    if _amounts_hidden.get():
+        content = (Div(t("fixed_assets.amounts_hidden"), cls="flash flash--info", id="fa-amounts-hidden"), *content)
     return await base_shell(*content, title=page_title(title_key), nav_active=nav, request=request,
                             company_settings=settings)
 
@@ -2620,6 +2631,8 @@ def setup_ui_routes(app) -> None:
                              _held_table(record["exceptions"], currency), cls="detail-card section-card"))
         if record["status"] in ("posted", "posted_with_exceptions"):
             parts.append(Div(H2(t("fixed_assets.reverse_run"), cls="section-title"),
+                             P(Strong(t("fixed_assets.permission.manage_accounting")), cls="settings-hint",
+                               id="fa-reverse-need"),
                              _op_form("reverse-run", Input(type="hidden", name="month", value=month),
                                       P(t("fixed_assets.reverse_run_hint"), cls="settings-hint"),
                                       review_label=t("fixed_assets.reverse_run")),

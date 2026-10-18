@@ -632,6 +632,8 @@
   "fixed_assets.recon_action.ledger": "仕訳を訂正する",
   "fixed_assets.recon_fix_from": "日付がロック済みの期間にあるため、訂正は {day} 付けになります。",
   "fixed_assets.permission.manage_accounting": "会計管理の権限が必要",
+  "fixed_assets.amount_hidden": "非表示",
+  "fixed_assets.amounts_hidden": "あなたのロールでは金額が非表示です。管理者はユーザーで財務レポートの閲覧を許可できます。",
   "fixed_assets.opening_title": "期首残高",
   "fixed_assets.opening_hint": "移行日 {cutover} 時点の各資産勘定における総勘定元帳と台帳の金額です。差額がゼロになるまで期首仕訳を記帳するか不足する期首資産を追加するか、差額を未解決のまま残してください。",
   "fixed_assets.opening_finish": "期首残高を完了",

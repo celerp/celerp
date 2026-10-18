@@ -632,6 +632,8 @@
   "fixed_assets.recon_action.ledger": "Correggi la registrazione",
   "fixed_assets.recon_fix_from": "La sua data cade in un periodo bloccato, quindi la correzione ha data {day}.",
   "fixed_assets.permission.manage_accounting": "Richiede Gestire la contabilità",
+  "fixed_assets.amount_hidden": "Nascosto",
+  "fixed_assets.amounts_hidden": "Gli importi sono nascosti per il tuo ruolo. Un amministratore può concedere Visualizzare i report finanziari in Utenti.",
   "fixed_assets.opening_title": "Saldi di apertura",
   "fixed_assets.opening_hint": "Cosa riportano il libro mastro e il registro su ogni conto dei cespiti alla data di passaggio {cutover}. Registra la scrittura di apertura o aggiungi i cespiti mancanti finché le differenze sono zero, oppure lasciale aperte.",
   "fixed_assets.opening_finish": "Concludi i saldi di apertura",

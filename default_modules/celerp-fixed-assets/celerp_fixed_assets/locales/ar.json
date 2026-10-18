@@ -632,6 +632,8 @@
   "fixed_assets.recon_action.ledger": "تصحيح القيد",
   "fixed_assets.recon_fix_from": "تاريخه ضمن فترة مقفلة، لذا يُؤرَّخ التصحيح في {day}.",
   "fixed_assets.permission.manage_accounting": "يتطلب صلاحية إدارة المحاسبة",
+  "fixed_assets.amount_hidden": "مخفي",
+  "fixed_assets.amounts_hidden": "المبالغ مخفية لدورك. يمكن للمسؤول منح صلاحية عرض التقارير المالية من صفحة المستخدمين.",
   "fixed_assets.opening_title": "الأرصدة الافتتاحية",
   "fixed_assets.opening_hint": "ما يحمله دفتر الأستاذ والسجل في كل حساب أصول في تاريخ الانتقال {cutover}. سجّل القيد الافتتاحي أو أضف الأصول الافتتاحية الناقصة حتى تصبح الفروق صفرًا، أو أبقها مفتوحة.",
   "fixed_assets.opening_finish": "إنهاء الأرصدة الافتتاحية",

@@ -632,6 +632,8 @@
   "fixed_assets.recon_action.ledger": "แก้ไขรายการบัญชี",
   "fixed_assets.recon_fix_from": "วันที่อยู่ในงวดที่ล็อกแล้ว การแก้ไขจึงลงวันที่ {day}",
   "fixed_assets.permission.manage_accounting": "ต้องมีสิทธิ์จัดการบัญชี",
+  "fixed_assets.amount_hidden": "ซ่อนอยู่",
+  "fixed_assets.amounts_hidden": "จำนวนเงินถูกซ่อนสำหรับบทบาทของคุณ ผู้ดูแลระบบสามารถให้สิทธิ์ดูรายงานการเงินได้ที่หน้าผู้ใช้",
   "fixed_assets.opening_title": "ยอดยกมา",
   "fixed_assets.opening_hint": "ยอดในบัญชีแยกประเภทและทะเบียนของแต่ละบัญชีสินทรัพย์ ณ วันตัดยอด {cutover} บันทึกรายการเปิดบัญชีหรือเพิ่มสินทรัพย์ยกมาที่ขาดจนผลต่างเป็นศูนย์ หรือคงผลต่างไว้",
   "fixed_assets.opening_finish": "เสร็จสิ้นยอดยกมา",

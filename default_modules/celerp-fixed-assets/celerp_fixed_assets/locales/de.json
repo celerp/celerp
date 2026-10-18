@@ -632,6 +632,8 @@
   "fixed_assets.recon_action.ledger": "Buchung korrigieren",
   "fixed_assets.recon_fix_from": "Sein Datum liegt in einer gesperrten Periode, daher wird die Korrektur auf den {day} datiert.",
   "fixed_assets.permission.manage_accounting": "Erfordert Buchhaltung verwalten",
+  "fixed_assets.amount_hidden": "Ausgeblendet",
+  "fixed_assets.amounts_hidden": "Beträge sind für Ihre Rolle ausgeblendet. Ein Admin kann unter Benutzer die Berechtigung Finanzberichte anzeigen erteilen.",
   "fixed_assets.opening_title": "Eröffnungssalden",
   "fixed_assets.opening_hint": "Was Hauptbuch und Anlagenverzeichnis zum Stichtag {cutover} auf jedem Anlagenkonto ausweisen. Buchen Sie die Eröffnungsbuchung oder erfassen Sie fehlende Anlagen, bis die Differenzen null sind, oder lassen Sie sie offen.",
   "fixed_assets.opening_finish": "Eröffnungssalden abschließen",

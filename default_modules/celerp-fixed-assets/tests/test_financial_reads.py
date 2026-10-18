@@ -196,3 +196,26 @@ async def test_f02_amounts_reach_the_owner_unchanged(fa):
     text = "".join([(await fa.client.get(p, headers=fa.h)).text for p in _api_reads(c)])
     assert {D("32000"), D(PRICE), D(INSURED), D(ASKED)} <= _amounts(text)
     assert await _downloads(fa, c, fa.h) == dict.fromkeys([*FINANCIAL_TAGS, "photos"], 200)
+
+
+async def test_p3_2_amounts_withheld_by_role_read_as_hidden_and_reverse_says_what_it_needs(fa):
+    """A role that does not read amounts sees them marked hidden, once said for the page, not
+    the empty mark that would read as nil. Reverse this run is offered with the permission it
+    needs, and Review as that role says so instead of doing it."""
+    await _managed_from(fa)
+    await _contributed(fa)
+    await _run(fa, "2026-02")
+    operator = await fa.role_headers("operator")
+    page = (await fa.page("/fixed-assets/runs/2026-02", headers=operator)).text
+    assert "Amounts are hidden for your role" in page and 'id="fa-amounts-hidden"' in page
+    total = re.search(r"<th scope=\"row\">Total</th>\s*<td[^>]*>(.*?)</td>", page, re.S).group(1)
+    assert "Hidden" in total and "--" not in total, total
+    assert "Needs Manage accounting" in page
+    owner = (await fa.page("/fixed-assets/runs/2026-02")).text
+    assert "Amounts are hidden" not in owner and "Needs Manage accounting" in owner
+    asset = (await fa.page(f"/fixed-assets/assets/{await _contributed(fa, name='Bike')}", headers=operator)).text
+    assert "Amounts are hidden for your role" in asset and ">Hidden<" in asset
+    review = await fa._ui("POST", "/fixed-assets/op/reverse-run/review", headers=operator,
+                          data={"month": "2026-02", "idempotency_key": "rv"})
+    assert "Manage accounting" in review.text, review.text
+    assert (await fa.ok(await fa.get("/runs")))["items"][0]["status"] == "posted"

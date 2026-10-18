@@ -632,6 +632,8 @@
   "fixed_assets.recon_action.ledger": "Koreksi jurnal",
   "fixed_assets.recon_fix_from": "Tanggalnya ada di periode terkunci, jadi koreksi diberi tanggal {day}.",
   "fixed_assets.permission.manage_accounting": "Memerlukan Kelola akuntansi",
+  "fixed_assets.amount_hidden": "Disembunyikan",
+  "fixed_assets.amounts_hidden": "Jumlah disembunyikan untuk peran Anda. Admin dapat memberikan Lihat laporan keuangan di Pengguna.",
   "fixed_assets.opening_title": "Saldo awal",
   "fixed_assets.opening_hint": "Isi buku besar dan register di setiap akun aset pada tanggal peralihan {cutover}. Catat jurnal pembukaan atau tambahkan aset awal yang kurang hingga selisihnya nol, atau biarkan terbuka.",
   "fixed_assets.opening_finish": "Selesaikan saldo awal",
