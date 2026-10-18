@@ -207,12 +207,18 @@ def _known(value) -> Decimal | None:
     return None if value in (None, "") else Decimal(str(value))
 
 
-def _result_row(value, currency: str | None) -> tuple[str, FT]:
-    """A disposal's result named as the gain or the loss it is, at its size. Unknown (hidden
-    or not yet worked out) or nil, it is named as either."""
+def _signed_row(value, currency: str | None, up: str, down: str, either: str) -> tuple[str, FT]:
+    """An amount that can go either way, named by the way it went (``up`` or ``down``) at its
+    size, so a loss reads as a loss, never as a minus. Unknown (hidden or not yet worked out)
+    or nil, it is named ``either``."""
     amount = _known(value) or Decimal(0)
-    key = "fixed_assets.gain" if amount > 0 else "fixed_assets.loss" if amount < 0 else "fixed_assets.gain_or_loss"
+    key = up if amount > 0 else down if amount < 0 else either
     return t(key), _money_td(abs(amount) if amount else value, currency)
+
+
+def _result_row(value, currency: str | None) -> tuple[str, FT]:
+    """A disposal's result named as the gain or the loss it is."""
+    return _signed_row(value, currency, "fixed_assets.gain", "fixed_assets.loss", "fixed_assets.gain_or_loss")
 
 
 def _text(value) -> str:
@@ -530,8 +536,12 @@ def _remeasure_figures(result: dict, currency: str) -> FT:
     """Depreciation brought up to the date, the carrying amount before and after, and where
     the difference goes; a reversal also shows the limit it stops at."""
     keys = _REMEASURED + tuple(k for k in ("reversal", "limit") if k in result)
+    signed = {"surplus": ("fixed_assets.remeasure.surplus", "fixed_assets.remeasure.surplus_used"),
+              "profit_or_loss": ("fixed_assets.remeasure.gain", "fixed_assets.remeasure.loss")}
     return _detail_table([_depreciation_row(f"fixed_assets.remeasure.{k}", result[k], currency) if k == "depreciation"
-                          else (t(f"fixed_assets.remeasure.{k}"), _money_td(result[k], currency)) for k in keys])
+                          else _signed_row(result[k], currency, *signed[k], f"fixed_assets.remeasure.{k}")
+                          if k in signed else (t(f"fixed_assets.remeasure.{k}"), _money_td(result[k], currency))
+                          for k in keys])
 
 
 def _depreciation_row(label_key: str, value, currency: str) -> tuple[str, FT]:

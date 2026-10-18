@@ -876,6 +876,12 @@ async def test_impair_from_the_asset_page_then_undo_it(owner_ui):
             "idempotency_key": str(uuid.uuid4())}
     review = await owner_ui.post("/fixed-assets/op/impair/review", data=data)
     assert t("fixed_assets.remeasure.new_carrying_amount") in review.text and "fixed_assets." not in review.text
+    # A loss reads as a loss at its size, as a disposal's does, never as a minus.
+    rows = {tr.th.get_text(strip=True): tr.td.get_text(strip=True)
+            for tr in BeautifulSoup(review.text, "html.parser").select(".detail-table tr")}
+    loss = rows[t("fixed_assets.remeasure.loss")]
+    assert loss[0] != "-" and Decimal(re.sub(r"[^\d.]", "", loss)) > 0, rows
+    assert t("fixed_assets.remeasure.profit_or_loss") not in rows, rows
     href = await _review_and_confirm(owner_ui, "impair", data)
     assert href == f"/fixed-assets/assets/{car}"
     page = await owner_ui.get(href)
