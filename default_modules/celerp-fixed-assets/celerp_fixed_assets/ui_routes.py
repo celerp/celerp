@@ -45,7 +45,7 @@ import re
 from contextvars import ContextVar
 from datetime import date
 from decimal import Decimal
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -58,7 +58,7 @@ from ui.components.shell import base_shell, page_header, page_title, toast_heade
 from ui.components.table import (EMPTY, breadcrumbs, bulk_toolbar, display_cell, editable_cell, empty_mark, empty_state_cta,
                                  fmt_money, pagination, party_options, row_menu, searchable_select,
                                  PARTY_PRELOAD, PARTY_SEARCH_URL)
-from ui.config import get_role, get_token as _token
+from ui.config import get_company_id, get_role, get_token
 from ui.i18n import refusal_text, t
 from ui.routes.csv_import import read_tabular_source
 from celerp.importers import tabular
@@ -109,8 +109,34 @@ async def _error_box(request: Request, e: APIError):
     if _missing_permission(e):
         params = ({"href": "/settings/general?tab=users", "action": "fixed_assets.action.open_users"}
                   if await _grants_permissions(request) else {})
+    return _refusal_box(_error_text(e), params)
+
+
+def _refusal_box(text: str, params: dict, cls: str = "flash flash--error") -> FT:
+    """A refusal's text with its links and its way on (``href`` and ``action``, or ``fill``)."""
     fix = [" ", A(t(params["action"]), href=params["href"])] if params.get("href") and params.get("action") else []
-    return Div(*_linked(_error_text(e), params.get("links") or []), *fix, cls="flash flash--error")
+    if params.get("fill"):
+        fix += [" ", _fill_button(params["fill"])]
+    return Div(*_linked(text, params.get("links") or []), *fix, cls=cls)
+
+
+def _undo_refused(asset: dict, kind: str) -> tuple:
+    """Why the asset's undo of ``kind`` would be refused now, said beside its button before it
+    is pressed. The button stays, so the way to undo is still known when it cannot be used."""
+    detail = (asset.get("undo_refused") or {}).get(kind)
+    if not detail:
+        return ()
+    params = (detail.get("params") or {}) if isinstance(detail, dict) else {}
+    return (_refusal_box(refusal_text(detail), params, "flash flash--warning"),)
+
+
+def _fill_button(fill: dict) -> FT:
+    """The value a refusal names as the one that works (``fill``: its form ``field``, ``value``
+    and ``action`` label), one click away: it fills the field and reviews again."""
+    script = (f"const f = this.closest('form'); f.elements[{json.dumps(fill['field'])}].value = "
+              f"{json.dumps(fill['value'])}; f.querySelector('[hx-post$=\"/review\"]').click();")
+    return Button(t(fill["action"], value=fill["value"]), type="button", cls="btn btn--sm btn--secondary",
+                  onclick=script)
 
 
 def _linked(text: str, links: list[dict]) -> list:
@@ -136,6 +162,65 @@ def _linked(text: str, links: list[dict]) -> list:
 # Set from the setup each page reads: the member's role does not read amounts, so an amount
 # the API withheld reads as hidden, not as nil.
 _amounts_hidden: ContextVar[bool] = ContextVar("fixed_assets_amounts_hidden", default=False)
+# Every request a module page sends carries the company the page was opened in, so a write
+# sent after the session switched company in another tab is refused, never saved in the other
+# company. Set per request from that header, or for a plain form (which sends no page headers)
+# from its address: the page's company and where the page is.
+_PAGE_COMPANY = "X-Celerp-Page-Company"
+_PAGE_COMPANY_QUERY = "page_company"
+_switched: ContextVar[tuple[str, str] | None] = ContextVar("fixed_assets_switched", default=None)
+
+
+def _token(request: Request) -> str | None:
+    """The session's token, noting whether the page that sent the request was opened in
+    another company than the session is in now."""
+    page = request.headers.get(_PAGE_COMPANY) or request.query_params.get(_PAGE_COMPANY_QUERY)
+    now = get_company_id(request)
+    if page and now and page != now:
+        here = urlsplit(request.headers.get("HX-Current-URL") or request.headers.get("Referer") or "")
+        _switched.set((page, here.path + (f"?{here.query}" if here.query else "")))
+    else:
+        _switched.set(None)
+    return get_token(request)
+
+
+def _page_company_action(request: Request, action: str) -> str:
+    """A plain form's address, carrying the company its page was opened in."""
+    company = get_company_id(request)
+    return f"{action}?{urlencode({_PAGE_COMPANY_QUERY: company})}" if company else action
+
+
+async def _refuse_if_switched(token: str) -> None:
+    """Refuse a write (nothing saved) when the session switched company in another tab after
+    the page was opened."""
+    if switched := _switched.get():
+        raise await _switched_refusal(token, *switched)
+
+
+async def _send(token: str, method: str, path: str, body: dict) -> dict:
+    """A write to the module's API, refused when the session switched company since the page opened."""
+    await _refuse_if_switched(token)
+    return await api.fixed_assets_send(token, method, path, body)
+
+
+async def _send_form(token: str, method: str, path: str, data: dict, files: dict | None = None) -> dict:
+    """A form write (with files when given) to the module's API, refused like :func:`_send`."""
+    await _refuse_if_switched(token)
+    return await api.fixed_assets_form(token, method, path, data, files=files)
+
+
+async def _switched_refusal(token: str, page_id: str, back: str) -> APIError:
+    """Which company the page was opened in, which one the session is in now, and the way back."""
+    mine = (await api.my_companies(token)).get("items") or []
+    now = next((c["company_name"] for c in mine if c.get("is_current")), "")
+    page = next((c["company_name"] for c in mine if c["company_id"] == page_id), None)
+    if page is None:
+        message = t("fixed_assets.switched_company_gone", now=now)
+        return APIError(409, message, {"message": message, "params": {}})
+    switch = t("fixed_assets.switch_to", company=page)
+    message = t("fixed_assets.switched_company", page=page, now=now, switch=switch)
+    href = f"/switch-company/{quote(page_id)}?{urlencode({'next': back or '/fixed-assets'})}"
+    return APIError(409, message, {"message": message, "params": {"links": [{"label": switch, "href": href}]}})
 
 
 def _left_use_notice(asset: dict) -> FT | str:
@@ -157,12 +242,18 @@ def _known(value) -> Decimal | None:
     return None if value in (None, "") else Decimal(str(value))
 
 
-def _result_row(value, currency: str | None) -> tuple[str, FT]:
-    """A disposal's result named as the gain or the loss it is, at its size. Unknown (hidden
-    or not yet worked out) or nil, it is named as either."""
+def _signed_row(value, currency: str | None, up: str, down: str, either: str) -> tuple[str, FT]:
+    """An amount that can go either way, named by the way it went (``up`` or ``down``) at its
+    size, so a loss reads as a loss, never as a minus. Unknown (hidden or not yet worked out)
+    or nil, it is named ``either``."""
     amount = _known(value) or Decimal(0)
-    key = "fixed_assets.gain" if amount > 0 else "fixed_assets.loss" if amount < 0 else "fixed_assets.gain_or_loss"
+    key = up if amount > 0 else down if amount < 0 else either
     return t(key), _money_td(abs(amount) if amount else value, currency)
+
+
+def _result_row(value, currency: str | None) -> tuple[str, FT]:
+    """A disposal's result named as the gain or the loss it is."""
+    return _signed_row(value, currency, "fixed_assets.gain", "fixed_assets.loss", "fixed_assets.gain_or_loss")
 
 
 def _text(value) -> str:
@@ -182,6 +273,11 @@ def _detail_table(rows: list[tuple[str, object]]) -> FT:
     """A label and value table; a value given as its own cell (money) keeps that cell."""
     return Table(Tbody(*[Tr(Th(label, scope="row"), value if getattr(value, "tag", None) == "td" else Td(value))
                          for label, value in rows]), cls="data-table detail-table")
+
+
+def _subhead(text) -> FT:
+    """A heading inside a card or review, under its section title."""
+    return H4(text, cls="form-subtitle")
 
 
 def _more_menu(*items: FT) -> FT:
@@ -245,6 +341,16 @@ async def _context(token: str) -> tuple[dict, str]:
     return setup, currency
 
 
+def _acts(content) -> bool:
+    """Whether the page is an operation form (one with its #fa-preview), which a read-only page
+    hides. A record page that only carries forms inside its cards still has its records to read."""
+    def preview(c) -> bool:
+        return isinstance(c, FT) and c.attrs.get("id") == "fa-preview"
+
+    return any(_acts(c) if isinstance(c, (list, tuple)) else
+               preview(c) or isinstance(c, FT) and any(map(preview, c.children)) for c in content)
+
+
 async def _page(request: Request, *content, title_key: str, nav: str = "fixed_assets"):
     """A module page. While the company has the module turned off its records stay readable
     here, read-only, under a banner that says so."""
@@ -257,13 +363,22 @@ async def _page(request: Request, *content, title_key: str, nav: str = "fixed_as
     if not uses_module(settings, MODULE):
         from ui.routes.modules_page import turn_on_action
 
-        way_on = turn_on_action(get_role(request), settings, MODULE, t("fixed_assets.turn_on_records"),
-                                t("fixed_assets.ask_admin_records"),
-                                str(request.url.replace(scheme="", netloc="")))
+        back = str(request.url.replace(scheme="", netloc=""))
+        if _acts(content):
+            # Its actions are hidden, so the page says where they went and offers the way on there.
+            way_on = ""
+            hidden = (turn_on_action(get_role(request), settings, MODULE, t("fixed_assets.turn_on_to_act"),
+                                     t("fixed_assets.ask_admin_to_act"), back, primary=True),)
+        else:
+            way_on = turn_on_action(get_role(request), settings, MODULE, t("fixed_assets.turn_on_records"),
+                                    t("fixed_assets.ask_admin_records"), back)
+            hidden = ()
         content = (Div(t("fixed_assets.records_read_only"), way_on, cls="flash flash--warning", id="fa-read-only"),
-                   Div(*content, cls="records-read-only"))
+                   Div(*content, cls="records-read-only"), *hidden)
     if _amounts_hidden.get():
         content = (Div(t("fixed_assets.amounts_hidden"), cls="flash flash--info", id="fa-amounts-hidden"), *content)
+    if company := get_company_id(request):
+        content = (Div(*content, hx_headers=json.dumps({_PAGE_COMPANY: company}), style="display: contents"),)
     return await base_shell(*content, title=page_title(title_key), nav_active=nav, request=request,
                             company_settings=settings)
 
@@ -277,7 +392,7 @@ async def _refused(request: Request, e: APIError, title_key: str):
     crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
                           *([(t(title_key), None)] if title_key != "fixed_assets.title" else [])])
     if e.status == 404:
-        body = empty_state_cta(_error_text(e), t("fixed_assets.title"), "/fixed-assets")
+        body = empty_state_cta(_error_text(e), t("fixed_assets.view_all"), "/fixed-assets")
     else:
         body = await _error_box(request, e)
     if (e.data or {}).get("message_key") == "fixed_assets.not_managed":
@@ -387,13 +502,24 @@ def _preview(action: str, result: dict, currency: str) -> FT:
     journals = result.get("journals") or []
     if "their_number" in result:
         parts.append(_transfer_figures(result, currency))
-        parts += [H4(t("fixed_assets.transfer_here")), _lines_table(journals[0].get("lines") or [], currency),
-                  H4(t("fixed_assets.transfer_there", company=result["company"])),
+        parts += [_subhead(t("fixed_assets.transfer_here")), _lines_table(journals[0].get("lines") or [], currency),
+                  _subhead(t("fixed_assets.transfer_there", company=result["company"])),
                   _lines_table(journals[1].get("lines") or [], result.get("their_currency") or currency)]
     else:
         parts += [_lines_table(je.get("lines") or [], currency) for je in journals]
-    for month in result.get("months") or []:
-        parts.append(H4(f"{month['month']}: {_money(month['total'], currency)}"))
+    months = result.get("months") or []
+    if len(months) > 1:
+        # A review of several months opens with what it adds up to, and can be confirmed from there.
+        assets = {a["asset_id"] for m in months for a in m["assets"]}
+        parts += [_detail_table([
+            (t("fixed_assets.run_months_covered"),
+             t("fixed_assets.months_covered", first=months[0]["month"], last=months[-1]["month"])),
+            (t("fixed_assets.asset_count"), str(len(assets))),
+            (t("label.total"), _money_td(result.get("total"), currency))])]
+        if not result.get("errors"):
+            parts.append(_step(action, "confirm", t("fixed_assets.confirm"), "btn btn--primary", "closest #fa-preview"))
+    for month in months:
+        parts.append(_subhead(f"{month['month']}: {_money(month['total'], currency)}"))
         parts.append(_lines_table(month["lines"], currency) if month["lines"]
                      else P(t("fixed_assets.month_posts_nothing"), cls="form-hint"))
         if month["assets"]:
@@ -402,7 +528,7 @@ def _preview(action: str, result: dict, currency: str) -> FT:
             parts.append(_held_table(month["exceptions"], currency))
     if result.get("empty"):
         parts.append(P(t("fixed_assets.nothing_to_depreciate"), cls="form-hint"))
-    elif not journals and not result.get("months"):
+    elif not journals and not months:
         parts.append(P(t("fixed_assets.posts_nothing"), cls="form-hint"))
     # Rows an import would refuse: each named, and nothing to confirm until they are fixed.
     errors = result.get("errors") or []
@@ -411,10 +537,8 @@ def _preview(action: str, result: dict, currency: str) -> FT:
                          cls="flash flash--error"))
     return Div(H3(t("fixed_assets.review_title"), cls="section-title"), *parts,
                Input(type="hidden", name="fingerprint", value=result.get("fingerprint", "")),
-               Div(Button(t("fixed_assets.confirm"), type="button", cls="btn btn--primary",
-                          hx_post=f"/fixed-assets/op/{action}/confirm", hx_include="closest form",
-                          hx_target="closest #fa-preview", hx_swap="outerHTML"),
-                   cls="form-actions") if not errors else "",
+               _step(action, "confirm", t("fixed_assets.confirm"), "btn btn--primary", "closest #fa-preview")
+               if not errors else "",
                cls="detail-card section-card", id="fa-preview")
 
 
@@ -431,29 +555,29 @@ def _correction_preview(result: dict, currency: str) -> list[FT]:
     if result.get("prior_years"):
         hint = (t("fixed_assets.prior_to_pl", reason=_text(result.get("immaterial_reason")))
                 if result.get("treatment") == "profit_and_loss" else t("fixed_assets.prior_to_equity"))
-        parts += [H4(t("fixed_assets.prior_years_title")), P(hint, cls="form-hint"), _restated_table(
+        parts += [_subhead(t("fixed_assets.prior_years_title")), P(hint, cls="form-hint"), _restated_table(
             result["prior_years"], currency)]
     if result.get("movements"):
-        parts += [H4(t("fixed_assets.movements")), Table(
+        parts += [_subhead(t("fixed_assets.movements")), Table(
             Thead(Tr(Th(t("fixed_assets.movement")), Th(t("fixed_assets.effective_date")),
                      Th(t("fixed_assets.posting_date")))),
             Tbody(*[Tr(Td(t(f"fixed_assets.movement.{m['operation']}")), Td(_text(m.get("effective_date"))),
                        Td(_text(m.get("posting_date")))) for m in result["movements"]]), cls="data-table")]
     if result.get("corrected"):
         # A replaced source: the movements that stay as they posted, and the ones it rewrites.
-        parts += [H4(t("fixed_assets.kept_title")), Table(
+        parts += [_subhead(t("fixed_assets.kept_title")), Table(
             Thead(Tr(Th(t("fixed_assets.movement")), Th(t("fixed_assets.effective_date")),
                      Th(t("fixed_assets.posting_date")))),
             Tbody(*[Tr(Td(t(f"fixed_assets.movement.{m['operation']}")), Td(_text(m.get("effective_date"))),
                        Td(_text(m.get("posting_date")))) for m in sorted(
                 result.get("kept") or [], key=lambda m: m["effective_date"], reverse=True)]), cls="data-table"),
-            H4(t("fixed_assets.corrected_title")), Table(
+            _subhead(t("fixed_assets.corrected_title")), Table(
             Thead(Tr(Th(t("fixed_assets.effective_date")), Th(t("fixed_assets.posting_date")),
                      _money_th(t("fixed_assets.cost")))),
             Tbody(*[Tr(Td(_text(m.get("effective_date"))), Td(_text(m.get("posting_date"))),
                        _money_td(m.get("cost"), currency)) for m in result["corrected"]]), cls="data-table")]
     if result.get("future"):
-        parts += [H4(t("fixed_assets.future_title")), Table(
+        parts += [_subhead(t("fixed_assets.future_title")), Table(
             Thead(Tr(Th(t("fixed_assets.month")), _money_th(t("fixed_assets.amount")))),
             Tbody(*[Tr(Td(f["month"]), _money_td(f["amount"], currency)) for f in result["future"]]),
             cls="data-table")]
@@ -467,8 +591,12 @@ def _remeasure_figures(result: dict, currency: str) -> FT:
     """Depreciation brought up to the date, the carrying amount before and after, and where
     the difference goes; a reversal also shows the limit it stops at."""
     keys = _REMEASURED + tuple(k for k in ("reversal", "limit") if k in result)
+    signed = {"surplus": ("fixed_assets.remeasure.surplus", "fixed_assets.remeasure.surplus_used"),
+              "profit_or_loss": ("fixed_assets.remeasure.gain", "fixed_assets.remeasure.loss")}
     return _detail_table([_depreciation_row(f"fixed_assets.remeasure.{k}", result[k], currency) if k == "depreciation"
-                          else (t(f"fixed_assets.remeasure.{k}"), _money_td(result[k], currency)) for k in keys])
+                          else _signed_row(result[k], currency, *signed[k], f"fixed_assets.remeasure.{k}")
+                          if k in signed else (t(f"fixed_assets.remeasure.{k}"), _money_td(result[k], currency))
+                          for k in keys])
 
 
 def _depreciation_row(label_key: str, value, currency: str) -> tuple[str, FT]:
@@ -563,12 +691,26 @@ def _op_form(action: str, *fields: FT, review_label: str | None = None, actions:
     does it. Targets are relative, so a page can carry several of these forms. ``actions`` sit
     beside Review."""
     return Form(*fields, operation_key_input(),
-                Div(Button(review_label or t("fixed_assets.review"), type="button", cls="btn btn--secondary",
-                           hx_post=f"/fixed-assets/op/{action}/review", hx_include="closest form",
-                           hx_target="next #fa-preview", hx_swap="outerHTML"),
-                    *actions, cls="form-actions"),
+                _step(action, "review", review_label or t("fixed_assets.review"), "btn btn--primary",
+                      "next #fa-preview", *actions),
                 Div(id="fa-preview"),
                 onsubmit="return false;", cls=f"settings-card {_STACK}")
+
+
+def _titled(asset: dict) -> str:
+    """An asset as an action page's title names it: its number and its name."""
+    return " ".join(filter(None, (asset["number"], asset.get("name"))))
+
+
+def _step(action: str, step: str, label: str, cls: str, target: str, *actions: FT) -> FT:
+    """The button for one step of an operation (review or confirm) with ``actions`` beside it.
+    While its request runs the button is disabled and the step is named beside it, so a slow
+    answer is not taken for no answer."""
+    return Div(Button(label, type="button", cls=cls, hx_post=f"/fixed-assets/op/{action}/{step}",
+                      hx_include="closest form", hx_target=target, hx_swap="outerHTML",
+                      hx_disabled_elt="this", hx_indicator="closest .form-actions"),
+               *actions, Span(t(f"fixed_assets.working.{step}"), cls="htmx-indicator form-hint"),
+               cls="form-actions")
 
 
 def _amount(form, name: str):
@@ -986,7 +1128,7 @@ def _disposal_card(asset: dict, movements: list[dict], currency: str) -> FT | st
     # A transfer is undone in both companies at once, through Undo latest.
     undo = "" if target else _op_form("undo-disposal", Input(type="hidden", name="asset_id", value=asset["id"]),
                                       P(t("fixed_assets.undo_disposal_hint"), cls="settings-hint"),
-                                      review_label=t("fixed_assets.undo_disposal"))
+                                      *_undo_refused(asset, "disposal"), review_label=t("fixed_assets.undo_disposal"))
     title = t("fixed_assets.partial_disposal_title", share=part) if part else t("fixed_assets.disposal_title")
     return Div(H2(title, cls="section-title"),
                _detail_table(rows), undo, cls="detail-card section-card", id=f"fa-disposal-{asset_id}")
@@ -1030,11 +1172,11 @@ def _sale_card(asset: dict, sale: dict, currency: str, today: str) -> FT | str:
     parts.append(_detail_table(rows))
     # A void or deleted invoice will never be finalized, so it has no journal to show.
     if (sale.get("journal") or {}).get("lines") and not (sale.get("invoice_void") or sale.get("draft_deleted")):
-        parts += [H4(t("fixed_assets.sale_journal_" + ("pending" if sale["state"] == "pending" else "posted"))),
+        parts += [_subhead(t("fixed_assets.sale_journal_" + ("pending" if sale["state"] == "pending" else "posted"))),
                   _lines_table(sale["journal"]["lines"], currency)]
     notes = sale.get("credit_notes") or []
     if notes:
-        parts += [H4(t("fixed_assets.credit_notes")), Table(
+        parts += [_subhead(t("fixed_assets.credit_notes")), Table(
             Thead(Tr(Th(t("fixed_assets.number")), Th(t("fixed_assets.date")), Th(t("fixed_assets.credit_kind")),
                      _money_th(t("fixed_assets.amount")))),
             Tbody(*[Tr(Td(A(n["number"], href=_doc_href(n["id"]))), Td(_text(n.get("date"))),
@@ -1054,7 +1196,7 @@ def _sale_card(asset: dict, sale: dict, currency: str, today: str) -> FT | str:
                               review_label=t("fixed_assets.cancel_sale")))
     if "credit" in actions:
         parts.append(_op_form(
-            "sale-credit", hidden, H4(t("fixed_assets.credit_sale")),
+            "sale-credit", hidden, _subhead(t("fixed_assets.credit_sale")),
             P(t("fixed_assets.credit_sale_hint"), cls="settings-hint"),
             _field(t("fixed_assets.credit_kind"),
                    Select(*[Option(t(f"fixed_assets.credit_kind.{k}"), value=k) for k in ("adjust", "returned")],
@@ -1103,9 +1245,13 @@ def doc_register_actions(doc: dict) -> FT | None:
 
 
 def _filters(q: str, class_id: str, classes: list[dict]) -> FT:
-    """Search, class and Filter on one row; on a phone Filter wraps with the class, never alone."""
+    """Search, class and Filter on one row; on a phone Filter wraps with the class, never alone.
+    The list follows the search as it is typed, with the search kept in the address."""
     return Form(
-        _input("q", q, type_="search", placeholder=t("fixed_assets.search"), aria_label=t("fixed_assets.search")),
+        _input("q", q, type_="search", placeholder=t("fixed_assets.search"), aria_label=t("fixed_assets.search"),
+               hx_get="/fixed-assets", hx_trigger="input changed delay:300ms", hx_include="closest form",
+               hx_target="#fa-register-body", hx_select="#fa-register-body", hx_swap="outerHTML",
+               hx_push_url="true"),
         Div(_picker("class_id", [(c["id"], c["name"]) for c in classes], class_id, label=t("fixed_assets.class"),
                     empty="fixed_assets.all_classes"),
             Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary"), cls="flex-row gap-sm"),
@@ -1137,6 +1283,7 @@ def _settings_form(settings: dict, available: dict) -> FT:
     regimes = [r["key"] for r in available["tax_regimes"]] + sorted(chosen - {r["key"] for r in available["tax_regimes"]})
 
     return Form(
+        P(t("fixed_assets.settings_autosave"), cls="settings-hint"),
         _field(t("fixed_assets.run_mode"), Select(
             *[Option(t(f"fixed_assets.run_mode.{m}"), value=m, selected=m == settings.get("run_mode"))
               for m in RUN_MODES], name="run_mode", cls="form-input"), t("fixed_assets.run_mode_hint")),
@@ -1159,7 +1306,7 @@ def _settings_form(settings: dict, available: dict) -> FT:
             Input(type="hidden", name="tax_regimes:flag", value="1"),
             *[Label(Input(type="checkbox", name="tax_regimes", value=k, checked=k in chosen), _rule_label("tax_regime", k),
                     cls="settings-toggle") for k in regimes] or [
-                P(t("fixed_assets.no_tax_regime"), " ", t("fixed_assets.no_tax_regime_install"), " ",
+                P(t("fixed_assets.no_tax_regime"), " ", t("fixed_assets.no_tax_regime_install_here"), " ",
                   A(t("fixed_assets.open_modules"), href="/modules"), cls="form-hint")], id="fa-tax-regimes"),
                # With none offered, the statement above already says where a regime comes from.
                t("fixed_assets.tax_regimes_hint") if regimes else None),
@@ -1192,9 +1339,11 @@ def _class_cell(cls: dict, field: str, chart: list[dict]) -> FT:
         labels = {value: _rule_label("method", value)}
     elif field.endswith("account"):
         labels = {a["code"]: f"{a['code']} {a['name']}" for a in chart}
+    # A settings table edits on one click, as Celerp's other settings tables do.
     return display_cell(cls["id"], field, value, "text", label_map=labels,
                         cls_extra="cell--number" if field in ("life_months", "residual_percent") else "",
-                        edit_url=f"/settings/fixed-assets/classes/{quote(cls['id'], safe=':')}/{field}/edit")
+                        edit_url=f"/settings/fixed-assets/classes/{quote(cls['id'], safe=':')}/{field}/edit")(
+        hx_trigger="click", title=t("settings.click_to_edit"))
 
 
 def _classes_card(classes: list[dict], chart: list[dict]) -> FT:
@@ -1232,21 +1381,34 @@ def _classes_card(classes: list[dict], chart: list[dict]) -> FT:
     )
 
 
+def _movement_name(m: dict, by_id: dict[str, dict]) -> str:
+    """A movement as the history names it. Depreciation brought up to date or taken back by a
+    dated operation names the months it covers, which can be months already charged; an undo
+    names what it undid."""
+    name = t(f"fixed_assets.movement.{m.get('operation')}")
+    if m.get("operation") == "undo" and (undone := by_id.get(m.get("reverses"))):
+        return t("fixed_assets.movement_undoes", what=_movement_name(undone, by_id))
+    if m.get("operation") != "run" and (months := sorted(m.get("periods") or {})):
+        covered = months[0] if len(months) == 1 else t("fixed_assets.months_covered", first=months[0], last=months[-1])
+        return t("fixed_assets.movement_months", what=name, months=covered)
+    return name
+
+
 def _movements_table(items: list[dict], currency: str) -> FT:
-    """Each movement's change to cost and accumulated depreciation, and to accumulated
-    impairment once any movement has touched it. A column the movement does not change
-    reads as empty."""
+    """Each movement's change to cost and depreciation, and to impairment once any movement
+    has touched it. A column the movement does not change reads as empty."""
     if not items:
         return P(t("fixed_assets.no_movements"), cls="form-hint")
     columns = ["cost", "accumulated_depreciation"]
     if any(Decimal(str((m.get("amounts") or {}).get("accumulated_impairment") or 0)) for m in items):
         columns.append("accumulated_impairment")
-    rows = [Tr(Td(_text(m.get("posting_date"))), Td(_text(m.get("effective_date"))),
-               Td(t(f"fixed_assets.movement.{m.get('operation')}")),
+    by_id = {m["id"]: m for m in items if m.get("id")}
+    rows = [Tr(Td(_text(m.get("posting_date"))), Td(_text(m.get("effective_date"))), Td(_movement_name(m, by_id)),
                *[_money_td(_known((m.get("amounts") or {}).get(c)) or None, currency) for c in columns])
             for m in items]
     return Table(Thead(Tr(Th(t("fixed_assets.posting_date")), Th(t("fixed_assets.effective_date")),
-                          Th(t("fixed_assets.movement")), *[_money_th(t(f"fixed_assets.{c}")) for c in columns])),
+                          Th(t("fixed_assets.movement")),
+                          *[_money_th(t(f"fixed_assets.movement_column.{c}")) for c in columns])),
                  Tbody(*rows), cls="data-table")
 
 
@@ -1653,11 +1815,11 @@ def _opening_table(accounts: list[dict], currency: str) -> FT:
     rows = [Tr(Td(a["label"]), _money_td(a["ledger"], currency), _money_td(a["registered"], currency),
                *([_money_td(a["importing"], currency)] if importing else []),
                _money_td(a["difference"], currency)) for a in accounts]
-    return Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.recon_ledger")),
-                          _money_th(t("fixed_assets.recon_registered")),
-                          *([_money_th(t("fixed_assets.importing"))] if importing else []),
-                          _money_th(t("fixed_assets.difference")))),
-                 Tbody(*rows), cls="data-table", id="fa-opening-accounts")
+    return Div(Table(Thead(Tr(Th(t("fixed_assets.account")), _money_th(t("fixed_assets.recon_ledger")),
+                              _money_th(t("fixed_assets.recon_registered")),
+                              *([_money_th(t("fixed_assets.importing"))] if importing else []),
+                              _money_th(t("fixed_assets.difference")))),
+                     Tbody(*rows), cls="data-table", id="fa-opening-accounts"), cls="table-scroll-wrap")
 
 
 def _opening_actions(state: str | None, cutover: str) -> FT:
@@ -1696,7 +1858,7 @@ def _runs_table(items: list[dict], currency: str) -> FT:
 async def _hx_write(token: str, method: str, path: str, body: dict, done: str, said: str) -> Response:
     """A plain write from a small form: on success go to ``done`` with a toast that ``said`` what changed, else say why."""
     try:
-        await api.fixed_assets_send(token, method, path, body)
+        await _send(token, method, path, body)
     except APIError as e:
         return Response(headers=toast_header(_error_text(e), "error", persist=True))
     return Response(headers={"HX-Redirect": done, **toast_header(said)})
@@ -1795,7 +1957,7 @@ def _param_inputs(policy: dict, methods: list[dict]) -> list[FT]:
                 inputs.append(_field(t(f"fixed_assets.param.{name}"),
                                      _input(field, current.get(name), type_="number", step="any", min="0")))
         # The plain wrapper carries `hidden`, which the form group's own display would override.
-        groups.append(Div(Div(H4(t("fixed_assets.params_for", method=_rule_label("method", key)), cls="form-subtitle"),
+        groups.append(Div(Div(_subhead(t("fixed_assets.params_for", method=_rule_label("method", key))),
                               *inputs, cls="form-group"), data_method=key, hidden=policy.get("method") != key))
     return groups
 
@@ -2075,7 +2237,7 @@ async def _fair_value_lines(form) -> tuple[list[tuple[str, str, str]], str | Non
     return lines, None
 
 
-def _revalue_files_card(class_id: str, report: dict | None) -> FT:
+def _revalue_files_card(request: Request, class_id: str, report: dict | None) -> FT:
     """The valuer's report to keep on the class's assets, and a file to fill the fair values from."""
     base = f"/fixed-assets/classes/{quote(class_id, safe=':')}/revalue"
     kept = ""
@@ -2089,7 +2251,7 @@ def _revalue_files_card(class_id: str, report: dict | None) -> FT:
                               Input(type="file", name="file", cls="form-input", aria_label=t("fixed_assets.valuer_report")),
                               t("fixed_assets.valuer_report_hint")),
                        Button(t("fixed_assets.valuer_report_upload"), type="submit", cls="btn btn--secondary"),
-                       method="post", action=f"{base}/report", enctype="multipart/form-data", cls=_STACK)
+                       method="post", action=_page_company_action(request, f"{base}/report"), enctype="multipart/form-data", cls=_STACK)
     values_form = Form(_field(t("fixed_assets.fair_values_file"),
                               Input(type="file", name="csv_file", accept=".csv,.xlsx", cls="form-input",
                                     aria_label=t("fixed_assets.fair_values_file")),
@@ -2141,7 +2303,9 @@ def setup_ui_routes(app) -> None:
                        ("fixed_assets.import_register", "/fixed-assets/import"))]))
         if not found["items"] and not params:
             body = Div(empty_state_cta(t("fixed_assets.empty"), t("fixed_assets.register_from_bills"),
-                                       "/fixed-assets/intake", hint=t("fixed_assets.empty_hint")))
+                                       "/fixed-assets/intake", hint=t("fixed_assets.empty_hint"),
+                                       more=(A(t("fixed_assets.add_asset"), href="/fixed-assets/assets/new",
+                                               cls="btn btn--secondary"),)))
         elif not found["items"]:
             body = P(t("fixed_assets.no_match"), cls="form-hint")
         else:
@@ -2151,8 +2315,8 @@ def setup_ui_routes(app) -> None:
                            P(t("fixed_assets.register_hint"), cls="settings-hint"), _class_accounts_banner(classes), notice,
                            _attention_card(held) if held else "", _reviews_due_card(due) if due else "",
                            due_soon_card(upkeep_due) if upkeep_due else "",
-                           _filters(q, class_id, [c for c in classes if not c.get("archived")]), body,
-                           title_key="fixed_assets.title")
+                           _filters(q, class_id, [c for c in classes if not c.get("archived")]),
+                           Div(body, id="fa-register-body"), title_key="fixed_assets.title")
 
     @app.post("/fixed-assets/start")
     async def start(request: Request):
@@ -2160,7 +2324,7 @@ def setup_ui_routes(app) -> None:
         if not token:
             return Response(status_code=401)
         try:
-            await api.fixed_assets_send(token, "POST", "/start", {})
+            await _send(token, "POST", "/start", {})
         except APIError as e:
             return Response(headers=toast_header(_error_text(e), "error", persist=True))
         return Response(headers={"HX-Redirect": "/fixed-assets"})
@@ -2177,7 +2341,7 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.intake_title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.intake_title"), None)])
         if not items:
-            body = empty_state_cta(t("fixed_assets.intake_empty"), t("fixed_assets.title"), "/fixed-assets")
+            body = empty_state_cta(t("fixed_assets.intake_empty"), t("fixed_assets.view_all"), "/fixed-assets")
         else:
             # A depreciation line is not an asset: it is linked to the assets it depreciated.
             rows = [Tr(Td(_text(ln.get("date"))),
@@ -2229,7 +2393,7 @@ def setup_ui_routes(app) -> None:
                       *[x for i, link in enumerate(links) for x in ((", ", link) if i else (link,))]),
                     cls="detail-card section-card"), title_key="fixed_assets.line_title")
             return await _page(request, crumbs, page_header(t("fixed_assets.line_title")),
-                               empty_state_cta(t("fixed_assets.line_gone"), t("fixed_assets.intake_title"),
+                               empty_state_cta(t("fixed_assets.line_gone"), t("fixed_assets.view_lines"),
                                                "/fixed-assets/intake"),
                                title_key="fixed_assets.line_title")
         summary = Div(P(Strong(_text(line.get("description"))), " ",
@@ -2306,13 +2470,12 @@ def setup_ui_routes(app) -> None:
         else:
             body["fingerprint"] = str(form.get("fingerprint") or "")
         try:
-            result = await api.fixed_assets_send(token, "POST", path_of(form), body)
+            result = await _send(token, "POST", path_of(form), body)
             _, currency = await _context(token)
         except APIError as e:
             return Div(await _error_box(request, e),
-                       *([Button(t("fixed_assets.review_again"), type="button", cls="btn btn--secondary",
-                                 hx_post=f"/fixed-assets/op/{action}/review", hx_include="closest form",
-                                 hx_target="closest #fa-preview", hx_swap="outerHTML")] if step == "confirm" else []),
+                       *([_step(action, "review", t("fixed_assets.review_again"), "btn btn--primary",
+                                "closest #fa-preview")] if step == "confirm" else []),
                        id="fa-preview")
         if step == "review":
             return _preview(action, result, currency)
@@ -2377,7 +2540,7 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (asset["number"], None)])
         undo = _op_form("undo-asset", Input(type="hidden", name="asset_id", value=asset_id),
-                        P(t("fixed_assets.undo_hint"), cls="settings-hint"),
+                        P(t("fixed_assets.undo_hint"), cls="settings-hint"), *_undo_refused(asset, "registration"),
                         review_label=t("fixed_assets.undo"))
         extra: list[FT] = []
         if asset.get("status") == "physical":
@@ -2484,7 +2647,7 @@ def setup_ui_routes(app) -> None:
         path = f"/assets/{quote(asset_id, safe=':')}"
         try:
             asset = await api.fixed_assets_get(token, path)
-            asset = await api.fixed_assets_send(token, "PATCH", path, {
+            asset = await _send(token, "PATCH", path, {
                 "changes": {field: value}, "previous": {field: asset.get(field)}})
             members = await _members(token) if field == RESPONSIBLE else {}
         except APIError as e:
@@ -2544,10 +2707,12 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, "fixed_assets.recon_title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.recon_title"), None)])
-        when = Form(_field(t("fixed_assets.recon_at"), _input("at", report["at"], type_="date",
-                                                                min=report["cutover"])),
-                    Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary"),
-                    method="get", action="/fixed-assets/reconciliation", cls="flex-row")
+        when = Div(Form(Label(t("fixed_assets.recon_at"), fr="fa-recon-at", cls="form-label"),
+                        Input(type="date", name="at", id="fa-recon-at", value=report["at"], min=report["cutover"],
+                              cls="date-input", onkeydown="if(event.key==='Escape'){this.blur();}"),
+                        Button(t("fixed_assets.filter"), type="submit", cls="btn btn--secondary btn--sm"),
+                        method="get", action="/fixed-assets/reconciliation", cls="date-custom-form"),
+                   cls="date-filter-bar")
         errors = Div(H3(t("fixed_assets.recon_errors")),
                      Ul(*[Li(t("fixed_assets.recon_error", account=e["label"],
                                 held=_money(e["held"], currency), registered=_money(e["registered"], currency)))
@@ -2600,7 +2765,7 @@ def setup_ui_routes(app) -> None:
             return Response(status_code=401)
         form = await request.form()
         try:
-            await api.fixed_assets_send(token, "POST", "/opening/finish",
+            await _send(token, "POST", "/opening/finish",
                                         {k: True for k in ("keep_open", "reopen") if form.get(k)})
         except APIError as e:
             return await _error_box(request, e)
@@ -2647,7 +2812,7 @@ def setup_ui_routes(app) -> None:
         if record is None:
             crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.runs_title"), None)])
             return await _page(request, crumbs, page_header(t("fixed_assets.runs_title")),
-                               empty_state_cta(t("fixed_assets.run_missing"), t("fixed_assets.runs_title"),
+                               empty_state_cta(t("fixed_assets.run_missing"), t("fixed_assets.view_runs"),
                                                "/fixed-assets/runs"),
                                title_key="fixed_assets.runs_title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
@@ -2711,7 +2876,7 @@ def setup_ui_routes(app) -> None:
                         Input(type="hidden", name="field", value=field), *fields,
                         _field(t("fixed_assets.request_note"), _input("reason"), t("fixed_assets.request_hint")),
                         actions=(request_button,))
-        title = t("fixed_assets.correct_title", number=asset["number"])
+        title = t("fixed_assets.correct_title", number=_titled(asset))
         return await _page(request, crumbs, page_header(title), _left_use_notice(asset), tabs, form,
                            title_key="fixed_assets.correct")
 
@@ -2729,7 +2894,7 @@ def setup_ui_routes(app) -> None:
                               (asset["number"], f"/fixed-assets/assets/{asset_id}"), (t("fixed_assets.dispose"), None)])
         form = _op_form("dispose", Input(type="hidden", name="asset_id", value=asset_id),
                         P(t("fixed_assets.dispose_hint"), cls="settings-hint"), *_disposal_fields(asset, setup["today"]))
-        return await _page(request, crumbs, page_header(t("fixed_assets.dispose_title", number=asset["number"])),
+        return await _page(request, crumbs, page_header(t("fixed_assets.dispose_title", number=_titled(asset))),
                            _left_use_notice(asset), form, title_key="fixed_assets.dispose")
 
     @app.get("/fixed-assets/assets/{asset_id}/sell")
@@ -2760,7 +2925,7 @@ def setup_ui_routes(app) -> None:
                             search_url=PARTY_SEARCH_URL, aria_label=t("fixed_assets.buyer")),
                                Span(t("fixed_assets.buyer_hint"), " ",
                                     A(t("fixed_assets.add_contact"), href="/contacts/customers"))))
-        return await _page(request, crumbs, page_header(t("fixed_assets.sell_title", number=asset["number"])),
+        return await _page(request, crumbs, page_header(t("fixed_assets.sell_title", number=_titled(asset))),
                            _left_use_notice(asset), form, title_key="fixed_assets.sell")
 
     async def _asset_crumbs(token: str, asset_id: str, label_key: str) -> tuple[dict, FT]:
@@ -2796,7 +2961,7 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.move")
         form = _op_form("move", Input(type="hidden", name="asset_id", value=asset_id),
                         P(t("fixed_assets.move_hint"), cls="settings-hint"), *fields)
-        return await _page(request, crumbs, page_header(t("fixed_assets.move_title", number=asset["number"])),
+        return await _page(request, crumbs, page_header(t("fixed_assets.move_title", number=_titled(asset))),
                            _left_use_notice(asset), form, title_key="fixed_assets.move")
 
     @app.post("/fixed-assets/move/selected")
@@ -2844,7 +3009,7 @@ def setup_ui_routes(app) -> None:
                         _field(t("fixed_assets.reclassify_date"),
                                _input("date", setup["today"], type_="date", required=True)),
                         _field(t("fixed_assets.to_class"), _picker("class_id", options, label=t("fixed_assets.to_class"))))
-        return await _page(request, crumbs, page_header(t("fixed_assets.reclassify_title", number=asset["number"])),
+        return await _page(request, crumbs, page_header(t("fixed_assets.reclassify_title", number=_titled(asset))),
                            _left_use_notice(asset), form, title_key="fixed_assets.reclassify")
 
     @app.get("/fixed-assets/assets/{asset_id}/transfer")
@@ -2861,7 +3026,7 @@ def setup_ui_routes(app) -> None:
             chart = (await api.get_chart(token)).get("items") or [] if targets else []
         except APIError as e:
             return await _refused(request, e, "fixed_assets.transfer")
-        title = page_header(t("fixed_assets.transfer_title", number=asset["number"]))
+        title = page_header(t("fixed_assets.transfer_title", number=_titled(asset)))
         sell = A(t("fixed_assets.sell"), href=f"/fixed-assets/assets/{asset_id}/sell", cls="btn btn--sm btn--secondary")
         hint = P(t("fixed_assets.transfer_taxable_hint"), " ", sell, cls="settings-hint")
         if not targets:
@@ -2917,22 +3082,24 @@ def setup_ui_routes(app) -> None:
             return await _refused(request, e, "fixed_assets.remeasure")
         cls = next((c for c in classes if c["id"] == asset.get("class_id")), {})
         field = "fair_value" if op == "revaluation" else "recoverable_amount"
-        notes: list[FT] = [P(t(f"fixed_assets.remeasure_hint.{op}"), cls="settings-hint")]
         if op == "revaluation" and cls.get("measurement_policy") != "revaluation" and not asset.get("left_use"):
-            notes.append(Div(t("fixed_assets.cost_model_hint"), " ",
-                             A(t("fixed_assets.change_to_revaluation"),
-                               href=f"/fixed-assets/classes/{quote(cls.get('id') or '', safe=':')}/revalue",
-                               cls="btn btn--sm btn--secondary"), cls="flash flash--warning"))
-        form = _op_form(ops[op], Input(type="hidden", name="asset_id", value=asset_id), *notes,
-                        _field(t("fixed_assets.measurement_date"),
-                               _input("date", request.query_params.get("date") or setup["today"], type_="date",
-                                      required=True),
-                               t("fixed_assets.measurement_date_hint")),
-                        _field(t(f"fixed_assets.{field}"), _input(field, value, type_="number", step="any", min="0",
-                                                                  required=True)),
-                        _field(t("fixed_assets.basis"), _input("basis", basis, required=True),
-                               t("fixed_assets.basis_hint")))
-        return await _page(request, crumbs, page_header(t("fixed_assets.remeasure_title", number=asset["number"])),
+            # Revaluing one asset of a cost-model class is refused, so the tab offers what does work.
+            form = Div(P(t("fixed_assets.cost_model_hint"), cls="settings-hint"),
+                       Div(A(t("fixed_assets.change_to_revaluation"),
+                             href=f"/fixed-assets/classes/{quote(cls.get('id') or '', safe=':')}/revalue",
+                             cls="btn btn--primary")), cls=f"settings-card {_STACK}")
+        else:
+            form = _op_form(ops[op], Input(type="hidden", name="asset_id", value=asset_id),
+                            P(t(f"fixed_assets.remeasure_hint.{op}"), cls="settings-hint"),
+                            _field(t("fixed_assets.measurement_date"),
+                                   _input("date", request.query_params.get("date") or setup["today"], type_="date",
+                                          required=True),
+                                   t("fixed_assets.measurement_date_hint")),
+                            _field(t(f"fixed_assets.{field}"), _input(field, value, type_="number", step="any", min="0",
+                                                                      required=True)),
+                            _field(t("fixed_assets.basis"), _input("basis", basis, required=True),
+                                   t("fixed_assets.basis_hint")))
+        return await _page(request, crumbs, page_header(t("fixed_assets.remeasure_title", number=_titled(asset))),
                            _left_use_notice(asset), _tabs(f"/fixed-assets/assets/{asset_id}/remeasure", "op", op, ops, "fixed_assets.remeasure_op"),
                            form, title_key="fixed_assets.remeasure")
 
@@ -2954,7 +3121,7 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, "fixed_assets.add_to_asset")
         tabs = _tabs(f"/fixed-assets/assets/{asset_id}/add", "kind", kind, kinds, "fixed_assets.add_kind")
-        title = page_header(t("fixed_assets.add_to_asset_title", number=asset["number"]))
+        title = page_header(t("fixed_assets.add_to_asset_title", number=_titled(asset)))
         if kind == "repair":
             body = Div(P(t("fixed_assets.add_hint.repair"), cls="settings-hint"),
                        A(t("fixed_assets.register_from_bills"), href="/fixed-assets/intake", cls="btn btn--primary"),
@@ -3024,7 +3191,7 @@ def setup_ui_routes(app) -> None:
                         _field(t("fixed_assets.available_date"),
                                _input("date", setup["today"], type_="date", required=True)),
                         rows, add_row, P(t("fixed_assets.allocation_hint"), cls="form-hint"))
-        return await _page(request, crumbs, page_header(t("fixed_assets.place_title", number=asset["number"])),
+        return await _page(request, crumbs, page_header(t("fixed_assets.place_title", number=_titled(asset))),
                            form, title_key="fixed_assets.place_in_service")
 
     @app.get("/fixed-assets/assets/{asset_id}/place-in-service/row")
@@ -3049,7 +3216,7 @@ def setup_ui_routes(app) -> None:
         if body["outcome"] == "recoverable_amount":
             body["recoverable_amount"] = _amount(form, "recoverable_amount")
         try:
-            done = await api.fixed_assets_send(token, "POST", f"/assets/{quote(asset_id, safe=':')}/reviews", body)
+            done = await _send(token, "POST", f"/assets/{quote(asset_id, safe=':')}/reviews", body)
         except APIError as e:
             return Response(headers=toast_header(_error_text(e), "error", persist=True))
         found = done.get("impairment")
@@ -3088,7 +3255,7 @@ def setup_ui_routes(app) -> None:
                 for r in items]
         body = (Table(Thead(Tr(Th(t("fixed_assets.number")), Th(t("fixed_assets.name")), Th(t("fixed_assets.due")),
                                Th(""))), Tbody(*rows), cls="data-table") if rows
-                else empty_state_cta(t("fixed_assets.reviews_empty"), t("fixed_assets.title"), "/fixed-assets"))
+                else empty_state_cta(t("fixed_assets.reviews_empty"), t("fixed_assets.view_all"), "/fixed-assets"))
         return await _page(request, crumbs, page_header(t("fixed_assets.reviews_due_title")),
                            P(t("fixed_assets.reviews_due_hint"), cls="settings-hint"), body,
                            title_key="fixed_assets.reviews_due_title")
@@ -3106,11 +3273,12 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, "fixed_assets.action.fix_account")
         cls = next((c for c in classes if c["id"] == class_id), None)
-        crumbs = breadcrumbs([(t("fixed_assets.settings_title"), "/settings/fixed-assets"),
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
+                              (t("fixed_assets.settings_title"), "/settings/fixed-assets"),
                               *([(cls["name"], None)] if cls else []), (t("fixed_assets.action.fix_account"), None)])
         if cls is None:
             return await _page(request, crumbs, page_header(t("fixed_assets.action.fix_account")),
-                               empty_state_cta(t("fixed_assets.class_missing"), t("fixed_assets.settings_title"),
+                               empty_state_cta(t("fixed_assets.class_missing"), t("fixed_assets.view_classes"),
                                                "/settings/fixed-assets"), title_key="fixed_assets.action.fix_account")
         postable = {a["code"] for a in _postable(chart)}
         fields = ("asset_account", "accumulated_depreciation_account", "depreciation_account")
@@ -3161,13 +3329,14 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, "fixed_assets.revalue_class")
         cls = next((c for c in classes if c["id"] == class_id), None)
-        crumbs = breadcrumbs([(t("fixed_assets.settings_title"), "/settings/fixed-assets"),
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
+                              (t("fixed_assets.settings_title"), "/settings/fixed-assets"),
                               *([(cls["name"], None)] if cls else [])])
         if cls is None or not assets:
-            return await _page(request, crumbs, page_header(t("fixed_assets.revalue_class")),
+            return await _page(request, crumbs, page_header(t("fixed_assets.revalue_class")), *notices,
                                empty_state_cta(t("fixed_assets.class_missing" if cls is None
                                                  else "fixed_assets.revalue_class_empty"),
-                                               t("fixed_assets.settings_title"), "/settings/fixed-assets"),
+                                               t("fixed_assets.view_classes"), "/settings/fixed-assets"),
                                title_key="fixed_assets.revalue_class")
         rows = [Tr(Td(A(a["number"], href=f"/fixed-assets/assets/{a['id']}")), Td(_text(a.get("name"))),
                    _money_td(a.get("nbv"), currency),
@@ -3191,7 +3360,7 @@ def setup_ui_routes(app) -> None:
                                       if report else ""), t("fixed_assets.shared_basis_hint")),
                         Div(table, cls="table-scroll-wrap"))
         title = t(f"fixed_assets.revalue_class_title.{policy}", name=cls["name"])
-        return await _page(request, crumbs, page_header(title), *notices, _revalue_files_card(class_id, report),
+        return await _page(request, crumbs, page_header(title), *notices, _revalue_files_card(request, class_id, report),
                            form, title_key="fixed_assets.revalue_class")
 
     @app.get("/fixed-assets/classes/{class_id}/revalue")
@@ -3242,8 +3411,8 @@ def setup_ui_routes(app) -> None:
                 Div(t("fixed_assets.valuer_report_choose"), cls="flash flash--error"),))
         payload = {"file": (file.filename, await file.read(), file.content_type or "application/octet-stream")}
         try:
-            report = await api.fixed_assets_form(token, "POST", f"/classes/{quote(class_id, safe=':')}/valuer-report",
-                                                 {}, files=payload)
+            report = await _send_form(token, "POST", f"/classes/{quote(class_id, safe=':')}/valuer-report", {},
+                                      files=payload)
         except APIError as e:
             return await _revalue_class_view(request, token, class_id,
                                              notices=(await _error_box(request, e),))
@@ -3300,7 +3469,7 @@ def setup_ui_routes(app) -> None:
         body = {**_correct_body(form), "reason": str(form.get("reason") or "").strip() or None,
                 "op_key": str(form.get(OP_KEY_FIELD) or "")}
         try:
-            saved = await api.fixed_assets_send(token, "POST", f"/assets/{quote(asset_id, safe=':')}/corrections",
+            saved = await _send(token, "POST", f"/assets/{quote(asset_id, safe=':')}/corrections",
                                                 body)
         except APIError as e:
             return Response(headers=toast_header(_error_text(e), "error", persist=True))
@@ -3320,7 +3489,7 @@ def setup_ui_routes(app) -> None:
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.corrections_title"), None)])
         waiting = sum(1 for r in items if r.get("state") == "requested")
         body = (_corrections_table(items) if items
-                else empty_state_cta(t("fixed_assets.corrections_empty"), t("fixed_assets.title"), "/fixed-assets",
+                else empty_state_cta(t("fixed_assets.corrections_empty"), t("fixed_assets.view_all"), "/fixed-assets",
                                      hint=t("fixed_assets.corrections_empty_hint")))
         report = A(t("fixed_assets.ppa_title"), href="/fixed-assets/reports/prior-period-adjustments",
                    cls="btn btn--secondary")
@@ -3416,11 +3585,12 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, "fixed_assets.apply_to_assets")
         cls = next((c for c in classes if c["id"] == class_id), None)
-        crumbs = breadcrumbs([(t("fixed_assets.settings_title"), "/settings/fixed-assets"),
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
+                              (t("fixed_assets.settings_title"), "/settings/fixed-assets"),
                               *([(cls["name"], None)] if cls else [])])
         if cls is None:
             return await _page(request, crumbs, page_header(t("fixed_assets.apply_to_assets")),
-                               empty_state_cta(t("fixed_assets.class_missing"), t("fixed_assets.settings_title"),
+                               empty_state_cta(t("fixed_assets.class_missing"), t("fixed_assets.view_classes"),
                                                "/settings/fixed-assets"),
                                title_key="fixed_assets.apply_to_assets")
         form = _op_form("apply-class", Input(type="hidden", name="class_id", value=class_id),
@@ -3604,7 +3774,7 @@ def setup_ui_routes(app) -> None:
         if (body.get("run_day") or "").isdigit():
             body["run_day"] = int(body["run_day"])
         try:
-            await api.fixed_assets_send(token, "PATCH", "/settings", body)
+            await _send(token, "PATCH", "/settings", body)
         except APIError as e:
             return Response(headers=toast_header(_error_text(e), "error", persist=True))
         return Response(headers=toast_header(t("fixed_assets.saved")))
@@ -3619,7 +3789,7 @@ def setup_ui_routes(app) -> None:
         if not token:
             return Response(status_code=401)
         try:
-            await api.fixed_assets_send(token, "POST", "/classes", {"name": t("fixed_assets.new_class"),
+            await _send(token, "POST", "/classes", {"name": t("fixed_assets.new_class"),
                                                                     "life_months": 60})
             return await _classes_fragment(token)
         except APIError as e:
@@ -3632,7 +3802,7 @@ def setup_ui_routes(app) -> None:
             return Response(status_code=401)
         form = await request.form()
         try:
-            await api.fixed_assets_send(token, "PATCH", f"/classes/{quote(class_id, safe=':')}",
+            await _send(token, "PATCH", f"/classes/{quote(class_id, safe=':')}",
                                         {"archived": str(form.get("archived")) == "1"})
             return await _classes_fragment(token)
         except APIError as e:
@@ -3694,7 +3864,7 @@ def setup_ui_routes(app) -> None:
         if field == "life_months":
             value = int(raw) if raw.isdigit() else (None if not raw else raw)
         try:
-            cls = await api.fixed_assets_send(token, "PATCH", f"/classes/{quote(class_id, safe=':')}",
+            cls = await _send(token, "PATCH", f"/classes/{quote(class_id, safe=':')}",
                                               {field: value})
         except APIError as e:
             # The editor stays open on the refused row, the reason under it.

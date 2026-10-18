@@ -68,7 +68,8 @@ async def test_s2_component_replacement_derecognizes_old(fa):
     moves = await _movements(fa, car)
     out = moves[-1]
     assert out["operation"] == "disposal" and out["reason"] == "replaced" and D(out["share"]) == D("0.25")
-    assert _lines(await _journal(fa, out)) == {"6400": (D(1150), D(0)), "1220": (D(250), D(1150)),
+    # The catch-up of 1,150 and the 250 that leaves meet on 1220 as one credit of 900.
+    assert _lines(await _journal(fa, out)) == {"6400": (D(1150), D(0)), "1220": (D(0), D(900)),
                                                "1210": (D(0), D(3000)), "6980": (D(2750), D(0))}
     got = await fa.asset(car)
     assert D(got["cost"]) == D(9000) and D(got["accumulated_depreciation"]) == D(900)
@@ -82,7 +83,8 @@ async def test_s2_component_replacement_derecognizes_old(fa):
     gone = await fa.asset(engine)
     assert gone["status"] == "disposed" and gone["disposal"]["reason"] == "replaced"
     last = (await _movements(fa, engine))[-1]
-    assert _lines(await _journal(fa, last)) == {"6400": (D("333.33"), D(0)), "1220": (D("333.33"), D("333.33")),
+    # Its catch-up is all the depreciation it leaves with, so 1220 nets to nothing and stays off.
+    assert _lines(await _journal(fa, last)) == {"6400": (D("333.33"), D(0)),
                                                 "1210": (D(0), D(4000)), "6980": (D("3666.67"), D(0))}
     names = [(c["name"], c["status"]) for c in (await fa.ok(await fa.get(f"/assets/{car}/components")))["items"]]
     assert sorted(names) == [("Engine", "active"), ("Engine", "disposed")]

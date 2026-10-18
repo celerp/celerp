@@ -127,6 +127,9 @@ def setup_routes(app):
             notice = flash(t("recovery.reset_done"), kind="success")
         elif request.query_params.get("imported"):
             notice = flash(t("auth.backup_restored_signin"), kind="success")
+        elif nxt != "/":
+            # Sent here from a page that needs a signed-in user: say so, not just "Sign in".
+            notice = flash(t("auth.sign_in_to_continue"), kind="info")
         else:
             notice = ""
         resp = auth_shell(_login_form(notice=notice, next_url=nxt), title=page_title("btn.sign_in"))
@@ -433,7 +436,8 @@ def setup_routes(app):
             new_access, new_refresh = await api_switch(token, company_id)
         except APIError as e:
             return RedirectResponse(f"/?error={e.detail}", status_code=302)
-        resp = RedirectResponse("/", status_code=302)
+        # ?next= returns to the page that offered the switch (a page opened in this company).
+        resp = RedirectResponse(_safe_next(request.query_params.get("next")), status_code=302)
         set_session_cookies(resp, new_access, new_refresh, request)
         return resp
 

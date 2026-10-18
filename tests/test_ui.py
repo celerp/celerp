@@ -344,6 +344,8 @@ class TestAuthRouting:
         with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=True)):
             page = await ui_client.get("/login?next=%2Fdocs%2Fdoc%3AINV-1%3Fpage%3D2")
         assert 'name="next" value="/docs/doc:INV-1?page=2"' in page.text
+        # It says why the sign-in page opened instead of the page asked for.
+        assert t("auth.sign_in_to_continue") in page.text
         with patch("ui.routes.auth.api_login", new=AsyncMock(return_value=("tok", "ref"))):
             r = await ui_client.post("/login", data={
                 "email": "a@b.c", "password": "pwvalid1", "next": "/docs/doc:INV-1?page=2"})
@@ -366,6 +368,7 @@ class TestAuthRouting:
             r = await ui_client.get("/login")
         assert r.status_code == 200
         assert b"sign in" in r.content.lower() or b"login" in r.content.lower()
+        assert t("auth.sign_in_to_continue") not in r.text
 
     @pytest.mark.asyncio
     async def test_login_redirects_to_setup_when_not_bootstrapped(self, ui_client):
@@ -1045,6 +1048,16 @@ class TestCompanySwitcher:
         set_cookie = r.headers.get("set-cookie", "")
         assert "celerp_token" in set_cookie
         assert "new-token-xyz" in set_cookie
+
+    @pytest.mark.asyncio
+    async def test_switch_company_returns_to_a_local_next_and_never_off_site(self, ui_client):
+        """?next= leads back to the page that offered the switch; anything not a local path leads home."""
+        with patch("ui.api_client.switch_company", new=AsyncMock(return_value=("new-token-xyz", "new-refresh-xyz"))):
+            back = await ui_client.get("/switch-company/c2?next=/fixed-assets/assets/a1/dispose", cookies=_authed())
+            away = await ui_client.get("/switch-company/c2?next=//evil.example/x", cookies=_authed())
+            plain = await ui_client.get("/switch-company/c2", cookies=_authed())
+        assert back.headers["location"] == "/fixed-assets/assets/a1/dispose"
+        assert away.headers["location"] == "/" and plain.headers["location"] == "/"
 
     @pytest.mark.asyncio
     async def test_switch_company_post_without_auth_redirects(self, ui_client):
@@ -6069,6 +6082,130 @@ class TestBulkTransferRoute:
         assert b"not allowed" in r.content
 
 
+class TestFilesSectionErrorReplies:
+    """A refused Files-section request is an error reply the section's client shows in its notice;
+    a 200 fragment would be swapped over the whole section."""
+
+    _ROUTES = [
+        ("get", "/items/i1/files/_section", "get_item"),
+        ("get", "/contacts/c1/files/_section", "get_contact"),
+        ("get", "/docs/d1/files/_section", "get_doc"),
+        ("delete", "/items/i1/files/f1", "delete_item_file"),
+        ("delete", "/contacts/c1/files/f1", "delete_contact_file"),
+        ("delete", "/docs/d1/files/f1", "delete_doc_file"),
+        ("post", "/items/i1/files/f1/tag", "tag_item_file"),
+        ("post", "/contacts/c1/files/f1/tag", "tag_contact_file"),
+        ("post", "/docs/d1/files/f1/tag", "tag_doc_file"),
+        ("post", "/items/i1/files/f1/description", "describe_item_file"),
+        ("post", "/contacts/c1/files/f1/description", "patch_contact_file_description"),
+        ("post", "/docs/d1/files/f1/description", "patch_doc_file_description"),
+        ("post", "/items/i1/files", "upload_item_file"),
+        ("post", "/contacts/c1/files", "upload_contact_file"),
+        ("post", "/docs/d1/files", "upload_doc_file"),
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method,url,call", _ROUTES)
+    async def test_a_rejected_session_is_a_401_with_the_sign_in_link(self, ui_client, method, url, call):
+        from ui.api_client import APIError
+        with patch(f"ui.api_client.{call}", new=AsyncMock(side_effect=APIError(401, "Not authenticated"))):
+            r = await ui_client.request(method.upper(), url, cookies=_authed(),
+                                        **({"files": {"file": ("a.pdf", b"%PDF-1.0", "application/pdf")}}
+                                           if url.endswith("/files") else {"data": {"document_tag": "x"}}))
+        assert r.status_code == 401, (url, r.status_code)
+        assert r.headers["content-type"].startswith("text/html")
+        assert '<a href="/login?reason=expired">' in r.text and "files-section-" not in r.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method,url,call", [r for r in _ROUTES if r[0] == "get"])
+    async def test_a_refused_refresh_is_an_error_reply_not_a_paragraph(self, ui_client, method, url, call):
+        from ui.api_client import APIError
+        with patch(f"ui.api_client.{call}", new=AsyncMock(side_effect=APIError(404, "not here"))):
+            r = await ui_client.get(url, cookies=_authed())
+        assert r.status_code == 404 and "not here" in r.text and "files-section-" not in r.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("url", ["/contacts/c1/files", "/docs/d1/files", "/items/i1/files"])
+    async def test_an_upload_without_a_file_is_an_error_reply(self, ui_client, url):
+        r = await ui_client.post(url, data={}, cookies=_authed())
+        assert r.status_code == 400 and "files-section-" not in r.text
+
+
+class TestCompanyFilesAggregation:
+    """The company-wide Files section reads the self-contact, items and documents; a failed read is
+    an error reply, never an empty or partial list that would replace the real one."""
+
+    _URL = "/finance/company-files/_section"
+    _SELF = {"entity_id": "c-self", "is_self": True, "files": [
+        {"id": "f1", "filename": "deed.pdf", "url": "/x/deed.pdf", "mime": "application/pdf", "size": 9,
+         "document_tag": "other", "uploaded_at": None, "description": None}]}
+
+    def _patches(self, **over):
+        from contextlib import ExitStack
+        calls = {
+            "get_company": AsyncMock(return_value={"settings": {"self_contact_id": "c-self"}, "current_role": "admin"}),
+            "get_contact": AsyncMock(return_value=self._SELF),
+            "list_items": AsyncMock(return_value={"items": []}),
+            "list_docs": AsyncMock(return_value={"items": []}),
+        }
+        calls.update(over)
+        stack = ExitStack()
+        for name, mock in calls.items():
+            stack.enter_context(patch(f"ui.api_client.{name}", new=mock))
+        return stack
+
+    @pytest.mark.asyncio
+    async def test_an_expired_session_is_a_401_with_the_sign_in_link(self, ui_client):
+        from ui.api_client import APIError
+        gone = AsyncMock(side_effect=APIError(401, "Not authenticated"))
+        with self._patches(get_company=gone, list_contacts=gone, get_contact=gone, list_items=gone, list_docs=gone):
+            r = await ui_client.get(self._URL, cookies=_authed())
+        assert r.status_code == 401 and '<a href="/login?reason=expired">' in r.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing", ["get_contact", "list_items", "list_docs"])
+    async def test_one_failed_read_is_an_error_reply_not_a_partial_list(self, ui_client, failing):
+        from ui.api_client import APIError
+        with self._patches(**{failing: AsyncMock(side_effect=APIError(503, "down"))}):
+            r = await ui_client.get(self._URL, cookies=_authed())
+        assert r.status_code == 503 and "down" in r.text and "files-section-" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_failed_company_lookup_is_an_error_reply(self, ui_client):
+        from ui.api_client import APIError
+        with self._patches(get_company=AsyncMock(side_effect=APIError(503, "down"))):
+            r = await ui_client.get(self._URL, cookies=_authed())
+        assert r.status_code == 503 and "files-section-" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_company_with_no_files_answers_200_with_the_empty_state(self, ui_client):
+        with self._patches(get_contact=AsyncMock(return_value={"entity_id": "c-self", "is_self": True})):
+            r = await ui_client.get(self._URL, cookies=_authed())
+        assert r.status_code == 200 and "files-section-" in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_company_with_no_self_contact_yet_answers_200_with_the_empty_state(self, ui_client):
+        with self._patches(get_company=AsyncMock(return_value={"settings": {}}),
+                           list_contacts=AsyncMock(return_value={"items": []})):
+            r = await ui_client.get(self._URL, cookies=_authed())
+        assert r.status_code == 200 and "files-section-" in r.text
+
+    @pytest.mark.asyncio
+    async def test_an_upload_without_a_file_is_a_400(self, ui_client):
+        with self._patches():
+            r = await ui_client.post("/finance/company-files", data={}, cookies=_authed())
+        assert r.status_code == 400 and "files-section-" not in r.text
+
+
+    @pytest.mark.asyncio
+    async def test_a_failed_contact_documents_tab_read_is_an_error_not_an_empty_tab(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.list_contact_docs", new=AsyncMock(side_effect=APIError(503, "down"))), \
+             patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1"})):
+            r = await ui_client.get("/contacts/c1/tab/documents", cookies=_authed())
+        assert "down" in r.text and "cell-error" in r.text
+
+
 class TestAttachmentRoutes:
     """Route tests for attachment upload and delete."""
 
@@ -6098,8 +6235,8 @@ class TestAttachmentRoutes:
             data={},
             cookies=_authed(),
         )
-        assert r.status_code == 200
-        assert b"no file" in r.content.lower() or b"file" in r.content.lower()
+        assert r.status_code == 400
+        assert b"no file" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_upload_attachment_unauthenticated(self, ui_client):
@@ -6122,7 +6259,7 @@ class TestAttachmentRoutes:
                 files={"file": ("big.jpg", io.BytesIO(b"data"), "image/jpeg")},
                 cookies=_authed(),
             )
-        assert r.status_code == 200
+        assert r.status_code == 413
         assert b"file too large" in r.content
 
     @pytest.mark.asyncio
@@ -7674,7 +7811,7 @@ class TestCsvImportHelpers:
             error_report_action="/x/errors",
             back_href="/x",
         ))
-        assert "Import All" in html
+        assert "Import 1 Row" in html
         assert "rows ready" in html or "1" in html
 
     def test_validation_result_errors_shows_download_button(self):
@@ -7764,7 +7901,7 @@ class TestInventoryImportFlow:
             r = await _inventory_import_with_mapping(ui_client, csv_bytes)
         assert r.status_code == 200
         # Unknown location is not a validation error - it gets auto-created at confirm
-        assert b"Import All" in r.content
+        assert b"Import 1 Row" in r.content
 
     @pytest.mark.asyncio
     async def test_import_preview_missing_location_column_accepted(self, ui_client):
@@ -7774,7 +7911,7 @@ class TestInventoryImportFlow:
             r = await _inventory_import_with_mapping(ui_client, csv_bytes)
         assert r.status_code == 200
         # No location_name column is fine - default location resolved at confirm
-        assert b"Import All" in r.content
+        assert b"Import 1 Row" in r.content
 
     @pytest.mark.asyncio
     async def test_import_preview_clean_shows_import_button(self, ui_client):
@@ -7783,7 +7920,7 @@ class TestInventoryImportFlow:
         with patch("ui.api_client.get_locations", new=AsyncMock(return_value=_LOCATIONS_RESP)):
             r = await _inventory_import_with_mapping(ui_client, csv_bytes)
         assert r.status_code == 200
-        assert b"Import All" in r.content
+        assert b"Import 1 Row" in r.content
         assert b"import-preview" in r.content
 
     @pytest.mark.asyncio
@@ -7949,7 +8086,7 @@ class TestInventoryImportFlow:
             ["name", "type"],
         )
         assert r.status_code == 200
-        assert b"Import All" in r.content
+        assert b"Import 1 Row" in r.content
 
     @pytest.mark.asyncio
     async def test_locations_preview_errors_shows_download(self, ui_client):
@@ -7987,7 +8124,7 @@ class TestInventoryImportFlow:
             ["name", "rate", "tax_type", "is_default", "description"],
         )
         assert r.status_code == 200
-        assert b"Import All" in r.content
+        assert b"Import 1 Row" in r.content
 
     @pytest.mark.asyncio
     async def test_taxes_errors_download(self, ui_client):
@@ -8012,7 +8149,7 @@ class TestInventoryImportFlow:
             ["name", "days", "description"],
         )
         assert r.status_code == 200
-        assert b"Import All" in r.content
+        assert b"Import 1 Row" in r.content
 
     @pytest.mark.asyncio
     async def test_terms_errors_download(self, ui_client):
@@ -8682,7 +8819,7 @@ class TestCsvImportUxErrorTable:
         """When rows are all valid, must show Import All, not error table."""
         rows = [{"sku": "S1", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = self._html(rows)
-        assert "Import All" in html
+        assert "Import 1 Row" in html
         assert "csvFillColumn" not in html  # no inline-fix JS
         assert "cell-edit" not in html  # no editable cells
 
@@ -13584,7 +13721,7 @@ class TestCsvImportSellByValidation:
             "Got fix-errors panel but sell_by=piece should be valid against unit 'piece'. "
             f"Response: {r2.text[:800]}"
         )
-        assert b"Import All" in r2.content or b"import-confirm" in r2.content, (
+        assert b"Import 1 Row" in r2.content or b"import-confirm" in r2.content, (
             f"Expected confirm panel. Got: {r2.text[:800]}"
         )
 
@@ -15191,6 +15328,20 @@ class TestInventoryUXFixes:
         assert b"Test Ring" in result.body
         assert b"RING-001" in result.body
 
+    def test_printable_label_sheet_toolbar_uses_the_app_buttons(self):
+        """Print and Back on a label sheet are the app's own buttons, in the user's language."""
+        from bs4 import BeautifulSoup
+        from celerp_labels.ui_routes import _printable_label_sheet
+        from ui.i18n import t
+
+        soup = BeautifulSoup(_printable_label_sheet([{"name": "A"}], None, back_url="/fixed-assets").body,
+                             "html.parser")
+        assert soup.find("link", rel="stylesheet")["href"] == "/static/app.css"
+        bar = soup.find(class_="no-print")
+        assert [(e.name, e["class"], e.get_text(strip=True)) for e in bar.find_all(["button", "a"])] == [
+            ("button", ["btn", "btn--primary"], t("btn.print")), ("a", ["btn", "btn--secondary"], t("label.back"))]
+        assert bar.find("a")["href"] == "/fixed-assets"
+
     def test_printable_label_sheet_handles_no_template(self):
         """_printable_label_sheet falls back gracefully when no template provided."""
         from celerp_labels.ui_routes import _printable_label_sheet
@@ -15843,11 +15994,16 @@ class TestFilesSectionRenders:
         assert "sort=" in html or "▲" in html or "▼" in html or "sort_dir" in html
 
     def test_files_section_filter_bar_has_tag_dropdown(self):
-        """Filter bar must include a tag dropdown select."""
+        """The tag filter is a searchable dropdown (rule i: the tag list can pass ten) that
+        refreshes the section on change and keeps the chosen tag."""
+        from bs4 import BeautifulSoup
         from ui.components.files import files_section
         from fasthtml.common import to_xml
-        html = to_xml(files_section("contact", "c1", []))
-        assert 'name="tag_filter"' in html
+        soup = BeautifulSoup(to_xml(files_section("contact", "c1", [], tag_filter="invoice")), "html.parser")
+        assert soup.select_one("select[name=tag_filter]") is None
+        hidden = soup.select_one(".combobox-wrap input[type=hidden][name=tag_filter]")
+        assert hidden is not None and hidden["value"] == "invoice" and hidden["hx-trigger"] == "change"
+        assert len(hidden.find_parent(class_="combobox-wrap").select(".combobox-option[data-value]")) > 10
 
     def test_files_section_filter_bar_has_date_inputs(self):
         """Filter bar must include from-date and to-date inputs."""

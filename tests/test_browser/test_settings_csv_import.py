@@ -28,7 +28,7 @@ def test_settings_import_creates_the_row_and_returns_to_its_tab(page: Page, fres
     page.locator("input[type='file']").first.set_input_files({"name": f"{kind}.csv", "mimeType": "text/csv", "buffer": csv})
     page.locator("#csv-preview-btn").click()
     page.get_by_role("button", name="Continue to Preview").click()
-    page.locator("button", has_text="Import All 1 Rows").click()
+    page.locator("button", has_text="Import 1 Row").click()
     back = page.locator("#import-preview a.btn--primary")
     expect(back).to_have_attribute("href", tab)
     # The result: one created, nothing failed.

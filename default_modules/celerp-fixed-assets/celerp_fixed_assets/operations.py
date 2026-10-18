@@ -6,7 +6,8 @@ Every write follows one contract. The caller takes the company lock and its auth
 then the operation is planned from what the books hold now. A preview applies the plan,
 takes it back, and returns it with a fingerprint of it, so it refuses whatever a confirm
 would; a confirm plans again under the lock and refuses when the
-fingerprint differs, so nothing is posted that the user did not see. A confirmed
+fingerprint differs, naming each asset on it that changed since, so nothing is posted
+that the user did not see. A confirmed
 operation is recorded under its operation key (``fa:op:<key>``) with a hash of the
 request: the same key and request returns the recorded result, the same key with a
 different request is refused.
@@ -25,13 +26,14 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
+from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.money import books_currency, round_money
 from celerp_fixed_assets import setup, sources
 from celerp_fixed_assets.projections import BUCKETS, _dec, money, said
 from celerp_fixed_assets.store import _emit, _entities, _state, recorded
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 MODULE = "celerp-fixed-assets"
 REGISTER_MODES = ("separate", "quantity", "expense", "maintenance")
@@ -271,7 +273,8 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
     generation = context.get("generation", 0)
     fingerprint = f"{generation}.{_hash({'shown': shown, 'basis': context.get('basis')})}"
     if body.get("preview"):
-        result = copy.deepcopy({**shown, "fingerprint": fingerprint})
+        # The ledger's last entry when reviewed, so a stale confirm can name what changed after it.
+        result = copy.deepcopy({**shown, "fingerprint": f"{fingerprint}.{await _last_entry(session, company_id)}"})
         await label_lines(session, company_id, result)
         context["intent_hash"] = intent_hash
         # Review refuses what Confirm would: the operation is applied and taken back.
@@ -281,18 +284,78 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
         finally:
             await savepoint.rollback()
         return result
-    previewed = str(body.get("fingerprint") or "")
-    if previewed != fingerprint:
-        if previewed.split(".", 1)[0] != str(generation):
+    previewed = str(body.get("fingerprint") or "").split(".")
+    if previewed[:2] != fingerprint.split("."):
+        if previewed[0] != str(generation):
             raise conflict("Line was registered and released since you opened this form. Press Review again.")
-        raise conflict("An asset, account or posting on this review changed since you reviewed it. "
-                       "Press Review again to see it as it stands now.")
+        raise await _stale(session, company_id, shown, previewed[2] if len(previewed) > 2 else "")
     context["intent_hash"] = intent_hash
     result, effects = await _applied(session, company_id, apply, context, op_key)
     await _emit(session, company_id, user_id, f"fa:op:{op_key}", "fa_op", "fa.op.recorded", {
         "type": op_type, "intent_hash": intent_hash, "result": result, "effects": effects},
         key=f"fa:op:{op_key}")
     return result
+
+
+async def _last_entry(session, company_id) -> int:
+    return int((await session.execute(select(func.coalesce(func.max(LedgerEntry.id), 0)).where(
+        LedgerEntry.company_id == company_id))).scalar_one())
+
+
+def _numbers(value) -> set[str]:
+    """Every asset number shown anywhere in ``value``."""
+    if isinstance(value, list):
+        return {n for v in value for n in _numbers(v)}
+    if isinstance(value, dict):
+        return {n for k, v in value.items() for n in ({v} if k == "number" and isinstance(v, str) else _numbers(v))}
+    return set()
+
+
+def _change(entity_type: str, event_type: str, data: dict) -> str | None:
+    """What one ledger entry did to an asset, named as its page names it; None for an
+    entry its movement names (the asset's creation, a movement applied to it)."""
+    from ui.i18n import t
+
+    if entity_type == "fa_movement":
+        return t(f"fixed_assets.movement.{data['operation']}")
+    if event_type in ("fa.asset.created", "fa.asset.moved"):
+        return None
+    if event_type == "fa.asset.updated" and "placements" in (data.get("changes") or {}):
+        return t("fixed_assets.change.moved")
+    if event_type == "fa.asset.status":
+        return t("fixed_assets.change.status")
+    if event_type.startswith("fa.asset.file_"):
+        return t("fixed_assets.change.files")
+    return t("fixed_assets.change.edited")
+
+
+async def _stale(session, company_id, shown: dict, since: str) -> HTTPException:
+    """The refusal for a confirm whose review no longer stands: each asset on it that changed
+    after ledger entry ``since``, with what changed, linked; or, when none did (an account or
+    a posting changed), what may have."""
+    again = "Press Review again to see it as it stands now."
+    unnamed = conflict(f"An asset, account or posting on this review changed since you reviewed it. {again}")
+    numbers = _numbers(shown)
+    if not since.isdigit() or not numbers:
+        return unnamed
+    rows = (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.entity_type, LedgerEntry.event_type,
+                                         LedgerEntry.data).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.id > int(since),
+        LedgerEntry.entity_type.in_(("fa_asset", "fa_movement"))).order_by(LedgerEntry.id))).all()
+    what: dict[str, list[str]] = {}
+    for entity_id, entity_type, event_type, data in rows:
+        asset_id = data.get("asset_id") if entity_type == "fa_movement" else entity_id
+        change = _change(entity_type, event_type, data)
+        if change:
+            what.setdefault(asset_id, []).append(change)
+    states = {a: await _state(session, company_id, a) or {} for a in what}
+    named = sorted((s["number"], a) for a, s in states.items() if s.get("number") in numbers)
+    if not named:
+        return unnamed
+    listed = _listed([f"{n} ({', '.join(dict.fromkeys(what[a]))})" for n, a in named])
+    them = "it" if len(named) == 1 else "them"
+    return setup.refused(409, f"{listed} changed since you reviewed {them}. {again}",
+                         links=[{"label": n, "href": f"/fixed-assets/assets/{a}"} for n, a in named])
 
 
 def _journal_lines(value) -> list[dict]:
@@ -865,8 +928,7 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         created = [(a, rows[a].state, 1) for a in effects["assets"]]
         moved = [c for c in created if int(c[1].get("movement_count") or 0) > 1]
         if moved:
-            raise await changed_since(session, company_id, moved, ("since it was registered", "since they were registered"),
-                                      "instead")
+            raise await changed_since(session, company_id, moved, _SINCE_REGISTERED, "instead")
         movements = {m: await _state(session, company_id, m) for m in effects["movements"]}
         # Per asset it did not create, the operation's last movement is still the asset's latest.
         last: dict[str, int] = {}
@@ -929,6 +991,17 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
 
     return await _run(session, company_id, user_id, body, op_type="undo", keys=("manage_accounting",),
                       plan=plan, apply=apply)
+
+
+_SINCE_REGISTERED = ("since it was registered", "since they were registered")
+
+
+async def registration_refusal(session, company_id, asset_id: str, asset: dict) -> HTTPException | None:
+    """Why Undo registration would refuse the asset, with the way on, or None while nothing has
+    happened to it since it was registered. The asset page shows it beside the button."""
+    if int(asset.get("movement_count") or 0) > 1:
+        return await changed_since(session, company_id, [(asset_id, asset, 1)], _SINCE_REGISTERED, "instead")
+    return None
 
 
 async def undo_asset(session, company_id, user_id, asset_id: str, body: dict) -> dict:

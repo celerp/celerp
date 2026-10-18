@@ -148,7 +148,7 @@ function celerpToast(message, type, persist, action) {
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }
   var toast = document.createElement('div');
-  toast.className = 'toast toast--' + (type || 'error');
+  toast.className = 'toast toast--' + (type || 'error') + (persist ? ' toast--persist' : '');
   var body = document.createElement('span');
   body.className = 'toast__msg';
   body.textContent = message;
@@ -177,6 +177,13 @@ function celerpToast(message, type, persist, action) {
 function _celerpKeepToast(toast) {
   try { sessionStorage.setItem('celerp_pending_toast', JSON.stringify(toast)); } catch(ex) {}
 }
+// A toast reports the last action. The user's next action answers for itself, so the
+// toasts that would otherwise linger beside its answer step aside; persistent ones stay.
+document.addEventListener('htmx:beforeRequest', function(e) {
+  var cause = e.detail.requestConfig && e.detail.requestConfig.triggeringEvent;
+  if (!cause || (cause.type !== 'click' && cause.type !== 'submit')) return;
+  document.querySelectorAll('#toast-container .toast:not(.toast--persist)').forEach(_dismissToast);
+});
 function _dismissToast(toast) {
   toast.classList.remove('toast--visible');
   setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);

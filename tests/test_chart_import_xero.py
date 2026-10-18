@@ -285,7 +285,7 @@ async def test_chart_review_lists_rows_the_import_would_refuse_before_confirm(cl
     assert "999" in review and review.count("loop") >= 2 and "530" in review
     assert "Existing codes are kept." in review and "Skipped: 540" in review
     # The counts are what the import will add: only 550.
-    assert _ready_count(review) == 1 and "Import All 1 Rows" in review, review[:3000]
+    assert _ready_count(review) == 1 and "Import 1 Row" in review, review[:3000]
     assert await _chart(client, owner) == before, "the review wrote to the chart"
 
 
