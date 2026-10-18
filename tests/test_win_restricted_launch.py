@@ -222,6 +222,24 @@ def test_the_private_folder_is_made_once_owned_by_the_user_and_closed_to_others(
     assert owner.stdout.strip() == user_sid == folder.name.removeprefix("Celerp-"), owner.stderr
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows security descriptors")
+def test_a_private_folder_other_accounts_can_open_is_refused_and_left_as_found(tmp_path):
+    folder = Path(_private_dir(tmp_path).stdout.strip())
+    (folder / "postgres").mkdir()
+    (folder / "postgres" / "PG_VERSION").write_text("17")
+    # Every user of the PC may read the folder and the files in it.
+    subprocess.run(["icacls", str(folder), "/grant", "*S-1-5-32-545:(OI)(CI)R", "/t"], check=True, capture_output=True)
+    refused = _private_dir(tmp_path)
+    assert refused.returncode == 1
+    assert refused.stderr == f"{launch.FAILURE_PREFIX} {folder} can be opened by other accounts\n"
+    assert (folder / "postgres" / "PG_VERSION").read_text() == "17"
+    # Closed again, it is used as it is.
+    subprocess.run(["icacls", str(folder), "/remove:g", "*S-1-5-32-545", "/t"], check=True, capture_output=True)
+    again = _private_dir(tmp_path)
+    assert (again.returncode, again.stdout.strip()) == (0, str(folder)), again.stderr
+    assert (folder / "postgres" / "PG_VERSION").read_text() == "17"
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows junctions")
 def test_a_link_or_file_in_place_of_the_private_folder_is_refused(tmp_path):
     folder = Path(_private_dir(tmp_path).stdout.strip())
