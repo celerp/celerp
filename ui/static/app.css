@@ -90,6 +90,9 @@ a:hover { text-decoration: underline; }
 .auth-title { font-size: 20px; font-weight: 600; color: var(--c-text); }
 .auth-subtitle { font-size: 12px; color: var(--c-text2); margin-top: 6px; }
 .auth-form { display: flex; flex-direction: column; gap: 16px; }
+.secret-input { display: flex; align-items: center; gap: 6px; }
+.secret-input input { flex: 1; min-width: 0; }
+.connector-action-area .secret-input { flex: 1; min-width: 260px; }
 .auth-footer-text { font-size: 12px; color: var(--c-text2); text-align: center; margin-top: 8px; }
 .auth-link { color: var(--c-accent); }
 .auth-alt-action { font-size: 13px; color: var(--c-text2); text-align: center; margin-top: 12px; }

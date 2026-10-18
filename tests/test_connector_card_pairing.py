@@ -121,10 +121,10 @@ async def test_connect_with_pairing_link_stores_address_and_key(monkeypatch):
     monkeypatch.setattr(routes, "_check_permission", permission)
 
     bad = await handler(Request({"pairing_link": "not a link"}), "celerp")
-    assert "Check the pairing link" in to_xml(bad)
+    assert "Check the pairing link" in bad.body.decode()
     assert stored == []
     shown = await handler(Request({"pairing_link": pairing_link(ADDRESS, KEY)}), "celerp")
-    assert "stored" in to_xml(shown)
+    assert "stored" in shown.body.decode()
     assert stored[0] == ("celerp", KEY, "", ADDRESS)
 
 

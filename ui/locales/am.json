@@ -422,6 +422,8 @@
   "btn.set_new_password": "አዲስ የይለፍ ቃል አስቀምጥ",
   "btn.share": "አጋራ",
   "btn.show_community": "የማህበረሰብ ሞጁሎችን አሳይ",
+  "btn.show": "አሳይ",
+  "btn.hide": "ደብቅ",
   "btn.sign_in": "ግባ",
   "btn.skip": "ዝለል",
   "btn.split_match": "ክፈል እና አዛምድ",

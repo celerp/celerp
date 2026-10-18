@@ -419,6 +419,8 @@
   "btn.set_new_password": "تعيين كلمة مرور جديدة",
   "btn.share": "يشارك",
   "btn.show_community": "عرض وحدات المجتمع",
+  "btn.show": "إظهار",
+  "btn.hide": "إخفاء",
   "btn.sign_in": "تسجيل الدخول",
   "btn.skip": "يتخطى",
   "btn.split_match": "تقسيم ومطابقة",

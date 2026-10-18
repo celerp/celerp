@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 
 from ui.components.attrs import hx_vals
+from ui.components.shell import secret_input
 from ui.components.activity import relative_time
 from ui.i18n import get_lang, refusal_text, t
 from ui.routes.settings import _check_permission, _token
@@ -939,9 +940,8 @@ def _connector_card(
             if config is not None else None
         )
         if cid == "celerp":
-            fields = [Input(name="pairing_link", type="password", autocomplete="off",
-                            placeholder=t("accountant_access.pairing_link", lang),
-                            cls="input input--sm", style="flex:1;min-width:260px;")]
+            fields = [secret_input("pairing_link", lang=lang, cls="input input--sm",
+                                   placeholder=t("accountant_access.pairing_link", lang))]
         else:
             fields = [
                 Input(name="store_url", placeholder="https://mystore.com",
@@ -963,6 +963,7 @@ def _connector_card(
                 hx_swap="outerHTML",
                 style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;",
             ),
+            Div(id=f"connector-connect-result-{cid}"),
             *([disconnect] if disconnect is not None else []),
             cls="connector-action-area",
         )
@@ -1018,6 +1019,15 @@ def _entitlement_cta(lang: str = "en") -> FT:
         A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"),
         cls="flash flash--warning connector-entitlement-cta",
     )
+
+
+def _connect_refused(platform: str, reason: str | FT) -> HTMLResponse:
+    """A refused connect answers beside the form, so the values typed or pasted into it
+    stay where they are for the user to check."""
+    if isinstance(reason, str):
+        reason = Span(reason, cls="flash flash--warning")
+    return HTMLResponse(to_xml(reason), headers={
+        "HX-Retarget": f"#connector-connect-result-{platform}", "HX-Reswap": "innerHTML"})
 
 
 def _connect_required(platform: str, exc: Exception, lang: str) -> FT | None:
@@ -1983,25 +1993,13 @@ def setup_routes(app):
             try:
                 store_url, consumer_key = parse_pairing_link(form.get("pairing_link"))
             except ValueError:
-                return Div(
-                    Span(t("accountant_access.pairing_link_invalid", lang),
-                         cls="flash flash--warning"),
-                    id=f"connector-card-{platform}", cls="connector-card",
-                )
+                return _connect_refused(platform, t("accountant_access.pairing_link_invalid", lang))
             store_url = store_url.rstrip("/")
         if not consumer_key or (platform == "woocommerce" and not consumer_secret):
-            return Div(
-                Span(t("connectors.missing_credentials", lang),
-                     cls="flash flash--warning"),
-                id=f"connector-card-{platform}",
-                cls="connector-card",
-            )
+            return _connect_refused(platform, t("connectors.missing_credentials", lang))
 
         if (url_err := _store_url_error(store_url, platform)) is not None:
-            return Div(
-                Span(t(url_err, lang), cls="flash flash--warning"),
-                id=f"connector-card-{platform}", cls="connector-card",
-            )
+            return _connect_refused(platform, t(url_err, lang))
 
         # Validation + storage run in the API process, which holds the live relay
         # session (the UI process has none). The proxy probes the store first, so a
@@ -2012,11 +2010,7 @@ def setup_routes(app):
             result = await store_connector_credentials(
                 token, platform, consumer_key, consumer_secret, store_url)
         except Exception as exc:
-            return Div(
-                _connect_required(platform, exc, lang) or Span(f"✗ {exc}", cls="flash flash--warning"),
-                id=f"connector-card-{platform}",
-                cls="connector-card",
-            )
+            return _connect_refused(platform, _connect_required(platform, exc, lang) or f"✗ {exc}")
 
         if not result.get("ok"):
             # Surface a failed store rather than silently rendering "connected".
@@ -2030,11 +2024,7 @@ def setup_routes(app):
                 msg = detail
             else:
                 msg = t("connectors.connect_failed", lang)
-            return Div(
-                Span(msg, cls="flash flash--warning"),
-                id=f"connector-card-{platform}",
-                cls="connector-card",
-            )
+            return _connect_refused(platform, msg)
 
         # Create connector config with defaults
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)

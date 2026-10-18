@@ -419,6 +419,8 @@
   "btn.set_new_password": "新しいパスワードを設定する",
   "btn.share": "共有",
   "btn.show_community": "コミュニティモジュールを表示",
+  "btn.show": "表示",
+  "btn.hide": "非表示",
   "btn.sign_in": "サインイン",
   "btn.skip": "スキップ",
   "btn.split_match": "スプリット＆マッチ",

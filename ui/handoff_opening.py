@@ -33,6 +33,7 @@ class OpeningFailed(Exception):
 @dataclass
 class Opening:
     entry: str
+    link: str = ""  # the pasted link, put back in its field if the copy cannot be opened
     state: str = RUNNING
     stage: str = "requesting"
     received: int = 0
@@ -62,13 +63,13 @@ def _sweep() -> None:
         del _openings[key]
 
 
-def start(entry: str, work: Callable[[Opening], Awaitable[dict]], unavailable: str) -> str:
+def start(entry: str, link: str, work: Callable[[Opening], Awaitable[dict]], unavailable: str) -> str:
     """Begin `work` in the background and return the opening's id. `work` returns the
     staged copy's summary or raises OpeningFailed; anything else is logged and shown
     as `unavailable`."""
     _sweep()
     key = secrets.token_urlsafe(32)
-    opening = Opening(entry)
+    opening = Opening(entry, link)
 
     async def run() -> None:
         try:

@@ -419,6 +419,8 @@
   "btn.set_new_password": "Imposta nuova password",
   "btn.share": "Condividi",
   "btn.show_community": "Mostra i moduli della community",
+  "btn.show": "Mostra",
+  "btn.hide": "Nascondi",
   "btn.sign_in": "Accedi",
   "btn.skip": "Salta",
   "btn.split_match": "Dividi e abbina",

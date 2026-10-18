@@ -280,6 +280,16 @@ document.addEventListener('click', function(e) {
       if (b) b.setAttribute('aria-expanded', 'false');
     });
   }
+  // data-reveal button: show or mask the secret field it names
+  var revealBtn = e.target.closest('[data-reveal]');
+  if (revealBtn) {
+    var secret = document.querySelector(revealBtn.getAttribute('data-reveal'));
+    if (secret) {
+      var masked = secret.type === 'password';
+      secret.type = masked ? 'text' : 'password';
+      revealBtn.textContent = revealBtn.getAttribute(masked ? 'data-hide' : 'data-show');
+    }
+  }
   // data-copy button: copy sibling/target text to clipboard with "Copied!" feedback
   var copyBtn = e.target.closest('[data-copy]');
   if (copyBtn) {
@@ -2691,6 +2701,17 @@ def auth_shell(*content, title: str = "Celerp") -> FT:
 def flash(msg: str, kind: str = "error", raw: bool = False) -> FT:
     content = NotStr(msg) if raw else msg
     return Div(content, cls=f"flash flash--{kind}", id="flash")
+
+
+def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-input", **attrs) -> FT:
+    """A pasted secret (a copy or pairing link): masked, kept on a refused check so the
+    user can look at it, and shown only when they click Show."""
+    return Div(
+        Input(type="password", id=name, name=name, value=value, autocomplete="off", cls=cls, **attrs),
+        Button(t("btn.show", lang), type="button", cls="btn btn--secondary btn--sm",
+               data_reveal=f"#{name}", data_show=t("btn.show", lang), data_hide=t("btn.hide", lang)),
+        cls="secret-input",
+    )
 
 
 def toast_header(message: str, kind: str = "success", *, persist: bool = False,

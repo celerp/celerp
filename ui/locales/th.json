@@ -419,6 +419,8 @@
   "btn.set_new_password": "ตั้งรหัสผ่านใหม่",
   "btn.share": "แบ่งปัน",
   "btn.show_community": "แสดงโมดูลจากชุมชน",
+  "btn.show": "แสดง",
+  "btn.hide": "ซ่อน",
   "btn.sign_in": "เข้าสู่ระบบ",
   "btn.skip": "ข้าม",
   "btn.split_match": "แยกและจับคู่",

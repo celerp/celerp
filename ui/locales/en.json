@@ -447,6 +447,8 @@
   "btn.set_new_password": "Set new password",
   "btn.share": "Share",
   "btn.show_community": "Show Community Modules",
+  "btn.show": "Show",
+  "btn.hide": "Hide",
   "btn.sign_in": "Sign in",
   "btn.skip": "Skip",
   "btn.split_match": "Split & Match",

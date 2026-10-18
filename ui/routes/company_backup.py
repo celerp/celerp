@@ -54,7 +54,7 @@ import ui.api_client as api
 import ui.handoff_opening as opening
 from ui.api_client import APIError
 from ui.components.files import fmt_size
-from ui.components.shell import flash
+from ui.components.shell import flash, secret_input
 from ui.components.table import fmt_money, format_value
 from ui.config import cookie_domain, get_company_id, get_token, session_cookie_secure, set_session_cookies
 from ui.i18n import get_lang, t
@@ -202,7 +202,7 @@ def _outcome(request: Request) -> dict:
 
 
 async def _upload_page(request: Request, mode: WizardMode, error: str | None = None, status_code: int = 200,
-                       email: str = ""):
+                       email: str = "", link: str = ""):
     return wizard_page(
         request,
         auth_header(t(_TITLE), t("company_backup.upload_subtitle")),
@@ -216,8 +216,7 @@ async def _upload_page(request: Request, mode: WizardMode, error: str | None = N
             ),
             Div(
                 Label(t("company_backup.handoff_link_label"), For="handoff_link", cls="form-label"),
-                Input(type="text", id="handoff_link", name="handoff_link", autocomplete="off",
-                      cls="form-input"),
+                secret_input("handoff_link", link, get_lang(request)),
                 cls="form-group",
             ),
             *(sign_in_fields(email) if mode is START_COMPANY else []),
@@ -529,7 +528,8 @@ async def _read(request: Request, mode: WizardMode):
         try:
             validated = parse_handoff_link(link)
         except ValueError:
-            return await _upload_page(request, mode, t("company_backup.handoff_unavailable"), email=email)
+            return await _upload_page(request, mode, t("company_backup.handoff_unavailable"), email=email,
+                                      link=link)
         unavailable = t("company_backup.handoff_unavailable")
 
         async def work(job: opening.Opening) -> dict:
@@ -549,7 +549,7 @@ async def _read(request: Request, mode: WizardMode):
             return {"summary": summary, "email": email}
 
         resp = RedirectResponse(f"{mode.base}/opening", status_code=303)
-        resp.set_cookie(OPENING_COOKIE, opening.start(mode.key, work, unavailable), max_age=opening.KEEP_SECONDS,
+        resp.set_cookie(OPENING_COOKIE, opening.start(mode.key, link, work, unavailable), max_age=opening.KEEP_SECONDS,
                         path=mode.base, httponly=True, samesite="strict", secure=session_cookie_secure(request),
                         domain=cookie_domain(request))
         return resp
@@ -657,7 +657,7 @@ async def _opened(request: Request, mode: WizardMode):
         return RedirectResponse(f"{mode.base}/opening", status_code=303)
     opening.forget(key, mode.key)
     if job.state == opening.FAILED:
-        resp = _html(await _upload_page(request, mode, job.message))
+        resp = _html(await _upload_page(request, mode, job.message, link=job.link))
     else:
         result = job.summary
         resp = _with_cookie(await _preview_page(request, mode, _preview_of(result["summary"]),
