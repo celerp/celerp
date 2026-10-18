@@ -15172,6 +15172,20 @@ class TestInventoryUXFixes:
         assert b"Test Ring" in result.body
         assert b"RING-001" in result.body
 
+    def test_printable_label_sheet_toolbar_uses_the_app_buttons(self):
+        """Print and Back on a label sheet are the app's own buttons, in the user's language."""
+        from bs4 import BeautifulSoup
+        from celerp_labels.ui_routes import _printable_label_sheet
+        from ui.i18n import t
+
+        soup = BeautifulSoup(_printable_label_sheet([{"name": "A"}], None, back_url="/fixed-assets").body,
+                             "html.parser")
+        assert soup.find("link", rel="stylesheet")["href"] == "/static/app.css"
+        bar = soup.find(class_="no-print")
+        assert [(e.name, e["class"], e.get_text(strip=True)) for e in bar.find_all(["button", "a"])] == [
+            ("button", ["btn", "btn--primary"], t("btn.print")), ("a", ["btn", "btn--secondary"], t("label.back"))]
+        assert bar.find("a")["href"] == "/fixed-assets"
+
     def test_printable_label_sheet_handles_no_template(self):
         """_printable_label_sheet falls back gracefully when no template provided."""
         from celerp_labels.ui_routes import _printable_label_sheet

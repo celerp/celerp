@@ -3169,7 +3169,8 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, "fixed_assets.action.fix_account")
         cls = next((c for c in classes if c["id"] == class_id), None)
-        crumbs = breadcrumbs([(t("fixed_assets.settings_title"), "/settings/fixed-assets"),
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
+                              (t("fixed_assets.settings_title"), "/settings/fixed-assets"),
                               *([(cls["name"], None)] if cls else []), (t("fixed_assets.action.fix_account"), None)])
         if cls is None:
             return await _page(request, crumbs, page_header(t("fixed_assets.action.fix_account")),
@@ -3224,7 +3225,8 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, "fixed_assets.revalue_class")
         cls = next((c for c in classes if c["id"] == class_id), None)
-        crumbs = breadcrumbs([(t("fixed_assets.settings_title"), "/settings/fixed-assets"),
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
+                              (t("fixed_assets.settings_title"), "/settings/fixed-assets"),
                               *([(cls["name"], None)] if cls else [])])
         if cls is None or not assets:
             return await _page(request, crumbs, page_header(t("fixed_assets.revalue_class")),
@@ -3479,7 +3481,8 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, "fixed_assets.apply_to_assets")
         cls = next((c for c in classes if c["id"] == class_id), None)
-        crumbs = breadcrumbs([(t("fixed_assets.settings_title"), "/settings/fixed-assets"),
+        crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"),
+                              (t("fixed_assets.settings_title"), "/settings/fixed-assets"),
                               *([(cls["name"], None)] if cls else [])])
         if cls is None:
             return await _page(request, crumbs, page_header(t("fixed_assets.apply_to_assets")),

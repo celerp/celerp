@@ -527,6 +527,16 @@ async def test_correct_an_asset_then_the_corrections_pages_and_report(owner_ui):
     assert "fixed_assets." not in apply.text
 
 
+async def test_every_class_page_roots_its_breadcrumb_at_fixed_assets(owner_ui):
+    await _managed_car(owner_ui)
+    vehicles = next(c for c in (await owner_ui.api.get(f"{API}/classes")).json()["items"] if c["name"] == "Vehicles")
+    for page in ("fix-account", "revalue", "apply"):
+        soup = BeautifulSoup((await owner_ui.get(f"/fixed-assets/classes/{vehicles['id']}/{page}")).text, "html.parser")
+        links = [(a.get_text(strip=True), a["href"]) for a in soup.select(".breadcrumbs .breadcrumb-link")]
+        assert links[:2] == [(t("fixed_assets.title"), "/fixed-assets"),
+                             (t("fixed_assets.settings_title"), "/settings/fixed-assets")], page
+
+
 async def test_u1_dispose_review_lists_what_leaves_the_books(owner_ui):
     car = await _managed_car(owner_ui)
     review = await owner_ui.post("/fixed-assets/op/dispose/review", data={
