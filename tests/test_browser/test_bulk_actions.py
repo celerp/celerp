@@ -173,6 +173,8 @@ def test_writeoff_journey_terminal_and_undo(page, ui_server, api):
     page.get_by_role("button", name="Undo write-off").wait_for(state="visible", timeout=10000)
     assert api.get(f"/items/{iid}").json()["status"] == "disposed"
 
+    # The write-off reloads the page; a click before htmx has loaded sends nothing.
+    page.wait_for_load_state("load")
     page.get_by_role("button", name="Undo write-off").click()
     page.get_by_role("button", name="Write off stock").wait_for(state="visible", timeout=10000)
     assert api.get(f"/items/{iid}").json()["status"] == "available"
