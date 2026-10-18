@@ -175,18 +175,17 @@ async def test_recovery_fails_closed(client, session, relay, short_floor, failur
 
 async def test_recovery_send_is_enumeration_neutral(client, session, relay, short_floor):
     """A user of this install and an email that is not get the same answer at the same
-    pace; only the first is sent a code, after the answer, and the second is never
-    named to the relay. The reset answers the same way for both."""
+    pace, and the second is never named to the relay; the code is with the relay before
+    the answer comes. The reset answers the same way for both."""
     await _register(client)
-    relay.send_gate = asyncio.Event()
 
-    local = await asyncio.wait_for(_send(client, OWNER), 2)
-    stranger = await asyncio.wait_for(_send(client, "nobody@example.com"), 2)
-    empty = await asyncio.wait_for(_send(client, ""), 2)
-    assert local.status_code == stranger.status_code == empty.status_code == 200
-    assert local.json() == stranger.json() == empty.json() == {"outcome": "sent"}
-    relay.send_gate.set()
-    await settle()
+    answers, took = [], []
+    for email in (OWNER, "nobody@example.com", ""):
+        started = time.monotonic()
+        answers.append(await _send(client, email))
+        took.append(time.monotonic() - started)
+    assert [(r.status_code, r.json()) for r in answers] == [(200, {"outcome": "sent"})] * 3
+    assert min(took) >= short_floor
     assert relay.sent_to() == [OWNER]
     assert relay.paths().count("/email-codes/status") == 3
 
@@ -200,6 +199,19 @@ async def test_recovery_send_is_enumeration_neutral(client, session, relay, shor
     assert (wrong.status_code, wrong.json()) == (foreign.status_code, foreign.json())
     assert min(local_took, foreign_took) >= short_floor
     assert [b["email"] for p, b in relay.calls if p == "/email-codes/verify"] == [OWNER]
+
+
+async def test_recovery_send_says_when_no_code_is_coming(client, session, relay, short_floor):
+    """The relay is up but cannot deliver the code: the answer says none is coming. The
+    relay's limit on codes for an email answers as sent, as an email that is not a user
+    here does."""
+    await _register(client)
+    relay.send_status = 503
+    assert (await _send(client, OWNER)).json() == {"outcome": "unavailable"}
+    assert (await _send(client, "nobody@example.com")).json() == {"outcome": "sent"}
+
+    relay.send_status = 429
+    assert (await _send(client, OWNER)).json() == {"outcome": "sent"}
 
 
 async def test_recovery_matches_users_exactly_as_sign_in(client, session, relay, short_floor):

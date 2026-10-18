@@ -128,6 +128,17 @@ async def test_a_form_address_opened_directly_goes_to_its_page(ui, path, page):
     assert (r.status_code, r.headers.get("location")) == (303, page)
 
 
+async def test_recovery_page_when_no_code_could_be_sent(client, relay, short_floor, ui):
+    """A code the relay could not deliver: the page says no code was sent and offers the
+    terminal reset, sending a code again and the way back to sign in."""
+    await _register(client)
+    relay.send_status = 503
+    page = await ui.post("/forgot-password", data={"email": OWNER}, follow_redirects=True)
+    assert t("recovery.unavailable") in page.text
+    assert t("recovery.send_new_code") in page.text and 'href="/forgot-password"' in page.text
+    assert 'href="/login"' in page.text
+
+
 async def test_recovery_without_an_email_asks_for_it(relay):
     """Send code with the email left empty stays on the first form and asks for the
     email; nothing goes to Celerp."""

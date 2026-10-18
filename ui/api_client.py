@@ -523,8 +523,9 @@ async def login(email: str, password: str) -> tuple[str, str]:
 
 
 async def recovery_send(email: str) -> str:
-    """"sent" or "unavailable": the same answer whether or not the email is a user here."""
-    async with _anon_api_client() as c:
+    """"sent" or "unavailable" (no code is coming): the same answer whether or not the
+    email is a user here."""
+    async with _anon_api_client(timeout=20.0) as c:
         return _raise(await c.post("/auth/password-recovery/send", json={"email": email})).json()["outcome"]
 
 

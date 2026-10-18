@@ -557,6 +557,8 @@ def setup_routes(app):
             auth_header(t("recovery.terminal_title")),
             _above_form(flash(t("recovery.unavailable"), kind="warning") if unavailable else "",
                         _terminal_block(command)),
+            P(A(t("recovery.send_new_code"), href="/forgot-password", cls="auth-link"),
+              cls="auth-footer-text") if unavailable else "",
             P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),
             cls="auth-card",
         ))

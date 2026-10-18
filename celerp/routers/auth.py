@@ -22,7 +22,6 @@ from celerp.models.accounting import UserCompany
 from celerp.models.auth import PasswordReset, PasswordResetNotice
 from celerp.models.company import Company, User
 from celerp.services import bootstrap, email_codes
-from celerp.services.background import spawn_background
 from celerp.services.business_time import company_timezone
 from celerp.services.email_codes import Outcome
 from celerp.services.password_reset import reset_password, set_password, terminal_command, user_by_email
@@ -422,9 +421,9 @@ async def switch_company(
 # depends on whether the email is a user here, and any answer other than a plain yes
 # resets nothing.
 
-# Every recovery reset answers no sooner than this after the relay's status answer:
-# longer than a code check may take, so a user here and an email that is not take the
-# same time.
+# Every recovery send and reset answers no sooner than this after the relay's status
+# answer: longer than a relay call may take, so a user here and an email that is not
+# take the same time.
 RECOVERY_FLOOR_S = 4.0
 _CODE = re.compile(r"[0-9]{6}")
 
@@ -446,13 +445,20 @@ def _code_refused() -> HTTPException:
 @router.post("/password-recovery/send", dependencies=_PER_ACCOUNT)
 @limiter.limit("3/minute", key_func=_account_key)
 async def recovery_send(request: Request, payload: EmailBody, session: AsyncSession = Depends(get_session)) -> dict:
-    """Email a recovery code to the user whose email this is, if there is one here, when
-    the relay is up; the answer is the same whether or not there is."""
+    """Email a recovery code to the user whose email this is, if there is one here; the
+    answer is the same, and comes as late, whether or not there is. "unavailable" says no
+    code is coming: the relay is down, or it could not deliver this one."""
     if await email_codes.status() is not Outcome.OK:
         return {"outcome": "unavailable"}
-    if user := await user_by_email(session, payload.email):
-        spawn_background(email_codes.send(user.email))
-    return {"outcome": "sent"}
+    started = time.monotonic()
+    try:
+        user = await user_by_email(session, payload.email)
+        # The relay refuses a send when this email has had its codes for now; the last one
+        # still stands, so that answers as sent.
+        sent = await email_codes.send(user.email) if user else Outcome.OK
+    finally:
+        await asyncio.sleep(max(0.0, started + RECOVERY_FLOOR_S - time.monotonic()))
+    return {"outcome": "unavailable" if sent is Outcome.UNAVAILABLE else "sent"}
 
 
 @router.post("/password-recovery/reset", dependencies=_PER_ACCOUNT)

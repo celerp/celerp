@@ -25,7 +25,8 @@ class FakeRelay:
         self.calls: list[tuple[str, dict]] = []
         self.issued: dict[str, str] = {}
         self.failure: str | None = None
-        self.send_gate: asyncio.Event | None = None
+        # The answer to a send other than a plain yes: 503 could not deliver, 429 too many.
+        self.send_status: int | None = None
 
     def paths(self) -> list[str]:
         return [path for path, _ in self.calls]
@@ -48,8 +49,8 @@ class FakeRelay:
         if path == "/email-codes/status":
             return httpx.Response(200, json={"ok": True})
         if path == "/email-codes/send":
-            if self.send_gate is not None:
-                await self.send_gate.wait()
+            if self.send_status is not None:
+                return httpx.Response(self.send_status, json={"detail": "no"})
             self.issued[body["email"]] = CODE
             return httpx.Response(200, json={"ok": True})
         if path == "/email-codes/verify":
