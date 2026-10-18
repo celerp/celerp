@@ -33,6 +33,7 @@ from celerp_fixed_assets.operations import (
     _run,
     asset_movements,
     catch_up,
+    changes,
     conflict,
     reverse_move,
 )
@@ -112,12 +113,13 @@ def check_date(books: runs.Books, asset: dict, live: list[dict], day: str, *, wh
     if day < (asset.get("available_date") or day):
         raise setup.unprocessable(f"The {what} date is before {asset['number']} was available for use "
                                   f"({asset['available_date']}).")
-    if day > setup.today_in(books.settings).isoformat():
-        raise setup.unprocessable(f"The {what} date {day} is after today.")
+    setup.not_after_today(f"The {what} date", day, books.settings)
     setup.require_open(books.lock, day)
-    changed = max((m["effective_date"] for m in live if m.get("operation") not in _CHARGES), default=day)
-    if changed > day:
-        raise setup.unprocessable(f"{asset['number']} changed on {changed}. {verb} on or after that date.")
+    later = [m for m in live if m.get("operation") not in _CHARGES and m["effective_date"] > day]
+    if later:
+        changed = max(m["effective_date"] for m in later)
+        raise setup.unprocessable(f"{asset['number']} was changed on {changed} ({changes(later)}). "
+                                  f"{verb} on or after that date.")
 
 
 def owed(books: runs.Books, asset: dict, movements: list[dict], month: int, through: int) -> tuple[dict, object]:
@@ -322,9 +324,10 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
 
             invoice = doc_number(await _state(session, company_id, latest["invoice_id"]), latest["invoice_id"])
             raise conflict(f"{asset['number']} was sold on invoice {invoice}. Void or credit that invoice instead.")
-        if int(latest["id"].rsplit(":", 1)[1]) != int(asset.get("movement_count") or 0):
-            raise conflict(f"{asset['number']} has changed since it was disposed of, so the disposal can no longer "
-                           "be undone.")
+        since = [m for m in movements if int(m["id"].rsplit(":", 1)[1]) > int(latest["id"].rsplit(":", 1)[1])]
+        if since:
+            raise conflict(f"{asset['number']} has changed since it was disposed of ({changes(since)}), so the "
+                           "disposal can no longer be undone. Use Correct to change its figures.")
         books = await runs._books(session, company_id)
         day = latest["effective_date"]
         if books.lock is not None and date.fromisoformat(day) <= books.lock:

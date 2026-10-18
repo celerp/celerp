@@ -234,6 +234,7 @@
   "fixed_assets.reverse_run_hint": "Đảo bút toán của tháng này và khấu hao đã ghi cho từng tài sản. Chỉ lần chạy gần nhất mới có thể đảo, khi tháng của nó còn mở.",
   "fixed_assets.action.fix_account": "Sửa tài khoản ghi sổ",
   "fixed_assets.action.open_users": "Mở Người dùng",
+  "fixed_assets.action.open_run": "Mở lần chạy",
   "fixed_assets.action.review_source": "Xem lại nguồn",
   "fixed_assets.action.enter_reading": "Nhập chỉ số",
   "fixed_assets.action.skip": "Bỏ qua",

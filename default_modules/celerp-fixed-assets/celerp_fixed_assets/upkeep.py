@@ -58,8 +58,8 @@ def add_months(day: str, months: int) -> str:
     return date(year, month, min(d.day, calendar.monthrange(year, month)[1])).isoformat()
 
 
-def _day(value, refusal: str) -> str:
-    return setup.day(value, refusal).isoformat()
+def _day(value, field: str) -> str:
+    return setup.day(value, field).isoformat()
 
 
 def _text(value) -> str | None:
@@ -79,7 +79,7 @@ def _whole(value, low: int, high: int, refusal: str) -> int:
 async def _field(session, company_id, field: str, value, kind: str):
     """One reminder field, checked and normalized; a refusal names what to fix."""
     if field == "due":
-        return _day(value, "Enter the due date.")
+        return _day(value, "The due date")
     if field == "every_months":
         if value in (None, ""):
             return None
@@ -190,7 +190,7 @@ async def mark_done(session, company_id, user_id, reminder_id: str, body: dict) 
     closed; done maintenance goes in the asset's maintenance log."""
     reminder = await _locked(session, company_id, reminder_id, REMINDER)
     _open(reminder)
-    day = _day(body.get("date"), "Enter the date the work was done.")
+    day = _day(body.get("date"), "The date the work was done")
     every = reminder.get("every_months")
     after = {"due": add_months(day, every)} if every else {"status": "done"}
     before = {k: reminder.get(k) for k in after}
@@ -206,7 +206,7 @@ async def mark_done(session, company_id, user_id, reminder_id: str, body: dict) 
 async def postpone(session, company_id, user_id, reminder_id: str, body: dict) -> dict:
     reminder = await _locked(session, company_id, reminder_id, REMINDER)
     _open(reminder)
-    to = _day(body.get("to"), "Enter the date to postpone to.")
+    to = _day(body.get("to"), "The date to postpone to")
     reason = _text(body.get("reason"))
     if not reason:
         raise setup.unprocessable("Say why it is postponed.")
@@ -270,7 +270,7 @@ async def undo(session, company_id, user_id, reminder_id: str) -> dict:
 async def add_entry(session, company_id, user_id, asset_id: str, body: dict) -> dict:
     """Work done on an asset; a next due date adds a maintenance reminder for it."""
     await _live_asset(session, company_id, asset_id)
-    day = _day(body.get("date"), "Enter the date the work was done.")
+    day = _day(body.get("date"), "The date the work was done")
     work = _text(body.get("work"))
     if not work:
         raise setup.unprocessable("Describe the maintenance work.")
@@ -295,7 +295,7 @@ async def edit_entry(session, company_id, user_id, maint_id: str, changes: dict)
     unknown = sorted(set(changes) - set(MAINT_EDITABLE))
     if unknown:
         raise setup.unprocessable(f"{unknown[0]} cannot be edited on a maintenance entry.")
-    after = {k: _day(v, "Enter the date the work was done.") if k == "date" else _text(v) for k, v in changes.items()}
+    after = {k: _day(v, "The date the work was done") if k == "date" else _text(v) for k, v in changes.items()}
     if "work" in after and not after["work"]:
         raise setup.unprocessable("Describe the maintenance work.")
     after = {k: v for k, v in after.items() if entry.get(k) != v}

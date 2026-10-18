@@ -373,7 +373,7 @@ async def test_s4_credit_exceeding_remaining_and_duplicate_refused(fa):
     first = await _credit(fa, inv, "2000")
     over = (await fa.ok(await _credit_note(fa, inv, "9000", on="2026-06-12")))["id"]
     refused = await _doc(fa, over, "finalize")
-    assert refused.status_code == 409 and "Only 8,000" in refused.json()["detail"]
+    assert refused.status_code == 409 and "Only $8,000.00" in refused.json()["detail"]
     assert number in refused.json()["detail"]
     assert (await fa.state(over))["status"] == "draft"
     await _credit(fa, inv, "8000", on="2026-06-15", returned=True)

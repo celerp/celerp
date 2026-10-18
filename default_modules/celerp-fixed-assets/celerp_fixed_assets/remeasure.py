@@ -31,7 +31,7 @@ from decimal import Decimal
 from celerp.services.money import books_currency
 from celerp_fixed_assets import disposal, notices, projections, runs, setup
 from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
-from celerp_fixed_assets.projections import money
+from celerp_fixed_assets.projections import money, said
 from celerp_fixed_assets.operations import (
     _continued,
     _date,
@@ -156,8 +156,8 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
         accumulated_after = -at["accumulated"]
     elif operation == "impairment":
         if value >= carrying:
-            raise setup.unprocessable(f"The recoverable amount {money(value, currency)} is not below the "
-                                      f"carrying amount {money(carrying, currency)} of {asset['number']}, so it is not impaired.")
+            raise setup.unprocessable(f"The recoverable amount {said(value, currency)} is not below the "
+                                      f"carrying amount {said(carrying, currency)} of {asset['number']}, so it is not impaired.")
         loss = carrying - value
         to_surplus = -min(loss, surplus) if revalues else _ZERO
         to_pnl = loss + to_surplus
@@ -170,15 +170,15 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
         if not impairment:
             raise setup.unprocessable(f"{asset['number']} has no impairment to reverse.")
         if value <= carrying:
-            raise setup.unprocessable(f"The recoverable amount {money(value, currency)} is not above the "
-                                      f"carrying amount {money(carrying, currency)} of {asset['number']}, so there is nothing to reverse.")
+            raise setup.unprocessable(f"The recoverable amount {said(value, currency)} is not above the "
+                                      f"carrying amount {said(carrying, currency)} of {asset['number']}, so there is nothing to reverse.")
         reversal = min(value - carrying, impairment)
         to_pnl = -min(reversal, at["losses"], max(at["shadow"] - carrying, _ZERO))
         if not revalues:
             reversal = -to_pnl
         if not reversal:
             raise setup.unprocessable(f"{asset['number']} already carries what it would have without the "
-                                      f"impairment ({money(at['shadow'], currency)}), so there is nothing to reverse.")
+                                      f"impairment ({said(at['shadow'], currency)}), so there is nothing to reverse.")
         to_surplus = reversal + to_pnl
         lines.append(JournalLine(account=accumulated_account, debit=reversal))
         lines += _surplus_and_pnl(roles, asset, to_surplus, to_pnl)
@@ -450,9 +450,7 @@ async def record_review(session, company_id, user_id, asset_id: str, body: dict)
     if asset.get("status") != "active":
         raise HTTPException(status_code=409, detail=f"{asset['number']} is not in use, so it is not reviewed.")
     day = _date(body.get("date"), "The review date")
-    today = setup.today_in(settings).isoformat()
-    if day > today:
-        raise setup.unprocessable(f"The review date {day} is after today.")
+    setup.not_after_today("The review date", day, settings)
     if day < (asset.get("available_date") or day):
         raise setup.unprocessable(f"The review date is before {asset['number']} was available for use.")
     outcome = body.get("outcome")

@@ -234,6 +234,7 @@
   "fixed_assets.reverse_run_hint": "የዚህን ወር ጆርናል እና በእያንዳንዱ ንብረት ላይ የተደረገውን የእርጅና ቅነሳ ይቀለብሳል። መቀልበስ የሚቻለው የመጨረሻውን ሂደት ብቻ ነው፣ ወሩ ክፍት እስከሆነ ድረስ።",
   "fixed_assets.action.fix_account": "የመመዝገቢያ ሂሳብ አስተካክል",
   "fixed_assets.action.open_users": "ተጠቃሚዎችን ክፈት",
+  "fixed_assets.action.open_run": "ሂደቱን ክፈት",
   "fixed_assets.action.review_source": "ምንጩን ገምግም",
   "fixed_assets.action.enter_reading": "ንባቡን አስገባ",
   "fixed_assets.action.skip": "ተዘሏል",

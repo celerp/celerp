@@ -28,7 +28,7 @@ from decimal import Decimal
 from celerp.models.projections import Projection
 from celerp.services.money import books_currency, round_money
 from celerp_fixed_assets import setup, sources
-from celerp_fixed_assets.projections import BUCKETS, _dec, money
+from celerp_fixed_assets.projections import BUCKETS, _dec, money, said
 from celerp_fixed_assets.store import _emit, _entities, _state, recorded
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -58,14 +58,14 @@ def _amount(value, field: str, *, positive: bool = False) -> Decimal:
 
 def _money_in(value, field: str, currency: str, *, positive: bool = False) -> Decimal:
     """A money amount the user entered, rounded once to the precision of ``currency``."""
-    amount = round_money(_amount(value, field), currency)
+    amount = round_money(_amount(value, field, positive=positive), currency)
     if positive and amount == 0:
         raise setup.unprocessable(f"{field} must be more than zero.")
     return amount
 
 
 def _date(value, field: str) -> str:
-    return setup.day(value, f"{field} is a date.").isoformat()
+    return setup.day(value, field).isoformat()
 
 
 def _hash(value) -> str:
@@ -483,7 +483,7 @@ async def link_depreciation(session, company_id, user_id, body: dict) -> dict:
             shares.append((asset_id, asset["number"], _money_in(a.get("amount"), "Each amount", currency, positive=True)))
         total = sum((s for _, _, s in shares), Decimal(0))
         if total != round_money(_dec(line["amount"]), currency):
-            raise setup.unprocessable(f"The amounts add up to {money(total, currency)}, not {money(line['amount'], currency)}.")
+            raise setup.unprocessable(f"The amounts add up to {said(total, currency)}, not {said(line['amount'], currency)}.")
         return ({"journals": [], "assets": [{"number": n, "accumulated_depreciation": money(s, currency)} for _, n, s in shares]},
                 {"line": line, "shares": shares, "generation": line["generation"]})
 
@@ -751,9 +751,17 @@ async def reverse_move(session, company_id, user_id, movement_id: str, mv: dict,
     return reversed_id
 
 
-async def _way_back(session, company_id, asset: dict) -> str:
-    """Why an asset that has changed since it was registered cannot be undone, and the way
-    back to its page's Correct, which an active asset offers."""
+def changes(movements: list[dict]) -> str:
+    """What ``movements`` did, named as the asset's history names them ("Impairment, Improvement")."""
+    from ui.i18n import t
+
+    return ", ".join(dict.fromkeys(t(f"fixed_assets.movement.{m['operation']}") for m in movements))
+
+
+async def way_back(session, company_id, asset: dict, changed: str, correct: str) -> str:
+    """Why ``asset`` cannot be taken back because it ``changed`` since, and the way back: for a
+    sold or disposed asset, ending that first; otherwise ``correct``, the Correct an active
+    asset offers, said as it reads where the message is shown."""
     number = asset["number"]
     sale = asset.get("sale") or {}
     if asset.get("status") == "sold" and sale.get("invoice_id"):
@@ -763,7 +771,7 @@ async def _way_back(session, company_id, asset: dict) -> str:
                 "then use Correct there.")
     if asset.get("status") in ("sold", "disposed"):
         return f"{number} was disposed of. Undo the disposal on its page, then use Correct there."
-    return f"{number} has changed since it was registered. Use Correct on its page instead."
+    return f"{number} {changed}. {correct}"
 
 
 async def _undo(session, company_id, user_id, target_keys: list[str], body: dict, *, subject: str | None = None,
@@ -796,7 +804,8 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         moved = [a for a in assets if int(a.get("movement_count") or 0) > 1]
         changed = [a["number"] for a in moved]
         if len(changed) == 1:
-            raise conflict(await _way_back(session, company_id, moved[0]))
+            raise conflict(await way_back(session, company_id, moved[0], "has changed since it was registered",
+                                          "Use Correct instead."))
         if changed:
             raise conflict(f"These assets have changed since they were added: {', '.join(changed)}. "
                            "Use Correct on each instead.")

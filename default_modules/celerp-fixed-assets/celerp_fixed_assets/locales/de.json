@@ -234,6 +234,7 @@
   "fixed_assets.reverse_run_hint": "Storniert die Buchung dieses Monats und die Abschreibung jeder Anlage. Nur der letzte Lauf kann storniert werden, solange sein Monat offen ist.",
   "fixed_assets.action.fix_account": "Buchungskonto korrigieren",
   "fixed_assets.action.open_users": "Benutzer öffnen",
+  "fixed_assets.action.open_run": "Lauf öffnen",
   "fixed_assets.action.review_source": "Quelle prüfen",
   "fixed_assets.action.enter_reading": "Zählerstand erfassen",
   "fixed_assets.action.skip": "Übersprungen",

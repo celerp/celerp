@@ -41,7 +41,7 @@ FIGURES = (*COST_COLUMNS, *DEPRECIATION_COLUMNS, *IMPAIRMENT_COLUMNS, "nbv_openi
 
 
 def _day(value, field: str) -> date:
-    return setup.day(value, f"{field} must be a date (YYYY-MM-DD).")
+    return setup.day(value, field)
 
 
 async def _range(session, company_id, date_from, date_to) -> tuple[dict, date, date]:

@@ -27,7 +27,7 @@ from celerp.models.projections import Projection
 from celerp.services.account_roles import line_has_role, line_roles
 from celerp.services.money import currency_dp, round_money
 from celerp_fixed_assets import disposal, runs, setup
-from celerp_fixed_assets.projections import money
+from celerp_fixed_assets.projections import money, said
 from celerp_fixed_assets.operations import (
     MODULE,
     _continued,
@@ -63,11 +63,6 @@ def doc_number(state: dict | None, doc_id: str) -> str:
     carries that reference)."""
     state = state or {}
     return str(state.get("doc_number") or state.get("ref_id") or doc_id.removeprefix("doc:"))
-
-
-def _money(value: Decimal, currency: str) -> str:
-    """An amount in a message, at ``currency``'s precision and grouped in thousands."""
-    return f"{round_money(value, currency):,}"
 
 
 def _href(asset_id: str) -> str:
@@ -412,7 +407,7 @@ async def credit(session, company_id, user_id, asset_id: str, body: dict) -> dic
         if kind == "adjust":
             amount = _money_in(body.get("amount"), "The amount", in_doc, positive=True)
             if amount * rate > remaining:
-                raise conflict(f"Only {_money(remaining, base)} of the sale of {asset['number']} is left to credit.")
+                raise conflict(f"Only {said(remaining, base)} of the sale of {asset['number']} is left to credit.")
         else:
             amount = round_money(remaining / rate, in_doc)
         shown = {"number": asset["number"], "kind": kind, "date": day, "amount": money(amount, in_doc),
@@ -601,7 +596,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     short = asset_id.removeprefix("fa:asset:")
     if not line.get("asset_returned"):
         if amount > remaining:
-            raise conflict(f"Only {_money(remaining, books.currency)} of the sale of {number} is left to credit.")
+            raise conflict(f"Only {said(remaining, books.currency)} of the sale of {number} is left to credit.")
         restated, added = _restate(accounts, held, gain - amount)
         je_id = await _post(session, company_id, user_id, key=f"asset:{short}:credit:{uuid.uuid4().hex}",
                             operation="sale_adjust", day=day, memo=f"{number} sale credited: {doc_number(doc, doc_id)}",
@@ -617,7 +612,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     foreign = str(doc.get("currency") or "").upper() not in ("", books.currency)
     if abs(amount - remaining) > (Decimal(1).scaleb(-currency_dp(books.currency)) if foreign else 0):
         raise conflict(f"A return credits what is left of the sale of {number}: "
-                       f"{_money(remaining, books.currency)}.")
+                       f"{said(remaining, books.currency)}.")
     mv = await _state(session, company_id, sale["movement_id"])
     cls = await setup.get_class(session, company_id, asset.get("class_id"))
     moved = {k: _dec((mv.get("amounts") or {}).get(k)) for k in ("cost", _AD, _IMP, _SURPLUS)}

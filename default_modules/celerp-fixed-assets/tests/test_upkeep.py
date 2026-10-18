@@ -84,7 +84,7 @@ async def test_reminder_refusals_are_named(fa):
              ({"kind": "maintenance", "due": _on(5)}, "Describe the maintenance work"),
              ({"kind": "warranty", "due": _on(5)}, "Name the warranty provider"),
              ({"kind": "insurance", "due": _on(5)}, "Name the insurer"),
-             ({"kind": "warranty", "provider": "Dealer", "due": "soon"}, "Enter the due date"),
+             ({"kind": "warranty", "provider": "Dealer", "due": "soon"}, "The due date soon is not a date"),
              ({"kind": "warranty", "provider": "Dealer", "due": _on(5), "every_months": 0},
               "whole number of months"),
              ({"kind": "warranty", "provider": "Dealer", "due": _on(5), "lead_days": 400}, "between 0 and 365"),

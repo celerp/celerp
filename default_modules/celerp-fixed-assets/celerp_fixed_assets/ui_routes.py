@@ -89,12 +89,15 @@ def _missing_permission(e: APIError) -> bool:
 
 
 def _error_box(e: APIError):
-    """A refusal, with the way to fix it when it names one (its ``href`` and ``action`` label).
-    A missing permission leads to Users, where the owner grants it."""
+    """A refusal, with the way to fix it when it names one (its ``href`` and ``action`` label),
+    or a link to each record it names (``links``). A missing permission leads to Users, where
+    the owner grants it."""
     params = (e.data or {}).get("params") or {}
     if _missing_permission(e):
         params = {"href": "/settings/general?tab=users", "action": "fixed_assets.action.open_users"}
     fix = [" ", A(t(params["action"]), href=params["href"])] if params.get("href") and params.get("action") else []
+    for link in params.get("links") or []:
+        fix += [" ", A(link["label"], href=link["href"])]
     return Div(_error_text(e), *fix, cls="flash flash--error")
 
 

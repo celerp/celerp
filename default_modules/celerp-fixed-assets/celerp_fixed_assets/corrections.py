@@ -29,7 +29,7 @@ from celerp_fixed_assets.operations import (
     MODULE, _claim, _date, _dec, _intent_hash, _journal_view, _lines, _money_in, _move, _op_key, _open_line, _post,
     _reversed_lines, _run, _same_intent, asset_movements, conflict)
 from celerp_fixed_assets.store import _emit, _entities, _state
-from celerp_fixed_assets.projections import BUCKETS, money
+from celerp_fixed_assets.projections import BUCKETS, money, said
 
 ESTIMATE_FIELDS = setup.POLICY_FIELDS
 ERROR_FIELDS = ("cost", "available_date", "class_id", "opening_values", "maintenance")
@@ -177,7 +177,7 @@ async def _cost(d: Draft, value, fa: dict) -> None:
     new = _money_in(value, "Cost", d.books.currency, positive=True)
     diff = new - _dec(d.asset.get("cost"))
     if not diff:
-        raise setup.unprocessable(f"The cost is already {money(new, d.books.currency)}.")
+        raise setup.unprocessable(f"The cost is already {said(new, d.books.currency)}.")
     credit = await _acquisition_credit(d)
     n = d.journal(_lines(d.cls["asset_account"], credit, diff), f"{d.asset['number']} cost corrected")
     d.move("cost", d.asset["available_date"], {"cost": diff},
@@ -467,8 +467,7 @@ async def _posting_day(session, company_id, books: runs.Books, original: str, ch
     today = setup.today_in(books.settings).isoformat()
     if chosen:
         chosen = _date(chosen, "The posting date")
-        if chosen > today:
-            raise setup.unprocessable(f"The posting date {chosen} is after today.")
+        setup.not_after_today("The posting date", chosen, books.settings)
     return await correction_day(session, company_id, original, chosen=chosen or None) or today
 
 

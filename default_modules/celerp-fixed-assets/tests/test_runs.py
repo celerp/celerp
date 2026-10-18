@@ -138,7 +138,7 @@ async def test_run_posts_one_journal_per_month_at_month_end(fa):
     assert [m["effective_date"] for m in run_moves] == ["2026-01-31", "2026-02-28", "2026-03-31"]
     await fa.fold_matches(car)
     again = await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "again"})
-    assert again.status_code == 409 and "already posted" in again.json()["detail"]
+    assert again.status_code == 409 and "already posted" in again.json()["detail"]["message"]
     await _run(fa, "2026-04")
     assert sorted(await _run_journals(fa))[-1] == "run:2026-04:1"
     future = await fa.post("/runs", {"month": "2099-01", "preview": True, "op_key": "f"})
@@ -225,8 +225,9 @@ async def test_s3_reverse_run_refused_after_newer_movement(fa):
     refused = await fa.post("/runs/2026-03/reverse", {"preview": True, "op_key": "r"})
     number = (await fa.asset(car))["number"]
     assert refused.status_code == 409
-    assert number in refused.json()["detail"] and "Correct" in refused.json()["detail"]
-    assert (await fa.asset(van))["number"] not in refused.json()["detail"]
+    said = refused.json()["detail"]["message"]
+    assert number in said and "Correct" in said
+    assert (await fa.asset(van))["number"] not in said
     await _run(fa, "2026-04")
     april = (await _run_journals(fa))["run:2026-04:1"]
     assert _lines(april)["1220"] == (D(0), D("350"))  # the car owes 150 after the linked 50

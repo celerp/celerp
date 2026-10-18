@@ -23,7 +23,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from celerp_fixed_assets import disposal, operations, projections, runs, setup, transfer
-from celerp_fixed_assets.projections import money
+from celerp_fixed_assets.projections import money, said
 from celerp_fixed_assets.operations import (
     _claim,
     _create_asset,
@@ -205,7 +205,7 @@ async def _replaced(session, company_id, books, asset_id: str, asset: dict, cls:
     cost = _dec(asset.get("cost"))
     if estimate <= 0 or estimate >= cost:
         raise setup.unprocessable(f"The estimated cost of the old part is more than 0 and less than "
-                                  f"{asset['number']}'s cost of {money(cost, books.currency)}.")
+                                  f"{asset['number']}'s cost of {said(cost, books.currency)}.")
     return disposal._plan_asset(books, asset_id, asset, cls, movements, day, estimate / cost, _ZERO, roles)
 
 
@@ -257,7 +257,7 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
                                 "policy": {**policy, "life_months": life} if life else policy})
         total = sum((a["amount"] for a in allocations), _ZERO)
         if total > balance:
-            raise setup.unprocessable(f"The allocations total {money(total, currency)}, more than the {money(balance, currency)} "
+            raise setup.unprocessable(f"The allocations total {said(total, currency)}, more than the {said(balance, currency)} "
                                       f"{site['number']} holds.")
         debits: dict[str, Decimal] = {}
         for a in allocations:

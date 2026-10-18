@@ -24,7 +24,7 @@ from decimal import Decimal
 from fastapi import HTTPException
 
 from celerp_fixed_assets import runs, setup
-from celerp_fixed_assets.projections import money
+from celerp_fixed_assets.projections import said
 from celerp_fixed_assets.operations import MODULE, _dec, _effects, _journal_view, _post, _run, _undo, conflict
 from celerp_fixed_assets.store import _emit, _entities, _state
 
@@ -155,8 +155,8 @@ async def _split(session, company_id, account: str, amount: Decimal, keys: list[
                                      credit=Decimal(0) if debit else take, moves_recognized=True, recognized_in=key))
             left -= take
     if left:
-        raise conflict(f"The ledger holds {money(amount - left, currency)} on account {account} for these assets and the "
-                       f"register {money(amount, currency)}. Open the reconciliation to see the difference.")
+        raise conflict(f"The ledger holds {said(amount - left, currency)} on account {account} for these assets and the "
+                       f"register {said(amount, currency)}. Open the reconciliation to see the difference.")
     return lines
 
 

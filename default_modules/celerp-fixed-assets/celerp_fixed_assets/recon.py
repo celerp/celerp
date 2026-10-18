@@ -224,10 +224,7 @@ async def report(session, company_id, at: str | None = None) -> dict:
     fa = await setup.require_managed(session, company_id)
     cut = setup.cutover(fa)
     at = at or (await setup.business_today(session, company_id)).isoformat()
-    try:
-        at = date.fromisoformat(at).isoformat()
-    except ValueError:
-        raise setup.unprocessable("The reconciliation date is a date.") from None
+    at = setup.day(at, "The reconciliation date").isoformat()
     if at < cut:
         raise setup.unprocessable(f"The reconciliation starts at the cutover {cut}.")
     classes, surplus, surpluses, clearings = await _accounts(session, company_id)

@@ -84,7 +84,7 @@ async def test_dispose_validates_its_inputs(fa):
     await _managed_from(fa)
     car = await _contributed(fa)
     for body, words in (({"date": "2026-05-01", "reason": "stolen"}, "Choose why"),
-                        ({"date": "not a date", "reason": "lost"}, "is a date"),
+                        ({"date": "not a date", "reason": "lost"}, "is not a date"),
                         ({"date": "2025-12-31", "reason": "lost"}, "before"),
                         ({"date": "2026-05-01", "reason": "lost", "percent": "120"}, "percent"),
                         ({"date": "2026-05-01", "reason": "lost", "quantity": "2"}, "quantity")):

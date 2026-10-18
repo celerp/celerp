@@ -72,12 +72,31 @@ def number(value, field: str) -> Decimal:
     return out
 
 
-def day(value, refusal: str) -> date:
-    """``value`` as an ISO date, refused with ``refusal`` otherwise."""
+def refused(status: int, message: str, **params) -> HTTPException:
+    """A refusal with the way on: ``href`` and ``action`` (the link's label key), or ``links``
+    (each {"label", "href"}), which the page shows beside the message."""
+    return HTTPException(status_code=status, detail={"message": message, "params": params})
+
+
+def day(value, field: str) -> date:
+    """``value`` as an ISO date. Blank asks for ``field`` ("The disposal date"); anything else
+    says how to write a date."""
+    if value in (None, ""):
+        raise unprocessable(f"Enter {field[0].lower()}{field[1:]}.")
     try:
-        return date.fromisoformat(str(value or ""))
+        return date.fromisoformat(str(value))
     except ValueError:
-        raise unprocessable(refusal) from None
+        raise unprocessable(f"{field} {value} is not a date. Enter it as YYYY-MM-DD, such as 2026-09-30.") from None
+
+
+def not_after_today(field: str, value: str, company_settings: dict | None) -> None:
+    """Refuses ``value`` (an ISO date) ahead of the company's today, naming that today and the
+    time zone that decides it, with the way to the setting."""
+    today = today_in(company_settings).isoformat()
+    if value > today:
+        zone = (company_settings or {}).get("timezone") or "UTC"
+        raise refused(422, f"{field} {value} is after the company's today, {today} (time zone {zone}).",
+                      href="/settings/general?tab=company", action="settings.company_details")
 
 
 def require_open(lock: date | None, day: str) -> None:
@@ -316,10 +335,10 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
             fa.update(auto_post_user=str(user_id), auto_post_paused=False)
             await notices.clear(session, company_id, notices.PAUSED, notices.NO_USER)
     if "run_day" in body:
-        day = body["run_day"]
-        if not isinstance(day, int) or isinstance(day, bool) or not 1 <= day <= 28:
+        run_day = body["run_day"]
+        if not isinstance(run_day, int) or isinstance(run_day, bool) or not 1 <= run_day <= 28:
             raise unprocessable("The run day is a day of the month from 1 to 28.")
-        fa["run_day"] = day
+        fa["run_day"] = run_day
     if "convention" in body:
         if body["convention"] != fa.get("convention") and not rules.is_available(
                 "convention", body["convention"], company.settings):
@@ -336,10 +355,7 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
                 raise unprocessable(f"{key} is not a tax regime this company can use.")
         fa["tax_regimes"] = list(dict.fromkeys(chosen))
     if "first_managed_period" in body:
-        try:
-            first = date.fromisoformat(str(body["first_managed_period"]))
-        except ValueError:
-            raise unprocessable("The first managed period is a date.") from None
+        first = day(body["first_managed_period"], "The first managed period")
         if first.day != 1:
             raise unprocessable("The first managed period starts on the first day of a month.")
         if fa.get("first_managed_period") and fa["first_managed_period"] != first.isoformat():
@@ -428,14 +444,11 @@ def _active_market(value) -> dict | None:
         return None
     if not isinstance(value, dict) or set(value) - {"date", "basis"}:
         raise unprocessable("An active market has a date and a basis.")
-    try:
-        day = date.fromisoformat(str(value.get("date"))).isoformat()
-    except ValueError:
-        raise unprocessable("The active market date is a date.") from None
+    on = day(value.get("date"), "The active market date").isoformat()
     basis = str(value.get("basis") or "").strip()
     if not basis:
         raise unprocessable("Say where the active market is quoted.")
-    return {"date": day, "basis": basis}
+    return {"date": on, "basis": basis}
 
 
 def check_tax_categories(value, current: dict | None = None) -> dict:

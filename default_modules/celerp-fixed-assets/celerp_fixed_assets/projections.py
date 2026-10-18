@@ -25,6 +25,13 @@ def money(value, currency: str) -> str:
     return str(round_money(_dec(value), currency))
 
 
+def said(value, currency: str) -> str:
+    """An amount in a message, as the pages show it: symbol, thousands grouped, currency precision."""
+    from celerp.output.doc_print import fmt_money
+
+    return fmt_money(money(value, currency), currency)
+
+
 def live(movements: list[dict]) -> list[dict]:
     """The movements that still count: undone ones and their reversals cancel out."""
     reversed_ids = {m.get("reverses") for m in movements if m.get("reverses")}

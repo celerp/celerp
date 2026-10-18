@@ -67,12 +67,13 @@ def _long(index: int) -> str:
 
 def _month(value, field: str = "The month") -> int:
     text = str(value or "")
+    refusal = f"Enter {field[0].lower()}{field[1:]} as YYYY-MM, such as 2026-09."
     try:
         index = parse_period(text)
     except ValueError:
-        raise setup.unprocessable(f"{field} is a month, as YYYY-MM.") from None
+        raise setup.unprocessable(refusal) from None
     if period_label(index) != text:
-        raise setup.unprocessable(f"{field} is a month, as YYYY-MM.")
+        raise setup.unprocessable(refusal)
     return index
 
 
@@ -426,7 +427,8 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
     currency = books.currency
     label = period_label(month)
     if books.last is not None and month <= books.last:
-        raise conflict(f"Depreciation for {label} is already posted.")
+        raise setup.refused(409, f"Depreciation for {label} is already posted. Open its run to see it or reverse it.",
+                            href=f"/fixed-assets/runs/{label}", action="fixed_assets.action.open_run")
     if _end(month) >= today:
         raise setup.unprocessable(f"{label} has not ended yet. Depreciation runs for a month once it has ended.")
     if month < books.first:
@@ -602,9 +604,13 @@ async def reverse(session, company_id, user_id, label: str, body: dict) -> dict:
         for asset_id, index in sorted(last.items()):
             asset = await _state(session, company_id, asset_id)
             if int(asset.get("movement_count") or 0) > index:
-                changed.append(asset["number"])
+                changed.append((asset["number"], asset_id, asset))
         if changed:
-            raise conflict(f"{', '.join(sorted(changed))} changed since this run. Use Correct instead.")
+            ways = [await operations.way_back(session, company_id, a, "changed since this run",
+                                              "Use Correct on its page to change its depreciation.")
+                    for _, _, a in sorted(changed)]
+            raise setup.refused(409, " ".join([f"The {label} run can no longer be reversed.", *ways]),
+                                links=[{"label": n, "href": f"/fixed-assets/assets/{i}"} for n, i, _ in sorted(changed)])
         journals = [await _state(session, company_id, j) for j in record.get("journal_ids") or []]
         shown = {"month": label, "journals": [operations._reversed_lines(je, books.currency) for je in journals if je]}
         return shown, {"record": record}
