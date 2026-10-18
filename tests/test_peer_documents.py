@@ -495,6 +495,76 @@ async def test_real_service_invoice_mirror_posts_once_in_second_company(client, 
     assert conflicting.value.status_code == 409
 
 
+async def _copy_held_bill(client, session):
+    """An issued bill in a company copy, held under its source identity at the revision the
+    copy was made from, as a firm holds a client's bill: (grant, bill id, revision, payload)."""
+    from celerp.models.company_peer import CompanyPeerIdentity
+    from celerp.models.projections import Projection
+    from celerp.services.peer_documents import _FIELDS
+    from celerp.services.peer_identity import _digest
+    from test_payments_stripe import _register, _h, _company_id
+
+    token = await _register(client)
+    company = uuid.UUID(_company_id(token))
+    created = await client.post("/docs", json={
+        "doc_type": "bill", "contact_name": "Supplier",
+        "line_items": [{"description": "Paper", "quantity": 2, "unit_price": 40.0}],
+        "currency": "USD"}, headers=_h(token))
+    assert created.status_code in (200, 201), created.text
+    bill = created.json()["id"]
+    assert (await client.post(f"/docs/{bill}/finalize", headers=_h(token))).status_code == 200
+    state = (await client.get(f"/docs/{bill}", headers=_h(token))).json()
+    assert state["status"] == "awaiting_payment"
+    revision = (await session.get(Projection, (company, bill), populate_existing=True)).version
+    grant = SimpleNamespace(company_id=company, source_company_id=uuid.uuid4(), label="Books")
+    session.add(CompanyPeerIdentity(
+        company_id=company, source_company_id=grant.source_company_id, entity_type="doc",
+        source_entity_id=bill, source_key_hash=_digest(bill), target_entity_id=bill,
+        last_revision=revision))
+    await session.commit()
+    payload = {key: state[key] for key in _FIELDS if key in state and key != "contact_id"}
+    return grant, bill, revision, payload
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_issued_bill_the_copy_holds_is_taken_at_a_later_revision(client, session):
+    grant, bill, revision, payload = await _copy_held_bill(client, session)
+    assert await documents.receive_document(
+        session, grant=grant, source_entity_id=bill, source_revision=revision + 1,
+        data=payload) == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_a_change_to_an_issued_bill_the_copy_holds_tells_the_client_what_happens(client, session):
+    grant, bill, revision, payload = await _copy_held_bill(client, session)
+    with pytest.raises(HTTPException) as refused:
+        await documents.receive_document(
+            session, grant=grant, source_entity_id=bill, source_revision=revision + 1,
+            data={**payload, "line_items": [{"description": "Paper", "quantity": 3,
+                                             "unit_price": 40.0}]})
+    assert refused.value.status_code == 409
+    assert refused.value.detail == documents.ISSUED_IN_COPY
+    assert "doc:" not in refused.value.detail and "Draft" not in refused.value.detail
+
+
+@pytest.mark.asyncio
+async def test_a_receiving_refusal_does_not_name_the_receiving_record(monkeypatch):
+    from celerp_docs import import_service
+
+    async def claim(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target")
+    async def imported(*args, **kwargs):
+        return SimpleNamespace(records=[SimpleNamespace(
+            status="failed", message="doc:target: The books are locked to 2026-09-30.")])
+    monkeypatch.setattr(documents, "claim_peer_revision", claim)
+    monkeypatch.setattr(import_service, "import_doc_records", imported)
+    with pytest.raises(HTTPException) as refused:
+        await documents.receive_document(
+            _Session(), grant=_grant(), source_entity_id="doc:source", source_revision=3,
+            data={"doc_type": "invoice", "status": "draft", "currency": "USD"})
+    assert refused.value.detail == "The books are locked to 2026-09-30."
+
+
 def _applied_credit(**extra) -> dict:
     return {"index": 1, "amount": 30, "payment_date": "2026-10-12", "currency": "USD",
             "method": "credit_note", "source_doc_id": "doc:source-note", "paired_index": 0,
