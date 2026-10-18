@@ -6131,6 +6131,81 @@ class TestFilesSectionErrorReplies:
         assert r.status_code == 400 and "files-section-" not in r.text
 
 
+class TestCompanyFilesAggregation:
+    """The company-wide Files section reads the self-contact, items and documents; a failed read is
+    an error reply, never an empty or partial list that would replace the real one."""
+
+    _URL = "/finance/company-files/_section"
+    _SELF = {"entity_id": "c-self", "is_self": True, "files": [
+        {"id": "f1", "filename": "deed.pdf", "url": "/x/deed.pdf", "mime": "application/pdf", "size": 9,
+         "document_tag": "other", "uploaded_at": None, "description": None}]}
+
+    def _patches(self, **over):
+        from contextlib import ExitStack
+        calls = {
+            "get_company": AsyncMock(return_value={"settings": {"self_contact_id": "c-self"}, "current_role": "admin"}),
+            "get_contact": AsyncMock(return_value=self._SELF),
+            "list_items": AsyncMock(return_value={"items": []}),
+            "list_docs": AsyncMock(return_value={"items": []}),
+        }
+        calls.update(over)
+        stack = ExitStack()
+        for name, mock in calls.items():
+            stack.enter_context(patch(f"ui.api_client.{name}", new=mock))
+        return stack
+
+    @pytest.mark.asyncio
+    async def test_an_expired_session_is_a_401_with_the_sign_in_link(self, ui_client):
+        from ui.api_client import APIError
+        gone = AsyncMock(side_effect=APIError(401, "Not authenticated"))
+        with self._patches(get_company=gone, list_contacts=gone, get_contact=gone, list_items=gone, list_docs=gone):
+            r = await ui_client.get(self._URL, cookies=_authed())
+        assert r.status_code == 401 and '<a href="/login?reason=expired">' in r.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing", ["get_contact", "list_items", "list_docs"])
+    async def test_one_failed_read_is_an_error_reply_not_a_partial_list(self, ui_client, failing):
+        from ui.api_client import APIError
+        with self._patches(**{failing: AsyncMock(side_effect=APIError(503, "down"))}):
+            r = await ui_client.get(self._URL, cookies=_authed())
+        assert r.status_code == 503 and "down" in r.text and "files-section-" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_failed_company_lookup_is_an_error_reply(self, ui_client):
+        from ui.api_client import APIError
+        with self._patches(get_company=AsyncMock(side_effect=APIError(503, "down"))):
+            r = await ui_client.get(self._URL, cookies=_authed())
+        assert r.status_code == 503 and "files-section-" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_company_with_no_files_answers_200_with_the_empty_state(self, ui_client):
+        with self._patches(get_contact=AsyncMock(return_value={"entity_id": "c-self", "is_self": True})):
+            r = await ui_client.get(self._URL, cookies=_authed())
+        assert r.status_code == 200 and "files-section-" in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_company_with_no_self_contact_yet_answers_200_with_the_empty_state(self, ui_client):
+        with self._patches(get_company=AsyncMock(return_value={"settings": {}}),
+                           list_contacts=AsyncMock(return_value={"items": []})):
+            r = await ui_client.get(self._URL, cookies=_authed())
+        assert r.status_code == 200 and "files-section-" in r.text
+
+    @pytest.mark.asyncio
+    async def test_an_upload_without_a_file_is_a_400(self, ui_client):
+        with self._patches():
+            r = await ui_client.post("/finance/company-files", data={}, cookies=_authed())
+        assert r.status_code == 400 and "files-section-" not in r.text
+
+
+    @pytest.mark.asyncio
+    async def test_a_failed_contact_documents_tab_read_is_an_error_not_an_empty_tab(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.list_contact_docs", new=AsyncMock(side_effect=APIError(503, "down"))), \
+             patch("ui.api_client.get_contact", new=AsyncMock(return_value={"entity_id": "c1"})):
+            r = await ui_client.get("/contacts/c1/tab/documents", cookies=_authed())
+        assert "down" in r.text and "cell-error" in r.text
+
+
 class TestAttachmentRoutes:
     """Route tests for attachment upload and delete."""
 

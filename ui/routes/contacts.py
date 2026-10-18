@@ -1203,21 +1203,16 @@ def setup_routes(app):
     # the delete affordance. Identity edits here flow to every customer/vendor context at once.
 
     async def _resolve_self_contact_id(token: str) -> str | None:
-        """The company's own contact id: the cached settings value, else the contact flagged is_self."""
-        try:
-            company = await api.get_company(token)
-            sid = (company.get("settings") or {}).get("self_contact_id")
-            if sid:
-                return sid
-        except Exception:
-            pass
-        try:
-            items = (await api.list_contacts(token, {"limit": 999})).get("items", [])
-            for c in items:
-                if c.get("is_self"):
-                    return c.get("id") or c.get("entity_id")
-        except Exception:
-            pass
+        """The company's own contact id: the cached settings value, else the contact flagged is_self.
+        None means the company has none yet; a failed read raises APIError."""
+        company = await api.get_company(token)
+        sid = (company.get("settings") or {}).get("self_contact_id")
+        if sid:
+            return sid
+        items = (await api.list_contacts(token, {"limit": 999})).get("items", [])
+        for c in items:
+            if c.get("is_self"):
+                return c.get("id") or c.get("entity_id")
         return None
 
     @app.get("/finance/company-details")
@@ -1228,7 +1223,10 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         if (r := await _check_permission(request, "manage_company_settings")):
             return r
-        sid = await _resolve_self_contact_id(token)
+        try:
+            sid = await _resolve_self_contact_id(token)
+        except APIError:
+            sid = None
         if not sid:
             return await base_shell(
                 page_header("🏢 " + t("settings.company_details")),
@@ -1250,6 +1248,10 @@ def setup_routes(app):
         # library, with a quick-upload dropzone); Documents/Notes/Activity follow. No tags / financial cards.
         from ui.routes.settings import _company_settings_card
         from ui.i18n import get_lang
+        try:
+            files_html = await _company_files_section(token)
+        except APIError as e:
+            files_html = Div(str(e.detail), cls="flash flash--error")
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("settings.company_details"), None)]),
             page_header("🏢 " + t("settings.company_details")),
@@ -1270,29 +1272,19 @@ def setup_routes(app):
             _addresses_section(contact),
             _tab_bar(sid, active="company-files",
                      lead_tabs=[("company-files", t("label.files"), "/finance/company-files/_section")]),
-            Div(await _company_files_section(token), id="tab-content"),
+            Div(files_html, id="tab-content"),
             title=page_title("settings.company_details"), nav_active="company-details",
             extra_head=_phone_head_items(), request=request,
         )
 
     async def _company_files_section(token: str, **section_kwargs) -> FT:
         """Aggregate + render the read-only company-wide files section (company docs + item images +
-        doc attachments). Shared by the page and its sort/pagination _section route."""
+        doc attachments). Shared by the page and its sort/pagination _section route. A failed read
+        raises APIError: only a company that really has no self-contact, items or documents is empty."""
         sid = await _resolve_self_contact_id(token)
-        self_contact: dict = {}
-        if sid:
-            try:
-                self_contact = await api.get_contact(token, sid) or {}
-            except Exception:
-                self_contact = {}
-        try:
-            items = (await api.list_items(token, {"limit": 9999})).get("items", [])
-        except Exception:
-            items = []
-        try:
-            docs = (await api.list_docs(token, {"limit": 9999})).get("items", [])
-        except Exception:
-            docs = []
+        self_contact = (await api.get_contact(token, sid) or {}) if sid else {}
+        items = (await api.list_items(token, {"limit": 9999})).get("items", [])
+        docs = (await api.list_docs(token, {"limit": 9999})).get("items", [])
         files = _collect_company_files(self_contact, items, docs)
         # can_upload=True: the dropzone POSTs to base_url (/finance/company-files), which routes the file
         # onto the self-contact so it shows here AND in the company's customer/vendor entries. Item and
@@ -1302,6 +1294,13 @@ def setup_routes(app):
             can_upload=True, hide_product_images=True, show_linked=True, base_url="/finance/company-files",
             title=t("contacts.company_files_title"), **section_kwargs,
         )
+
+    async def _company_files_reply(token: str, **section_kwargs):
+        """The company files section, or the refusal (error status, notice) when a read behind it failed."""
+        try:
+            return await _company_files_section(token, **section_kwargs)
+        except APIError as e:
+            return files_error(str(e.detail), e.status)
 
     # Company files live as the first tab on the Company Details page (loaded via the _section route
     # below + the POST upload route), so there is no standalone page.
@@ -1316,20 +1315,22 @@ def setup_routes(app):
             return files_session_expired()
         if (r := await _check_permission(request, "manage_company_settings")):
             return r
-        sid = await _resolve_self_contact_id(token)
         form = await request.form()
         file = form.get("file")
-        if file is not None and hasattr(file, "read") and sid:
-            content = await file.read()
-            filename = getattr(file, "filename", "upload")
-            content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
-            try:
+        if file is None or not hasattr(file, "read"):
+            return files_error(t("msg.no_file_provided"))
+        try:
+            sid = await _resolve_self_contact_id(token)
+            if sid:
+                content = await file.read()
+                filename = getattr(file, "filename", "upload")
+                content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
                 await api.upload_contact_file(token, sid, content, filename, content_type,
                                               str(form.get("description", "")).strip(),
                                               str(form.get("document_tag", "")).strip())
-            except APIError as e:
-                return files_error(str(e.detail), e.status)
-        return await _company_files_section(token)
+        except APIError as e:
+            return files_error(str(e.detail), e.status)
+        return await _company_files_reply(token)
 
     @app.get("/finance/company-files/_section")
     async def company_files_section(request: Request, page: int = 1, sort_dir: str = "desc",
@@ -1337,7 +1338,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return files_session_expired()
-        return await _company_files_section(token, page=page, sort_dir=sort_dir, tag_filter=tag_filter,
+        return await _company_files_reply(token, page=page, sort_dir=sort_dir, tag_filter=tag_filter,
                                             date_from=date_from, date_to=date_to, search=search)
 
     # ── Tab routes ────────────────────────────────────────────────────────
@@ -1350,12 +1351,9 @@ def setup_routes(app):
         try:
             docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
             docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
-        except Exception:
-            docs = []
-        try:
             contact = await api.get_contact(token, contact_id)
-        except Exception:
-            contact = {}
+        except APIError as e:
+            return P(t("error.session_expired") if e.status == 401 else str(e.detail), cls="cell-error")
         cid = contact.get("entity_id") or contact.get("id") or contact_id
         # The company self-contact has its own Files tab, so its Documents tab is docs-only (no dup files).
         return _documents_tab(docs, contact, cid, show_files=not contact.get("is_self"))
