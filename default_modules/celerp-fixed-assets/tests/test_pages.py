@@ -1288,6 +1288,64 @@ async def test_r2_21_a_form_sent_after_a_switch_in_another_tab_saves_nothing_and
     assert again.status_code == 302 and again.headers["location"] == f"/fixed-assets/assets/{car}/dispose"
 
 
+async def _switched_away(ui, car: str, monkeypatch) -> tuple[dict, list]:
+    """The page's company, after another tab switched the session to Beta Co; every file
+    form sent to the API from then on is recorded, not sent."""
+    import ui.api_client as api
+
+    home = (await ui.api.get("/companies/me")).json()
+    r = await ui.api.post("/companies", json={"name": "Beta Co"})
+    assert r.status_code == 200, r.text
+    ui.cookies.set("celerp_token", r.json()["access_token"])
+    sent: list = []
+
+    async def recorded(*args, **kwargs):
+        sent.append(args)
+        return {}
+    monkeypatch.setattr(api, "fixed_assets_form", recorded)
+    return home, sent
+
+
+async def test_r2_21_a_file_sent_after_a_switch_in_another_tab_is_refused_and_never_sent(owner_ui, monkeypatch):
+    car = await _managed_car(owner_ui)
+    entry = await owner_ui.api.post(f"{API}/assets/{car}/maintenance", json={"date": "2026-10-01", "work": "Brake pads"})
+    assert entry.status_code == 200, entry.text
+    home, sent = await _switched_away(owner_ui, car, monkeypatch)
+    switch = t("fixed_assets.switch_to", company=home["name"])
+    said = t("fixed_assets.switched_company", page=home["name"], now="Beta Co", switch=switch)
+    headers = {"HX-Request": "true", "X-Celerp-Page-Company": home["id"],
+               "HX-Current-URL": f"http://ui/fixed-assets/assets/{car}"}
+    pdf = {"file": ("receipt.pdf", b"%PDF-1.0\n", "application/pdf")}
+
+    upload = await owner_ui.post(f"/fixed-assets/assets/{car}/files", headers=headers, files=pdf)
+    assert said in html.unescape(re.sub(r"<[^>]+>", "", upload.text)), upload.text
+    receipt = await owner_ui.post(f"/fixed-assets/maintenance/{entry.json()['id']}/files", headers=headers, files=pdf)
+    assert _toast(receipt) == said
+    problem = await owner_ui.post(f"/fixed-assets/mine/{car}/problems", headers=headers, data={"text": "Dent"},
+                                  files={"photo": ("dent.png", b"\x89PNG", "image/png")})
+    assert _toast(problem) == said
+    assert sent == [], "nothing reaches the API in either company"
+
+
+async def test_r2_21_a_valuer_report_sent_after_a_switch_in_another_tab_is_refused_and_never_sent(owner_ui, monkeypatch):
+    car = await _managed_car(owner_ui)
+    class_id = (await owner_ui.api.get(f"{API}/assets/{car}")).json()["class_id"]
+    page = BeautifulSoup((await owner_ui.get(f"/fixed-assets/classes/{class_id}/revalue")).text, "html.parser")
+    action = page.find("form", attrs={"action": re.compile(r"/revalue/report")})["action"]
+    home, sent = await _switched_away(owner_ui, car, monkeypatch)
+
+    # A plain form carries no page headers: the company the page was opened in rides on its address.
+    here = f"http://ui/fixed-assets/classes/{class_id}/revalue"
+    report = await owner_ui.post(action, headers={"Referer": here},
+                                 files={"file": ("valuation.pdf", b"%PDF-1.0\n", "application/pdf")})
+    switch = t("fixed_assets.switch_to", company=home["name"])
+    said = t("fixed_assets.switched_company", page=home["name"], now="Beta Co", switch=switch)
+    assert said in html.unescape(re.sub(r"<[^>]+>", "", report.text)), report.text
+    back = f"/switch-company/{home['id']}?next={quote(f'/fixed-assets/classes/{class_id}/revalue', safe='')}"
+    assert f'<a href="{html.escape(back)}">{switch}</a>' in report.text
+    assert sent == [], "nothing reaches the API in either company"
+
+
 async def test_u22_the_buyer_is_a_contact_and_the_result_says_gain_or_loss(owner_ui):
     car = await _managed_car(owner_ui)
     buyer = (await owner_ui.api.get(f"/crm/contacts/{await _buyer(owner_ui)}")).json()

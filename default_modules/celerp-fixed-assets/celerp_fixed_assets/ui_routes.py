@@ -164,29 +164,49 @@ def _linked(text: str, links: list[dict]) -> list:
 _amounts_hidden: ContextVar[bool] = ContextVar("fixed_assets_amounts_hidden", default=False)
 # Every request a module page sends carries the company the page was opened in, so a write
 # sent after the session switched company in another tab is refused, never saved in the other
-# company. Set per request from that header: the page's company and where the page is.
+# company. Set per request from that header, or for a plain form (which sends no page headers)
+# from its address: the page's company and where the page is.
 _PAGE_COMPANY = "X-Celerp-Page-Company"
+_PAGE_COMPANY_QUERY = "page_company"
 _switched: ContextVar[tuple[str, str] | None] = ContextVar("fixed_assets_switched", default=None)
 
 
 def _token(request: Request) -> str | None:
     """The session's token, noting whether the page that sent the request was opened in
     another company than the session is in now."""
-    page, now = request.headers.get(_PAGE_COMPANY), get_company_id(request)
+    page = request.headers.get(_PAGE_COMPANY) or request.query_params.get(_PAGE_COMPANY_QUERY)
+    now = get_company_id(request)
     if page and now and page != now:
-        here = urlsplit(request.headers.get("HX-Current-URL") or "")
+        here = urlsplit(request.headers.get("HX-Current-URL") or request.headers.get("Referer") or "")
         _switched.set((page, here.path + (f"?{here.query}" if here.query else "")))
     else:
         _switched.set(None)
     return get_token(request)
 
 
-async def _send(token: str, method: str, path: str, body: dict) -> dict:
-    """A write to the module's API, refused (nothing saved) when the session switched company
-    in another tab after the page was opened."""
+def _page_company_action(request: Request, action: str) -> str:
+    """A plain form's address, carrying the company its page was opened in."""
+    company = get_company_id(request)
+    return f"{action}?{urlencode({_PAGE_COMPANY_QUERY: company})}" if company else action
+
+
+async def _refuse_if_switched(token: str) -> None:
+    """Refuse a write (nothing saved) when the session switched company in another tab after
+    the page was opened."""
     if switched := _switched.get():
         raise await _switched_refusal(token, *switched)
+
+
+async def _send(token: str, method: str, path: str, body: dict) -> dict:
+    """A write to the module's API, refused when the session switched company since the page opened."""
+    await _refuse_if_switched(token)
     return await api.fixed_assets_send(token, method, path, body)
+
+
+async def _send_form(token: str, method: str, path: str, data: dict, files: dict | None = None) -> dict:
+    """A form write (with files when given) to the module's API, refused like :func:`_send`."""
+    await _refuse_if_switched(token)
+    return await api.fixed_assets_form(token, method, path, data, files=files)
 
 
 async def _switched_refusal(token: str, page_id: str, back: str) -> APIError:
@@ -2217,7 +2237,7 @@ async def _fair_value_lines(form) -> tuple[list[tuple[str, str, str]], str | Non
     return lines, None
 
 
-def _revalue_files_card(class_id: str, report: dict | None) -> FT:
+def _revalue_files_card(request: Request, class_id: str, report: dict | None) -> FT:
     """The valuer's report to keep on the class's assets, and a file to fill the fair values from."""
     base = f"/fixed-assets/classes/{quote(class_id, safe=':')}/revalue"
     kept = ""
@@ -2231,7 +2251,7 @@ def _revalue_files_card(class_id: str, report: dict | None) -> FT:
                               Input(type="file", name="file", cls="form-input", aria_label=t("fixed_assets.valuer_report")),
                               t("fixed_assets.valuer_report_hint")),
                        Button(t("fixed_assets.valuer_report_upload"), type="submit", cls="btn btn--secondary"),
-                       method="post", action=f"{base}/report", enctype="multipart/form-data", cls=_STACK)
+                       method="post", action=_page_company_action(request, f"{base}/report"), enctype="multipart/form-data", cls=_STACK)
     values_form = Form(_field(t("fixed_assets.fair_values_file"),
                               Input(type="file", name="csv_file", accept=".csv,.xlsx", cls="form-input",
                                     aria_label=t("fixed_assets.fair_values_file")),
@@ -3313,7 +3333,7 @@ def setup_ui_routes(app) -> None:
                               (t("fixed_assets.settings_title"), "/settings/fixed-assets"),
                               *([(cls["name"], None)] if cls else [])])
         if cls is None or not assets:
-            return await _page(request, crumbs, page_header(t("fixed_assets.revalue_class")),
+            return await _page(request, crumbs, page_header(t("fixed_assets.revalue_class")), *notices,
                                empty_state_cta(t("fixed_assets.class_missing" if cls is None
                                                  else "fixed_assets.revalue_class_empty"),
                                                t("fixed_assets.view_classes"), "/settings/fixed-assets"),
@@ -3340,7 +3360,7 @@ def setup_ui_routes(app) -> None:
                                       if report else ""), t("fixed_assets.shared_basis_hint")),
                         Div(table, cls="table-scroll-wrap"))
         title = t(f"fixed_assets.revalue_class_title.{policy}", name=cls["name"])
-        return await _page(request, crumbs, page_header(title), *notices, _revalue_files_card(class_id, report),
+        return await _page(request, crumbs, page_header(title), *notices, _revalue_files_card(request, class_id, report),
                            form, title_key="fixed_assets.revalue_class")
 
     @app.get("/fixed-assets/classes/{class_id}/revalue")
@@ -3391,8 +3411,8 @@ def setup_ui_routes(app) -> None:
                 Div(t("fixed_assets.valuer_report_choose"), cls="flash flash--error"),))
         payload = {"file": (file.filename, await file.read(), file.content_type or "application/octet-stream")}
         try:
-            report = await api.fixed_assets_form(token, "POST", f"/classes/{quote(class_id, safe=':')}/valuer-report",
-                                                 {}, files=payload)
+            report = await _send_form(token, "POST", f"/classes/{quote(class_id, safe=':')}/valuer-report", {},
+                                      files=payload)
         except APIError as e:
             return await _revalue_class_view(request, token, class_id,
                                              notices=(await _error_box(request, e),))

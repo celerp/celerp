@@ -514,7 +514,10 @@ def files_section(
       var fd=new FormData(); fd.append('file',file);
       var txt=zone.querySelector('.file-drop-text');
       if(txt) txt.textContent=zone.dataset.uploadingText;
-      fetch('{base_url}',{{method:'POST',headers:{{'HX-Request':'true'}},body:fd}})
+      // Carry the headers the page sets for its htmx requests, as an htmx upload would.
+      var scope=zone.closest('[hx-headers]');
+      var headers=Object.assign({{'HX-Request':'true'}},scope?JSON.parse(scope.getAttribute('hx-headers')):{{}});
+      fetch('{base_url}',{{method:'POST',headers:headers,body:fd}})
         .then(function(r){{if(!r.ok) throw new Error(zone.dataset.uploadFailedText); return r.text();}})
         .then(function(html){{
           var sec=document.getElementById('files-section-{sid}');

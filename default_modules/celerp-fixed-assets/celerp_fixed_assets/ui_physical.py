@@ -20,8 +20,8 @@ from ui.i18n import t
 
 from celerp_fixed_assets.files import ASSET_FILE_TAGS
 from celerp_fixed_assets.setup import today_in
-from celerp_fixed_assets.ui_routes import (_STACK, _error_text, _field, _hx_write, _input, _page, _refused, _send, _text,
-                                           _token)
+from celerp_fixed_assets.ui_routes import (_STACK, _error_text, _field, _hx_write, _input, _page, _refused, _send,
+                                           _send_form, _text, _token)
 
 _CHECKS = "/fixed-assets/checks"
 
@@ -139,8 +139,8 @@ def setup_physical_routes(app) -> None:
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
         try:
-            await api.fixed_assets_form(token, method, f"/assets/{quote(asset_id, safe=':')}/files{suffix}",
-                                        data or {}, files=files)
+            await _send_form(token, method, f"/assets/{quote(asset_id, safe=':')}/files{suffix}", data or {},
+                             files=files)
             return await _files_fragment(token, asset_id)
         except APIError as e:
             return P(_error_text(e), cls="cell-error")
@@ -249,8 +249,8 @@ def setup_physical_routes(app) -> None:
         files = ({"photo": (photo.filename, await photo.read(), photo.content_type or "application/octet-stream")}
                  if hasattr(photo, "read") and photo.filename else None)
         try:
-            await api.fixed_assets_form(token, "POST", f"/mine/{quote(asset_id, safe=':')}/problems",
-                                        {"text": str(form.get("text") or "")}, files=files)
+            await _send_form(token, "POST", f"/mine/{quote(asset_id, safe=':')}/problems",
+                             {"text": str(form.get("text") or "")}, files=files)
         except APIError as e:
             return Response(headers=toast_header(_error_text(e), "error", persist=True))
         return Response(headers={"HX-Redirect": "/fixed-assets/mine", **toast_header(t("fixed_assets.problem_sent"))})
