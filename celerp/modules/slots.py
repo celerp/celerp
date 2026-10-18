@@ -31,7 +31,9 @@ category_schema    Default field definitions for a named category
 projection_handler Maps event-type prefixes to a handler function. Each event type has
                    one handler: no two prefixes may overlap (one equal to or starting
                    with another), within a module, across modules, or with a prefix
-                   core handles itself (KERNEL_PROJECTION_PREFIXES)
+                   core handles itself (KERNEL_PROJECTION_PREFIXES). An optional
+                   "permission" names the one its events are read with: activity
+                   and ledger feeds leave them out for a role without it
 on_company_created Async callback(session, company_id) fired after a new company is persisted
 on_modules_ready   Async callback(session) fired once after every module has loaded
 doc_finalize_hook  Async callback fired when a document is finalized, before commit

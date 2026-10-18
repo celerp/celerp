@@ -222,8 +222,9 @@ async def test_s4_draft_finalize_completes_sale_atomically(fa, monkeypatch):
     assert _lines(await _doc_entry(fa, inv)) == {"1120": (D("10000"), D(0)), CLEARING: (D(0), D("10000"))}
     [je] = await _sale_journals(fa, car)
     assert je["ts"][:10] == "2026-05-20"
-    assert _lines(je) == {"6400": (D("200"), D(0)), "1220": (D("800"), D("200")), CLEARING: (D("10000"), D(0)),
+    assert _lines(je) == {"6400": (D("200"), D(0)), "1220": (D("600"), D(0)), CLEARING: (D("10000"), D(0)),
                           "1210": (D(0), D("12000")), "6980": (D("1200"), D(0))}
+    assert [e["account"] for e in je["entries"]].count("1220") == 1  # the catch-up is netted, not in and out
     got = await fa.asset(car)
     assert got["status"] == "sold" and got["sale"]["state"] == "sold"
     assert got["disposal"]["date"] == "2026-05-20" and D(got["disposal"]["gain_or_loss"]) == D("-1200")

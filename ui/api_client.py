@@ -2900,6 +2900,14 @@ async def download_item_file(token: str, entity_id: str, file_id: str) -> httpx.
         return _raise(await c.get(f"/items/{entity_id}/files/{file_id}"))
 
 
+def file_disposition(resp: httpx.Response, kind: str) -> str:
+    """The Content-Disposition for forwarding a downloaded file as ``kind`` (inline or
+    attachment), with the API's own file-name parameters kept as sent. A name outside
+    latin-1 arrives only as RFC 5987 ``filename*``; reading just ``filename=`` loses it."""
+    params = resp.headers.get("content-disposition", "").partition(";")[2].strip()
+    return f"{kind}; {params}" if params else kind
+
+
 async def get_item_thumbnail(token: str, entity_id: str, file_id: str) -> httpx.Response:
     """Fetch the list thumbnail bytes; a cloud-stored preview is followed to its URL."""
     async with _bulk_api_client(token) as c:

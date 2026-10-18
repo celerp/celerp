@@ -264,6 +264,15 @@ def _left_use(asset_id: str, state: dict) -> dict | None:
     return None if message is None else {"message": message, "links": operations.left_use_links(asset_id, state)}
 
 
+async def _undo_refused(session, company_id, asset_id: str, state: dict) -> dict:
+    """Why each undo the asset page offers would be refused now (None where it would not), so
+    the page says so beside the button rather than after it is pressed."""
+    movements = await operations.asset_movements(session, company_id, asset_id)
+    found = {"registration": await operations.registration_refusal(session, company_id, asset_id, state),
+             "disposal": await disposal.undo_refusal(session, company_id, state, movements)}
+    return {k: e.detail if e else None for k, e in found.items()}
+
+
 @router.get("/assets/{asset_id}", dependencies=_VIEW)
 async def get_asset(asset_id: str, company_id=Depends(get_current_company_id), money: bool = _MONEY,
                     session: AsyncSession = Depends(get_session)) -> dict:
@@ -271,6 +280,7 @@ async def get_asset(asset_id: str, company_id=Depends(get_current_company_id), m
     return {**asset_out(asset_id, state, money=money),
             **views.readable(await remeasure.asset_facts(session, company_id, asset_id, state), money),
             "undoable": await additions.undoable(session, company_id, asset_id),
+            "undo_refused": await _undo_refused(session, company_id, asset_id, state),
             "left_use": _left_use(asset_id, state),
             "next_charge": views.readable(await runs.next_charge(session, company_id, asset_id, state), money)}
 

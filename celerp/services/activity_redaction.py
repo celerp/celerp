@@ -8,6 +8,10 @@ the app (item detail, list, dashboard cost basis). The ledger/activity feeds mus
 the same rule, enforced **server-side** so raw cost never ships to an under-threshold
 role. This is the single source of truth for that redaction, used by both the ledger
 router and the dashboard activity endpoints.
+
+The same feeds leave out a module's events from a role that cannot read that module: a
+module names the permission its events are read with on its ``projection_handler``
+contribution.
 """
 
 from __future__ import annotations
@@ -21,6 +25,23 @@ COST_FIELD_KEYS = frozenset({"cost_price", "cost_total"})
 # item cost, COGS on fulfillment, manufacturing unit cost. Sell prices (retail_price etc.)
 # are deliberately excluded - they are visible to all roles, matching item-level visibility.
 COST_DATA_KEYS = frozenset({"cost_price", "cost_total", "total_cogs", "cogs", "unit_cost"})
+
+
+def hidden_event_prefixes(settings: dict | None, role: str | None) -> list[str]:
+    """The event-type prefixes whose module's events this role cannot read."""
+    from celerp.modules import slots
+
+    return [c["prefix"] for c in slots.get("projection_handler")
+            if c.get("permission") and not role_has_permission(settings, role or "", c["permission"])]
+
+
+def readable_events(stmt, settings: dict | None, role: str | None):
+    """``stmt`` over ledger entries narrowed to the events this role can read."""
+    from celerp.models.ledger import LedgerEntry
+
+    for prefix in hidden_event_prefixes(settings, role):
+        stmt = stmt.where(~LedgerEntry.event_type.startswith(prefix, autoescape=True))
+    return stmt
 
 
 def can_see_costs(settings: dict | None, role: str | None) -> bool:

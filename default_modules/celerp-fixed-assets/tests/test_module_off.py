@@ -103,6 +103,18 @@ async def test_s11_records_read_only_while_off(fa):
         page = await fa.page(path)
         assert page.status_code == 200, page.text
         assert 'id="fa-read-only"' in page.text and 'class="records-read-only"' in page.text
+    # An action page's form is hidden, so its body says so and offers the way on in its place.
+    from bs4 import BeautifulSoup
+    from ui.i18n import t
+    soup = BeautifulSoup((await fa.page(f"/fixed-assets/assets/{car}/dispose")).text, "html.parser")
+    told = soup.find(string=t("fixed_assets.turn_on_to_act")).find_parent("form")
+    assert told["hx-post"] == "/modules/celerp-fixed-assets/enable" and not told.find_parent(class_="records-read-only")
+    assert not soup.select("#fa-read-only button")
+    # A record page keeps its records to read, so the way on stays in the notice at its top,
+    # even when its cards carry forms of their own.
+    for path in ("/fixed-assets", f"/fixed-assets/assets/{car}"):
+        record = BeautifulSoup((await fa.page(path)).text, "html.parser")
+        assert record.select("#fa-read-only button") and t("fixed_assets.turn_on_to_act") not in record.text, path
     posted = await fa.submit(f"/fixed-assets/assets/{car}/readings", {"month": "2026-01", "reading": "10"})
     assert 'id="fa-read-only"' not in posted.text
     assert (await fa.asset(car))["name"] == "Owner's car"

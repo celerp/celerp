@@ -24,11 +24,13 @@ import pytest
 # DATABASE_URL is provided by the root conftest (Postgres via testcontainers or a
 # preset URL); the browser servers run against that same database.
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
+# The browser servers run every first-party module. Set in api_server, not here: pytest
+# imports this file for any run over tests/, and a unit test must not run as a server
+# whose ENABLED_MODULES pins the module list.
 _ALL_MODULES = (
     "celerp-accounting,celerp-ai,celerp-connectors,celerp-contacts,celerp-sales-funnel,celerp-dashboard,celerp-docs,celerp-inventory,"
     "celerp-fixed-assets,celerp-labels,celerp-manufacturing,celerp-reports,celerp-subscriptions,celerp-verticals"
 )
-os.environ.setdefault("ENABLED_MODULES", _ALL_MODULES)
 
 # Per-xdist-worker ports so the browser suite can SHARD with `-n` (each worker boots its own API +
 # UI servers and browser against its own worker database — see the root conftest's per-worker DB).
@@ -96,6 +98,7 @@ def api_server():
     """Start FastAPI on this worker's API port against the (Postgres) test database."""
     _require_free_port(_API_PORT)
     import uvicorn
+    os.environ.setdefault("ENABLED_MODULES", _ALL_MODULES)
     # Start from a clean schema; the app rebuilds tables on startup (create_all).
     _reset_pg_database()
 
@@ -313,18 +316,55 @@ def api(api_server, seeded_user):
         yield client
 
 
-def clear_session_registry() -> None:
-    """Wipe session_registry rows so a second user can log in (the direct
-    connection limit allows one active session; nonces stay valid)."""
+def _test_db():
     import psycopg2
     from urllib.parse import urlsplit
     parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
     conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
                             password=parts.password, dbname=parts.path.lstrip("/"))
     conn.autocommit = True
+    return conn
+
+
+def clear_session_registry() -> None:
+    """Wipe session_registry rows so a second user can log in (the direct
+    connection limit allows one active session; nonces stay valid)."""
+    conn = _test_db()
     with conn.cursor() as cur:
         cur.execute("DELETE FROM session_registry;")
     conn.close()
+
+
+def wait_for_landing(page, timeout: float = 30000) -> str:
+    """Waits until the page has left Settings and returns the path it landed on, after
+    checking it is where signing in lands: the first page in the menu (top-level entries
+    render before the groups, so it is the sidebar's first link)."""
+    from urllib.parse import urlsplit
+    page.wait_for_url(lambda u: not urlsplit(u).path.startswith("/settings"), timeout=timeout)
+    page.wait_for_load_state("load")
+    url = urlsplit(page.url)
+    landed = url.path + (f"?{url.query}" if url.query else "")
+    first = page.locator(".sidebar a.nav-link").first.get_attribute("href")
+    assert landed == first, f"landed on {landed}, the first page in the menu is {first}"
+    return landed
+
+
+@pytest.fixture
+def keep_sign_ins():
+    """For a test that signs everyone out (a forced sign-in, a recovery): puts every
+    user's session nonce back afterwards, so the suite's shared tokens stay valid."""
+    conn = _test_db()
+    with conn.cursor() as cur:
+        cur.execute("SELECT user_id, nonce FROM user_auth_state")
+        rows = cur.fetchall()
+    try:
+        yield
+    finally:
+        with conn.cursor() as cur:
+            for user_id, nonce in rows:
+                cur.execute("UPDATE user_auth_state SET nonce = %s WHERE user_id = %s", (nonce, user_id))
+        conn.close()
+        clear_session_registry()
 
 
 def _set_auth_cookie(browser_context, token: str) -> None:

@@ -25,7 +25,7 @@ from ui.components.deleted_items import deleted_items, deleted_label, is_deleted
 from ui.components.demo_items import DEMO_ITEMS_FILTER
 from ui.components.icons import import_icon
 from ui.api_client import APIError, _flatten_item_attrs
-from ui.components.files import files_section as _shared_files_section
+from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
@@ -4748,79 +4748,79 @@ function celerpPrintLabel(entityId, templateId) {
     async def item_upload_file(request: Request, entity_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         form = await request.form()
         file = form.get("file")
         if file is None:
-            return P(t("msg.no_file_provided"), cls="cell-error")
+            return files_error(t("msg.no_file_provided"))
         try:
             await api.upload_item_file(token, entity_id, file)
             item = await api.get_item(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return files_error(str(e.detail), e.status)
         return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.post("/items/{entity_id}/files/{file_id}/tag")
     async def item_tag_file(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return Response("", status_code=401)
+            return files_session_expired()
         form = await request.form()
         tag = str(form.get("document_tag", ""))
         try:
             await api.tag_item_file(token, entity_id, file_id, tag)
             item = await api.get_item(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return files_error(str(e.detail), e.status)
         return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.post("/items/{entity_id}/files/{file_id}/description")
     async def item_describe_file(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return Response("", status_code=401)
+            return files_session_expired()
         form = await request.form()
         description = str(form.get("description", ""))
         try:
             await api.describe_item_file(token, entity_id, file_id, description)
             item = await api.get_item(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return files_error(str(e.detail), e.status)
         return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.post("/items/{entity_id}/files/{file_id}/hero")
     async def item_set_file_hero(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return Response("", status_code=401)
+            return files_session_expired()
         try:
             await api.set_item_file_hero(token, entity_id, file_id)
             item = await api.get_item(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return files_error(str(e.detail), e.status)
         return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.delete("/items/{entity_id}/files/{file_id}")
     async def item_delete_file(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return Response("", status_code=401)
+            return files_session_expired()
         try:
             await api.delete_item_file(token, entity_id, file_id)
             item = await api.get_item(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return files_error(str(e.detail), e.status)
         return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.get("/items/{entity_id}/files/_section")
     async def item_files_section_partial(request: Request, entity_id: str):
         token = _token(request)
         if not token:
-            return Response("", status_code=401)
+            return files_session_expired()
         try:
             item = await api.get_item(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return files_error(str(e.detail), e.status)
         qp = request.query_params
         return _item_files_section(
             entity_id, item, show_preview=_item_files_preview(request),
@@ -4842,15 +4842,11 @@ function celerpPrintLabel(entityId, templateId) {
             from starlette.responses import Response as _R
             return _R(str(e.detail), status_code=e.status)
         content_type = resp.headers.get("content-type", "application/octet-stream")
-        cd = resp.headers.get("content-disposition", "")
-        filename = "download"
-        if "filename=" in cd:
-            filename = cd.split("filename=")[-1].strip('"').strip("'")
         from starlette.responses import Response as _R
         return _R(
             content=resp.content,
             media_type=content_type,
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            headers={"Content-Disposition": api.file_disposition(resp, "inline")},
         )
 
     # ── List thumbnail column: upload into the cell, serve the preview ─────────

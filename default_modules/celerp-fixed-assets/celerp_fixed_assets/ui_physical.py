@@ -8,20 +8,20 @@ from urllib.parse import quote, urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.files import files_section, linked_files
+from ui.components.files import files_error, files_section, files_session_expired, linked_files
 from ui.components.shell import page_header, toast_header
-from ui.components.table import EMPTY, breadcrumbs
+from ui.components.table import EMPTY, breadcrumbs, empty_state_cta
 from ui.config import get_claims, get_role
-from ui.config import get_token as _token
 from ui.i18n import t
 
 from celerp_fixed_assets.files import ASSET_FILE_TAGS
 from celerp_fixed_assets.setup import today_in
-from celerp_fixed_assets.ui_routes import _STACK, _error_text, _field, _hx_write, _input, _page, _refused, _text
+from celerp_fixed_assets.ui_routes import (_STACK, _error_box, _error_text, _field, _hx_write, _input, _page,
+                                           _refuse_if_switched, _refused, _send, _send_form, _text, _token)
 
 _CHECKS = "/fixed-assets/checks"
 
@@ -133,24 +133,29 @@ def setup_physical_routes(app) -> None:
 
     # ── Files on an asset ────────────────────────────────────────────────────
 
+    async def _files_refusal(request: Request, e: APIError):
+        """An error status, so the Files section on the page is left as it is and shows this in its
+        notice, with the way back when the refusal names one."""
+        return files_error(await _error_box(request, e), e.status)
+
     async def _file_write(request: Request, asset_id: str, method: str, suffix: str, data: dict | None = None,
                           files: dict | None = None):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         try:
-            await api.fixed_assets_form(token, method, f"/assets/{quote(asset_id, safe=':')}/files{suffix}",
-                                        data or {}, files=files)
+            await _send_form(token, method, f"/assets/{quote(asset_id, safe=':')}/files{suffix}", data or {},
+                             files=files)
             return await _files_fragment(token, asset_id)
         except APIError as e:
-            return P(_error_text(e), cls="cell-error")
+            return await _files_refusal(request, e)
 
     @app.post("/fixed-assets/assets/{asset_id}/files")
     async def asset_file_upload(request: Request, asset_id: str):
         form = await request.form()
         file = form.get("file")
         if not hasattr(file, "read"):
-            return P(t("msg.upload_failed"), cls="cell-error")
+            return files_error(t("msg.upload_failed"))
         payload = {"file": (file.filename or "upload", await file.read(), file.content_type or "application/octet-stream")}
         return await _file_write(request, asset_id, "POST", "", {"document_tag": str(form.get("document_tag") or "")},
                                  files=payload)
@@ -176,12 +181,13 @@ def setup_physical_routes(app) -> None:
                                   tag_filter: str = "", date_from: str = "", date_to: str = "", search: str = ""):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         try:
+            await _refuse_if_switched(token)
             return await _files_fragment(token, asset_id, page=page, sort_dir=sort_dir, tag_filter=tag_filter,
                                          date_from=date_from, date_to=date_to, search=search)
         except APIError as e:
-            return P(_error_text(e), cls="cell-error")
+            return await _files_refusal(request, e)
 
     async def _download(request: Request, path: str):
         token = _token(request)
@@ -209,7 +215,8 @@ def setup_physical_routes(app) -> None:
             items = (await api.fixed_assets_get(token, "/mine"))["items"]
         except APIError as e:
             return await _refused(request, e, "fixed_assets.mine_title")
-        body = [_mine_card(a) for a in items] or [P(t("fixed_assets.mine_empty"), cls="form-hint")]
+        body = [_mine_card(a) for a in items] or [empty_state_cta(
+            t("fixed_assets.mine_empty"), t("fixed_assets.mine_back"), "/", hint=t("fixed_assets.mine_empty_hint"))]
         return await _page(request, page_header(t("fixed_assets.mine_title")),
                            P(t("fixed_assets.mine_hint"), cls="settings-hint"), *body,
                            title_key="fixed_assets.mine_title", nav="my_assets")
@@ -248,8 +255,8 @@ def setup_physical_routes(app) -> None:
         files = ({"photo": (photo.filename, await photo.read(), photo.content_type or "application/octet-stream")}
                  if hasattr(photo, "read") and photo.filename else None)
         try:
-            await api.fixed_assets_form(token, "POST", f"/mine/{quote(asset_id, safe=':')}/problems",
-                                        {"text": str(form.get("text") or "")}, files=files)
+            await _send_form(token, "POST", f"/mine/{quote(asset_id, safe=':')}/problems",
+                             {"text": str(form.get("text") or "")}, files=files)
         except APIError as e:
             return Response(headers=toast_header(_error_text(e), "error", persist=True))
         return Response(headers={"HX-Redirect": "/fixed-assets/mine", **toast_header(t("fixed_assets.problem_sent"))})
@@ -298,13 +305,14 @@ def setup_physical_routes(app) -> None:
             return Response(status_code=401)
         tag = str((await request.form()).get("tag") or "")
         try:
-            check = await api.fixed_assets_send(token, "POST", "/checks", {"tag": tag})
+            check = await _send(token, "POST", "/checks", {"tag": tag})
             checks = (await api.fixed_assets_get(token, "/checks"))["items"]
         except APIError as e:
             return Response(status_code=204, headers=toast_header(_error_text(e), "error", persist=True))
         return Response(to_xml(_checks_list(checks, str(get_claims(request).get("sub", "")))),
-                        headers=toast_header(t("fixed_assets.check_already" if check.get("already")
-                                               else "fixed_assets.check_recorded", number=check["number"])))
+                        headers=toast_header(t("fixed_assets.check_already", number=check["number"]), "info")
+                        if check.get("already")
+                        else toast_header(t("fixed_assets.check_recorded", number=check["number"])))
 
     @app.delete(f"{_CHECKS}/{{check_id}}")
     async def remove_check(request: Request, check_id: str):
@@ -332,7 +340,7 @@ def setup_physical_routes(app) -> None:
 
     @app.get(f"{_CHECKS}/not-seen/print")
     async def not_seen_print(request: Request, since: str = ""):
-        from ui.components.report_kit import plain_error_response, print_shell
+        from ui.components.report_kit import print_shell
 
         token = _token(request)
         if not token:
@@ -341,6 +349,6 @@ def setup_physical_routes(app) -> None:
             items = await _not_seen(token, since)
             company = await api.get_company(token)
         except APIError as e:
-            return plain_error_response(e)
+            return await _refused(request, e, "fixed_assets.checks_title")
         return print_shell(company, t("fixed_assets.not_seen_title"), t("fixed_assets.not_seen_since_date", date=since),
                            _not_seen_table(items))

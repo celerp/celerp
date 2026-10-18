@@ -120,7 +120,7 @@ def test_j1_the_account_picker_offers_only_postable_accounts_and_saves_a_pick(pa
     cell = page.locator(f'td[hx-get="/settings/fixed-assets/classes/{vehicles}/asset_account/edit"]')
 
     # 1200 is a header with accounts under it: no journal line can post to it, so it is not offered.
-    cell.dblclick()
+    cell.click()
     box = page.locator("td.cell--editing .combobox-input").first
     box.click()
     box.fill("1200 ")
@@ -213,13 +213,24 @@ def _choose(page: Page, name: str, text: str) -> None:
     page.locator(".combobox-option:visible", has_text=text).first.click()
 
 
+def test_an_asset_files_tag_filter_is_searched_and_refreshes_the_list(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    van = _contributed(c, "Delivery van")
+    page.goto(f"/fixed-assets/assets/{van}")
+    with page.expect_response(lambda r: "/_section" in r.url and "tag_filter=warranties" in r.url):
+        _choose(page, "tag_filter", "Warrant")
+    expect(page.locator(".combobox-wrap:has(input[name='tag_filter']) .combobox-input")).to_have_value(
+        re.compile("Warrant"))
+
+
 def test_j4_locked_date_is_refused_and_the_first_open_date_saves(page: Page, fresh_company):
     c = fresh_company
     _started(c)
     _ok(c.post("/accounting/period-lock", json={"lock_date": "2026-03-31"}))
 
     page.goto("/fixed-assets")
-    page.get_by_role("link", name="Add asset").click()
+    page.locator(".page-header").get_by_role("link", name="Add asset").click()
     page.get_by_role("link", name="Contributed or acquired without a bill").click()
     page.locator("input[name=name]").fill("Owner's car")
     _choose(page, "class_id", "Vehicles")
@@ -263,7 +274,7 @@ def test_j5_bad_import_rows_are_fixed_in_the_grid_and_imported(page: Page, fresh
         review.locator(f"input[name=exclude][value='{n}']").check()
         expect(review.locator("tr.import-row--excluded")).to_have_count(done, timeout=20000)
     with page.expect_navigation(url="**/fixed-assets/imports/**"):
-        review.get_by_role("button", name="Import All 1 Rows").click()
+        review.get_by_role("button", name="Import 1 Row").click()
     expect(page.locator("#fa-import-imported tbody tr")).to_have_count(1)
 
     page.locator("input[name='v.2.class']").fill("Buildings")
@@ -643,8 +654,10 @@ def test_j6_labels_off_asks_an_admin_and_the_admin_turns_it_on_and_prints(page: 
     _started(c)
     car = _contributed(c, "Owner's car")
     number = _ok(c.get(f"{API}/assets/{car}"))["number"]
-    # The company chooses its own modules: fixed assets and what it needs, not Labels.
+    # The company chooses its own modules: it starts from everything the server loads, so it
+    # turns Labels off.
     _ok(c.post("/companies/me/modules/celerp-fixed-assets/enable"))
+    _ok(c.post("/companies/me/modules/celerp-labels/disable"))
     assert "celerp-labels" not in _ok(c.get("/companies/me"))["settings"]["enabled_modules"]
     owner = page.context.cookies()
 
@@ -779,7 +792,9 @@ def test_j9_stale_move_form_asks_for_a_new_review_and_the_move_succeeds(page: Pa
     _operate(c, f"/assets/{car}/move", {"date": "2026-01-20", "location_id": office})
 
     page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
-    expect(page.locator("#fa-preview .flash--error")).to_contain_text("changed since you reviewed it")
+    stale = page.locator("#fa-preview .flash--error")
+    expect(stale).to_contain_text("FA-0001 (Moved) changed since you reviewed it.")
+    expect(stale.get_by_role("link", name="FA-0001")).to_have_attribute("href", f"/fixed-assets/assets/{car}")
     page.locator("#fa-preview").get_by_role("button", name="Review again").click()
     with page.expect_navigation(url=f"**/fixed-assets/assets/{car}"):
         page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
@@ -788,18 +803,65 @@ def test_j9_stale_move_form_asks_for_a_new_review_and_the_move_succeeds(page: Pa
     expect(page.locator("main")).to_contain_text("North store")
 
 
+def test_a_slow_review_or_confirm_disables_its_button_and_says_it_is_working(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _ok(c.post("/companies/me/locations", json={"name": "North store", "type": "warehouse"}))
+    car = _contributed(c, "Owner's car")
+    page.goto(f"/fixed-assets/assets/{car}/move")
+    page.locator("input[name=date]").fill("2026-02-01")
+    _choose(page, "location_id", "North store")
+    for step, button, working in (("review", page.get_by_role("button", name="Review", exact=True), "Reviewing..."),
+                                  ("confirm", page.locator("#fa-preview").get_by_role("button", name="Confirm"),
+                                   "Confirming...")):
+        held = []
+        page.route(f"**/fixed-assets/op/move/{step}", lambda route: held.append(route))
+        cue = button.locator("xpath=..").get_by_text(working)
+        expect(cue).to_have_css("opacity", "0")
+        button.click()
+        expect(button).to_be_disabled()
+        expect(cue).to_have_css("opacity", "1")
+        if step == "confirm":
+            with page.expect_navigation(url=f"**/fixed-assets/assets/{car}"):
+                held[0].continue_()
+            break
+        held[0].continue_()
+        expect(page.locator("#fa-preview")).to_contain_text("North store")
+        expect(button).to_be_enabled()
+        expect(cue).to_have_css("opacity", "0")
+    expect(page.locator("main")).to_contain_text("North store")
+
+
+def test_a_run_through_a_month_not_ended_offers_the_latest_one_in_one_click(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _contributed(c, "Owner's car")
+    page.goto("/fixed-assets/runs")
+    month = page.locator("input[name=month]")
+    latest = month.input_value()
+    year, number = map(int, latest.split("-"))
+    current = f"{year + 1}-01" if number == 12 else f"{year}-{number + 1:02d}"
+    month.fill(current)
+    page.get_by_role("button", name="Review", exact=True).click()
+    refusal = page.locator("#fa-preview .flash--error")
+    expect(refusal).to_contain_text(f"{current} has not ended yet.")
+    refusal.get_by_role("button", name=f"Review through {latest}").click()
+    expect(month).to_have_value(latest)
+    preview = page.locator("#fa-preview")
+    expect(preview).to_contain_text("Owner's car")
+    # A review of several months is confirmed from its summary or from its end.
+    expect(preview.get_by_role("button", name="Confirm").last).to_be_visible()
+
+
 def test_j10_revalue_on_a_cost_class_starts_the_class_workflow_and_revalues_it(page: Page, fresh_company):
     c = fresh_company
     _started(c)
     first, second = (_contributed(c, f"Building {n}", cost="48000", on="2026-01-01", cls="Buildings") for n in "AB")
 
     page.goto(f"/fixed-assets/assets/{first}/remeasure")
-    page.locator("input[name=date]").fill("2026-03-31")
-    page.locator("input[name=fair_value]").fill("50000")
-    page.get_by_role("button", name="Review", exact=True).click()
-    expect(page.locator("#fa-preview .flash--error")).to_contain_text(
-        "This class uses the cost model. Change class to revaluation revalues all 2 assets in it on one date.")
-    page.locator(".flash--warning").get_by_role("link", name="Change class to revaluation").click()
+    expect(page.locator("main")).to_contain_text("This asset's class uses the cost model, so its assets are not revalued.")
+    expect(page.locator("input[name=fair_value]")).to_have_count(0)
+    page.get_by_role("link", name="Change class to revaluation").click()
     page.wait_for_url("**/fixed-assets/classes/**/revalue")
     expect(page.locator("h1")).to_contain_text("Change Buildings to revaluation")
     page.locator("input[name=date]").fill("2026-03-31")
@@ -935,7 +997,7 @@ def test_j14_import_with_the_module_off_turns_it_on_and_imports(page: Page, fres
     page.locator("#csv-preview-btn").click()
     page.get_by_role("button", name="Continue to Preview").click()
     with page.expect_navigation(url="**/fixed-assets/imports/**"):
-        page.locator("#import-preview").get_by_role("button", name="Import All 1 Rows").click()
+        page.locator("#import-preview").get_by_role("button", name="Import 1 Row").click()
     expect(page.locator("#fa-import-imported tbody tr")).to_have_count(1)
     assert [a["name"] for a in _ok(c.get(f"{API}/assets"))["items"]] == ["Warehouse"]
 
@@ -1385,3 +1447,137 @@ def test_j21_bill_line_account_is_kept_and_the_finalized_bill_leads_to_registeri
     expect(page.locator("main")).to_contain_text(f"registered as {roaster['number']}")
     expect(page.get_by_role("link", name=roaster["number"])).to_have_attribute(
         "href", f"/fixed-assets/assets/{roaster['id']}")
+
+
+# Every column checked against what it holds: a header over figures sits right, over them; any
+# other header is centred; a figure is right-aligned and any other value left. The header grid
+# follows rowspan and colspan, so a column under a grouped header is matched to its own label.
+_MISALIGNED = """table => {
+  const grid = [], heads = [...table.tHead.rows];
+  heads.forEach((row, r) => { let col = 0; grid[r] = grid[r] || [];
+    for (const th of row.cells) {
+      while (grid[r][col]) col++;
+      for (let dr = 0; dr < th.rowSpan; dr++) for (let dc = 0; dc < th.colSpan; dc++) {
+        (grid[r + dr] = grid[r + dr] || [])[col + dc] = th; }
+      col += th.colSpan; } });
+  const own = grid[grid.length - 1] || [], out = [];
+  const figure = /^[-+(]?[^\\d\\s]{0,4}\\s?[\\d,]+(\\.\\d+)?\\)?%?$/;
+  const is = (el, side) => { const a = getComputedStyle(el).textAlign;
+    return a === side || (side === "left" && a === "start") || (side === "right" && a === "end"); };
+  own.forEach((th, i) => {
+    const cells = [...table.tBodies[0].rows].map(r => r.cells[i]).filter(c => c && c.colSpan === 1
+      && !c.querySelector("input, select, button, details") && c.innerText.trim() && c.innerText.trim() !== "--");
+    if (!cells.length) return;
+    const num = cells.every(c => figure.test(c.innerText.trim()));
+    if (th.colSpan === 1 && th.innerText.trim() && !is(th, num ? "right" : "center"))
+      out.push(`header ${th.innerText.trim()}: ${getComputedStyle(th).textAlign}`);
+    cells.forEach(c => { if (!is(c, num ? "right" : "left"))
+      out.push(`${th.innerText.trim()} ${c.innerText.trim()}: ${getComputedStyle(c).textAlign}`); }); });
+  return out; }"""
+
+
+def test_u32_settings_classes_and_the_import_review_align_headers_and_values_by_what_they_hold(
+        page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    page.goto("/settings/fixed-assets")
+    assert page.locator("#fa-classes table").evaluate(_MISALIGNED) == []
+    page.goto("/fixed-assets/import")
+    page.locator("input[type='file']").first.set_input_files(
+        {"name": "register.csv", "mimeType": "text/csv", "buffer": _REGISTER})
+    page.locator("#csv-preview-btn").click()
+    page.get_by_role("button", name="Continue to Preview").click()
+    rows = page.locator("#import-preview table:has-text('Warehouse')")
+    expect(rows).to_be_visible()
+    assert rows.evaluate(_MISALIGNED) == []
+
+
+def test_u39_a_done_toast_steps_aside_for_the_next_action(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    _operate(c, f"/assets/{car}/sell", {"date": "2026-05-20", "price": "10000", "contact_id": _buyer(c)})
+    page.goto(f"/fixed-assets/assets/{car}")
+    page.get_by_role("button", name="Cancel the sale").click()
+    with page.expect_navigation():
+        page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
+    done = page.locator(".toast-container .toast", has_text="Sale cancelled.")
+    expect(done).to_have_count(1)
+    # The next action on the same page answers on its own, without the last one's toast beside it.
+    with page.expect_response(lambda r: r.request.method == "POST" and "/fixed-assets/" in r.url):
+        page.get_by_role("button", name="Undo registration").click()
+    expect(done).to_have_count(0)
+
+
+def test_u33_opening_balances_fit_a_phone_with_finish_in_reach(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _operate(c, "/assets", {"kind": "opening", "class_id": _classes(c)["Buildings"]["id"], "name": "Warehouse",
+                            "available_date": "2020-01-01", "cost": "250000", "accumulated_depreciation": "40000"})
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto("/fixed-assets/opening")
+    # The page never scrolls sideways; a wide table scrolls inside its own box.
+    assert page.evaluate("document.documentElement.scrollWidth") <= 390
+    finish = page.get_by_role("button", name="Finish").bounding_box()
+    assert finish["x"] >= 0 and finish["x"] + finish["width"] <= 390, finish
+
+
+def test_u30_the_register_follows_its_search_as_it_is_typed(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    _contributed(c, "Delivery van")
+    _contributed(c, "Forklift")
+    page.goto("/fixed-assets")
+    rows = page.locator("main table.data-table tbody tr")
+    expect(rows).to_have_count(2)
+    page.locator("main input[name=q]").press_sequentially("Fork")
+    expect(rows).to_have_count(1)
+    expect(rows.first).to_contain_text("Forklift")
+    expect(page).to_have_url(re.compile(r"[?&]q=Fork"))
+    page.locator("main input[name=q]").fill("")
+    expect(rows).to_have_count(2)
+
+
+def test_u27_a_long_first_run_opens_with_its_summary_and_confirm(page: Page, fresh_company):
+    c = fresh_company
+    _started(c, first="2025-01-01")
+    _contributed(c, "Owner's car", on="2025-01-15")
+    page.goto("/fixed-assets/runs")
+    expect(page.locator(".empty-state-cta")).to_be_visible()
+    page.locator("input[name=month]").fill("2026-06")
+    page.get_by_role("button", name="Review", exact=True).click()
+    preview = page.locator("#fa-preview")
+    expect(preview).to_contain_text("2025-01 to 2026-06")
+    # Months, assets and the total come first, with Confirm in reach before the months below.
+    confirm = preview.get_by_role("button", name="Confirm").first
+    first_month = preview.locator(".form-subtitle").first
+    assert confirm.bounding_box()["y"] < first_month.bounding_box()["y"]
+    expect(page.locator(".empty-state-cta")).to_be_hidden()
+    confirm.click()
+    page.wait_for_url("**/fixed-assets/runs")
+    expect(page.locator("main")).to_contain_text("2026-06")
+
+
+def test_u35_headings_clear_what_is_above_them_values_sit_by_their_labels_and_filter_lines_up(page: Page, fresh_company):
+    c = fresh_company
+    _started(c)
+    car = _contributed(c, "Owner's car")
+    _reconciled(page)
+    main = page.locator("main")
+    box, button = main.locator("input[name=at]").bounding_box(), main.get_by_role("button", name="Filter").bounding_box()
+    assert abs((box["y"] + box["height"] / 2) - (button["y"] + button["height"] / 2)) <= 2, (box, button)
+
+    def gap(above, below) -> float:
+        a, b = above.bounding_box(), below.bounding_box()
+        return b["y"] - (a["y"] + a["height"])
+
+    headings = main.locator(".section-title")
+    assert gap(main.locator("#fa-recon-status"), headings.nth(0)) >= 12
+    assert gap(main.locator("#fa-recon-accounts"), headings.nth(1)) >= 12
+
+    page.goto(f"/fixed-assets/assets/{car}")
+    for table in page.locator(".detail-table").all():
+        label, whole = table.locator("th[scope=row]").first.bounding_box(), table.bounding_box()
+        assert label["width"] < whole["width"] / 2, (label, whole)
+    money = page.locator(".detail-table td.cell--number").first
+    assert money.evaluate("e => getComputedStyle(e).textAlign") in ("left", "start")

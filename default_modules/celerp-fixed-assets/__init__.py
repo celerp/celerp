@@ -55,7 +55,7 @@ PLUGIN_MANIFEST = {
             "label_key": "fixed_assets.asset_tags",
             "keys": ["number", "tag", "name", "class", "location", "in_service", "barcode"],
             "preset": {
-                "name": "Asset tag",
+                "name": "fixed_assets.asset_tag",
                 "format": "50x25mm",
                 "orientation": "portrait",
                 "fields": [
@@ -76,7 +76,8 @@ PLUGIN_MANIFEST = {
             "permission": "view_fixed_assets",
         },
         "projection_handler": [
-            {"prefix": "fa.", "handler": "celerp_fixed_assets.projections:apply_fixed_asset_event"},
+            {"prefix": "fa.", "handler": "celerp_fixed_assets.projections:apply_fixed_asset_event",
+             "permission": "view_fixed_assets"},
         ],
         # A demo company's sample data includes a few asset bills to register.
         "demo_records": {"handler": "celerp_fixed_assets.demo:seed_demo_assets_hook"},

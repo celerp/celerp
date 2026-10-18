@@ -29,6 +29,7 @@ from company_backup_support import token
 from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
 from test_company_reset_payments import (_PAYMENT, BOOKS, _Cloud, _harbor, _invoice, _paid, _pay_by_hand,
                                          _reset, _system_recovery, _unmatched)
+from test_system_recovery_exact import _migration_history  # noqa: F401
 from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio

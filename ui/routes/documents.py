@@ -22,6 +22,7 @@ import ui.api_client as api
 from ui.components.icons import import_icon
 from ui.api_client import APIError, error_message
 from celerp.accounting_roles import account_label
+from celerp.downloads import content_disposition
 from celerp.services.units import (
     DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, line_receive_kind, quantity_step,
 )
@@ -40,7 +41,7 @@ from ui.module_slots import connected_connector_ids, required_connectors, visibl
 from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
-from ui.components.files import files_section as _shared_doc_files_section
+from ui.components.files import files_error, files_section as _shared_doc_files_section, files_session_expired
 from ui.components.operation_key import (
     operation_key_attrs, operation_key_input, operation_key_vals, required_operation_key, submitted_operation_key,
 )
@@ -1947,7 +1948,7 @@ def setup_routes(app):
         return _Resp(
             content=buf.getvalue(),
             media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{doc_ref}_items.csv"'},
+            headers={"Content-Disposition": content_disposition("attachment", f"{doc_ref}_items.csv")},
         )
 
     @app.get("/docs/{entity_id}/items/csv")
@@ -4125,15 +4126,11 @@ celerpUpdateBulkAlloc();
     async def doc_upload_file(request: Request, entity_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         form = await request.form()
         file = form.get("file")
         if not file or not hasattr(file, "read"):
-            try:
-                doc = await api.get_doc(token, entity_id)
-            except APIError:
-                doc = {"entity_id": entity_id}
-            return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
+            return files_error(t("msg.no_file_provided"))
         description = str(form.get("description", "")).strip()
         document_tag = str(form.get("document_tag", "")).strip()
         content = await file.read()
@@ -4143,47 +4140,47 @@ celerpUpdateBulkAlloc();
             await api.upload_doc_file(token, entity_id, content, filename, content_type, description, document_tag)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(error_message(e))
+            return files_error(error_message(e), e.status)
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.delete("/docs/{entity_id}/files/{file_id}")
     async def doc_delete_file(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         try:
             await api.delete_doc_file(token, entity_id, file_id)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(error_message(e))
+            return files_error(error_message(e), e.status)
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.post("/docs/{entity_id}/files/{file_id}/tag")
     async def doc_tag_file(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         form = await request.form()
         document_tag = str(form.get("document_tag", "")).strip()
         try:
             await api.tag_doc_file(token, entity_id, file_id, document_tag)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(error_message(e))
+            return files_error(error_message(e), e.status)
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.post("/docs/{entity_id}/files/{file_id}/description")
     async def doc_patch_file_description(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         form = await request.form()
         description = str(form.get("description", "")).strip()
         try:
             await api.patch_doc_file_description(token, entity_id, file_id, description)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(error_message(e))
+            return files_error(error_message(e), e.status)
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.get("/docs/{entity_id}/history")
@@ -4245,12 +4242,12 @@ celerpUpdateBulkAlloc();
     async def doc_files_section(request: Request, entity_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return files_session_expired()
         qp = request.query_params
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(error_message(e))
+            return files_error(error_message(e), e.status)
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc),
             page=int(qp.get("page", "1") or "1"),
             sort_dir=qp.get("sort_dir", "desc"),

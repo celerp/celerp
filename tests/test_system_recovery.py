@@ -45,7 +45,7 @@ def _key() -> str:
 
 def _archive(path, *, dump: bytes = b"PGDUMP", meta: dict | None = None, members: tuple = ("database.dump", "meta.json")):
     """A whole-installation archive in the .celerp-backup layout."""
-    meta = {"pg_version": "unknown", "company_name": "Harbor Goods Ltd", "enabled_modules": [], **(meta or {})}
+    meta = {"pg_version": "unknown", "enabled_modules": [], **(meta or {})}
     with tarfile.open(path, "w:gz") as tar:
         for name, body in (("database.dump", dump), ("meta.json", json.dumps(meta).encode())):
             if name in members:
@@ -93,6 +93,7 @@ def _import_internals(monkeypatch, tmp_path, *, safety_error: str | None = None)
     monkeypatch.setattr(backup, "check_backup_dump", lambda path, url: None)
     monkeypatch.setattr(backup, "write_restore_script", shutil.copyfile)
     monkeypatch.setattr(ownership, "connector_maintenance_guard", _guard)
+    monkeypatch.setattr(backup_import, "_refuse_unrecorded_history", lambda path: None)
     for name in ("_reconcile_connectors", "_dispose_engine", "_reconcile_schema",
                  "_clear_restored_connector_state"):
         monkeypatch.setattr(backup_import, name, _none)
@@ -239,6 +240,19 @@ async def test_legacy_import_api_install_owner_only(real_client, real_engine, tm
     run.assert_not_called()
 
 
+async def test_import_success_names_no_made_up_company(real_client, real_engine, tmp_path, monkeypatch):
+    """A whole-installation backup belongs to no one company, so the success message
+    names none, rather than "Imported backup from unknown"."""
+    from celerp.services import backup_import
+    monkeypatch.setattr(backup_import, "run_recovery", AsyncMock(return_value=_result()))
+    _, _, tok = await _install_owner(real_engine)
+    archive = _archive(tmp_path / "whole.celerp-backup").read_bytes()
+    r = await real_client.post("/backup/import", files={"file": ("whole.celerp-backup", archive)}, headers=auth(tok))
+    assert r.status_code == 200, r.text
+    assert "Backup imported." in r.text
+    assert "unknown" not in r.text
+
+
 async def test_export_disk_full_shows_plain_message(real_client, real_engine, tmp_path, monkeypatch):
     """A disk that fills while the export archive is written refuses with a plain message
     and leaves no half-written archive behind."""
@@ -289,7 +303,7 @@ async def test_system_recovery_continue_install_owner_only(ui, real_client, real
     ui.cookies.set("celerp_token", tok)
     r = await ui.post("/backup/import", files={"file": ("whole.celerp-backup", archive, "application/octet-stream")})
     assert r.status_code in (200, 403)
-    assert "Imported backup" not in r.text
+    assert "Backup imported." not in r.text
     r = await ui.post("/backup/restore/snap-1")
     assert r.status_code in (200, 403)
     assert "Database restored" not in r.text
@@ -406,7 +420,7 @@ async def test_cloud_snapshot_relay_payload_unchanged(tmp_path, monkeypatch):
 
     async def _meta():
         return {"celerp_version": running_version(), "pg_version": "16", "created_at": "2026-09-29T02:00:00Z",
-                "company_name": "Harbor Goods Ltd", "enabled_modules": []}
+                "enabled_modules": []}
 
     monkeypatch.setattr(httpx, "AsyncClient", _client)
     monkeypatch.setattr(backup_repo, "_relay", _relay)
@@ -451,7 +465,7 @@ async def test_cloud_snapshot_relay_payload_unchanged(tmp_path, monkeypatch):
         with tarfile.open(path, "r:gz") as tar:
             assert tar.extractfile("database.dump").read() == dump
             assert tar.extractfile("attachments/receipt.pdf").read() == b"RECEIPT"
-            assert json.loads(tar.extractfile("meta.json").read())["company_name"] == "Harbor Goods Ltd"
+            assert json.loads(tar.extractfile("meta.json").read())["created_at"] == "2026-09-29T02:00:00Z"
     finally:
         path.unlink(missing_ok=True)
 
@@ -520,7 +534,7 @@ async def test_system_recovery_continues_when_safety_point_fails(real_client, re
     assert r.status_code == 200, r.text
     assert calls["restore"] == []
     assert SAFETY_WARNING in r.text
-    assert "Imported backup" not in r.text and "Import failed" not in r.text
+    assert "Backup imported." not in r.text and "Import failed" not in r.text
     button = re.search(r'<button[^>]*hx-post="/backup/import/continue"[^>]*>', r.text)
     assert button, r.text
     match = re.search(r"""hx-vals=(["'])(.*?)\1""", button.group(0))

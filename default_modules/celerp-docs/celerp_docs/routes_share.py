@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
 from celerp.db import get_session
+from celerp.downloads import content_disposition
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken, is_active as share_is_active
@@ -723,7 +724,7 @@ async def download_share_bundle(
         content=json.dumps(bundle, default=str),
         media_type="application/json",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": content_disposition("attachment", filename),
             "Access-Control-Allow-Origin": "*",
         },
     )

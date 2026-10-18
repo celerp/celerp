@@ -9,10 +9,10 @@ patchedDependencies:
     hash: 65fps4cm74pnxh4zvhdjtraxui
     path: patches/@electron__universal@2.0.1.patch
   app-builder-lib@25.1.8:
-    hash: f7ldcjrhu6ephhdmcpvo42mz6u
+    hash: v5qqdg72kqp4pq5ugq2bi6jrtm
     path: patches/app-builder-lib@25.1.8.patch
   embedded-postgres@17.9.0-beta.16:
-    hash: vbkgyurwv53qfixwq6grwcr3z4
+    hash: drl7qbkifwzmpe23kz2pqmi77a
     path: patches/embedded-postgres@17.9.0-beta.16.patch
 
 importers:
@@ -30,7 +30,7 @@ importers:
         version: 6.8.3
       embedded-postgres:
         specifier: ^17.9.0-beta.16
-        version: 17.9.0-beta.16(patch_hash=vbkgyurwv53qfixwq6grwcr3z4)
+        version: 17.9.0-beta.16(patch_hash=drl7qbkifwzmpe23kz2pqmi77a)
     devDependencies:
       electron:
         specifier: ^30.0.0
@@ -3234,7 +3234,7 @@ snapshots:
 
   app-builder-bin@5.0.0-alpha.10: {}
 
-  app-builder-lib@25.1.8(patch_hash=f7ldcjrhu6ephhdmcpvo42mz6u)(dmg-builder@25.1.8(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8)))(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8)):
+  app-builder-lib@25.1.8(patch_hash=v5qqdg72kqp4pq5ugq2bi6jrtm)(dmg-builder@25.1.8(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8)))(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8)):
     dependencies:
       '@develar/schema-utils': 2.6.5
       '@electron/notarize': 2.5.0
@@ -3683,7 +3683,7 @@ snapshots:
 
   dmg-builder@25.1.8(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8)):
     dependencies:
-      app-builder-lib: 25.1.8(patch_hash=f7ldcjrhu6ephhdmcpvo42mz6u)(dmg-builder@25.1.8(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8)))(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8))
+      app-builder-lib: 25.1.8(patch_hash=v5qqdg72kqp4pq5ugq2bi6jrtm)(dmg-builder@25.1.8(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8)))(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8))
       builder-util: 25.1.7
       builder-util-runtime: 9.2.10
       fs-extra: 10.1.0
@@ -3728,7 +3728,7 @@ snapshots:
 
   electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8):
     dependencies:
-      app-builder-lib: 25.1.8(patch_hash=f7ldcjrhu6ephhdmcpvo42mz6u)(dmg-builder@25.1.8(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8)))(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8))
+      app-builder-lib: 25.1.8(patch_hash=v5qqdg72kqp4pq5ugq2bi6jrtm)(dmg-builder@25.1.8(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8)))(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8))
       archiver: 5.3.2
       builder-util: 25.1.7
       fs-extra: 10.1.0
@@ -3739,7 +3739,7 @@ snapshots:
 
   electron-builder@25.1.8(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8)):
     dependencies:
-      app-builder-lib: 25.1.8(patch_hash=f7ldcjrhu6ephhdmcpvo42mz6u)(dmg-builder@25.1.8(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8)))(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8))
+      app-builder-lib: 25.1.8(patch_hash=v5qqdg72kqp4pq5ugq2bi6jrtm)(dmg-builder@25.1.8(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8)))(electron-builder-squirrel-windows@25.1.8(dmg-builder@25.1.8))
       builder-util: 25.1.7
       builder-util-runtime: 9.2.10
       chalk: 4.1.2
@@ -3789,7 +3789,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  embedded-postgres@17.9.0-beta.16(patch_hash=vbkgyurwv53qfixwq6grwcr3z4):
+  embedded-postgres@17.9.0-beta.16(patch_hash=drl7qbkifwzmpe23kz2pqmi77a):
     dependencies:
       async-exit-hook: 2.0.1
       pg: 8.20.0

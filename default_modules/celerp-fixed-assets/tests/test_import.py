@@ -320,6 +320,8 @@ async def test_j5_wizard_upload_review_import(fa):
             "map__Depreciation to date": "accumulated_depreciation"}
     review = await fa._ui("POST", "/fixed-assets/import/mapped", data=form, follow_redirects=True)
     assert review.status_code == 200 and "Garages" in review.text
+    # Nothing is imported yet, so the review says what the import will do, not what it did.
+    assert t("fixed_assets.import_rows_as_at", cutover=cut) in review.text
     draft_ref = str(review.url).rsplit("/", 1)[1]
     revision = review.text.split('name="revision" value="', 1)[1].split('"', 1)[0]
     excluded = await fa.submit("/fixed-assets/import/review", {"csv_ref": draft_ref, "revision": revision,

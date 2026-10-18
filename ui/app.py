@@ -248,11 +248,17 @@ class TokenRefreshMiddleware:
                 _make_set_cookie(REFRESH_COOKIE_NAME, new_refresh, True, REFRESH_COOKIE_MAX_AGE, secure, "lax"),
             ]
 
+            session_cookie = f"{COOKIE_NAME}=".encode()
+
             async def send_with_cookies(message):
                 if message["type"] == "http.response.start":
                     headers = list(message.get("headers", []))
-                    for cookie_val in extra_cookies:
-                        headers.append((b"set-cookie", cookie_val.encode()))
+                    # A route that opened another session (company switch, a restored
+                    # company, login) set its own cookies; the refreshed old session
+                    # must not follow them, or the browser keeps the old one.
+                    if not any(k.lower() == b"set-cookie" and v.startswith(session_cookie) for k, v in headers):
+                        for cookie_val in extra_cookies:
+                            headers.append((b"set-cookie", cookie_val.encode()))
                     message = {**message, "headers": headers}
                 await send(message)
 

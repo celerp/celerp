@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from company_backup_support import company, owner, token
+from test_helpers import released_migration_history
 from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
 
 from celerp.services.backup_import import _clear_restored_connector_state as _real_clear
@@ -64,6 +65,14 @@ SOURCE_FILES = {
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+@pytest.fixture(autouse=True)
+def _migration_history():
+    """Every installation records its migration history from its first start; the test
+    database, built without migrations, is given it, so its dumps are like a real one's."""
+    with released_migration_history() as head:
+        yield head
+
+
 def _add(tar: tarfile.TarFile, name: str, body: bytes) -> None:
     info = tarfile.TarInfo(name=name)
     info.size = len(body)
@@ -75,7 +84,7 @@ def _archive(path: Path, files: dict[str, bytes] | None = None, *, dump: bytes =
              version: str | None = None) -> Path:
     """A whole-installation archive in the .celerp-backup layout, made by Celerp *version*
     (None: an archive from before backups recorded their version)."""
-    meta = {"pg_version": "unknown", "company_name": "Harbor Goods Ltd", "enabled_modules": modules}
+    meta = {"pg_version": "unknown", "enabled_modules": modules}
     if version is not None:
         meta["celerp_version"] = version
     with tarfile.open(path, "w:gz") as tar:
@@ -115,9 +124,9 @@ def _closure(names: list[str]) -> list[str]:
 
 
 class _Recovery:
-    """Stubs the database side of a recovery (dump, dump check, pg_restore, schema reconcile, connector
-    and session steps) and records each step with whether writes were paused and the
-    connector maintenance guard held at that moment."""
+    """Stubs the database side of a recovery (dump, dump and history checks, pg_restore,
+    schema reconcile, connector and session steps) and records each step with whether
+    writes were paused and the connector maintenance guard held at that moment."""
 
     def __init__(self, tmp_path: Path, monkeypatch, *, real_database: bool = False):
         import celerp.connectors.ownership as ownership
@@ -187,6 +196,7 @@ class _Recovery:
 
         monkeypatch.setattr(backup, "dump_database", _dump)
         monkeypatch.setattr(backup, "check_backup_dump", lambda path, url: None)
+        monkeypatch.setattr(backup_import, "_refuse_unrecorded_history", lambda path: None)
         monkeypatch.setattr(backup, "write_restore_script", shutil.copyfile)
         monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
         monkeypatch.setattr(backup_import, "_dispose_engine", _none)
@@ -327,6 +337,17 @@ async def test_cloud_snapshot_meta_lists_every_company_module(rec, real_engine):
     await company(real_engine, user, "Beta Trading", "beta", settings={"enabled_modules": ["celerp-contacts"]})
     meta = await backup_export.archive_meta()
     assert sorted(meta["enabled_modules"]) == sorted(_closure(["celerp-contacts", "celerp-labels"]))
+
+
+async def test_full_backup_meta_names_no_single_company(rec, real_engine):
+    """A full backup holds the whole installation, so its metadata names no one
+    company: there is no field to fall back to a made-up name such as "unknown"."""
+    from celerp.services import backup_export
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await company(real_engine, user, "Beta Trading", "beta")
+    meta = await backup_export.archive_meta()
+    assert "company_name" not in meta
 
 
 async def test_old_backup_fallback_uses_every_company_module(rec, real_engine, tmp_path):
@@ -606,15 +627,16 @@ async def test_recovery_safety_archive_outside_restore_roots_and_survives_swap(r
 
 
 async def test_recovery_notice_names_safety_archive(rec, tmp_path):
-    """The result, the post-restore sign-in notice and the page all name the safety archive."""
+    """The result, the owner's post-restore notice and the page all name the safety archive."""
     from celerp.services import backup_import
     from celerp_backup.routes import _restore_flash
-    from ui.routes.auth import _restore_notice_message
+    from ui.components.shell import restore_outcome_parts
     result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup"))
     assert result.ok is True, result.error
     notice = json.loads((rec.data / "restore-notice.json").read_text())
     assert notice["safety_archive"] == result.safety_archive
-    assert result.safety_archive in _restore_notice_message(notice)
+    assert result.safety_archive in " ".join(
+        restore_outcome_parts("Restored.", notice["warnings"], notice["safety_archive"]))
     assert result.safety_archive in _restore_flash(result, "Restored.").body.decode()
 
 
@@ -896,6 +918,55 @@ async def test_streamed_export_round_trips_through_recovery(tmp_path, monkeypatc
     assert result.ok is True, result.error
     assert await _company_names(real_engine) == {"Alpha Trading"}
     assert attachment.read_bytes() == body
+
+
+async def _recovery_of_a_real_dump(tmp_path, monkeypatch, real_engine, history: str | None):
+    """System Recovery of a real dump taken while the database's migration history is
+    `history` (None: no history, as a database built without migrations has), before a
+    second company is added; this installation keeps its own history. Returns (result,
+    recorder)."""
+    from sqlalchemy import text
+
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    with released_migration_history():
+        async with real_engine.begin() as conn:
+            if history is None:
+                await conn.execute(text("DROP TABLE alembic_version"))
+            else:
+                await conn.execute(text("UPDATE alembic_version SET version_num = :v"), {"v": history})
+        source = await backup_export.export_full()
+    try:
+        await company(real_engine, user, "Beta Trading", "beta")
+        result = await backup_import.run_recovery(source)
+    finally:
+        source.unlink(missing_ok=True)
+    return result, rec
+
+
+async def test_recovery_refuses_a_backup_with_no_migration_history(tmp_path, monkeypatch, code_config,
+                                                                    real_engine):
+    """A dump of a database built without migrations is refused before anything is
+    changed: its schema could only be guessed, and a wrong guess fails after the
+    installation has been replaced."""
+    result, rec = await _recovery_of_a_real_dump(tmp_path, monkeypatch, real_engine, history=None)
+    assert result.ok is False
+    assert result.error == t("system_recovery.no_migration_history", "en")
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+    assert rec.safety_archives() == [] and rec.staging() == []
+    assert "reconcile" not in rec.names()
+
+
+async def test_recovery_refuses_a_backup_whose_migration_history_is_unknown(tmp_path, monkeypatch, code_config,
+                                                                            real_engine):
+    result, rec = await _recovery_of_a_real_dump(tmp_path, monkeypatch, real_engine, history="f00dfeed0001")
+    assert result.ok is False
+    assert result.error == t("system_recovery.unknown_migration", "en", revision="f00dfeed0001")
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+    assert rec.safety_archives() == [] and rec.staging() == []
 
 
 # ── A failed replacement is undone, or the installation stays closed ─────────
@@ -1224,6 +1295,132 @@ async def test_failed_recovery_does_not_revive_sessions(tmp_path, monkeypatch, c
     assert len(rec.safety_archives()) == 1
     assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 401
     assert backup_import.recovery_incomplete() is False
+
+
+# ── A failed recovery's outcome waits for the next sign-in ───────────────────
+
+async def test_failed_recovery_outcome_waits_for_the_next_sign_in(rec, tmp_path, monkeypatch):
+    """A recovery that fails once it has started ends every session, so the page that
+    started it may never show the result: the outcome is kept for the owner's next
+    signed-in page, and shown once."""
+    from celerp.services import backup_import
+    rec.seed()
+    _inject(monkeypatch, "schema")
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is False and result.session_ended is True
+    assert backup_import.take_recovery_failure() == result.error
+    assert backup_import.take_recovery_failure() is None
+
+
+async def test_failed_recovery_outcome_names_folders_as_written(rec, tmp_path, monkeypatch):
+    """A file system failure reads as its reason and the folders involved, written as
+    the user sees them, not as a Python string with every backslash doubled."""
+    from celerp.services import backup_import
+    rec.seed()
+    src = r"C:\Users\Owner\AppData\Roaming\celerp\celerp-data\recovery-staging\a1\files\attachments"
+    dst = r"C:\Users\Owner\AppData\Roaming\celerp\celerp-data\static\attachments"
+
+    def _swap(*_a, **_k):
+        raise PermissionError(13, "Access is denied", src, None, dst)
+
+    monkeypatch.setattr(backup_import, "_swap_roots", _swap)
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is False and result.session_ended is True
+    assert f"Access is denied: {src} -> {dst}." in result.error
+    assert "\\\\" not in result.error
+    assert backup_import.take_recovery_failure() == result.error
+
+
+async def test_recovery_refused_before_any_change_keeps_no_outcome(rec, tmp_path):
+    """A recovery refused before anything changed signs no one out: its page shows the
+    answer, and nothing waits for a later sign-in."""
+    from celerp.services import backup_import
+    rec.fail_safety()
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.needs_confirmation is True and result.session_ended is False
+    bad = _archive(tmp_path / "bad.celerp-backup", modules=["../evil"])
+    refused = await backup_import.run_recovery(bad)
+    assert refused.ok is False and refused.session_ended is False
+    assert backup_import.take_recovery_failure() is None
+
+
+async def test_successful_recovery_clears_an_earlier_failure(rec, tmp_path, monkeypatch):
+    """The outcome shown after sign-in is the last recovery's, never an older failure's."""
+    from celerp.services import backup_import
+    rec.seed()
+    _inject(monkeypatch, "schema")
+    assert (await backup_import.run_recovery(_archive(tmp_path / "a.celerp-backup", SOURCE_FILES))).ok is False
+    assert (await backup_import.run_recovery(_archive(tmp_path / "b.celerp-backup", SOURCE_FILES))).ok is True
+    assert backup_import.take_recovery_failure() is None
+
+
+async def test_failed_recovery_clears_an_earlier_success(rec, tmp_path, monkeypatch):
+    """A restore nobody signed in after, then a recovery that fails: the sign-in page
+    must say the last recovery did not complete, never "Backup restored"."""
+    from celerp.services import backup_import
+    rec.seed()
+    assert (await backup_import.run_recovery(_archive(tmp_path / "a.celerp-backup", SOURCE_FILES))).ok is True
+    _inject(monkeypatch, "schema")
+    failed = await backup_import.run_recovery(_archive(tmp_path / "b.celerp-backup", SOURCE_FILES))
+    assert failed.ok is False
+    assert backup_import.restore_notice_waiting() is False
+    assert backup_import.take_recovery_failure() == failed.error
+
+
+async def test_outcome_says_how_the_next_start_resolved_the_recovery(rec, tmp_path, monkeypatch):
+    """A recovery that could not be undone keeps the installation closed until a start
+    resolves it; the outcome then shown says what that start did, not to restart."""
+    from celerp.services import backup_import
+    rec.seed()
+    real_restore = backup_import._run_restore_script
+    broken = [True]
+
+    async def _restore(dump, url):
+        await real_restore(dump, url)
+        if broken:
+            raise RuntimeError("disk full")
+
+    monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
+    result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    assert result.ok is False and result.session_ended is True
+    broken.clear()
+    await backup_import.finish_incomplete_recovery()
+    outcome = backup_import.take_recovery_failure()
+    assert outcome is not None and "disk full" in outcome
+    assert "put back" in outcome and result.safety_archive in outcome
+    assert "restart Celerp" not in outcome
+
+
+async def test_outcome_says_the_next_start_finished_a_recovery_without_safety_copy(rec, tmp_path, monkeypatch):
+    from celerp.services import backup_import
+    rec.seed()
+    _inject(monkeypatch, "root_swap")
+    rec.fail_safety()
+    first = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
+    result = await backup_import.continue_recovery(first.confirmation_id, first.archive_digest)
+    assert result.ok is False and result.session_ended is True
+    await backup_import.finish_incomplete_recovery()
+    outcome = backup_import.take_recovery_failure()
+    assert outcome is not None and "root_swap broke" in outcome
+    assert "finished restoring the backup when Celerp started again" in outcome
+    assert "restart Celerp" not in outcome
+
+
+async def test_failed_recovery_page_signs_out_and_says_to_sign_in(rec, real_client, real_engine, tmp_path,
+                                                                  monkeypatch):
+    """The page that started a recovery which then failed says so, drops the ended session
+    and offers sign-in, instead of leaving a dead session to bounce to the login page."""
+    tok = await _install_owner(real_engine)
+    rec.seed()
+    _inject(monkeypatch, "schema")
+    archive = _archive(tmp_path / "src.celerp-backup", SOURCE_FILES)
+    r = await real_client.post("/backup/import", files={"file": ("src.celerp-backup", archive.read_bytes())},
+                               headers=auth(tok))
+    assert r.status_code == 200, r.text
+    assert "schema broke" in r.text and "flash--error" in r.text
+    assert t("system_recovery.failed_signed_out", "en") in html.unescape(r.text)
+    assert 'href="/login"' in r.text
+    assert r.headers.get("X-Session-Ended") == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -1611,7 +1808,8 @@ async def test_recovery_stopped_after_the_database_was_emptied_is_finished_at_ne
     _Recovery(tmp_path, monkeypatch, real_database=True)
     user = await owner(committed_engine)
     await company(committed_engine, user, "Alpha Trading", "alpha")
-    safety = await backup_export.export_full()
+    with released_migration_history(settings.database_url):
+        safety = await backup_export.export_full()
     backup_import._mark_recovery_started(safety, [])
     await _execute(committed_engine, "DROP TABLE companies CASCADE")
     await backup_import.finish_incomplete_recovery()

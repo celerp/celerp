@@ -120,8 +120,8 @@ def is_installed(module_name: str) -> bool:
 
 
 def _configured_load_set() -> list[str]:
-    from celerp.config import read_config
-    return list(read_config().get("modules", {}).get("enabled") or [])
+    from celerp.config import installation_modules
+    return installation_modules()
 
 
 def dependency_closure(names) -> list[str]:

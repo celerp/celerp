@@ -10,9 +10,8 @@ language ``xx`` and asserting its unmistakable values reach the rendered output
 while ``xx`` is active. They are red against a tree that hardcodes the English
 strings or resolves them at import time.
 
-Mechanisms covered: a render-time label in a component, a translated value
-handed to inline JavaScript via a ``data-*`` attribute (R2), and an interpolated
-status message built in a plain helper.
+Mechanisms covered: a render-time label in a component, and a translated value
+handed to inline JavaScript via a ``data-*`` attribute (R2).
 """
 
 import pytest
@@ -22,7 +21,6 @@ from fasthtml.common import to_xml
 from ui import i18n
 from ui.routes.auth import (
     _setup_import_form,
-    _restore_notice_message,
     _direct_connection_gate,
 )
 
@@ -33,7 +31,6 @@ _XX = {
     "auth.backup_file_label": "XX_BACKUP_FILE_LABEL",
     "auth.restore_backup_btn": "XX_RESTORE_BTN",
     "auth.restoring": "XX_RESTORING",
-    "auth.restore_notice_message": "XX_RESTORED {company}",
     "auth.direct_connection_gate_body": "XX_GATE_BODY",
 }
 
@@ -68,13 +65,6 @@ def test_restore_button_loading_label_via_data_attr():
     assert 'data-loading-label="XX_RESTORING"' in html
 
 
-def test_restore_notice_message_interpolates():
-    # Interpolation: the company name fills the {company} placeholder at render.
-    out = _restore_notice_message({"company_name": "Acme"})
-    assert "XX_RESTORED" in out
-    assert "Acme" in out
-
-
 def test_direct_connection_gate_body_translates():
-    html = to_xml(_direct_connection_gate("user@example.com", "pw"))
+    html = to_xml(_direct_connection_gate("user@example.com", "pw", "/"))
     assert "XX_GATE_BODY" in html

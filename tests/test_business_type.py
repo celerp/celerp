@@ -452,11 +452,15 @@ async def test_no_restart_when_the_module_system_is_off(client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_restart_when_enabled_modules_are_pinned_by_the_environment(client, monkeypatch):
+    from celerp.modules import loader
     monkeypatch.setenv("MODULE_DIR", _DEFAULT_MODULES)
     monkeypatch.setenv("ENABLED_MODULES", "celerp-subscriptions")
     monkeypatch.delenv("CELERP_SUPERVISED", raising=False)
+    running = loader.is_running
     h = await _owner(client)
-    assert (await _set(client, h, "gemstones")).json()["restart_required"] is False
+    # The pinned module is the one this server runs.
+    with patch("celerp.modules.loader.is_running", lambda n: n == "celerp-subscriptions" or running(n)):
+        assert (await _set(client, h, "gemstones")).json()["restart_required"] is False
 
 
 @pytest.mark.asyncio

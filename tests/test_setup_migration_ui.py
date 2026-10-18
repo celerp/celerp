@@ -1557,6 +1557,23 @@ async def test_preparing_run_explains_and_waits_without_a_start_button(ui, fake_
     assert f'action="/migrations/{run_id}/start"' not in _page(r)
 
 
+@pytest.mark.parametrize("preparing,status,quiet", [(True, "ready", True), (False, "running", False)])
+def test_preparing_poll_rides_through_the_restart_it_announces(preparing, status, quiet):
+    """RED before the change: preparing ends in the restart the page announces, and
+    the poll that fails while the servers are down raised a native alert on this
+    page (it has no in-page error box). The alert froze the window until dismissed,
+    so it could not follow the restart to the new servers. A running migration has
+    no planned restart, so a lost connection there is still reported."""
+    from fasthtml.common import to_xml
+
+    from ui.routes.migrations import _progress_fragment
+
+    run = {"id": "r1", "status": status, "preparing": preparing, "phases": []}
+    html = to_xml(_progress_fragment(run))
+    assert 'hx-trigger="every 2s"' in html
+    assert ('data-quiet-error="1"' in html) is quiet
+
+
 @pytest.mark.asyncio
 async def test_the_polled_progress_drops_still_running_once_ready(ui, fake_api):
     """The line saying the move keeps running is part of what the page re-reads, so it

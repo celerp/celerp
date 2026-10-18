@@ -185,7 +185,6 @@ async def test_restored_connector_cleanup_fences_stale_context(
 
 
 def _make_archive(
-    company_name: str = "Test",
     version: str | None = None,
     extra_meta: dict | None = None,
     include_dump: bool = True,
@@ -205,7 +204,6 @@ def _make_archive(
                 "celerp_version": version,
                 "pg_version": "16",
                 "created_at": "2026-01-01T00:00:00Z",
-                "company_name": company_name,
             }
             if extra_meta:
                 meta.update(extra_meta)
@@ -411,6 +409,7 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
         monkeypatch.setattr(backup_import, name, _none)
     monkeypatch.setattr(backup_import, "make_safety_archive", _safety)
     monkeypatch.setattr("celerp.services.backup.check_backup_dump", lambda path, url: None)
+    monkeypatch.setattr(backup_import, "_refuse_unrecorded_history", lambda path: None)
     monkeypatch.setattr("celerp.services.backup.write_restore_script", shutil.copyfile)
     monkeypatch.setattr(backup_import, "_apply_modules", _apply)
     monkeypatch.setattr("celerp.modules.registry.load_set", _every_company)
@@ -662,43 +661,66 @@ class TestReconcileSchema:
 
 class TestRestoreNotice:
     def test_notice_roundtrip_and_one_shot(self, monkeypatch, tmp_path):
-        """The importer persists the outcome; the login page consumes it exactly once,
-        so the banner survives the automatic restart but never becomes permanent."""
+        """The importer persists the outcome; it is waiting until taken, then taken
+        exactly once, so it survives the automatic restart but never becomes permanent."""
         from celerp.config import settings
-        from celerp.services.backup_import import RESTORE_NOTICE_FILE, _write_restore_notice
-        from ui.routes.auth import _consume_restore_notice
+        from celerp.services.backup_import import (
+            RESTORE_NOTICE_FILE, _write_restore_notice, restore_notice_waiting, take_restore_notice,
+        )
 
         monkeypatch.setattr(settings, "data_dir", tmp_path)
-        _write_restore_notice("Acme", ["celerp-labels"], "/data/recovery-safety/pre.celerp-backup", True)
+        _write_restore_notice(["celerp-labels"], "/data/recovery-safety/pre.celerp-backup", True)
         assert (tmp_path / RESTORE_NOTICE_FILE).is_file()
+        assert restore_notice_waiting()
 
-        notice = _consume_restore_notice()
+        notice = take_restore_notice()
         assert notice is not None
-        assert notice["company_name"] == "Acme"
+        assert "company_name" not in notice
         assert notice["warnings"] == ["celerp-labels"]
         assert notice["safety_archive"] == "/data/recovery-safety/pre.celerp-backup"
         assert notice["restart_scheduled"] is True
-        assert not (tmp_path / RESTORE_NOTICE_FILE).exists()  # one-shot
-        assert _consume_restore_notice() is None
+        assert not restore_notice_waiting()  # one-shot
+        assert take_restore_notice() is None
 
-    def test_notice_message_composes_all_parts(self):
-        from ui.routes.auth import _restore_notice_message
+    def test_two_pages_taking_the_notice_at_once_show_it_once(self, monkeypatch, tmp_path):
+        """Two of the owner's tabs loading at the same moment: the second take, made
+        while the first is still reading the notice, finds nothing to show."""
+        from celerp.config import settings
+        from celerp.services import backup_import
 
-        msg = _restore_notice_message({
-            "company_name": "Acme",
-            "warnings": ["celerp-labels"],
-            "safety_archive": "/data/recovery-safety/pre.celerp-backup",
-        })
-        assert "Acme" in msg
-        assert "celerp-labels" in msg
-        assert "/data/recovery-safety/pre.celerp-backup" in msg
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        backup_import._write_restore_notice([], None, True)
+        real_loads = json.loads
+        second: list = []
+
+        def loads_racing_a_second_page(raw, *a, **kw):
+            if not second:
+                second.append("racing")
+                second[0] = backup_import.take_restore_notice()
+            return real_loads(raw, *a, **kw)
+
+        monkeypatch.setattr(backup_import.json, "loads", loads_racing_a_second_page)
+        first = backup_import.take_restore_notice()
+        assert first is not None
+        assert second == [None]
+        assert not backup_import.restore_notice_waiting()
+
+    def test_outcome_parts_compose_all_parts(self):
+        from ui.components.shell import restore_outcome_parts
+
+        parts = restore_outcome_parts("Backup imported.", ["celerp-labels"], "/data/recovery-safety/pre.celerp-backup")
+        assert parts[0] == "Backup imported."
+        assert parts[1] == "celerp-labels"
+        assert "/data/recovery-safety/pre.celerp-backup" in parts[2]
+        assert restore_outcome_parts("Backup imported.", [], None) == ["Backup imported."]
 
     def test_no_notice_file_means_no_banner(self, monkeypatch, tmp_path):
         from celerp.config import settings
-        from ui.routes.auth import _consume_restore_notice
+        from celerp.services.backup_import import restore_notice_waiting, take_restore_notice
 
         monkeypatch.setattr(settings, "data_dir", tmp_path)
-        assert _consume_restore_notice() is None
+        assert not restore_notice_waiting()
+        assert take_restore_notice() is None
 
 
 class TestRestoreFlashContinuation:
@@ -758,7 +780,6 @@ class TestRecoveryPropagation:
         _stub_recovery(monkeypatch, tmp_path, restart=True)
 
         archive = _make_archive(
-            company_name="Acme",
             extra_meta={"enabled_modules": ["celerp-fictional"]},
         )
         path = _write_archive_to_tmp(archive)
@@ -773,7 +794,7 @@ class TestRecoveryPropagation:
         assert any("celerp-fictional" in w for w in result.warnings)
 
         notice = json.loads((tmp_path / "data" / backup_import.RESTORE_NOTICE_FILE).read_text())
-        assert notice["company_name"] == "Acme"
+        assert "company_name" not in notice
         assert notice["restart_scheduled"] is True
         assert notice["safety_archive"] == result.safety_archive
         assert notice["warnings"] == result.warnings
@@ -800,3 +821,67 @@ class TestApplyModulesRestartDecision:
 
         assert backup_import._apply_modules(["celerp-labels"]) is True
         assert (tmp_path / ".restart_requested").exists()
+
+
+def test_recovery_marker_is_written_where_a_directory_cannot_be_opened(monkeypatch, tmp_path):
+    """Windows refuses os.open on a directory with PermissionError, so a System Recovery
+    there must still record and clear its marker: the directory sync after the rename is
+    skipped where the platform cannot do it, never turned into a failed recovery."""
+    from celerp import config_store
+    from celerp.config import settings
+    from celerp.services import backup_import
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(config_store, "_DIR_FSYNC_SUPPORTED", False)
+    real_open = os.open
+
+    def _open_like_windows(path, flags, *args, **kwargs):
+        if Path(path).is_dir():
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", _open_like_windows)
+    backup_import._mark_recovery_started(tmp_path / "target.celerp-backup", [])
+    assert backup_import.recovery_incomplete() is True
+    backup_import._mark_recovery_finished()
+    assert backup_import.recovery_incomplete() is False
+
+
+def _fail_directory_fsync(monkeypatch):
+    """Make every fsync of a directory fail, as a disk error or a filesystem that cannot
+    sync would, while file fsyncs still succeed."""
+    import stat
+    real_fsync = os.fsync
+
+    def _fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(5, "Input/output error")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", _fsync)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="directories are synced only on POSIX")
+def test_recovery_marker_fails_when_its_directory_cannot_be_synced(monkeypatch, tmp_path):
+    """The recovery marker is what brings an interrupted System Recovery back to a whole
+    state, so a recovery must not start on a marker whose rename may not be on disk."""
+    from celerp.config import settings
+    from celerp.services import backup_import
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    _fail_directory_fsync(monkeypatch)
+    with pytest.raises(OSError):
+        backup_import._mark_recovery_started(tmp_path / "target.celerp-backup", [])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="directories are synced only on POSIX")
+def test_attachment_landing_mark_fails_when_its_directory_cannot_be_synced(monkeypatch, tmp_path):
+    """Files are stored only after their landing mark is durable, so a mark that may not
+    survive a crash fails the store instead of leaving files nothing will clean up."""
+    from celerp.config import settings
+    from celerp.services import attachments
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    _fail_directory_fsync(monkeypatch)
+    with pytest.raises(OSError):
+        attachments.mark_landing("c0ffee00-0000-4000-8000-000000000001")

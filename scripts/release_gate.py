@@ -31,7 +31,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 PLATFORMS = ("ubuntu-latest", "windows-latest", "macos-latest")
-BUILD_PREREQUISITES = ("prepare-release", "setup-matrix", "openapi-asset")
+BUILD_PREREQUISITES = ("prepare-release", "setup-matrix", "account-names", "openapi-asset")
 # packaged-upgrade-smoke.yml's jobs, called from build.yml. GitHub names a called
 # workflow's jobs "<calling job> / <job>", so they are matched on the last part.
 UPGRADE_TESTS = ("upgrade (ubuntu-latest)", "upgrade (windows-latest)")

@@ -29,6 +29,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from company_backup_support import company, owner, snapshot, token
 from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
+# A System Recovery here restores a real dump, which carries its migration history as an
+# installation's does.
+from test_system_recovery_exact import _migration_history  # noqa: F401
 
 from celerp.services.payments import reconcile_payments
 from ui.i18n import t

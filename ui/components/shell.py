@@ -133,7 +133,7 @@ function celerpToast(message, type, persist, action) {
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }
   var toast = document.createElement('div');
-  toast.className = 'toast toast--' + (type || 'error');
+  toast.className = 'toast toast--' + (type || 'error') + (persist ? ' toast--persist' : '');
   var body = document.createElement('span');
   body.className = 'toast__msg';
   body.textContent = message;
@@ -162,6 +162,13 @@ function celerpToast(message, type, persist, action) {
 function _celerpKeepToast(toast) {
   try { sessionStorage.setItem('celerp_pending_toast', JSON.stringify(toast)); } catch(ex) {}
 }
+// A toast reports the last action. The user's next action answers for itself, so the
+// toasts that would otherwise linger beside its answer step aside; persistent ones stay.
+document.addEventListener('htmx:beforeRequest', function(e) {
+  var cause = e.detail.requestConfig && e.detail.requestConfig.triggeringEvent;
+  if (!cause || (cause.type !== 'click' && cause.type !== 'submit')) return;
+  document.querySelectorAll('#toast-container .toast:not(.toast--persist)').forEach(_dismissToast);
+});
 function _dismissToast(toast) {
   toast.classList.remove('toast--visible');
   setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
@@ -1989,6 +1996,38 @@ def _redirect_notice(request, lang: str) -> list:
     return notices
 
 
+def restore_outcome_parts(base_msg: str, warnings: list, safety_archive: str | None) -> list[str]:
+    """The sentences that report a finished System Recovery: *base_msg*, each warning,
+    then where the safety copy of the replaced installation was saved."""
+    parts = [base_msg, *(str(w) for w in warnings)]
+    if safety_archive:
+        parts.append(t("system_recovery.safety_saved", path=safety_archive))
+    return parts
+
+
+async def _recovery_outcome_notice(request) -> list:
+    """The outcome of a System Recovery, which ended every session, on the installation
+    owner's first signed-in page (backup_import.take_recovery_failure and
+    take_restore_notice). It names server paths, so nobody else sees it, and it stays
+    for the owner until then."""
+    from celerp.services import backup_import
+    from ui.config import get_token
+    token = get_token(request) if request is not None else None
+    if not token or not (backup_import.recovery_failure_waiting() or backup_import.restore_notice_waiting()):
+        return []
+    import ui.api_client as _api
+    if not await _api.installation_owner(token):
+        return []
+    notices = []
+    if message := backup_import.take_recovery_failure():
+        notices.append(flash(message))
+    if (restored := backup_import.take_restore_notice()) is not None:
+        warnings = restored.get("warnings") or []
+        parts = restore_outcome_parts(t("system_recovery.imported"), warnings, restored.get("safety_archive"))
+        notices.append(flash(" ".join(parts), kind="warning" if warnings else "success"))
+    return notices
+
+
 def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """The outer HTML document shared by every full-chrome page: head assets, the
     supplied nav, top bar, banners, main content, and footer.
@@ -2081,7 +2120,7 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
         lang = get_lang(request)
     sidebar = _sidebar(nav_active, lang=lang, role=role, request=request, settings=company_settings)
     return _shell_document(
-        *content, nav=sidebar, title=title, companies=companies,
+        *await _recovery_outcome_notice(request), *content, nav=sidebar, title=title, companies=companies,
         extra_head=extra_head, lang=lang, request=request,
     )
 
@@ -2529,16 +2568,28 @@ def module_active(settings: dict | None, name: str) -> bool:
     return any(item.get("_module") == name for item in module_nav(settings))
 
 
+def visible_nav(settings: dict | None, role: str) -> list[dict]:
+    """The nav entries this role sees for the company, in display order."""
+    from ui.module_slots import slot_permission_allows
+    settings = settings or {}
+    return [item for item in module_nav(settings) if slot_permission_allows(item, settings, role)]
+
+
+def landing_path(settings: dict | None, role: str) -> str:
+    """Where signing in lands: the first page in the caller's menu, which is the dashboard
+    where the company runs it and the role may see it. With nothing in the menu, Settings,
+    which every role can open."""
+    items = visible_nav(settings, role)
+    first = next((item for item in items if not item.get("group")), None) or next(iter(items), None)
+    return (first or {}).get("href") or "/settings/general"
+
+
 def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, settings: dict | None = None) -> FT:
     """Build sidebar entirely from module nav slots + kernel entries."""
     from collections import defaultdict
     from celerp.services.permissions import role_has_permission
-    from ui.module_slots import slot_permission_allows
 
     settings = settings or {}
-
-    def _allowed(item: dict) -> bool:
-        return slot_permission_allows(item, settings, role)
 
     # Drop what this company cannot see before deduplicating, not after. Two modules
     # may offer the same section: accounting and reports both declare "reports",
@@ -2546,7 +2597,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
     # Deduplicating first lets a disabled module's entry win the key and then be
     # filtered out, taking the enabled module's entry with it and leaving the
     # section missing from the nav altogether.
-    visible = [item for item in module_nav(settings) if _allowed(item)]
+    visible = visible_nav(settings, role)
 
     # Deduplicate by key (first occurrence wins - kernel entries are last, so module wins)
     seen_keys: set[str] = set()
