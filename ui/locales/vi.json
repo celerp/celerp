@@ -6206,7 +6206,7 @@
   "migration.xero_att_doc_gone": "{file}: tài liệu không còn tồn tại trong Celerp.",
   "migration.xero_att_confirm_gone": "Lần đăng nhập Xero này không còn chờ xác nhận. Hãy tải lại để đăng nhập.",
   "migration.xero_att_other_org": "Tệp của sổ sách này được tải từ {bound}, nhưng lần đăng nhập này chọn {organisation}, nên không tải gì cả. Hãy tải lại và chọn {bound}.",
-  "migration.xero_att_mismatch": "Chưa đính kèm: {fields} trong Xero khác với chứng từ đã nhập. Nếu bạn đăng nhập nhầm tổ chức, hãy tải lại và chọn tổ chức mà sổ sách này đến từ.",
+  "migration.xero_att_mismatch": "Chưa đính kèm: các thông tin sau trong Xero khác với chứng từ đã nhập: {fields}. Nếu bạn đăng nhập nhầm tổ chức, hãy tải lại và chọn tổ chức mà sổ sách này đến từ.",
   "migration.xero_att_field_date": "ngày",
   "migration.xero_att_field_currency": "tiền tệ",
   "migration.xero_att_field_total": "tổng tiền",

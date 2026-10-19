@@ -6206,7 +6206,7 @@
   "migration.xero_att_doc_gone": "{file}: لم يعد المستند موجودًا في Celerp.",
   "migration.xero_att_confirm_gone": "لم يعد تسجيل الدخول هذا إلى Xero بانتظار التأكيد. اجلب مرة أخرى لتسجيل الدخول.",
   "migration.xero_att_other_org": "جُلبت ملفات هذه الدفاتر من {bound}، لكن تسجيل الدخول هذا اختار {organisation}، لذلك لم يُجلب شيء. اجلب مرة أخرى واختر {bound}.",
-  "migration.xero_att_mismatch": "لم يُرفق: {fields} في Xero تختلف عن المستند المستورد. إذا سجلت الدخول إلى المؤسسة الخطأ، فاجلب مرة أخرى واختر المؤسسة التي جاءت منها هذه الدفاتر.",
+  "migration.xero_att_mismatch": "لم يُرفق: هذه التفاصيل في Xero تختلف عن المستند المستورد: {fields}. إذا سجلت الدخول إلى المؤسسة الخطأ، فاجلب مرة أخرى واختر المؤسسة التي جاءت منها هذه الدفاتر.",
   "migration.xero_att_field_date": "التاريخ",
   "migration.xero_att_field_currency": "العملة",
   "migration.xero_att_field_total": "الإجمالي",

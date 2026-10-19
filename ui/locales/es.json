@@ -6206,7 +6206,7 @@
   "migration.xero_att_doc_gone": "{file}: el documento ya no existe en Celerp.",
   "migration.xero_att_confirm_gone": "Este inicio de sesión de Xero ya no está esperando confirmación. Vuelva a obtenerlos para iniciar sesión.",
   "migration.xero_att_other_org": "Los archivos de estos libros se obtuvieron de {bound}, pero este inicio de sesión eligió {organisation}, así que no se obtuvo nada. Vuelva a obtenerlos y elija {bound}.",
-  "migration.xero_att_mismatch": "No adjuntado: {fields} en Xero no coinciden con el documento importado. Si inició sesión en la organización equivocada, vuelva a obtenerlos y elija aquella de la que provienen estos libros.",
+  "migration.xero_att_mismatch": "No adjuntado: estos datos en Xero no coinciden con el documento importado: {fields}. Si inició sesión en la organización equivocada, vuelva a obtenerlos y elija aquella de la que provienen estos libros.",
   "migration.xero_att_field_date": "fecha",
   "migration.xero_att_field_currency": "moneda",
   "migration.xero_att_field_total": "total",

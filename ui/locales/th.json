@@ -6206,7 +6206,7 @@
   "migration.xero_att_doc_gone": "{file}: เอกสารนี้ไม่มีอยู่ใน Celerp แล้ว",
   "migration.xero_att_confirm_gone": "การลงชื่อเข้าใช้ Xero นี้ไม่ได้รอการยืนยันแล้ว ดึงอีกครั้งเพื่อลงชื่อเข้าใช้",
   "migration.xero_att_other_org": "ไฟล์ของบัญชีชุดนี้ดึงมาจาก {bound} แต่การลงชื่อเข้าใช้ครั้งนี้เลือก {organisation} จึงไม่ได้ดึงอะไรเลย ดึงอีกครั้งแล้วเลือก {bound}",
-  "migration.xero_att_mismatch": "ไม่ได้แนบ: {fields} ใน Xero ไม่ตรงกับเอกสารที่นำเข้า หากคุณลงชื่อเข้าใช้ผิดองค์กร ให้ดึงอีกครั้งแล้วเลือกองค์กรที่บัญชีชุดนี้มาจาก",
+  "migration.xero_att_mismatch": "ไม่ได้แนบ: รายละเอียดต่อไปนี้ใน Xero ไม่ตรงกับเอกสารที่นำเข้า: {fields} หากคุณลงชื่อเข้าใช้ผิดองค์กร ให้ดึงอีกครั้งแล้วเลือกองค์กรที่บัญชีชุดนี้มาจาก",
   "migration.xero_att_field_date": "วันที่",
   "migration.xero_att_field_currency": "สกุลเงิน",
   "migration.xero_att_field_total": "ยอดรวม",

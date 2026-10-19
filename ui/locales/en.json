@@ -6205,7 +6205,7 @@
   "migration.xero_att_doc_gone": "{file}: the document no longer exists in Celerp.",
   "migration.xero_att_confirm_gone": "This Xero sign-in is no longer waiting to be confirmed. Fetch again to sign in.",
   "migration.xero_att_other_org": "These books' files were fetched from {bound}, but this sign-in chose {organisation}, so nothing was fetched. Fetch again and choose {bound}.",
-  "migration.xero_att_mismatch": "Not attached: the {fields} in Xero differ from the document imported. If you signed in to the wrong organisation, fetch again and choose the one these books came from.",
+  "migration.xero_att_mismatch": "Not attached: these details in Xero differ from the document imported: {fields}. If you signed in to the wrong organisation, fetch again and choose the one these books came from.",
   "migration.xero_att_field_date": "date",
   "migration.xero_att_field_currency": "currency",
   "migration.xero_att_field_total": "total",

@@ -6206,7 +6206,7 @@
   "migration.xero_att_doc_gone": "{file} : le document n'existe plus dans Celerp.",
   "migration.xero_att_confirm_gone": "Cette connexion à Xero n'attend plus de confirmation. Relancez la récupération pour vous connecter.",
   "migration.xero_att_other_org": "Les fichiers de cette comptabilité ont été récupérés depuis {bound}, mais cette connexion a choisi {organisation}, donc rien n'a été récupéré. Relancez la récupération et choisissez {bound}.",
-  "migration.xero_att_mismatch": "Non joint : {fields} dans Xero diffèrent du document importé. Si vous vous êtes connecté à la mauvaise organisation, relancez la récupération et choisissez celle d'où vient cette comptabilité.",
+  "migration.xero_att_mismatch": "Non joint : ces informations dans Xero diffèrent du document importé : {fields}. Si vous vous êtes connecté à la mauvaise organisation, relancez la récupération et choisissez celle d'où vient cette comptabilité.",
   "migration.xero_att_field_date": "date",
   "migration.xero_att_field_currency": "devise",
   "migration.xero_att_field_total": "total",

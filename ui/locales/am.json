@@ -6206,7 +6206,7 @@
   "migration.xero_att_doc_gone": "{file}: ሰነዱ ከእንግዲህ በCelerp ውስጥ የለም።",
   "migration.xero_att_confirm_gone": "ይህ የXero መግቢያ ከእንግዲህ ማረጋገጫ እየጠበቀ አይደለም። ለመግባት እንደገና ያምጡ።",
   "migration.xero_att_other_org": "የእነዚህ መዝገቦች ፋይሎች ከ{bound} ተመጥተዋል፣ ይህ መግቢያ ግን {organisation}ን መርጧል፣ ስለዚህ ምንም አልተመጣም። እንደገና ያምጡና {bound}ን ይምረጡ።",
-  "migration.xero_att_mismatch": "አልተያያዘም፦ በXero ያሉት {fields} ከገባው ሰነድ ይለያሉ። ወደ የተሳሳተ ድርጅት ከገቡ፣ እንደገና ያምጡና እነዚህ መዝገቦች የመጡበትን ይምረጡ።",
+  "migration.xero_att_mismatch": "አልተያያዘም፦ እነዚህ በXero ያሉ ዝርዝሮች ከገባው ሰነድ ይለያሉ፦ {fields}። ወደ የተሳሳተ ድርጅት ከገቡ፣ እንደገና ያምጡና እነዚህ መዝገቦች የመጡበትን ይምረጡ።",
   "migration.xero_att_field_date": "ቀን",
   "migration.xero_att_field_currency": "ምንዛሪ",
   "migration.xero_att_field_total": "ድምር",

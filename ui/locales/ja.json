@@ -6206,7 +6206,7 @@
   "migration.xero_att_doc_gone": "{file}: このドキュメントはCelerpにもう存在しません。",
   "migration.xero_att_confirm_gone": "このXeroのサインインは確認待ちではなくなりました。もう一度取得してサインインしてください。",
   "migration.xero_att_other_org": "この帳簿のファイルは{bound}から取得されましたが、今回のサインインでは{organisation}が選ばれたため、何も取得していません。もう一度取得して{bound}を選んでください。",
-  "migration.xero_att_mismatch": "添付していません: Xeroの{fields}がインポートした書類と異なります。別の組織にサインインした場合は、もう一度取得して、この帳簿の元の組織を選んでください。",
+  "migration.xero_att_mismatch": "添付していません: Xeroの次の項目がインポートした書類と異なります: {fields}。別の組織にサインインした場合は、もう一度取得して、この帳簿の元の組織を選んでください。",
   "migration.xero_att_field_date": "日付",
   "migration.xero_att_field_currency": "通貨",
   "migration.xero_att_field_total": "合計",

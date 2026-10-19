@@ -6206,7 +6206,7 @@
   "migration.xero_att_doc_gone": "{file}: Das Dokument existiert in Celerp nicht mehr.",
   "migration.xero_att_confirm_gone": "Diese Xero-Anmeldung wartet nicht mehr auf eine Bestätigung. Rufen Sie erneut ab, um sich anzumelden.",
   "migration.xero_att_other_org": "Die Dateien dieser Bücher wurden aus {bound} abgerufen, diese Anmeldung hat aber {organisation} gewählt, daher wurde nichts abgerufen. Rufen Sie erneut ab und wählen Sie {bound}.",
-  "migration.xero_att_mismatch": "Nicht angehängt: {fields} in Xero weichen vom importierten Dokument ab. Wenn Sie sich bei der falschen Organisation angemeldet haben, rufen Sie erneut ab und wählen Sie die, aus der diese Bücher stammen.",
+  "migration.xero_att_mismatch": "Nicht angehängt: Diese Angaben in Xero weichen vom importierten Dokument ab: {fields}. Wenn Sie sich bei der falschen Organisation angemeldet haben, rufen Sie erneut ab und wählen Sie die, aus der diese Bücher stammen.",
   "migration.xero_att_field_date": "Datum",
   "migration.xero_att_field_currency": "Währung",
   "migration.xero_att_field_total": "Gesamtbetrag",

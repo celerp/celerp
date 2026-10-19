@@ -6206,7 +6206,7 @@
   "migration.xero_att_doc_gone": "{file}: il documento non esiste più in Celerp.",
   "migration.xero_att_confirm_gone": "Questo accesso a Xero non è più in attesa di conferma. Recupera di nuovo per accedere.",
   "migration.xero_att_other_org": "I file di questi libri sono stati recuperati da {bound}, ma questo accesso ha scelto {organisation}, quindi non è stato recuperato nulla. Recupera di nuovo e scegli {bound}.",
-  "migration.xero_att_mismatch": "Non allegato: {fields} in Xero differiscono dal documento importato. Se hai effettuato l'accesso all'organizzazione sbagliata, recupera di nuovo e scegli quella da cui provengono questi libri.",
+  "migration.xero_att_mismatch": "Non allegato: questi dati in Xero differiscono dal documento importato: {fields}. Se hai effettuato l'accesso all'organizzazione sbagliata, recupera di nuovo e scegli quella da cui provengono questi libri.",
   "migration.xero_att_field_date": "data",
   "migration.xero_att_field_currency": "valuta",
   "migration.xero_att_field_total": "totale",
