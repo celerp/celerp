@@ -38,6 +38,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from decimal import Decimal
 
+from celerp.accounting_roles import refusal
 from celerp.services.business_time import company_today
 
 from celerp_fixed_assets import fixaccount, runs, setup, sources
@@ -330,7 +331,8 @@ async def find(session, company_id, key: str) -> dict:
     found = next((d for a in (await report(session, company_id))["accounts"] for d in a["differences"]
                   if d["key"] == key), None)
     if found is None:
-        raise setup.unprocessable("There is no such difference. Select Try again.")
+        raise setup.unprocessable(refusal(
+            "fixed_assets.err_no_difference", "There is no such difference. Select Try again."))
     return found
 
 

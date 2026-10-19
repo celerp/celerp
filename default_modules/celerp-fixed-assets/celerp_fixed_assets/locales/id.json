@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "Pengingat pemeliharaan, garansi, dan asuransi dalam masa pemberitahuannya, atau terlambat. Buka aset untuk menandai selesai atau menundanya.",
   "fixed_assets.reminders_empty": "Tidak ada pengingat aset yang jatuh tempo.",
   "fixed_assets.notice.reminders.title": "Pengingat aset",
-  "fixed_assets.notice.reminders.body": "Pengingat aset berikut jatuh tempo:\n{items}"
+  "fixed_assets.notice.reminders.body": "Pengingat aset berikut jatuh tempo:\n{items}",
+  "fixed_assets.err_same_key_new_details": "Perubahan ini sudah dibuat dengan detail berbeda. Pilih Coba lagi dan mulai dari awal.",
+  "fixed_assets.err_changed_by_someone": "Diubah oleh orang lain. Pilih Coba lagi untuk melihatnya.",
+  "fixed_assets.err_no_difference": "Selisih itu tidak ada. Pilih Coba lagi.",
+  "fixed_assets.err_no_year_end_item": "Item akhir tahun itu tidak ada. Pilih Coba lagi."
 }

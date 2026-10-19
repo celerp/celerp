@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "Lembretes de manutenção, garantia e seguro dentro da antecedência, ou vencidos. Abra um ativo para marcar como feito ou adiar.",
   "fixed_assets.reminders_empty": "Nenhum lembrete de ativo pendente.",
   "fixed_assets.notice.reminders.title": "Lembretes de ativos",
-  "fixed_assets.notice.reminders.body": "Estes lembretes de ativos vencem:\n{items}"
+  "fixed_assets.notice.reminders.body": "Estes lembretes de ativos vencem:\n{items}",
+  "fixed_assets.err_same_key_new_details": "Esta alteração já foi feita com outros dados. Selecione Tentar novamente e comece de novo.",
+  "fixed_assets.err_changed_by_someone": "Alterado por outra pessoa. Selecione Tentar novamente para ver.",
+  "fixed_assets.err_no_difference": "Essa diferença não existe. Selecione Tentar novamente.",
+  "fixed_assets.err_no_year_end_item": "Esse item de fim de ano não existe. Selecione Tentar novamente."
 }

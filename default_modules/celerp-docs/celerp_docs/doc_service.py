@@ -417,9 +417,7 @@ async def set_woocommerce_order_reconciled(
         raise ValueError(t("documents.err_woo_order_missing", order_id=order_id))
     state = doc.state or {}
     if state.get("woocommerce_reconciliation_signature") != signature:
-        raise WooCommerceReconciliationChanged(
-            "This order changed in WooCommerce. Select Try again to review the change."
-        )
+        raise WooCommerceReconciliationChanged
     wanted = {
         "woocommerce_reconciled_signature": signature if reconciled else None,
         "woocommerce_reconciliation_required": None if reconciled else reason,

@@ -58,7 +58,7 @@ def policy_of(cls: dict, fa: dict) -> dict:
             "params": dict(cls.get("params") or {})}
 
 
-def unprocessable(message: str) -> HTTPException:
+def unprocessable(message: str | dict) -> HTTPException:
     return HTTPException(status_code=422, detail=message)
 
 

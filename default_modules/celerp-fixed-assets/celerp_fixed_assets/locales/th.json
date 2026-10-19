@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "การแจ้งเตือนบำรุงรักษา การรับประกัน และประกันภัยที่อยู่ในช่วงแจ้งล่วงหน้าหรือเลยกำหนด เปิดสินทรัพย์เพื่อทำเครื่องหมายว่าเสร็จหรือเลื่อน",
   "fixed_assets.reminders_empty": "ไม่มีการแจ้งเตือนสินทรัพย์ที่ถึงกำหนด",
   "fixed_assets.notice.reminders.title": "การแจ้งเตือนสินทรัพย์",
-  "fixed_assets.notice.reminders.body": "การแจ้งเตือนสินทรัพย์เหล่านี้ถึงกำหนด:\n{items}"
+  "fixed_assets.notice.reminders.body": "การแจ้งเตือนสินทรัพย์เหล่านี้ถึงกำหนด:\n{items}",
+  "fixed_assets.err_same_key_new_details": "การเปลี่ยนแปลงนี้ถูกทำไปแล้วด้วยรายละเอียดที่ต่างกัน เลือก ลองอีกครั้ง แล้วเริ่มใหม่",
+  "fixed_assets.err_changed_by_someone": "มีคนอื่นเปลี่ยนแปลงไปแล้ว เลือก ลองอีกครั้ง เพื่อดู",
+  "fixed_assets.err_no_difference": "ไม่มีผลต่างนี้ เลือก ลองอีกครั้ง",
+  "fixed_assets.err_no_year_end_item": "ไม่มีรายการสิ้นปีนี้ เลือก ลองอีกครั้ง"
 }

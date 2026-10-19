@@ -6240,5 +6240,6 @@
   "event.fa.check.recorded": "تم فحص أصل ثابت",
   "event.fa.check.removed": "تمت إزالة فحص أصل ثابت",
   "modules.turn_on": "تشغيل",
-  "nav.my_assets": "أصولي"
+  "nav.my_assets": "أصولي",
+  "connectors.order_changed_in_woocommerce": "تغيّر هذا الطلب في WooCommerce. اختر إعادة المحاولة لمراجعة التغيير."
 }

@@ -121,6 +121,52 @@ def test_no_message_in_code_tells_the_user_to_refresh_or_reload():
     assert found == []
 
 
+def _literal_text(node) -> str | None:
+    """A string literal as written, an f-string with each placeholder as ``{}``."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) else "{}" for v in node.values)
+    return None
+
+
+def test_every_select_try_again_message_in_code_is_a_catalog_message():
+    """A message that tells the user to select Try again only gets the control (and a translation)
+    when it is the English of a catalog key, so no API refusal may carry the sentence as plain text."""
+    catalogued = {re.sub(r"\{\w+\}", "{}", v) for k, v in _catalog("en").items()
+                  if re.search(r"[Ss]elect Try again", v)}
+    plain = []
+    for rel, path in _python_sources():
+        if rel.startswith("ui/"):
+            continue
+        nodes = list(ast.walk(ast.parse(path.read_text(encoding="utf-8"))))
+        parts = {id(v) for n in nodes if isinstance(n, ast.JoinedStr) for v in n.values}
+        for n in nodes:
+            text = None if id(n) in parts else _literal_text(n)
+            if text and re.search(r"[Ss]elect Try again", text) and text not in catalogued:
+                plain.append(f"{rel}:{n.lineno}: {text[:90]}")
+    assert not plain, "\n".join(plain)
+
+
+@pytest.mark.parametrize("lang", ["en", "th"])
+def test_a_refusal_the_api_sends_with_a_key_reaches_the_reader_with_the_try_again_control(lang, module_catalogs):
+    """The WooCommerce order-changed refusal and a fixed assets one, rendered the way the page shows them."""
+    from fastapi import HTTPException
+    from celerp_connectors.routes import _order_changed
+    from celerp_fixed_assets.operations import _same_intent
+    from ui.i18n import _current_lang, refusal_text
+
+    with pytest.raises(HTTPException) as err:
+        _same_intent({"intent_hash": "a"}, "b")
+    token = _current_lang.set(lang)
+    try:
+        shown = [refusal_text(d) for d in (_order_changed(), err.value.detail)]
+    finally:
+        _current_lang.reset(token)
+    assert all(shown) and all(_says_try_again(lang, text) for text in shown)
+    assert (shown[0] == _order_changed()["message"]) == (lang == "en")
+
+
 # Messages that ask the user to do the action again (or that sit beside a Retry control of
 # their own): they never get the Try again control, in any language.
 _RETRY_THE_ACTION = (

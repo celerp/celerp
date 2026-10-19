@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "በቀደም ብሎ ቀናቸው ውስጥ ያሉ ወይም ያለፉ የጥገና፣ የዋስትና እና የኢንሹራንስ ማስታወሻዎች። ለማጠናቀቅ ወይም ለማራዘም ንብረቱን ይክፈቱ።",
   "fixed_assets.reminders_empty": "የደረሰ የንብረት ማስታወሻ የለም።",
   "fixed_assets.notice.reminders.title": "የንብረት ማስታወሻዎች",
-  "fixed_assets.notice.reminders.body": "እነዚህ የንብረት ማስታወሻዎች ደርሰዋል፦\n{items}"
+  "fixed_assets.notice.reminders.body": "እነዚህ የንብረት ማስታወሻዎች ደርሰዋል፦\n{items}",
+  "fixed_assets.err_same_key_new_details": "ይህ ለውጥ ቀደም ሲል በተለየ ዝርዝር ተደርጓል። እንደገና ሞክር ይምረጡና እንደገና ይጀምሩ።",
+  "fixed_assets.err_changed_by_someone": "በሌላ ሰው ተቀይሯል። ለማየት እንደገና ሞክር ይምረጡ።",
+  "fixed_assets.err_no_difference": "እንዲህ ያለ ልዩነት የለም። እንደገና ሞክር ይምረጡ።",
+  "fixed_assets.err_no_year_end_item": "እንዲህ ያለ የዓመት መጨረሻ ንጥል የለም። እንደገና ሞክር ይምረጡ።"
 }

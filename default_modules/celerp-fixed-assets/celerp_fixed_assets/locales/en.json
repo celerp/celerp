@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "Maintenance, warranty and insurance reminders within their days ahead, or overdue. Open an asset to mark one done or postpone it.",
   "fixed_assets.reminders_empty": "No asset reminders are due.",
   "fixed_assets.notice.reminders.title": "Asset reminders",
-  "fixed_assets.notice.reminders.body": "These asset reminders are due:\n{items}"
+  "fixed_assets.notice.reminders.body": "These asset reminders are due:\n{items}",
+  "fixed_assets.err_same_key_new_details": "This change was already made with different details. Select Try again and start again.",
+  "fixed_assets.err_changed_by_someone": "Changed by someone else. Select Try again to see it.",
+  "fixed_assets.err_no_difference": "There is no such difference. Select Try again.",
+  "fixed_assets.err_no_year_end_item": "There is no such year-end item. Select Try again."
 }

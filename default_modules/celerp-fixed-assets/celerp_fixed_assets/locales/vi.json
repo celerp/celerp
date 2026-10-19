@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "Nhắc nhở bảo trì, bảo hành và bảo hiểm trong thời gian báo trước hoặc đã quá hạn. Mở tài sản để đánh dấu xong hoặc hoãn.",
   "fixed_assets.reminders_empty": "Không có nhắc nhở tài sản nào đến hạn.",
   "fixed_assets.notice.reminders.title": "Nhắc nhở tài sản",
-  "fixed_assets.notice.reminders.body": "Các nhắc nhở tài sản sau đã đến hạn:\n{items}"
+  "fixed_assets.notice.reminders.body": "Các nhắc nhở tài sản sau đã đến hạn:\n{items}",
+  "fixed_assets.err_same_key_new_details": "Thay đổi này đã được thực hiện với thông tin khác. Hãy chọn Thử lại rồi bắt đầu lại.",
+  "fixed_assets.err_changed_by_someone": "Đã được người khác thay đổi. Hãy chọn Thử lại để xem.",
+  "fixed_assets.err_no_difference": "Không có chênh lệch này. Hãy chọn Thử lại.",
+  "fixed_assets.err_no_year_end_item": "Không có mục cuối năm này. Hãy chọn Thử lại."
 }

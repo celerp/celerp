@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "事前通知期間内または期限切れの保守・保証・保険リマインダーです。資産を開いて完了または延期にします。",
   "fixed_assets.reminders_empty": "期日が近い資産リマインダーはありません。",
   "fixed_assets.notice.reminders.title": "資産リマインダー",
-  "fixed_assets.notice.reminders.body": "次の資産リマインダーの期日です:\n{items}"
+  "fixed_assets.notice.reminders.body": "次の資産リマインダーの期日です:\n{items}",
+  "fixed_assets.err_same_key_new_details": "この変更は別の内容ですでに行われています。「再試行」を選んで、最初からやり直してください。",
+  "fixed_assets.err_changed_by_someone": "他の人によって変更されました。「再試行」を選ぶと確認できます。",
+  "fixed_assets.err_no_difference": "その差異は存在しません。「再試行」を選んでください。",
+  "fixed_assets.err_no_year_end_item": "その年度末の項目は存在しません。「再試行」を選んでください。"
 }

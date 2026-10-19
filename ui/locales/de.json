@@ -6240,5 +6240,6 @@
   "event.fa.check.recorded": "Anlage geprüft",
   "event.fa.check.removed": "Prüfung einer Anlage entfernt",
   "modules.turn_on": "Einschalten",
-  "nav.my_assets": "Meine Anlagen"
+  "nav.my_assets": "Meine Anlagen",
+  "connectors.order_changed_in_woocommerce": "Diese Bestellung wurde in WooCommerce geändert. Wählen Sie „Erneut versuchen“, um die Änderung zu prüfen."
 }

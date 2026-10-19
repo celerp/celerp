@@ -307,7 +307,7 @@ async def test_descriptive_edit_compare_and_set(fa):
         "changes": {"name": "Van 1", "serial": "VIN123"}, "previous": {"name": "Delivery van", "serial": None}}))
     assert ok["name"] == "Van 1" and ok["serial"] == "VIN123"
     stale = await fa.patch(f"/assets/{asset['id']}", {"changes": {"name": "Van 2"}, "previous": {"name": "Delivery van"}})
-    assert stale.status_code == 409 and "Changed by someone else" in stale.json()["detail"]
+    assert stale.status_code == 409 and "Changed by someone else" in stale.json()["detail"]["message"]
     assert (await fa.asset(asset["id"]))["name"] == "Van 1"
 
 

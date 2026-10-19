@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "تذكيرات الصيانة والضمان والتأمين ضمن أيامها المسبقة أو المتأخرة. افتح أصلاً لتعليم تذكير كمنجز أو تأجيله.",
   "fixed_assets.reminders_empty": "لا توجد تذكيرات أصول مستحقة.",
   "fixed_assets.notice.reminders.title": "تذكيرات الأصول",
-  "fixed_assets.notice.reminders.body": "تذكيرات الأصول هذه مستحقة:\n{items}"
+  "fixed_assets.notice.reminders.body": "تذكيرات الأصول هذه مستحقة:\n{items}",
+  "fixed_assets.err_same_key_new_details": "تم إجراء هذا التغيير من قبل بتفاصيل مختلفة. اختر إعادة المحاولة ثم ابدأ من جديد.",
+  "fixed_assets.err_changed_by_someone": "غيّره شخص آخر. اختر إعادة المحاولة لرؤيته.",
+  "fixed_assets.err_no_difference": "لا يوجد فرق كهذا. اختر إعادة المحاولة.",
+  "fixed_assets.err_no_year_end_item": "لا يوجد بند كهذا في نهاية السنة. اختر إعادة المحاولة."
 }

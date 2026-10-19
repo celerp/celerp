@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import refusal
 from celerp.connectors.base import SyncDirection, SyncEntity
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.db import get_session
@@ -623,6 +624,12 @@ async def reset_unassigned_connector(
     return {"ok": True}
 
 
+def _order_changed() -> dict:
+    """The refusal for marking an order reconciled after WooCommerce changed it again."""
+    return refusal("connectors.order_changed_in_woocommerce",
+                   "This order changed in WooCommerce. Select Try again to review the change.")
+
+
 class ReconciledRequest(BaseModel):
     signature: str
 
@@ -648,10 +655,7 @@ async def _set_order_reconciled(
                 detail=t("error.order_clears_itself"),
             )
         if signature is not None and entry["signature"] != signature:
-            raise HTTPException(
-                status_code=409,
-                detail="This order changed in WooCommerce. Select Try again to review the change.",
-            )
+            raise HTTPException(status_code=409, detail=_order_changed())
         entry["reconciled"] = signature is not None
 
     entry = await update_attention_entry(
@@ -667,7 +671,7 @@ async def _set_order_reconciled(
         )
     except WooCommerceReconciliationChanged as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=_order_changed()) from exc
     except ValueError as exc:
         await session.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -25,6 +25,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refusal
 from celerp.services.business_time import business_today, company_today
 
 from celerp_fixed_assets import recon, remeasure, runs, setup, taxbooks
@@ -202,7 +203,8 @@ async def mark(session, company_id, user_id, year, body: dict) -> dict:
         raise setup.unprocessable("Describe the effect of accepting this item on the figures.")
     found = next((i for i in (await report(session, company_id, year))["items"] if i["key"] == key), None)
     if found is None:
-        raise HTTPException(status_code=404, detail="There is no such year-end item. Select Try again.")
+        raise HTTPException(status_code=404, detail=refusal(
+            "fixed_assets.err_no_year_end_item", "There is no such year-end item. Select Try again."))
     if state == "accepted" and found["kind"] == "tax":
         raise conflict(f"{found['label']}. A tax year keeps its figures for the years after it, so a missing "
                        f"figure cannot be accepted. {found['remedy']} Note it while it waits.")

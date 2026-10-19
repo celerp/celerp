@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "Rappels d'entretien, de garantie et d'assurance dans leurs jours d'avance, ou en retard. Ouvrez une immobilisation pour en marquer un comme fait ou le reporter.",
   "fixed_assets.reminders_empty": "Aucun rappel d'immobilisation à traiter.",
   "fixed_assets.notice.reminders.title": "Rappels d'immobilisations",
-  "fixed_assets.notice.reminders.body": "Ces rappels d'immobilisations arrivent à échéance :\n{items}"
+  "fixed_assets.notice.reminders.body": "Ces rappels d'immobilisations arrivent à échéance :\n{items}",
+  "fixed_assets.err_same_key_new_details": "Cette modification a déjà été effectuée avec d'autres informations. Sélectionnez « Réessayer » et recommencez.",
+  "fixed_assets.err_changed_by_someone": "Modifié par quelqu'un d'autre. Sélectionnez « Réessayer » pour le voir.",
+  "fixed_assets.err_no_difference": "Cet écart n'existe pas. Sélectionnez « Réessayer ».",
+  "fixed_assets.err_no_year_end_item": "Cet élément de clôture d'exercice n'existe pas. Sélectionnez « Réessayer »."
 }

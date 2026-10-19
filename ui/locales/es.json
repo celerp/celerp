@@ -6240,5 +6240,6 @@
   "event.fa.check.recorded": "Activo fijo verificado",
   "event.fa.check.removed": "Verificación de activo fijo eliminada",
   "modules.turn_on": "Activar",
-  "nav.my_assets": "Mis activos"
+  "nav.my_assets": "Mis activos",
+  "connectors.order_changed_in_woocommerce": "Este pedido cambió en WooCommerce. Seleccione Reintentar para revisar el cambio."
 }

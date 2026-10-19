@@ -6240,5 +6240,6 @@
   "event.fa.check.recorded": "Fixed asset checked",
   "event.fa.check.removed": "Fixed asset check removed",
   "modules.turn_on": "Turn on",
-  "nav.my_assets": "My assets"
+  "nav.my_assets": "My assets",
+  "connectors.order_changed_in_woocommerce": "This order changed in WooCommerce. Select Try again to review the change."
 }

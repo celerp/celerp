@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "Promemoria di manutenzione, garanzia e assicurazione entro i giorni di anticipo, o scaduti. Apri un cespite per segnarne uno come fatto o rinviarlo.",
   "fixed_assets.reminders_empty": "Nessun promemoria cespiti in scadenza.",
   "fixed_assets.notice.reminders.title": "Promemoria cespiti",
-  "fixed_assets.notice.reminders.body": "Questi promemoria cespiti sono in scadenza:\n{items}"
+  "fixed_assets.notice.reminders.body": "Questi promemoria cespiti sono in scadenza:\n{items}",
+  "fixed_assets.err_same_key_new_details": "Questa modifica è già stata fatta con dati diversi. Seleziona Riprova e ricomincia.",
+  "fixed_assets.err_changed_by_someone": "Modificato da qualcun altro. Seleziona Riprova per vederlo.",
+  "fixed_assets.err_no_difference": "Questa differenza non esiste. Seleziona Riprova.",
+  "fixed_assets.err_no_year_end_item": "Questa voce di fine anno non esiste. Seleziona Riprova."
 }

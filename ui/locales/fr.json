@@ -6240,5 +6240,6 @@
   "event.fa.check.recorded": "Immobilisation contrôlée",
   "event.fa.check.removed": "Contrôle d'immobilisation supprimé",
   "modules.turn_on": "Activer",
-  "nav.my_assets": "Mes actifs"
+  "nav.my_assets": "Mes actifs",
+  "connectors.order_changed_in_woocommerce": "Cette commande a changé dans WooCommerce. Sélectionnez « Réessayer » pour examiner la modification."
 }

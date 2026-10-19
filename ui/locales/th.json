@@ -6240,5 +6240,6 @@
   "event.fa.check.recorded": "ตรวจนับสินทรัพย์ถาวร",
   "event.fa.check.removed": "ลบการตรวจนับสินทรัพย์ถาวร",
   "modules.turn_on": "เปิดใช้",
-  "nav.my_assets": "สินทรัพย์ของฉัน"
+  "nav.my_assets": "สินทรัพย์ของฉัน",
+  "connectors.order_changed_in_woocommerce": "คำสั่งซื้อนี้ถูกเปลี่ยนใน WooCommerce เลือก ลองอีกครั้ง เพื่อตรวจสอบการเปลี่ยนแปลง"
 }

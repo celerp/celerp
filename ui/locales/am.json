@@ -6240,5 +6240,6 @@
   "event.fa.check.recorded": "ቋሚ ንብረት ተፈትሿል",
   "event.fa.check.removed": "የቋሚ ንብረት ፍተሻ ተወግዷል",
   "modules.turn_on": "አብራ",
-  "nav.my_assets": "የእኔ ንብረቶች"
+  "nav.my_assets": "የእኔ ንብረቶች",
+  "connectors.order_changed_in_woocommerce": "ይህ ትዕዛዝ በWooCommerce ተቀይሯል። ለውጡን ለመገምገም እንደገና ሞክር ይምረጡ።"
 }
