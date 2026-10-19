@@ -4199,9 +4199,9 @@ async def migration_withdraw_move_request(token: str, request_id: str) -> dict:
 
 
 async def migration_xero_attachments(token: str, run_id: str, action: str = "") -> dict:
-    """The Xero attachment fetch of a migration; ``action`` "start" or "stop" acts on it first.
-    Starting and stopping reach the cloud, so they get the cloud's time to answer."""
-    path = f"/migrations/{run_id}/xero-attachments" + ("/stop" if action == "stop" else "")
+    """The Xero attachment fetch of a migration; ``action`` "start", "confirm" or "stop" acts
+    on it first. Starting and stopping reach the cloud, so they get the cloud's time to answer."""
+    path = f"/migrations/{run_id}/xero-attachments" + (f"/{action}" if action in ("confirm", "stop") else "")
     async with _local_error_mapping():
         async with _local_client(token, timeout=40.0) as c:
             r = await (c.post(path) if action else c.get(path))

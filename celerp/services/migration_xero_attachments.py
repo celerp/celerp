@@ -3,10 +3,13 @@
 """Fetch the files attached to a Xero migration's documents and attach them in Celerp.
 
 A Xero export set carries no attachments. After the import, the owner signs in to Xero
-once through Celerp's read-only Xero app on the relay; Celerp then lists the invoices,
-bills and credit notes that have files, finds each one among the documents the
-migration imported by the key the export set gave it, and attaches its files. Documents
-that were not imported are listed with their file count, never downloaded.
+once through Celerp's read-only Xero app on the relay, sees which organisation the sign-in
+chose and starts the fetch. Celerp then lists the invoices, bills and credit notes that
+have files, finds each one among the documents the migration imported by the key the
+export set gave it, and attaches its files only when Xero's date, currency, total and
+contact are the document's imported values. Documents that were not imported or differ
+are listed with their file count and reason, never downloaded. Once files came from one
+organisation, a sign-in to another is refused.
 
 The fetch is resumable: the listing cursor is saved after each page and every file is
 attached under an idempotency key from its Xero id, so a retry, a restart or fetching
@@ -17,8 +20,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 
 import httpx
 from fastapi import HTTPException
@@ -26,6 +31,7 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import find_event_by_idempotency
+from celerp.models.ledger import LedgerEntry
 from celerp.models.migration import (
     MigrationAttachmentFetch,
     MigrationCleanupTask,
@@ -39,6 +45,7 @@ from celerp.services import cloud_entitlement
 from celerp.services.attachments import FILE_ATTACHED_EVENTS, attach_file, store_file
 from celerp.services.company_handoff_sender import cloud_json
 from celerp.services.migration_core_sink import stage_file_cleanup
+from celerp.services.money import round_money
 from celerp.services.migrations import _try_xact_lock
 from ui.i18n import t
 
@@ -47,6 +54,7 @@ logger = logging.getLogger(__name__)
 KINDS = ("Invoices", "CreditNotes")
 PAGE_SIZE = 100  # Xero's page size for invoices and credit notes
 LIVE = ("signing_in", "fetching", "waiting")
+OPEN = (*LIVE, "confirming")  # holds Xero access at the relay; "confirming" waits for the owner
 LOOP_S = 60
 RETRY_S = 300
 DOWNLOAD_S = 120
@@ -146,12 +154,15 @@ async def start(session: AsyncSession, run: MigrationRun, user_id: uuid.UUID) ->
         operation = _next_operation(run.id, row.operation_id if row else None)
     else:
         operation = row.operation_id
+    if row is not None and row.status == "confirming":  # signing in to another organisation
+        await close_at_relay(row.cloud_id)
     created = await _cloud("POST", "/xero-attachments", payload={"operation_id": str(operation)}, expected=201)
     if row is None:
         row = MigrationAttachmentFetch(migration_run_id=run.id, started_by_user_id=user_id)
         session.add(row)
     if row.operation_id != operation:
         row.progress, row.organisation, row.error, row.next_attempt_at = {}, "", "", None
+        row.tenant_id = None
     row.operation_id, row.status, row.started_by_user_id = operation, "signing_in", user_id
     row.cloud_id = str(created.get("id") or "") or None
     await session.commit()
@@ -160,10 +171,23 @@ async def start(session: AsyncSession, run: MigrationRun, user_id: uuid.UUID) ->
     return out
 
 
+async def confirm(session: AsyncSession, run: MigrationRun) -> dict:
+    """The owner saw the organisation the sign-in chose and starts fetching from it, which
+    binds these books to it. Refused when no sign-in is waiting for it."""
+    _require_xero(run)
+    row = await _row(session, run.id, lock=True)
+    if row is None or row.status != "confirming" or not row.tenant_id:
+        raise HTTPException(status_code=409, detail=t("migration.xero_att_confirm_gone"))
+    row.bound_tenant_id, row.bound_organisation = row.tenant_id, row.organisation
+    row.status, row.error, row.next_attempt_at = "fetching", "", None
+    await session.commit()
+    return await view(session, run)
+
+
 async def stop(session: AsyncSession, run: MigrationRun) -> dict:
     """End a fetch in progress and close its Xero access. Files already attached stay."""
     row = await _row(session, run.id, lock=True)
-    if row is not None and row.status in LIVE:
+    if row is not None and row.status in OPEN:
         row.status, row.next_attempt_at = "stopped", None
         cloud_id = row.cloud_id
         await session.commit()
@@ -174,7 +198,43 @@ async def stop(session: AsyncSession, run: MigrationRun) -> dict:
 async def discarded_cloud_id(session: AsyncSession, run_id: uuid.UUID) -> str | None:
     """The relay fetch to close when a migration is discarded with its fetch still open."""
     row = await _row(session, run_id)
-    return row.cloud_id if row is not None and row.status in LIVE else None
+    return row.cloud_id if row is not None and row.status in OPEN else None
+
+
+async def _attached_any(session: AsyncSession, run_id: uuid.UUID) -> bool:
+    """Whether a file fetched for this migration was attached."""
+    return await session.scalar(select(LedgerEntry.id).where(
+        LedgerEntry.idempotency_key.like(_idempotency_key(run_id, "%"))).limit(1)) is not None
+
+
+def _xero_date(doc: dict) -> str | None:
+    """The document's date as YYYY-MM-DD, from DateString or Xero's /Date(ms)/ form."""
+    if isinstance(doc.get("DateString"), str) and len(doc["DateString"]) >= 10:
+        return doc["DateString"][:10]
+    ms = re.match(r"/Date\((-?\d+)", str(doc.get("Date") or ""))
+    return datetime.fromtimestamp(int(ms[1]) / 1000, timezone.utc).date().isoformat() if ms else None
+
+
+def _total(value, currency: str) -> Decimal | None:
+    try:
+        return round_money(Decimal(str(value)), currency) if value is not None and currency else None
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def differences(doc: dict, imported: dict) -> list[str]:
+    """The fields of Xero's *doc* that differ from the *imported* document's source values:
+    date, currency, total and contact. A value missing on either side differs."""
+    currency = str(imported.get("currency") or "").upper()
+    same = {
+        "date": _xero_date(doc) is not None and _xero_date(doc) == imported.get("issue_date"),
+        "currency": bool(currency) and str(doc.get("CurrencyCode") or "").upper() == currency,
+        "total": _total(doc.get("Total"), currency) is not None
+        and _total(doc.get("Total"), currency) == _total(imported.get("total"), currency),
+        "contact": bool(imported.get("contact_name")) and str((doc.get("Contact") or {}).get("Name") or "")
+        .strip().casefold() == str(imported["contact_name"]).strip().casefold(),
+    }
+    return [field for field, ok in same.items() if not ok]
 
 
 # ── Fetching ─────────────────────────────────────────────────────────────────
@@ -192,6 +252,8 @@ class _Fetch:
         self.row_id, self.operation, self.cloud_id = row.id, row.operation_id, row.cloud_id
         self.status, self.progress, self.now = row.status, dict(row.progress or {}), now
         self.organisation = row.organisation
+        self.tenant_id, self.bound_tenant_id = row.tenant_id, row.bound_tenant_id
+        self.bound_organisation = row.bound_organisation
 
     async def save(self, **values) -> bool:
         async with _maker()() as s:
@@ -246,17 +308,31 @@ class _Fetch:
         fetch = (await self.relay(f"/xero-attachments/{self.cloud_id}")).json()
         status = fetch.get("status")
         if status == "connected":
-            self.organisation = str(fetch.get("organisation") or "")[:200]
-            await self.save(status="fetching", organisation=self.organisation, error="", next_attempt_at=None)
-            return True
+            organisation, tenant = str(fetch.get("organisation") or "")[:200], str(fetch.get("tenant_id") or "")[:64]
+            if not tenant:
+                await self.fail(t("migration.xero_att_ended"))
+            if self.bound_tenant_id and tenant != self.bound_tenant_id:
+                async with _maker()() as s:
+                    attached = await _attached_any(s, self.run_id)
+                if attached:
+                    await self.fail(t("migration.xero_att_other_org", organisation=organisation or "Xero",
+                                      bound=self.bound_organisation or "Xero"))
+            # The owner sees the organisation and starts the fetch (confirm).
+            await self.save(status="confirming", organisation=organisation, tenant_id=tenant, error="",
+                            next_attempt_at=None)
+            return False
         if status == "signing_in":
             return False
         await self.fail(str(fetch.get("error") or "") or t("migration.xero_att_ended"))
         return False
 
     async def run(self) -> None:
-        if self.status == "signing_in" and not await self.signing_in():
+        if self.status == "signing_in":
+            await self.signing_in()
             return
+        if not self.tenant_id or self.tenant_id != self.bound_tenant_id:
+            await self.fail(t("migration.xero_att_other_org", organisation=self.organisation or "Xero",
+                              bound=self.bound_organisation or "Xero"))
         if self.status == "waiting":
             await self.save(status="fetching", error="", next_attempt_at=None)
         kind_index, page = int(self.progress.get("kind", 0)), int(self.progress.get("page", 1))
@@ -301,6 +377,12 @@ class _Fetch:
                 counts["unmatched"].append({"document": number, "contact": contact, "files": len(files),
                                             "reason": t("migration.xero_att_not_imported_doc")})
                 continue
+            differ = differences(doc, await self.imported(target))
+            if differ:
+                counts["unmatched"].append({"document": number, "contact": contact, "files": len(files),
+                                            "reason": t("migration.xero_att_mismatch", fields=", ".join(
+                                                t(f"migration.xero_att_field_{field}") for field in differ))})
+                continue
             for meta in files:
                 counts["total"] += 1
                 problem = await self.attach(kind, doc_id, target, meta)
@@ -323,6 +405,14 @@ class _Fetch:
         by_key = {k: (entity_type, str(entity_id)) for k, entity_type, entity_id in found
                   if entity_type in FILE_ATTACHED_EVENTS}
         return next((by_key[k] for k in keys if k in by_key), None)
+
+    async def imported(self, target: tuple[str, str]) -> dict:
+        """The source values this migration imported the *target* document with."""
+        async with _maker()() as s:
+            data = await s.scalar(select(LedgerEntry.data).where(
+                LedgerEntry.company_id == self.company_id, LedgerEntry.entity_id == target[1],
+                LedgerEntry.event_type == "doc.created", LedgerEntry.source == "migration").limit(1))
+        return data or {}
 
     async def attach(self, kind: str, doc_id: str, target: tuple[str, str], meta: dict) -> str | None:
         """Download one file and attach it to its document. Returns why it was not attached."""

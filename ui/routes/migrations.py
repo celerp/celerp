@@ -1714,6 +1714,10 @@ def migrations_routes(app) -> None:
     async def migration_xero_attachments_start(request: Request, run_id: str):
         return await _xero_attachments(request, run_id, "start")
 
+    @app.post("/migrations/{run_id}/xero-attachments/confirm")
+    async def migration_xero_attachments_confirm(request: Request, run_id: str):
+        return await _xero_attachments(request, run_id, "confirm")
+
     @app.post("/migrations/{run_id}/xero-attachments/stop")
     async def migration_xero_attachments_stop(request: Request, run_id: str):
         return await _xero_attachments(request, run_id, "stop")
@@ -2051,6 +2055,13 @@ def _xero_attachments_panel(request: Request, run_id: str, fetch: dict, *, error
                       cls="btn btn--primary btn--sm") if url else "",
                     Button(t("company_backup.ready_copy_link"), type="button", cls="btn btn--secondary btn--sm",
                            **{"data-copy": "", "data-copy-text": url}) if url else "",
+                    stop, cls="form-actions")]
+    elif status == "confirming":
+        body = [P(t("migration.xero_attachments_confirm_hint", **counts)),
+                Div(Button(t("migration.xero_attachments_confirm"), type="button", hx_post=f"{base}/confirm",
+                           cls="btn btn--primary btn--sm", **swap),
+                    Button(t("migration.xero_attachments_other_org"), type="button", hx_post=base,
+                           cls="btn btn--secondary btn--sm", **swap),
                     stop, cls="form-actions")]
     elif status in ("fetching", "waiting"):
         body = [flash(fetch["error"], "warning") if status == "waiting" and fetch.get("error") else "",

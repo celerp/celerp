@@ -747,6 +747,13 @@ async def start_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(g
         raise
 
 
+@router.post("/{run_id}/xero-attachments/confirm")
+async def confirm_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
+                                   session: AsyncSession = Depends(get_session)) -> dict:
+    """Fetch from the organisation the Xero sign-in chose, as the owner saw it."""
+    return await xero_attachments.confirm(session, await _owned_run(session, run_id, ctx))
+
+
 @router.post("/{run_id}/xero-attachments/stop")
 async def stop_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                 session: AsyncSession = Depends(get_session)) -> dict:

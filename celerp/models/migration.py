@@ -179,6 +179,11 @@ class MigrationAttachmentFetch(Base):
     # signing_in, fetching, waiting (a Xero limit), done, stopped or failed
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     organisation: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    # The Xero organisation (its stable tenant id) the current sign-in chose, and the one the
+    # owner confirmed and files were fetched from; the binding outlives each fetch.
+    tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bound_tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bound_organisation: Mapped[str] = mapped_column(String(200), nullable=False, default="", server_default="")
     error: Mapped[str] = mapped_column(Text, nullable=False, default="")
     progress: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
