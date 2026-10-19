@@ -131,6 +131,12 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
     return text.format(**kwargs) if kwargs else text
 
 
+def try_again_labels() -> list[str]:
+    """What every language calls the Try again action, so a notice written in one language and
+    shown in another still gets its button."""
+    return sorted({_cached_load(lang).get("btn.try_again", "Try again") for lang in available_langs()})
+
+
 # The system price lists every company starts with (they cannot be deleted) are UI
 # labels and translate; any other price list name is user data. One source: the
 # names come from PRICE_LISTS_FALLBACK, each keyed chip.<name>.

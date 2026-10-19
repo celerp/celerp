@@ -13,7 +13,7 @@ from fasthtml.common import *
 
 from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, reason_key
 from ui.config import COOKIE_NAME, get_role
-from ui.i18n import t, get_lang, available_langs
+from ui.i18n import t, get_lang, available_langs, try_again_labels
 from ui.components.table import searchable_select
 
 # Cache-bust static assets by hashing app.css content
@@ -144,7 +144,35 @@ function celerpLineSelection(rows) {
 function celerpCount(forms, n) {
   return forms[n === 1 ? 'one' : 'many'].replace('{n}', n);
 }
+// Try again: a notice that tells the user to select Try again gets the button that does it. The
+// one place that makes it, for notices the server draws, toasts and swapped-in responses alike.
+// Reloading the page is the click's job and never happens on its own.
+var _CELERP_NOTICE = '.cell-error, .flash, .error-banner, .error-inline, .toast__msg, #global-ui-error, #save-status, #scan-bar-status, .account-panel__notice';
+function _namesTryAgain(text) {
+  return window.__shellI18n.tryAgainLabels.some(function(label) { return text.indexOf(label) !== -1; });
+}
+function celerpTryAgain(root) {
+  root.querySelectorAll(_CELERP_NOTICE).forEach(function(notice) {
+    if (notice.querySelector(_CELERP_NOTICE + ', .try-again') || !_namesTryAgain(notice.textContent)) return;
+    var label = window.__shellI18n.tryAgainLabels.filter(function(l) { return notice.textContent.indexOf(l) !== -1; })[0];
+    var button = document.createElement('a');
+    button.className = 'btn btn--secondary btn--sm try-again';
+    button.href = location.href;
+    button.textContent = label;
+    button.onclick = function(ev) { ev.preventDefault(); location.reload(); };
+    notice.appendChild(document.createTextNode(' '));
+    notice.appendChild(button);
+  });
+}
+function _celerpWatchTryAgain() {
+  celerpTryAgain(document);
+  new MutationObserver(function() { celerpTryAgain(document); })
+    .observe(document.body, {childList: true, subtree: true});
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _celerpWatchTryAgain);
+else _celerpWatchTryAgain();
 function celerpToast(message, type, persist, action) {
+  persist = persist || _namesTryAgain(message);
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }
   var toast = document.createElement('div');
@@ -1937,6 +1965,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "importHint": t("shell.import_hint", lang),
         "demoHint": t("shell.demo_hint", lang),
         "close": t("btn.close", lang),
+        "tryAgainLabels": try_again_labels(),
     }
 
 

@@ -2862,7 +2862,7 @@ celerpUpdateBulkAlloc();
             if new_pl:
                 version = (await api.get_doc(token, entity_id)).get("version")
                 if version is None:
-                    raise APIError(409, "Reload the document before repricing")
+                    raise APIError(409, "Select Try again before repricing")
                 await api.reprice_doc(token, entity_id, new_pl, int(version))
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
@@ -8002,7 +8002,6 @@ window._L = {_json.dumps({
     "net_subtotal": t("documents.net_subtotal"),
     "double_click_rename": t("documents.double_click_rename"),
     "save_failed": t("documents.save_failed"),
-    "save_reload_action": t("documents.save_reload_action"),
     "invalid_qty": t("documents.enter_a_number"),
     "dup_on_doc": t("documents.duplicate_item_on_document"),
     "reprice_failed": t("documents.reprice_failed"),
@@ -9161,16 +9160,8 @@ async function _celerpRefreshHeldBadges() {{
             // Another save landed first, so this tab's rows are stale. Offer the only safe
             // way back to a consistent state - reload the latest before editing again - rather
             // than a dead-end error. Nothing was written.
-            statusEl.textContent = '';
             statusEl.style.color = 'red';
-            const label = document.createElement('span');
-            label.textContent = '\\u2717 ' + msg + ' ';
-            const reload = document.createElement('button');
-            reload.type = 'button';
-            reload.className = 'btn btn--ghost btn--xs';
-            reload.textContent = _L.save_reload_action;
-            reload.onclick = function() {{ window.location.reload(); }};
-            statusEl.append(label, reload);
+            statusEl.textContent = '\\u2717 ' + msg;
         }} else {{
             // Nothing was written: put the stored lines back in place so the table matches
             // what is saved, and say why.

@@ -650,7 +650,7 @@ async def _set_order_reconciled(
         if signature is not None and entry["signature"] != signature:
             raise HTTPException(
                 status_code=409,
-                detail="This order changed in WooCommerce; refresh to review the change",
+                detail="This order changed in WooCommerce. Select Try again to review the change.",
             )
         entry["reconciled"] = signature is not None
 

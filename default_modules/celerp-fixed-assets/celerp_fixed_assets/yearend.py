@@ -202,7 +202,7 @@ async def mark(session, company_id, user_id, year, body: dict) -> dict:
         raise setup.unprocessable("Describe the effect of accepting this item on the figures.")
     found = next((i for i in (await report(session, company_id, year))["items"] if i["key"] == key), None)
     if found is None:
-        raise HTTPException(status_code=404, detail="There is no such year-end item. Reload the year end.")
+        raise HTTPException(status_code=404, detail="There is no such year-end item. Select Try again.")
     if state == "accepted" and found["kind"] == "tax":
         raise conflict(f"{found['label']}. A tax year keeps its figures for the years after it, so a missing "
                        f"figure cannot be accepted. {found['remedy']} Note it while it waits.")

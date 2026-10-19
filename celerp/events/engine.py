@@ -366,7 +366,7 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
         if not current or current != data.get("from_account"):
             raise HTTPException(status_code=409, detail=refusal(
                 "inventory.account_moved_since",
-                "This stock has moved to another inventory account since it was read. Reload and try again."))
+                "This stock has moved to another inventory account since it was read. Select Try again."))
         return
     changed = data.get("fields_changed")
     if LOT_ACCOUNT_FIELD in data:

@@ -3963,7 +3963,7 @@ async def remove_line_attachment(
     if held is None:
         raise HTTPException(status_code=404, detail=refusal(
             "accounting.statement_attachment_not_found",
-            "This statement line has no such attachment. Reload the line to see the "
+            "This statement line has no such attachment. Select Try again to see the "
             "attachments it holds, then remove one of those."))
     name = company_file_name(company_id, held)
     if name is not None:

@@ -416,7 +416,7 @@ async def _locked_note(session: AsyncSession, company_id, contact_id: str, note_
             or note.state.get("deleted"):
         raise HTTPException(status_code=404, detail=refusal(
             "contacts.note_not_found",
-            "That note is not on this contact. Reload the contact to see its notes, then "
+            "That note is not on this contact. Select Try again to see its notes, then "
             "edit or remove one of those."))
 
 

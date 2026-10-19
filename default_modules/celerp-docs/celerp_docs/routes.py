@@ -4831,13 +4831,13 @@ def _resolve_inbound_line(doc: dict, it: ReceivedItem, item_skus: dict[str, str]
         if len(found) != 1:
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.receive_line_unknown",
-                f"{what}: that line is not on this document. Reload the document and pick the line again.",
+                f"{what}: that line is not on this document. Select Try again, then pick the line again.",
                 what=what))
         index = found[0]
         if it.po_line_index not in (-1, index):
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.receive_line_mismatch",
-                f"{what}: that line has moved on this document. Reload the document and pick the line again.",
+                f"{what}: that line has moved on this document. Select Try again, then pick the line again.",
                 what=what))
     elif it.po_line_index != -1:
         if not 0 <= it.po_line_index < len(lines):
@@ -6682,7 +6682,7 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, 
         if index is None:
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.return_line_unknown",
-                "A selected line is not on this document as named. Reload the document and select the lines again."))
+                "A selected line is not on this document as named. Select Try again, then select the lines again."))
         if index in picked:
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.return_line_once", "Each line can be selected once."))
@@ -9722,7 +9722,7 @@ def _selected_line_indices(line_items: list[dict], body: FulfillLinesRequest) ->
         index_of = {li.get("line_id"): i for i, li in enumerate(line_items) if li.get("line_id")}
         if any(lid not in index_of for lid in body.line_ids):
             raise HTTPException(status_code=422, detail=refusal(
-                "lines.not_on_document", "A line you chose is no longer on this record. Reload it and choose again."))
+                "lines.not_on_document", "A line you chose is no longer on this record. Select Try again, then choose again."))
         return sorted({index_of[lid] for lid in body.line_ids})
     binders: dict[str, list[int]] = {}
     for i, li in enumerate(line_items):
@@ -9733,7 +9733,7 @@ def _selected_line_indices(line_items: list[dict], body: FulfillLinesRequest) ->
         lines = binders.get(eid, [])
         if not lines:
             raise HTTPException(status_code=422, detail=refusal(
-                "lines.not_on_document", "A line you chose is no longer on this record. Reload it and choose again."))
+                "lines.not_on_document", "A line you chose is no longer on this record. Select Try again, then choose again."))
         if len(lines) > 1:
             sku = str(line_items[lines[0]].get("sku") or "")
             raise HTTPException(status_code=409, detail=refusal(

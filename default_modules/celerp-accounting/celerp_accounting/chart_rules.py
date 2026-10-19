@@ -272,7 +272,7 @@ async def change_account(
     if acc is None:
         raise HTTPException(status_code=404, detail=refusal(
             "chart.account_not_found",
-            "Celerp couldn't find this account. It may have been deleted. Refresh the page."))
+            "Celerp couldn't find this account. It may have been deleted. Select Try again."))
     await check_account_change(session, company_id, acc, account_type=account_type, is_active=is_active)
     # Read after the row lock, so a role remap that committed meanwhile is seen.
     settings = await current_settings(session, company_id)

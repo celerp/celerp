@@ -4438,7 +4438,7 @@ class TestListsCreateBlank:
         {code: stale_version} body with status 409, so the page branches on the code, never on
         English message text."""
         from ui.api_client import APIError
-        mock = AsyncMock(side_effect=APIError(409, "This list was changed by someone else; reload to get the latest before saving"))
+        mock = AsyncMock(side_effect=APIError(409, "This list was changed by someone else. Select Try again to get the latest before saving."))
         with patch("ui.api_client.patch_list_line_page", create=True, new=mock):
             r = await ui_client.post(
                 "/lists/list:WO-1/lines",
@@ -6276,10 +6276,8 @@ class TestCompanyFilesAggregation:
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(503, "down"))):
             r = await ui_client.get("/contacts/c1", cookies=_authed())
-        assert "down" in r.text and "contact could not be loaded" in r.text and "Select Try again to reload the page" in r.text
-        assert "Reload the page" not in r.text
-        retry = r.text.split("Try again</a>", 1)[0].rsplit("<a ", 1)[1]
-        assert 'href="/contacts/c1"' in retry and "hx-get" not in retry and "btn btn--secondary btn--sm" in retry
+        assert "down" in r.text and "contact could not be loaded" in r.text and "Select Try again." in r.text
+        assert "eload" not in r.text.split("contact could not be loaded", 1)[1].split("</div>", 1)[0]
 
     @pytest.mark.asyncio
     async def test_a_failed_documents_read_keeps_the_contact_page_and_shows_the_notice_in_the_documents_tab(self, ui_client):
@@ -6291,13 +6289,12 @@ class TestCompanyFilesAggregation:
         assert r.status_code == 200
         assert "Acme Trading" in r.text and "tab-bar" in r.text
         tab = r.text.split('id="tab-content"', 1)[1]
-        assert "documents, files and totals could not be loaded" in tab and "Select Try again to reload the page" in tab
+        assert "documents, files and totals could not be loaded" in tab and "Select Try again." in tab
         assert "Open Documents again" not in tab and "None yet" not in tab
         assert "financial-card" not in r.text
-        # Try again is a plain link to the contact page (a full reload, never an htmx swap), and the
-        # Documents tab on this state does the same, so cards, files and documents come back together.
-        retry = tab.split("Try again</a>", 1)[0].rsplit("<a ", 1)[1]
-        assert 'href="/contacts/c1"' in retry and "hx-get" not in retry and "btn btn--secondary btn--sm" in retry
+        # The Documents tab on this state is a plain link to the contact page (a full load, never an
+        # htmx swap), so cards, files and documents come back together; the notice's Try again button
+        # comes from the shell.
         docs_tab = r.text.split('id="tab-documents"', 1)[0].rsplit("<a ", 1)[1] + r.text.split('id="tab-documents"', 1)[1].split("</a>", 1)[0]
         assert 'href="/contacts/c1"' in docs_tab and "hx-get" not in docs_tab
         assert 'hx-get="/contacts/c1/tab/notes"' in r.text
@@ -6317,15 +6314,16 @@ class TestCompanyFilesAggregation:
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(404, sentence))):
             r = await ui_client.get("/contacts/c1", cookies=_authed())
-        assert sentence in r.text and "could not be loaded" not in r.text and "Reload the page" not in r.text
+        assert sentence in r.text and "could not be loaded" not in r.text
         assert 'class="page-title"' in r.text
+        assert "Select Try again" not in r.text.split('class="page-title"', 1)[1].split("<script", 1)[0]
 
     @pytest.mark.asyncio
     async def test_a_temporary_contact_failure_keeps_the_wrapper_and_has_a_heading(self, ui_client):
         from ui.api_client import APIError
         with patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(503, "down"))):
             r = await ui_client.get("/contacts/c1", cookies=_authed())
-        assert "Select Try again to reload the page" in r.text and 'class="page-title"' in r.text
+        assert "Select Try again." in r.text and 'class="page-title"' in r.text
 
     @pytest.mark.asyncio
     async def test_a_contact_with_no_documents_still_shows_none_yet(self, ui_client):

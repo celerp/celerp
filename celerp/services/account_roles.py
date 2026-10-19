@@ -615,7 +615,7 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
     if company is None:
         raise HTTPException(status_code=404, detail=refusal(
             "posting.company_not_found",
-            "Celerp couldn't find this company. It may have been deleted. Refresh the page."))
+            "Celerp couldn't find this company. It may have been deleted. Select Try again."))
     # A child added under the account meanwhile would turn it into a header.
     await lock_chart(session, company_id)
     before = dict(company.settings or {})

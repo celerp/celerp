@@ -235,16 +235,16 @@ def test_batch_limit_says_remove_some():
 # -- Copy -------------------------------------------------------------------
 
 @pytest.mark.parametrize("key,needle", [
-    ("api.timed_out", "Refresh the page to see whether it worked"),
+    ("api.timed_out", "Select Try again"),
     ("api.unreachable", "restart Celerp"),
     ("page.api_unavailable", "isn't responding"),
-    ("dashboard.error_loading", "Refresh the page"),
+    ("dashboard.error_loading", "Select Try again"),
     ("ai.action_expired", "Ask the assistant again"),
     ("ai.action_failed", "make the change yourself"),
     ("ai.confirm_all_result", "Open the ones marked"),
     ("ai.confirm_all_result_attention", "see what to fix"),
-    ("ai.conversation_load_failed", "Refresh the page"),
-    ("ai.conversations_load_failed", "Refresh the page"),
+    ("ai.conversation_load_failed", "Select Try again"),
+    ("ai.conversations_load_failed", "Select Try again"),
     ("ai.memory_load_failed", "saved notes"),
     ("ai.quota_unavailable", "internet connection"),
     ("ai.job_failed", "attach them again"),

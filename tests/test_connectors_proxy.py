@@ -659,7 +659,7 @@ async def test_mark_reconciled_route_explains_a_refusal(reconcile_ui):
     from ui.api_client import APIError
 
     client, cookies, setter = reconcile_ui
-    setter.side_effect = APIError(409, "This order changed in WooCommerce; refresh to review the change")
+    setter.side_effect = APIError(409, "This order changed in WooCommerce. Select Try again to review the change.")
     entry = {"id": "7", "label": "Order 7", "reason": "has a refund", "signature": "sig-8"}
     with patch("celerp.connectors.sync_runner.attention_entries", AsyncMock(return_value=[entry])):
         async with client:

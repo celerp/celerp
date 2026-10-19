@@ -79,13 +79,13 @@ def test_unused_restart_key_is_gone():
     ("module_import.unsafe", "Only install modules from developers you trust"),
     ("module_import.too_large", "Ask the module's developer for a smaller version."),
     ("modules.delete_failed", "Restart Celerp and try again."),
-    ("marketplace.from_cache", "Check your internet connection and reload the page."),
+    ("marketplace.from_cache", "Select Try again"),
     ("marketplace.import_failed", "Download it again and retry"),
     ("modules.required_by", "Disable those first."),
     ("setup.modules_failed_to_start", "Open the Modules page"),
     ("modules.load_failed", "or turn the module off."),
     ("modules.not_reported", "gave no reason"),
-    ("error.category_not_found", "It may have been deleted. Refresh the page."),
+    ("error.category_not_found", "Select Try again"),
 ])
 def test_module_messages_say_what_to_do(key, says):
     assert says in t(key, "en", name="X", label="X", error="E", exc="E", names="X")

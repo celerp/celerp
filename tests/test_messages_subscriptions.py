@@ -40,15 +40,15 @@ async def test_pausing_a_draft_says_only_active_can_pause(client):
 
 
 @pytest.mark.parametrize("key, says", [
-    ("subscriptions.err_not_found", "Refresh the list."),
+    ("subscriptions.err_not_found", "Select Try again"),
     ("subscriptions.err_generate_cancelled", "Create a new subscription"),
     ("subscriptions.err_pause_not_active", "Only an active subscription can be paused."),
     ("subscriptions.err_resume_not_paused", "Only a paused subscription can be resumed."),
     ("subscriptions.err_already_cancelled", "Nothing more to do."),
     ("subscriptions.err_activate_not_draft", "Only a draft subscription can be activated."),
     ("subscriptions.err_frequency_required", "then activate it"),
-    ("msg.could_not_load_quota_data", "Refresh the page."),
-    ("msg.could_not_load_usage_data", "Refresh the page."),
+    ("msg.could_not_load_quota_data", "Select Try again"),
+    ("msg.could_not_load_usage_data", "Select Try again"),
     ("error.api_not_found", "use the menu"),
 ])
 def test_subscription_messages_say_what_to_do(key, says):
