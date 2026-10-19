@@ -1,5 +1,5 @@
 diff --git a/out/AppUpdater.js b/out/AppUpdater.js
-index 7358a8f0efca83c0e05186fa51f154592b66c8dd..ee659a1304e5d7e7bb3b95c0dc5cceed6054ee29 100644
+index 7358a8f0efca83c0e05186fa51f154592b66c8dd..0f7a6c06bcbe6e03f79f8a7d9df7b5b84fca7921 100644
 --- a/out/AppUpdater.js
 +++ b/out/AppUpdater.js
 @@ -404,6 +404,17 @@ class AppUpdater extends events_1.EventEmitter {
@@ -29,23 +29,28 @@ index 7358a8f0efca83c0e05186fa51f154592b66c8dd..ee659a1304e5d7e7bb3b95c0dc5cceed
              await taskOptions.done({
                  ...updateInfo,
                  downloadedFile: updateFile,
-@@ -614,19 +625,35 @@ class AppUpdater extends events_1.EventEmitter {
+@@ -614,19 +625,40 @@ class AppUpdater extends events_1.EventEmitter {
              });
          };
          const tempUpdateFile = await (0, DownloadedUpdateHelper_1.createTempUpdateFile)(`temp-${updateFileName}`, cacheDir, log);
 +        // On Windows, antivirus holds a freshly written file for a while, and renaming or deleting
-+        // it fails with EPERM, EACCES or EBUSY until it lets go: wait up to 60 seconds.
-+        const retryWhileHeld = (task, what) => (0, builder_util_runtime_1.retry)(task, {
-+            retries: 120,
-+            interval: 500,
-+            shouldRetry: (error) => {
-+                if (error instanceof Error && /^(EBUSY|EPERM|EACCES):/.test(error.message)) {
-+                    return true;
++        // it fails with EPERM, EACCES or EBUSY until it lets go: wait up to 60 seconds. Node's own
++        // fs is used because fs-extra's rename already retries for up to 60 seconds per call on
++        // Windows, which would stretch the wait to hours.
++        const retryWhileHeld = async (task) => {
++            const deadline = Date.now() + 60000;
++            for (;;) {
++                try {
++                    return await task(require("fs").promises);
 +                }
-+                log.warn(`Cannot ${what}: ${error.message || error.stack}`);
-+                return false;
-+            },
-+        });
++                catch (error) {
++                    if (!(error instanceof Error && /^(EBUSY|EPERM|EACCES):/.test(error.message)) || Date.now() >= deadline) {
++                        throw error;
++                    }
++                    await new Promise(resolve => setTimeout(resolve, 500));
++                }
++            }
++        };
          try {
              await taskOptions.task(tempUpdateFile, downloadOptions, packageFile, removeFileIfAny);
 -            await (0, builder_util_runtime_1.retry)(() => (0, fs_extra_1.rename)(tempUpdateFile, updateFile), {
@@ -57,7 +62,7 @@ index 7358a8f0efca83c0e05186fa51f154592b66c8dd..ee659a1304e5d7e7bb3b95c0dc5cceed
 +            // An old cached installer that cannot be removed must not fail the update: the new
 +            // one is then installed from its temp file.
 +            if (await (0, fs_extra_1.pathExists)(updateFile)) {
-+                await retryWhileHeld(() => (0, fs_extra_1.unlink)(updateFile), `remove ${updateFile}`).catch((e) => {
++                await retryWhileHeld(fs => fs.unlink(updateFile)).catch((e) => {
 +                    if (e.code === "ENOENT") {
 +                        return;
                      }
@@ -70,7 +75,7 @@ index 7358a8f0efca83c0e05186fa51f154592b66c8dd..ee659a1304e5d7e7bb3b95c0dc5cceed
 +                });
 +            }
 +            if (updateFile !== tempUpdateFile) {
-+                await retryWhileHeld(() => (0, fs_extra_1.rename)(tempUpdateFile, updateFile), "rename temp file to final file");
++                await retryWhileHeld(fs => fs.rename(tempUpdateFile, updateFile));
 +            }
          }
          catch (e) {

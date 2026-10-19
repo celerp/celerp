@@ -19,7 +19,6 @@ const updaterDir = path.dirname(require.resolve("electron-updater/package.json")
 const fromUpdater = (id) => require(require.resolve(id, { paths: [updaterDir] }));
 const { AppUpdater } = require("electron-updater/out/AppUpdater");
 const { DownloadedUpdateHelper } = require("electron-updater/out/DownloadedUpdateHelper");
-const fsExtra = fromUpdater("fs-extra");
 const { CancellationToken } = fromUpdater("builder-util-runtime");
 
 const NAME = "Celerp-Setup.exe";
@@ -28,12 +27,14 @@ function windowsError(code, op) {
   return Object.assign(new Error(`${code}: operation not permitted, ${op}`), { code });
 }
 
-// fn(original, args, call) decides each call: throw to fail it, or return
-// original(...args) to let it through. `call` counts the calls fn has seen.
+// fn(original, args, call) decides each call to fs.promises[name]: throw to
+// fail it, or return original(...args) to let it through. `call` counts the
+// calls fn has seen. The patch must use Node's own fs: on Windows, fs-extra's
+// rename retries for up to 60 seconds inside each call.
 function intercept(name, fn) {
-  const original = fsExtra[name];
+  const original = fs.promises[name];
   let call = 0;
-  return jest.spyOn(fsExtra, name).mockImplementation((...args) => fn(original, args, call++));
+  return jest.spyOn(fs.promises, name).mockImplementation((...args) => fn(original, args, call++));
 }
 
 // Real time, which the tests' fake timers leave alone.
