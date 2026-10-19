@@ -166,7 +166,8 @@ class PaymentsNotClosed(Exception):
     ``reason`` is "disconnected", "payment_settling", "payment_unrecorded",
     "reconnect_required" (a payment can be checked only once the merchant reconnects
     the Stripe account they withdrew), "update_required" (a refund waits for a
-    version of Celerp that can record it) or "unconfirmed".
+    version of Celerp that can record it), "fees_settling" (a payment's or refund's
+    provider fees are not reported or recorded yet) or "unconfirmed".
     """
 
     def __init__(self, reason: str) -> None:
@@ -177,7 +178,8 @@ class PaymentsNotClosed(Exception):
 _CLOSURE = "/billing/connect/companies/retire"
 _RECOVERY = "/billing/connect/recovery"
 _PREPARED = ("prepared", "retired")
-_REFUSED = ("payment_settling", "payment_unrecorded", "reconnect_required", "update_required")
+_REFUSED = ("payment_settling", "payment_unrecorded", "reconnect_required", "update_required",
+            "fees_settling")
 # Answers after which a step can never succeed: the request is forgotten, and Celerp
 # Cloud keeps the company's payments closed.
 _FINAL = {"finalize": ("generation_stale", "cancelled", "not_prepared"),
