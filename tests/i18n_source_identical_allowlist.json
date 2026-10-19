@@ -155,6 +155,7 @@
     "settings_cloud.in_mins",
     "settings_sales.line_ident_barcode_sku",
     "setup.cloud",
+    "shell.update_details",
     "th.barcode",
     "th.code",
     "th.detail",
