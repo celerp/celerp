@@ -3,7 +3,7 @@
 "use strict";
 
 const { EventEmitter } = require("events");
-const { trackUpdater, serveUpdateState } = require("../update-state");
+const { trackUpdater, serveUpdateState, updateFailure } = require("../update-state");
 
 // A fake electron-updater: the tracker only subscribes to its events.
 function setup() {
@@ -336,4 +336,51 @@ test("every change sent carries a higher revision than the state read before it"
     const revisions = windowSent.map(([, state]) => state.revision);
     expect([before.revision, ...revisions]).toEqual([0, 1, 2, 3]);
     expect(handlers["get-update-state"]().revision).toBe(3);
+  });
+
+test("a failure links the release page of the version being installed, or the latest release before one is known",
+  function test_error_carries_release_page_url() {
+    const { updater, getUpdateState } = setup();
+    updater.emit("error", new Error("getaddrinfo ENOTFOUND github.com"));
+    expect(getUpdateState().releaseUrl).toBe("https://github.com/celerp/celerp/releases/latest");
+    updater.emit("update-available", { version: "2.6.1" });
+    expect(getUpdateState().releaseUrl).toBe("");
+    updater.emit("error", new Error("EPERM: operation not permitted, rename"));
+    expect(getUpdateState().releaseUrl).toBe("https://github.com/celerp/celerp/releases/tag/v2.6.1");
+  });
+
+test("onFailure hears of a download that fails, once, and again after the user dismisses it",
+  function test_on_failure_fires_once_per_failed_download() {
+    const updater = new EventEmitter();
+    const failures = [];
+    const { dismissError } = trackUpdater(updater, () => {}, (state) => failures.push(state.message));
+    updater.emit("error", new Error("offline"));            // a failed check, no download
+    updater.emit("update-available", { version: "2.6.1" });
+    updater.emit("error", new Error("EPERM: rename"));      // the download fails
+    updater.emit("error", new Error("EPERM: rename"));      // the app's own retry fails too
+    expect(failures).toEqual(["EPERM: rename"]);
+    dismissError();
+    updater.emit("update-available", { version: "2.6.1" });
+    updater.emit("error", new Error("sha512 checksum mismatch"));
+    expect(failures).toEqual(["EPERM: rename", "sha512 checksum mismatch"]);
+  });
+
+test("a failure is told in plain words, by what failed, with the installer to download",
+  function test_update_failure_copy() {
+    const url = "https://github.com/celerp/celerp/releases/tag/v2.6.1";
+    const locked = updateFailure("EPERM: operation not permitted, rename 'a' -> 'b'", { version: "2.6.1" });
+    expect(locked.message).toMatch(/would not let Celerp save/);
+    expect(locked.detail).toMatch(/antivirus/i);
+    expect(locked.releaseUrl).toBe(url);
+    expect(updateFailure("EACCES: permission denied", { version: "2.6.1" }).message).toBe(locked.message);
+    expect(updateFailure("EBUSY: resource busy or locked", { version: "2.6.1" }).message).toBe(locked.message);
+    expect(updateFailure("sha512 checksum mismatch", { version: "2.6.1" }).message).toMatch(/security check/);
+    expect(updateFailure("net::ERR_CONNECTION_RESET", { version: "2.6.1" }).message).toMatch(/could not download/);
+    const install = updateFailure("spawn UNKNOWN", { version: "2.6.1", installing: true });
+    expect(install.message).toMatch(/could not start the installer/);
+    expect(updateFailure("x", {}).releaseUrl).toBe("https://github.com/celerp/celerp/releases/latest");
+    for (const f of [locked, install]) {
+      expect(f.detail).toMatch(/Download the installer/);
+      expect(f.message + f.detail).not.toMatch(/—/);
+    }
   });

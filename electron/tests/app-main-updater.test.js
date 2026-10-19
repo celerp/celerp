@@ -38,3 +38,61 @@ test("app-main sends the updater's changes to its window as they happen",
     updater.emit("update-downloaded", { version: "2.0.1" });
     expect(sent).toEqual([["update-available", "downloading"], ["update-downloaded", "downloaded"]]);
   });
+
+// A packaged app whose window has loaded, with a dialog that answers `choice`.
+function packagedApp(choice) {
+  const shown = [];
+  const opened = [];
+  const relaunched = [];
+  const loaded = loadAppMain({
+    app: { isPackaged: true, relaunch: () => relaunched.push(true), exit: () => {} },
+    dialog: { showMessageBox: (win, opts) => { shown.push(opts); return Promise.resolve({ response: choice }); } },
+    shell: { openExternal: (url) => { opened.push(url); return Promise.resolve(); } },
+  });
+  loaded.updater.checkForUpdates = () => Promise.resolve();
+  loaded.updater.quitAndInstall = () => loaded.updater.emit("error", new Error("spawn UNKNOWN"));
+  loaded.setMainWindow({ isDestroyed: () => false, webContents: { once: () => {}, send: () => {} } });
+  loaded.setupAutoUpdater();
+  return { ...loaded, shown, opened, relaunched };
+}
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test("a failed download is shown in a dialog whose Download the installer opens that version's release page",
+  async function test_failed_download_offers_the_installer() {
+    const { updater, shown, opened } = packagedApp(0);
+    updater.emit("update-available", { version: "2.6.1" });
+    updater.emit("error", new Error("EPERM: operation not permitted, rename"));
+    await settle();
+    expect(shown.length).toBe(1);
+    expect(shown[0].buttons[0]).toBe("Download the installer");
+    expect(shown[0].message).toMatch(/would not let Celerp save/);
+    expect(opened).toEqual(["https://github.com/celerp/celerp/releases/tag/v2.6.1"]);
+  });
+
+test("closing the failure dialog opens nothing, and a failed check stays on the update card",
+  async function test_close_opens_nothing_and_check_failures_do_not_pop_up() {
+    const { updater, shown, opened } = packagedApp(1);
+    updater.emit("error", new Error("getaddrinfo ENOTFOUND github.com"));
+    await settle();
+    expect(shown.length).toBe(0);
+    updater.emit("update-available", { version: "2.6.1" });
+    updater.emit("error", new Error("sha512 checksum mismatch"));
+    await settle();
+    expect(shown.length).toBe(1);
+    expect(opened).toEqual([]);
+  });
+
+test("an installer that cannot be started is shown, offers the installer, and Celerp restarts after",
+  async function test_install_launch_failure_offers_the_installer() {
+    const { updater, listeners, shown, opened, relaunched } = packagedApp(0);
+    updater.emit("update-available", { version: "2.6.1" });
+    updater.emit("update-downloaded", { version: "2.6.1" });
+    await listeners["install-update"]();
+    await settle();
+    expect(shown.length).toBe(1);
+    expect(shown[0].message).toMatch(/could not start the installer/);
+    expect(shown[0].detail).toMatch(/restart/i);
+    expect(opened).toEqual(["https://github.com/celerp/celerp/releases/tag/v2.6.1"]);
+    expect(relaunched.length).toBe(1);
+  });
