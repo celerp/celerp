@@ -1,5 +1,5 @@
 diff --git a/out/AppUpdater.js b/out/AppUpdater.js
-index 7358a8f0efca83c0e05186fa51f154592b66c8dd..0f7a6c06bcbe6e03f79f8a7d9df7b5b84fca7921 100644
+index 7358a8f0efca83c0e05186fa51f154592b66c8dd..d5ada8685f5fe27ed796a32470c37865bfca0631 100644
 --- a/out/AppUpdater.js
 +++ b/out/AppUpdater.js
 @@ -404,6 +404,17 @@ class AppUpdater extends events_1.EventEmitter {
@@ -52,13 +52,13 @@ index 7358a8f0efca83c0e05186fa51f154592b66c8dd..0f7a6c06bcbe6e03f79f8a7d9df7b5b8
 +        };
          try {
              await taskOptions.task(tempUpdateFile, downloadOptions, packageFile, removeFileIfAny);
-+            const deadline = Date.now() + 60000;
 -            await (0, builder_util_runtime_1.retry)(() => (0, fs_extra_1.rename)(tempUpdateFile, updateFile), {
 -                retries: 60,
 -                interval: 500,
 -                shouldRetry: (error) => {
 -                    if (error instanceof Error && /^EBUSY:/.test(error.message)) {
 -                        return true;
++            const deadline = Date.now() + 60000;
 +            // An old cached installer that cannot be removed must not fail the update: the new
 +            // one is then installed from its temp file.
 +            if (await (0, fs_extra_1.pathExists)(updateFile)) {
@@ -80,3 +80,94 @@ index 7358a8f0efca83c0e05186fa51f154592b66c8dd..0f7a6c06bcbe6e03f79f8a7d9df7b5b8
          }
          catch (e) {
              await removeFileIfAny();
+diff --git a/out/BaseUpdater.js b/out/BaseUpdater.js
+index 00f99bd0743a7bae63c271fdf0af3dee062ed6f2..7e10345809538774118b5cb319565684c6e106d0 100644
+--- a/out/BaseUpdater.js
++++ b/out/BaseUpdater.js
+@@ -12,17 +12,20 @@ class BaseUpdater extends AppUpdater_1.AppUpdater {
+     quitAndInstall(isSilent = false, isForceRunAfter = false) {
+         this._logger.info(`Install on explicit quitAndInstall`);
+         // If NOT in silent mode use `autoRunAppAfterInstall` to determine whether to force run the app
+-        const isInstalled = this.install(isSilent, isSilent ? isForceRunAfter : this.autoRunAppAfterInstall);
+-        if (isInstalled) {
+-            setImmediate(() => {
+-                // this event is normally emitted when calling quitAndInstall, this emulates that
+-                require("electron").autoUpdater.emit("before-quit-for-update");
+-                this.app.quit();
+-            });
+-        }
+-        else {
+-            this.quitAndInstallCalled = false;
+-        }
++        // The app quits only once the installer has started: an installer that
++        // cannot start leaves the app running, and the error event says why.
++        Promise.resolve(this.install(isSilent, isSilent ? isForceRunAfter : this.autoRunAppAfterInstall)).then(isInstalled => {
++            if (isInstalled) {
++                setImmediate(() => {
++                    // this event is normally emitted when calling quitAndInstall, this emulates that
++                    require("electron").autoUpdater.emit("before-quit-for-update");
++                    this.app.quit();
++                });
++            }
++            else {
++                this.quitAndInstallCalled = false;
++            }
++        });
+     }
+     executeDownload(taskOptions) {
+         return super.executeDownload({
+diff --git a/out/NsisUpdater.js b/out/NsisUpdater.js
+index 6fb70b4275a59741d28aecc389c2736909130a3e..4f9f3c3afa384975a36213bd00176dc4d66dddfe 100644
+--- a/out/NsisUpdater.js
++++ b/out/NsisUpdater.js
+@@ -120,32 +120,37 @@ class NsisUpdater extends BaseUpdater_1.BaseUpdater {
+             // only = form is supported
+             args.push(`--package-file=${packagePath}`);
+         }
+-        const callUsingElevation = () => {
+-            this.spawnLog(path.join(process.resourcesPath, "elevate.exe"), [installerPath].concat(args)).catch(e => this.dispatchError(e));
++        // Resolves true once the installer has started, or false once it has
++        // failed to start, after dispatching the error.
++        const failed = (e) => {
++            this.dispatchError(e);
++            return false;
+         };
++        const callUsingElevation = () => this.spawnLog(path.join(process.resourcesPath, "elevate.exe"), [installerPath].concat(args)).then(() => true);
+         if (options.isAdminRightsRequired) {
+             this._logger.info("isAdminRightsRequired is set to true, run installer using elevate.exe");
+-            callUsingElevation();
+-            return true;
++            return callUsingElevation().catch(failed);
+         }
+-        this.spawnLog(installerPath, args).catch((e) => {
++        return this.spawnLog(installerPath, args).then(() => true, (e) => {
+             // https://github.com/electron-userland/electron-builder/issues/1129
+             // Node 8 sends errors: https://nodejs.org/dist/latest-v8.x/docs/api/errors.html#errors_common_system_errors
+             const errorCode = e.code;
+             this._logger.info(`Cannot run installer: error code: ${errorCode}, error message: "${e.message}", will be executed again using elevate if EACCES, and will try to use electron.shell.openItem if ENOENT`);
+             if (errorCode === "UNKNOWN" || errorCode === "EACCES") {
+-                callUsingElevation();
++                return callUsingElevation();
+             }
+             else if (errorCode === "ENOENT") {
+-                require("electron")
++                return require("electron")
+                     .shell.openPath(installerPath)
+-                    .catch((err) => this.dispatchError(err));
+-            }
+-            else {
+-                this.dispatchError(e);
++                    .then((err) => {
++                    if (err) {
++                        throw new Error(err);
++                    }
++                    return true;
++                });
+             }
+-        });
+-        return true;
++            throw e;
++        }).catch(failed);
+     }
+     async differentialDownloadWebPackage(downloadUpdateOptions, packageInfo, packagePath, provider) {
+         if (packageInfo.blockMapSize == null) {

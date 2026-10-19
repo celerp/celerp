@@ -12,7 +12,7 @@ patchedDependencies:
     hash: v5qqdg72kqp4pq5ugq2bi6jrtm
     path: patches/app-builder-lib@25.1.8.patch
   electron-updater@6.8.3:
-    hash: s64zgnng6znjicgyzzijfnzkre
+    hash: tewhpfxsnmkhi2twshmlrzgumu
     path: patches/electron-updater@6.8.3.patch
   embedded-postgres@17.9.0-beta.16:
     hash: drl7qbkifwzmpe23kz2pqmi77a
@@ -30,7 +30,7 @@ importers:
         version: 17.9.0-beta.16
       electron-updater:
         specifier: ^6.3.0
-        version: 6.8.3(patch_hash=s64zgnng6znjicgyzzijfnzkre)
+        version: 6.8.3(patch_hash=tewhpfxsnmkhi2twshmlrzgumu)
       embedded-postgres:
         specifier: ^17.9.0-beta.16
         version: 17.9.0-beta.16(patch_hash=drl7qbkifwzmpe23kz2pqmi77a)
@@ -3770,7 +3770,7 @@ snapshots:
 
   electron-to-chromium@1.5.341: {}
 
-  electron-updater@6.8.3(patch_hash=s64zgnng6znjicgyzzijfnzkre):
+  electron-updater@6.8.3(patch_hash=tewhpfxsnmkhi2twshmlrzgumu):
     dependencies:
       builder-util-runtime: 9.5.1
       fs-extra: 10.1.0
