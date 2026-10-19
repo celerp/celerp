@@ -298,8 +298,9 @@ async def receive_fees(payload: dict) -> bool:
 
     A fee delivered before its payment is left pending, not silently lost. A fee that can
     never be recorded is acknowledged: with a notice to record it by hand when its
-    document or payment was deleted or its payment is among the unmatched payments, and
-    silently when its company no longer exists (nobody is left to tell).
+    document or payment was deleted, its payment is among the unmatched payments, or the
+    payment's recorded books cannot take it, and silently when its company no longer
+    exists (nobody is left to tell).
     """
     from datetime import timezone
     from celerp.events.engine import find_event_by_idempotency
@@ -392,7 +393,12 @@ async def receive_fees(payload: dict) -> bool:
             return True
     told = await _fee_not_recorded(cid, target_doc if row is not None else None, document, fees, problem,
                                    reference=reference)
-    return problem in ("deleted", "unmatched") and told
+    return problem in _FEE_UNRECORDABLE and told
+
+
+# Causes no later fix can reach: the document or payment is gone, or the payment's own
+# recorded books (currency, bank account, rate) cannot take the fee.
+_FEE_UNRECORDABLE = ("deleted", "unmatched", "currency", "books")
 
 
 def _fee_amount(fees: dict) -> str:
@@ -419,9 +425,8 @@ async def _fee_not_recorded(cid, doc_id: str | None, document: str, fees: dict, 
                             roles=(), reference: str = "") -> bool:
     """Tell the company, unmissably and once per fee and cause, that a fee Celerp Cloud
     delivered could not be recorded and why; whether the notice was recorded. A fee whose
-    document or payment was deleted, or whose payment *reference* is among the unmatched
-    payments, is acknowledged once told (retrying cannot help, and *doc_id* is None when
-    the document is gone); any other cause is not, so the fee is
+    cause is in _FEE_UNRECORDABLE is acknowledged once told (retrying cannot help, and
+    *doc_id* is None when the document is gone); any other cause is not, so the fee is
     delivered again and recorded once the cause is fixed. A refused posting account also
     raises the standing posting-accounts notice (posting_readiness.notify_unmapped)."""
     from celerp.notifications import service as notification_service

@@ -1326,11 +1326,14 @@ async def test_online_fee_contract_rejects_inconsistent_fees(
         {"fees": {**fees, "total_minor": 11}},
         {"fees": {**fees, "platform_minor": True}},
         {"fees": {**fees, "total_minor": 0.1}},
-        {"fees": {**fees, "currency": "eur"}},
         {"reference": "pi_not_a_payment"},
         {"occurred_at": "2026-10-12"},
     ):
         assert await receive_fees({**event, **changes}) is False
+    # A currency the payment's books cannot take is acknowledged with a notice, never posted.
+    before = await _ledger_count(session, cid)
+    assert await receive_fees({**event, "fees": {**fees, "currency": "eur"}}) is True
+    assert await _ledger_count(session, cid) == before
     assert await receive_fees(event) is True
 
 
@@ -1412,7 +1415,10 @@ async def test_provider_base_currency_fees_are_not_converted_twice(client, sessi
     debit = sum(Decimal(str(e.get("debit") or 0)) for e in entries)
     credit = sum(Decimal(str(e.get("credit") or 0)) for e in entries)
     assert debit == credit == Decimal("3.2")
-    assert await receive_fees({**report, "fees": {**fees, "currency": "gbp"}}) is False
+    # A third currency is never converted: acknowledged with a notice, nothing posted.
+    before = await _ledger_count(session, cid)
+    assert await receive_fees({**report, "fees": {**fees, "currency": "gbp", "transaction_id": "txn_gbp"}}) is True
+    assert await _ledger_count(session, cid) == before
 
 
 async def _fee_notices(session, cid: str, key: str) -> list:
@@ -1470,8 +1476,10 @@ async def test_online_fees_post_to_the_chosen_account(client, session, payments_
 @pytest.mark.asyncio
 async def test_fee_notice_and_failure_notice(client, session, payments_on):
     """Each fee booked on the company's behalf tells it so, once, with a link to the
-    invoice; a fee that cannot be recorded tells it why instead of only being logged,
-    and is recorded when delivered again after the cause is fixed."""
+    invoice; a fee that cannot be recorded tells it why instead of only being logged.
+    One whose cause can be fixed is recorded when delivered again after the fix; one
+    whose cause is the payment's own recorded books is acknowledged once told, since
+    no fix can reach them."""
     from celerp.services.payments import receive_fees
 
     tok = await _register(client)
@@ -1492,10 +1500,11 @@ async def test_fee_notice_and_failure_notice(client, session, payments_on):
     returned = await _fee_notices(session, cid, "notice.online_fee_returned")
     assert len(returned) == 1 and "1.00 USD" in returned[0].body
 
-    # A fee in a currency the payment's books cannot convert is never guessed at.
+    # A fee in a currency the payment's books cannot convert is never guessed at; the
+    # books were fixed when the payment was recorded, so it is acknowledged once told.
     odd = {**fees, "transaction_id": "txn_notice_gbp", "currency": "gbp"}
-    assert await receive_fees({**event, "fees": odd}) is False
-    assert await receive_fees({**event, "fees": odd}) is False
+    assert await receive_fees({**event, "fees": odd}) is True
+    assert await receive_fees({**event, "fees": odd}) is True
     failed = await _fee_notices(session, cid, "notice.online_fee_failed")
     assert len(failed) == 1
     assert failed[0].priority == "high" and failed[0].action_url == f"/docs/{eid}"
@@ -1631,6 +1640,34 @@ async def test_fee_for_a_payment_kept_among_the_unmatched_is_acknowledged_with_o
     assert reason["message_key"] == "notice.online_fee_failed.unmatched"
     assert reason["params"] == {"reference": "pi_parked"}
     assert "5.20 USD" in failed[0].body and "pi_parked" in failed[0].body
+    assert await _ledger_count(session, cid) == before
+
+
+@pytest.mark.asyncio
+async def test_fee_for_a_payment_recorded_without_books_is_acknowledged_with_one_notice(
+        client, session, payments_on):
+    """A payment recorded without the bank account or rate its fees need keeps them so;
+    no fix can reach them, so the fee is acknowledged and the company told once."""
+    import uuid
+    from sqlalchemy import select
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_fees
+
+    tok = await _register(client)
+    cid = _company_id(tok)
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_no_books",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    eid, event = await _paid_with_fees(client, tok, "pi_no_books", fees)
+    row = await session.scalar(select(Projection).where(
+        Projection.company_id == uuid.UUID(cid), Projection.entity_id == eid))
+    row.state = {**row.state, "payments": [{**p, "bank_account": None} for p in row.state["payments"]]}
+    await session.commit()
+    before = await _ledger_count(session, cid)
+
+    assert [await receive_fees(event) for _ in range(2)] == [True, True]
+    failed = await _fee_notices(session, cid, "notice.online_fee_failed")
+    assert len(failed) == 1
+    assert failed[0].i18n["params"]["reason"]["message_key"] == "notice.online_fee_failed.books"
     assert await _ledger_count(session, cid) == before
 
 
