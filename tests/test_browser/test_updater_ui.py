@@ -340,6 +340,7 @@ _VISIBLE_STATE_JS = """() => {
     check: shown(q('.update-card__check-btn')),
     progress: shown(q('.update-card__progress-bar')) ? q('.update-card__progress-fill').style.width : '',
     log: shown(q('.update-card__log')) ? q('.update-card__log').textContent : '',
+    installer: shown(q('.update-card__installer-link')) ? q('.update-card__installer-link').href : '',
   };
 }"""
 
@@ -444,6 +445,27 @@ def test_failed_download_survives_background_checks(page, ui_server):
     assert (seen["state"], seen["badge"]) == ("Up to date", "")
     assert "Update error: sha512 checksum mismatch" in seen["log"]
     assert _reloaded(page) == seen
+
+
+_RELEASES = "https://github.com/celerp/celerp/releases"
+
+
+@pytest.mark.parametrize("found, release", [
+    (_FOUND, f"{_RELEASES}/tag/v2.0.1"),
+    (("update-available", {}), f"{_RELEASES}/latest"),
+], ids=["with-version", "no-version"])
+def test_failed_update_offers_the_installer(page, ui_server, found, release):
+    """Any failure offers the installer from the release page of the version being
+    installed, or the latest release when the version is not known; it goes once
+    an update runs again."""
+    _fake_electron(page)
+    assert _open(page, f"{ui_server}/")["installer"] == ""
+    _emit(page, found, _PROGRESS, ("error", {"message": "EPERM: operation not permitted, rename"}))
+    assert page.evaluate(_VISIBLE_STATE_JS)["installer"] == release
+    assert _reloaded(page)["installer"] == release
+    page.evaluate("() => document.querySelector('.update-card__check-btn').click()")
+    _emit(page, _CHECKING, _FOUND, _PROGRESS)
+    assert page.evaluate(_VISIBLE_STATE_JS)["installer"] == ""
 
 
 @pytest.mark.parametrize("found", [_FOUND, ("update-available", {})], ids=["with-version", "no-version"])
