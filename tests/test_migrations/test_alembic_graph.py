@@ -42,16 +42,19 @@ RELEASE_HEAD = "o2d3e4f5a6b7"
 # payment revisions, then per-company modules for companies from 2.5, then the invoice
 # an unmatched payment is recorded on, then cash flow sections, notice translations and
 # generated account codes, then import reversibility, then per-user notice reads, then
-# the index on the asset a projection belongs to, then company peer grants, then removing
-# per-user API keys, then the firm view's key last use and refused records, then the
-# revisions two-way sync sent or declined, then the account links two-way sync keeps,
-# then the attachments a Xero migration fetches, then the firm name a company key carries,
-# then password resets.
+# the index on the asset a projection belongs to, then password resets.
 RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1", "t7i8j9k0l1m2",
                  "u8j9k0l1m2n3", "c7f1a2b3d4e5", "d8e9f0a1b2c3", "e9f0a1b2c3d4", "v0m1n2o3p4q5",
-                 "w1n2o3p4q5r6", "x2o3p4q5r6s7", "x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9",
-                 "a5t6u7v8w9x0", "b6u7v8w9x0y1", "c7v8w9x0y1z2", "d8w9x0y1z2a3",
-                 "e9x0y1z2a3b4", "f0y1z2a3b4c5", "y3p4q5r6s7t8"]
+                 "w1n2o3p4q5r6", "x2o3p4q5r6s7", "y3p4q5r6s7t8"]
+
+# The head 2.6.0 shipped. Released history never changes, so what comes after it follows
+# it: company peer grants, then removing per-user API keys, then the firm view's key last
+# use and refused records, then the revisions two-way sync sent or declined, then the
+# account links two-way sync keeps, then the attachments a Xero migration fetches, then the
+# firm name a company key carries.
+SHIPPED_HEAD = "y3p4q5r6s7t8"
+AFTER_SHIPPED = ["x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9", "a5t6u7v8w9x0", "b6u7v8w9x0y1",
+                 "c7v8w9x0y1z2", "d8w9x0y1z2a3", "e9x0y1z2a3b4", "f0y1z2a3b4c5"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.
@@ -96,7 +99,53 @@ def test_the_graph_has_one_head_and_no_merge_points():
 def test_this_release_runs_in_order_after_the_last_release():
     script = ScriptDirectory.from_config(build_alembic_config())
     walked = [r.revision for r in script.walk_revisions(base=RELEASE_HEAD, head="heads")]
-    assert list(reversed(walked)) == [RELEASE_HEAD, *RELEASE_CHAIN]
+    assert list(reversed(walked)) == [RELEASE_HEAD, *RELEASE_CHAIN, *AFTER_SHIPPED]
+
+
+def test_the_revision_2_6_0_shipped_keeps_its_parent():
+    script = ScriptDirectory.from_config(build_alembic_config())
+    assert script.get_revision(SHIPPED_HEAD).down_revision == "x2o3p4q5r6s7"
+
+
+def test_a_database_from_2_6_0_runs_every_revision_after_it():
+    """A 2.6.0 database is stamped at the head 2.6.0 shipped, so every revision after it
+    still runs on upgrade: the per-user API key is dropped and keys issued before the firm
+    name existed take the name their client was shown."""
+    with throwaway_db("from_2_6_0") as (_, sync_url):
+        upgrade_to(sync_url, SHIPPED_HEAD)
+        eng = create_engine(sync_url)
+        company_id, grant_id = str(uuid.uuid4()), str(uuid.uuid4())
+        try:
+            with eng.begin() as conn:
+                assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == SHIPPED_HEAD
+                conn.execute(text(
+                    "INSERT INTO users (id, email, name, auth_hash, is_active, created_at, api_key) "
+                    "VALUES (:u, 'owner@example.com', 'Owner', 'hash', true, now(), 'old-key')"),
+                    {"u": str(uuid.uuid4())})
+                conn.execute(text(
+                    "INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                    "VALUES (:id, 'Firm Copy', 'firm-copy', "
+                    "CAST('{\"restored_backup\": {\"opened_from\": \"Lakeside\"}}' AS json), true, now())"),
+                    {"id": company_id})
+            # A key issued by a build between the peer grants and the firm name.
+            upgrade_to(sync_url, AFTER_SHIPPED[-2])
+            with eng.begin() as conn:
+                conn.execute(text(
+                    "INSERT INTO company_peer_grants (id, company_id, source_company_id, token_hash, "
+                    "label, scopes, created_at, expires_at) VALUES (:id, :c, :s, :h, 'Key', "
+                    "CAST('[]' AS json), now(), now() + interval '1 day')"),
+                    {"id": grant_id, "c": company_id, "s": str(uuid.uuid4()), "h": "c" * 64})
+            upgrade_to(sync_url, head_rev())
+            with eng.connect() as conn:
+                version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                firm = conn.execute(text("SELECT firm FROM company_peer_grants WHERE id = :id"),
+                                    {"id": grant_id}).scalar_one()
+        finally:
+            eng.dispose()
+        user_columns = {column for table, column, *_ in schema_of(sync_url)["columns"] if table == "users"}
+    assert version == head_rev() == AFTER_SHIPPED[-1]
+    assert "api_key" not in user_columns
+    assert firm == "Lakeside"
 
 
 @pytest.mark.parametrize("table", ["company_peer_grants", "company_peer_identities"])
@@ -133,7 +182,7 @@ def test_peer_downgrade_preserves_persisted_records(table):
         finally:
             eng.dispose()
         with pytest.raises(RuntimeError, match="Cannot downgrade while company integrations exist"):
-            _downgrade_to(sync_url, "x2o3p4q5r6s7")
+            _downgrade_to(sync_url, SHIPPED_HEAD)
         eng = create_engine(sync_url)
         try:
             with eng.connect() as conn:

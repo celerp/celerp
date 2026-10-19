@@ -22,7 +22,7 @@ from celerp.cli import _apply_migrations
 from .conftest import throwaway_db, upgrade_to
 
 REVISION = "y3p4q5r6s7t8"
-PARENT = "f0y1z2a3b4c5"
+PARENT = "x2o3p4q5r6s7"
 RESET_COLUMNS = {"reset_token", "reset_token_expires"}
 
 
