@@ -160,6 +160,20 @@ def test_every_message_that_says_select_try_again_is_recognised_in_its_own_langu
     assert missed == []
 
 
+def test_a_long_notice_is_checked_in_time_proportional_to_its_length(module_catalogs):
+    """Every message with its Try again sentence cut, run together: words the pattern starts on
+    again and again, so a pattern that backtracks over the whole notice would hang the page."""
+    import time
+    from ui.i18n import t
+    en = _catalog("en")
+    cut = " ".join(re.sub(r"[Ss]elect Try again", "", _filled(t(k, "en")))
+                   for k in en if re.search(r"[Ss]elect Try again", en[k]))
+    notice = cut * 4
+    started = time.perf_counter()
+    assert not _says_try_again("en", notice)
+    assert time.perf_counter() - started < 1
+
+
 @pytest.mark.parametrize("lang", ["en", "th", "ja", "de"])
 def test_a_message_that_means_do_it_again_gets_no_try_again_control(lang, module_catalogs):
     from ui.i18n import t

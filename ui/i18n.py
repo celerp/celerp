@@ -133,7 +133,19 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
 
 
 _JS_SPECIAL = re.compile(r"[.*+?^${}()|[\]\\/]")
-_PARAM = re.compile(r"\\\{\w+\\\}")
+_PARAM = re.compile(r"\{\w+\}")
+
+
+def _message_pattern(text: str) -> str:
+    """*text* as a regular expression in which each {param} matches any text. A param at either
+    end is left out: in a search it changes nothing, and a leading wildcard makes testing a long
+    notice cost far more than its length. Empty when the message has no words of its own."""
+    literals = [_JS_SPECIAL.sub(r"\\\g<0>", part) for part in _PARAM.split(text)]
+    while literals and not literals[0]:
+        literals.pop(0)
+    while literals and not literals[-1]:
+        literals.pop()
+    return r"[\s\S]*?".join(literals)
 
 
 def _try_again_pattern(lang: str) -> str:
@@ -144,7 +156,7 @@ def _try_again_pattern(lang: str) -> str:
     en = _cached_load("en")
     keys = sorted(k for k, v in en.items() if re.search(r"[Ss]elect Try again", v))
     texts = sorted({t(k, lang) for k in keys}, key=len, reverse=True)
-    return "|".join(_PARAM.sub(r"[\\s\\S]*?", _JS_SPECIAL.sub(r"\\\g<0>", text)) for text in texts)
+    return "|".join(p for p in map(_message_pattern, texts) if p)
 
 
 try_again_pattern = lru_cache(maxsize=32)(_try_again_pattern) if not _DEBUG else _try_again_pattern
