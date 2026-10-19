@@ -33,6 +33,15 @@ def _first(kind: str):
     return next(d for d in build.simulate().documents if d.kind == kind)
 
 
+def _in_xero(doc) -> dict:
+    """The values Xero's API gives the document the export set was built from."""
+    return {"DateString": f"{doc.issued.isoformat()}T00:00:00", "CurrencyCode": doc.currency,
+            "Total": float(doc.total)}
+
+
+DEMO_TENANT, OTHER_TENANT = "6f1c0d2e-0000-4000-8000-00000000d3e0", "6f1c0d2e-0000-4000-8000-0000000000a7"
+
+
 class FakeRelay:
     """The relay's Xero attachment routes, with one organisation's documents behind them."""
 
@@ -46,18 +55,18 @@ class FakeRelay:
         self.no_account = False
 
     def document(self, kind: str, number: str, xero_type: str, contact: str,
-                 *files: tuple[str, str, bytes]) -> str:
+                 *files: tuple[str, str, bytes], **values) -> str:
         doc_id = str(uuid.uuid4())
         key = "CreditNoteID" if kind == "CreditNotes" else "InvoiceID"
         number_key = "CreditNoteNumber" if kind == "CreditNotes" else "InvoiceNumber"
         (self.credit_notes if kind == "CreditNotes" else self.invoices).append(
             {key: doc_id, number_key: number, "Type": xero_type, "Contact": {"Name": contact},
-             "HasAttachments": True})
+             "HasAttachments": True, **values})
         self.files[doc_id] = [(str(uuid.uuid4()), name, mime, data) for name, mime, data in files]
         return doc_id
 
-    def connect(self, fetch_id: str) -> None:
-        self.fetches[fetch_id].update(status="connected", organisation="Demo Trading Ltd")
+    def connect(self, fetch_id: str, organisation: str = "Demo Trading Ltd", tenant_id: str = DEMO_TENANT) -> None:
+        self.fetches[fetch_id].update(status="connected", organisation=organisation, tenant_id=tenant_id)
 
     async def request(self, method, path, *, json=None, params=None, total_s=35, content=None):
         if self.no_account:
@@ -67,7 +76,7 @@ class FakeRelay:
             same = next((f for f in self.fetches.values() if f["operation_id"] == json["operation_id"]), None)
             if same is None:
                 same = {"id": str(uuid.uuid4()), "operation_id": json["operation_id"], "status": "signing_in",
-                        "organisation": "", "error": ""}
+                        "organisation": "", "tenant_id": None, "error": ""}
                 self.fetches[same["id"]] = same
             return httpx.Response(201, json=self._view(same))
         parts = path.strip("/").split("/")
@@ -97,7 +106,7 @@ class FakeRelay:
 
     @staticmethod
     def _view(fetch: dict) -> dict:
-        out = {k: fetch[k] for k in ("id", "status", "organisation", "error")}
+        out = {k: fetch[k] for k in ("id", "status", "organisation", "tenant_id", "error")}
         if fetch["status"] == "signing_in":
             out["authorize_url"] = f"https://login.xero.com/identity/connect/authorize?state={fetch['id']}"
         return out
@@ -155,10 +164,12 @@ async def test_files_in_xero_are_attached_to_the_imported_documents(real_engine,
     run, headers = await _imported(real_engine, monkeypatch, tmp_path)
     base = f"/migrations/{run.id}/xero-attachments"
     invoice, bill, note = _first("Sales invoice"), _first("Bill"), _first("Sales credit note")
-    relay.document("Invoices", invoice.number, "ACCREC", invoice.contact, ("receipt.pdf", "application/pdf", PDF))
+    relay.document("Invoices", invoice.number, "ACCREC", invoice.contact, ("receipt.pdf", "application/pdf", PDF),
+                   **_in_xero(invoice))
     relay.document("Invoices", bill.number, "ACCPAY", bill.contact,
-                   ("bill.pdf", "application/pdf", PDF), ("delivery.png", "image/png", PNG))
-    relay.document("CreditNotes", note.number, "ACCRECCREDIT", note.contact, ("note.pdf", "application/pdf", PDF))
+                   ("bill.pdf", "application/pdf", PDF), ("delivery.png", "image/png", PNG), **_in_xero(bill))
+    relay.document("CreditNotes", note.number, "ACCRECCREDIT", note.contact, ("note.pdf", "application/pdf", PDF),
+                   **_in_xero(note))
     gone = relay.document("Invoices", "INV-9999", "ACCREC", "Gone Customer", ("old.pdf", "application/pdf", PDF))
 
     assert (await real_client.get(base, headers=headers)).json()["status"] == "none"
@@ -176,6 +187,13 @@ async def test_files_in_xero_are_attached_to_the_imported_documents(real_engine,
     assert relay.reads() == []
 
     relay.connect(next(iter(relay.fetches)))
+    await _advance(run)
+    # Signed in: the owner sees which organisation and starts the fetch themselves.
+    confirming = (await real_client.get(base, headers=headers)).json()
+    assert (confirming["status"], confirming["organisation"]) == ("confirming", "Demo Trading Ltd")
+    await _advance(run)
+    assert relay.reads() == []
+    assert (await real_client.post(f"{base}/confirm", headers=headers)).json()["status"] == "fetching"
     await _advance(run)
     done = (await real_client.get(base, headers=headers)).json()
     assert done["status"] == "done", done
@@ -202,6 +220,8 @@ async def test_files_in_xero_are_attached_to_the_imported_documents(real_engine,
     assert again.json()["status"] == "signing_in" and len(relay.fetches) == 2
     relay.connect(again.json()["authorize_url"].rsplit("=", 1)[1])
     await _advance(run)
+    await real_client.post(f"{base}/confirm", headers=headers)
+    await _advance(run)
     assert len(relay.reads()) > reads
     assert (await real_client.get(base, headers=headers)).json()["attached"] == 4
     assert len(await _doc_files(real_engine, run, f"P:{bill.number}")) == 2
@@ -211,7 +231,8 @@ async def test_xero_limits_pause_the_fetch_and_stop_ends_it(real_engine, real_cl
     run, headers = await _imported(real_engine, monkeypatch, tmp_path)
     base = f"/migrations/{run.id}/xero-attachments"
     invoice = _first("Sales invoice")
-    relay.document("Invoices", invoice.number, "ACCREC", invoice.contact, ("receipt.pdf", "application/pdf", PDF))
+    relay.document("Invoices", invoice.number, "ACCREC", invoice.contact, ("receipt.pdf", "application/pdf", PDF),
+                   **_in_xero(invoice))
 
     # Only the owner of the migration sees or starts it.
     from company_backup_support import company, owner
@@ -227,6 +248,8 @@ async def test_xero_limits_pause_the_fetch_and_stop_ends_it(real_engine, real_cl
 
     started = (await real_client.post(base, headers=headers)).json()
     relay.connect(next(iter(relay.fetches)))
+    await _advance(run)
+    await real_client.post(f"{base}/confirm", headers=headers)
     relay.limited = httpx.Response(429, headers={"retry-after": "7200", "x-rate-limit-problem": "day"},
                                    json={"Title": "Rate limit exceeded"})
     now = datetime.now(timezone.utc)
@@ -276,3 +299,86 @@ async def test_only_a_xero_migration_fetches_from_xero(real_engine, real_client,
     assert refused.status_code == 409 and "Xero" in refused.json()["detail"]
     assert relay.calls == []
     assert (await load_run(real_engine, run.id)).status == "ready_to_finalize"
+
+
+async def _fetch_from(client, run, headers, relay, organisation: str, tenant_id: str) -> dict:
+    """Sign in to one organisation, confirm it and fetch; the fetch as the owner then sees it."""
+    base = f"/migrations/{run.id}/xero-attachments"
+    started = (await client.post(base, headers=headers)).json()
+    relay.connect(started["authorize_url"].rsplit("=", 1)[1], organisation, tenant_id)
+    await _advance(run)
+    confirm = await client.post(f"{base}/confirm", headers=headers)
+    if confirm.status_code == 200:
+        await _advance(run)
+    return (await client.get(base, headers=headers)).json()
+
+
+async def test_files_of_another_organisation_with_the_same_numbers_are_never_attached(
+        real_engine, real_client, relay, monkeypatch, tmp_path):
+    """Two Xero organisations can both have an INV-0001 for a customer of the same name. The
+    files are attached only when Xero's date, currency, total and contact match the document
+    imported; the owner can then sign in to the right organisation and fetch again."""
+    run, headers = await _imported(real_engine, monkeypatch, tmp_path)
+    invoice, note = _first("Sales invoice"), _first("Sales credit note")
+    other = relay.document("Invoices", invoice.number, "ACCREC", invoice.contact,
+                           ("theirs.pdf", "application/pdf", PDF),
+                           **{**_in_xero(invoice), "DateString": "2019-02-03T00:00:00", "Total": 12.5})
+    relay.document("CreditNotes", note.number, "ACCRECCREDIT", note.contact, ("their-note.pdf", "application/pdf", PDF),
+                   **{**_in_xero(note), "Total": float(note.total) + 1})
+
+    wrong = await _fetch_from(real_client, run, headers, relay, "Other Trading Ltd", OTHER_TENANT)
+    assert wrong["status"] == "done" and wrong["organisation"] == "Other Trading Ltd"
+    assert (wrong["attached"], wrong["total"]) == (0, 0)
+    reasons = {row["document"]: row["reason"] for row in wrong["unmatched"]}
+    assert set(reasons) == {invoice.number, note.number}
+    assert "date" in reasons[invoice.number] and "total" in reasons[invoice.number]
+    assert "total" in reasons[note.number] and "date" not in reasons[note.number]
+    assert "fetch again" in reasons[invoice.number]
+    assert await _doc_files(real_engine, run, f"S:{invoice.number}") == []
+    assert await _doc_files(real_engine, run, f"S:{note.number}") == []
+    # Nothing of the other organisation's files was downloaded.
+    assert not any(p.endswith(relay.files[other][0][0]) for p in relay.reads())
+
+    # Signed in to the right organisation, the true matches are attached and the rest still are not.
+    relay.invoices.clear()
+    relay.credit_notes.clear()
+    relay.document("Invoices", invoice.number, "ACCREC", invoice.contact, ("receipt.pdf", "application/pdf", PDF),
+                   **_in_xero(invoice))
+    relay.document("CreditNotes", note.number, "ACCRECCREDIT", note.contact, ("note.pdf", "application/pdf", PDF),
+                   **_in_xero(note))
+    bill = _first("Bill")
+    relay.document("Invoices", bill.number, "ACCPAY", bill.contact, ("bill.pdf", "application/pdf", PDF),
+                   **{**_in_xero(bill), "CurrencyCode": "USD" if bill.currency != "USD" else "EUR"})
+    right = await _fetch_from(real_client, run, headers, relay, "Demo Trading Ltd", DEMO_TENANT)
+    assert right["status"] == "done", right
+    assert (right["attached"], right["total"]) == (2, 2)
+    assert [row["document"] for row in right["unmatched"]] == [bill.number]
+    assert "currency" in right["unmatched"][0]["reason"]
+    assert [f["filename"] for f in await _doc_files(real_engine, run, f"S:{invoice.number}")] == ["receipt.pdf"]
+    assert [f["filename"] for f in await _doc_files(real_engine, run, f"S:{note.number}")] == ["note.pdf"]
+    assert await _doc_files(real_engine, run, f"P:{bill.number}") == []
+
+
+async def test_once_files_are_attached_a_fetch_from_another_organisation_is_refused(
+        real_engine, real_client, relay, monkeypatch, tmp_path):
+    run, headers = await _imported(real_engine, monkeypatch, tmp_path)
+    base = f"/migrations/{run.id}/xero-attachments"
+    invoice = _first("Sales invoice")
+    relay.document("Invoices", invoice.number, "ACCREC", invoice.contact, ("receipt.pdf", "application/pdf", PDF),
+                   **_in_xero(invoice))
+    first = await _fetch_from(real_client, run, headers, relay, "Demo Trading Ltd", DEMO_TENANT)
+    assert (first["status"], first["attached"]) == ("done", 1)
+
+    # Another organisation whose document matches in every value is still refused: these
+    # books' files come from the organisation they were first fetched from.
+    reads = len(relay.reads())
+    refused = await _fetch_from(real_client, run, headers, relay, "Other Trading Ltd", OTHER_TENANT)
+    assert refused["status"] == "failed", refused
+    assert "Other Trading Ltd" in refused["error"] and "Demo Trading Ltd" in refused["error"]
+    assert len(relay.reads()) == reads
+    assert relay.calls[-1][0] == "DELETE"
+    # Confirming a sign-in that is no longer waiting for it is refused too.
+    assert (await real_client.post(f"{base}/confirm", headers=headers)).status_code == 409
+
+    again = await _fetch_from(real_client, run, headers, relay, "Demo Trading Ltd", DEMO_TENANT)
+    assert (again["status"], again["attached"]) == ("done", 1)
