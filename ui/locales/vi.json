@@ -678,7 +678,7 @@
   "error.api_unavailable": "Dịch vụ nền của Celerp không chạy. Hãy khởi động lại Celerp; nếu vẫn xảy ra, hãy hỏi trên GitHub Issues hoặc Discussions.",
   "error.cannot_deactivate_self": "Bạn không thể vô hiệu hóa tài khoản của chính mình. Hãy nhờ một quản trị viên khác hoặc chủ sở hữu công ty làm việc này.",
   "error.company_name_blank": "Hãy nhập tên công ty.",
-  "error.company_settings_unavailable": "Celerp không đọc được cài đặt công ty của bạn (múi giờ và năm tài chính), nên không thể tính các ngày ở đây. Hãy thử lại; nếu vẫn xảy ra, hãy khởi động lại Celerp.",
+  "error.company_settings_unavailable": "Celerp không đọc được cài đặt công ty của bạn (múi giờ và năm tài chính), nên không thể tính các ngày ở đây. Nếu vẫn xảy ra, hãy khởi động lại Celerp.",
   "error.company_settings_unavailable_title": "Không có cài đặt công ty",
   "error.days_must_be_number": "Hãy nhập số ngày dưới dạng số nguyên, ví dụ 30.",
   "error.days_negative": "Số ngày không thể nhỏ hơn 0. Hãy nhập 0 trở lên.",

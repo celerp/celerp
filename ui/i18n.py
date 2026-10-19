@@ -52,6 +52,7 @@ def _invalidate_cache() -> None:
     getattr(_cached_load, "cache_clear", lambda: None)()
     category_label_everywhere.cache_clear()
     _field_label_keys.cache_clear()
+    getattr(try_again_pattern, "cache_clear", lambda: None)()
 
 
 def register_catalog(lang: str, mapping, *, rtl: bool = False) -> None:
@@ -131,10 +132,22 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
     return text.format(**kwargs) if kwargs else text
 
 
-def try_again_labels() -> list[str]:
-    """What every language calls the Try again action, so a notice written in one language and
-    shown in another still gets its button."""
-    return sorted({_cached_load(lang).get("btn.try_again", "Try again") for lang in available_langs()})
+_JS_SPECIAL = re.compile(r"[.*+?^${}()|[\]\\/]")
+_PARAM = re.compile(r"\\\{\w+\\\}")
+
+
+def _try_again_pattern(lang: str) -> str:
+    """A regular expression (valid in Python and JavaScript) that matches the messages which
+    tell the user to select Try again, as *lang* words them. The messages are the catalog keys
+    whose English says "Select Try again", so a sentence that only means "do it again" never
+    matches, whatever words it uses."""
+    en = _cached_load("en")
+    keys = sorted(k for k, v in en.items() if re.search(r"[Ss]elect Try again", v))
+    texts = sorted({t(k, lang) for k in keys}, key=len, reverse=True)
+    return "|".join(_PARAM.sub(r"[\\s\\S]*?", _JS_SPECIAL.sub(r"\\\g<0>", text)) for text in texts)
+
+
+try_again_pattern = lru_cache(maxsize=32)(_try_again_pattern) if not _DEBUG else _try_again_pattern
 
 
 # The system price lists every company starts with (they cannot be deleted) are UI

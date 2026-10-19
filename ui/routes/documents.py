@@ -8053,7 +8053,7 @@ async function _celerpPickerError(resp) {{
 }}
 function _celerpPickerStatus(text) {{
     const statusEl = document.getElementById('save-status');
-    if (statusEl) {{ statusEl.textContent = '\u2717 ' + text; statusEl.style.color = 'red'; }}
+    if (statusEl) {{ statusEl.textContent = '\u2717 ' + text; statusEl.style.color = 'red'; celerpTryAgain(statusEl); }}
 }}
 /* ── Barcode scan bar ── */
 (function() {{
@@ -8142,12 +8142,14 @@ function _celerpPickerStatus(text) {{
                             // would hide the only guidance while the field is unusable.
                             keepAddLocked = true;
                             scanStatus.textContent = '✗ ' + _L.scan_reload_needed;
+                            celerpTryAgain(scanStatus);
                         }}
                         return;
                     }}
                     // Any other rejection (a closed, void, or locked record) committed nothing, so keep the field AND the
                     // key for a plain retry.
                     scanStatus.textContent = '✗ ' + (typeof detail === 'string' ? detail : _L.scan_error);
+                    celerpTryAgain(scanStatus);
                     scanStatus.className = 'scan-bar-status scan-bar-status--err';
                     _clearStatusSoon();
                     return;
@@ -8201,6 +8203,7 @@ function _celerpPickerStatus(text) {{
                     return await performScan();
                 }}).catch(() => {{
                     scanStatus.textContent = '✗ ' + _L.save_failed;
+                    celerpTryAgain(scanStatus);
                     scanStatus.className = 'scan-bar-status scan-bar-status--err';
                     return false;
                 }});
@@ -9158,10 +9161,11 @@ async function _celerpRefreshHeldBadges() {{
             _celerpShowReservedConflicts(conflicts);
         }} else if (stale) {{
             // Another save landed first, so this tab's rows are stale. Offer the only safe
-            // way back to a consistent state - reload the latest before editing again - rather
+            // way back to a consistent state - open the latest before editing again - rather
             // than a dead-end error. Nothing was written.
             statusEl.style.color = 'red';
             statusEl.textContent = '\\u2717 ' + msg;
+            statusEl.append(' ', celerpTryAgainButton());
         }} else {{
             // Nothing was written: put the stored lines back in place so the table matches
             // what is saved, and say why.

@@ -238,10 +238,7 @@ def setup_routes(app):
         if bootstrapped:
             return RedirectResponse("/login", status_code=302)
         from ui.api_client import setup_code_required as _code_req
-        return auth_shell(
-            _setup_import_form(setup_code_required=await _code_req()),
-            title=page_title("system_recovery.title"),
-        )
+        return _import_page(request, setup_code_required=await _code_req())
 
     @app.post("/setup/import-backup")
     async def setup_import_submit(request: Request):
@@ -256,24 +253,12 @@ def setup_routes(app):
         file = form.get("backup_file")
         setup_code = str(form.get("setup_code", "")).strip()
         if not file or not hasattr(file, "read"):
-            return auth_shell(_setup_import_form(error=t("auth.select_backup_file")), title=page_title("system_recovery.title"))
+            return _import_page(request, error=t("auth.select_backup_file"))
         code_required = await api.setup_code_required()
         if code_required and not setup_code:
-            return auth_shell(
-                _setup_import_form(
-                    error=t("auth.setup_code_required"),
-                    setup_code_required=True,
-                ),
-                title=page_title("system_recovery.title"),
-            )
+            return _import_page(request, error=t("auth.setup_code_required"), setup_code_required=True)
         if getattr(file, "size", None) == 0:
-            return auth_shell(
-                _setup_import_form(
-                    error=t("auth.file_empty"),
-                    setup_code_required=code_required,
-                ),
-                title=page_title("system_recovery.title"),
-            )
+            return _import_page(request, error=t("auth.file_empty"), setup_code_required=code_required)
         try:
             await file.seek(0)
             async with api._local_client(timeout=120.0, follow_redirects=False, bulk=True) as c:
@@ -294,12 +279,7 @@ def setup_routes(app):
                     detail = api.error_text(r, t("auth.import_failed_unreadable"))
                 else:
                     detail = r.text[:300] or t("auth.import_failed")
-                return auth_shell(
-                    _setup_import_form(
-                        error=detail, setup_code_required=code_required
-                    ),
-                    title=page_title("system_recovery.title"),
-                )
+                return _import_page(request, error=detail, setup_code_required=code_required)
             # Success - surface missing-module warnings (if any) on the form
             warnings: list[str] = []
             restart_scheduled = False
@@ -315,29 +295,11 @@ def setup_routes(app):
                 if restart_scheduled:
                     parts.append(t("auth.restore_restart_note"))
                 warn_msg = t("auth.restore_complete_but") + " ".join(parts)
-                return auth_shell(
-                    _setup_import_form(
-                        warning=warn_msg,
-                        continue_to="/login?imported=1",
-                    ),
-                    title=page_title("system_recovery.title"),
-                )
+                return _import_page(request, warning=warn_msg, continue_to="/login?imported=1")
         except httpx.TimeoutException:
-            return auth_shell(
-                _setup_import_form(
-                    error=t("auth.import_timed_out"),
-                    setup_code_required=code_required,
-                ),
-                title=page_title("system_recovery.title"),
-            )
+            return _import_page(request, error=t("auth.import_timed_out"), setup_code_required=code_required)
         except Exception as exc:
-            return auth_shell(
-                _setup_import_form(
-                    error=t("auth.connection_error", exc=exc),
-                    setup_code_required=code_required,
-                ),
-                title=page_title("system_recovery.title"),
-            )
+            return _import_page(request, error=t("auth.connection_error", exc=exc), setup_code_required=code_required)
         return RedirectResponse("/login?imported=1", status_code=302)
 
     @app.post("/setup")
@@ -726,6 +688,14 @@ async def _unbootstrapped_gate(request: Request):
     return None
 
 
+def _import_page(request: Request, **form) -> FT:
+    """The restore-from-backup page. It carries the client bundle so a message that says to
+    select Try again gets the button, which opens this page again with GET (never re-sending
+    the upload)."""
+    return auth_shell(*client_scripts(get_lang(request), request), _setup_import_form(**form),
+                      title=page_title("system_recovery.title"))
+
+
 # What a failed submit renders back: everything the user typed except the passwords.
 _SETUP_KEPT_FIELDS = ("company_name", "name", "email", "setup_code", "vertical", "currency")
 
@@ -734,7 +704,7 @@ async def _setup_page(request: Request, values: dict, *, code_required: bool,
                       error: str | None = None, error_field: str = "") -> FT:
     from ui.components.start_options import supported_sources
     return auth_shell(
-        *client_scripts(get_lang(request)),
+        *client_scripts(get_lang(request), request),
         _setup_form(values, error=error, error_field=error_field, setup_code_required=code_required,
                     sources=await supported_sources()),
         title=t("page.setup"),

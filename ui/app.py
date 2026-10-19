@@ -582,6 +582,16 @@ async def proxy_attachment(request: Request, path: str) -> Response:
         r = await c.get(f"/static/attachments/{path}")
     return Response(content=r.content, media_type=r.headers.get("content-type", "application/octet-stream"), status_code=r.status_code)
 
+@app.route("/static/try-again/{lang}.js")
+async def try_again_pattern_js(request: Request, lang: str) -> Response:
+    # Versioned by content in its address (client_scripts), so it can be kept for good.
+    from ui.components.shell import try_again_script
+    from ui.i18n import available_langs
+    if lang not in available_langs():
+        return Response(status_code=404)
+    return Response(try_again_script(lang), media_type="application/javascript",
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 # Correct a bundled-dir first entry so the UI lists imports from the writable drop-in;

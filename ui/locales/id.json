@@ -678,7 +678,7 @@
   "error.api_unavailable": "Layanan latar belakang Celerp tidak berjalan. Mulai ulang Celerp; jika terus terjadi, tanyakan di GitHub Issues atau Discussions.",
   "error.cannot_deactivate_self": "Anda tidak dapat menonaktifkan akun Anda sendiri. Minta admin lain atau pemilik perusahaan melakukannya.",
   "error.company_name_blank": "Masukkan nama perusahaan.",
-  "error.company_settings_unavailable": "Celerp tidak dapat membaca pengaturan perusahaan Anda (zona waktu dan tahun buku), sehingga tanggal di sini tidak dapat dihitung. Coba lagi; jika terus terjadi, mulai ulang Celerp.",
+  "error.company_settings_unavailable": "Celerp tidak dapat membaca pengaturan perusahaan Anda (zona waktu dan tahun buku), sehingga tanggal di sini tidak dapat dihitung. Jika terus terjadi, mulai ulang Celerp.",
   "error.company_settings_unavailable_title": "Pengaturan perusahaan tidak tersedia",
   "error.days_must_be_number": "Masukkan jumlah hari sebagai bilangan bulat, misalnya 30.",
   "error.days_negative": "Jumlah hari tidak boleh di bawah nol. Masukkan 0 atau lebih.",

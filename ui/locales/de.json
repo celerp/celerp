@@ -678,7 +678,7 @@
   "error.api_unavailable": "Der Hintergrunddienst von Celerp läuft nicht. Starten Sie Celerp neu; wenn es weiter passiert, fragen Sie in GitHub Issues oder Discussions nach.",
   "error.cannot_deactivate_self": "Sie können Ihr eigenes Konto nicht deaktivieren. Bitten Sie einen anderen Admin oder den Unternehmensinhaber darum.",
   "error.company_name_blank": "Geben Sie einen Unternehmensnamen ein.",
-  "error.company_settings_unavailable": "Celerp konnte Ihre Firmeneinstellungen (Zeitzone und Geschäftsjahr) nicht lesen, daher lassen sich die Daten hier nicht ermitteln. Versuchen Sie es erneut; wenn es weiter passiert, starten Sie Celerp neu.",
+  "error.company_settings_unavailable": "Celerp konnte Ihre Firmeneinstellungen (Zeitzone und Geschäftsjahr) nicht lesen, daher lassen sich die Daten hier nicht ermitteln. Wenn es weiter passiert, starten Sie Celerp neu.",
   "error.company_settings_unavailable_title": "Firmeneinstellungen nicht verfügbar",
   "error.days_must_be_number": "Geben Sie die Anzahl der Tage als ganze Zahl ein, zum Beispiel 30.",
   "error.days_negative": "Die Anzahl der Tage kann nicht unter null liegen. Geben Sie 0 oder mehr ein.",

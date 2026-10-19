@@ -136,13 +136,22 @@ def _filled(template: str) -> str:
     return re.sub(r"\{\w+\}", "X", template)
 
 
+@pytest.fixture
+def module_catalogs():
+    """The module catalogs a running app registers, so module messages are in the pattern too."""
+    from ui.i18n import register_catalog
+    for d in LOCALE_DIRS[1:]:
+        for path in d.glob("*.json"):
+            register_catalog(path.stem, json.loads(path.read_text(encoding="utf-8")))
+
+
 def _says_try_again(lang: str, text: str) -> bool:
     from ui.i18n import try_again_pattern
     return re.search(try_again_pattern(lang), text) is not None
 
 
 @pytest.mark.parametrize("lang", LANGS)
-def test_every_message_that_says_select_try_again_is_recognised_in_its_own_language(lang):
+def test_every_message_that_says_select_try_again_is_recognised_in_its_own_language(lang, module_catalogs):
     from ui.i18n import t
     en = _catalog("en")
     keys = [k for k, v in en.items() if re.search(r"[Ss]elect Try again", v)]
@@ -152,7 +161,7 @@ def test_every_message_that_says_select_try_again_is_recognised_in_its_own_langu
 
 
 @pytest.mark.parametrize("lang", ["en", "th", "ja", "de"])
-def test_a_message_that_means_do_it_again_gets_no_try_again_control(lang):
+def test_a_message_that_means_do_it_again_gets_no_try_again_control(lang, module_catalogs):
     from ui.i18n import t
     en = _catalog("en")
     assert [k for k in _RETRY_THE_ACTION if k not in en] == []
@@ -167,9 +176,10 @@ def _request(method: str, path: str, query: str = ""):
                     "query_string": query.encode(), "headers": [], "app": app})
 
 
+# A page that came from GET has no address of its own: the button opens the one the browser shows.
 @pytest.mark.parametrize("method, path, query, address", [
-    ("GET", "/inventory", "q=ring", "/inventory?q=ring"),
-    ("GET", "/contacts/c1", "", "/contacts/c1"),
+    ("GET", "/inventory", "q=ring", ""),
+    ("GET", "/contacts/c1", "", ""),
     ("POST", "/inventory/import/preview", "", "/inventory/import"),
     ("POST", "/inventory/import/mapped", "", "/inventory/import"),
     ("POST", "/docs/import/mapped", "", "/docs/import"),
@@ -207,16 +217,29 @@ def import_backup_page(ui_client):
     return open_
 
 
+@pytest.fixture
+def import_backup_page_pattern(ui_client):
+    async def fetch(src):
+        r = await ui_client.get(src)
+        assert r.status_code == 200 and "immutable" in r.headers["cache-control"]
+        return json.loads(r.text.split(" = ", 1)[1].rstrip(";"))
+    return fetch
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lang", ["en", "th"])
-async def test_the_restore_page_that_says_select_try_again_carries_it_and_it_opens_with_get(import_backup_page, lang):
+async def test_the_restore_page_that_says_select_try_again_carries_it_and_it_opens_with_get(
+        import_backup_page, import_backup_page_pattern, lang):
     from ui.i18n import t
     r = await import_backup_page("POST", lang)
     assert t("auth.import_timed_out", lang) in r.text
     config = _shell_config(r.text)
     assert config["tryAgainHref"] == "/setup/import-backup"
     assert config["tryAgain"] == t("btn.try_again", lang)
-    assert re.search(config["tryAgainPattern"], t("auth.import_timed_out", lang))
+    src = re.search(r'<script src="(/static/try-again/[^"]+)"', r.text).group(1)
+    assert f"/{lang}.js?v=" in src
+    pattern = await import_backup_page_pattern(src)
+    assert re.search(pattern, t("auth.import_timed_out", lang))
 
 
 @pytest.mark.asyncio

@@ -754,7 +754,7 @@
   "error.back_to_dashboard": "Back to Dashboard",
   "error.cannot_deactivate_self": "You can't deactivate your own account. Ask another admin or the company owner to do it.",
   "error.company_name_blank": "Enter a company name.",
-  "error.company_settings_unavailable": "Celerp couldn't read your company settings (time zone and financial year), so the dates here can't be worked out. Try again; if it keeps happening, restart Celerp.",
+  "error.company_settings_unavailable": "Celerp couldn't read your company settings (time zone and financial year), so the dates here can't be worked out. If it keeps happening, restart Celerp.",
   "error.company_settings_unavailable_title": "Company settings unavailable",
   "error.days_must_be_number": "Enter the number of days as a whole number, for example 30.",
   "error.days_negative": "The number of days can't be below zero. Enter 0 or more.",

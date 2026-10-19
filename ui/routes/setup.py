@@ -176,7 +176,7 @@ def setup_routes(app):
 
     def _company_page(request: Request, values: dict, error: str | None = None):
         return auth_shell(
-            *client_scripts(get_lang(request)),
+            *client_scripts(get_lang(request), request),
             _company_setup_form(values, error=error),
             title=page_title("setup.finish_title"),
         )

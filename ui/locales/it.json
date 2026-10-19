@@ -678,7 +678,7 @@
   "error.api_unavailable": "Il servizio in background di Celerp non è in esecuzione. Riavvia Celerp; se continua, chiedi su GitHub Issues o Discussions.",
   "error.cannot_deactivate_self": "Non puoi disattivare il tuo account. Chiedi a un altro amministratore o al proprietario dell'azienda di farlo.",
   "error.company_name_blank": "Inserisci un nome per l'azienda.",
-  "error.company_settings_unavailable": "Celerp non è riuscito a leggere le impostazioni della tua azienda (fuso orario ed esercizio), quindi le date qui non possono essere calcolate. Riprova; se continua a succedere, riavvia Celerp.",
+  "error.company_settings_unavailable": "Celerp non è riuscito a leggere le impostazioni della tua azienda (fuso orario ed esercizio), quindi le date qui non possono essere calcolate. Se continua a succedere, riavvia Celerp.",
   "error.company_settings_unavailable_title": "Impostazioni aziendali non disponibili",
   "error.days_must_be_number": "Inserisci il numero di giorni come numero intero, ad esempio 30.",
   "error.days_negative": "Il numero di giorni non può essere inferiore a zero. Inserisci 0 o più.",

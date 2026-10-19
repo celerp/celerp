@@ -678,7 +678,7 @@
   "error.api_unavailable": "O serviço em segundo plano do Celerp não está em execução. Reinicie o Celerp; se continuar acontecendo, pergunte no GitHub Issues ou Discussions.",
   "error.cannot_deactivate_self": "Você não pode desativar sua própria conta. Peça a outro administrador ou ao proprietário da empresa para fazer isso.",
   "error.company_name_blank": "Digite um nome de empresa.",
-  "error.company_settings_unavailable": "O Celerp não conseguiu ler as configurações da sua empresa (fuso horário e ano fiscal), então as datas aqui não podem ser calculadas. Tente novamente; se continuar acontecendo, reinicie o Celerp.",
+  "error.company_settings_unavailable": "O Celerp não conseguiu ler as configurações da sua empresa (fuso horário e ano fiscal), então as datas aqui não podem ser calculadas. Se continuar acontecendo, reinicie o Celerp.",
   "error.company_settings_unavailable_title": "Configurações da empresa indisponíveis",
   "error.days_must_be_number": "Digite o número de dias como número inteiro, por exemplo 30.",
   "error.days_negative": "O número de dias não pode ser menor que zero. Digite 0 ou mais.",

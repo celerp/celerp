@@ -156,7 +156,7 @@ async def _read_scan(request: Request, mode: WizardMode, token: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def wizard_page(request: Request, *content, status_code: int = 200, title: str = "migration.title"):
-    page = auth_shell(*client_scripts(get_lang(request)), Div(*content, cls="auth-card migration-wizard"),
+    page = auth_shell(*client_scripts(get_lang(request), request), Div(*content, cls="auth-card migration-wizard"),
                       title=page_title(title))
     if status_code == 200:
         return page
