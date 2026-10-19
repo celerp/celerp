@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -23,6 +24,9 @@ from celerp.db import get_session_ctx
 from celerp.held_back import HeldBack, held_back
 from celerp.services.runtime_state import is_draining
 from ui.i18n import t
+
+# A document's file upload, a connected company's included, takes the per-file limit.
+_DOC_FILE = re.compile(r"/docs/[^/]+/files")
 
 logger = logging.getLogger(__name__)
 
@@ -89,17 +93,27 @@ class MaxBodySizeMiddleware:
         # same total cap.
         if scope.get("path", "").endswith(
             ("/items/files/bulk", "/items/attachments/bulk", "/backup/import", "/backup/import-bootstrap",
-             "/migrations/bootstrap/scan", "/migrations/scan", "/company-backups/read",
-             "/company-backups/bootstrap/read")
+             "/migrations/bootstrap/scan", "/migrations/scan")
         ):
             await self.app(scope, receive, send)
             return
+
+        limit = self.max_body_size_bytes
+        if scope.get("path", "").endswith((
+            "/company-backups/read", "/company-backups/bootstrap/read",
+            "/company-backups/start-company/read",
+        )):
+            from celerp.services.company_backup import MAX_UPLOAD_BYTES
+            limit = MAX_UPLOAD_BYTES + 256 * 1024  # account for multipart framing
+        elif _DOC_FILE.fullmatch(scope.get("path", "")):
+            from celerp.services.attachments import MAX_FILE_BYTES
+            limit = MAX_FILE_BYTES + 256 * 1024
 
         headers = dict(scope.get("headers", []))
         cl = headers.get(b"content-length")
         if cl is not None:
             try:
-                if int(cl) > self.max_body_size_bytes:
+                if int(cl) > limit:
                     response = JSONResponse(status_code=413, content={"detail": t("error.upload_too_large")})
                     await response(scope, receive, send)
                     return
@@ -108,7 +122,6 @@ class MaxBodySizeMiddleware:
                 await response(scope, receive, send)
                 return
 
-        limit = self.max_body_size_bytes
         received = 0
         too_large = False
         started = False

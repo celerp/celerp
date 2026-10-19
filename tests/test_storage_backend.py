@@ -364,7 +364,7 @@ async def test_s3_backend_delete_company_deletes_every_page_and_reports_errors(m
     context = MagicMock()
     context.__aenter__ = AsyncMock(return_value=mock_client)
     context.__aexit__ = AsyncMock(return_value=False)
-    monkeypatch.setattr(attachments, "_s3_client", lambda *args: context)
+    monkeypatch.setattr(attachments, "s3_client", lambda *args: context)
     mock_client.list_objects_v2 = AsyncMock(side_effect=[
         {"Contents": [{"Key": "attachments/co/a.png"}], "IsTruncated": True, "NextContinuationToken": "t1"},
         {"Contents": [{"Key": "attachments/co/b.png"}], "IsTruncated": False},

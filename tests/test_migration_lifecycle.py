@@ -168,10 +168,10 @@ async def test_cutover_date_and_opening_scope_validation(migration_env):
     assert (chosen.mode, chosen.cutover_date) == ("cutover", date(2026, 2, 1))
     assert validate_decisions(scan, {"mode": "full_history", "cutover_date": "2026-02-01"}).cutover_date is None
 
-    # An open-document snapshot the source cannot carry at cutover is refused with its reason.
+    # A business with foreign currency balances can cut over like any other.
     fx = await _manager_scan(FX)
-    errors = _field_errors(lambda: validate_decisions(fx, {"mode": "cutover", "cutover_date": "2026-02-01"}))
-    assert "foreign currency" in errors["cutover_date"]
+    chosen = validate_decisions(fx, {"mode": "cutover", "cutover_date": "2026-02-28"})
+    assert (chosen.mode, chosen.cutover_date) == ("cutover", date(2026, 2, 28))
 
     # Historical effects are carried once: before the cutover only open documents and their
     # settlements survive, and balances arrive as openings dated at the cutover.
@@ -283,9 +283,9 @@ async def test_migration_state_machine_rejects_illegal_transitions(real_client, 
     headers = auth(admin_token)
     assert (await load_run(real_engine, uuid.UUID(run_id))).status == "running"
     r = await real_client.post(f"/migrations/{run_id}/start", headers=headers)
-    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_cannot_start", "en", status=t("migration.status.running", "en"))
+    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_cannot_start", "en")
     r = await real_client.post(f"/migrations/{run_id}/finalize", headers=headers)
-    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_cannot_finalize", "en", status=t("migration.status.running", "en"))
+    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_cannot_finalize", "en")
 
     # Cancel is persisted at once; the runner stops between batches at cancelled.
     cancel_responses = []
@@ -304,7 +304,7 @@ async def test_migration_state_machine_rejects_illegal_transitions(real_client, 
     assert run.phase_state["company_settings"]["status"] == "done"
     assert run.phase_state.get("contacts_locations", {}).get("status") != "done"
     r = await real_client.post(f"/migrations/{run_id}/cancel", headers=headers)
-    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_cannot_cancel", "en", status=t("migration.status.cancelled", "en"))
+    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_cannot_cancel", "en")
 
     # Resume: 202 after the intent is persisted, then the runner finishes.
     scheduled = len(migration_env["scheduled"])
@@ -322,15 +322,15 @@ async def test_migration_state_machine_rejects_illegal_transitions(real_client, 
                                      for _ in range(2)])
     assert sorted(r.status_code for r in results) == [200, 409]
     assert [r.json()["detail"] for r in results if r.status_code == 409] == [
-        t("migration.err_cannot_finalize", "en", status=t("migration.status.completed", "en"))]
+        t("migration.err_cannot_finalize", "en")]
     assert await count(real_engine, "companies", "id = :c AND is_active", c=run.company_id) == 1
 
     # A finished run cannot be restarted, cancelled or discarded, even once the company is deactivated.
     async with real_engine.begin() as conn:
         await conn.execute(text("UPDATE companies SET is_active = false WHERE id = :c"), {"c": run.company_id})
-    for action, detail in (("start", t("migration.err_cannot_start", "en", status=t("migration.status.completed", "en"))),
-                           ("cancel", t("migration.err_cannot_cancel", "en", status=t("migration.status.completed", "en"))),
-                           ("finalize", t("migration.err_cannot_finalize", "en", status=t("migration.status.completed", "en"))),
+    for action, detail in (("start", t("migration.err_cannot_start", "en")),
+                           ("cancel", t("migration.err_cannot_cancel", "en")),
+                           ("finalize", t("migration.err_cannot_finalize", "en")),
                            ("discard", t("migration.err_no_unfinished", "en"))):
         r = await real_client.post(f"/migrations/{run_id}/{action}", headers=headers)
         assert r.status_code == 409 and r.json()["detail"] == detail, (action, r.text)
@@ -579,16 +579,16 @@ async def test_reconciliation_provider_failure_blocks_finalize(real_engine, migr
     assert "Ledger measurement failed." in run.error_summary["message"]
     assert run.reconciliation == {}
     error = await finalize_error(run_id)
-    assert (error.status_code, error.detail) == (409, t("migration.err_cannot_finalize", "en", status=t("migration.status.failed", "en")))
+    assert (error.status_code, error.detail) == (409, t("migration.err_cannot_finalize", "en"))
     assert await inactive(company_id)
     sink.reconcile_error = None
 
-    # An unexplained difference fails and shows the differing row.
+    # A measured difference remains reviewable and shows the differing row.
     run_id, company_id, _ = await staged_run(real_engine, spec=fake_spec(expected_locations=4),
                                              email="diff@example.com")
     await migrations.run_migration(run_id)
     run = await load_run(real_engine, run_id)
-    assert run.status == "failed" and run.reconciliation["blockers"] == 1
+    assert run.status == "ready_to_finalize" and run.reconciliation["blockers"] == 1
     row = next(r for r in run.reconciliation["rows"] if r["key"] == "Location")
     assert (row["source"], row["celerp"], row["difference"], row["result"]) == ("4", "3", "-1", "fail")
     assert await inactive(company_id)
@@ -607,6 +607,7 @@ async def test_reconciliation_provider_failure_blocks_finalize(real_engine, migr
     await migrations.run_migration(other)
     row = next(r for r in (await load_run(real_engine, other)).reconciliation["rows"] if r["check"] == "bank_cash")
     assert (row["celerp"], row["result"]) == (None, "fail")
+    assert (await load_run(real_engine, other)).status == "failed"
 
     # Finalize re-checks verification under lock.
     async with real_engine.begin() as conn:
@@ -632,6 +633,94 @@ async def test_reconciliation_provider_failure_blocks_finalize(real_engine, migr
     assert error.status_code == 500
     assert (await load_run(real_engine, run_id)).status == "ready_to_finalize"
     assert await inactive(company_id)
+
+
+@pytest.mark.asyncio
+async def test_reviewed_differences_can_finish_but_unreviewed_cannot(real_engine, migration_env):
+    from celerp.models.company import Company, User
+    from celerp.services import migrations
+    from celerp.services.migrations import MigrationError
+
+    run_id, company_id, _ = await staged_run(
+        real_engine, spec=fake_spec(expected_locations=4), email="reviewed@example.com",
+    )
+    await migrations.run_migration(run_id)
+    report = (await load_run(real_engine, run_id)).reconciliation
+    assert report["blockers"] == 1 and migrations.reviewable_differences(report)
+
+    with pytest.raises(MigrationError) as denied:
+        await _finalize(real_engine, run_id)
+    assert (denied.value.status_code, denied.value.detail) == (
+        409, t("migration.err_review_differences", "en"),
+    )
+    assert (await load_run(real_engine, run_id)).status == "ready_to_finalize"
+
+    from migration_support import posting_choices_from
+    from celerp.services.posting_readiness import readiness
+
+    async with maker(real_engine)() as s:
+        choices = posting_choices_from(await readiness(s, company_id) or [])
+        run = await creator_run(s, run_id)
+        reviewer = await s.get(User, run.created_by_user_id)
+        await migrations.finalize(s, run, choices, reviewed_by=reviewer)
+    finished = await load_run(real_engine, run_id)
+    assert finished.status == "completed"
+    review = finished.reconciliation["reviewed_differences"]
+    assert review["by"] == "Owner"
+    reviewed_at = datetime.fromisoformat(review["at"])
+    assert abs(datetime.now(timezone.utc) - reviewed_at) < timedelta(minutes=5)
+    pack = migrations.reconciliation_pack_csv(finished)
+    assert "Differences reviewed by,Owner" in pack
+    assert f"Reviewed at,{review['at']}" in pack
+    assert "Differences reviewed,Yes" not in pack
+    async with maker(real_engine)() as s:
+        company = await s.get(Company, company_id)
+        assert company.is_active is True and company.is_migration_staged is False
+
+
+@pytest.mark.asyncio
+async def test_unmeasured_difference_cannot_be_reviewed_away(real_engine, migration_env):
+    from celerp.services import migrations
+
+    run_id, _, _ = await staged_run(
+        real_engine,
+        spec=fake_spec(extra_expectations=[{
+            "measure": "bank_cash", "key": "1000", "expected": "12.50",
+        }]),
+        email="unmeasured-reviewed@example.com",
+    )
+    await migrations.run_migration(run_id)
+    run = await load_run(real_engine, run_id)
+    assert run.status == "failed"
+    assert run.reconciliation["blockers"] == 1
+    assert not migrations.reviewable_differences(run.reconciliation)
+
+
+@pytest.mark.asyncio
+async def test_unmeasured_failure_counts_only_unmeasured_checks_in_the_readers_language(
+        real_engine, migration_env):
+    from celerp.services import migrations
+    from ui.i18n import _current_lang
+
+    run_id, _, _ = await staged_run(
+        real_engine,
+        spec=fake_spec(expected_locations=4, extra_expectations=[{
+            "measure": "bank_cash", "key": "1000", "expected": "12.50",
+        }]),
+        email="mixed-unmeasured@example.com",
+    )
+    await migrations.run_migration(run_id)
+    run = await load_run(real_engine, run_id)
+    assert run.status == "failed" and run.reconciliation["blockers"] == 2
+    async with maker(real_engine)() as s:
+        english = (await migrations.run_view(s, await s.get(type(run), run_id)))["error"]["message"]
+        token = _current_lang.set("de")
+        try:
+            german = (await migrations.run_view(s, await s.get(type(run), run_id)))["error"]["message"]
+        finally:
+            _current_lang.reset(token)
+    assert english == t("migration.err_unmeasured", "en", n=1)
+    assert german == t("migration.err_unmeasured", "de", n=1) != english
 
 
 @pytest.mark.asyncio

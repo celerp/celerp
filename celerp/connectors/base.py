@@ -36,6 +36,10 @@ class SyncEntity(str, Enum):
     CONTACTS = "contacts"
     INVENTORY = "inventory"
     INVOICES = "invoices"
+    DOCUMENTS = "documents"
+    ATTACHMENTS = "attachments"
+    JOURNALS = "journals"
+    PERIOD_LOCK = "period_lock"
 
 
 class ConnectorCategory(str, Enum):
@@ -49,10 +53,15 @@ class SyncFrequency(str, Enum):
     DAILY = "daily"         # once per day at configured hour
 
 
-# Entity classification for direction filtering. Inbound entities are pulled from
-# the platform; the *_out entities are pushed from Celerp to the platform.
-_INBOUND_ENTITIES = {"products", "orders", "contacts", "inventory"}
-_OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out"}
+# The one list of sync entities. Inbound entities are pulled from the platform; the
+# *_out entities are pushed from Celerp to the platform, in dispatch order (documents
+# before the stock counts and files that refer to them). Each entity is run by the
+# connector method named sync_<entity>.
+INBOUND_ENTITIES = ("products", "orders", "contacts", "inventory", "journals", "period_lock")
+OUTBOUND_ENTITIES = (
+    "products_out", "contacts_out", "journals_out", "invoices_out", "documents_out",
+    "inventory_out", "attachments_out",
+)
 
 
 def entity_allowed(entity: str, direction: SyncDirection) -> bool:
@@ -60,9 +69,9 @@ def entity_allowed(entity: str, direction: SyncDirection) -> bool:
     if direction == SyncDirection.BOTH:
         return True
     if direction == SyncDirection.INBOUND:
-        return entity in _INBOUND_ENTITIES
+        return entity in INBOUND_ENTITIES
     if direction == SyncDirection.OUTBOUND:
-        return entity in _OUTBOUND_ENTITIES
+        return entity in OUTBOUND_ENTITIES
     return False
 
 
@@ -140,6 +149,10 @@ class ConnectorBase(ABC):
         document states. Connectors that cannot tell return False."""
         return False
 
+    async def before_outbound(self, ctx: ConnectorContext, now: datetime | None = None) -> None:
+        """Called once before a run sends anything, e.g. to warn about expiring credentials."""
+        return None
+
     @abstractmethod
     async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull products/variants from platform -> Celerp items."""
@@ -157,6 +170,10 @@ class ConnectorBase(ABC):
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull customers/vendors from platform -> Celerp CRM. Override if supported."""
         raise NotImplementedError(f"{self.name} does not support contact sync")
+
+    async def sync_contacts_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Send company contacts to an approved external recipient."""
+        raise NotImplementedError(f"{self.name} does not support outbound contact sync")
 
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
         """Push Celerp items -> platform. Override if supported."""

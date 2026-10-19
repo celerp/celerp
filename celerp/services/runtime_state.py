@@ -57,6 +57,14 @@ def _drain_cache_get() -> dict[str, Any] | None:
     return _drain_cache
 
 
+def drain_cache_status() -> dict[str, Any] | None:
+    """The cached drain state and its age in seconds; None when nothing is cached."""
+    cached = _drain_cache_get()
+    if cached is None:
+        return None
+    return {"value": cached, "cache_age_s": round(time.monotonic() - _drain_cache_at, 2)}
+
+
 def _drain_cache_bust() -> None:
     global _drain_cache
     _drain_cache = None

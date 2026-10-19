@@ -180,7 +180,7 @@ async def test_a_run_that_produces_no_list_keeps_the_previous_one(_db_engine):
     crashed = await run_sync(stub, ctx, "orders")
     assert crashed.errors and "connection refused" in crashed.errors[0]
     assert await attention_entries(cid, stub.name, "orders") == waiting
-    assert await attention_entries(cid, stub.name) == waiting
+    assert await attention_entries(cid, stub.name) == [{**waiting[0], "entity": "orders"}]
 
     await run_sync(stub, ctx, "orders")
     assert stub.received == [[], waiting, waiting]

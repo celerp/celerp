@@ -109,7 +109,7 @@ def _s3_files(monkeypatch, tmp_path) -> _Bucket:
     from celerp.services import attachments
     bucket = _Bucket()
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    monkeypatch.setattr(attachments, "_s3_client", bucket.client)
+    monkeypatch.setattr(attachments, "s3_client", bucket.client)
     monkeypatch.setattr(attachments, "_backend", attachments.S3Backend("https://s3.example.test", "bucket", "k", "s"))
     return bucket
 

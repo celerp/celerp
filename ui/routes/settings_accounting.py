@@ -127,6 +127,7 @@ def _bank_accounts_tab(banks: list[dict]) -> FT:
 def _period_lock_tab(lock_data: dict) -> FT:
     lock_date = lock_data.get("lock_date") or ""
     set_at = lock_data.get("lock_date_set_at") or ""
+    firm_lock = lock_data.get("firm_lock")
     return Div(
         H3(t("page.period_lock"), cls="section-title"),
         P(
@@ -159,6 +160,11 @@ def _period_lock_tab(lock_data: dict) -> FT:
                  updated=(set_at[:10] if set_at else t("settings_accounting.unknown"))),
                cls="text-muted mt-md")]
             if lock_date else []
+        ),
+        *(
+            [P(t("settings_accounting.firm_lock", firm=firm_lock["firm"], date=firm_lock["date"]),
+               cls="text-muted mt-sm")]
+            if firm_lock else []
         ),
         Hr(cls="section-divider mt-lg mb-lg"),
         H3(t("page.close_fiscal_year"), cls="section-title"),

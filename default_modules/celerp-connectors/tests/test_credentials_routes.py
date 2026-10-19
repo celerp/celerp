@@ -589,3 +589,33 @@ async def test_revoke_refuses_new_credential_after_webhook_cleanup():
     assert result["ok"] is False
     assert result["error"] == "connection_changed"
     assert not delete.called
+
+
+def test_disconnect_does_not_need_a_connect_session():
+    """Leaving a connection is always possible, with or without Celerp Connect."""
+    from celerp_connectors.routes import _require_session, open_router
+
+    route = next(r for r in open_router.routes
+                 if r.path == "/connectors/{connector_name}/credentials" and "DELETE" in r.methods)
+    assert route.endpoint is revoke_credentials
+    assert _require_session not in [d.call for d in route.dependant.dependencies]
+
+
+@pytest.mark.asyncio
+async def test_accountant_disconnect_goes_ahead_when_the_relay_is_out_of_reach():
+    """Without Connect the relay cannot be asked to drop its copy of the key; the
+    accountant connection is this company's own, so it disconnects anyway."""
+    from celerp.connectors.ownership import RESET_STATUS_DISCONNECTED
+
+    url_p, hdr_p = _relay_state()
+    release = AsyncMock()
+    with patch("celerp.connectors.ownership.release_connector_ownership", release), \
+            url_p, hdr_p, respx.mock:
+        respx.get(f"{RELAY}/tokens/celerp/revision").mock(return_value=httpx.Response(401))
+        session = _session()
+        result = await revoke_credentials("celerp", "company-test", None, session)
+
+    assert result == {"ok": True}
+    assert release.await_args.kwargs["status"] == RESET_STATUS_DISCONNECTED
+    session.rollback.assert_not_awaited()
+    assert session.commit.await_count == 1

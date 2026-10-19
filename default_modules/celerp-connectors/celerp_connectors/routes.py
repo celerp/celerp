@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import refusal
 from celerp.connectors.base import SyncDirection, SyncEntity
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.db import get_session
@@ -34,6 +35,11 @@ router = APIRouter(
     prefix="/connectors",
     tags=["connectors"],
     dependencies=[Depends(get_current_user), Depends(_require_session)],
+)
+# Leaving a connection never needs Connect.
+open_router = APIRouter(
+    prefix="/connectors", tags=["connectors"],
+    dependencies=[Depends(get_current_user)],
 )
 local_router = APIRouter(
     prefix="/connector-items", tags=["connectors"],
@@ -229,8 +235,6 @@ async def store_credentials(
     subscription_required, relay_not_https, relay_error.
     """
     from celerp import connectors
-    import httpx
-    from celerp.gateway.state import relay_http_url, relay_session_headers
 
     try:
         connector = connectors.get(connector_name)
@@ -284,6 +288,38 @@ async def store_credentials(
         except Exception as exc:
             return {"ok": False, "error": "store_unreachable", "detail": str(exc)}
 
+    elif connector_name == "celerp":
+        import json
+        from urllib.parse import urlsplit
+        from celerp.services.outbound_url import validate_public_base_url, fetch_public_bytes
+        try:
+            parsed = urlsplit(store_url)
+            if (not store_url or parsed.scheme != "https" or not parsed.hostname
+                    or parsed.port not in (None, 443) or parsed.path not in ("", "/")
+                    or parsed.username is not None or parsed.password is not None
+                    or parsed.query or parsed.fragment or payload.consumer_secret):
+                return {"ok": False, "error": "store_unreachable",
+                        "detail": "Enter the receiving installation's HTTPS address and company key."}
+            store_url = await validate_public_base_url(
+                store_url, reject_query=True, reject_fragment=True)
+            response = await fetch_public_bytes(
+                f"{store_url}/company-peers/verify",
+                max_bytes=4096, timeout=10.0,
+                headers={"Authorization": "Peer " + payload.consumer_key},
+                params={"source_company_id": str(company_id)},
+            )
+            if response.status_code != 200:
+                return {"ok": False, "error": "store_rejected",
+                        "detail": "The receiving installation rejected this company key."}
+            info = json.loads(response.content)
+            if (not isinstance(info, dict) or not info.get("scopes")
+                    or not info.get("company_id")):
+                return {"ok": False, "error": "store_rejected",
+                        "detail": "The receiving company did not confirm which records it accepts."}
+        except Exception:
+            return {"ok": False, "error": "store_unreachable",
+                    "detail": "The receiving Celerp installation could not be verified."}
+
     from celerp.connectors.base import ConnectorCategory, ConnectorContext, SyncFrequency
     from celerp.connectors.ownership import (
         ConnectorOwnershipError,
@@ -321,7 +357,8 @@ async def store_credentials(
 
     store_ctx = ConnectorContext(
         company_id=str(company_id),
-        access_token=f"{payload.consumer_key}:{payload.consumer_secret}",
+        access_token=(payload.consumer_key if connector_name == "celerp"
+                      else f"{payload.consumer_key}:{payload.consumer_secret}"),
         store_handle=store_url or None,
     )
     # The store is checked against the company's records, and its old product
@@ -400,26 +437,13 @@ async def store_credentials(
             "detail": f"{exc} Disconnect it before retrying.",
         }
 
+    from celerp.connectors.relay_token import RelayStoreError, store_api_key
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-            r = await client.post(
-                f"{relay_http_url()}/tokens/{connector_name}",
-                json={
-                    "consumer_key": payload.consumer_key,
-                    "consumer_secret": payload.consumer_secret,
-                    "store_url": store_url or None,
-                },
-                headers=relay_session_headers(),
-            )
-    except Exception as exc:
+        await store_api_key(connector_name, payload.consumer_key, payload.consumer_secret, store_url)
+    except RelayStoreError as exc:
+        if exc.status == 402:
+            return await _failure("subscription_required", "")
         return await _failure("relay_error", str(exc))
-
-    if r.status_code == 402:
-        return await _failure("subscription_required", "")
-    if r.status_code != 200:
-        return await _failure(
-            "relay_error", f"relay returned {r.status_code}"
-        )
 
     webhook_ids: list[str] = []
     if connector_name == "woocommerce":
@@ -456,7 +480,7 @@ async def store_credentials(
     return {"ok": True}
 
 
-@router.delete("/{connector_name}/credentials")
+@open_router.delete("/{connector_name}/credentials")
 async def revoke_credentials(
     connector_name: str,
     company_id: Annotated[str, Depends(get_current_company_id)],
@@ -495,8 +519,11 @@ async def revoke_credentials(
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    # The accountant connection is this company's own: when the relay cannot be
+    # reached to drop its copy of the key, it disconnects anyway.
     if failure := await _revoke_remote(
-        session, company_id, connector_name, webhook_ids, force=force
+        session, company_id, connector_name, webhook_ids, force=force,
+        best_effort=connector_name == "celerp",
     ):
         return failure
 
@@ -519,10 +546,11 @@ async def revoke_credentials(
 
 async def _revoke_remote(
     session: AsyncSession, company_id: str, connector_name: str,
-    webhook_ids: list[str], *, force: bool,
+    webhook_ids: list[str], *, force: bool, best_effort: bool = False,
 ) -> dict | None:
     """Disconnect the connector remotely. Returns the failure response, with
-    the local transaction rolled back, or None when it is disconnected."""
+    the local transaction rolled back, or None when it is disconnected. With
+    `best_effort`, a cleanup that cannot be confirmed is logged, not refused."""
     from celerp.connectors.remote_state import (
         ConnectorRemoteCleanupError,
         ConnectorRemoteStateChangedError,
@@ -537,6 +565,9 @@ async def _revoke_remote(
         await session.rollback()
         return {"ok": False, "error": "connection_changed", "detail": str(exc)}
     except ConnectorRemoteCleanupError as exc:
+        if best_effort:
+            log.warning("%s remote cleanup unconfirmed; disconnecting locally", connector_name)
+            return None
         await session.rollback()
         return {"ok": False, "error": "relay_error", "detail": str(exc)}
     return None
@@ -593,6 +624,12 @@ async def reset_unassigned_connector(
     return {"ok": True}
 
 
+def _order_changed() -> dict:
+    """The refusal for marking an order reconciled after WooCommerce changed it again."""
+    return refusal("connectors.order_changed_in_woocommerce",
+                   "This order changed in WooCommerce. Select Try again to review the change.")
+
+
 class ReconciledRequest(BaseModel):
     signature: str
 
@@ -618,10 +655,7 @@ async def _set_order_reconciled(
                 detail=t("error.order_clears_itself"),
             )
         if signature is not None and entry["signature"] != signature:
-            raise HTTPException(
-                status_code=409,
-                detail="This order changed in WooCommerce; refresh to review the change",
-            )
+            raise HTTPException(status_code=409, detail=_order_changed())
         entry["reconciled"] = signature is not None
 
     entry = await update_attention_entry(
@@ -637,7 +671,7 @@ async def _set_order_reconciled(
         )
     except WooCommerceReconciliationChanged as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=_order_changed()) from exc
     except ValueError as exc:
         await session.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -767,4 +801,5 @@ async def set_item_sync(
 def setup_api_routes(app) -> None:
     """Called by the module loader to register connector routes."""
     app.include_router(router)
+    app.include_router(open_router)
     app.include_router(local_router)

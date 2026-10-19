@@ -54,7 +54,7 @@ def test_prefix_keys_are_gone():
 
 
 @pytest.mark.parametrize("key, says", [
-    ("error.record_not_found", "Go back, refresh the page"),
+    ("error.record_not_found", "Select Try again"),
     ("contacts.err_resubmitted", "possibly from another tab"),
     ("contacts.err_file_not_found", "It may have been deleted."),
     ("contacts.err_name_required", "Enter a name for the contact"),
@@ -66,8 +66,8 @@ def test_prefix_keys_are_gone():
     ("contacts.err_merge_source_not_found", "one of the contacts to merge"),
     ("contacts.err_merge_source_deleted", "Remove it from the selection."),
     ("contacts.err_merge_source_merged", "already merged into another contact"),
-    ("contacts.delete_failed", "Refresh the page and try again."),
-    ("contacts.merge_failed", "Refresh the page and try again."),
+    ("contacts.delete_failed", "Select Try again"),
+    ("contacts.merge_failed", "Select Try again"),
     ("contacts.csv_expired", "Upload it again."),
     ("contacts.invalid_currency", "Choose a currency from the list."),
 ])

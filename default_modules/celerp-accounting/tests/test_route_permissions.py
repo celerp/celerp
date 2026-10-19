@@ -17,6 +17,7 @@ from celerp_accounting.routes import router
 
 READ = "view_financial_reports"
 WRITE = "manage_accounting"
+KEY_ONLY: frozenset[str] = frozenset()
 
 EXPECTED: dict[tuple[str, str], str | frozenset[str]] = {
     # Reports. Reading these is what view_financial_reports means.
@@ -34,6 +35,11 @@ EXPECTED: dict[tuple[str, str], str | frozenset[str]] = {
     ("POST", "/import/batch"): frozenset({WRITE, "import_export_data"}),
     ("POST", "/accounts/import/batch"): frozenset({WRITE, "import_export_data"}),
     ("POST", "/accounts/import/preview"): frozenset({WRITE, "import_export_data"}),
+    # Opened only by a connected company's key, which answers for the company; a
+    # signed-in user is refused whatever they hold.
+    ("GET", "/peer/journals"): KEY_ONLY,
+    ("POST", "/peer/journals"): KEY_ONLY,
+    ("GET", "/peer/lock"): KEY_ONLY,
 }
 
 

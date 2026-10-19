@@ -147,8 +147,9 @@ jobs:
       # this workflow, so this waits for those jobs, never its whole run. The builds
       # get 4 hours from when their run started building, so time queued for
       # runners does not count; this job polls for as long as GitHub lets one job
-      # run. Either way out publishes nothing, and re-running this failed job once
-      # the builds finish publishes the release.
+      # run. A failed build does not end the wait while others still run, so the
+      # outcome names every build that failed. Either way out publishes nothing,
+      # and re-running this failed job once the builds finish publishes the release.
       - name: Wait for the desktop builds and upgrade test of this commit
         shell: bash
         env:

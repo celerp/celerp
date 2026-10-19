@@ -45,6 +45,7 @@ from celerp.services.goods_cost import negative_cost_error
 from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
 from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_placing
 from celerp.services.physical_codes import lock_item_code_namespace
+from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
 from celerp.services.payments import recorded_unmatched, return_unmatched
 from celerp.tax_regimes import default_tax, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of, company_today
@@ -58,7 +59,7 @@ from celerp.services.document_lines import (
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
-from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, next_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
@@ -509,6 +510,7 @@ class DocImportRecord(BaseModel):
     source: str
     idempotency_key: str
     source_ts: str | None = None
+    source_revision: SourceRevision = None  # a connected company's records only
 
     _contact_fields = field_validator("data", mode="before")(_canonical_contact_payload)
 
@@ -984,6 +986,7 @@ class DocListFilters:
     not_restocked: bool = False
     not_stocked: bool = False
     converted_to_type: str | None = None
+    accounting_sync: Literal["excluded", "included"] | None = None
     ids: str | None = None
     sort: str | None = None
     dir: str = "desc"
@@ -1031,6 +1034,10 @@ def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
         base_where.append(Projection.state["converted_to_type"].as_string() == f.converted_to_type)
     if f.contact_id:
         base_where.append(Projection.state["contact_id"].as_string() == f.contact_id)
+    if f.accounting_sync:
+        excluded = Projection.state["accounting_sync_excluded"].as_boolean()
+        base_where.append(excluded.is_(True) if f.accounting_sync == "excluded"
+                          else excluded.is_not(True))
     if id_list:
         base_where.append(Projection.entity_id.in_(id_list))
     if f.date_from:
@@ -1827,6 +1834,7 @@ async def create_doc(
 
 @router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    await _refuse_synced(session, company_id, entity_id)
     result = await write_doc_patch(session, company_id, role, settings, user, entity_id, payload)
     await session.commit()
     return result
@@ -1847,6 +1855,42 @@ async def _refuse_fixed_consignor(session: AsyncSession, company_id, entity_id: 
             "consignment.consignor_fixed",
             "The consignor is fixed: goods on this consignment have been sold or billed, and those sales are "
             "owed to them."))
+
+
+# Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
+_FINALIZED_EDITABLE_FIELDS = frozenset({
+    "description", "customer_note", "internal_note",
+    "shipping_attn", "contact_shipping_address", "ref_id",
+    "line_items",  # partial: only description/account_code per line
+    # Contact snapshot fields - stored on doc, no JE impact
+    "contact_id", "contact_name", "contact_company_name", "contact_billing_address",
+    "contact_phone", "contact_email", "contact_tax_id", "payment_terms",
+    "accounting_sync_excluded",
+})
+_LI_FINALIZED_EDITABLE = frozenset({"description", "account_code"})
+
+
+def assert_finalized_edit(state: dict, fields_changed: dict) -> None:
+    """Refuse (409) a change to a finalized document beyond its corrective fields, and a line
+    change beyond each line's description and account."""
+    if set(fields_changed) - _FINALIZED_EDITABLE_FIELDS:
+        _assert_doc_editable(state)
+    if "line_items" not in fields_changed:
+        return
+    existing_by_idx = {i: li for i, li in enumerate(state.get("line_items") or [])}
+    for i, incoming in enumerate(fields_changed["line_items"].get("new") or []):
+        original = existing_by_idx.get(i, {})
+        for k, v in incoming.items():
+            if k in _LI_FINALIZED_EDITABLE:
+                continue
+            orig_v = original.get(k)
+            if k == "line_id" and not orig_v:
+                continue  # a legacy line is given its id on its first save
+            if v != orig_v:
+                raise HTTPException(
+                    status_code=409,
+                    detail=t("documents.err_line_field_finalized", field=k, line=i + 1),
+                )
 
 
 def _assert_doc_editable(state: dict) -> None:
@@ -1882,16 +1926,6 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     digest, idem_key = _patch_identity("doc", entity_id, payload)
     if (done := await _find_patch_replay(session, company_id, idem_key, "doc.updated", entity_id, digest)) is not None:
         return done
-    # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
-    _FINALIZED_EDITABLE_FIELDS = {
-        "description", "customer_note", "internal_note",
-        "shipping_attn", "contact_shipping_address", "ref_id",
-        "line_items",  # partial: only description/account_code per line
-        # Contact snapshot fields - stored on doc, no JE impact
-        "contact_id", "contact_name", "contact_company_name", "contact_billing_address",
-        "contact_phone", "contact_email", "contact_tax_id", "payment_terms",
-    }
-    _LI_FINALIZED_EDITABLE = {"description", "account_code"}
     # The selected contact is locked before the document, the order merge and delete use.
     contact = await _lock_selected_contact(session, company_id, settings, role, new_contact_id) if selecting else None
     # Locked load so the version check and the emit are one compare-and-set, as for lists.
@@ -1934,27 +1968,10 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         await _assert_sales_line_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)
     is_draft = row.state.get("status") == "draft"
     if not is_draft:
-        locked_fields = set(fields_changed) - _FINALIZED_EDITABLE_FIELDS
-        if locked_fields:
-            _assert_doc_editable(row.state)
-        # Guard: line_items patch on finalized doc may only touch _LI_FINALIZED_EDITABLE fields
+        assert_finalized_edit(row.state, fields_changed)
         if "line_items" in fields_changed:
             incoming_lis = (fields_changed["line_items"].get("new") or [])
-            existing_lis = row.state.get("line_items") or []
-            existing_by_idx = {i: li for i, li in enumerate(existing_lis)}
-            for i, incoming in enumerate(incoming_lis):
-                original = existing_by_idx.get(i, {})
-                for k, v in incoming.items():
-                    if k in _LI_FINALIZED_EDITABLE:
-                        continue
-                    orig_v = original.get(k)
-                    if k == "line_id" and not orig_v:
-                        continue  # a legacy line is given its id on its first save
-                    if v != orig_v:
-                        raise HTTPException(
-                            status_code=409,
-                            detail=t("documents.err_line_field_finalized", field=k, line=i + 1),
-                        )
+            existing_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
             if row.state.get("doc_type") in _BILL_POSTED:
                 # A line moved to another account posts there if the bill is reverted and finalized again.
                 await require_line_destinations(session, company_id, [
@@ -2124,8 +2141,9 @@ def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: st
     asyncio.create_task(_run())
 
 
-@router.post("/{entity_id}/send")
-async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def mark_doc_sent(session: AsyncSession, company_id, entity_id: str, user,
+                        payload: DocSendBody, *, source: str = "api"):
+    """Canonical sent transition, caller owns commit and any email side effect."""
     # Lock the doc row so the closed-check below is race-safe against a concurrent
     # close: without it, send and close both read a non-closed memo unlocked and
     # both commit, letting doc.sent silently un-close the memo the close settled.
@@ -2133,7 +2151,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     key, digest = _operation("send", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.sent",
                                    entity_id=entity_id, digest=digest)) is not None:
-        return done
+        return row, None, done
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail=t("documents.err_send_void"))
     if row.state.get("status") == "closed":
@@ -2146,9 +2164,19 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
         raise HTTPException(status_code=409, detail=t("documents.err_send_type"))
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.sent",
-        data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
+        data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source=source,
         idempotency_key=key, metadata_={"request": digest},
     )
+
+    return row, entry, None
+
+
+@router.post("/{entity_id}/send")
+async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    row, entry, prior = await mark_doc_sent(session, company_id, entity_id, user, payload)
+    if prior is not None:
+        return prior
+    doc_type = row.state.get("doc_type", "")
 
     sent_to = payload.sent_to
     view_url = pay_url = None
@@ -2554,8 +2582,9 @@ async def finalize_doc(
     return await finalize_document(entity_id, company_id, user, session, commit=True)
 
 
-@router.post("/{entity_id}/void")
-async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, user,
+                        session: AsyncSession, *, commit: bool = True,
+                        role: str | None = None, settings: dict | None = None) -> dict:
     from celerp.services import auto_je
 
     preview = await _get_doc(session, company_id, entity_id)
@@ -2619,6 +2648,8 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
             "the bill would leave that entry standing. To cancel the bill, revert it to draft."))
 
     if row.state.get("doc_type") == "debit_note" and row.state.get("source_return"):
+        if role is None or settings is None:
+            raise HTTPException(status_code=403, detail=t("acct.not_authorized"))
         assert_role_permission(settings, role, "fulfill_documents")
         await _undo_supplier_return(session, company_id, user.id, entity_id, row.state)
     event_data = payload.model_dump(exclude_none=True)
@@ -2637,9 +2668,26 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
         idempotency_key=key, metadata_={"request": digest},
     )
     await _settle_moved_cost(session, company_id, user.id, entity_id, row.state, f"void-{entry.id}", "doc.voided")
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id}
 
+
+@router.post("/{entity_id}/void")
+async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    await _refuse_synced(session, company_id, entity_id)
+    return await void_document(entity_id, payload, company_id, user, session,
+                               commit=True, role=role, settings=settings)
+
+
+async def _refuse_synced(session: AsyncSession, company_id, entity_id: str) -> None:
+    """A document a connected company sent is that company's to change; this company
+    answers it with a journal entry of its own."""
+    from celerp.services.peer_journals import synced_source
+
+    sender = await synced_source(session, uuid.UUID(str(company_id)), "doc", entity_id)
+    if sender is not None:
+        raise HTTPException(status_code=422, detail=t("documents.err_peer_synced", company=sender))
 
 async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: dict, tag: str, trigger: str) -> None:
     """Once an invoice stops standing (void, back to draft), settle any cost it still
@@ -3631,9 +3679,10 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     path and across connections, so two recorders on one doc are ordered at the row
     and cannot compute a duplicate or colliding payment_index.
 
-    The money moves through ``bank_account``, which must be able to hold it. Only
-    an imported debit note passes ``moves_cash=False``: it settles its bill against
-    the bill's own payable account, so no money moves.
+    The money moves through ``bank_account``, which must be able to hold it. Only a
+    migration passes ``moves_cash=False``, for an imported debit note and for the
+    amount a document was paid before its source books started: each settles the
+    document against its own receivable or payable account, so no money moves.
 
     *books* is the (base currency, document rate) the payment posts on when the caller
     already holds them - an online payment keeps the books its payment page opened with,
@@ -3943,7 +3992,7 @@ async def apply_payment_refund(session, company_id, entity_id: str, row: Project
 
 async def reverse_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict,
                                  refund: dict, *, reversal_date: str, books: PaymentBooks, actor_id,
-                                 source: str, idempotency_key: str):
+                                 source: str, idempotency_key: str, metadata_: dict | None = None):
     """Undo *refund*, the data of a doc.payment.refunded event of *payment* on the locked
     document *row*, when the money it gave back came back: emit
     doc.payment.refund_reversed and post the lines that give *refund*'s amount back
@@ -3962,6 +4011,7 @@ async def reverse_payment_refund(session, company_id, entity_id: str, row: Proje
         data={"payment_index": index, "refund_number": number, "amount": refund["amount"],
               "refund_id": refund.get("refund_id"), "reversal_date": reversal_date},
         actor_id=actor_id, location_id=None, source=source, idempotency_key=idempotency_key,
+        metadata_=metadata_ or {},
     )
     if getattr(entry, "was_deduped", False):
         return entry
@@ -4781,13 +4831,13 @@ def _resolve_inbound_line(doc: dict, it: ReceivedItem, item_skus: dict[str, str]
         if len(found) != 1:
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.receive_line_unknown",
-                f"{what}: that line is not on this document. Reload the document and pick the line again.",
+                f"{what}: that line is not on this document. Select Try again, then pick the line again.",
                 what=what))
         index = found[0]
         if it.po_line_index not in (-1, index):
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.receive_line_mismatch",
-                f"{what}: that line has moved on this document. Reload the document and pick the line again.",
+                f"{what}: that line has moved on this document. Select Try again, then pick the line again.",
                 what=what))
     elif it.po_line_index != -1:
         if not 0 <= it.po_line_index < len(lines):
@@ -6632,7 +6682,7 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, 
         if index is None:
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.return_line_unknown",
-                "A selected line is not on this document as named. Reload the document and select the lines again."))
+                "A selected line is not on this document as named. Select Try again, then select the lines again."))
         if index in picked:
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.return_line_once", "Each line can be selected once."))
@@ -7660,7 +7710,8 @@ def _assert_doc_import_permissions(settings: dict, role: str, data: dict) -> Non
 
 # Lifecycle state is owned by dedicated document operations, and the type and
 # number are established by the original create; import-upsert rewrites neither.
-_DOC_IMPORT_UPSERT_EXCLUDED = LIFECYCLE_OWNED_FIELDS | {"doc_type", "ref_id"}
+# import_treatment says how a new record is booked; an update cannot book it again.
+_DOC_IMPORT_UPSERT_EXCLUDED = LIFECYCLE_OWNED_FIELDS | {"doc_type", "ref_id", "import_treatment"}
 
 
 def _doc_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:
@@ -7931,9 +7982,12 @@ async def batch_import_docs(
     __: None = require_permission("import_export_data"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> BatchImportResult:
     from celerp_docs import import_service
 
+    if (peer := await peer_batch(auth, session, body.records)) is not None:
+        return BatchImportResult(**peer)
     role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     outcome = await import_service.import_doc_records(
         session, company_id, user, role, settings, body.records, upsert=body.upsert,
@@ -9122,6 +9176,10 @@ async def finalize_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    return await finalize_list_record(entity_id, company_id, user, session, commit=True)
+
+
+async def finalize_list_record(entity_id: str, company_id: str, user, session: AsyncSession, *, commit: bool = True) -> dict:
     """Lock a draft list (draft -> finalized). The single draft->open transition for every type.
 
     Type-specific on-finalize (from the behaviour registry): a quotation records `sent_at`, a
@@ -9159,7 +9217,8 @@ async def finalize_list(
     elif milestone:
         data[milestone] = now
     entry = await _emit_list(session, company_id, entity_id, "list.finalized", data, user)
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id, "status": FINALIZED}
 
 
@@ -9536,7 +9595,10 @@ async def batch_import_lists(
     __: None = require_permission("import_export_data"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> BatchImportResult:
+    if (peer := await peer_batch(auth, session, body.records)) is not None:
+        return BatchImportResult(**peer)
     role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     from sqlalchemy import select as _select
     from celerp.models.ledger import LedgerEntry
@@ -9660,7 +9722,7 @@ def _selected_line_indices(line_items: list[dict], body: FulfillLinesRequest) ->
         index_of = {li.get("line_id"): i for i, li in enumerate(line_items) if li.get("line_id")}
         if any(lid not in index_of for lid in body.line_ids):
             raise HTTPException(status_code=422, detail=refusal(
-                "lines.not_on_document", "A line you chose is no longer on this record. Reload it and choose again."))
+                "lines.not_on_document", "A line you chose is no longer on this record. Select Try again, then choose again."))
         return sorted({index_of[lid] for lid in body.line_ids})
     binders: dict[str, list[int]] = {}
     for i, li in enumerate(line_items):
@@ -9671,7 +9733,7 @@ def _selected_line_indices(line_items: list[dict], body: FulfillLinesRequest) ->
         lines = binders.get(eid, [])
         if not lines:
             raise HTTPException(status_code=422, detail=refusal(
-                "lines.not_on_document", "A line you chose is no longer on this record. Reload it and choose again."))
+                "lines.not_on_document", "A line you chose is no longer on this record. Select Try again, then choose again."))
         if len(lines) > 1:
             sku = str(line_items[lines[0]].get("sku") or "")
             raise HTTPException(status_code=409, detail=refusal(
@@ -11861,7 +11923,18 @@ async def upload_doc_file(
     _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    auth: AuthContext = Depends(get_auth_context),
+    source_file_id: str | None = Form(default=None, min_length=1, max_length=255),
+    sha256_hex: str | None = Form(default=None, min_length=64, max_length=64),
+    document_tag: str | None = Form(default=None, max_length=128),
+    description: str | None = Form(default=None, max_length=4096),
 ) -> dict:
+    """Attach a file to a document. A connected company's key names the document and the
+    file by its own ids, with the file's checksum (peer_import.receive_file)."""
+    peer_fields = {"source_file_id": source_file_id, "sha256_hex": sha256_hex,
+                   "document_tag": document_tag, "description": description}
+    if (peer := await receive_file(auth, session, entity_id, file, **peer_fields)) is not None:
+        return peer
     async with storing(session, company_id) as store:
         try:
             meta = await store.upload(file)
@@ -12045,10 +12118,12 @@ async def _get_audit(session: AsyncSession, company_id, entity_id: str, *, for_u
     return row
 
 
-async def _set_list_fields(session, company_id, entity_id, user, fields: dict):
+async def _set_list_fields(session, company_id, entity_id, user, fields: dict, *,
+                           idempotency_key: str | None = None):
     """Emit list.updated carrying the given top-level field changes (used by every type)."""
     fc = {k: {"new": v} for k, v in fields.items()}
-    return await _emit_list(session, company_id, entity_id, "list.updated", {"fields_changed": fc}, user)
+    return await _emit_list(session, company_id, entity_id, "list.updated",
+                            {"fields_changed": fc}, user, idem_key=idempotency_key)
 
 
 def _ambiguous_sku_detail(code: str, pieces: int) -> str:
@@ -12160,6 +12235,11 @@ async def create_audit_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    return await create_audit_list_record(payload, company_id, user, session, commit=True)
+
+
+async def create_audit_list_record(payload: AuditCreateBody, company_id: str, user, session: AsyncSession, *,
+                                  commit: bool = True, entity_id_override: str | None = None) -> dict:
     """Create a location-bound audit as a DRAFT manifest pre-seeded with the location's physical
     items. The manifest is reviewed/extended in draft (scan adds more); Finalize freezes each line's
     on-hand snapshot, then counting happens in the finalized stage."""
@@ -12178,14 +12258,15 @@ async def create_audit_list(
         lines.append({"item_id": r.entity_id, "sku": st.get("sku"), "name": st.get("name"),
                       "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0)})
     ref_id = next_doc_ref(company, "audit")
-    entity_id = f"list:{ref_id}"
+    entity_id = entity_id_override or f"list:{ref_id}"
     if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
         raise HTTPException(status_code=409, detail=t("documents.err_audit_number_taken", number=ref_id))
     data = {"list_type": "audit", "location_id": payload.location_id, "status": DRAFT,
             "ref_id": ref_id, "line_items": lines, "adjust_count": 0,
             "currency": company.settings.get("currency", "USD")}
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id, "id": entity_id, "ref_id": ref_id, "line_count": len(lines)}
 
 
@@ -12214,31 +12295,40 @@ def _scan_codes(payload: ScanBody) -> list[str]:
     return codes
 
 
-def _scan_replay(row: Projection, payload: ScanBody, codes: list[str]):
-    """The recorded outcome of a retried run, a 409 for a spent run key reused on a different
-    batch, or None for a new run.
+def _scan_event_key(entity_id: str, run_key: str) -> str:
+    raw = f"{len(entity_id)}:{entity_id}:{run_key}".encode("utf-8")
+    return "scan:" + hashlib.sha256(raw).hexdigest()
 
-    A retry of one Add click carries the same run_key AND the same batch still sitting in the
-    field. The key alone is not enough: if the response is lost, the user could edit the field to a
-    new batch and resubmit under the same key - replaying the old run would then silently drop the
-    new one. So each recorded run stores a fingerprint of its normalized codes + price_list."""
+
+async def _scan_replay(session: AsyncSession, row: Projection, payload: ScanBody, codes: list[str]):
+    """Replay a batch from the bounded projection cache or its durable domain event."""
     if not payload.run_key:
         return None
     fp = _scan_run_fingerprint(codes, payload.price_list)
-    for rec in (row.state.get(SCAN_RUNS_FIELD) or []):
-        if rec.get("key") == payload.run_key:
-            if rec.get("fp") != fp:
-                # A client bug (edited the field then resubmitted under a spent key). Reply with a code
-                # so the scan bar branches on it, not on message text, and the record's version so it
-                # can refresh the rows it shows.
-                from fastapi.responses import JSONResponse
-                return JSONResponse(status_code=409, content={
-                    "code": "scan_run_conflict",
-                    "detail": t("documents.err_scan_conflict"),
-                    "version": row.version})
-            return {"scanned": rec.get("scanned", 0), "results": rec.get("results", []),
-                    "failed": rec.get("failed", []), "duplicate": True, "version": row.version}
-    return None
+    previous = next((rec for rec in (row.state.get(SCAN_RUNS_FIELD) or [])
+                     if rec.get("key") == payload.run_key), None)
+    if previous is None:
+        entry = await find_event_by_idempotency(
+            session, row.company_id, _scan_event_key(row.entity_id, payload.run_key))
+        if entry is not None:
+            event_type = "doc.updated" if row.entity_type == "doc" else "list.updated"
+            if entry.entity_id != row.entity_id or entry.event_type != event_type:
+                raise HTTPException(409, "Scan operation identity conflicts with a previous event")
+            history = ((entry.data or {}).get("fields_changed") or {}).get(SCAN_RUNS_FIELD) or {}
+            previous = next((rec for rec in (history.get("new") or [])
+                             if isinstance(rec, dict) and rec.get("key") == payload.run_key), None)
+            if previous is None:
+                raise HTTPException(409, "Scan operation has no replayable result")
+    if previous is None:
+        return None
+    if previous.get("fp") != fp:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=409, content={
+            "code": "scan_run_conflict",
+            "detail": t("documents.err_scan_conflict"),
+            "version": row.version})
+    return {"scanned": previous.get("scanned", 0), "results": previous.get("results", []),
+            "failed": previous.get("failed", []), "duplicate": True, "version": row.version}
 
 
 def _record_scan_run(state: dict, payload: ScanBody, codes: list[str], results: list[dict],
@@ -12291,7 +12381,7 @@ async def scan_list(
     price_config = await get_price_config(session, company_id) if sb.priced or payload.price_list else None
     if payload.price_list:
         _check_price_list(settings, role, payload.price_list, price_config)
-    if (replay := _scan_replay(row, payload, codes)) is not None:
+    if (replay := await _scan_replay(session, row, payload, codes)) is not None:
         return replay
 
     lines = [dict(l) for l in (state.get("line_items") or [])]
@@ -12307,7 +12397,9 @@ async def scan_list(
         fields = {"line_items": lines} if scanned else {}
         if payload.run_key:
             fields[SCAN_RUNS_FIELD] = _record_scan_run(state, payload, codes, results, failed)
-        entry = await _set_list_fields(session, company_id, entity_id, user, fields)
+        entry = await _set_list_fields(
+            session, company_id, entity_id, user, fields,
+            idempotency_key=_scan_event_key(entity_id, payload.run_key) if payload.run_key else None)
         await session.commit()
         version = entry.id
     return {"scanned": scanned, "results": results, "failed": failed, "version": version}
@@ -12544,7 +12636,7 @@ async def scan_doc(
     price_config = await get_price_config(session, company_id)
     if payload.price_list:
         _check_price_list(settings, role, payload.price_list, price_config)
-    if (replay := _scan_replay(row, payload, codes)) is not None:
+    if (replay := await _scan_replay(session, row, payload, codes)) is not None:
         return replay
     # Priced as a line added in the editor: a purchase document at cost, which a caller who may not
     # see costs adds unpriced.
@@ -12575,9 +12667,11 @@ async def scan_doc(
     # A run is recorded whatever it placed, so its retry returns this answer (_scan_replay).
     if scanned or payload.run_key:
         runs = _record_scan_run(state, payload, codes, results, failed) if payload.run_key else None
-        written = await write_doc_patch(session, company_id, role, settings, user, entity_id,
-                                        DocPatch(fields_changed={"line_items": {"new": lines}} if scanned else {},
-                                                 expected_version=row.version), scan_runs=runs)
+        written = await write_doc_patch(
+            session, company_id, role, settings, user, entity_id,
+            DocPatch(fields_changed={"line_items": {"new": lines}} if scanned else {}, expected_version=row.version,
+                     idempotency_key=_scan_event_key(entity_id, payload.run_key) if payload.run_key else None),
+            scan_runs=runs)
         await session.commit()
         version = written["version"]
     return {"scanned": scanned, "results": results, "failed": failed, "version": version}
@@ -12647,6 +12741,10 @@ async def adjust_audit(
     _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    return await adjust_audit_record(entity_id, company_id, user, session, commit=True)
+
+
+async def adjust_audit_record(entity_id: str, company_id: str, user, session: AsyncSession, *, commit: bool = True) -> dict:
     """Apply a finalized audit against fresh, locked inventory state."""
     from celerp.services import auto_je
 
@@ -12745,7 +12843,8 @@ async def adjust_audit(
     )
     await _emit_list(session, company_id, entity_id, "list.closed",
                      {"result": "stock_adjusted", "line_items": lines, "adjust_count": cycle + 1}, user)
-    await session.commit()
+    if commit:
+        await session.commit()
     return {
         "adjusted": adjusted, "skipped": skipped,
         "shrinkage_value": to_stored_float(round_money(shrink_val, currency)),
@@ -13205,6 +13304,19 @@ async def undo_write_off(
             l.pop("adjusted", None)
             l.pop("disposed_entity_id", None)
             l.pop("disposed_qty", None)
+    # Corrections recorded after the disposal belong to this write-off cycle.
+    # Undo them with the original entry in this same transaction, leaving the
+    # restored lots on the books at their current corrected costs.
+    adjustment_ids = (await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+        Projection.entity_id.like(f"je:auto:{entity_id}:cost:%:writeoff_cost:0"),
+    ).order_by(Projection.entity_id))).scalars().all()
+    for adjustment_id in adjustment_ids:
+        derived_id = adjustment_id.removeprefix("je:auto:").removesuffix(":writeoff_cost:0")
+        await auto_je.void_for_list_adjustment(
+            session, company_id=company_id, user_id=user.id,
+            list_id=derived_id, kind="writeoff_cost")
     await auto_je.void_for_list_adjustment(session, company_id=company_id, user_id=user.id,
                                            list_id=entity_id, kind="writeoff", cycle=cycle)
     await _emit_list(session, company_id, entity_id, "list.reopened", {"line_items": lines}, user)
@@ -13340,3 +13452,50 @@ async def move_transfer(
                             "moved_at": datetime.now(timezone.utc).isoformat()})
     await session.commit()
     return {"moved": moved, "to_location_id": payload.to_location_id}
+
+
+
+class AccountingSyncSelection(BaseModel):
+    entity_ids: list[str] = Field(min_length=1, max_length=200)
+    excluded: bool
+    operation_id: uuid.UUID
+
+
+@router.post("/accounting-sync/bulk")
+async def update_accounting_sync_selection(
+    body: AccountingSyncSelection,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """One reviewed selection of documents, committed atomically with their audit events."""
+    if len(set(body.entity_ids)) != len(body.entity_ids):
+        raise HTTPException(422, "Document selection contains duplicates")
+    await locked_company(session, company_id)
+    items = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_id.in_(body.entity_ids),
+    ).order_by(Projection.entity_id).with_for_update())).scalars().all()
+    if len(items) != len(body.entity_ids) or any(row.entity_type != "doc" for row in items):
+        raise HTTPException(404, "Document selection not found")
+    changed = 0
+    for row in items:
+        prior = bool((row.state or {}).get("accounting_sync_excluded"))
+        if prior == body.excluded:
+            continue
+        identity = hashlib.sha256(row.entity_id.encode()).hexdigest()[:24]
+        await write_doc_patch(
+            session, company_id, role, settings, user, row.entity_id,
+            DocPatch(
+                fields_changed={
+                    "accounting_sync_excluded": {"old": prior, "new": body.excluded},
+                },
+                idempotency_key=f"accounting-sync:{body.operation_id}:{identity}",
+            ),
+        )
+        changed += 1
+    await session.commit()
+    return {"updated": changed, "selected": len(items)}

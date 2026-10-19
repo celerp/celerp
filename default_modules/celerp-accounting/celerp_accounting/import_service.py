@@ -181,13 +181,18 @@ async def create_chart_account(
 
 async def add_posting_account(
     session: AsyncSession, company_id: uuid.UUID, *, code: str, name: str, account_type: str,
-) -> None:
-    """A top-level account added through ``ChartAccess.add_account``, checked as an
-    account added in Settings is."""
-    await create_chart_account(session, company_id, code=checked_account_code(code),
-                               name=checked_account_name(name),
-                               account_type=checked_account_type(account_type), parent_code=None)
+    parent_code: str | None = None, cash_flow_category: str | None = None,
+) -> str:
+    """An account added through ``ChartAccess.add_account``, at the top of its type or
+    under ``parent_code``, checked as an account added in Settings is. Returns its id."""
+    from celerp_accounting.routes import _checked_cash_flow_category
+
+    acc = await create_chart_account(
+        session, company_id, code=checked_account_code(code), name=checked_account_name(name),
+        account_type=checked_account_type(account_type), parent_code=parent_code,
+        cash_flow_category=_checked_cash_flow_category(cash_flow_category))
     await session.flush()
+    return str(acc.id)
 
 
 async def next_bank_account_code(session: AsyncSession, company_id: uuid.UUID, parent_code: str | None) -> str:

@@ -64,7 +64,7 @@ def _scan_view(source: str, file_name: str, *, suggested: str = _ACCOUNT_OPTIONS
     display = next(s["display_name"] for s in _SOURCES if s["key"] == source)
     return {
         "source_system": source, "display_name": display, "file_name": file_name,
-        "size_bytes": 20480, "sha256_short": "9f2c41aa", "source_schema_version": "7",
+        "size_bytes": 20480, "source_schema_version": "7",
         "company_name": "Harbor Goods Ltd", "base_currency": "USD",
         "period_start": "2024-01-01", "period_end": "2025-12-31",
         "currencies": ["USD", "EUR"],
@@ -155,6 +155,17 @@ class FakeMigrationAPI:
         self.scan_error = False
         self.expired = False
         self.with_questions = True
+        self.draft_view: dict | None = None   # an export set the API keeps as a draft
+        self.scan_bodies: list[bytes] = []
+        self.export_requests: list[dict] = []  # newest first, as the API lists them
+        self.export_sends: list[dict] = []
+        self.export_adds: list[tuple[str, dict]] = []
+        self.export_refusal: tuple[int, str] | None = None
+        self.move_requests: list[dict] = []    # newest first, as the API lists them
+        self.move_sends: list[dict] = []
+        self.move_refusal: tuple[int, str] | None = None
+        self.xero_fetches: dict[str, dict] = {}   # run -> its Xero attachment fetch, as the API shows it
+        self.xero_refusal: tuple[int, str] | None = None
         self._n = 0
 
     def add_run(self, status: str, **kw) -> str:
@@ -170,10 +181,15 @@ class FakeMigrationAPI:
         if method == "GET" and path == "/migrations/sources":
             return _json(200, _SOURCES)
         if method == "POST" and path in ("/migrations/bootstrap/scan", "/migrations/scan"):
+            self.scan_bodies.append(body)
             if self.scan_error:
                 return _json(422, {"detail": "Celerp cannot read this file yet."})
+            if self.expired and _form_field(body, "draft"):
+                return _json(410, {"detail": "This scan has expired. Upload the file again."})
             source = _form_field(body, "source") or "manager_io"
             self._n += 1
+            if self.draft_view is not None and (_form_field(body, "check") or not self.draft_view["complete"]):
+                return _json(200, {"draft_token": f"drafttoken{self._n:04d}secretvalue", "checklist": self.draft_view})
             token = f"scantoken{self._n:04d}secretvalue"
             scan = _scan_view(source, _file_name(body) or "upload")
             if not self.with_questions:
@@ -209,6 +225,10 @@ class FakeMigrationAPI:
                 return _json(201, {"run_id": run_id})
             return _json(201, {"access_token": make_test_token("owner"),
                                "refresh_token": "refresh-new", "run_id": run_id})
+        if path.startswith("/migrations/move-requests"):
+            return self._move_request(method, path, json.loads(body) if body else {})
+        if path.startswith("/migrations/export-requests"):
+            return self._export_request(method, path, json.loads(body) if body else {})
         m = re.fullmatch(r"/migrations/([0-9a-f-]{36})(/[a-z/-]+)?", path)
         if not m or m.group(1) not in self.runs:
             return _json(404, {"detail": "Migration not found."})
@@ -242,7 +262,90 @@ class FakeMigrationAPI:
         if method == "POST" and tail == "/discard":
             del self.runs[run_id]
             return _json(200, {"redirect": "/"})
+        if tail.startswith("/xero-attachments"):
+            return self._xero_attachments(method, run_id, tail)
         return _json(405, {"detail": "Method not allowed"})
+
+    def _export_request(self, method: str, path: str, data: dict) -> httpx.Response:
+        if method == "GET" and path == "/migrations/export-requests":
+            return _json(200, {"items": self.export_requests})
+        if self.export_refusal is not None:
+            return _json(self.export_refusal[0], {"detail": self.export_refusal[1]})
+        if method == "POST" and path == "/migrations/export-requests":
+            self.export_sends.append(data)
+            row = _export_request(client_name=data["client_name"], source=data["source"])
+            self.export_requests.insert(0, row)
+            return _json(201, {k: row[k] for k in ("id", "link_id", "status")})
+        m = re.fullmatch(r"/migrations/export-requests/([0-9a-f-]{36})/(add|revoke)", path)
+        row = next((r for r in self.export_requests if m and r["id"] == m.group(1)), None)
+        if row is None:
+            return _json(404, {"detail": "Export request not found."})
+        if m.group(2) == "revoke":
+            row.update(status="revoked", readable=False)
+            return _json(200, {"status": "revoked"})
+        self.export_adds.append((row["id"], data))
+        self._n += 1
+        return _json(200, {"draft_token": f"drafttoken{self._n:04d}secretvalue", "checklist": self.draft_view})
+
+
+    def _xero_attachments(self, method: str, run_id: str, tail: str) -> httpx.Response:
+        fetch = self.xero_fetches.setdefault(run_id, _xero_fetch("none"))
+        if method == "GET":
+            return _json(200, fetch)
+        if self.xero_refusal is not None:
+            return _json(self.xero_refusal[0], {"detail": self.xero_refusal[1]})
+        if tail.endswith("/stop"):
+            fetch.update(status="stopped")
+            fetch.pop("authorize_url", None)
+        elif fetch["status"] not in ("fetching", "waiting"):
+            fetch.update(_xero_fetch("signing_in"))
+        return _json(200, fetch)
+
+    def _move_request(self, method: str, path: str, data: dict) -> httpx.Response:
+        if method == "GET" and path == "/migrations/move-requests":
+            return _json(200, {"items": self.move_requests})
+        if self.move_refusal is not None:
+            return _json(self.move_refusal[0], {"detail": self.move_refusal[1]})
+        if method == "POST" and path == "/migrations/move-requests":
+            self.move_sends.append(data)
+            row = _move_request(client_name=data["client_name"])
+            self.move_requests.insert(0, row)
+            return _json(201, {"id": row["id"], "status": row["status"]})
+        m = re.fullmatch(r"/migrations/move-requests/([0-9a-f-]{36})/withdraw", path)
+        row = next((r for r in self.move_requests if m and r["id"] == m.group(1)), None)
+        if row is None:
+            return _json(404, {"detail": "Move request not found."})
+        row.update(status="withdrawn", stored=False)
+        return _json(200, {"status": "withdrawn"})
+
+
+def _xero_fetch(status: str, **kw) -> dict:
+    """A Xero attachment fetch as the API shows it."""
+    view = {"status": status, "organisation": "", "error": "", "attached": 0, "total": 0, "unmatched": [],
+            "resume_at": None, **kw}
+    if status == "signing_in":
+        view.setdefault("authorize_url", "https://login.xero.com/identity/connect/authorize?state=abc")
+    return view
+
+
+def _move_request(**kw) -> dict:
+    """One move request as the API lists it."""
+    return {"id": str(uuid.uuid4()), "operation_id": str(uuid.uuid4()), "firm_name": "Example Accounting",
+            "client_name": "Client Ltd", "source": "xero", "status": "received", "note": "",
+            "created_at": "2026-10-17T08:00:00+00:00", "submitted_at": "2026-10-17T08:01:00+00:00",
+            "updated_at": None, "stored": True,
+            "files": [{"id": uuid.uuid4().hex, "name": "General Ledger.txt", "size": 20,
+                       "received_at": "2026-10-17T08:00:30+00:00"}], **kw}
+
+
+def _export_request(**kw) -> dict:
+    """One export request as the API lists it."""
+    return {"id": str(uuid.uuid4()), "link_id": str(uuid.uuid4()), "operation_id": str(uuid.uuid4()),
+            "firm_name": "Example Accounting", "client_name": "Client Ltd", "source": "xero",
+            "items": [{"label": "General Ledger", "menu": "Accounting > Reports > General Ledger > Export",
+                       "range": "From the first transaction to the last"}],
+            "status": "sent", "created_at": "2026-10-17T08:00:00+00:00",
+            "expires_at": "2026-10-31T08:00:00+00:00", "files": [], "stored": True, "readable": True, **kw}
 
 
 class Router(httpx.AsyncBaseTransport):
@@ -409,7 +512,7 @@ async def test_setup_form_offers_restore_and_move(ui, router, session, sample_mo
     assert r.status_code == 200
     page = _page(r)
     assert re.search(r'<form\b[^>]*action="/setup"', page)
-    assert _link(page, "/setup/restore-backup", "Restore a Celerp backup")
+    assert _link(page, "/setup/restore-backup", "Open a company copy")
     assert _link(page, "/setup/migrate", "Move your books from another system")
 
     for path in ("/setup/restore-backup", "/setup/migrate"):
@@ -626,7 +729,9 @@ async def test_source_selection_offers_source_request_link(ui, router, fake_api,
     from celerp.importers.adapters.registry import list_adapters
     body = r.json()
     assert [s["key"] for s in body] == [a.key for a in list_adapters()]
-    assert all(set(s) == {"key", "display_name", "artifacts"} for s in body)
+    assert all(set(s) == {"key", "display_name", "accepts", "artifacts", "checklist"} for s in body)
+    assert {s["key"]: s["checklist"] is not None for s in body} == {
+        a.key: hasattr(a, "checklist") for a in list_adapters()}
 
     r = await ui.post("/setup/migrate/scan", files=_UPLOAD,
                       data={"source": "manager_io", "prepared_by": "Example Bookkeeping"})
@@ -666,6 +771,309 @@ async def test_source_selection_offers_source_request_link(ui, router, fake_api,
     assert {host for _, host, _ in router.calls} == {"api"}
 
 
+DRAFT_COOKIE = "celerp_migration_draft"
+
+
+def _export_set_sources(monkeypatch) -> dict:
+    """The fake API offering Xero's export set beside the one-file sources; its blank checklist."""
+    from celerp.importers.adapters.exports import XeroAdapter
+    blank = XeroAdapter().checklist().view()
+    monkeypatch.setattr(sys.modules[__name__], "_SOURCES", [*_SOURCES, {
+        "key": "xero", "display_name": "Xero", "accepts": "",
+        "artifacts": [{"key": "export_set", "label": "Xero export files",
+                       "extensions": [".csv", ".txt", ".xlsx", ".zip"], "max_bytes": 1024 ** 3}],
+        "checklist": blank}])
+    return blank
+
+
+async def test_an_export_set_is_checked_file_by_file_and_kept_as_a_draft(ui, router, fake_api, monkeypatch):
+    blank = _export_set_sources(monkeypatch)
+    r = await ui.get("/setup/migrate?source=xero")
+    page = _page(r)
+    assert "Files to export from Xero" in page and "Xero closes access" in page
+    assert "Accounting > Reports > General Ledger > Export" in page
+    assert _link(page, "/setup/migrate/checklist?source=xero", "Open this list to print")
+    files = _inputs(page, "files")[0]
+    assert _attr(files, "hx-post") == "/setup/migrate/check" and _attr(files, "hx-include") == "closest form"
+    assert re.search(r"\bmultiple\b", files)       # an export set is many files of one kind
+    radio = next(tag for tag in _inputs(page, "source") if _attr(tag, "value") == "xero")
+    assert _attr(radio, "hx-get") == "/setup/migrate/checklist?source=xero"
+
+    printable = _page(await ui.get("/setup/migrate/checklist?source=xero"))
+    assert "Files to export from Xero" in printable and 'onclick="window.print()"' in printable
+    assert "is missing" not in printable    # a blank list names no problems before the first file
+    one_file = _page(await ui.get("/setup/migrate/checklist?source=manager_io"))
+    assert 'id="export-checklist"' in one_file and "has no list of files to export" in one_file
+
+    # A one-file source is never checked as a set: its chosen file stays in the field.
+    r = await ui.post("/setup/migrate/check", files=_UPLOAD, data={"source": "manager_io"})
+    assert r.status_code == 200 and fake_api.scan_bodies == []
+    assert "X-Export-Draft-Kept" not in r.headers
+
+    fake_api.draft_view = {**blank, "problems": ["General Ledger is missing. Export it from Accounting > "
+                                                 "Reports > General Ledger > Export."],
+                           "uploads": [{"name": "notes.txt", "stored_name": "artifact-1"}]}
+    r = await ui.post("/setup/migrate/check", files={"files": ("notes.txt", b"call the bank", "text/plain")},
+                      data={"source": "xero"})
+    assert r.status_code == 200 and r.headers["X-Export-Draft-Kept"] == "1"
+    assert _form_field(fake_api.scan_bodies[-1], "check") == "1"
+    token = _cookie_value(r, DRAFT_COOKIE)
+    assert "HttpOnly" in _cookie_header(r, DRAFT_COOKIE)
+    panel = _page(r)
+    assert panel.startswith('<div id="export-checklist"') and "General Ledger is missing" in panel
+    assert '"remove": "artifact-1"' in panel and "Remove" in panel
+    assert "Choose it again to put it back" in panel
+
+    ui.cookies.set(DRAFT_COOKIE, token, path="/setup/migrate")
+    r = await ui.post("/setup/migrate/check", data={"source": "xero", "remove": "artifact-1"},
+                      files={"files": ("", b"", "application/octet-stream")})
+    body = fake_api.scan_bodies[-1]
+    assert _form_field(body, "draft") == token and _form_field(body, "remove") == "artifact-1"
+
+    # Analyze with the set still short: the page says so and keeps every received file.
+    r = await ui.post("/setup/migrate/scan", data={"source": "xero"},
+                      files={"files": ("", b"", "application/octet-stream")})
+    assert r.status_code == 200
+    page = _page(r)
+    assert "The set is not ready to analyze yet" in page and "General Ledger is missing" in page
+    # Said inside the list, so the next check that swaps the list in also clears it.
+    assert page.index('id="export-checklist"') < page.index("The set is not ready to analyze yet")
+    assert _form_field(fake_api.scan_bodies[-1], "draft") == token
+    assert _form_field(fake_api.scan_bodies[-1], "check") is None
+    ui.cookies.set(DRAFT_COOKIE, _cookie_value(r, DRAFT_COOKIE), path="/setup/migrate")
+
+    fake_api.draft_view = {**blank, "complete": True, "problems": [], "uploads": []}
+    r = await ui.post("/setup/migrate/scan", data={"source": "xero"},
+                      files={"files": ("", b"", "application/octet-stream")})
+    assert r.status_code == 303 and r.headers["location"] == "/setup/migrate/coverage"
+    assert _cookie_value(r, SCAN_COOKIE) in fake_api.scans and _cleared(r, DRAFT_COOKIE)
+
+
+async def test_an_expired_draft_is_dropped_with_the_reason(ui, router, fake_api, monkeypatch):
+    blank = _export_set_sources(monkeypatch)
+    fake_api.draft_view = {**blank, "uploads": []}
+    fake_api.expired = True
+    ui.cookies.set(DRAFT_COOKIE, "drafttoken0001secretvalue", path="/setup/migrate")
+    r = await ui.post("/setup/migrate/check", data={"source": "xero"},
+                      files={"files": ("Contacts.csv", b"*ContactName\r\n", "text/csv")})
+    assert r.status_code == 200 and "This scan has expired" in _page(r)
+    assert _cleared(r, DRAFT_COOKIE) and "X-Export-Draft-Kept" not in r.headers
+    assert "Files to export from Xero" in _page(r)    # the blank list stays to start again
+
+
+# ---------------------------------------------------------------------------
+# Asking a client for their export files
+# ---------------------------------------------------------------------------
+
+REQUESTS = "/setup/new-company/migrate/requests"
+
+
+async def test_a_firm_emails_a_client_the_checklist_and_adds_what_arrives(ui, router, fake_api, monkeypatch):
+    blank = _export_set_sources(monkeypatch)
+    router.overrides[("GET", "/company-backups/sender")] = _respond(
+        200, {"firm_name": "Example Accounting", "reply_to": "firm@example.com"})
+    _owner(ui)
+    page = _page(await ui.get("/setup/new-company/migrate"))
+    section = re.search(r'<div[^>]*id="export-requests"[^>]*>', page).group(0)
+    assert _attr(section, "hx-get") == REQUESTS and _attr(section, "hx-trigger") == "load"
+    assert _attr(section, "hx-swap") == "outerHTML"  # the panel replaces the placeholder, never nests in it
+    assert 'id="export-requests"' not in _page(await ui.get("/setup/migrate"))   # no firm before setup
+
+    r = await ui.get(REQUESTS)
+    panel = _page(r)
+    assert panel.startswith('<div id="export-requests"')
+    assert "Ask a client for their export files" in panel and "only this installation can read" in panel
+    assert "No export requests yet." in panel
+    assert _attr(_inputs(panel, "firm_name")[0], "value") == "Example Accounting"
+    assert _attr(_inputs(panel, "reply_to")[0], "value") == "firm@example.com"
+    operation = _attr(_inputs(panel, "operation_id")[0], "value")
+    assert str(uuid.UUID(operation)) == operation
+    # Only a source with a list of files to export can be asked for.
+    assert re.findall(r'<option value="([^"]*)"', panel) == ["xero"]
+    form = re.search(r'<form[^>]*id="export-request-form"[^>]*>', panel).group(0)
+    assert _attr(form, "hx-post") == REQUESTS and _attr(form, "hx-target") == "#export-requests"
+
+    typed = {"operation_id": operation, "client_name": "Client Ltd", "recipient": "client@example.com",
+             "source": "xero", "firm_name": "Example Accounting", "reply_to": "firm@example.com"}
+    fake_api.export_refusal = (502, "The email could not be sent. Try again")
+    failed = _page(await ui.post(REQUESTS, data=typed))
+    assert "The email could not be sent" in failed
+    assert _attr(_inputs(failed, "operation_id")[0], "value") == operation        # a retry is the same send
+    assert _attr(_inputs(failed, "client_name")[0], "value") == "Client Ltd"
+    fake_api.export_refusal = (428, "Sign in to a free Celerp account to email an export checklist.")
+    needed = _page(await ui.post(REQUESTS, data=typed))
+    assert 'id="celerp-account-panel"' in needed and "export-send" in needed
+    fake_api.export_refusal = None
+
+    sent = _page(await ui.post(REQUESTS, data=typed))
+    assert fake_api.export_sends == [typed]
+    assert f"Export checklist sent to {typed['recipient']}." in sent
+    assert _attr(_inputs(sent, "operation_id")[0], "value") != operation          # the next send is new
+    assert "Waiting for exports" in sent and "Client Ltd" in sent and "No export requests yet." not in sent
+
+    older = _export_request(client_name="Older Client", created_at="2026-10-01T08:00:00+00:00")
+    arrived = _export_request(client_name="Second Client",
+                              files=[{"id": str(uuid.uuid4()), "name": "Contacts.csv", "size": 20,
+                                      "received_at": "2026-10-17T09:00:00+00:00"}])
+    fake_api.export_requests = [arrived, *fake_api.export_requests, older]
+    panel = _page(await ui.get(REQUESTS))
+    assert panel.index("Second Client") < panel.index("Client Ltd") < panel.index("Older Client")   # newest first
+    assert "Contacts.csv" in panel and "cannot be undone" in panel
+    add = f"{REQUESTS}/{arrived['id']}/add"
+    assert re.search(rf'<form[^>]*action="{re.escape(add)}"', panel)
+    assert f'action="{REQUESTS}/{older["id"]}/add"' not in panel                  # nothing arrived to add
+
+    fake_api.draft_view = {**blank, "uploads": [{"name": "Contacts.csv", "stored_name": "artifact-1"}]}
+    ui.cookies.set(DRAFT_COOKIE, "drafttoken0001secretvalue", path="/setup/new-company/migrate")
+    r = await ui.post(add)
+    assert r.status_code == 303 and r.headers["location"] == "/setup/new-company/migrate?source=xero&added=1"
+    assert fake_api.export_adds == [(arrived["id"], {"draft_token": "drafttoken0001secretvalue"})]
+    token = _cookie_value(r, DRAFT_COOKIE)
+    ui.cookies.set(DRAFT_COOKIE, token, path="/setup/new-company/migrate")
+    added = await ui.get(r.headers["location"])
+    page = _page(added)
+    assert "Contacts.csv" in page and '"remove": "artifact-1"' in page        # the files are in the upload
+    assert t("migration.export_request_added") in _visible(added)             # and the page says so
+    assert _form_field(fake_api.scan_bodies[-1], "draft") == token
+    assert t("migration.export_request_added") not in _page(await ui.get("/setup/new-company/migrate?source=xero"))
+
+    revoked = _page(await ui.post(f"{REQUESTS}/{older['id']}/revoke"))
+    assert revoked.startswith('<div id="export-requests"') and older["status"] == "revoked"
+    assert "Revoked" in revoked
+
+
+async def test_the_owner_only_refusal_names_the_owner_and_says_what_to_ask(ui, router, monkeypatch):
+    """A non-owner learns who the owner is and what to ask them; with no list of users the
+    refusal still says to ask the company owner."""
+    import ui.api_client as api
+
+    async def users(token):
+        return {"items": [
+            {"name": "Pat Owner", "email": "pat@example.com", "role": "owner", "is_active": True},
+            {"name": "", "email": "sam@example.com", "role": "owner", "is_active": True},
+            {"name": "Gone Owner", "email": "gone@example.com", "role": "owner", "is_active": False},
+            {"name": "Ada Admin", "email": "ada@example.com", "role": "admin", "is_active": True}]}
+    monkeypatch.setattr(api, "get_users", users)
+    _owner(ui, "admin")
+    page = _page(await ui.get("/setup/new-company/migrate"))
+    assert "Only the company owner can move a company into Celerp." in page
+    assert "Ask Pat Owner, sam@example.com to move it, or to make you the owner." in page
+    assert "Gone Owner" not in page and "Ada Admin" not in page
+
+    async def refused(token):
+        raise api.APIError(500, "down")
+    monkeypatch.setattr(api, "get_users", refused)
+    page = _page(await ui.get("/setup/new-company/migrate"))
+    assert "Ask the company owner to move it, or to make you the owner." in page
+
+
+async def test_only_the_owner_asks_for_exports_and_failures_are_said(ui, router, fake_api, monkeypatch):
+    _export_set_sources(monkeypatch)
+    for role in ("admin", "viewer"):
+        _owner(ui, role)
+        router.calls.clear()
+        for r in (await ui.get(REQUESTS), await ui.post(REQUESTS, data={"client_name": "x"})):
+            assert "Only the company owner can move a company into Celerp." in _page(r), role
+        assert router.migration_calls() == [], role
+
+    _owner(ui)
+    fake_api.export_requests = [_export_request(files=[{"id": str(uuid.uuid4()), "name": "Contacts.csv",
+                                                        "size": 20, "received_at": "2026-10-17T09:00:00+00:00"}])]
+    fake_api.export_refusal = (409, "This installation does not hold the key for these files.")
+    r = await ui.post(f"{REQUESTS}/{fake_api.export_requests[0]['id']}/add")
+    assert r.status_code == 200 and "does not hold the key" in _page(r)
+    router.overrides[("GET", "/migrations/export-requests")] = _respond(502, {"detail": "Cloud unreachable"})
+    assert "Cloud unreachable" in _page(await ui.get(REQUESTS))
+
+
+# ---------------------------------------------------------------------------
+# Asking Celerp's team to move a client
+# ---------------------------------------------------------------------------
+
+MOVES = "/setup/new-company/migrate/move-requests"
+
+
+async def test_a_firm_asks_celerp_to_move_a_client_from_the_open_export_set(ui, router, fake_api, monkeypatch):
+    _export_set_sources(monkeypatch)
+    router.overrides[("GET", "/company-backups/sender")] = _respond(
+        200, {"firm_name": "Example Accounting", "reply_to": "firm@example.com"})
+    _owner(ui)
+    page = _page(await ui.get("/setup/new-company/migrate"))
+    section = re.search(r'<div[^>]*id="move-requests"[^>]*>', page).group(0)
+    assert _attr(section, "hx-get") == MOVES and _attr(section, "hx-trigger") == "load"
+    assert _attr(section, "hx-swap") == "outerHTML"  # the panel replaces the placeholder, never nests in it
+    assert 'id="move-requests"' not in _page(await ui.get("/setup/migrate"))      # no firm before setup
+
+    panel = _page(await ui.get(MOVES))
+    assert panel.startswith('<div id="move-requests"')
+    assert "Ask Celerp to move this client" in panel
+    # What happens to the files is said before anything is sent.
+    assert "Celerp's team reads these files" in panel and "30 days" in panel
+    assert "No move requests yet." in panel
+    assert _attr(_inputs(panel, "firm_name")[0], "value") == "Example Accounting"
+    assert _attr(_inputs(panel, "reply_to")[0], "value") == "firm@example.com"
+    operation = _attr(_inputs(panel, "operation_id")[0], "value")
+    assert str(uuid.UUID(operation)) == operation
+    form = re.search(r'<form[^>]*id="move-request-form"[^>]*>', panel).group(0)
+    assert _attr(form, "hx-post") == MOVES and _attr(form, "hx-target") == "#move-requests"
+
+    typed = {"operation_id": operation, "client_name": "Client Ltd", "firm_name": "Example Accounting",
+             "reply_to": "firm@example.com"}
+    fake_api.move_refusal = (422, "Add the export files on this page first, then ask us to move this client.")
+    failed = _page(await ui.post(MOVES, data=typed))
+    assert "Add the export files on this page first" in failed
+    assert _attr(_inputs(failed, "operation_id")[0], "value") == operation      # a retry is the same send
+    assert _attr(_inputs(failed, "client_name")[0], "value") == "Client Ltd"
+    fake_api.move_refusal = (428, "Sign in to a free Celerp account to ask us to move a client.")
+    needed = _page(await ui.post(MOVES, data=typed))
+    assert 'id="celerp-account-panel"' in needed and "move-send" in needed
+    fake_api.move_refusal = None
+
+    ui.cookies.set(DRAFT_COOKIE, "drafttoken0001secretvalue", path="/setup/new-company/migrate")
+    sent = _page(await ui.post(MOVES, data=typed))
+    assert fake_api.move_sends == [{**typed, "draft_token": "drafttoken0001secretvalue"}]
+    assert f"Sent to the Celerp team. We will reply to {typed['reply_to']}." in sent
+    assert _attr(_inputs(sent, "operation_id")[0], "value") != operation        # the next send is new
+
+    older = _move_request(client_name="Older Client", status="declined", note="The ledger does not balance.",
+                          created_at="2026-10-01T08:00:00+00:00", stored=False)
+    working = _move_request(client_name="Second Client", status="in_progress", note="Started on the 2023 books.",
+                            created_at="2026-10-17T09:00:00+00:00")
+    fake_api.move_requests = [working, *fake_api.move_requests, older]
+    panel = _page(await ui.get(MOVES))
+    assert panel.index("Second Client") < panel.index("Client Ltd") < panel.index("Older Client")   # newest first
+    assert "In progress" in panel and "Declined" in panel and "Received" in panel
+    assert "Started on the 2023 books." in panel and "The ledger does not balance." in panel
+    assert "General Ledger.txt" in panel and "cannot be undone" in panel
+    withdraw = f"{MOVES}/{working['id']}/withdraw"
+    assert f'hx-post="{withdraw}"' in panel
+    assert f'hx-post="{MOVES}/{older["id"]}/withdraw"' not in panel              # a closed request stays
+
+    withdrawn = _page(await ui.post(withdraw))
+    assert withdrawn.startswith('<div id="move-requests"') and working["status"] == "withdrawn"
+    assert "Move request withdrawn. Its files were deleted." in withdrawn
+
+
+async def test_only_the_owner_asks_celerp_to_move_a_client(ui, router, fake_api, monkeypatch):
+    _export_set_sources(monkeypatch)
+    for role in ("admin", "viewer"):
+        _owner(ui, role)
+        router.calls.clear()
+        for r in (await ui.get(MOVES), await ui.post(MOVES, data={"client_name": "x"}),
+                  await ui.post(f"{MOVES}/{uuid.uuid4()}/withdraw")):
+            assert "Only the company owner can move a company into Celerp." in _page(r), role
+        assert router.migration_calls() == [], role
+
+    _owner(ui)
+    fake_api.move_requests = [_move_request(status="returned", stored=False)]
+    fake_api.move_refusal = (409, "This request is returned, so it cannot be withdrawn")
+    r = await ui.post(f"{MOVES}/{fake_api.move_requests[0]['id']}/withdraw")
+    assert r.status_code == 200 and "cannot be withdrawn" in _page(r)
+    assert "Move request not found." in _page(await ui.post(f"{MOVES}/not-a-uuid/withdraw"))
+    router.overrides[("GET", "/migrations/move-requests")] = _respond(502, {"detail": "Cloud unreachable"})
+    assert "Cloud unreachable" in _page(await ui.get(MOVES))
+
+
 # ---------------------------------------------------------------------------
 # Progress, verify, finish
 # ---------------------------------------------------------------------------
@@ -681,8 +1089,10 @@ async def test_migration_progress_survives_process_restart(ui, router, fake_api)
     assert all(p >= 0 for p in positions), dict(zip(_PHASE_LABELS, positions))
     assert positions == sorted(positions)
     assert "1203" in page  # inventory phase created counter
-    assert "0 attachments" in page
     assert 'hx-trigger="every 2s"' in _page(r)
+    # Once started, the footnote no longer counts down to a start, and stopping reads as a pause.
+    assert "if you do not start" not in page and "the migration finishes or is discarded" in page
+    assert re.search(rf'action="/migrations/{run_id}/cancel"[^>]*>\s*<button[^>]*>Pause import</button>', _page(r))
 
     # The runner process died: the API reports the stale heartbeat as interrupted
     # with the durable counters from the last committed batch.
@@ -750,7 +1160,14 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert _link(complete, f"/switch-company/{company_id}", "Open company")
     assert not _link(complete, "/dashboard")
     assert _link(complete, f"/setup/new-company/migrate?from_run={run_id}", "Move another company")
-    assert _link(complete, f"/company-backup/download?from_run={run_id}", "Download company backup")
+    assert _link(complete, f"/company-backup/download?from_run={run_id}", "Download company copy")
+    order = [complete.find(text) for text in ("Open company", "Send company copy", "Invite client",
+                                              "Move another company")]
+    assert -1 not in order and order == sorted(order)
+    assert _link(complete, f"/switch-company/{company_id}?next=/settings/users/new", "Invite client")
+    assert "they sign in to your Celerp and see only this company." in complete
+    assert "they get their own Celerp with this company in it." in complete
+    assert "Record a correcting journal entry" not in complete
 
     r = await ui.get(f"/migrations/{run_id}/pack")
     assert r.status_code == 200
@@ -759,6 +1176,7 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
 
     for text in (coverage, verify, complete):
         assert "Manager" not in text
+    for text in (coverage, verify):
         assert re.search(r"\bclient", text, re.I) is None
 
     sample_id = fake_api.add_run("completed", company_name="Sample company", is_sample=True)
@@ -768,7 +1186,60 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert "That's the whole migration." in page
     assert _link(page, "/setup/new-company/migrate", "Move your first company")
     assert _link(page, f"/switch-company/{fake_api.runs[sample_id]['company_id']}", "Open")
-    assert "Download company backup" not in page
+    assert "Download company copy" not in page
+
+
+_FAILED_ROW = {"check": "ar_control", "key": "", "currency": "USD", "source": "3120.00",
+               "celerp": "3020.00", "difference": "-100.00", "rule": "exact", "result": "fail"}
+
+
+async def test_differences_are_shown_once_with_both_ways_forward(ui, router, fake_api):
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    fake_api.recon[run_id]["rows"][1] = dict(_FAILED_ROW)
+    fake_api.recon[run_id]["blockers"] = 1
+    r = await ui.get(f"/migrations/{run_id}/verify")
+    assert r.status_code == 200
+    page = _visible(r)
+    assert page.count("-$100.00") == 1
+    assert "Finish now and correct later with a journal entry." in page
+    assert "Or fix the file in Manager.io and upload it again." in page
+    assert ("Finishing cannot be undone: the company goes live and new records can be built on it. "
+            "Before finishing you can still go back or discard the migration.") in page
+    box = re.search(r'<input\b[^>]*name="reviewed_differences"[^>]*>', page)
+    assert box and "required" not in box.group(0)
+    assert re.search(rf'<form\b[^>]*action="/migrations/{run_id}/start"[^>]*>.*?Check again.*?</form>',
+                     page, re.S)
+
+    r = await ui.post(f"/migrations/{run_id}/finalize", data={"reviewed_differences": "true"})
+    assert r.status_code == 303
+    assert fake_api.finalized_with[-1]["reviewed_differences"] is True
+    fake_api.recon[run_id]["reviewed_differences"] = {"by": "Owner", "at": "2026-10-16T08:00:00+00:00"}
+    r = await ui.get(f"/migrations/{run_id}/complete")
+    complete = _visible(r)
+    company_id = fake_api.runs[run_id]["company_id"]
+    assert _link(complete, f"/switch-company/{company_id}?next=/accounting/journal/new",
+                 "Record a correcting journal entry")
+    assert complete.find("Open company") < complete.find("Record a correcting journal entry") \
+        < complete.find("Send company copy")
+
+
+async def test_check_again_reruns_the_verification(ui, router, fake_api):
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    r = await ui.post(f"/migrations/{run_id}/start")
+    assert r.status_code == 303 and r.headers["location"] == f"/migrations/{run_id}"
+    assert fake_api.runs[run_id]["status"] == "running"
+    assert "Check again" in t("migration.err_verification_stale", "en")
+    assert "Resume" not in t("migration.err_verification_stale", "en")
+
+
+def test_wizard_step_bar_is_styled():
+    from pathlib import Path
+    css = (Path(__file__).parents[1] / "ui" / "static" / "app.css").read_text()
+    for cls in ("wizard-steps", "wizard-step", "step-num", "step-num--active", "step-num--done",
+                "step-label", "step-label--active"):
+        assert re.search(rf"\.{re.escape(cls)}\s*[{{:]", css), cls
 
 
 _AP_KEY = "5f1c2a90-3b7e-4d21-9a0c-6e8f1d2b3c4a"
@@ -794,6 +1265,19 @@ _LABELLED_ROWS = [
 
 
 @pytest.mark.asyncio
+async def test_verify_page_says_where_to_add_an_account_and_sets_discard_apart(ui, fake_api):
+    """The hint names the choice that adds an account, and Discard reads as the
+    destructive action it is, not as a link like the download."""
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    fake_api.posting[run_id] = [_posting_row("general_expense", "General expenses", proposal=_EXPENSE_PROPOSAL)]
+    html = _page(await ui.get(f"/migrations/{run_id}/verify"))
+    assert "Posting accounts" in html and "add the one shown" not in html
+    assert "choose Add account in its list" in html
+    assert re.search(rf'href="/migrations/{run_id}/discard" class="btn btn--outline btn--danger', html)
+
+
+@pytest.mark.asyncio
 async def test_verify_page_names_records_and_formats_figures(ui, router, fake_api):
     """RED before the change: rows showed the source key, raw enums and raw decimals."""
     _owner(ui)
@@ -814,6 +1298,7 @@ async def test_verify_page_names_records_and_formats_figures(ui, router, fake_ap
                 "-1,875.40", "0E-3", "12.000"):
         assert raw not in page, raw
 
+    fake_api.runs[run_id]["status"] = "completed"
     r = await ui.get(f"/migrations/{run_id}/complete")
     assert r.status_code == 200
     assert _AP_KEY not in _visible(r)
@@ -854,13 +1339,16 @@ async def test_finishing_asks_for_each_posting_account_the_company_needs(ui, rou
     # An account already set is shown, not asked for again.
     assert re.search(r"<td>Accounts receivable</td>\s*<td>120</td>", verify)
     assert 'name="role.receivable"' not in verify
+    # Every posting account picker is searchable, however short the chart is today.
+    for role in ("payable", "general_expense", "sales_revenue"):
+        assert re.search(rf'class="combobox-wrap">\s*<input[^>]*>\s*<input type="hidden" name="role.{role}"',
+                         verify), role
+    assert "<select" not in verify
     # The source's single control account is offered already chosen.
-    assert re.search(r'<select[^>]*name="role.payable"[^>]*>.*?<option value="210" selected>210 Creditors</option>',
-                     verify, re.S)
+    assert re.search(r'value="210 Creditors"[^>]*>\s*<input type="hidden" name="role.payable"[^>]*value="210"',
+                     verify)
     # Where the chart has nothing suitable, adding the proposed account is offered.
-    assert re.search(r'<option value="__new__">Add account 6950 General expenses \(Expense\)</option>', verify)
-    # More than ten options become a searchable picker.
-    assert re.search(r'class="combobox-wrap".*?name="role.sales_revenue"', verify, re.S)
+    assert re.search(r'data-value="__new__"[^>]*>Add account 6950 General expenses \(Expense\)</div>', verify)
     # A role no workflow needs yet is not asked for.
     assert "Exchange gain" not in verify
 
@@ -870,7 +1358,7 @@ async def test_finishing_asks_for_each_posting_account_the_company_needs(ui, rou
     assert r.status_code == 200
     page = _visible(r)
     assert "Choose the posting account for: Sales revenue." in page
-    assert re.search(r'<option value="211" selected>', page)
+    assert re.search(r'name="role.payable"[^>]*value="211"', page)
     assert fake_api.runs[run_id]["status"] == "ready_to_finalize"
 
     fake_api.refuse_finalize = ""
@@ -880,6 +1368,7 @@ async def test_finishing_asks_for_each_posting_account_the_company_needs(ui, rou
     assert fake_api.finalized_with == [{
         "roles": {"payable": "211", "sales_revenue": "405"},
         "add_accounts": [{**_EXPENSE_PROPOSAL, "role": "general_expense"}],
+        "reviewed_differences": False,
     }]
 
 
@@ -904,9 +1393,9 @@ async def test_finishing_names_accounts_the_source_gave_no_code_by_their_name(ui
     verify = _visible(await ui.get(f"/migrations/{run_id}/verify"))
 
     assert re.search(r"<td>Debtors</td>", verify)
-    assert re.search(r'<option value="M0a1b2c3d-1" selected>Creditors</option>', verify)
-    assert re.search(r'<option value="211">211 Other creditors</option>', verify)
-    assert re.search(r'<option value="Mdeadbeef">Mdeadbeef Bank charges</option>', verify)
+    assert re.search(r'value="Creditors"[^>]*>\s*<input type="hidden"[^>]*value="M0a1b2c3d-1"', verify)
+    assert re.search(r'data-value="211"[^>]*>211 Other creditors</div>', verify)
+    assert re.search(r'data-value="Mdeadbeef"[^>]*>Mdeadbeef Bank charges</div>', verify)
     shown = re.sub(r"<[^>]*>", " ", verify)
     assert "M73d6d4fc" not in shown and "M0a1b2c3d" not in shown
 
@@ -1086,6 +1575,21 @@ def test_preparing_poll_rides_through_the_restart_it_announces(preparing, status
 
 
 @pytest.mark.asyncio
+async def test_the_polled_progress_drops_still_running_once_ready(ui, fake_api):
+    """The line saying the move keeps running is part of what the page re-reads, so it
+    goes when the run is ready; the attachments count reads as a plain number."""
+    _owner(ui)
+    run_id = fake_api.add_run("running")
+    hx = {"HX-Request": "true"}
+    assert "The migration keeps running" in (await ui.get(f"/migrations/{run_id}", headers=hx)).text
+    fake_api.runs[run_id]["status"] = "ready_to_finalize"
+    fake_api.runs[run_id]["phases"][-1].update(phase="attachments", created=1)
+    html = (await ui.get(f"/migrations/{run_id}", headers=hx)).text
+    assert "The migration keeps running" not in html
+    assert "1 attachments" not in html and '<td class="cell--number">1</td>' in html
+
+
+@pytest.mark.asyncio
 async def test_failed_run_shows_plain_message_and_never_says_still_running(ui, fake_api):
     _owner(ui)
     run_id = fake_api.add_run("failed")
@@ -1111,4 +1615,142 @@ async def test_review_shows_company_currency_scope_and_plain_outcomes(ui, fake_a
     text = _visible(r)
     for expected in ("Harbor Goods Ltd", "USD", "2024-01-01", "Sales invoice", "Will move", "Will not move"):
         assert expected in text, expected
+    assert "(20 KB)" in text                                  # the file's size, not a hash of it
     assert "sales_invoices" not in _page(r) and "sales invoices" not in text
+
+
+_HTMX = {"HX-Request": "true"}
+
+
+async def test_the_files_attached_in_xero_are_fetched_from_the_check_results_page(ui, router, fake_api, monkeypatch):
+    _export_set_sources(monkeypatch)
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize", source="xero")
+    base = f"/migrations/{run_id}/xero-attachments"
+    for page_path in (f"/migrations/{run_id}/verify", f"/migrations/{run_id}/complete"):
+        if page_path.endswith("complete"):
+            fake_api.runs[run_id]["status"] = "completed"
+        section = re.search(r'<div[^>]*id="xero-attachments"[^>]*>', _page(await ui.get(page_path))).group(0)
+        assert _attr(section, "hx-get") == base and _attr(section, "hx-trigger") == "load", page_path
+        assert _attr(section, "hx-swap") == "outerHTML"
+    # Only a migration from Xero offers it, and never the sample company.
+    other = fake_api.add_run("ready_to_finalize")
+    assert 'id="xero-attachments"' not in _page(await ui.get(f"/migrations/{other}/verify"))
+    sample = fake_api.add_run("completed", source="xero", is_sample=True)
+    assert 'id="xero-attachments"' not in _page(await ui.get(f"/migrations/{sample}/complete"))
+
+    panel = _page(await ui.get(base, headers=_HTMX))
+    assert panel.startswith('<div id="xero-attachments"')
+    assert "Attachments in Xero" in panel and "only reads" in panel
+    form = re.search(r'<form[^>]*id="xero-attachments-form"[^>]*>', panel).group(0)
+    assert _attr(form, "hx-post") == base and _attr(form, "hx-target") == "#xero-attachments"
+    assert "hx-trigger=\"every" not in panel               # nothing to watch before a fetch starts
+
+    fake_api.xero_refusal = (428, "Sign in to a free Celerp account to fetch attachments from Xero.")
+    needed = _page(await ui.post(base))
+    assert 'id="celerp-account-panel"' in needed and "xero-attachments" in needed
+    fake_api.xero_refusal = None
+
+    signing = _page(await ui.post(base))
+    url = "https://login.xero.com/identity/connect/authorize?state=abc"
+    link = re.search(r'<a[^>]*>Sign in to Xero</a>', signing).group(0)
+    assert _attr(link, "href") == url and _attr(link, "target") == "_blank"
+    assert f'data-copy-text="{url}"' in signing             # the link can go to whoever holds the login
+    assert "choose this client's organisation" in signing
+    assert f'hx-post="{base}/stop"' in signing
+    assert _attr(re.search(r'<div[^>]*id="xero-attachments"[^>]*>', signing).group(0), "hx-trigger") == "every 5s"
+
+    fake_api.xero_fetches[run_id] = _xero_fetch("fetching", organisation="Demo Trading Ltd", attached=3, total=10)
+    fetching = _page(await ui.get(base, headers=_HTMX))
+    assert "Demo Trading Ltd" in fetching and "3 of 10 files attached so far" in fetching
+    assert "every 5s" in fetching and f'hx-post="{base}/stop"' in fetching
+
+    fake_api.xero_fetches[run_id] = _xero_fetch(
+        "waiting", organisation="Demo Trading Ltd", attached=3, total=10, resume_at="2026-10-17T10:00:00+00:00",
+        error="Xero's daily limit was reached. Fetching continues when it resets.")
+    waiting = _page(await ui.get(base, headers=_HTMX))
+    assert "daily limit was reached" in waiting and "every 5s" in waiting
+
+    fake_api.xero_fetches[run_id] = _xero_fetch(
+        "done", organisation="Demo Trading Ltd", attached=4, total=5, unmatched=[
+            {"document": "INV-9999", "contact": "Gone Customer", "files": 1,
+             "reason": "This document was not imported into Celerp."}])
+    done = _visible(await ui.get(base, headers=_HTMX))
+    assert "4 of 5 files from Demo Trading Ltd were attached" in done
+    assert "INV-9999" in done and "Gone Customer" in done and "This document was not imported into Celerp." in done
+    done_page = _page(await ui.get(base, headers=_HTMX))
+    assert "every 5s" not in done_page and "Fetch again" in done_page
+    files_header = re.search(r'<th[^>]*>Files</th>', done_page).group(0)
+    assert "cell--number" in files_header                    # a count sits right, under its header
+
+    fake_api.xero_fetches[run_id] = _xero_fetch("failed", error="Choose exactly one organisation when you sign in to Xero.")
+    failed = _page(await ui.get(base, headers=_HTMX))
+    assert "exactly one organisation" in failed and "Try again" in failed
+
+    fake_api.xero_fetches[run_id] = _xero_fetch("fetching", attached=1, total=2)
+    stopped = _page(await ui.post(f"{base}/stop"))
+    assert stopped.startswith('<div id="xero-attachments"') and "Fetching stopped" in stopped
+    assert "Fetch again" in stopped
+
+
+async def test_the_xero_attachments_address_opened_directly_goes_to_its_run(ui, fake_api, monkeypatch):
+    _export_set_sources(monkeypatch)
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize", source="xero")
+    r = await ui.get(f"/migrations/{run_id}/xero-attachments")
+    assert r.status_code == 303 and r.headers["location"] == f"/migrations/{run_id}"
+
+
+async def test_the_finished_page_of_an_unfinished_run_goes_to_the_run(ui, fake_api):
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    r = await ui.get(f"/migrations/{run_id}/complete")
+    assert r.status_code == 303 and r.headers["location"] == f"/migrations/{run_id}"
+
+
+async def test_a_xero_import_says_attachments_are_fetched_after_it(ui, fake_api, monkeypatch):
+    _export_set_sources(monkeypatch)
+    r = await ui.post("/setup/migrate/scan", files=_UPLOAD, data={"source": "manager_io"})
+    token = _cookie_value(r, SCAN_COOKIE)
+    ui.cookies.set(SCAN_COOKIE, token)
+    hint = "fetch them from Xero on the check results page"
+    assert hint not in _visible(await ui.get("/setup/migrate/coverage"))
+    fake_api.scans[token]["scan"].update(source_system="xero", display_name="Xero")
+    assert hint in _visible(await ui.get("/setup/migrate/coverage"))
+
+
+@pytest.mark.asyncio
+async def test_finish_pressed_again_shows_the_run_where_it_is(ui, fake_api):
+    """A second Finish (double click, a stale tab) on an import already on its way is
+    refused on the run's own page, which keeps itself current, in plain words."""
+    _owner(ui)
+    run_id = fake_api.add_run("running")
+    r = await ui.post(f"/migrations/{run_id}/finalize")
+    assert r.status_code == 200
+    page = _visible(r)
+    assert "The migration keeps running" in page and "Finish migration" not in page
+    for action in ("start", "cancel", "finalize"):
+        text = t(f"migration.err_cannot_{action}", "en")
+        assert '"' not in text and "Refresh" not in text and "status" not in text, text
+
+
+@pytest.mark.asyncio
+async def test_a_refused_run_action_keeps_its_reason_through_the_polls(ui, fake_api):
+    """The run's progress block replaces itself every 2 seconds while the import runs, so a
+    refusal shown on that page sits outside it and is still there after the next poll."""
+    from bs4 import BeautifulSoup
+
+    _owner(ui)
+    run_id = fake_api.add_run("running")
+    reason = "Cannot finalize a migration that is running."
+    soup = BeautifulSoup(_page(await ui.post(f"/migrations/{run_id}/finalize")), "html.parser")
+    polled = soup.find(id="migration-progress")
+    assert polled is not None and polled.get("hx-trigger") == "every 2s"
+    assert reason in soup.get_text() and reason not in polled.get_text()
+
+
+def test_xero_attachments_gate_says_what_signing_in_is_for():
+    """The sign-in gate on the attachments step says what signing in does, with no sales line."""
+    from ui.routes.account import _GATE_BENEFIT_KEYS
+    text = t(_GATE_BENEFIT_KEYS["xero-attachments"])
+    assert "Xero" in text and "free" not in text.lower()

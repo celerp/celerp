@@ -12,7 +12,6 @@ from decimal import Decimal as D
 import pytest
 
 from celerp.importers.adapters.base import MigrationDecisions, ScanError
-from celerp.importers.adapters.manager_io.book import INVENTORY_BLOCKERS
 from celerp.importers.adapters.manager_io.types import CONTENT_TYPES, TYPE_NAMES
 from celerp.importers.schema import CIFMode, CoverageClass
 from fixtures.manager_io import specs
@@ -66,7 +65,7 @@ def test_every_carried_type_has_a_field_allowlist():
 
     carried = {TYPE_NAMES[ctype] for ctype, klass in CONTENT_TYPES.items()
                if klass in (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS)
-               and TYPE_NAMES.get(ctype) and TYPE_NAMES[ctype] not in INVENTORY_BLOCKERS}
+               and TYPE_NAMES.get(ctype)}
     assert carried - set(SCHEMAS) == set()
     assert set(SCHEMAS) - carried == set()
 

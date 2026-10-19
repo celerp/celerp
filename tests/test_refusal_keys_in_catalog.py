@@ -219,8 +219,6 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
         "Password must be at least  characters.",
         "Unit '' type must be one of: ",
         " needs this module. Turn that off first.",
-        "Could not purge while a company backup or restore is running. Nothing was deleted. "
-        "Try again when it finishes.",
         "Unknown business type: ",
     },
     "celerp/services/lot_origin.py": {

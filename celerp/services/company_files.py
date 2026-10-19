@@ -24,6 +24,9 @@ from celerp.services import migration_scan_store as store
 logger = logging.getLogger(__name__)
 
 
+SENT = "sent"
+
+
 def company_backups_dir() -> Path:
     """Where generated company backups and uploaded backups waiting to be restored are kept."""
     return settings.data_dir / "company_backups"
@@ -32,9 +35,9 @@ def company_backups_dir() -> Path:
 def _remove_backups(company_id) -> None:
     if not attachments.is_plain_name(str(company_id)):
         raise ValueError(f"Invalid company id: {company_id!r}")
-    path = company_backups_dir() / str(company_id)
-    if path.exists():
-        shutil.rmtree(path)
+    for path in (company_backups_dir() / str(company_id), company_backups_dir() / SENT / str(company_id)):
+        if path.exists():
+            shutil.rmtree(path)
 
 
 async def delete_company_data(company_id, run_ids: list[str]) -> None:

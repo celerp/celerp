@@ -24,7 +24,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
@@ -37,6 +37,7 @@ from celerp.routers.migrations import ensure_not_bootstrapped, owner_account, us
 from celerp.services import bootstrap
 from celerp.services import company_backup as cb
 from celerp.services import company_backup_files as files
+from celerp.services import company_handoff_sender as sender
 from celerp.services.auth import AuthContext, request_caller
 from ui.i18n import t
 
@@ -44,19 +45,20 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/company-backups", tags=["company-backups"])
 
-MODULES_UNAVAILABLE = ("This company backup needs modules that cannot run here: {labels}. "
-                       "Import them, or choose another backup. Nothing was restored.")
+MODULES_UNAVAILABLE = ("This company copy needs modules that cannot run here: {labels}. "
+                       "Import them, or choose another company copy. Nothing was restored.")
 CONSENT_NEEDED = ("These modules come from outside Celerp. Confirm that you want to turn them on: {labels}. "
                   "Nothing was restored.")
 _BOOTSTRAP = "bootstrap"
 _START_COMPANY = "start_company"
 
 
-def _error(exc: cb.BackupError, stage: Path | None = None) -> JSONResponse:
-    """The refusal. Unless the owner can put it right and go on, the upload is deleted."""
+def _error(exc: cb.BackupError, stage: Path | None = None, **extra) -> JSONResponse:
+    """The refusal, with any *extra* fields. Unless the owner can put it right and go on,
+    the upload is deleted."""
     if stage is not None and exc.code is None:
         files.discard_stage(stage)
-    content: dict = {"detail": exc.detail}
+    content: dict = {"detail": exc.detail, **extra}
     if exc.code is not None:
         content["code"] = exc.code
     if isinstance(exc, cb.StalePreview):
@@ -96,6 +98,74 @@ async def download_backup(run_id: uuid.UUID | None = None, ctx: AuthContext = De
                         background=BackgroundTask(dest.unlink, missing_ok=True))
 
 
+class SendCompanyHandoff(BaseModel):
+    operation_id: uuid.UUID
+    key: str = Field(min_length=43, max_length=43)
+    firm_name: str = Field(min_length=1, max_length=160)
+    recipient: str = Field(min_length=3, max_length=320)
+    reply_to: str = Field(min_length=3, max_length=320)
+    note: str = Field(default="", max_length=1500)
+
+
+@router.post("/send-handoff")
+async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(user_owner),
+                       session: AsyncSession = Depends(get_session)):
+    try:
+        secret = sender.decode_key(payload.key)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    await session.rollback()  # snapshot uses its own consistent transaction
+    async def export(destination: Path):
+        # The copy names its firm, shown as Prepared by before it is opened.
+        await cb.export_company_snapshot(ctx.company_id, destination,
+                                         provenance={"prepared_by": payload.firm_name})
+    try:
+        sent = await sender.as_http(sender.send_company_backup(
+            export=export, company_id=ctx.company_id, operation_id=payload.operation_id,
+            secret=secret, firm_name=payload.firm_name,
+            recipient=payload.recipient, reply_to=payload.reply_to, note=payload.note,
+        ))
+    except cb.BackupError as exc:
+        return _error(exc)
+    await asyncio.to_thread(files.remember_sender, payload.firm_name, payload.reply_to)
+    return sent
+
+
+@router.get("/sender")
+async def last_sender(ctx: AuthContext = Depends(user_owner)):
+    """The firm name and reply address of the last send, for the next send form."""
+    return await asyncio.to_thread(files.last_sender)
+
+
+@router.get("/handoffs")
+async def company_handoffs(ctx: AuthContext = Depends(user_owner)):
+    """This company's copies sent; only its owner sees them, and each link they carry."""
+    return {"items": await sender.as_http(sender.company_copies(ctx.company_id))}
+
+
+@router.post("/handoffs/{copy_id}/revoke")
+async def revoke_company_handoff(copy_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)):
+    """The link stops working at once; Undo restores it for a short time."""
+    return await sender.as_http(sender.revoke_copy(ctx.company_id, copy_id))
+
+
+@router.post("/handoffs/{copy_id}/restore")
+async def restore_company_handoff(copy_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)):
+    return await sender.as_http(sender.restore_copy(ctx.company_id, copy_id))
+
+
+class NewCopyLink(BaseModel):
+    operation_id: uuid.UUID
+
+
+@router.post("/handoffs/{copy_id}/new-link")
+async def new_company_handoff_link(copy_id: uuid.UUID, payload: NewCopyLink,
+                                   ctx: AuthContext = Depends(user_owner)):
+    """Replace the link for the same stored copy: the old link stops working, and the
+    14 days and three downloads start again."""
+    return await sender.as_http(sender.new_link(ctx.company_id, copy_id, payload.operation_id))
+
+
 # ── Restore ──────────────────────────────────────────────────────────────────
 
 def _stage(owner: str, token: str) -> Path:
@@ -123,18 +193,34 @@ async def _preview(session: AsyncSession, stage: Path, token: str, mode: str, us
         await cb.check_backup(session, backup)
     except cb.ModulesRequired:
         pass
+    replace = None
     if user_id is None:
         plan = cb.plan_bootstrap_restore(backup)
     else:
         plan = await cb.plan_existing_restore(session, backup, mode, user_id, current_company_id)
         if plan.action == cb.REFUSE:
             raise cb.BackupError(409, t(cb.NOT_A_MEMBER))
+        replace = await cb.replace_offer(session, backup, plan, user_id)
     return {"upload_token": token, "file_name": files.stage_facts(stage).get("file_name", ""),
-            **backup.summary(), **plan.public()}
+            **backup.summary(), **plan.public(), "replace": replace, **_open(stage, plan, mode)}
+
+
+def _open(stage: Path, plan: cb.RestorePlan, mode: str) -> dict:
+    """Once the modules run, the open the owner chose with Enable and open: to do now, as
+    the preview they confirmed showed it, or held when anything else changed since."""
+    if not plan.modules.ready:
+        return {}
+    intent = files.take_open(stage)
+    if intent is None:
+        return {}
+    if intent.get("mode") != mode or intent.get("confirmed") != plan.confirmed:
+        return {"open_held": True}
+    return {"open_now": {"company_name": intent.get("company_name") or ""}}
 
 
 async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str = _BOOTSTRAP,
-                user_id=None, current_company_id=None) -> dict:
+                user_id=None, current_company_id=None, handoff_copy_id: str | None = None,
+                handoff_proof: str | None = None) -> dict:
     """Stage an uploaded backup privately and return its preview with the upload token."""
     await asyncio.to_thread(files.purge_expired_uploads)
     token = secrets.token_hex(16)
@@ -145,7 +231,20 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str =
                                     mode=mode, file_name=file.filename)
         except files.UploadTooLarge:
             raise cb.BackupError(413, t(cb.TOO_LARGE_UPLOAD)) from None
-        return await _preview(session, stage, token, mode, user_id, current_company_id)
+        preview = await _preview(session, stage, token, mode, user_id, current_company_id)
+        if handoff_copy_id or handoff_proof:
+            from celerp.services.company_handoff_transfer import (
+                HandoffDownloadError, HandoffUnreachable, verify_company_handoff,
+            )
+            try:
+                await verify_company_handoff(
+                    handoff_copy_id, handoff_proof, files.stage_facts(stage).get("sha256"))
+                files.bind_handoff(stage, handoff_copy_id, handoff_proof)
+            except HandoffUnreachable:
+                raise cb.BackupError(503, t("company_backup.err_handoff_unchecked")) from None
+            except (TypeError, ValueError, HandoffDownloadError):
+                raise cb.BackupError(422, t("company_backup.err_handoff_mismatch")) from None
+        return preview
     except BaseException:
         files.discard_stage(stage)
         raise
@@ -161,15 +260,25 @@ async def _staged(session: AsyncSession, owner: str, token: str, ctx: AuthContex
         return _error(exc, stage)
 
 
-async def _prepare(owner: str, token: str, consent: list[str]) -> JSONResponse:
+async def _prepare(owner: str, token: str, consent: list[str], *, open_: OpenIn | None = None,
+                   session: AsyncSession | None = None, ctx: AuthContext | None = None,
+                   mode: str = "settings") -> JSONResponse:
     """Turn on the modules a staged backup needs, then restart Celerp to load them. Bundled
-    modules are turned on; one from outside Celerp only when the owner named it."""
+    modules are turned on; one from outside Celerp only when the owner named it. With
+    ``open_`` (Enable and open) the owner confirms the preview as shown, and the backup is
+    opened under the name they chose once the modules run."""
     stage = _uploaded(owner, token)
     try:
         backup = await asyncio.to_thread(cb.read_backup, stage)
     except cb.BackupError as exc:
         return _error(exc, stage)
     modules = cb.requirement_plan(backup)
+    confirmed = None
+    if open_ is not None and ctx is not None:
+        plan = await cb.plan_existing_restore(session, backup, mode, ctx.user.id, ctx.company_id)
+        if plan.fingerprint != open_.plan_fingerprint:
+            return _error(cb.StalePreview(plan))
+        confirmed = plan.confirmed
     try:
         restart = await asyncio.to_thread(requirements.prepare, modules, consent=frozenset(consent))
     except requirements.RequirementsBlocked as exc:
@@ -181,6 +290,9 @@ async def _prepare(owner: str, token: str, consent: list[str]) -> JSONResponse:
     except OSError:
         logger.exception("Could not turn on the modules a company backup needs")
         raise HTTPException(status_code=503, detail=t("company_backup.err_modules_not_saved")) from None
+    if confirmed is not None:
+        await asyncio.to_thread(files.remember_open, stage, {"mode": mode, "confirmed": confirmed,
+                                                             "company_name": open_.company_name or ""})
     if not restart:
         return JSONResponse(status_code=200, content={"restart": False, "restarting": False})
     return JSONResponse(status_code=202, content={"restart": True, "restarting": requirements.schedule_restart()})
@@ -201,12 +313,12 @@ async def _import_module(file: UploadFile, session: AsyncSession, owner: str, to
     return await _staged(session, owner, token, ctx, mode)
 
 
-def _restored(result: cb.RestoreResult, tokens: dict) -> JSONResponse:
+def _restored(result: cb.RestoreResult, tokens: dict, **extra) -> JSONResponse:
     """The restore response, with the session *tokens* for the company it opened."""
     return JSONResponse(status_code=201 if result.outcome == cb.CREATED else 200, content={
         "company_id": result.company_id, "company_name": result.company_name, "outcome": result.outcome,
         "backup_created_at": result.backup_created_at, "team_members": result.team_members,
-        "role_permissions": result.role_permissions, **tokens})
+        "role_permissions": result.role_permissions, **extra, **tokens})
 
 
 RestoreMode = Literal["settings", "new_company"]
@@ -216,8 +328,18 @@ class UploadIn(BaseModel):
     upload_token: str
 
 
+class OpenIn(BaseModel):
+    plan_fingerprint: str
+    company_name: str = Field(default="", max_length=200)
+
+
 class PrepareIn(UploadIn):
     consent: list[str] = []
+
+
+class OwnerPrepareIn(PrepareIn):
+    mode: RestoreMode = "settings"
+    open: OpenIn | None = None
 
 
 class RestoreIn(UploadIn):
@@ -228,9 +350,11 @@ class RestoreIn(UploadIn):
 
 @router.post("/read")
 async def read_backup(file: UploadFile = File(...), mode: RestoreMode = Form("settings"),
+                      handoff_copy_id: str | None = Form(None), handoff_proof: str | None = Form(None),
                       ctx: AuthContext = Depends(user_owner), session: AsyncSession = Depends(get_session)):
     try:
-        return await _read(file, str(ctx.user.id), session, mode, ctx.user.id, ctx.company_id)
+        return await _read(file, str(ctx.user.id), session, mode, ctx.user.id, ctx.company_id,
+                           handoff_copy_id, handoff_proof)
     except cb.BackupError as exc:
         return _error(exc)
 
@@ -242,8 +366,10 @@ async def staged_backup(upload_token: str, mode: RestoreMode = "settings", ctx: 
 
 
 @router.post("/prepare")
-async def prepare_modules(payload: PrepareIn, ctx: AuthContext = Depends(user_owner)):
-    return await _prepare(str(ctx.user.id), payload.upload_token, payload.consent)
+async def prepare_modules(payload: OwnerPrepareIn, ctx: AuthContext = Depends(user_owner),
+                          session: AsyncSession = Depends(get_session)):
+    return await _prepare(str(ctx.user.id), payload.upload_token, payload.consent, open_=payload.open,
+                          session=session, ctx=ctx, mode=payload.mode)
 
 
 @router.post("/import-module")
@@ -279,12 +405,107 @@ async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_own
             result = await cb.restore_company(stage, mode=payload.mode, user_id=ctx.user.id,
                                               current_company_id=ctx.company_id,
                                               plan_fingerprint=payload.plan_fingerprint,
-                                              company_name=payload.company_name)
+                                              company_name=payload.company_name,
+                                              retain_peer_identities=files.staged_handoff(stage) is not None)
         except cb.BackupError as exc:
             return _error(exc, stage)
         files.finish_stage(stage, result.company_id)
     return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
                                                     expected_snonce=ctx.snonce))
+
+
+class ReplaceIn(BaseModel):
+    company_name: str = ""
+
+
+class ReplaceUploadIn(ReplaceIn, UploadIn):
+    mode: RestoreMode
+    plan_fingerprint: str
+
+
+@router.post("/replace")
+async def replace_with_copy(payload: ReplaceUploadIn, ctx: AuthContext = Depends(user_owner),
+                            session: AsyncSession = Depends(get_session)):
+    """Replace the caller's company of the same lineage with a staged copy of it, as the
+    preview offered, once its owner typed its name; a backup of it is kept first. Switches
+    the caller to the company the copy became."""
+    from celerp.credentials import issue_token_pair
+    stage = _stage(str(ctx.user.id), payload.upload_token)
+    if not stage.is_file():
+        await cb.finish_restore()
+        result = await cb.reopen_restored(files.restored_company(stage), user_id=ctx.user.id)
+        if result is None:
+            raise HTTPException(status_code=409, detail=t("company_backup.upload_expired"))
+        kept_id = None
+    else:
+        user_id, company_id = ctx.user.id, ctx.company_id
+        await session.rollback()  # the replace deletes a company through a transaction of its own
+        try:
+            result, kept_id = await cb.replace_company(
+                stage, mode=payload.mode, user_id=user_id, current_company_id=company_id,
+                plan_fingerprint=payload.plan_fingerprint, typed_name=payload.company_name,
+                retain_peer_identities=files.staged_handoff(stage) is not None)
+        except cb.ReplaceUnfinished as exc:
+            # The old company is gone: the owner is switched to the new one, where Try again
+            # finishes the follow-up.
+            files.finish_stage(stage, exc.company_id)
+            await session.refresh(ctx.user)
+            return _error(exc, **await issue_token_pair(session, user=ctx.user, company_id=exc.company_id,
+                                                        expected_snonce=ctx.snonce))
+        except cb.BackupError as exc:
+            return _error(exc, stage)
+        files.finish_stage(stage, result.company_id)
+        await session.refresh(ctx.user)
+    return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
+                                                    expected_snonce=ctx.snonce), kept_backup_id=kept_id)
+
+
+@router.get("/kept")
+async def kept_backups(ctx: AuthContext = Depends(user_owner)):
+    """The backups kept of this company each time a copy replaced it, newest first."""
+    return {"items": await cb.kept_backups(ctx.company_id)}
+
+
+@router.get("/kept/{kept_id}/download")
+async def download_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_owner)):
+    try:
+        path = await cb.kept_backup(ctx.company_id, kept_id)
+    except cb.BackupError as exc:
+        return _error(exc)
+    return FileResponse(path, media_type="application/octet-stream",
+                        filename=f"{ctx.company.slug}-before-replace{cb.EXTENSION}")
+
+
+@router.delete("/kept/{kept_id}", status_code=204)
+async def delete_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_owner)) -> Response:
+    """Delete a kept backup. Not undoable: it is the file itself, so the page asks first."""
+    try:
+        await cb.forget_kept_backup(ctx.company_id, kept_id)
+    except cb.BackupError as exc:
+        return _error(exc)
+    return Response(status_code=204)
+
+
+@router.post("/kept/{kept_id}/replace")
+async def restore_kept_backup(kept_id: str, payload: ReplaceIn, ctx: AuthContext = Depends(user_owner),
+                              session: AsyncSession = Depends(get_session)):
+    """Undo a replace: put a kept backup back in place of this company, the same way, so
+    the version it replaces is kept in turn."""
+    from celerp.credentials import issue_token_pair
+    user_id, company_id = ctx.user.id, ctx.company_id
+    await session.rollback()  # as for a replace
+    try:
+        path = await cb.kept_backup(company_id, kept_id)
+        lineage = await cb.company_lineage(company_id)
+        result, kept = await cb.replace_company(
+            path, mode="settings", user_id=user_id, current_company_id=company_id,
+            plan_fingerprint=None, typed_name=payload.company_name)
+    except cb.BackupError as exc:
+        return _error(exc)
+    files.discard_kept(lineage, kept_id)
+    await session.refresh(ctx.user)
+    return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
+                                                    expected_snonce=ctx.snonce), kept_backup_id=kept)
 
 
 @router.post("/reactivate")
@@ -323,10 +544,12 @@ async def _first_run(session: AsyncSession, x_setup_code: str | None) -> None:
 @router.post("/bootstrap/read")
 @limiter.limit("5/minute")
 async def bootstrap_read(request: Request, file: UploadFile = File(...),
+                         handoff_copy_id: str | None = Form(None), handoff_proof: str | None = Form(None),
                          session: AsyncSession = Depends(get_session), x_setup_code: str | None = Header(None)):
     await _first_run(session, x_setup_code)
     try:
-        return await _read(file, _BOOTSTRAP, session)
+        return await _read(file, _BOOTSTRAP, session, handoff_copy_id=handoff_copy_id,
+                           handoff_proof=handoff_proof)
     except cb.BackupError as exc:
         return _error(exc)
 
@@ -395,7 +618,8 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
                                                               expected_snonce=None))
     try:
         result = await cb.restore_company(stage, mode="bootstrap", owner_account=account,
-                                          company_name=payload.company_name, caller=request_caller(request))
+                                          company_name=payload.company_name, caller=request_caller(request),
+                                          retain_peer_identities=files.staged_handoff(stage) is not None)
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
@@ -412,10 +636,12 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
 @router.post("/start-company/read")
 @limiter.limit("5/minute")
 async def start_company_read(request: Request, file: UploadFile = File(...), email: str = Form(...),
-                             password: str = Form(...), session: AsyncSession = Depends(get_session)):
+                             password: str = Form(...), handoff_copy_id: str | None = Form(None),
+                             handoff_proof: str | None = Form(None), session: AsyncSession = Depends(get_session)):
     user = await companyless_login(session, email, password, request_caller(request))
     try:
-        return await _read(file, str(user.id), session, _START_COMPANY, user.id)
+        return await _read(file, str(user.id), session, _START_COMPANY, user.id,
+                           handoff_copy_id=handoff_copy_id, handoff_proof=handoff_proof)
     except cb.BackupError as exc:
         return _error(exc)
 
@@ -441,7 +667,8 @@ async def start_company_restore(request: Request, payload: StartCompanyRestoreIn
     try:
         result = await cb.restore_company(stage, mode=_START_COMPANY, user_id=user.id,
                                           plan_fingerprint=payload.plan_fingerprint,
-                                          company_name=payload.company_name)
+                                          company_name=payload.company_name,
+                                          retain_peer_identities=files.staged_handoff(stage) is not None)
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)

@@ -301,7 +301,7 @@ def test_grace_notice_storage_only_after_grace(tmp_path, monkeypatch):
 async def test_s3_test_success_head_bucket(monkeypatch):
     s3 = MagicMock()
     s3.head_bucket = AsyncMock(return_value={})
-    monkeypatch.setattr(attachments, "_s3_client",
+    monkeypatch.setattr(attachments, "s3_client",
                         lambda *a, **k: _ACM(s3), raising=False)
     result = await sc._try_s3_connect("http://127.0.0.1:1", "b", "AK", "SK")
     assert result == t("settings_cloud.connected_to_bucket", bucket="b")
@@ -313,7 +313,7 @@ async def test_s3_test_access_denied(monkeypatch):
     s3 = MagicMock()
     s3.head_bucket = AsyncMock(side_effect=exc.ClientError(
         {"Error": {"Code": "AccessDenied"}, "ResponseMetadata": {"HTTPStatusCode": 403}}))
-    monkeypatch.setattr(attachments, "_s3_client",
+    monkeypatch.setattr(attachments, "s3_client",
                         lambda *a, **k: _ACM(s3), raising=False)
     with pytest.raises(RuntimeError) as ei:
         await sc._try_s3_connect("http://127.0.0.1:1", "b", "AK", "SK")
@@ -326,7 +326,7 @@ async def test_s3_test_bucket_not_found(monkeypatch):
     s3 = MagicMock()
     s3.head_bucket = AsyncMock(side_effect=exc.ClientError(
         {"Error": {"Code": "NoSuchBucket"}, "ResponseMetadata": {"HTTPStatusCode": 404}}))
-    monkeypatch.setattr(attachments, "_s3_client",
+    monkeypatch.setattr(attachments, "s3_client",
                         lambda *a, **k: _ACM(s3), raising=False)
     with pytest.raises(RuntimeError) as ei:
         await sc._try_s3_connect("http://127.0.0.1:1", "b", "AK", "SK")
@@ -339,7 +339,7 @@ async def test_s3_test_unreachable(monkeypatch):
     s3 = MagicMock()
     s3.head_bucket = AsyncMock(
         side_effect=exc.EndpointConnectionError(endpoint_url="http://127.0.0.1:1"))
-    monkeypatch.setattr(attachments, "_s3_client",
+    monkeypatch.setattr(attachments, "s3_client",
                         lambda *a, **k: _ACM(s3), raising=False)
     with pytest.raises(RuntimeError) as ei:
         await sc._try_s3_connect("http://127.0.0.1:1", "b", "AK", "SK")
@@ -350,26 +350,26 @@ async def test_s3_test_unreachable(monkeypatch):
 async def test_s3_test_degrades_without_aiobotocore(monkeypatch):
     def _raise_import(*a, **k):
         raise ImportError("No module named 'aiobotocore'")
-    monkeypatch.setattr(attachments, "_s3_client", _raise_import, raising=False)
+    monkeypatch.setattr(attachments, "s3_client", _raise_import, raising=False)
     with pytest.raises(RuntimeError) as ei:
         await sc._try_s3_connect("http://127.0.0.1:1", "b", "AK", "SK")
     assert str(ei.value) == t("settings_cloud.s3_support_unavailable")
 
 
 async def test_s3_client_helper_shared(monkeypatch):
-    assert hasattr(attachments, "_s3_client"), "shared _s3_client helper missing"
+    assert hasattr(attachments, "s3_client"), "shared s3_client helper missing"
     s3 = MagicMock()
     s3.put_object = AsyncMock(return_value={})
     s3.head_bucket = AsyncMock(return_value={})
     _inject_aiobotocore(monkeypatch, s3)
-    real = attachments._s3_client
+    real = attachments.s3_client
     seen = {"n": 0}
 
     def spy(*a, **k):
         seen["n"] += 1
         return real(*a, **k)
 
-    monkeypatch.setattr(attachments, "_s3_client", spy)
+    monkeypatch.setattr(attachments, "s3_client", spy)
     backend = attachments.S3Backend("http://127.0.0.1:1", "bkt", "AK", "SK")
     await backend.store("co", "att", b"x", "image/png")
     _inject_botocore(monkeypatch)
@@ -382,7 +382,7 @@ async def test_s3_test_unenumerated_exception_redacted(monkeypatch):
     s3 = MagicMock()
     s3.head_bucket = AsyncMock(
         side_effect=ValueError("boto AKIAEXPOSED endpoint=http://secret"))
-    monkeypatch.setattr(attachments, "_s3_client",
+    monkeypatch.setattr(attachments, "s3_client",
                         lambda *a, **k: _ACM(s3), raising=False)
     with pytest.raises(RuntimeError) as ei:
         await sc._try_s3_connect("http://127.0.0.1:1", "bkt", "AKIAEXPOSED", "SECRET")

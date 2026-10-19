@@ -176,7 +176,7 @@ def setup_routes(app):
 
     def _company_page(request: Request, values: dict, error: str | None = None):
         return auth_shell(
-            *client_scripts(get_lang(request)),
+            *client_scripts(get_lang(request), request),
             _company_setup_form(values, error=error),
             title=page_title("setup.finish_title"),
         )
@@ -307,6 +307,8 @@ def setup_routes(app):
                 [
                     choice_card(t("setup.card_fresh"), t("setup.card_new_desc"), href="/setup/new-company/fresh"),
                     choice_card(t("setup.card_move"), t("setup.card_move_desc"), href=COMPANY.base),
+                    choice_card(t("setup.card_move_several"), t("setup.card_move_several_desc"),
+                                href=f"{COMPANY.base}/several"),
                     choice_card(t("setup.card_restore_from_backup"), t("setup.card_restore_desc"),
                                 href=NEW_COMPANY.base),
                     choice_card(t("setup.card_sample"), t("setup.card_sample_desc"), post_to=f"{COMPANY.base}/sample"),

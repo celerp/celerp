@@ -831,8 +831,8 @@
   "fixed_assets.transfer_other.not_using": "{company} belum memakai aset tetap. Beralih ke sana dan mulai aset tetap di sana.",
   "fixed_assets.transfer_other.no_rights": "Peran Anda di {company} tidak dapat mengelola akuntansi dan aset tetap di sana. Pemiliknya dapat memberi peran Anda keduanya.",
   "fixed_assets.switch_to": "Beralih ke {company}",
-  "fixed_assets.switched_company": "Halaman ini dibuka di {page}, tetapi Anda telah beralih ke {now} di tab lain, jadi tidak ada yang disimpan. {switch} untuk melanjutkan di sini, atau muat ulang halaman ini untuk bekerja di {now}.",
-  "fixed_assets.switched_company_gone": "Halaman ini dibuka di perusahaan yang tidak lagi dapat Anda akses, jadi tidak ada yang disimpan. Muat ulang halaman ini untuk bekerja di {now}.",
+  "fixed_assets.switched_company": "Halaman ini dibuka di {page}, tetapi Anda telah beralih ke {now} di tab lain, jadi tidak ada yang disimpan. {switch} untuk melanjutkan di sini, atau pilih Coba lagi untuk bekerja di {now}.",
+  "fixed_assets.switched_company_gone": "Halaman ini dibuka di perusahaan yang tidak lagi dapat Anda akses, jadi tidak ada yang disimpan. Pilih Coba lagi untuk bekerja di {now}.",
   "fixed_assets.transfer_date": "Tanggal pengalihan",
   "fixed_assets.transfer_price": "Harga pengalihan",
   "fixed_assets.transfer_price_hint": "Dalam {currency}, jumlah yang terutang oleh perusahaan terkait untuk aset ini.",
@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "Pengingat pemeliharaan, garansi, dan asuransi dalam masa pemberitahuannya, atau terlambat. Buka aset untuk menandai selesai atau menundanya.",
   "fixed_assets.reminders_empty": "Tidak ada pengingat aset yang jatuh tempo.",
   "fixed_assets.notice.reminders.title": "Pengingat aset",
-  "fixed_assets.notice.reminders.body": "Pengingat aset berikut jatuh tempo:\n{items}"
+  "fixed_assets.notice.reminders.body": "Pengingat aset berikut jatuh tempo:\n{items}",
+  "fixed_assets.err_same_key_new_details": "Perubahan ini sudah dibuat dengan detail berbeda. Pilih Coba lagi dan mulai dari awal.",
+  "fixed_assets.err_changed_by_someone": "Diubah oleh orang lain. Pilih Coba lagi untuk melihatnya.",
+  "fixed_assets.err_no_difference": "Selisih itu tidak ada. Pilih Coba lagi.",
+  "fixed_assets.err_no_year_end_item": "Item akhir tahun itu tidak ada. Pilih Coba lagi."
 }

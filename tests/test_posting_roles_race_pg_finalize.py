@@ -78,7 +78,7 @@ async def test_two_concurrent_finalizes_leave_exactly_one_completion(committed_e
     assert len(completed) == 1 and len(refused) == 1, results
     assert completed[0].status == migrations._S.COMPLETED.value
     assert isinstance(refused[0], migrations.MigrationError) and refused[0].status_code == 409
-    assert refused[0].detail == t("migration.err_cannot_finalize", "en", status=t("migration.status.completed", "en"))
+    assert refused[0].detail == t("migration.err_cannot_finalize", "en")
 
     async with factory() as s:
         company = await s.get(Company, cid)

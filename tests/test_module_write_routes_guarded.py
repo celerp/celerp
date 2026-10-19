@@ -24,6 +24,8 @@ _ALLOWED = {
         "restores a backup into an installation that has no users yet; the setup code authorizes it",
     ("POST", "celerp_inventory.routes:set_item_price"):
         "decides per request: set_inventory_prices, or edit_inventory for the cost of a draft being entered",
+    ("POST", "celerp_accounting.routes:peer_journal_receive"):
+        "a connected company's peer key only; the key's journals scope gates it and any other caller gets 403",
     ("POST", "celerp_fixed_assets.custody:confirm"):
         "decides per request: only the asset's custodian, whatever their role",
     ("POST", "celerp_fixed_assets.custody:report_problem"):

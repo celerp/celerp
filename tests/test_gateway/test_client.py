@@ -301,6 +301,24 @@ def test_every_anonymous_api_page_is_reached_through_connect_or_named_as_ui_only
     assert reached & ui_only == set()
 
 
+def test_accountant_grant_management_is_not_reached_through_connect(client):
+    """Only the signed sync calls go to the API port; granting a key needs sign-in."""
+    for path in ("/company-peers/grants", "/company-peers/grants/x/revoke"):
+        assert client._local_port_for(path) == client._ui_port
+
+
+def test_peer_signed_import_routes_reach_the_api_port(client):
+    """A connected company's signed record or file goes to the API's import route; the same
+    path unsigned, or another method, stays with the UI."""
+    for path in ("/crm/contacts/import/batch", "/items/import/batch", "/docs/import/batch",
+                 "/lists/import/batch", "/docs/doc:x/files"):
+        assert client._local_port_for(path, "POST", "Peer cp1.key") == client._api_port
+        assert client._local_port_for(path, "POST") == client._ui_port
+        assert client._local_port_for(path, "POST", "Bearer token") == client._ui_port
+        assert client._local_port_for(path, "GET", "Peer cp1.key") == client._ui_port
+    assert client._local_port_for("/docs/import", "POST", "Peer cp1.key") == client._ui_port
+
+
 def test_stop_sets_running_false(client):
     """stop() sets _running=False."""
     client._running = True
@@ -1162,7 +1180,7 @@ def test_hello_declares_exactly_the_delivery_types_dispatch_routes(client):
     Cloud never sends this install a delivery it would not route to a handler."""
     payload = client._build_hello_payload(tos_version="v1", app_version="1.0.0")
     assert payload["delivery_types"] == sorted(client._DELIVERIES)
-    assert set(payload["delivery_types"]) == {"invoice.payment", "invoice.payment_release", "invoice.refund"}
+    assert set(payload["delivery_types"]) == {"invoice.payment", "invoice.payment_release", "invoice.refund", "invoice.fees"}
 
 
 @pytest.mark.asyncio

@@ -161,6 +161,9 @@ async def test_only_the_creator_controls_a_run(real_client, real_engine, migrati
     for method, path in RUN_ROUTES:
         r = await getattr(real_client, method)(f"/migrations/{run_id}{path}", headers=auth(other_token))
         assert r.status_code == 404 and r.json() == {"detail": NOT_FOUND}, (path, r.text)
+    # The same answer for a run that is gone and one that is someone else's, so it names
+    # both and gives no advice another user cannot follow.
+    assert "only the user who started it can open it" in NOT_FOUND and "Start a new one" not in NOT_FOUND
     assert (await load_run(real_engine, uuid.UUID(run_id))).status == "running"
 
 

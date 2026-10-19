@@ -116,38 +116,55 @@ def latest_jobs(run_id: object) -> list[dict]:
     return _list(f"{_api()}/runs/{run_id}/jobs?filter=latest&per_page=100", "jobs")
 
 
-def unfinished(jobs: list[dict], label: str, required: dict[str, Callable[[str], bool]]) -> list[str]:
-    """The required jobs that have not succeeded yet. Refused when one is there
-    more than once, or finished without succeeding."""
+def job_states(jobs: list[dict], label: str,
+               required: dict[str, Callable[[str], bool]]) -> tuple[list[str], list[str]]:
+    """The required jobs not finished yet, and each finished one that did not succeed
+    as "<job> in <label> finished <conclusion>". Refused when one is there more than once."""
     found = {name: [j for j in jobs if matches(j["name"])] for name, matches in required.items()}
+    pending, failed = [], []
     for name, same in found.items():
         if len(same) > 1:
             raise Refused(f"{label} has {len(same)} {name} jobs")
-        if same and same[0]["status"] == "completed" and same[0]["conclusion"] != "success":
-            raise Refused(f"{same[0]['name']} in {label} finished {same[0]['conclusion']}")
-    return [name for name, same in found.items() if not same or same[0]["conclusion"] != "success"]
+        if not same or same[0]["status"] != "completed":
+            pending.append(name)
+        elif same[0]["conclusion"] != "success":
+            failed.append(f"{same[0]['name']} in {label} finished {same[0]['conclusion']}")
+    return pending, failed
+
+
+def unfinished(jobs: list[dict], label: str, required: dict[str, Callable[[str], bool]]) -> list[str]:
+    """The required jobs that have not succeeded yet. Refused when one is there
+    more than once, or finished without succeeding."""
+    pending, failed = job_states(jobs, label, required)
+    if failed:
+        raise Refused("; ".join(failed))
+    return pending
 
 
 def desktop_builds() -> None:
     """The current attempt of build.yml's run: exactly one successful build per
     platform, one successful upgrade test each on Linux and Windows, and every job
-    they depend on or that completes the release assets. Refused once the run has
+    they depend on or that completes the release assets. A job that failed does not
+    end the wait while others still run: the outcome is reported once every required
+    job finished, naming each one that did not succeed. Refused once the run has
     been building for BUILD_TIME without them."""
     run = _run("build.yml")
     required = {name: lambda job, name=name: job == name for name in BUILD_PREREQUISITES}
     required |= platform_builds(PLATFORMS)
     required |= {name: lambda job, name=name: job.rsplit(" / ", 1)[-1] == name for name in UPGRADE_TESTS}
     jobs = latest_jobs(run["id"])
-    missing = unfinished(jobs, f"build.yml run {run['id']}", required)
-    if not missing:
+    label = f"build.yml run {run['id']}"
+    pending, failed = job_states(jobs, label, required)
+    if not pending and not failed:
         return
-    if run["status"] == "completed":
-        raise Refused(f"build.yml run {run['id']} finished without {', '.join(missing)}")
+    if not pending or run["status"] == "completed":
+        raise Refused("; ".join(failed + ([f"{label} finished without {', '.join(pending)}"] if pending else [])))
     started = building_since(run, jobs)
     if started and datetime.now(timezone.utc) - _time(started) > BUILD_TIME:
-        raise Refused(f"build.yml run {run['id']} started building at {started} and has not finished within "
+        raise Refused(f"{label} started building at {started} and has not finished within "
                       f"{BUILD_TIME.seconds // 3600} hours. Once it finishes, re-run the failed publish job")
-    raise NotReady(f"waiting for {', '.join(missing)} in build.yml run {run['id']}")
+    so_far = f" ({'; '.join(failed)})" if failed else ""
+    raise NotReady(f"waiting for {', '.join(pending)} in {label}{so_far}")
 
 
 def _time(stamp: str) -> datetime:

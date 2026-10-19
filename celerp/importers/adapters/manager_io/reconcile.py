@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from decimal import Decimal
 
-from celerp.importers.adapters.manager_io.book import AP, AR, INBOUND, JOURNAL_DOCUMENTS, Book
+from celerp.importers.adapters.manager_io.book import AP, AR, INBOUND, JOURNAL_DOCUMENTS, STOCK_RECORDS, Book, Movement
 from celerp.importers.adapters.manager_io.ledger import Ledger
 from celerp.importers.schema import (
     CIFTolerance,
@@ -31,13 +31,37 @@ CONTROL_MEASURES = {"receivable": M.AR_CONTROL, "payable": M.AP_CONTROL, "tax": 
 CREDIT_TYPES = frozenset({"liability", "equity", "revenue"})
 
 
+def _at_unit_cost(book: Book, movement: Movement) -> list[tuple[str, Decimal, Decimal]]:
+    """(item, signed quantity, signed value) for each line a write-off or production order
+    states, the item a production order makes last."""
+    code = book.base_code or ""
+
+    def cost(item: str) -> Decimal:
+        dated = [c for on, c in sorted(book.unit_costs.get(item, [])) if on <= movement.date]
+        return dated[-1] if dated else ZERO
+
+    lines = list(movement.source_lines)
+    made = lines.pop() if movement.source_type == "ProductionOrder" else None
+    out = [(item, quantity, -round_money(-quantity * cost(item), code)) for item, quantity in lines]
+    if made:
+        added = sum((amount for _, amount in movement.expenses), ZERO)
+        out.append((*made, -sum((value for _, _, value in out), ZERO) + added))
+    return out
+
+
 def _stock_from_source(book: Book) -> dict[str, tuple[Decimal, Decimal]]:
-    """Quantity and base value held per item after every stock movement in the book, in the
-    order stock moved, receipts first on a day: goods received carry their share of the bill
-    line's net, goods delivered their share of the cost of sales the invoice line booked."""
+    """Quantity and base value held per item from its starting balance and after every stock
+    movement in the book, in the order stock moved, receipts first on a day: goods received
+    carry their share of the bill line's net, goods delivered their share of the cost of
+    sales the invoice line booked. A write-off or production order takes each item out at its
+    unit cost on its date, and a production order brings in what it makes at what it took out
+    plus the expenses it adds."""
     code = book.base_code or ""
     events: list[tuple] = []
     for key, movement in book.movements.items():
+        if movement.source_type in STOCK_RECORDS and not book.is_blocked(key):
+            events.append((movement.date, True, key, None, _at_unit_cost(book, movement)))
+            continue
         doc = book.documents.get(movement.document) if movement.document else None
         if book.is_blocked(key) or doc is None:
             continue
@@ -53,13 +77,18 @@ def _stock_from_source(book: Book) -> dict[str, tuple[Decimal, Decimal]]:
             lines = [(line.item, sign * line.quantity, i) for i, line in enumerate(doc.lines) if line.item]
             if lines:
                 events.append((doc.date, doc.source_type not in INBOUND, key, doc, lines))
-    held: dict[str, tuple[Decimal, Decimal]] = {}
+    held: dict[str, tuple[Decimal, Decimal]] = dict(book.starting_stock())
     taken: dict[tuple[str, int], Decimal] = defaultdict(lambda: ZERO)
     for _, _, _, doc, lines in sorted(events, key=lambda e: e[:3]):
+        if doc is None:
+            for item, quantity, value in lines:
+                on_hand, worth = held.get(item, (ZERO, ZERO))
+                held[item] = (on_hand + quantity, worth + value)
+            continue
         for item, quantity, index in lines:
             on_hand, worth = held.get(item, (ZERO, ZERO))
             source = doc.lines[index]
-            booked = source.net if quantity > 0 else -source.cost
+            booked = source.base_net if quantity > 0 else -source.cost
             before = taken[(doc.key, index)]
             value = (round_money(booked * (before + abs(quantity)) / source.quantity, code)
                      - round_money(booked * before / source.quantity, code))
@@ -93,7 +122,30 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
         if account.control in CONTROL_MEASURES:
             add(CONTROL_MEASURES[account.control], key, base, balance, label, credit)
         if account.control == "bank":
-            add(M.BANK_CASH, key, book.currency_code(account.currency), balance, label, credit)
+            add(M.BANK_CASH, key, base, balance, label, credit)
+    # The portion of a control balance not represented by currently open documents
+    # is a legitimate source opening/journal amount. Verify that residual as well as
+    # the control itself: together they prove open-document totals reconcile without
+    # rejecting source books that intentionally carry separate opening adjustments.
+    open_ar = ZERO
+    open_ap = ZERO
+    for key in ledger.documents:
+        doc = book.documents[key]
+        outstanding = round_money(ledger.states[key].amount_outstanding * (doc.rate or 1), base)
+        if doc.doc_type == "invoice":
+            open_ar += outstanding
+        elif doc.doc_type == "credit_note":
+            open_ar -= outstanding
+        elif doc.doc_type == "bill":
+            open_ap += outstanding
+        elif doc.doc_type == "debit_note":
+            open_ap -= outstanding
+    ar_control = sum((balances.get(a.key, ZERO) for a in book.accounts.values()
+                      if a.control == "receivable"), ZERO)
+    ap_control = sum((balances.get(a.key, ZERO) for a in book.accounts.values()
+                      if a.control == "payable"), ZERO)
+    add(M.AR_DOCUMENT_RESIDUAL, "", base, ar_control - open_ar)
+    add(M.AP_DOCUMENT_RESIDUAL, "", base, ap_control + open_ap)
     for key, contact in sorted(book.contacts.items()):
         customer = contact.source_type == "Customer"
         add(M.AR_BY_CUSTOMER if customer else M.AP_BY_SUPPLIER, key, base, party[key], contact.name, not customer)
@@ -108,14 +160,15 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
     counts: Counter = Counter()
     totals: dict[tuple[str, str], Decimal] = defaultdict(lambda: ZERO)
     statuses: Counter = Counter()
-    for key in ledger.documents:
-        doc = book.documents[key]
+    records = [(book.documents[k], ledger.states[k].status) for k in ledger.documents]
+    records += [(book.orders[k], book.orders[k].order_status) for k in ledger.orders]
+    for doc, status in records:
         if doc.source_type in JOURNAL_DOCUMENTS:
             continue
         group = (doc.doc_type, book.currency_code(doc.currency))
         counts[group] += 1
         totals[group] += doc.total
-        statuses[f"{doc.doc_type}:{ledger.states[key].status}"] += 1
+        statuses[f"{doc.doc_type}:{status}"] += 1
     for (doc_type, currency), count in sorted(counts.items()):
         add(M.DOCUMENT_COUNT, doc_type, currency, Decimal(count))
         add(M.DOCUMENT_TOTAL, doc_type, currency, totals[(doc_type, currency)])

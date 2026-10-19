@@ -1246,3 +1246,466 @@ async def test_a_stripe_payment_the_released_version_recorded_is_the_companys_to
     assert "held_by" not in (await _doc_state(client, tok, eid))["payments"][0]
     r = await _remove_payment(client, tok, eid, "void")
     assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_actual_online_fees_post_once_and_refund_as_separate_cash_movements(
+        client, session, payments_on):
+    import hashlib
+    import uuid
+    from decimal import Decimal
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_payment, receive_fees
+
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    payment = {"company_id": cid, "entity_id": eid, "reference": "pi_fee_1",
+               "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+               "context": dict(BOOKS), "managed": True}
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_fee_1",
+            "total_minor": 520, "processor_minor": 270,
+            "platform_minor": 250, "other_minor": 0}
+    event = {"company_id": cid, "entity_id": eid, "reference": "pi_fee_1",
+             "fees": fees, "occurred_at": PAID.isoformat()}
+    assert await receive_fees(event) is False
+    assert await receive_payment(payment)
+    assert await receive_fees(event)
+    assert await receive_fees(event)
+    token = hashlib.sha256(b"txn_fee_1").hexdigest()[:24]
+    journal = await session.get(
+        Projection, (uuid.UUID(cid), f"je:auto:{eid}:online-fees:{token}"),
+        populate_existing=True,
+    )
+    assert journal is not None and journal.state["status"] == "posted"
+    lines = journal.state["entries"]
+    debit = sum(Decimal(str(v.get("debit") or 0)) for v in lines)
+    credit = sum(Decimal(str(v.get("credit") or 0)) for v in lines)
+    assert debit == credit == Decimal("5.2")
+    assert sum(Decimal(str(v.get("debit") or 0)) for v in lines
+               if v["account"] != "1111") == Decimal("5.2")
+    assert sum(Decimal(str(v.get("credit") or 0)) for v in lines
+               if v["account"] == "1111") == Decimal("5.2")
+    assert (await _doc_state(client, tok, eid))["amount_outstanding"] == 0
+
+    reversed_fees = {**fees, "transaction_id": "txn_fee_refund",
+                     "total_minor": -100, "processor_minor": 0,
+                     "platform_minor": -100}
+    assert await receive_fees({**event, "fees": reversed_fees})
+    refund_token = hashlib.sha256(b"txn_fee_refund").hexdigest()[:24]
+    refund_je = await session.get(
+        Projection, (uuid.UUID(cid), f"je:auto:{eid}:online-fees:{refund_token}"),
+        populate_existing=True,
+    )
+    assert refund_je is not None and refund_je.state["status"] == "posted"
+    assert sum(Decimal(str(v.get("debit") or 0)) for v in refund_je.state["entries"]
+               if v["account"] == "1111") == Decimal("1")
+    with pytest.raises(ValueError, match="other details"):
+        await receive_fees({**event, "fees": {**fees, "total_minor": 521, "other_minor": 1}})
+
+
+@pytest.mark.asyncio
+async def test_online_fee_contract_rejects_inconsistent_fees(
+        client, session, payments_on):
+    from celerp.services.payments import receive_payment, receive_fees
+    from celerp.models.projections import Projection
+
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    assert await receive_payment({
+        "company_id": cid, "entity_id": eid, "reference": "pi_fee_guard",
+        "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+        "context": dict(BOOKS), "managed": True})
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_guard",
+            "total_minor": 10, "processor_minor": 10, "platform_minor": 0,
+            "other_minor": 0}
+    event = {"company_id": cid, "entity_id": eid, "reference": "pi_fee_guard",
+             "fees": fees, "occurred_at": PAID.isoformat()}
+    for changes in (
+        {"fees": {**fees, "total_minor": 11}},
+        {"fees": {**fees, "platform_minor": True}},
+        {"fees": {**fees, "total_minor": 0.1}},
+        {"reference": "pi_not_a_payment"},
+        {"occurred_at": "2026-10-12"},
+    ):
+        assert await receive_fees({**event, **changes}) is False
+    # A currency the payment's books cannot take is acknowledged with a notice, never posted.
+    before = await _ledger_count(session, cid)
+    assert await receive_fees({**event, "fees": {**fees, "currency": "eur"}}) is True
+    assert await _ledger_count(session, cid) == before
+    assert await receive_fees(event) is True
+
+
+
+@pytest.mark.asyncio
+async def test_delayed_actual_fees_post_in_open_period_without_backdating(client, session, payments_on):
+    import hashlib
+    import uuid
+    from datetime import date
+    from celerp.services.company_lock import locked_company
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_payment, receive_fees
+
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    assert await receive_payment({
+        "company_id": cid, "entity_id": eid, "reference": "pi_fee_late",
+        "amount_minor": 107000, "currency": "usd",
+        "paid_at": PAID.isoformat(), "context": dict(BOOKS), "managed": True})
+    company = await locked_company(session, uuid.UUID(cid))
+    company.settings = {**company.settings, "lock_date": "2026-09-30"}
+    await session.commit()
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_fee_late",
+            "total_minor": 100, "processor_minor": 100,
+            "platform_minor": 0, "other_minor": 0}
+    assert await receive_fees({
+        "company_id": cid, "entity_id": eid, "reference": "pi_fee_late",
+        "fees": fees, "occurred_at": PAID.isoformat()})
+    token = hashlib.sha256(b"txn_fee_late").hexdigest()[:24]
+    row = await session.get(
+        Projection, (uuid.UUID(cid), f"je:auto:{eid}:online-fees:{token}"),
+        populate_existing=True)
+    assert row is not None and row.state["status"] == "posted"
+    assert date.fromisoformat(str(row.state["ts"])[:10]) > date(2026, 9, 30)
+    assert await receive_fees({
+        "company_id": cid, "entity_id": eid, "reference": "pi_fee_late",
+        "fees": fees, "occurred_at": PAID.isoformat()})
+
+
+
+@pytest.mark.asyncio
+async def test_provider_base_currency_fees_are_not_converted_twice(client, session, payments_on):
+    import uuid
+    from decimal import Decimal
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_payment, receive_fees
+
+    tok = await _register(client)
+    created = await client.post("/docs", json={
+        "doc_type": "invoice", "contact_name": "Buyer",
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100}],
+        "total": 100, "currency": "EUR", "conversion_rate": 1.2,
+    }, headers=_h(tok))
+    assert created.status_code == 200, created.text
+    eid = created.json()["id"]
+    issued = await client.post(f"/docs/{eid}/finalize", headers=_h(tok))
+    assert issued.status_code == 200, issued.text
+    cid = _company_id(tok)
+    assert await receive_payment({
+        "company_id": cid, "entity_id": eid, "reference": "pi_fx_fee",
+        "amount_minor": 10000, "currency": "eur", "paid_at": PAID.isoformat(),
+        "context": {**BOOKS, "rate": "1.2"}, "managed": True,
+    })
+    fees = {"version": 1, "transaction_id": "txn_fee_usd_base", "currency": "usd",
+            "total_minor": 320, "processor_minor": 120, "platform_minor": 200,
+            "other_minor": 0}
+    report = {"company_id": cid, "entity_id": eid, "reference": "pi_fx_fee",
+              "fees": fees, "occurred_at": PAID.isoformat()}
+    assert await receive_fees(report)
+    assert await receive_fees(report)
+    from hashlib import sha256
+    token = sha256(b"txn_fee_usd_base").hexdigest()[:24]
+    journal = await session.get(
+        Projection, (uuid.UUID(cid), f"je:auto:{eid}:online-fees:{token}"),
+        populate_existing=True)
+    assert journal and journal.state["status"] == "posted"
+    entries = journal.state["entries"]
+    debit = sum(Decimal(str(e.get("debit") or 0)) for e in entries)
+    credit = sum(Decimal(str(e.get("credit") or 0)) for e in entries)
+    assert debit == credit == Decimal("3.2")
+    # A third currency is never converted: acknowledged with a notice, nothing posted.
+    before = await _ledger_count(session, cid)
+    assert await receive_fees({**report, "fees": {**fees, "currency": "gbp", "transaction_id": "txn_gbp"}}) is True
+    assert await _ledger_count(session, cid) == before
+
+
+async def _fee_notices(session, cid: str, key: str) -> list:
+    import uuid
+    from sqlalchemy import select
+    from celerp.models.notification import Notification
+    rows = (await session.execute(select(Notification).where(
+        Notification.company_id == uuid.UUID(cid)))).scalars().all()
+    return [n for n in rows if (n.i18n or {}).get("title") == f"{key}.title"]
+
+
+async def _paid_with_fees(client, tok, reference: str, fees: dict):
+    from celerp.services.payments import receive_payment
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    assert await receive_payment({"company_id": cid, "entity_id": eid, "reference": reference,
+                                  "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                                  "context": dict(BOOKS), "managed": True})
+    return eid, {"company_id": cid, "entity_id": eid, "reference": reference,
+                 "fees": fees, "occurred_at": PAID.isoformat()}
+
+
+@pytest.mark.asyncio
+async def test_online_fees_post_to_the_chosen_account(client, session, payments_on):
+    """The fee lands on the account the company chose for online payment fees, which a
+    new company starts with as its own seeded account, never on General expenses."""
+    import hashlib
+    import uuid
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_fees
+
+    tok = await _register(client)
+    roles = {r["role"]: r for r in (await client.get(
+        "/accounting/posting-accounts", headers=_h(tok))).json()["roles"]}
+    assert roles["online_payment_fees"]["code"] == "6940"
+    r = await client.post("/accounting/accounts", headers=_h(tok), json={
+        "code": "6945", "name": "Card fees", "account_type": "expense", "parent_code": "6000"})
+    assert r.status_code == 200, r.text
+    r = await client.put("/accounting/posting-accounts/online_payment_fees", headers=_h(tok),
+                         json={"code": "6945"})
+    assert r.status_code == 200, r.text
+
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_chosen",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    eid, event = await _paid_with_fees(client, tok, "pi_chosen", fees)
+    assert await receive_fees(event)
+    token = hashlib.sha256(b"txn_chosen").hexdigest()[:24]
+    journal = await session.get(Projection, (uuid.UUID(_company_id(tok)), f"je:auto:{eid}:online-fees:{token}"),
+                                populate_existing=True)
+    fee_lines = [e for e in journal.state["entries"] if e["account"] != "1111"]
+    assert {e["account"] for e in fee_lines} == {"6945"}
+    assert all(e["account_roles"] == ["online_payment_fees"] for e in fee_lines)
+
+
+@pytest.mark.asyncio
+async def test_fee_notice_and_failure_notice(client, session, payments_on):
+    """Each fee booked on the company's behalf tells it so, once, with a link to the
+    invoice; a fee that cannot be recorded tells it why instead of only being logged.
+    One whose cause can be fixed is recorded when delivered again after the fix; one
+    whose cause is the payment's own recorded books is acknowledged once told, since
+    no fix can reach them."""
+    from celerp.services.payments import receive_fees
+
+    tok = await _register(client)
+    cid = _company_id(tok)
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_notice",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    eid, event = await _paid_with_fees(client, tok, "pi_notice", fees)
+    assert await receive_fees(event)
+    assert await receive_fees(event)
+    recorded = await _fee_notices(session, cid, "notice.online_fee_recorded")
+    assert len(recorded) == 1
+    assert recorded[0].action_url == f"/docs/{eid}"
+    assert "5.20 USD" in recorded[0].body and "6940" in recorded[0].body
+
+    refund = {**fees, "transaction_id": "txn_notice_back", "total_minor": -100,
+              "processor_minor": 0, "platform_minor": -100}
+    assert await receive_fees({**event, "fees": refund})
+    returned = await _fee_notices(session, cid, "notice.online_fee_returned")
+    assert len(returned) == 1 and "1.00 USD" in returned[0].body
+
+    # A fee in a currency the payment's books cannot convert is never guessed at; the
+    # books were fixed when the payment was recorded, so it is acknowledged once told.
+    odd = {**fees, "transaction_id": "txn_notice_gbp", "currency": "gbp"}
+    assert await receive_fees({**event, "fees": odd}) is True
+    assert await receive_fees({**event, "fees": odd}) is True
+    failed = await _fee_notices(session, cid, "notice.online_fee_failed")
+    assert len(failed) == 1
+    assert failed[0].priority == "high" and failed[0].action_url == f"/docs/{eid}"
+    assert failed[0].i18n["params"]["reason"]["message_key"] == "notice.online_fee_failed.currency"
+
+    # The company's fee account cannot take postings: the fee is refused with a notice,
+    # and recorded once the account is fixed and the fee delivered again.
+    r = await client.post("/accounting/accounts", headers=_h(tok), json={
+        "code": "6946", "name": "Old fees", "account_type": "expense", "parent_code": "6000"})
+    assert r.status_code == 200, r.text
+    assert (await client.put("/accounting/posting-accounts/online_payment_fees", headers=_h(tok),
+                             json={"code": "6946"})).status_code == 200
+    from sqlalchemy import update
+    from celerp_accounting.models import Account
+    import uuid
+    await session.execute(update(Account).where(Account.company_id == uuid.UUID(cid), Account.code == "6946")
+                          .values(is_active=False))
+    await session.commit()
+    later = {**fees, "transaction_id": "txn_notice_later"}
+    assert await receive_fees({**event, "fees": later}) is False
+    failed = await _fee_notices(session, cid, "notice.online_fee_failed")
+    assert any(n.i18n["params"]["reason"]["message_key"] == "notice.online_fee_failed.account" for n in failed)
+    assert await _fee_notices(session, cid, "notice.posting_unmapped")
+    assert (await client.put("/accounting/posting-accounts/online_payment_fees", headers=_h(tok),
+                             json={"code": "6940"})).status_code == 200
+    assert await receive_fees({**event, "fees": later}) is True
+
+
+async def _ledger_count(session, cid: str) -> int:
+    import uuid
+    from sqlalchemy import func, select
+    from celerp.models.ledger import LedgerEntry
+    return await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == uuid.UUID(cid)))
+
+
+@pytest.mark.asyncio
+async def test_fee_for_a_deleted_document_is_acknowledged_with_one_notice(client, session, payments_on):
+    """A fee delivered for a document that no longer exists can never be recorded, so it
+    is acknowledged (the relay stops redelivering) and the company is told once, with the
+    amount and the document, to record it by hand. Nothing is posted."""
+    import uuid
+    from sqlalchemy import delete
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_fees
+
+    tok = await _register(client)
+    cid = _company_id(tok)
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_gone_doc",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    eid, event = await _paid_with_fees(client, tok, "pi_gone_doc", fees)
+    await session.execute(delete(Projection).where(
+        Projection.company_id == uuid.UUID(cid), Projection.entity_id == eid))
+    await session.commit()
+    before = await _ledger_count(session, cid)
+
+    assert await receive_fees({**event, "delivery_id": "d1"}) is True
+    assert await receive_fees({**event, "delivery_id": "d1"}) is True
+    failed = await _fee_notices(session, cid, "notice.online_fee_failed")
+    assert len(failed) == 1
+    assert failed[0].priority == "high" and failed[0].action_url is None
+    assert failed[0].i18n["params"]["reason"]["message_key"] == "notice.online_fee_failed.deleted"
+    assert "5.20 USD" in failed[0].body and eid in failed[0].body
+    assert await _ledger_count(session, cid) == before
+
+
+@pytest.mark.asyncio
+async def test_fee_for_a_deleted_payment_is_acknowledged_with_one_notice(client, session, payments_on):
+    """A fee for a payment entry that was deleted from its invoice is acknowledged with
+    one notice and nothing posted; a fee for a payment not yet delivered stays pending."""
+    import uuid
+    from sqlalchemy import select
+    from sqlalchemy.orm.attributes import flag_modified
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_fees
+
+    tok = await _register(client)
+    cid = _company_id(tok)
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_gone_pay",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    eid, event = await _paid_with_fees(client, tok, "pi_gone_pay", fees)
+    assert await receive_fees({**event, "reference": "pi_not_yet"}) is False
+    row = await session.scalar(select(Projection).where(
+        Projection.company_id == uuid.UUID(cid), Projection.entity_id == eid))
+    for p in row.state["payments"]:
+        if p.get("reference") == "pi_gone_pay":
+            p["status"] = "deleted"
+    flag_modified(row, "state")
+    await session.commit()
+    before = await _ledger_count(session, cid)
+
+    assert await receive_fees(event) is True
+    assert await receive_fees(event) is True
+    failed = await _fee_notices(session, cid, "notice.online_fee_failed")
+    assert len(failed) == 1
+    assert failed[0].action_url == f"/docs/{eid}"
+    assert failed[0].i18n["params"]["reason"]["message_key"] == "notice.online_fee_failed.deleted"
+    assert "5.20 USD" in failed[0].body
+    assert await _ledger_count(session, cid) == before
+
+
+@pytest.mark.asyncio
+async def test_fee_for_a_payment_kept_among_the_unmatched_is_acknowledged_with_one_notice(
+        client, session, payments_on):
+    """An invoice already paid by hand parks the online payment among the unmatched
+    payments; its fee can never be recorded on the invoice, so it is acknowledged and the
+    company is told once, with the amount and the payment reference, to record it by hand.
+    Nothing is posted."""
+    from celerp.services.payments import receive_payment, receive_fees
+
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    r = await client.post(f"/docs/{eid}/payment", headers=_h(tok), json={
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1111", "method": "bank_transfer",
+        "reference": "wire1"})
+    assert r.status_code == 200, r.text
+    assert await receive_payment({"company_id": cid, "entity_id": eid, "reference": "pi_parked",
+                                  "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                                  "context": dict(BOOKS), "managed": True}) is True
+    items = (await client.get("/payments/unmatched", headers=_h(tok))).json()["items"]
+    assert [p["reference"] for p in items] == ["pi_parked"]
+    before = await _ledger_count(session, cid)
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_parked",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    event = {"company_id": cid, "entity_id": eid, "reference": "pi_parked", "fees": fees,
+             "occurred_at": PAID.isoformat()}
+
+    assert [await receive_fees(event) for _ in range(3)] == [True, True, True]
+    failed = await _fee_notices(session, cid, "notice.online_fee_failed")
+    assert len(failed) == 1
+    reason = failed[0].i18n["params"]["reason"]
+    assert reason["message_key"] == "notice.online_fee_failed.unmatched"
+    assert reason["params"] == {"reference": "pi_parked"}
+    assert "5.20 USD" in failed[0].body and "pi_parked" in failed[0].body
+    assert await _ledger_count(session, cid) == before
+
+
+@pytest.mark.asyncio
+async def test_fee_for_a_payment_recorded_without_books_is_acknowledged_with_one_notice(
+        client, session, payments_on):
+    """A payment recorded without the bank account or rate its fees need keeps them so;
+    no fix can reach them, so the fee is acknowledged and the company told once."""
+    import uuid
+    from sqlalchemy import select
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_fees
+
+    tok = await _register(client)
+    cid = _company_id(tok)
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_no_books",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    eid, event = await _paid_with_fees(client, tok, "pi_no_books", fees)
+    row = await session.scalar(select(Projection).where(
+        Projection.company_id == uuid.UUID(cid), Projection.entity_id == eid))
+    row.state = {**row.state, "payments": [{**p, "bank_account": None} for p in row.state["payments"]]}
+    await session.commit()
+    before = await _ledger_count(session, cid)
+
+    assert [await receive_fees(event) for _ in range(2)] == [True, True]
+    failed = await _fee_notices(session, cid, "notice.online_fee_failed")
+    assert len(failed) == 1
+    assert failed[0].i18n["params"]["reason"]["message_key"] == "notice.online_fee_failed.books"
+    assert await _ledger_count(session, cid) == before
+
+
+@pytest.mark.asyncio
+async def test_fee_before_its_payment_stays_pending_without_a_notice(client, session, payments_on):
+    """A fee for a document with no payment for the reference and nothing unmatched under
+    it can still be recorded once the payment arrives, so it is not acknowledged."""
+    from celerp.services.payments import receive_fees
+
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_early",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    event = {"company_id": cid, "entity_id": eid, "reference": "pi_early", "fees": fees,
+             "occurred_at": PAID.isoformat()}
+    assert await receive_fees(event) is False
+    assert await _fee_notices(session, cid, "notice.online_fee_failed") == []
+
+
+@pytest.mark.asyncio
+async def test_fee_for_a_company_that_no_longer_exists_is_acknowledged_silently(client, session, payments_on):
+    """A company row that is gone never comes back, so its fee is acknowledged (the relay
+    stops redelivering) with nothing written and nobody to tell."""
+    import uuid
+    from sqlalchemy import func, select
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.notification import Notification
+    from celerp.services.payments import receive_fees
+
+    gone = str(uuid.uuid4())
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_no_company",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    event = {"company_id": gone, "entity_id": "doc:x", "reference": "pi_x",
+             "fees": fees, "occurred_at": PAID.isoformat()}
+    assert await receive_fees(event) is True
+    assert await receive_fees(event) is True
+    assert await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == uuid.UUID(gone))) == 0
+    assert await session.scalar(select(func.count()).select_from(Notification).where(
+        Notification.company_id == uuid.UUID(gone))) == 0

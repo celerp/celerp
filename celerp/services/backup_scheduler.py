@@ -55,9 +55,13 @@ def _seconds_until(target_hour: int, target_minute: int = 0) -> float:
     return (target - now).total_seconds()
 
 
+def db_backup_running() -> bool:
+    return _db_task is not None and not _db_task.done()
+
+
 def next_db_run_utc() -> datetime | None:
     """Return the next scheduled snapshot time (UTC), or None if not running."""
-    if _db_task is None or _db_task.done():
+    if not db_backup_running():
         return None
     from celerp.config import settings
     secs = _seconds_until(settings.backup_hour)

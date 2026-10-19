@@ -159,10 +159,13 @@ def test_prepared_by_limits_say_how_to_fix():
     assert ei.value.detail == {"prepared_by": t("migration.err_prepared_by_one_line", "en")}
 
 
-def test_illegal_action_shows_the_status_label_in_the_user_language(thai):
+def test_illegal_action_names_no_status_the_progress_page_moves_past(thai):
+    """The refusal stays on the run's progress page while its badge moves on, so it says only
+    that the action did not happen, in the user's language."""
     from celerp.services.migrations import _illegal
     err = _illegal("start", SimpleNamespace(status="running"))
-    assert err.detail == t("migration.err_cannot_start", "th", status=t("migration.status.running", "th"))
+    assert err.detail == t("migration.err_cannot_start", "th")
+    assert t("migration.status.running", "th") not in err.detail
 
 
 def test_cutover_before_records_names_the_first_day():

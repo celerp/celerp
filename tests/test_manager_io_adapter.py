@@ -72,15 +72,6 @@ def test_manager_rejects_corrupt_or_non_manager_sqlite(tmp_path):
     with pytest.raises(ScanError, match="damaged"):
         manager.inspect([artifact(damaged)])
 
-    # The older non-SQLite format is recognised as such and the user is told how to resave it.
-    legacy = tmp_path / "old.manager"
-    legacy.write_bytes(b"MNGR|" + b"\x00" * 64)
-    result = manager.detect([artifact(legacy)])
-    assert result.matched is False
-    assert "older Manager format" in (result.reason or "")
-    with pytest.raises(ScanError, match="save it, and upload the saved file"):
-        manager.inspect([artifact(legacy)])
-
     # Not SQLite at all.
     text = tmp_path / "notes.manager"
     text.write_bytes(b"plain text, not a database")
@@ -240,7 +231,7 @@ def test_manager_attachment_handling_is_untrusted_and_reported(tmp_path):
     assert ("Attachment (rejected)", CoverageClass.MAPPED_WITH_LOSS) in {
         (row.source_type, row.coverage_class) for row in manifest.coverage
     }
-    assert len(manifest.bundle.documents) == 7
+    assert len(manifest.bundle.documents) == 8
     assert manifest.source_summary["attachments"]["accepted"] == 1
 
 
@@ -434,7 +425,7 @@ def _cutover_case(tmp_path, *records: Obj):
     for adj in manifest.bundle.inventory_adjustments:
         qty, value = carried_stock.get(adj.item_external_id, (Decimal(0), Decimal(0)))
         carried_stock[adj.item_external_id] = (qty + adj.quantity, value + adj.value)
-    assert carried_stock == {item: held for item, held in stock(book.moves).items() if any(held)}
+    assert carried_stock == {item: held for item, held in stock(book, book.moves).items() if any(held)}
     return manifest, ledger
 
 
@@ -633,7 +624,7 @@ def test_attachments_move_only_to_records_that_hold_files(tmp_path):
     assert "Attachment (rejected)" not in coverage
     rejected = {row["source_external_id"] for row in manifest.source_summary["attachments"]["rejected"]}
     assert rejected == {ref(label) for label in ("AREC", "AFALL", "ATRF", "AJE", "ADN")}
-    assert len(manifest.bundle.documents) == 7
+    assert len(manifest.bundle.documents) == 8
 
 
 # ── Master data fidelity ──────────────────────────────────────────────────────
@@ -683,17 +674,17 @@ def test_an_inactive_item_still_holding_stock_is_imported_available_and_reported
     assert "Archive it in Celerp" in note and "default purchase price" in note
 
 
-def test_exchange_rates_are_reported_as_not_moved_and_stay_out_of_the_manifest(tmp_path):
-    # Celerp has no store of dated exchange rates, and every migrated record is in the base
-    # currency, so a rate table is disclosed at scan time and never handed to a sink.
+def test_exchange_rates_convert_records_and_stay_out_of_the_manifest(tmp_path):
+    # Celerp has no store of dated exchange rates: the table converts the records that store
+    # no rate of their own, each keeps its rate, and the table itself is never handed to a sink.
     objects = [*specs.basic_objects(), specs.obj("ForeignCurrency", "EUR", {1: "Euro", 2: "EUR", 4: 2}),
                specs.obj("ExchangeRate", "RATE1", {1: date(2026, 1, 1), 2: specs.k("EUR"), 6: Decimal("1.2")})]
     art = artifact(write_manager_file(tmp_path / "rates.manager", objects, specs.basic_blobs()))
     manager = adapter()
 
     count, klass, note = _coverage(manager.inspect([art]))["ExchangeRate"]
-    assert (count, klass) == (1, CoverageClass.UNSUPPORTED_NONFINANCIAL)
-    assert "base currency" in note
+    assert (count, klass) == (1, CoverageClass.MAPPED_WITH_LOSS)
+    assert "no rate of their own" in note
 
     manifest = manager.build_manifest([art], FULL)
     assert "exchange_rates" not in type(manifest.bundle).model_fields

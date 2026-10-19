@@ -831,8 +831,8 @@
   "fixed_assets.transfer_other.not_using": "{company} aún no usa activos fijos. Cambie a esa empresa e inicie allí los activos fijos.",
   "fixed_assets.transfer_other.no_rights": "Su rol en {company} no puede gestionar la contabilidad y los activos fijos allí. Su propietario puede darle ambos permisos.",
   "fixed_assets.switch_to": "Cambiar a {company}",
-  "fixed_assets.switched_company": "Esta página se abrió en {page}, pero desde entonces cambió a {now} en otra pestaña, así que no se guardó nada. {switch} para continuar aquí, o recargue esta página para trabajar en {now}.",
-  "fixed_assets.switched_company_gone": "Esta página se abrió en una empresa a la que ya no tiene acceso, así que no se guardó nada. Recargue esta página para trabajar en {now}.",
+  "fixed_assets.switched_company": "Esta página se abrió en {page}, pero desde entonces cambió a {now} en otra pestaña, así que no se guardó nada. {switch} para continuar aquí, o seleccione Reintentar para trabajar en {now}.",
+  "fixed_assets.switched_company_gone": "Esta página se abrió en una empresa a la que ya no tiene acceso, así que no se guardó nada. Seleccione Reintentar para trabajar en {now}.",
   "fixed_assets.transfer_date": "Fecha de transferencia",
   "fixed_assets.transfer_price": "Precio de transferencia",
   "fixed_assets.transfer_price_hint": "En {currency}, lo que la empresa vinculada debe por el activo.",
@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "Recordatorios de mantenimiento, garantía y seguro dentro de su antelación o vencidos. Abra un activo para marcar uno como hecho o aplazarlo.",
   "fixed_assets.reminders_empty": "No hay recordatorios de activos pendientes.",
   "fixed_assets.notice.reminders.title": "Recordatorios de activos",
-  "fixed_assets.notice.reminders.body": "Estos recordatorios de activos vencen:\n{items}"
+  "fixed_assets.notice.reminders.body": "Estos recordatorios de activos vencen:\n{items}",
+  "fixed_assets.err_same_key_new_details": "Este cambio ya se hizo con otros datos. Seleccione Reintentar y empiece de nuevo.",
+  "fixed_assets.err_changed_by_someone": "Lo cambió otra persona. Seleccione Reintentar para verlo.",
+  "fixed_assets.err_no_difference": "No existe esa diferencia. Seleccione Reintentar.",
+  "fixed_assets.err_no_year_end_item": "No existe ese elemento del cierre de ejercicio. Seleccione Reintentar."
 }

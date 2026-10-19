@@ -211,18 +211,9 @@ async def sse_stats() -> dict[str, Any]:
 @router.get("/caches", dependencies=[require_permission("manage_company_settings")])
 async def cache_stats() -> dict[str, Any]:
     """In-process cache state (the drain cache)."""
-    import celerp.services.runtime_state as _rs
+    from celerp.services.runtime_state import drain_cache_status
 
-    now = time.monotonic()
-    drain_entry = None
-    cached = _rs._drain_cache_get()
-    if cached is not None:
-        drain_entry = {
-            "value": cached,
-            "cache_age_s": round(now - _rs._drain_cache_at, 2) if _rs._drain_cache is not None else None,
-        }
-
-    return {"drain_cache": drain_entry}
+    return {"drain_cache": drain_cache_status()}
 
 
 @router.get("/requests", dependencies=[require_permission("manage_company_settings")])

@@ -292,8 +292,8 @@ async def test_a_page_rendered_without_a_key_is_refused_as_out_of_date(client, s
         r = await _page(auth, f"/api/items/{made}/runs/{order}/act", {"action": "start"})
         toast = await _bulk(auth, "start", [order], "")
 
-    assert "This page is out of date. Reload it and try again." in r.text and "flash--error" in r.text
-    assert toast == {"message": "This page is out of date. Reload it and try again.", "type": "error"}
+    assert "This page is out of date. Select Try again." in r.text and "flash--error" in r.text
+    assert toast == {"message": "This page is out of date. Select Try again.", "type": "error"}
     assert await _settled(session, auth) == events
 
 

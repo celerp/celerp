@@ -2095,9 +2095,7 @@ async def purge_module_data(
     except DBAPIError as exc:
         if sqlstate(exc) != "55P03":
             raise
-        raise HTTPException(status_code=409, detail=(
-            "Could not purge while a company backup or restore is running. "
-            "Nothing was deleted. Try again when it finishes.")) from None
+        raise HTTPException(status_code=409, detail=t("company.err_purge_copy_running")) from None
     pkg_path = resolve_module_path(module_name)
     if pkg_path is None:
         raise HTTPException(status_code=404, detail=t("company.err_module_not_found"))

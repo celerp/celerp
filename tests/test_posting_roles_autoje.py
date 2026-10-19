@@ -82,8 +82,8 @@ async def test_reconcile_never_creates_an_account_and_changes_nothing_when_run_a
 
     unmapped = await reconcile_company(session, cid)
     first = dict((await session.get(Company, cid)).settings)
-    # The unguessed roles (work in progress, the consignor payable, the fixed asset roles)
-    # take their seeded accounts only when Celerp has just created them.
+    # The unguessed roles (work in progress, the consignor payable, online payment fees, the
+    # fixed asset roles) take their seeded accounts only when Celerp has just created them.
     assert set(unmapped) == {"landed_freight", *(r.value for r in UNGUESSED_ROLES)}
     assert "landed_freight" not in first[ROLES_KEY]
     assert await reconcile_company(session, cid) == unmapped

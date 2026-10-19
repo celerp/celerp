@@ -14,13 +14,13 @@
           <input type="date" name="from" value="2026-01-01" max="2026-03-31" id="dfb-from" class="date-input">
 <span class="date-sep">--</span>          <input type="date" name="to" value="2026-03-31" min="2026-01-01" id="dfb-to" class="date-input">
 <button type="submit" class="btn btn--secondary btn--sm">Apply</button><script>(function(){var f=document.getElementById('dfb-from'),t=document.getElementById('dfb-to');if(!f||!t)return;f.addEventListener('change',function(){if(f.value)t.min=f.value;});t.addEventListener('change',function(){if(t.value)f.max=t.value;});})();</script></form><a href="/settings/general?tab=company" class="settings-gear" title="Related settings">⚙</a>      </div>
-<a href="/reports/trial-balance?from=2026-01-01&amp;to=2026-03-31" class="btn btn--ghost btn--sm">← Trial Balance</a>    </div>
+<a href="/reports/trial-balance?from=2026-01-01&amp;to=2026-03-31" class="btn btn--ghost btn--sm">Trial Balance</a>    </div>
     <table class="data-table">
       <thead>
         <tr>
           <th>Date</th>
           <th>Ref</th>
-          <th>Type</th>
+          <th>Description</th>
           <th class="cell--number">Debit</th>
           <th class="cell--number">Credit</th>
           <th class="cell--number">Balance</th>
@@ -64,7 +64,7 @@
         </tr>
         <tr>
           <td class="cell--mono">2026-02-15</td>
-          <td></td>
+          <td>--</td>
           <td>Late delivery charge</td>
           <td class="cell--number">฿15.00</td>
           <td class="cell--number"></td>

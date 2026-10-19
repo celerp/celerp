@@ -90,6 +90,9 @@ a:hover { text-decoration: underline; }
 .auth-title { font-size: 20px; font-weight: 600; color: var(--c-text); }
 .auth-subtitle { font-size: 12px; color: var(--c-text2); margin-top: 6px; overflow-wrap: anywhere; }
 .auth-form { display: flex; flex-direction: column; gap: 16px; }
+.secret-input { display: flex; align-items: center; gap: 6px; }
+.secret-input input { flex: 1; min-width: 0; }
+.connector-action-area .secret-input { flex: 1; min-width: 260px; }
 .auth-footer-text { font-size: 12px; color: var(--c-text2); text-align: center; margin-top: 8px; }
 .auth-link { color: var(--c-accent); }
 .auth-alt-action { font-size: 13px; color: var(--c-text2); text-align: center; margin-top: 12px; }
@@ -124,6 +127,16 @@ a:hover { text-decoration: underline; }
 
 /* ─── Auth card wide variant ──────────────────────────────────────────── */
 .auth-card--wide { max-width: 520px; }
+
+/* ─── Wizard steps ────────────────────────────────────────────────────── */
+.wizard-steps { display: flex; gap: 0; margin-bottom: 28px; overflow: hidden; }
+.wizard-step { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.wizard-step:not(:last-child)::after { content: ""; flex: 1; height: 1px; background: var(--c-border); margin: 0 6px; min-width: 8px; }
+.step-num { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text2); flex-shrink: 0; }
+.step-num--active { background: var(--c-accent); border-color: var(--c-accent); color: #fff; }
+.step-num--done { background: var(--c-green); border-color: var(--c-green); color: #fff; }
+.step-label { font-size: 11px; color: var(--c-text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.step-label--active { color: var(--c-text); font-weight: 600; }
 
 /* ─── Form extras ─────────────────────────────────────────────────────── */
 .form-textarea { resize: vertical; min-height: 72px; line-height: 1.5; font-family: inherit; }
@@ -161,9 +174,27 @@ a:hover { text-decoration: underline; }
 .migration-wizard form:has(input[name="mode"][value="full_history"]:checked) .cutover-date { display: none; }
 /* The wizard card has a fixed width, so its tables fill the card (not the base max-content)
    and their text wraps between words (a coverage note, a check label) instead of pushing
-   the table past the card. Figures never wrap. */
+   the table past the card. Figures and dates never wrap. */
 .migration-wizard .data-table { margin-bottom: 16px; width: 100%; }
-.migration-wizard .data-table td:not(.cell--number, .cell--money) { white-space: normal; overflow-wrap: break-word; }
+.migration-wizard > p + :is(form, .table-scroll-wrap) { margin-top: 16px; }
+.migration-wizard .data-table td:not(.cell--number, .cell--money, .cell--date) { white-space: normal; overflow-wrap: break-word; }
+/* Client companies: reasons wrap in their cell; the filters keep their own width. */
+#firm-view .data-table { width: 100%; }
+#firm-view .data-table td.firm-view-attention { white-space: normal; overflow-wrap: break-word; }
+.export-requests { display: flex; flex-direction: column; gap: 12px; margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--c-border); }
+.export-requests > * { margin: 0; }
+#copies-list { margin-bottom: 16px; }
+#accountant-access-form { margin: 16px 0 24px; }
+#accountant-access-grants .data-table { width: 100%; }
+#accountant-access-grants .data-table td.grant-scopes { white-space: normal; overflow-wrap: break-word; padding-block: 6px; }
+#sync-accounts .data-table { width: 100%; }
+#sync-accounts .data-table td { white-space: normal; overflow-wrap: break-word; padding-block: 6px; }
+#sync-accounts .data-table td:first-child { white-space: nowrap; }
+#sync-accounts .data-table td .flex-row { flex-wrap: wrap; }
+#sync-accounts .data-table td .combobox-wrap { min-width: 12rem; max-width: 16rem; }
+#firm-view .firm-view-actions { flex-wrap: wrap; }
+.firm-view-filters { margin-bottom: 12px; }
+.firm-view-filters select { width: auto; }
 
 /* ─── Sidebar ─────────────────────────────────────────────────────────── */
 .sidebar {
@@ -581,7 +612,7 @@ th.cell--number { font-family: inherit; }
 .badge--invoice { background: rgba(14,165,122,0.12); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.3); }
 .badge--purchase-order, .badge--purchase_order { background: rgba(249,115,22,0.12); color: var(--c-orange); border: 1px solid rgba(249,115,22,0.3); }
 .badge--paused { background: rgba(234,179,8,0.12); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
-.badge--warning { background: rgba(234,179,8,0.12); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
+.badge--warning, .badge--soon { background: rgba(234,179,8,0.12); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
 .badge--alert, .badge--danger, .badge--error { background: rgba(239,68,68,0.12); color: var(--c-red); border: 1px solid rgba(239,68,68,0.3); }
 .badge--asset { background: rgba(14,165,122,0.12); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.3); }
 .badge--liability { background: rgba(249,115,22,0.12); color: var(--c-orange); border: 1px solid rgba(249,115,22,0.3); }
@@ -1588,7 +1619,9 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
   /* Hide chrome */
   .sidebar, .topbar, .brand-footer,
   .doc-actions, .payment-section, .refund-section, .receive-section,
-  .btn, button, .sidebar-toggle { display: none !important; }
+  .btn, button, .sidebar-toggle, .export-print-link { display: none !important; }
+  /* Controls and columns that only work on screen, such as filters and row actions */
+  .screen-only { display: none !important; }
 
   /* Remove shell layout so doc fills page */
   .app-shell, .content-area, .main-content { display: block !important; }
@@ -1913,6 +1946,8 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .doc-section .section-icon { font-size: 14px; }
 .doc-section .section-title { font-size: 13px; font-weight: 600; color: var(--c-text); margin: 0; text-transform: none; letter-spacing: 0; }
 .doc-section .form-group { padding: 8px 14px; display: flex; flex-direction: row; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* A read-only value starts where the text of an editable cell does (its padding plus border). */
+.doc-section .form-group > .meta-value { padding-inline: 7px; }
 .doc-section .form-label { font-size: 12px; color: var(--c-text2); min-width: 100px; }
 
 /* Two-column rows */
@@ -3071,7 +3106,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 }
 .connector-step { margin-bottom: 4px; }
 
-.connector-connected-details { margin-bottom: 14px; }
+.connector-connected-details { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 14px; }
 .connector-meta-row {
   display: flex;
   align-items: center;
@@ -3397,6 +3432,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .toast__msg { white-space: pre-line; min-width: 0; overflow-wrap: anywhere; }
 .toast--error { background: #fef2f2; border: 1px solid rgba(239,68,68,0.4); color: #b91c1c; }
 .toast--success { background: #f0fdf4; border: 1px solid rgba(34,197,94,0.4); color: #15803d; }
+.toast--warning { background: #fefce8; border: 1px solid rgba(234,179,8,0.4); color: #92710a; }
 .toast--info { background: var(--c-bg-alt, #f8f9fa); border: 1px solid var(--c-border); color: var(--c-text); }
 .toast__action { color: inherit; font-weight: 600; text-decoration: underline; flex-shrink: 0; }
 .toast__close { margin-left: auto; background: none; border: none; cursor: pointer; font-size: 1.1rem; line-height: 1; padding: 0; opacity: 0.6; flex-shrink: 0; }

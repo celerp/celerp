@@ -831,8 +831,8 @@
   "fixed_assets.transfer_other.not_using": "{company} ainda não usa ativos imobilizados. Mude para essa empresa e inicie lá os ativos imobilizados.",
   "fixed_assets.transfer_other.no_rights": "A sua função em {company} não pode gerir a contabilidade e os ativos imobilizados. O proprietário pode dar ambos à sua função.",
   "fixed_assets.switch_to": "Mudar para {company}",
-  "fixed_assets.switched_company": "Esta página foi aberta em {page}, mas entretanto mudou para {now} noutro separador, por isso nada foi guardado. {switch} para continuar aqui, ou recarregue esta página para trabalhar em {now}.",
-  "fixed_assets.switched_company_gone": "Esta página foi aberta numa empresa a que já não tem acesso, por isso nada foi guardado. Recarregue esta página para trabalhar em {now}.",
+  "fixed_assets.switched_company": "Esta página foi aberta em {page}, mas entretanto mudou para {now} noutro separador, por isso nada foi guardado. {switch} para continuar aqui, ou selecione Tentar novamente para trabalhar em {now}.",
+  "fixed_assets.switched_company_gone": "Esta página foi aberta numa empresa a que já não tem acesso, por isso nada foi guardado. Selecione Tentar novamente para trabalhar em {now}.",
   "fixed_assets.transfer_date": "Data da transferência",
   "fixed_assets.transfer_price": "Preço de transferência",
   "fixed_assets.transfer_price_hint": "Em {currency}, o valor que a empresa relacionada deve pelo ativo.",
@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "Lembretes de manutenção, garantia e seguro dentro da antecedência, ou vencidos. Abra um ativo para marcar como feito ou adiar.",
   "fixed_assets.reminders_empty": "Nenhum lembrete de ativo pendente.",
   "fixed_assets.notice.reminders.title": "Lembretes de ativos",
-  "fixed_assets.notice.reminders.body": "Estes lembretes de ativos vencem:\n{items}"
+  "fixed_assets.notice.reminders.body": "Estes lembretes de ativos vencem:\n{items}",
+  "fixed_assets.err_same_key_new_details": "Esta alteração já foi feita com outros dados. Selecione Tentar novamente e comece de novo.",
+  "fixed_assets.err_changed_by_someone": "Alterado por outra pessoa. Selecione Tentar novamente para ver.",
+  "fixed_assets.err_no_difference": "Essa diferença não existe. Selecione Tentar novamente.",
+  "fixed_assets.err_no_year_end_item": "Esse item de fim de ano não existe. Selecione Tentar novamente."
 }

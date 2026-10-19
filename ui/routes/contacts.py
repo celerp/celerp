@@ -439,11 +439,6 @@ def _people_section(contact: dict) -> FT:
     )
 
 
-def _reload_contact_link(contact_id: str) -> FT:
-    """Try again: a plain link to the contact page, a full reload (the desktop app has no reload control)."""
-    return A(t("btn.try_again"), href=f"/contacts/{contact_id}", cls="btn btn--secondary btn--sm")
-
-
 def _tab_bar(cid: str, active: str = "documents", lead_tabs: list | None = None, reload_documents: bool = False) -> FT:
     """HTMX-driven tab bar for Documents / Notes / Activity. lead_tabs prepends extra (key, label, href)
     tabs (e.g. the company's Files tab, which loads a different route than /contacts/{cid}/tab/{key}).
@@ -1177,9 +1172,8 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             # A missing contact is final, so the API's own sentence stands alone; only a
-            # temporary failure is worth "reload to try again".
-            body = str(e.detail) if e.status == 404 else (
-                t("msg.contact_load_failed", detail=str(e.detail)), " ", _reload_contact_link(contact_id))
+            # temporary failure is worth Try again (the shell adds the button).
+            body = str(e.detail) if e.status == 404 else t("msg.contact_load_failed", detail=str(e.detail))
             return await base_shell(
                 breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.customers"), "/contacts/customers")]),
                 page_header(t("page.contact_detail")),
@@ -1195,8 +1189,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             docs = []
             docs_error = files_error_block(
-                (t("msg.contact_documents_load_failed", detail=str(e.detail)), " ", _reload_contact_link(contact_id)),
-                e.status)
+                t("msg.contact_documents_load_failed", detail=str(e.detail)), e.status)
         try:
             vocab = await api.get_contact_tags_vocabulary(token)
         except Exception:

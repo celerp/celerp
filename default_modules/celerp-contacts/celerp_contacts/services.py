@@ -12,8 +12,12 @@ from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.importers.results import ImportOutcome, failure_reason
 from celerp.models.projections import Projection
 from celerp.services.currencies import require_currency_code
+from celerp.services.peer_import import SourceRevision
 
 CONTACT_CREATED = "crm.contact.created"
+_NULLABLE_CONTACT_FIELDS = frozenset({
+    "company_name", "email", "phone", "billing_address", "shipping_address", "currency",
+})
 
 
 class CRMImportRecord(BaseModel):
@@ -23,6 +27,7 @@ class CRMImportRecord(BaseModel):
     source: str
     idempotency_key: str
     source_ts: str | None = None
+    source_revision: SourceRevision = None  # a connected company's records only
 
 
 def contact_import_identity(data: dict) -> str:
@@ -54,6 +59,7 @@ async def import_contact_records(
     records: Sequence[CRMImportRecord],
     *,
     match_identity: bool,
+    allow_null_updates: bool = False,
 ) -> ImportOutcome:
     """Create each imported contact, or update the contact it already is.
 
@@ -101,7 +107,8 @@ async def import_contact_records(
             if candidates:
                 contact_id = candidates.pop()
                 state = states[contact_id]
-                incoming = {k: v for k, v in rec.data.items() if v is not None}
+                incoming = {k: v for k, v in rec.data.items()
+                            if v is not None or (allow_null_updates and k in _NULLABLE_CONTACT_FIELDS)}
                 if "contact_type" in incoming:
                     incoming["contact_type"] = _imported_type(state.get("contact_type"), incoming["contact_type"])
                 changes = {k: {"old": state.get(k), "new": v} for k, v in incoming.items() if state.get(k) != v}

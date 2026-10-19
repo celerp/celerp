@@ -267,6 +267,25 @@ def to_base(amount: _MoneyInput, rate: _MoneyInput, base_currency: str) -> float
     return to_stored_float(round_money(to_decimal(amount) * to_decimal(rate), base_currency))
 
 
+def split_to_base(amounts: list[_MoneyInput], rate: _MoneyInput, base_currency: str) -> list[Decimal]:
+    """Several document-currency parts in the books' currency, summing to the converted whole.
+
+    Each part takes the rounded conversion of everything up to it less the rounded
+    conversion of what came before it, so the parts always add up to the total
+    converted once (to_base of the sum), and no part drifts by more than one unit.
+    """
+    rate = to_decimal(rate)
+    out: list[Decimal] = []
+    running = Decimal(0)
+    before = Decimal(0)
+    for amount in amounts:
+        running += to_decimal(amount)
+        upto = round_money(running * rate, base_currency)
+        out.append(upto - before)
+        before = upto
+    return out
+
+
 def allocate_pro_rata(amount: _MoneyInput, weights: list[Decimal], currency: str) -> list[Decimal]:
     """Split amount across weights in proportion, in whole units of the currency (cents).
 

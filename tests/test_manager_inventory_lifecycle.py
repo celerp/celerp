@@ -238,8 +238,8 @@ async def test_manager_single_default_location_imports_with_exact_item_location_
 # Worked out by hand in the spec's docstring, never read back from the adapter.
 
 GAD = ref("GAD")
-ORACLE = {WID: (D("9"), D("29.71")), GAD: (D("2"), D("14.00"))}
-ORACLE_OPENING = {WID: (D("17"), D("55.66")), GAD: (D("3"), D("21.00"))}
+ORACLE = {WID: (D("9"), D("29.00")), GAD: (D("2"), D("14.00"))}
+ORACLE_OPENING = {WID: (D("17"), D("55.50")), GAD: (D("3"), D("21.00"))}
 ORACLE_MODES = [
     (FULL, {"mode": "full_history"}),
     (MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=specs.ORACLE_CUTOVER),
@@ -379,7 +379,14 @@ async def test_manager_source_oracle_independent_of_manifest_decode(real_engine,
 
     run, _ = await migrate(real_engine, INVENTORY.read_bytes(), "lifecycle.manager", {"mode": "full_history"},
                            monkeypatch, tmp_path)
-    assert run.status == "failed"
+    # Exact source-to-target mismatches remain visible but require explicit review;
+    # no mismatched import is activated automatically.
+    assert run.status == "ready_to_finalize"
+    from celerp.models.company import Company
+    from migration_support import maker
+    async with maker(real_engine)() as s:
+        company = await s.get(Company, run.company_id)
+        assert company.is_migration_staged and not company.is_active
     failing = {(r["check"], r["key"], D(r["source"])) for r in run.reconciliation["rows"] if r["result"] == "fail"}
     assert {("inventory_quantity", WID, HELD[0]), ("inventory_value", WID, HELD[1])} <= failing
 
@@ -396,7 +403,7 @@ def test_manager_physical_quantity_differs_from_financial_document(oracle):
         so1, bo1, bo3 = documents[ref("SO1")], documents[ref("BO1")], documents[ref("BO3")]
         assert [(ln.item_external_id, ln.quantity) for ln in so1.line_items] == [(WID, D("7")), (GAD, D("2"))]
         assert so1.total == D("127.50")
-        assert [(q, v) for _, _, _, q, v in _links(so1)] == [(D("5"), D("15.94"))]
+        assert [(q, v) for _, _, _, q, v in _links(so1)] == [(D("5"), D("16.00"))]
         assert [(q, v) for _, _, _, q, v in _links(so1, GAD)] == [(D("2"), D("14.00"))]
         assert [(ln.item_external_id, ln.quantity) for ln in bo1.line_items] == [(WID, D("10")), (GAD, D("4"))]
         assert [(m, q) for m, _, _, q, _ in _links(bo1, GAD)] == [(ref("GRO1"), D("3")), (ref("GRO2"), D("1"))]
@@ -428,7 +435,7 @@ async def test_manager_no_double_count_invoice_and_delivery(real_engine, monkeyp
     move its own stock: never on both, and never on an invoice a delivery note fulfils."""
     manifest = _manifest(oracle)
     assert _sources(manifest) == _adjustment_sources(["GRO1", "GRA", "BO2", "DNA", "GRO2", "DNO1", "SO2"])
-    assert _adjusted(manifest, -1) == {WID: (D("-9"), D("-29.29")), GAD: (D("-2"), D("-14.00"))}
+    assert _adjusted(manifest, -1) == {WID: (D("-9"), D("-30.00")), GAD: (D("-2"), D("-14.00"))}
 
     run, maps, items = await _migrated_stock(real_engine, monkeypatch, tmp_path, oracle, {"mode": "full_history"})
     assert _sold(maps, items) == {("SO1", "WID-1"): D("5"), ("SO1", "GAD-1"): D("2"), ("SO2", "WID-1"): D("3"),
@@ -472,14 +479,14 @@ def test_manager_cutover_delivery_receipt_straddling_cutover(oracle):
         specs.ORACLE_CUTOVER}
     assert _moves(manifest) == [
         ("GoodsReceipt", f"{ref('GRO2')}:stock:1", date(2026, 2, 7), GAD, D("1"), D("7.00")),
-        ("DeliveryNote", f"{ref('DNO1')}:stock:1", date(2026, 2, 7), WID, D("-5"), D("-15.94")),
+        ("DeliveryNote", f"{ref('DNO1')}:stock:1", date(2026, 2, 7), WID, D("-5"), D("-16.00")),
         ("DeliveryNote", f"{ref('DNO1')}:stock:2", date(2026, 2, 7), GAD, D("-2"), D("-14.00")),
-        ("SalesInvoice", f"{ref('SO2')}:stock:1", date(2026, 2, 8), WID, D("-3"), D("-10.01")),
+        ("SalesInvoice", f"{ref('SO2')}:stock:1", date(2026, 2, 8), WID, D("-3"), D("-10.50")),
     ]
     documents = _documents(manifest)
     assert _links(documents[ref("BO1")], GAD) == [(ref("GRO1"), "2026-02-03", 1, D("3"), D("21.00")),
                                                   (ref("GRO2"), "2026-02-07", 1, D("1"), D("7.00"))]
     assert _links(documents[ref("BO4")]) == [(ref("GRA"), "2026-02-04", 0, D("2"), D("8.00"))]
-    assert _links(documents[ref("SO1")]) == [(ref("DNO1"), "2026-02-07", 0, D("5"), D("15.94"))]
-    assert _links(documents[ref("SO3")]) == [(ref("DNA"), "2026-02-05", 0, D("1"), D("3.34"))]
+    assert _links(documents[ref("SO1")]) == [(ref("DNO1"), "2026-02-07", 0, D("5"), D("16.00"))]
+    assert _links(documents[ref("SO3")]) == [(ref("DNA"), "2026-02-05", 0, D("1"), D("3.50"))]
     assert _held(manifest) == ORACLE

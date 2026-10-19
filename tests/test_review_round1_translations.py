@@ -58,7 +58,7 @@ async def test_changing_a_deleted_account_is_refused_in_the_users_language(sessi
     finally:
         set_lang("en")
     assert th_text != en_text
-    assert "Refresh the page" in en_text
+    assert "Select Try again" in en_text
 
 
 @pytest.mark.asyncio
@@ -115,7 +115,7 @@ async def test_undoing_a_merge_of_an_unknown_item_is_refused_in_the_users_langua
     r = await client.post(f"/items/{missing_id}/undo-merge", headers=auth["headers"])
     assert r.status_code == 404, r.text
     en_text = r.json()["detail"]
-    assert "Refresh the page" in en_text
+    assert "Select Try again" in en_text
 
     client.cookies.set("celerp_lang", "th")
     r = await client.post(f"/items/{missing_id}/undo-merge", headers=auth["headers"])

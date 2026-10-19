@@ -48,6 +48,7 @@ _XX = {
     "settings_accounting.finance_settings": "XX_FINANCE",
     "settings_accounting.period_lock_help": "XX_PLHELP",
     "settings_accounting.currently_locked_through": "XX_LOCKED {lock_date} {updated}",
+    "settings_accounting.firm_lock": "XX_FIRMLOCK {firm} {date}",
     "settings_accounting.close_year_confirm": "XX_CONFIRM",
     "settings_accounting.delete_rule_confirm": "XX_DELRULE",
     "settings_accounting.ph_match_pattern": "XX_PHPATTERN",
@@ -110,6 +111,25 @@ def test_period_lock_tab_translates_help_and_interpolates_status():
     assert "XX_LOCKED" in html       # currently-locked message, interpolated
     assert "2026-01-01" in html      # the interpolated lock date
     assert "XX_CONFIRM" in html      # close-year confirm attribute
+
+
+def test_period_lock_tab_says_which_accountant_holds_a_lock():
+    """A lock the accountant sent is named with its firm and date, so the client knows where
+    it came from before choosing Unlock; with none, nothing is said."""
+    lock = {"lock_date": "2026-06-30", "firm_lock": {"firm": "Harbor Bookkeeping", "date": "2026-06-30"}}
+    assert "XX_FIRMLOCK Harbor Bookkeeping 2026-06-30" in to_xml(_period_lock_tab(lock))
+    assert "XX_FIRMLOCK" not in to_xml(_period_lock_tab({"lock_date": "2026-06-30", "firm_lock": None}))
+
+
+def test_period_lock_help_matches_the_on_or_before_field():
+    import json
+    from pathlib import Path
+    for path in sorted((Path(i18n.__file__).parent / "locales").glob("*.json")):
+        catalog = json.loads(path.read_text(encoding="utf-8"))
+        assert "{firm}" in catalog["settings_accounting.firm_lock"], path.name
+    help_en = json.loads((Path(i18n.__file__).parent / "locales" / "en.json").read_text())[
+        "settings_accounting.period_lock_help"]
+    assert help_en.startswith("Lock all transactions on or before a date."), help_en
 
 
 def test_account_form_translates_type_and_status_options():

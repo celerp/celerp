@@ -84,6 +84,7 @@ from celerp.modules import requirements
 from celerp.modules.registry import set_enabled
 from celerp.services import attachments
 from celerp.services import migration_scan_store as store
+from celerp.services import migration_templates
 from celerp.services import posting_readiness
 from celerp.services.auth import first_usable_company_link, normalize_role
 from celerp.services.company_files import delete_company_data
@@ -347,7 +348,6 @@ def scan_view(scan: store.ScanSession) -> dict:
         "display_name": adapter.display_name if adapter else s.source_system,
         "file_name": ", ".join(a.original_name for a in scan.artifacts),
         "size_bytes": sum(a.size_bytes for a in scan.artifacts),
-        "sha256_short": scan.artifacts[0].sha256[:12],
         "source_schema_version": s.source_schema_version,
         "company_name": s.company_name,
         "base_currency": s.base_currency,
@@ -411,7 +411,7 @@ async def started_run_id(session: AsyncSession, claim: str, user_id: uuid.UUID) 
 
 
 def _illegal(action: str, run: MigrationRun) -> MigrationError:
-    return MigrationError(409, t(f"migration.err_cannot_{action}", status=t(f"migration.status.{run.status}")))
+    return MigrationError(409, t(f"migration.err_cannot_{action}"))
 
 
 def staged_settings(modules: Sequence[str]) -> dict:
@@ -918,6 +918,29 @@ def _row(expectation: ReconciliationExpectation, actual: Decimal | None) -> dict
     return row
 
 
+def _measured(row: dict) -> bool:
+    """A failed check with real figures on both sides, as opposed to one that could not be measured."""
+    try:
+        return (
+            row.get("celerp") is not None
+            and Decimal(str(row["difference"])).is_finite()
+            and Decimal(str(row["difference"])) != 0
+            and Decimal(str(row["source"])).is_finite()
+            and Decimal(str(row["celerp"])).is_finite()
+        )
+    except (ValueError, TypeError, KeyError, ArithmeticError):
+        return False
+
+
+def reviewable_differences(report: dict) -> bool:
+    """Only measured mismatches may be accepted after explicit review.
+
+    Missing measurements or corrupt rows cannot be waived by a checkbox.
+    """
+    failures = [row for row in report.get("rows", []) if row.get("result") == "fail"]
+    return bool(failures) and len(failures) == report.get("blockers") and all(map(_measured, failures))
+
+
 async def _verification(session: AsyncSession, run: MigrationRun) -> dict:
     """Compare the source's own figures with what Celerp now holds. Raises on a provider failure."""
     adapter, artifacts, decisions = await asyncio.to_thread(_source, run)
@@ -979,18 +1002,21 @@ async def _reconcile_run(maker, run_id: uuid.UUID, state: dict, expected: list[t
             return
         await s.rollback()  # measurement only; nothing it read is kept locked
         run = await s.get(MigrationRun, run_id, with_for_update=True, populate_existing=True)
-        passed = report["blockers"] == 0
+        ready = report["blockers"] == 0 or reviewable_differences(report)
         state[_P.RECONCILIATION.value] = {**_phase_entry(state, _P.RECONCILIATION),
-                                          "status": "done" if passed else "failed"}
-        if passed:
+                                          "status": "done" if ready else "failed"}
+        if ready:
             state[_P.READY_TO_FINALIZE.value] = {**_phase_entry(state, _P.READY_TO_FINALIZE), "status": "done"}
         run.phase_state = dict(state)
         run.reconciliation = report
-        run.current_phase = (_P.READY_TO_FINALIZE if passed else _P.RECONCILIATION).value
-        if not passed:
-            run.error_summary = {"phase": _P.RECONCILIATION.value, "batch_cursor": 0, "error_class": "Mismatch",
-                                 "message": f"{report['blockers']} verification check(s) do not match the source."}
-        await _set_status(s, run, _S.READY_TO_FINALIZE if passed else _S.FAILED)
+        run.current_phase = (_P.READY_TO_FINALIZE if ready else _P.RECONCILIATION).value
+        run.error_summary = {} if ready else {
+            "phase": _P.RECONCILIATION.value, "batch_cursor": 0, "error_class": "Mismatch",
+            "message_key": "migration.err_unmeasured",
+            "params": {"n": report["blockers"] - sum(1 for row in report.get("rows", [])
+                                                     if row.get("result") == "fail" and _measured(row))},
+        }
+        await _set_status(s, run, _S.READY_TO_FINALIZE if ready else _S.FAILED)
         await s.commit()
 
 
@@ -1005,25 +1031,35 @@ async def is_company_migration_staged(session: AsyncSession, company_id: uuid.UU
     return bool(await session.scalar(select(Company.is_migration_staged).where(Company.id == company_id)))
 
 
-async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: dict | None = None) -> MigrationRun:
+async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: dict | None = None,
+                   *, reviewed_by: User | None = None) -> MigrationRun:
     """Re-check verification under the company lock, then set the posting accounts
     (``posting_readiness.apply_choices`` with ``posting_accounts``), install the source's
     lock date and activate the company in one commit, so the company never becomes normal
     without its lock or the accounts its workflows post to. Migrated stock recording no
-    inventory account is placed in the same commit (lot_origin.place_company_stock)."""
+    inventory account is placed in the same commit (lot_origin.place_company_stock).
+    Measured differences finish only with ``reviewed_by``, whose name and the time are kept
+    in the verification report and the pack. The accounts chosen are saved for the
+    creator's next client from the same source (``migration_templates.remember``)."""
     await _lock_run(session, run)
     if run.status != _S.READY_TO_FINALIZE:
         raise _illegal("finalize", run)
     run_id = run.id  # read before a rollback expires the row
     try:
         report = await _verification(session, run)
-        if report["blockers"]:
+        # Approval applies to the exact figures shown, never a changed set of numbers.
+        if report["blockers"] and (
+            report.get("rows") != (run.reconciliation or {}).get("rows")
+            or not reviewable_differences(report)
+        ):
             run.reconciliation = report
             await session.commit()
             raise MigrationError(409, t("migration.err_verification_stale"))
+        if report["blockers"] and reviewed_by is None:
+            raise MigrationError(409, t("migration.err_review_differences"))
         company = await session.get(Company, run.company_id)
         try:
-            await posting_readiness.apply_choices(session, run.company_id, posting_accounts)
+            chosen = await posting_readiness.apply_choices(session, run.company_id, posting_accounts)
         except posting_readiness.ReadinessError as exc:
             await session.rollback()
             raise MigrationError(409, exc.detail) from None
@@ -1032,7 +1068,11 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
             write_period_lock(company, run.source_lock_date.isoformat(), run.created_by_user_id)
         company.is_active = True
         company.is_migration_staged = False
+        if report["blockers"]:
+            report["reviewed_differences"] = {"by": reviewed_by.name or reviewed_by.email,
+                                              "at": datetime.now(timezone.utc).isoformat()}
         await place_company_stock(session, run.company_id)
+        await migration_templates.remember(session, run, chosen)
         run.reconciliation = report
         run.status = _S.COMPLETED.value
         run.current_phase = _P.READY_TO_FINALIZE.value
@@ -1230,10 +1270,13 @@ def _error_view(run: MigrationRun) -> dict | None:
     """What the owner is told about a failure: the message and the records it names, never
     the exception, cursor or module behind it."""
     summary = run.error_summary or {}
-    if not summary.get("message"):
+    # A keyed message is worded at read time, in the reader's language.
+    message = (t(summary["message_key"], **summary.get("params", {})) if summary.get("message_key")
+               else summary.get("message"))
+    if not message:
         return None
     phase = summary.get("phase")
-    return {"message": summary["message"], "missing": summary.get("missing"),
+    return {"message": message, "missing": summary.get("missing"),
             "phase": PHASE_LABELS.get(_P(phase)) if phase in _P._value2member_map_ else None}
 
 
@@ -1262,6 +1305,7 @@ async def run_view(session: AsyncSession, run: MigrationRun) -> dict:
         "prepared_by": run.prepared_by,
         "is_bootstrap_run": bool(run.source_summary.get("bootstrap")),
         "is_sample": bool(run.source_summary.get("sample")),
+        "saved_answers": bool(await migration_templates.answers(session, run.created_by_user_id, run.source_system)),
     }
 
 
@@ -1331,6 +1375,10 @@ def reconciliation_pack_csv(run: MigrationRun) -> str:
     ):
         writer.writerow([label, value])
     writer.writerow([])
+    if review := report.get("reviewed_differences"):
+        writer.writerow(["Differences reviewed by", csv_safe(review["by"])])
+        writer.writerow(["Reviewed at", review["at"]])
+        writer.writerow([])
     # What was carried with loss or not moved, so the pack records it beside the checks.
     losses = [e for e in (run.coverage or {}).get("entries", []) if e["coverage_class"] in _PACK_LOSSES]
     if losses:
