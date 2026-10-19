@@ -584,13 +584,15 @@ async def proxy_attachment(request: Request, path: str) -> Response:
 
 @app.route("/static/try-again/{lang}.js")
 async def try_again_pattern_js(request: Request, lang: str) -> Response:
-    # Versioned by content in its address (client_scripts), so it can be kept for good.
-    from ui.components.shell import try_again_script
+    # Versioned by content in its address (client_scripts), so it is kept for good, but only
+    # under the version of what it serves: an address from before a restart gets it uncached.
+    from ui.components.shell import try_again_script, try_again_version
     from ui.i18n import available_langs
     if lang not in available_langs():
         return Response(status_code=404)
+    current = request.query_params.get("v") == try_again_version(lang)
     return Response(try_again_script(lang), media_type="application/javascript",
-                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
+                    headers={"Cache-Control": "public, max-age=31536000, immutable" if current else "no-store"})
 
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 

@@ -2024,13 +2024,17 @@ def _js_value(value) -> str:
 
 
 def try_again_script(lang: str) -> str:
-    """The script behind try_again_script_src: which messages get the Try again button, in *lang*."""
+    """The script behind _try_again_script_src: which messages get the Try again button, in *lang*."""
     return f"window.__celerpTryAgainPattern = {_js_value(try_again_pattern(lang))};"
 
 
+def try_again_version(lang: str) -> str:
+    """The version in the Try again script's address: it changes whenever the script does."""
+    return hashlib.sha1(try_again_pattern(lang).encode()).hexdigest()[:12]
+
+
 def _try_again_script_src(lang: str) -> str:
-    version = hashlib.sha1(try_again_pattern(lang).encode()).hexdigest()[:12]
-    return f"/static/try-again/{lang}.js?v={version}"
+    return f"/static/try-again/{lang}.js?v={try_again_version(lang)}"
 
 
 def client_scripts(lang: str = "en", request=None) -> list:

@@ -257,6 +257,14 @@ async def test_the_restore_page_that_says_select_try_again_carries_it_and_it_ope
 
 
 @pytest.mark.asyncio
+async def test_a_try_again_address_from_before_a_restart_is_served_but_never_kept(ui_client):
+    """A page drawn before the messages changed asks for the old version: it gets the current
+    pattern, never cached for good under the old address."""
+    r = await ui_client.get("/static/try-again/en.js?v=000000000000")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
 async def test_repricing_without_a_version_says_so_in_the_readers_language(ui_client):
     from unittest.mock import AsyncMock, patch
     from test_ui import _authed
