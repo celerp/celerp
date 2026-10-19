@@ -341,6 +341,7 @@ _VISIBLE_STATE_JS = """() => {
     progress: shown(q('.update-card__progress-bar')) ? q('.update-card__progress-fill').style.width : '',
     log: shown(q('.update-card__log')) ? q('.update-card__log').textContent : '',
     installer: shown(q('.update-card__installer-link')) ? q('.update-card__installer-link').href : '',
+    help: shown(q('.update-card__help-link')),
   };
 }"""
 
@@ -433,7 +434,7 @@ def test_failed_check_clears_to_the_next_result(page, ui_server, result, state):
 def test_failed_download_survives_background_checks(page, ui_server):
     """A failed download is named as one, stays on the card and lights the bell
     through the app's own checks and reloads, until the user checks again."""
-    _fake_electron(page, [_FOUND, _PROGRESS, ("error", {"message": "sha512 checksum mismatch"})])
+    _fake_electron(page, [_FOUND, _PROGRESS, ("error", {"message": "net::ERR_CONNECTION_RESET"})])
     failed = _open(page, f"{ui_server}/")
     assert (failed["state"], failed["badge"], failed["check"]) == (t("shell.update_download_failed", "en"), "1", True)
     _emit(page, _CHECKING, _UP_TO_DATE, _CHECKING, _FOUND, _PROGRESS)
@@ -443,7 +444,7 @@ def test_failed_download_survives_background_checks(page, ui_server):
     _emit(page, _CHECKING, _UP_TO_DATE)
     seen = page.evaluate(_VISIBLE_STATE_JS)
     assert (seen["state"], seen["badge"]) == ("Up to date", "")
-    assert "Update error: sha512 checksum mismatch" in seen["log"]
+    assert "Update error: net::ERR_CONNECTION_RESET" in seen["log"]
     assert _reloaded(page) == seen
 
 
@@ -466,6 +467,21 @@ def test_failed_update_offers_the_installer(page, ui_server, found, release):
     page.evaluate("() => document.querySelector('.update-card__check-btn').click()")
     _emit(page, _CHECKING, _FOUND, _PROGRESS)
     assert page.evaluate(_VISIBLE_STATE_JS)["installer"] == ""
+
+
+@pytest.mark.parametrize(("message", "state_key", "installer", "help_shown"), [
+    ("EPERM: operation not permitted, rename", "shell.update_save_failed", f"{_RELEASES}/tag/v2.0.1", False),
+    ("sha512 checksum mismatch, expected a, got b", "shell.update_verify_failed", "", True),
+], ids=["antivirus", "security-check"])
+def test_failed_update_says_what_failed(page, ui_server, message, state_key, installer, help_shown):
+    """The card says in plain words what failed. A download that failed its
+    security check offers help and Check for updates, never the installer."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/")
+    _emit(page, _FOUND, _PROGRESS, ("error", {"message": message}))
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert (seen["state"], seen["installer"], seen["help"], seen["check"]) == (
+        t(state_key, "en"), installer, help_shown, True)
 
 
 @pytest.mark.parametrize("found", [_FOUND, ("update-available", {})], ids=["with-version", "no-version"])
