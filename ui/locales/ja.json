@@ -5510,6 +5510,7 @@
   "notice.online_fee_failed.body": "{document} のオンライン決済手数料 {amount}(取引 {transaction})を記録できませんでした: {reason}",
   "notice.online_fee_failed.currency": "手数料の通貨が、この入金の会計情報では換算できない通貨です。帳簿に必要な場合は仕訳で記録してください。",
   "notice.online_fee_failed.deleted": "書類またはその入金が削除されたため、手数料を記録する対象がありません。帳簿に必要な場合は仕訳で記録してください。",
+  "notice.online_fee_failed.unmatched": "入金 {reference} はこの書類ではなく未照合の入金に入っているため、ここには手数料を記録する入金がありません。帳簿に必要な場合は仕訳で記録してください。",
   "notice.online_fee_failed.books": "この入金は、手数料の計上に必要な銀行口座または為替レートなしで記録されています。帳簿に必要な場合は仕訳で記録してください。",
   "notice.online_fee_failed.account": "オンライン決済手数料に選んだ勘定科目には計上できません。設定 > 会計 > 転記勘定 で使える勘定科目を選んでください。Celerp Cloud が再送したときに手数料が記録されます。",
   "notice.online_fee_failed.conflict": "Celerp Cloud は以前この手数料を別の金額で報告しており、最初の金額が記録されたままです。決済代行会社で手数料を確認し、必要なら仕訳で修正してください。",

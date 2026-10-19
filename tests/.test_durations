@@ -12155,7 +12155,7 @@
 "tests/test_payments_stripe.py::test_fee_notice_and_failure_notice": 0.309,
 "tests/test_payments_stripe.py::test_full_online_payment_journey": 0.275,
 "tests/test_payments_stripe.py::test_manual_payment_racing_online_confirm": 0.184,
-"tests/test_payments_stripe.py::test_online_fee_contract_rejects_inconsistent_and_wrong_company": 0.207,
+"tests/test_payments_stripe.py::test_online_fee_contract_rejects_inconsistent_fees": 0.207,
 "tests/test_payments_stripe.py::test_online_fees_post_to_the_chosen_account": 0.244,
 "tests/test_payments_stripe.py::test_online_payment_posts_exactly_one_journal_entry": 0.184,
 "tests/test_payments_stripe.py::test_paid_invoice_share_view_drops_pay_bar": 0.192,

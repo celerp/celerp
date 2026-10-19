@@ -1305,9 +1305,8 @@ async def test_actual_online_fees_post_once_and_refund_as_separate_cash_movement
 
 
 @pytest.mark.asyncio
-async def test_online_fee_contract_rejects_inconsistent_and_wrong_company(
+async def test_online_fee_contract_rejects_inconsistent_fees(
         client, session, payments_on):
-    import uuid
     from celerp.services.payments import receive_payment, receive_fees
     from celerp.models.projections import Projection
 
@@ -1329,7 +1328,6 @@ async def test_online_fee_contract_rejects_inconsistent_and_wrong_company(
         {"fees": {**fees, "total_minor": 0.1}},
         {"fees": {**fees, "currency": "eur"}},
         {"reference": "pi_not_a_payment"},
-        {"company_id": str(uuid.uuid4())},
         {"occurred_at": "2026-10-12"},
     ):
         assert await receive_fees({**event, **changes}) is False
@@ -1600,12 +1598,77 @@ async def test_fee_for_a_deleted_payment_is_acknowledged_with_one_notice(client,
 
 
 @pytest.mark.asyncio
-async def test_fee_for_an_unavailable_company_is_not_acknowledged(client, session, payments_on):
-    """A company that cannot be held is a cause retrying can outlast: no acknowledgement."""
-    import uuid
+async def test_fee_for_a_payment_kept_among_the_unmatched_is_acknowledged_with_one_notice(
+        client, session, payments_on):
+    """An invoice already paid by hand parks the online payment among the unmatched
+    payments; its fee can never be recorded on the invoice, so it is acknowledged and the
+    company is told once, with the amount and the payment reference, to record it by hand.
+    Nothing is posted."""
+    from celerp.services.payments import receive_payment, receive_fees
+
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    r = await client.post(f"/docs/{eid}/payment", headers=_h(tok), json={
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1111", "method": "bank_transfer",
+        "reference": "wire1"})
+    assert r.status_code == 200, r.text
+    assert await receive_payment({"company_id": cid, "entity_id": eid, "reference": "pi_parked",
+                                  "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                                  "context": dict(BOOKS), "managed": True}) is True
+    items = (await client.get("/payments/unmatched", headers=_h(tok))).json()["items"]
+    assert [p["reference"] for p in items] == ["pi_parked"]
+    before = await _ledger_count(session, cid)
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_parked",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    event = {"company_id": cid, "entity_id": eid, "reference": "pi_parked", "fees": fees,
+             "occurred_at": PAID.isoformat()}
+
+    assert [await receive_fees(event) for _ in range(3)] == [True, True, True]
+    failed = await _fee_notices(session, cid, "notice.online_fee_failed")
+    assert len(failed) == 1
+    reason = failed[0].i18n["params"]["reason"]
+    assert reason["message_key"] == "notice.online_fee_failed.unmatched"
+    assert reason["params"] == {"reference": "pi_parked"}
+    assert "5.20 USD" in failed[0].body and "pi_parked" in failed[0].body
+    assert await _ledger_count(session, cid) == before
+
+
+@pytest.mark.asyncio
+async def test_fee_before_its_payment_stays_pending_without_a_notice(client, session, payments_on):
+    """A fee for a document with no payment for the reference and nothing unmatched under
+    it can still be recorded once the payment arrives, so it is not acknowledged."""
     from celerp.services.payments import receive_fees
 
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_early",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    event = {"company_id": cid, "entity_id": eid, "reference": "pi_early", "fees": fees,
+             "occurred_at": PAID.isoformat()}
+    assert await receive_fees(event) is False
+    assert await _fee_notices(session, cid, "notice.online_fee_failed") == []
+
+
+@pytest.mark.asyncio
+async def test_fee_for_a_company_that_no_longer_exists_is_acknowledged_silently(client, session, payments_on):
+    """A company row that is gone never comes back, so its fee is acknowledged (the relay
+    stops redelivering) with nothing written and nobody to tell."""
+    import uuid
+    from sqlalchemy import func, select
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.notification import Notification
+    from celerp.services.payments import receive_fees
+
+    gone = str(uuid.uuid4())
     fees = {"version": 1, "currency": "usd", "transaction_id": "txn_no_company",
             "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
-    assert await receive_fees({"company_id": str(uuid.uuid4()), "entity_id": "doc:x", "reference": "pi_x",
-                               "fees": fees, "occurred_at": PAID.isoformat()}) is False
+    event = {"company_id": gone, "entity_id": "doc:x", "reference": "pi_x",
+             "fees": fees, "occurred_at": PAID.isoformat()}
+    assert await receive_fees(event) is True
+    assert await receive_fees(event) is True
+    assert await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == uuid.UUID(gone))) == 0
+    assert await session.scalar(select(func.count()).select_from(Notification).where(
+        Notification.company_id == uuid.UUID(gone))) == 0

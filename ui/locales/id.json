@@ -5512,6 +5512,7 @@
   "notice.online_fee_failed.body": "{amount} biaya pembayaran online pada {document} (transaksi {transaction}) tidak dicatat: {reason}",
   "notice.online_fee_failed.currency": "biaya dalam mata uang yang tidak dapat dikonversi dengan data pembukuan pembayaran. Jika perlu dibukukan, catat dengan jurnal.",
   "notice.online_fee_failed.deleted": "dokumen atau pembayaran di dalamnya telah dihapus, sehingga tidak ada tempat untuk mencatat biaya ini. Jika perlu dibukukan, catat dengan jurnal.",
+  "notice.online_fee_failed.unmatched": "pembayaran {reference} tercantum di antara pembayaran yang belum dicocokkan, bukan pada dokumen ini, sehingga tidak ada pembayaran di sini untuk mencatat biaya ini. Jika perlu dibukukan, catat dengan jurnal.",
   "notice.online_fee_failed.books": "pembayaran dicatat tanpa rekening bank atau kurs yang diperlukan untuk membukukan biayanya. Jika perlu dibukukan, catat dengan jurnal.",
   "notice.online_fee_failed.account": "akun yang dipilih untuk biaya pembayaran online tidak dapat menerima posting. Pilih akun yang dapat dipakai di Pengaturan > Akuntansi > Akun posting; biaya dicatat saat Celerp Cloud mengirimkannya lagi.",
   "notice.online_fee_failed.conflict": "Celerp Cloud sebelumnya melaporkan biaya ini dengan jumlah berbeda, dan jumlah pertama tetap tercatat. Periksa biaya ini dengan penyedia pembayaran Anda dan koreksi dengan jurnal bila perlu.",

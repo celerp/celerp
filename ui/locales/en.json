@@ -5510,6 +5510,7 @@
   "notice.online_fee_failed.body": "{amount} in online payment fees on {document} (transaction {transaction}) was not recorded: {reason}",
   "notice.online_fee_failed.currency": "the fee is in a currency the payment's books cannot convert. If it belongs in the books, record it with a journal entry.",
   "notice.online_fee_failed.deleted": "the document or the payment on it was deleted, so there is nothing to record the fee against. If it belongs in the books, record it with a journal entry.",
+  "notice.online_fee_failed.unmatched": "the payment {reference} is listed among the unmatched payments, not on this document, so there is no payment here to record the fee against. If it belongs in the books, record it with a journal entry.",
   "notice.online_fee_failed.books": "the payment was recorded without the bank account or exchange rate needed to book its fees. If they belong in the books, record them with a journal entry.",
   "notice.online_fee_failed.account": "the account chosen for online payment fees cannot take postings. Choose a usable account in Settings > Accounting > Posting accounts; the fee is recorded when Celerp Cloud delivers it again.",
   "notice.online_fee_failed.conflict": "Celerp Cloud reported this fee earlier with different amounts, and the first amounts stay recorded. Check the fee with your payment provider and correct it with a journal entry if needed.",
