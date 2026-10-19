@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
     services:
       postgres:
@@ -55,17 +55,19 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
 
-      - name: Run tests (shard ${{ matrix.group }}/10)
+      - name: Run tests (shard ${{ matrix.group }}/12)
         env:
           ALLOW_INSECURE_JWT: "true"
           # Run on the Postgres service (each xdist worker gets its own database).
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
         # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
-        # pytest-split fans the suite across 10 parallel runners; each still uses -n auto
+        # pytest-split fans the suite across 12 parallel runners; each still uses -n auto
         # within its 2 cores.
         # Process tests run in their own job so the split stays even.
         # The split balances measured time from tests/.test_durations (refresh it with
-        # --store-durations when a shard nears the cap); it sits under tests/ so the
+        # --store-durations when a shard nears the cap). The same shard swings by a third
+        # from run to run on these runners, and collection takes about a minute of the
+        # 600s, so each shard's estimate stays near 450s. The file sits under tests/ so the
         # repo-wide name checks, which skip tests/, never read its test ids. A test missing
         # from it counts as the average, so a split by count alone would put the slow
         # backup and reset files in one shard.
@@ -73,7 +75,7 @@ jobs:
           timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           --timeout=30
           -m "not browser and not embedded_pg and not process and not integration"
-          --splits 10 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --splits 12 --group ${{ matrix.group }} --splitting-algorithm least_duration
           --durations-path tests/.test_durations
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
