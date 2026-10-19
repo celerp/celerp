@@ -5511,6 +5511,7 @@
   "notice.online_fee_failed.title": "Comisión de pago en línea no registrada",
   "notice.online_fee_failed.body": "No se registraron {amount} en comisiones de pagos en línea de {document} (transacción {transaction}): {reason}",
   "notice.online_fee_failed.currency": "la comisión está en una moneda que los datos contables del pago no pueden convertir. Si corresponde a la contabilidad, regístrela con un asiento de diario.",
+  "notice.online_fee_failed.deleted": "el documento o el pago registrado en él se eliminó, así que no hay dónde registrar la comisión. Si corresponde a la contabilidad, regístrela con un asiento de diario.",
   "notice.online_fee_failed.books": "el pago se registró sin la cuenta bancaria o el tipo de cambio necesarios para contabilizar sus comisiones. Si corresponden a la contabilidad, regístrelas con un asiento de diario.",
   "notice.online_fee_failed.account": "la cuenta elegida para comisiones de pagos en línea no admite asientos. Elija una cuenta válida en Ajustes > Contabilidad > Cuentas de contabilización; la comisión se registra cuando Celerp Cloud la vuelva a enviar.",
   "notice.online_fee_failed.conflict": "Celerp Cloud informó antes esta comisión con otros importes, y los primeros siguen registrados. Compruebe la comisión con su proveedor de pagos y corríjala con un asiento de diario si hace falta.",

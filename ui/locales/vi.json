@@ -5511,6 +5511,7 @@
   "notice.online_fee_failed.title": "Chưa ghi nhận phí thanh toán trực tuyến",
   "notice.online_fee_failed.body": "Chưa ghi nhận {amount} phí thanh toán trực tuyến của {document} (giao dịch {transaction}): {reason}",
   "notice.online_fee_failed.currency": "phí ở loại tiền mà dữ liệu sổ sách của khoản thanh toán không quy đổi được. Nếu cần đưa vào sổ, hãy ghi nhận bằng bút toán.",
+  "notice.online_fee_failed.deleted": "chứng từ hoặc khoản thanh toán trên đó đã bị xóa, nên không còn chỗ để ghi nhận phí này. Nếu cần đưa vào sổ, hãy ghi nhận bằng bút toán.",
   "notice.online_fee_failed.books": "khoản thanh toán được ghi nhận mà không có tài khoản ngân hàng hoặc tỷ giá cần để hạch toán phí. Nếu cần đưa vào sổ, hãy ghi nhận bằng bút toán.",
   "notice.online_fee_failed.account": "tài khoản đã chọn cho phí thanh toán trực tuyến không nhận được bút toán. Hãy chọn tài khoản dùng được trong Cài đặt > Kế toán > Tài khoản ghi sổ; phí sẽ được ghi nhận khi Celerp Cloud gửi lại.",
   "notice.online_fee_failed.conflict": "Celerp Cloud đã báo khoản phí này trước đó với số tiền khác, và số tiền đầu tiên vẫn được ghi nhận. Hãy kiểm tra khoản phí với nhà cung cấp thanh toán và điều chỉnh bằng bút toán nếu cần.",

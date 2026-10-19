@@ -5511,6 +5511,7 @@
   "notice.online_fee_failed.title": "Taxa de pagamento online não registrada",
   "notice.online_fee_failed.body": "{amount} em taxas de pagamentos online de {document} (transação {transaction}) não foram registrados: {reason}",
   "notice.online_fee_failed.currency": "a taxa está em uma moeda que os dados contábeis do pagamento não conseguem converter. Se ela pertence à contabilidade, registre-a com um lançamento de diário.",
+  "notice.online_fee_failed.deleted": "o documento ou o pagamento registrado nele foi excluído, então não há onde registrar a taxa. Se ela pertence à contabilidade, registre-a com um lançamento de diário.",
   "notice.online_fee_failed.books": "o pagamento foi registrado sem a conta bancária ou a taxa de câmbio necessárias para lançar as taxas. Se pertencem à contabilidade, registre-as com um lançamento de diário.",
   "notice.online_fee_failed.account": "a conta escolhida para taxas de pagamentos online não aceita lançamentos. Escolha uma conta utilizável em Configurações > Contabilidade > Contas de lançamento; a taxa é registrada quando o Celerp Cloud a enviar novamente.",
   "notice.online_fee_failed.conflict": "O Celerp Cloud informou esta taxa antes com outros valores, e os primeiros continuam registrados. Confira a taxa com seu provedor de pagamento e corrija-a com um lançamento de diário se necessário.",

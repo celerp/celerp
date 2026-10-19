@@ -1524,3 +1524,88 @@ async def test_fee_notice_and_failure_notice(client, session, payments_on):
     assert (await client.put("/accounting/posting-accounts/online_payment_fees", headers=_h(tok),
                              json={"code": "6940"})).status_code == 200
     assert await receive_fees({**event, "fees": later}) is True
+
+
+async def _ledger_count(session, cid: str) -> int:
+    import uuid
+    from sqlalchemy import func, select
+    from celerp.models.ledger import LedgerEntry
+    return await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == uuid.UUID(cid)))
+
+
+@pytest.mark.asyncio
+async def test_fee_for_a_deleted_document_is_acknowledged_with_one_notice(client, session, payments_on):
+    """A fee delivered for a document that no longer exists can never be recorded, so it
+    is acknowledged (the relay stops redelivering) and the company is told once, with the
+    amount and the document, to record it by hand. Nothing is posted."""
+    import uuid
+    from sqlalchemy import delete
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_fees
+
+    tok = await _register(client)
+    cid = _company_id(tok)
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_gone_doc",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    eid, event = await _paid_with_fees(client, tok, "pi_gone_doc", fees)
+    await session.execute(delete(Projection).where(
+        Projection.company_id == uuid.UUID(cid), Projection.entity_id == eid))
+    await session.commit()
+    before = await _ledger_count(session, cid)
+
+    assert await receive_fees({**event, "delivery_id": "d1"}) is True
+    assert await receive_fees({**event, "delivery_id": "d1"}) is True
+    failed = await _fee_notices(session, cid, "notice.online_fee_failed")
+    assert len(failed) == 1
+    assert failed[0].priority == "high" and failed[0].action_url is None
+    assert failed[0].i18n["params"]["reason"]["message_key"] == "notice.online_fee_failed.deleted"
+    assert "5.20 USD" in failed[0].body and eid in failed[0].body
+    assert await _ledger_count(session, cid) == before
+
+
+@pytest.mark.asyncio
+async def test_fee_for_a_deleted_payment_is_acknowledged_with_one_notice(client, session, payments_on):
+    """A fee for a payment entry that was deleted from its invoice is acknowledged with
+    one notice and nothing posted; a fee for a payment not yet delivered stays pending."""
+    import uuid
+    from sqlalchemy import select
+    from sqlalchemy.orm.attributes import flag_modified
+    from celerp.models.projections import Projection
+    from celerp.services.payments import receive_fees
+
+    tok = await _register(client)
+    cid = _company_id(tok)
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_gone_pay",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    eid, event = await _paid_with_fees(client, tok, "pi_gone_pay", fees)
+    assert await receive_fees({**event, "reference": "pi_not_yet"}) is False
+    row = await session.scalar(select(Projection).where(
+        Projection.company_id == uuid.UUID(cid), Projection.entity_id == eid))
+    for p in row.state["payments"]:
+        if p.get("reference") == "pi_gone_pay":
+            p["status"] = "deleted"
+    flag_modified(row, "state")
+    await session.commit()
+    before = await _ledger_count(session, cid)
+
+    assert await receive_fees(event) is True
+    assert await receive_fees(event) is True
+    failed = await _fee_notices(session, cid, "notice.online_fee_failed")
+    assert len(failed) == 1
+    assert failed[0].action_url == f"/docs/{eid}"
+    assert failed[0].i18n["params"]["reason"]["message_key"] == "notice.online_fee_failed.deleted"
+    assert "5.20 USD" in failed[0].body
+    assert await _ledger_count(session, cid) == before
+
+
+@pytest.mark.asyncio
+async def test_fee_for_an_unavailable_company_is_not_acknowledged(client, session, payments_on):
+    """A company that cannot be held is a cause retrying can outlast: no acknowledgement."""
+    import uuid
+    from celerp.services.payments import receive_fees
+
+    fees = {"version": 1, "currency": "usd", "transaction_id": "txn_no_company",
+            "total_minor": 520, "processor_minor": 270, "platform_minor": 250, "other_minor": 0}
+    assert await receive_fees({"company_id": str(uuid.uuid4()), "entity_id": "doc:x", "reference": "pi_x",
+                               "fees": fees, "occurred_at": PAID.isoformat()}) is False

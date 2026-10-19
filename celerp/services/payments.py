@@ -294,7 +294,8 @@ async def receive_payment(payload: dict) -> bool:
 async def receive_fees(payload: dict) -> bool:
     """Record actual online-fee transactions on the books holding their gross receipt.
 
-    A fee delivered before its payment is left pending, not silently lost.
+    A fee delivered before its payment is left pending, not silently lost. A fee whose
+    document or payment was deleted is acknowledged with a notice to record it by hand.
     """
     from datetime import timezone
     from celerp.events.engine import find_event_by_idempotency
@@ -340,18 +341,19 @@ async def receive_fees(payload: dict) -> bool:
             Projection.entity_id == target_doc,
             Projection.entity_type == "doc",
         ).with_for_update())).scalar_one_or_none()
-        if row is None:
+        state = (row.state or {}) if row is not None else {}
+        entries = [p for p in state.get("payments", [])
+                   if p.get("reference") == reference and p.get("method") == "stripe"]
+        payment = next((p for p in entries if p.get("status") != "deleted"), None)
+        if row is not None and not entries:
             return False
-        payment = next((p for p in (row.state or {}).get("payments", [])
-                        if p.get("reference") == reference and p.get("method") == "stripe"
-                        and p.get("status") != "deleted"), None)
-        if payment is None:
-            return False
-        books = payment.get("books") or {}
-        settled_currency = str(payment.get("currency") or (row.state or {}).get("currency") or "").lower()
+        books = (payment or {}).get("books") or {}
+        settled_currency = str((payment or {}).get("currency") or state.get("currency") or "").lower()
         base_currency = str(books.get("base_currency") or "").lower()
-        document = (row.state or {}).get("ref_id") or (row.state or {}).get("doc_number") or target_doc
-        if currency.lower() not in (settled_currency, base_currency):
+        document = state.get("ref_id") or state.get("doc_number") or target_doc
+        if payment is None:
+            problem = "deleted"
+        elif currency.lower() not in (settled_currency, base_currency):
             problem = "currency"
         elif not (isinstance(books, dict) and books.get("base_currency")
                   and payment.get("bank_account") and payment.get("conversion_rate")):
@@ -379,8 +381,8 @@ async def receive_fees(payload: dict) -> bool:
                 await _fee_recorded(session, cid, target_doc, document, fees, account)
             await session.commit()
             return True
-    await _fee_not_recorded(cid, target_doc, document, fees, problem)
-    return False
+    told = await _fee_not_recorded(cid, target_doc if row is not None else None, document, fees, problem)
+    return problem == "deleted" and told
 
 
 def _fee_amount(fees: dict) -> str:
@@ -403,9 +405,12 @@ async def _fee_recorded(session, cid, doc_id: str, document: str, fees: dict, ac
         action_url=f"/docs/{doc_id}")
 
 
-async def _fee_not_recorded(cid, doc_id: str, document: str, fees: dict, problem: str, roles=()) -> None:
+async def _fee_not_recorded(cid, doc_id: str | None, document: str, fees: dict, problem: str,
+                            roles=()) -> bool:
     """Tell the company, unmissably and once per fee and cause, that a fee Celerp Cloud
-    delivered could not be recorded and why. The delivery is not acknowledged, so it is
+    delivered could not be recorded and why; whether the notice was recorded. A fee whose
+    document or payment was deleted is acknowledged once told (retrying cannot help, and
+    *doc_id* is None when the document is gone); any other cause is not, so the fee is
     delivered again and recorded once the cause is fixed. A refused posting account also
     raises the standing posting-accounts notice (posting_readiness.notify_unmapped)."""
     from celerp.notifications import service as notification_service
@@ -421,7 +426,7 @@ async def _fee_not_recorded(cid, doc_id: str, document: str, fees: dict, problem
                 session, cid, "accounting",
                 t("notice.online_fee_failed.title", "en", **params),
                 t("notice.online_fee_failed.body", "en", **params),
-                action_url=f"/docs/{doc_id}",
+                action_url=f"/docs/{doc_id}" if doc_id else None,
                 i18n={"title": "notice.online_fee_failed.title", "body": "notice.online_fee_failed.body",
                       "params": keyed})
             if roles:
@@ -429,6 +434,8 @@ async def _fee_not_recorded(cid, doc_id: str, document: str, fees: dict, problem
             await session.commit()
     except Exception:
         log.exception("Could not record the notice for an unrecorded online fee")
+        return False
+    return True
 
 
 class _Moved(Exception):
