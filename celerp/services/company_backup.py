@@ -728,6 +728,17 @@ async def _unchanged(session: AsyncSession, plan: _Plan, lock) -> None:
         raise BackupError(409, t(RESHAPED, table=changed))
 
 
+def _row_expr(plan: _Plan, name: str) -> str:
+    """The JSON a backup carries for each row of table ``name``."""
+    table = plan.schema[name]
+    expr = _without([c for c, col in table.columns.items() if col.generated])
+    if name == "ledger":
+        expr = f"({expr} || {_ACTOR_LABEL})"
+    for cols in plan.outside_fks(name):
+        expr = f"({expr} || jsonb_build_object({', '.join(f'{_literal(c)}, NULL' for c in cols)}))"
+    return expr
+
+
 async def _export_company(session: AsyncSession, company_id, partial: Path, *, provenance: dict | None) -> dict:
     """Write the backup to ``partial``; the caller publishes it or deletes it."""
     company = await session.get(Company, company_id)
@@ -777,14 +788,9 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
         with private_file(partial) as raw, zipfile.ZipFile(raw, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for name in tables:
                 table = plan.schema[name]
-                expr = _without([c for c, col in table.columns.items() if col.generated])
-                if name == "ledger":
-                    expr = f"({expr} || {_ACTOR_LABEL})"
-                for cols in plan.outside_fks(name):
-                    expr = f"({expr} || jsonb_build_object({', '.join(f'{_literal(c)}, NULL' for c in cols)}))"
                 digest, rows = hashlib.sha256(), 0
                 with zf.open(f"tables/{name}.jsonl", "w", force_zip64=True) as fh:
-                    async for batch in _batches(session, table, company_id, expr):
+                    async for batch in _batches(session, table, company_id, _row_expr(plan, name)):
                         for line in batch:
                             body = line.encode()
                             if len(body) > MAX_ROW_BYTES or _row_too_large(body):
@@ -1951,12 +1957,55 @@ async def _check_replacing(session: AsyncSession, replacing: _Replacing, user_id
         raise BackupError(403, t(REPLACE_OWNER_ONLY, company=company.name), "not_owner")
     if replacing.typed_name != company.name:
         raise BackupError(422, t(REPLACE_NAME, company=company.name), "name_mismatch")
-    ledger = await session.scalar(text("SELECT count(*) FROM ledger WHERE company_id = :c"), {"c": company.id})
     canonical = lambda value: json.dumps(value, sort_keys=True)  # noqa: E731
-    if (ledger != replacing.kept["tables"].get("ledger", {}).get("rows", 0)
-            or canonical(_kept_settings(company.settings)) != canonical(replacing.kept["company"]["settings"])):
+    if (canonical(_kept_settings(company.settings)) != canonical(replacing.kept["company"]["settings"])
+            or not await _as_kept(session, company, replacing.kept)):
         raise BackupError(409, t(REPLACE_CHANGED, company=company.name), "changed")
     return company
+
+
+async def _as_kept(session: AsyncSession, company: Company, kept: dict) -> bool:
+    """Whether every table a backup carries holds the company's rows exactly as the kept
+    backup ``kept`` (its manifest) holds them, and every attachment file it references is
+    the one kept. Read as the backup reads them, so the digests are the manifest's.
+
+    The caller holds the company for deletion, which keeps out new rows and file writes;
+    the rows read are held here until the transaction ends, so none of them changes
+    between this check and the replace."""
+    plan = await _classify(session, installed_modules(), strict=True)
+    tables: dict[str, str] = {}
+    found: dict[str, str] = {}
+    types: dict[str, str] = {}
+    _collect_urls(_kept_settings(company.settings), company.id, found, types)
+    for name in plan.order:
+        table = plan.schema[name]
+        where = (f"t.company_id = CAST(CAST(:c AS text) AS "
+                 f"{db_catalog.ident(table.columns['company_id'].udt)})")
+        await session.execute(text(
+            f"SELECT count(*) FROM (SELECT 1 FROM {db_catalog.ident(name)} t WHERE {where} FOR SHARE) s"),
+            {"c": str(company.id)})
+        digest, rows = hashlib.sha256(), 0
+        async for batch in _batches(session, table, company.id, _row_expr(plan, name)):
+            for line in batch:
+                _collect_urls(json.loads(line), company.id, found, types)
+                digest.update(line.encode() + b"\n")
+            rows += len(batch)
+        if rows:
+            tables[name] = digest.hexdigest()
+    if tables != {name: m["sha256"] for name, m in kept["tables"].items() if m["rows"]}:
+        return False
+    kept_files = {a["url"]: a for a in kept["attachments"]}
+    if set(found.values()) != set(kept_files):
+        return False
+    for url, entry in kept_files.items():
+        try:
+            body = await attachments.read_company_file(company.id, url,
+                                                      _member_limit(f"attachments/{entry['name']}"))
+        except OSError:
+            return False
+        if body is None or hashlib.sha256(body).hexdigest() != entry["sha256"]:
+            return False
+    return True
 
 
 async def _reset_replaced(session: AsyncSession, company: Company, typed_name: str):
