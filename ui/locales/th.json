@@ -6076,6 +6076,7 @@
   "company_backup.err_replace_owner_only": "เฉพาะเจ้าของ {company} เท่านั้นที่แทนที่ได้",
   "company_backup.err_replace_name": "ชื่อที่พิมพ์ไม่ตรงกับ {company} โปรดพิมพ์ให้ตรงตามที่เขียนไว้ ไม่มีสิ่งใดถูกแทนที่",
   "company_backup.err_replace_changed": "{company} มีการเปลี่ยนแปลงระหว่างที่ Celerp ทำสำเนา ไม่มีสิ่งใดถูกแทนที่ โปรดลองอีกครั้ง",
+  "company_backup.err_replace_unfinished": "{company} ถูกแทนที่แล้ว และเวอร์ชันที่ถูกแทนที่อยู่ในสำเนาที่บันทึกไว้ Celerp ไม่สามารถจัดการขั้นตอนหลังการแทนที่ให้เสร็จได้ ลองอีกครั้งเพื่อให้เสร็จ จะไม่มีการแทนที่สิ่งใดเพิ่ม",
   "company_backup.err_replace_not_backed_up": "Celerp ทำสำเนาของ {company} ก่อนแทนที่ไม่ได้: {reason} ไม่มีสิ่งใดถูกแทนที่",
   "company_backup.err_kept_not_found": "สำเนาที่บันทึกไว้นี้ไม่อยู่แล้ว",
   "company_backup.err_replace_gone": "ที่นี่ไม่มีบริษัทที่สำเนานี้แทนที่ได้ ไม่มีสิ่งใดถูกแทนที่",

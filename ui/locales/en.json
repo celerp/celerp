@@ -6076,6 +6076,7 @@
   "company_backup.err_replace_owner_only": "Only the owner of {company} can replace it.",
   "company_backup.err_replace_name": "The name you typed does not match {company}. Type it exactly as it is written. Nothing was replaced.",
   "company_backup.err_replace_changed": "{company} changed while Celerp was backing it up. Nothing was replaced. Try again.",
+  "company_backup.err_replace_unfinished": "{company} was replaced, and the version it replaced is in Saved copies. Celerp could not finish tidying up after the replace. Try again to finish; nothing more is replaced.",
   "company_backup.err_replace_not_backed_up": "Celerp could not back up {company} before replacing it: {reason} Nothing was replaced.",
   "company_backup.err_kept_not_found": "This saved copy is no longer here.",
   "company_backup.err_replace_gone": "There is no company here that this copy can replace. Nothing was replaced.",

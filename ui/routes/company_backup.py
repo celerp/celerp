@@ -896,6 +896,12 @@ async def _refused(request: Request, mode: WizardMode, upload_token: str, e: API
     again, checked afresh, with the reason; a refused backup or a gone upload starts over."""
     if _unconfirmed(e):
         return await _resolving_page(request, mode, e, target, form, values or {})
+    if isinstance(e.data, dict) and e.data.get("code") == "replaced_unfinished":
+        # The company was replaced: the session moves to the new one, where sending it again
+        # finishes the follow-up.
+        resp = await _resolving_page(request, mode, e, target, form, values or {})
+        set_session_cookies(resp, e.data["access_token"], e.data["refresh_token"], request)
+        return resp
     if mode is START_COMPANY and e.status == 401:
         return await _password_again_page(request, mode, e, target, form, values or {})
     stale = isinstance(e.data, dict) and e.data.get("code") == "stale_preview"

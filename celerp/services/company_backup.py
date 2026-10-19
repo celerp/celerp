@@ -201,6 +201,7 @@ REPLACE_CHANGED = "company_backup.err_replace_changed"
 REPLACE_NOT_BACKED_UP = "company_backup.err_replace_not_backed_up"
 KEPT_NOT_FOUND = "company_backup.err_kept_not_found"
 REPLACE_GONE = "company_backup.err_replace_gone"
+REPLACE_UNFINISHED = "company_backup.err_replace_unfinished"
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _RAW_NUL = re.compile(rb"(?<!\\)(?:\\\\)*\\u0000")
@@ -228,6 +229,15 @@ class StalePreview(BackupError):
     def __init__(self, plan: RestorePlan) -> None:
         super().__init__(409, t(STALE_PREVIEW), "stale_preview")
         self.plan = plan
+
+
+class ReplaceUnfinished(BackupError):
+    """Not a refusal: the replace committed, then a follow-up step failed. The backup kept
+    of the replaced company stays; ``finish_restore`` completes the follow-up."""
+
+    def __init__(self, company_id: str, company_name: str) -> None:
+        super().__init__(500, t(REPLACE_UNFINISHED, company=company_name), "replaced_unfinished")
+        self.company_id = company_id
 
 
 class ModulesRequired(BackupError):
@@ -1788,6 +1798,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 # Last, once its team has the new company, so no one is signed out by it.
                 closure, task_id = await _reset_replaced(session, target, replacing.typed_name)
             await session.commit()
+            if replacing is not None:
+                replacing.committed = True
         except BaseException as exc:
             await session.rollback()
             await _settle_replaced(session, getattr(exc, "closure", None) or closure, task_id)
@@ -1798,15 +1810,30 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 except Exception:
                     logger.warning("Removing attachment files of a failed company restore failed", exc_info=True)
             raise
-        await _settle_replaced(session, closure, task_id)
-        # The restore has committed: rewriting the load set's mirror never undoes it.
-        await commit_with_load_set(session)
-    if stored:
-        await asyncio.to_thread(attachments.clear_landing, str(new_id))
+        try:
+            await _settle_replaced(session, closure, task_id)
+            # The restore has committed: rewriting the load set's mirror never undoes it.
+            await commit_with_load_set(session)
+            if stored:
+                await asyncio.to_thread(attachments.clear_landing, str(new_id))
+        except Exception:
+            if replacing is None:
+                raise
+            logger.exception("A follow-up step of the replace of company %s failed", replacing.company_id)
+            raise ReplaceUnfinished(str(company.id), company.name) from None
     return RestoreResult(company_id=str(company.id), company_name=company.name,
                          outcome=CREATED if replacing is None else REPLACED,
                          backup_created_at=m["created_at"], user_id=str(user.id), team_members=team,
                          role_permissions=plan.role_permissions)
+
+
+async def finish_restore() -> None:
+    """Complete what a committed restore left unfinished: its attachment landing mark and
+    the load set's mirror. Safe to repeat. A replaced company's payments and files are
+    settled by their own retries."""
+    await reconcile_landings()
+    async with AsyncSession(bind=celerp.db.engine) as session:
+        await commit_with_load_set(session)
 
 
 async def reopen_restored(company_id, *, user_id=None, owner_account: dict | None = None,
@@ -1864,13 +1891,14 @@ async def reactivate_restored(path: Path, *, mode: str, user_id, current_company
 _COMPARED = {"doc": "documents", "journal_entry": "journals", "item": "items"}
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Replacing:
-    """The company a restore replaces, the name its owner typed, and the manifest of the
-    backup of it kept first."""
+    """The company a restore replaces, the name its owner typed, the manifest of the
+    backup of it kept first, and whether the replace has committed."""
     company_id: uuid.UUID
     typed_name: str
     kept: dict
+    committed: bool = False
 
 
 def _when(value) -> str | None:
@@ -2056,9 +2084,10 @@ async def replace_company(path: Path, *, mode: str, user_id, current_company_id,
                           typed_name: str, retain_peer_identities: bool = False) -> tuple[RestoreResult, str]:
     """Replace the caller's company of the same lineage with this copy, as the preview
     identified by ``plan_fingerprint`` offered it (None: as it is offered now, for Undo).
-    Only its owner replaces it, typing its name exactly; a backup of it is kept first,
-    and a failure anywhere replaces nothing and drops that backup. Returns the result
-    and the kept backup's id."""
+    Only its owner replaces it, typing its name exactly; a backup of it is kept first.
+    A failure before the replace commits replaces nothing and drops that backup; once it
+    has committed the backup always stays, and a follow-up step that fails raises
+    ReplaceUnfinished. Returns the result and the kept backup's id."""
     backup = await asyncio.to_thread(read_backup, path)
     async with AsyncSession(bind=celerp.db.engine) as session:
         plan, _ = await _plan(session, backup, mode, user_id, current_company_id, lock=False)
@@ -2074,13 +2103,14 @@ async def replace_company(path: Path, *, mode: str, user_id, current_company_id,
     target = uuid.UUID(offer["company_id"])
     kept_id, kept = await _keep_backup(target, offer["company_name"])
     lineage = kept["company"]["lineage_id"]
+    replacing = _Replacing(target, typed_name, kept)
     try:
         result = await restore_company(path, mode=mode, user_id=user_id, current_company_id=current_company_id,
                                        plan_fingerprint=plan.fingerprint,
-                                       retain_peer_identities=retain_peer_identities,
-                                       replacing=_Replacing(target, typed_name, kept))
+                                       retain_peer_identities=retain_peer_identities, replacing=replacing)
     except BaseException:
-        files.discard_kept(lineage, kept_id)
+        if not replacing.committed:
+            files.discard_kept(lineage, kept_id)
         raise
     return result, kept_id
 

@@ -53,11 +53,12 @@ _BOOTSTRAP = "bootstrap"
 _START_COMPANY = "start_company"
 
 
-def _error(exc: cb.BackupError, stage: Path | None = None) -> JSONResponse:
-    """The refusal. Unless the owner can put it right and go on, the upload is deleted."""
+def _error(exc: cb.BackupError, stage: Path | None = None, **extra) -> JSONResponse:
+    """The refusal, with any *extra* fields. Unless the owner can put it right and go on,
+    the upload is deleted."""
     if stage is not None and exc.code is None:
         files.discard_stage(stage)
-    content: dict = {"detail": exc.detail}
+    content: dict = {"detail": exc.detail, **extra}
     if exc.code is not None:
         content["code"] = exc.code
     if isinstance(exc, cb.StalePreview):
@@ -431,6 +432,7 @@ async def replace_with_copy(payload: ReplaceUploadIn, ctx: AuthContext = Depends
     from celerp.credentials import issue_token_pair
     stage = _stage(str(ctx.user.id), payload.upload_token)
     if not stage.is_file():
+        await cb.finish_restore()
         result = await cb.reopen_restored(files.restored_company(stage), user_id=ctx.user.id)
         if result is None:
             raise HTTPException(status_code=409, detail=t("company_backup.upload_expired"))
@@ -443,6 +445,13 @@ async def replace_with_copy(payload: ReplaceUploadIn, ctx: AuthContext = Depends
                 stage, mode=payload.mode, user_id=user_id, current_company_id=company_id,
                 plan_fingerprint=payload.plan_fingerprint, typed_name=payload.company_name,
                 retain_peer_identities=files.staged_handoff(stage) is not None)
+        except cb.ReplaceUnfinished as exc:
+            # The old company is gone: the owner is switched to the new one, where Try again
+            # finishes the follow-up.
+            files.finish_stage(stage, exc.company_id)
+            await session.refresh(ctx.user)
+            return _error(exc, **await issue_token_pair(session, user=ctx.user, company_id=exc.company_id,
+                                                        expected_snonce=ctx.snonce))
         except cb.BackupError as exc:
             return _error(exc, stage)
         files.finish_stage(stage, result.company_id)

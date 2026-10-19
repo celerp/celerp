@@ -6076,6 +6076,7 @@
   "company_backup.err_replace_owner_only": "{company}ን መተካት የሚችለው ባለቤቱ ብቻ ነው።",
   "company_backup.err_replace_name": "የተየቡት ስም ከ{company} ጋር አይዛመድም። ልክ እንደተጻፈው ይተይቡት። ምንም አልተተካም።",
   "company_backup.err_replace_changed": "Celerp ቅጂ በሚያዘጋጅበት ጊዜ {company} ተቀይሯል። ምንም አልተተካም። እንደገና ይሞክሩ።",
+  "company_backup.err_replace_unfinished": "{company} ተተክቷል፣ የተተካው ስሪት በተቀመጡ ቅጂዎች ውስጥ አለ። Celerp ከመተካቱ በኋላ ያለውን ማስተካከያ ማጠናቀቅ አልቻለም። ለማጠናቀቅ እንደገና ይሞክሩ፤ ሌላ ምንም አይተካም።",
   "company_backup.err_replace_not_backed_up": "Celerp {company}ን ከመተካቱ በፊት ቅጂ ማዘጋጀት አልቻለም፦ {reason} ምንም አልተተካም።",
   "company_backup.err_kept_not_found": "ይህ የተቀመጠ ቅጂ ከእንግዲህ እዚህ የለም።",
   "company_backup.err_replace_gone": "ይህ ቅጂ ሊተካው የሚችል ኩባንያ እዚህ የለም። ምንም አልተተካም።",

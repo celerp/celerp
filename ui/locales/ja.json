@@ -6076,6 +6076,7 @@
   "company_backup.err_replace_owner_only": "{company}を置き換えられるのはオーナーだけです。",
   "company_backup.err_replace_name": "入力した名前が{company}と一致しません。表記どおりに正確に入力してください。何も置き換えられていません。",
   "company_backup.err_replace_changed": "Celerpがコピーを作成している間に{company}が変更されました。何も置き換えられていません。もう一度お試しください。",
+  "company_backup.err_replace_unfinished": "{company}は置き換えられ、置き換えられたバージョンは保存済みコピーにあります。置き換え後の後処理を完了できませんでした。もう一度お試しいただくと完了します。これ以上何も置き換えられません。",
   "company_backup.err_replace_not_backed_up": "置き換える前に{company}のコピーを作成できませんでした: {reason} 何も置き換えられていません。",
   "company_backup.err_kept_not_found": "この保存済みコピーはもうありません。",
   "company_backup.err_replace_gone": "このコピーで置き換えられる会社はここにありません。何も置き換えられていません。",

@@ -6076,6 +6076,7 @@
   "company_backup.err_replace_owner_only": "Somente o proprietário de {company} pode substituí-la.",
   "company_backup.err_replace_name": "O nome digitado não corresponde a {company}. Digite-o exatamente como está escrito. Nada foi substituído.",
   "company_backup.err_replace_changed": "{company} mudou enquanto o Celerp fazia uma cópia. Nada foi substituído. Tente novamente.",
+  "company_backup.err_replace_unfinished": "{company} foi substituída e a versão substituída está em Cópias salvas. O Celerp não conseguiu terminar a arrumação após a substituição. Tente novamente para terminar; nada mais é substituído.",
   "company_backup.err_replace_not_backed_up": "O Celerp não conseguiu fazer uma cópia de {company} antes de substituí-la: {reason} Nada foi substituído.",
   "company_backup.err_kept_not_found": "Esta cópia salva não está mais aqui.",
   "company_backup.err_replace_gone": "Não há nenhuma empresa aqui que esta cópia possa substituir. Nada foi substituído.",

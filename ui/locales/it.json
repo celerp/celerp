@@ -6076,6 +6076,7 @@
   "company_backup.err_replace_owner_only": "Solo il proprietario di {company} può sostituirla.",
   "company_backup.err_replace_name": "Il nome digitato non corrisponde a {company}. Digitalo esattamente come è scritto. Non è stato sostituito nulla.",
   "company_backup.err_replace_changed": "{company} è cambiata mentre Celerp ne faceva una copia. Non è stato sostituito nulla. Riprova.",
+  "company_backup.err_replace_unfinished": "{company} è stata sostituita e la versione sostituita si trova in Copie salvate. Celerp non è riuscito a completare il riordino dopo la sostituzione. Riprova per completare; non viene sostituito nient'altro.",
   "company_backup.err_replace_not_backed_up": "Celerp non è riuscito a fare una copia di {company} prima di sostituirla: {reason} Non è stato sostituito nulla.",
   "company_backup.err_kept_not_found": "Questa copia salvata non è più qui.",
   "company_backup.err_replace_gone": "Qui non c'è nessuna azienda che questa copia possa sostituire. Non è stato sostituito nulla.",

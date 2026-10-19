@@ -6076,6 +6076,7 @@
   "company_backup.err_replace_owner_only": "Nur der Inhaber von {company} kann es ersetzen.",
   "company_backup.err_replace_name": "Der eingegebene Name stimmt nicht mit {company} überein. Geben Sie ihn genau so ein, wie er geschrieben ist. Es wurde nichts ersetzt.",
   "company_backup.err_replace_changed": "{company} hat sich geändert, während Celerp eine Kopie davon erstellt hat. Es wurde nichts ersetzt. Versuchen Sie es erneut.",
+  "company_backup.err_replace_unfinished": "{company} wurde ersetzt, und die ersetzte Version liegt unter Gespeicherte Kopien. Celerp konnte das Aufräumen nach dem Ersetzen nicht abschließen. Versuchen Sie es erneut, um es abzuschließen; es wird nichts weiter ersetzt.",
   "company_backup.err_replace_not_backed_up": "Celerp konnte vor dem Ersetzen keine Kopie von {company} erstellen: {reason} Es wurde nichts ersetzt.",
   "company_backup.err_kept_not_found": "Diese gespeicherte Kopie ist nicht mehr vorhanden.",
   "company_backup.err_replace_gone": "Hier gibt es kein Unternehmen, das diese Kopie ersetzen kann. Es wurde nichts ersetzt.",

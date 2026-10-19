@@ -6076,6 +6076,7 @@
   "company_backup.err_replace_owner_only": "Solo el propietario de {company} puede reemplazarla.",
   "company_backup.err_replace_name": "El nombre escrito no coincide con {company}. Escríbalo exactamente como está escrito. No se reemplazó nada.",
   "company_backup.err_replace_changed": "{company} cambió mientras Celerp hacía una copia. No se reemplazó nada. Inténtelo de nuevo.",
+  "company_backup.err_replace_unfinished": "{company} se reemplazó y la versión reemplazada está en Copias guardadas. Celerp no pudo terminar de ordenar después del reemplazo. Inténtelo de nuevo para terminar; no se reemplaza nada más.",
   "company_backup.err_replace_not_backed_up": "Celerp no pudo hacer una copia de {company} antes de reemplazarla: {reason} No se reemplazó nada.",
   "company_backup.err_kept_not_found": "Esta copia guardada ya no está aquí.",
   "company_backup.err_replace_gone": "Aquí no hay ninguna empresa que esta copia pueda reemplazar. No se reemplazó nada.",

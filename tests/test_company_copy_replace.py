@@ -340,7 +340,9 @@ async def test_a_failure_after_the_replace_committed_keeps_the_backup(real_clien
     assert kept["company_name"] == NAME
 
     monkeypatch.setattr(cb, "commit_with_load_set", counted)
-    again = await real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok))
+    assert _cid(r.json()["access_token"]) == new  # the owner is switched to the replaced company
+    again = await real_client.post("/company-backups/replace", json=_replace_request(preview),
+                                   headers=auth(r.json()["access_token"]))
     assert again.status_code == 200, again.text
     assert again.json()["company_id"] == new and finished
     assert attachments.landing_companies() == []

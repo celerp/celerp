@@ -6076,6 +6076,7 @@
   "company_backup.err_replace_owner_only": "يمكن لمالك {company} وحده استبدالها.",
   "company_backup.err_replace_name": "الاسم الذي كتبته لا يطابق {company}. اكتبه تمامًا كما هو مكتوب. لم يُستبدل شيء.",
   "company_backup.err_replace_changed": "تغيرت {company} أثناء إنشاء Celerp نسخة منها. لم يُستبدل شيء. حاول مرة أخرى.",
+  "company_backup.err_replace_unfinished": "تم استبدال {company}، والنسخة التي استُبدلت موجودة في النسخ المحفوظة. لم يتمكن Celerp من إنهاء الترتيب بعد الاستبدال. حاول مرة أخرى لإنهائه؛ لن يُستبدل أي شيء آخر.",
   "company_backup.err_replace_not_backed_up": "تعذر على Celerp إنشاء نسخة من {company} قبل استبدالها: {reason} لم يُستبدل شيء.",
   "company_backup.err_kept_not_found": "هذه النسخة المحفوظة لم تعد موجودة.",
   "company_backup.err_replace_gone": "لا توجد هنا شركة يمكن لهذه النسخة استبدالها. لم يُستبدل شيء.",

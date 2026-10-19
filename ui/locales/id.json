@@ -6076,6 +6076,7 @@
   "company_backup.err_replace_owner_only": "Hanya pemilik {company} yang dapat menggantinya.",
   "company_backup.err_replace_name": "Nama yang Anda ketik tidak cocok dengan {company}. Ketik persis seperti tertulis. Tidak ada yang diganti.",
   "company_backup.err_replace_changed": "{company} berubah saat Celerp membuat salinannya. Tidak ada yang diganti. Coba lagi.",
+  "company_backup.err_replace_unfinished": "{company} sudah diganti, dan versi yang diganti ada di Salinan tersimpan. Celerp tidak dapat menyelesaikan perapian setelah penggantian. Coba lagi untuk menyelesaikannya; tidak ada lagi yang diganti.",
   "company_backup.err_replace_not_backed_up": "Celerp tidak dapat membuat salinan {company} sebelum menggantinya: {reason} Tidak ada yang diganti.",
   "company_backup.err_kept_not_found": "Salinan tersimpan ini sudah tidak ada.",
   "company_backup.err_replace_gone": "Tidak ada perusahaan di sini yang dapat diganti dengan salinan ini. Tidak ada yang diganti.",

@@ -6076,6 +6076,7 @@
   "company_backup.err_replace_owner_only": "Chỉ chủ sở hữu của {company} mới có thể thay thế nó.",
   "company_backup.err_replace_name": "Tên bạn nhập không khớp với {company}. Hãy nhập chính xác như đã viết. Không có gì bị thay thế.",
   "company_backup.err_replace_changed": "{company} đã thay đổi trong lúc Celerp tạo bản sao. Không có gì bị thay thế. Hãy thử lại.",
+  "company_backup.err_replace_unfinished": "{company} đã được thay thế và phiên bản bị thay thế nằm trong Bản sao đã lưu. Celerp chưa thể hoàn tất việc dọn dẹp sau khi thay thế. Hãy thử lại để hoàn tất; không có gì khác bị thay thế.",
   "company_backup.err_replace_not_backed_up": "Celerp không thể tạo bản sao của {company} trước khi thay thế: {reason} Không có gì bị thay thế.",
   "company_backup.err_kept_not_found": "Bản sao đã lưu này không còn ở đây.",
   "company_backup.err_replace_gone": "Ở đây không có công ty nào mà bản sao này có thể thay thế. Không có gì bị thay thế.",
