@@ -403,7 +403,12 @@ if ($Demo) {
 if ($OverRunning) {
   $before = RunningApp $installDir $port "before installing over the running app"
   $installDir = InstallSetup $setup "install over the running app ($($before.Count) app processes)"
-  $left = @($before | Where-Object { $p = Get-Process -Id $_.Id -EA SilentlyContinue; $p -and $p.StartTime -eq $_.StartTime })
+  # Windows reuses PIDs, and a process the smoke cannot read reports no StartTime or Path, so a survivor is
+  # the same PID with the same readable start time and the same executable.
+  $left = @($before | Where-Object {
+    $p = Get-Process -Id $_.Id -EA SilentlyContinue
+    $p -and $null -ne $p.StartTime -and $p.StartTime -eq $_.StartTime -and $p.Path -and $p.Path -eq $_.Path
+  })
   if ($left.Count) { $left | Format-Table Id, Name, Path | Out-String | Write-Host; Fail "the installer left the app running" }
   TreeMatches $installDir "install over the running app"
   $port = Launch $exe "launch after installing over the running app"
