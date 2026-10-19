@@ -1,0 +1,77 @@
+diff --git a/out/AppUpdater.js b/out/AppUpdater.js
+index 7358a8f0efca83c0e05186fa51f154592b66c8dd..ee659a1304e5d7e7bb3b95c0dc5cceed6054ee29 100644
+--- a/out/AppUpdater.js
++++ b/out/AppUpdater.js
+@@ -404,6 +404,17 @@ class AppUpdater extends events_1.EventEmitter {
+         if (!(await this.isUpdateAvailable(updateInfo))) {
+             this._logger.info(`Update for version ${this.currentVersion.format()} is not available (latest version: ${updateInfo.version}, downgrade is ${this.allowDowngrade ? "allowed" : "disallowed"}).`);
+             this.emit("update-not-available", updateInfo);
++            // Up to date: an installer left in the pending folder (one an antivirus held on to,
++            // or the one this version came from) is no longer needed, unless one is waiting to install.
++            try {
++                const downloadedUpdateHelper = await this.getOrCreateDownloadHelper();
++                if (downloadedUpdateHelper.file == null) {
++                    await downloadedUpdateHelper.clear();
++                }
++            }
++            catch (e) {
++                this._logger.warn(`Cannot clear the pending update folder: ${e.message || e}`);
++            }
+             return {
+                 isUpdateAvailable: false,
+                 versionInfo: updateInfo,
+@@ -588,7 +599,7 @@ class AppUpdater extends events_1.EventEmitter {
+         let updateFile = path.join(cacheDir, updateFileName);
+         const packageFile = packageInfo == null ? null : path.join(cacheDir, `package-${version}${path.extname(packageInfo.path) || ".7z"}`);
+         const done = async (isSaveCache) => {
+-            await downloadedUpdateHelper.setDownloadedFile(updateFile, packageFile, updateInfo, fileInfo, updateFileName, isSaveCache);
++            await downloadedUpdateHelper.setDownloadedFile(updateFile, packageFile, updateInfo, fileInfo, path.basename(updateFile), isSaveCache);
+             await taskOptions.done({
+                 ...updateInfo,
+                 downloadedFile: updateFile,
+@@ -614,19 +625,35 @@ class AppUpdater extends events_1.EventEmitter {
+             });
+         };
+         const tempUpdateFile = await (0, DownloadedUpdateHelper_1.createTempUpdateFile)(`temp-${updateFileName}`, cacheDir, log);
++        // On Windows, antivirus holds a freshly written file for a while, and renaming or deleting
++        // it fails with EPERM, EACCES or EBUSY until it lets go: wait up to 60 seconds.
++        const retryWhileHeld = (task, what) => (0, builder_util_runtime_1.retry)(task, {
++            retries: 120,
++            interval: 500,
++            shouldRetry: (error) => {
++                if (error instanceof Error && /^(EBUSY|EPERM|EACCES):/.test(error.message)) {
++                    return true;
++                }
++                log.warn(`Cannot ${what}: ${error.message || error.stack}`);
++                return false;
++            },
++        });
+         try {
+             await taskOptions.task(tempUpdateFile, downloadOptions, packageFile, removeFileIfAny);
+-            await (0, builder_util_runtime_1.retry)(() => (0, fs_extra_1.rename)(tempUpdateFile, updateFile), {
+-                retries: 60,
+-                interval: 500,
+-                shouldRetry: (error) => {
+-                    if (error instanceof Error && /^EBUSY:/.test(error.message)) {
+-                        return true;
++            // An old cached installer that cannot be removed must not fail the update: the new
++            // one is then installed from its temp file.
++            if (await (0, fs_extra_1.pathExists)(updateFile)) {
++                await retryWhileHeld(() => (0, fs_extra_1.unlink)(updateFile), `remove ${updateFile}`).catch((e) => {
++                    if (e.code === "ENOENT") {
++                        return;
+                     }
+-                    log.warn(`Cannot rename temp file to final file: ${error.message || error.stack}`);
+-                    return false;
+-                },
+-            });
++                    log.warn(`Cannot remove the old cached installer ${updateFile}, using ${tempUpdateFile} instead: ${e.message || e}`);
++                    updateFile = tempUpdateFile;
++                });
++            }
++            if (updateFile !== tempUpdateFile) {
++                await retryWhileHeld(() => (0, fs_extra_1.rename)(tempUpdateFile, updateFile), "rename temp file to final file");
++            }
+         }
+         catch (e) {
+             await removeFileIfAny();

@@ -1,7 +1,7 @@
 {
   "name": "celerp",
   "version": "1.0.0",
-  "description": "Free business software \u2014 inventory, invoicing, and operations in one place.",
+  "description": "Free business software — inventory, invoicing, and operations in one place.",
   "main": "main.js",
   "author": {
     "name": "Data Universal Limited",
@@ -20,10 +20,10 @@
     "test": "NODE_ENV=development jest --forceExit"
   },
   "dependencies": {
-    "electron-updater": "^6.3.0",
-    "embedded-postgres": "^17.9.0-beta.16",
     "@embedded-postgres/darwin-arm64": "17.9.0-beta.16",
-    "@embedded-postgres/darwin-x64": "17.9.0-beta.16"
+    "@embedded-postgres/darwin-x64": "17.9.0-beta.16",
+    "electron-updater": "^6.3.0",
+    "embedded-postgres": "^17.9.0-beta.16"
   },
   "devDependencies": {
     "electron": "^30.0.0",
@@ -33,7 +33,7 @@
   "build": {
     "appId": "com.celerp.app",
     "productName": "Celerp",
-    "copyright": "Copyright \u00a9 2026 Noah Severs",
+    "copyright": "Copyright © 2026 Noah Severs",
     "directories": {
       "output": "dist"
     },
@@ -242,7 +242,8 @@
     "patchedDependencies": {
       "@electron/universal@2.0.1": "patches/@electron__universal@2.0.1.patch",
       "app-builder-lib@25.1.8": "patches/app-builder-lib@25.1.8.patch",
-      "embedded-postgres@17.9.0-beta.16": "patches/embedded-postgres@17.9.0-beta.16.patch"
+      "embedded-postgres@17.9.0-beta.16": "patches/embedded-postgres@17.9.0-beta.16.patch",
+      "electron-updater@6.8.3": "patches/electron-updater@6.8.3.patch"
     }
   }
 }

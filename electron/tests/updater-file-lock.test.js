@@ -57,7 +57,7 @@ const tempFile = () => path.join(pending(), `temp-${NAME}`);
 
 // Run electron-updater's download step for a new installer, with the download
 // itself writing "new" to the temp file. Fake time runs on until it settles.
-// Returns { result, error, downloadedFile, seconds }.
+// Returns { error, downloadedFile }.
 async function download() {
   const helper = new DownloadedUpdateHelper(cacheDir);
   const log = { info: () => {}, warn: (m) => warnings.push(String(m)), error: () => {}, debug: () => {} };
@@ -74,19 +74,17 @@ async function download() {
     task: async (dest) => fs.promises.writeFile(dest, "new"),
     done: async (info) => { downloadedFile = info.downloadedFile; },
   };
-  const started = Date.now();
   let settled = false;
-  let result;
   let error;
   AppUpdater.prototype.executeDownload.call(self, taskOptions)
-    .then((r) => { result = r; }, (e) => { error = e; })
+    .catch((e) => { error = e; })
     .finally(() => { settled = true; });
   for (let i = 0; i < 400 && !settled; i++) {
     await new Promise((resolve) => setImmediate(resolve));
     await jest.advanceTimersByTimeAsync(250);
   }
   if (!settled) throw new Error("download never settled");
-  return { result, error, downloadedFile, seconds: (Date.now() - started) / 1000 };
+  return { error, downloadedFile };
 }
 
 test("a download antivirus holds for a few seconds (EPERM) is saved once it is released",
@@ -115,12 +113,11 @@ test("EACCES while the download is held is waited out the same way",
 
 test("a download that stays locked fails after about 60 seconds of retries, not at once",
   async function test_permanent_lock_fails_after_sixty_seconds() {
-    const rename = intercept("rename", () => { throw windowsError("EPERM", "rename"); });
-    const { error, seconds } = await download();
+    const tries = [];
+    intercept("rename", () => { tries.push(Date.now()); throw windowsError("EPERM", "rename"); });
+    const { error } = await download();
     expect(error && error.message).toMatch(/^EPERM:/);
-    expect(rename.mock.calls.length).toBeGreaterThan(100);
-    expect(seconds).toBeGreaterThanOrEqual(59);
-    expect(seconds).toBeLessThanOrEqual(62);
+    expect((tries[tries.length - 1] - tries[0]) / 1000).toBe(60);
   });
 
 // Hold `file` the way antivirus does on Windows, for `seconds` of (fake) time,
@@ -173,4 +170,22 @@ test("electron-updater is patched for exactly the installed version",
     const pkg = require("../package.json");
     const { version } = require("electron-updater/package.json");
     expect(pkg.pnpm.patchedDependencies[`electron-updater@${version}`]).toBe(`patches/electron-updater@${version}.patch`);
+  });
+
+test("once the app is up to date, an installer left in the pending folder is removed",
+  async function test_up_to_date_check_clears_pending_folder() {
+    cacheOldInstaller();
+    const helper = new DownloadedUpdateHelper(cacheDir);
+    const self = {
+      _logger: { info: () => {}, warn: () => {} },
+      emit: () => {},
+      currentVersion: { format: () => "2.6.1" },
+      allowDowngrade: false,
+      getUpdateInfoAndProvider: async () => ({ info: { version: "2.6.1" } }),
+      isUpdateAvailable: async () => false,
+      getOrCreateDownloadHelper: async () => helper,
+    };
+    const result = await AppUpdater.prototype.doCheckForUpdates.call(self);
+    expect(result.isUpdateAvailable).toBe(false);
+    expect(fs.existsSync(finalFile())).toBe(false);
   });
