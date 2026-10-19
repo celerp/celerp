@@ -372,6 +372,7 @@
   "btn.reset_columns_title": "Reset column visibility, order and widths to defaults",
   "btn.restart_now": "Restart Now",
   "btn.restart_to_install": "Restart to install",
+  "btn.download_installer": "Download the installer",
   "btn.restore": "Restore",
   "btn.resume": "Resume",
   "btn.retry": "Retry",

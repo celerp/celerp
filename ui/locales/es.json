@@ -345,6 +345,7 @@
   "btn.reset_columns_title": "Restablecer columnas a los valores predeterminados",
   "btn.restart_now": "Reiniciar ahora",
   "btn.restart_to_install": "Reiniciar para instalar",
+  "btn.download_installer": "Descargar el instalador",
   "btn.restore": "Restaurar",
   "btn.resume": "Reanudar",
   "btn.retry": "Reintentar",

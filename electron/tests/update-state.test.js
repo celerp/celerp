@@ -25,8 +25,10 @@ function downloadedSetup() {
 // The state without its log lines and revision.
 const stateOf = ({ log, revision, ...state }) => state;
 
-const IDLE = { status: "idle", version: "", percent: 0, message: "", checking: false, downloadFailed: false };
-const DOWNLOADED = { status: "downloaded", version: "2.0.1", percent: 100, message: "", checking: false, downloadFailed: false };
+const IDLE = { status: "idle", version: "", percent: 0, message: "", checking: false, downloadFailed: false, releaseUrl: "" };
+const DOWNLOADED = { ...IDLE, status: "downloaded", version: "2.0.1", percent: 100 };
+const LATEST = "https://github.com/celerp/celerp/releases/latest";
+const V201 = "https://github.com/celerp/celerp/releases/tag/v2.0.1";
 
 test("a fresh tracker starts idle", function test_new_tracker_starts_idle() {
   const { getUpdateState } = setup();
@@ -44,7 +46,7 @@ test("relaunch starts fresh: a new tracker is idle even after another reached do
 test("update found goes straight to downloading and is forwarded", function test_update_found_starts_downloading() {
   const { updater, sent, getUpdateState } = setup();
   updater.emit("update-available", { version: "2.0.1" });
-  const state = { status: "downloading", version: "2.0.1", percent: 0, message: "", checking: false, downloadFailed: false };
+  const state = { ...IDLE, status: "downloading", version: "2.0.1" };
   expect(stateOf(getUpdateState())).toEqual(state);
   expect(sent.map(([ch, s]) => [ch, stateOf(s)])).toEqual([["update-available", state]]);
 });
@@ -53,7 +55,7 @@ test("progress updates the percent and keeps the version", function test_progres
   const { updater, getUpdateState } = setup();
   updater.emit("update-available", { version: "2.0.1" });
   updater.emit("download-progress", { percent: 12.5 });
-  expect(stateOf(getUpdateState())).toEqual({ status: "downloading", version: "2.0.1", percent: 12.5, message: "", checking: false, downloadFailed: false });
+  expect(stateOf(getUpdateState())).toEqual({ ...IDLE, status: "downloading", version: "2.0.1", percent: 12.5 });
   updater.emit("download-progress", { percent: 80 });
   expect(getUpdateState().percent).toBe(80);
 });
@@ -100,7 +102,7 @@ test("downloaded cannot be demoted by later updater noise", function test_downlo
 test("an error before any download is retained for later replay", function test_pre_download_error_is_retained() {
   const { updater, sent, getUpdateState } = setup();
   updater.emit("error", new Error("getaddrinfo ENOTFOUND github.com"));
-  const state = { status: "error", version: "", percent: 0, message: "getaddrinfo ENOTFOUND github.com", checking: false, downloadFailed: false,
+  const state = { ...IDLE, status: "error", message: "getaddrinfo ENOTFOUND github.com", releaseUrl: LATEST,
                   log: ["Update error: getaddrinfo ENOTFOUND github.com"], revision: 1 };
   expect(getUpdateState()).toEqual(state);
   // Reading it again (a later page load) still returns the error.
@@ -147,7 +149,7 @@ test("an error with no usable message is stored with an empty message",
     for (const err of [undefined, null, {}, new Error("")]) {
       const { updater, getUpdateState } = setup();
       updater.emit("error", err);
-      expect(getUpdateState()).toEqual({ status: "error", version: "", percent: 0, message: "", checking: false, downloadFailed: false, log: ["Update error"], revision: 1 });
+      expect(getUpdateState()).toEqual({ ...IDLE, status: "error", releaseUrl: LATEST, log: ["Update error"], revision: 1 });
     }
   });
 
@@ -158,7 +160,7 @@ test("a check that finds nothing does not stop a download in progress",
     updater.emit("download-progress", { percent: 30 });
     sent.length = 0;
     updater.emit("update-not-available", {});
-    expect(stateOf(getUpdateState())).toEqual({ status: "downloading", version: "2.0.1", percent: 30, message: "", checking: false, downloadFailed: false });
+    expect(stateOf(getUpdateState())).toEqual({ ...IDLE, status: "downloading", version: "2.0.1", percent: 30 });
     expect(sent).toEqual([]);
   });
 
@@ -226,7 +228,7 @@ test("a failed check is kept until a later check has a result, and stays in the 
       updater.emit("checking-for-update");
       // While the new check runs, the failure is still there.
       expect(stateOf(getUpdateState())).toEqual(
-        { ...IDLE, status: "error", message: "getaddrinfo ENOTFOUND github.com", checking: true });
+        { ...IDLE, status: "error", message: "getaddrinfo ENOTFOUND github.com", checking: true, releaseUrl: LATEST });
       updater.emit(event, payload);
       expect(stateOf(getUpdateState())).toEqual(result);
       expect(getUpdateState().log.slice(0, 2)).toEqual(
@@ -242,7 +244,7 @@ test("a failed download is kept through the app's own checks until a retried dow
     updater.emit("error", new Error("sha512 checksum mismatch"));
     const failed = getUpdateState();
     expect(stateOf(failed)).toEqual(
-      { ...IDLE, status: "error", version: "2.0.1", message: "sha512 checksum mismatch", downloadFailed: true });
+      { ...IDLE, status: "error", version: "2.0.1", message: "sha512 checksum mismatch", downloadFailed: true, releaseUrl: V201 });
     sent.length = 0;
     // The periodic re-check finds nothing, then finds the update and downloads it again.
     for (const [event, payload] of [
@@ -317,7 +319,7 @@ test("a check the user asks for dismisses a failed download, and the check's res
     updater.emit("error", new Error("sha512 checksum mismatch"));
     handlers["check-for-updates"]();
     expect(stateOf(handlers["get-update-state"]())).toEqual(
-      { ...IDLE, status: "error", version: "2.0.1", message: "sha512 checksum mismatch" });
+      { ...IDLE, status: "error", version: "2.0.1", message: "sha512 checksum mismatch", releaseUrl: V201 });
     updater.emit("checking-for-update");
     updater.emit("update-not-available", {});
     const state = handlers["get-update-state"]();

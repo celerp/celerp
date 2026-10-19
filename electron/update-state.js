@@ -14,8 +14,48 @@
 // Log lines kept for the update card, oldest dropped first.
 const MAX_LOG_LINES = 200;
 
+const RELEASES = "https://github.com/celerp/celerp/releases";
+
+// The release page with the installer for `version`, or the latest release.
+function releasePageUrl(version) {
+  return version ? `${RELEASES}/tag/v${version}` : `${RELEASES}/latest`;
+}
+
 function initialUpdateState() {
-  return Object.freeze({ status: "idle", version: "", percent: 0, message: "", checking: false, downloadFailed: false });
+  return Object.freeze({ status: "idle", version: "", percent: 0, message: "", checking: false,
+                         downloadFailed: false, releaseUrl: "" });
+}
+
+/**
+ * What to tell the user when an update fails, in plain words, by what failed:
+ * starting the installer (`installing`), saving the download (Windows refused,
+ * usually antivirus still scanning it), the download's security check, or the
+ * download itself. Every failure offers the installer for `version` to download
+ * from `releaseUrl`.
+ *
+ * @param {string} errorMessage the updater's error
+ * @param {{version?: string, installing?: boolean}} context
+ * @returns {{message: string, detail: string, releaseUrl: string}}
+ */
+function updateFailure(errorMessage, { version = "", installing = false } = {}) {
+  const installer = version ? `the installer for version ${version}` : "the installer";
+  let message;
+  let advice;
+  if (installing) {
+    message = "Celerp could not start the installer.";
+    advice = `Download ${installer} and run it yourself. Celerp will restart when you close this message.`;
+  } else if (/^(EPERM|EACCES|EBUSY):/.test(errorMessage)) {
+    message = "Celerp downloaded the update, but Windows would not let Celerp save it.";
+    advice = "This usually means antivirus software is still checking the download. " +
+      `Download ${installer} and run it yourself, or check for updates again in a few minutes.`;
+  } else if (/sha512|checksum|signature|signed/i.test(errorMessage)) {
+    message = "The downloaded update did not pass its security check, so Celerp did not use it.";
+    advice = `Download ${installer} and run it yourself.`;
+  } else {
+    message = "Celerp could not download the update.";
+    advice = `Check your internet connection. You can also download ${installer} and run it yourself.`;
+  }
+  return { message, detail: `${advice}${errorMessage ? `\n\nDetails: ${errorMessage}` : ""}`, releaseUrl: releasePageUrl(version) };
 }
 
 // A download percent from 0 to 100; anything that is not a number is 0.
@@ -38,7 +78,7 @@ function toPercent(value) {
  *   or the user dismisses it: checks, found and progress leave it as it is.
  *
  * @param {{status: string, version: string, percent: number, message: string,
- *          checking: boolean, downloadFailed: boolean}} state
+ *          checking: boolean, downloadFailed: boolean, releaseUrl: string}} state
  * @param {{type: "check"|"dismiss"|"found"|"progress"|"downloaded"|"not-available"|"error",
  *          version?: string, percent?: number, message?: string}} event
  */
@@ -46,7 +86,7 @@ function nextUpdateState(state, event) {
   if (state.status === "downloaded") return null;
   const failedDownload = state.status === "error" && state.downloadFailed;
   const next = (fields) =>
-    Object.freeze({ ...state, message: "", checking: false, downloadFailed: false, ...fields });
+    Object.freeze({ ...state, message: "", checking: false, downloadFailed: false, releaseUrl: "", ...fields });
   switch (event.type) {
     case "check":
       if ((state.status !== "idle" && state.status !== "error") || failedDownload) return null;
@@ -70,7 +110,8 @@ function nextUpdateState(state, event) {
       return initialUpdateState();
     case "error":
       return next({ status: "error", percent: 0, message: event.message || "",
-                    downloadFailed: state.status === "downloading" || failedDownload });
+                    downloadFailed: state.status === "downloading" || failedDownload,
+                    releaseUrl: releasePageUrl(state.version) });
     default:
       return null;
   }
@@ -83,15 +124,17 @@ function nextUpdateState(state, event) {
  * rises with each change, so a state read earlier but delivered later (the
  * page's get-update-state answer racing a live event) is recognisably older. The log is the
  * history of every check, kept until relaunch. An error is always logged, even
- * when it no longer changes the state.
+ * when it no longer changes the state. `onFailure(state)` hears of a download
+ * that fails, once, until the user dismisses it.
  *
  * @param {{on: (event: string, fn: Function) => void}} updater
  * @param {(channel: string, state: object) => void} send
+ * @param {(state: object) => void} [onFailure]
  * @returns {{getUpdateState: () => object, dismissError: () => void}}
  *   getUpdateState returns a copy with its log and revision; dismissError clears a failed
  *   download, at the user's request.
  */
-function trackUpdater(updater, send) {
+function trackUpdater(updater, send, onFailure = () => {}) {
   let state = initialUpdateState();
   let log = [];
   // Progress is logged once per 10% step, so the log stays short.
@@ -137,8 +180,10 @@ function trackUpdater(updater, send) {
     apply("update-not-available", { type: "not-available" }, () => ""));
   updater.on("error", (err) => {
     const message = typeof err === "string" ? err : (err && err.message) || "";
+    const failedBefore = state.downloadFailed;
     apply("update-error", { type: "error", message },
       () => (message ? "Update error: " + message : "Update error"), true);
+    if (state.downloadFailed && !failedBefore) onFailure(snapshot());
   });
 
   return {
@@ -157,12 +202,14 @@ function trackUpdater(updater, send) {
  * @param {() => ({webContents: {send: Function}}|null)} getWindow
  * @param {{on: (event: string, fn: Function) => void, checkForUpdates: () => Promise}} updater
  * @param {boolean} canCheck
+ * @param {(state: object) => void} [onFailure] see trackUpdater
+ * @returns {{getUpdateState: () => object}}
  */
-function serveUpdateState(ipcMain, getWindow, updater, canCheck) {
+function serveUpdateState(ipcMain, getWindow, updater, canCheck, onFailure) {
   const { getUpdateState, dismissError } = trackUpdater(updater, (channel, state) => {
     const win = getWindow();
     if (win) win.webContents.send(channel, state);
-  });
+  }, onFailure);
   ipcMain.handle("get-update-state", () => getUpdateState());
   // A check the user asks for dismisses a failed download; the checks the app
   // runs by itself never do.
@@ -170,6 +217,7 @@ function serveUpdateState(ipcMain, getWindow, updater, canCheck) {
     dismissError();
     if (canCheck) updater.checkForUpdates().catch(() => {}); // errors handled by the "error" event
   });
+  return { getUpdateState };
 }
 
-module.exports = { initialUpdateState, nextUpdateState, trackUpdater, serveUpdateState };
+module.exports = { initialUpdateState, nextUpdateState, trackUpdater, serveUpdateState, updateFailure };

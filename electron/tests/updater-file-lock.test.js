@@ -36,13 +36,17 @@ function intercept(name, fn) {
   return jest.spyOn(fsExtra, name).mockImplementation((...args) => fn(original, args, call++));
 }
 
+// Real time, which the tests' fake timers leave alone.
+const realSetTimeout = setTimeout;
+const realNow = () => Number(process.hrtime.bigint() / 1000000n);
+
 let cacheDir;
 let warnings;
 
 beforeEach(() => {
   cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-updater-"));
   warnings = [];
-  jest.useFakeTimers({ doNotFake: ["setImmediate", "nextTick", "queueMicrotask"] });
+  jest.useFakeTimers({ doNotFake: ["setImmediate", "nextTick", "queueMicrotask", "hrtime"] });
 });
 
 afterEach(() => {
@@ -79,11 +83,13 @@ async function download() {
   AppUpdater.prototype.executeDownload.call(self, taskOptions)
     .catch((e) => { error = e; })
     .finally(() => { settled = true; });
-  for (let i = 0; i < 400 && !settled; i++) {
-    await new Promise((resolve) => setImmediate(resolve));
-    await jest.advanceTimersByTimeAsync(250);
+  // Run each retry's timer; while none is due, let the real file system work.
+  const deadline = realNow() + 20000;
+  while (!settled) {
+    if (realNow() > deadline) throw new Error("download never settled");
+    if (jest.getTimerCount() > 0) await jest.advanceTimersByTimeAsync(500);
+    else await new Promise((resolve) => realSetTimeout(resolve, 5));
   }
-  if (!settled) throw new Error("download never settled");
   return { error, downloadedFile };
 }
 

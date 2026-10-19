@@ -345,6 +345,7 @@
   "btn.reset_columns_title": "列をデフォルトにリセット",
   "btn.restart_now": "今すぐ再起動",
   "btn.restart_to_install": "再起動してインストール",
+  "btn.download_installer": "インストーラーをダウンロード",
   "btn.restore": "復元する",
   "btn.resume": "再開",
   "btn.retry": "リトライ",

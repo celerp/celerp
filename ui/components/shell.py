@@ -1165,10 +1165,18 @@ document.addEventListener('DOMContentLoaded', function() {
     var progressBar = card.querySelector('.update-card__progress-bar');
     var progressFill = card.querySelector('.update-card__progress-fill');
     var logEl = card.querySelector('.update-card__log');
+    var installerLink = card.querySelector('.update-card__installer-link');
 
     function setState(text, showRestart) {
       if (stateEl) stateEl.textContent = text;
       if (restartBtn) restartBtn.style.display = showRestart ? '' : 'none';
+    }
+
+    // Every failure offers the installer, from the release page the state names.
+    function setInstallerLink(url) {
+      if (!installerLink) return;
+      if (url) installerLink.href = url;
+      installerLink.style.display = url ? '' : 'none';
     }
 
     function setCheckBtn(visible) {
@@ -1233,6 +1241,7 @@ document.addEventListener('DOMContentLoaded', function() {
           setState(i18n.upToDate, false);
           resetToIdle();
         }
+        setInstallerLink(s.status === 'error' ? s.releaseUrl : '');
         setLog(s.log);
         window.celerpSetUpdateBell(s.status === 'downloading' || s.status === 'downloaded'
                                    || (s.status === 'error' && s.downloadFailed));
@@ -2306,6 +2315,10 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         ),
                         # Scrolling log (hidden until first log line)
                         Pre(cls="update-card__log", style="display:none;"),
+                        # Shown when an update fails, linking that version's release page.
+                        A(t("btn.download_installer"), href="https://github.com/celerp/celerp/releases/latest",
+                          target="_blank", rel="noopener noreferrer", cls="update-card__installer-link",
+                          style="display:none;"),
                         Button(t("btn.check_for_updates"), cls="update-card__check-btn", type="button"),
                         Span("", cls="update-card__release"),
                         Button(t("btn.restart_to_install"), cls="update-card__restart-btn", type="button",

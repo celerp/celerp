@@ -345,6 +345,7 @@
   "btn.reset_columns_title": "إعادة تعيين الأعمدة إلى الإعدادات الافتراضية",
   "btn.restart_now": "أعد التشغيل الآن",
   "btn.restart_to_install": "إعادة التشغيل للتثبيت",
+  "btn.download_installer": "تنزيل برنامج التثبيت",
   "btn.restore": "يعيد",
   "btn.resume": "استئناف",
   "btn.retry": "أعد المحاولة",

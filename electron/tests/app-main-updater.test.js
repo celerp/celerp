@@ -6,6 +6,7 @@
 
 "use strict";
 
+const os = require("os");
 const { loadAppMain } = require("./app-main-loader.lib");
 
 test("app-main serves get-update-state from the updater it tracks",
@@ -46,8 +47,9 @@ function packagedApp(choice) {
   const relaunched = [];
   const loaded = loadAppMain({
     app: { isPackaged: true, relaunch: () => relaunched.push(true), exit: () => {} },
-    dialog: { showMessageBox: (win, opts) => { shown.push(opts); return Promise.resolve({ response: choice }); } },
+    dialog: { showMessageBox: (...args) => { shown.push(args[args.length - 1]); return Promise.resolve({ response: choice }); } },
     shell: { openExternal: (url) => { opened.push(url); return Promise.resolve(); } },
+    resourcesPath: os.tmpdir(),
   });
   loaded.updater.checkForUpdates = () => Promise.resolve();
   loaded.updater.quitAndInstall = () => loaded.updater.emit("error", new Error("spawn UNKNOWN"));

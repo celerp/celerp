@@ -197,7 +197,7 @@ const { migrateArgs } = require("./migrate_cmd");
 const { compatibilityArgs, mayOpenData } = require("./compatibility");
 const { openData, reopenData } = require("./boot");
 const { writeConfig: writeLockedConfig } = require("./config-writer");
-const { serveUpdateState } = require("./update-state");
+const { serveUpdateState, updateFailure } = require("./update-state");
 const { startupDeelevation, relaunchThroughExplorer } = require("./deelevation");
 const { windowsStartFailure, clusterStartFailure, logSince } = require("./windows-start-errors");
 const { initialiseClusterOnce, postgresPaths } = require("./windows-initdb");
@@ -872,6 +872,10 @@ function resolveStorageEnv(cfg) {
  *   idle -> downloading -> downloaded -> [admin clicks] -> install
  *   idle/downloading -> error on failure; downloaded is final until relaunch
  *
+ * A failed download, or an installer that will not start, is told in a dialog
+ * that offers the installer to download from the release page; a failed check
+ * only shows on the update card.
+ *
  * autoInstallOnAppQuit = false: Squirrel/NSIS never install on normal quit.
  * The ONLY install trigger is an explicit admin action (installUpdate IPC).
  * This eliminates background race conditions entirely.
@@ -884,7 +888,33 @@ function resolveStorageEnv(cfg) {
  */
 // get-update-state answers idle until the updater checks (dev builds never check);
 // check-for-updates runs the check the user asks for.
-serveUpdateState(ipcMain, () => mainWindow, autoUpdater, app.isPackaged);
+const updateState = serveUpdateState(ipcMain, () => mainWindow, autoUpdater, app.isPackaged,
+  (state) => showUpdateFailure(state.message, { version: state.version }));
+
+// Set once the servers have stopped for the installer, so an error then is the install failing.
+let installingUpdate = false;
+
+// Tell the user an update failed, in a dialog they cannot miss, and offer the
+// installer to run themselves. The release page opens only if they choose it.
+async function showUpdateFailure(errorMessage, context) {
+  const failure = updateFailure(errorMessage, context);
+  const options = {
+    type: "warning",
+    buttons: ["Download the installer", "Close"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "Update failed",
+    message: failure.message,
+    detail: failure.detail,
+  };
+  try {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
+    if (response === 0) await shell.openExternal(failure.releaseUrl);
+  } catch (err) {
+    console.error("[updater] could not show the update failure:", err?.message ?? String(err));
+  }
+}
 
 function setupAutoUpdater() {
   if (!app.isPackaged) return;
@@ -894,9 +924,16 @@ function setupAutoUpdater() {
   autoUpdater.allowPrerelease = false;
 
   autoUpdater.on("error", (err) => {
-    // Update failures must never interrupt work, but must be visible: the
-    // update card shows them, and the console keeps them.
-    console.error("[updater] error:", err?.message ?? String(err));
+    // The update card shows every failure and the console keeps it; a failed
+    // download is also told in a dialog (serveUpdateState above).
+    const message = err?.message ?? String(err);
+    console.error("[updater] error:", message);
+    // The servers have stopped for the installer, so Celerp restarts once the user has read this.
+    if (installingUpdate) {
+      installingUpdate = false;
+      showUpdateFailure(message, { version: updateState.getUpdateState().version, installing: true })
+        .finally(() => fullRelaunch(app));
+    }
   });
 
   // Delay initial check until the renderer has loaded and registered its IPC handlers.
@@ -1264,6 +1301,7 @@ function createWindow() {
 ipcMain.on("install-update", async () => {
   isQuitting = true;  // prevent the macOS hide-on-close handler from blocking quit
   await lifecycle.shutdown();
+  installingUpdate = true;
   autoUpdater.quitAndInstall(true, true);
 });
 
