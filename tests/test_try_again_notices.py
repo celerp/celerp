@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
 """No message tells the user to refresh or reload the page (the desktop app has no visible
-reload). A notice that needs one names the Try again action instead, and one shared piece of
-the shell turns that name into a button that reloads the page when it is clicked."""
+reload). A notice that needs one says "Select Try again" instead, and only those messages get
+the Try again control, which opens the page again with GET when it is clicked."""
 
 from __future__ import annotations
 
@@ -121,18 +121,122 @@ def test_no_message_in_code_tells_the_user_to_refresh_or_reload():
     assert found == []
 
 
-def test_the_shell_carries_one_try_again_button_for_every_notice_that_names_it():
-    from ui.components.shell import client_scripts, _shell_js_i18n
-    labels = _shell_js_i18n("en")["tryAgainLabels"]
-    assert sorted(labels) == sorted({_catalog(lang)["btn.try_again"] for lang in LANGS})
-    js = "".join(str(s) for s in client_scripts("en"))
-    assert js.count("function celerpTryAgain") == 1 and "location.reload()" in js
-    assert js.count("try-again") >= 1
+# Messages that ask the user to do the action again (or that sit beside a Retry control of
+# their own): they never get the Try again control, in any language.
+_RETRY_THE_ACTION = (
+    "shell.request_failed", "api.unreachable", "error.backup_running", "auth.sign_ins_paused_one",
+    "settings.reset_not_done", "connectors.connect_failed", "inventory.err_merge_stores_unchecked",
+    "acct.err_je_zero", "acct.err_void_none_selected", "acct.err_writeoff_too_large",
+    "contacts.err_none_selected", "modules.unavailable_retry", "msg.files_load_failed",
+    "error.company_settings_unavailable", "older_stock.failed", "btn.try_again", "btn.retry",
+)
 
 
-def test_the_contact_notice_has_no_second_try_again_implementation():
-    import ui.routes.contacts as contacts
-    assert not hasattr(contacts, "_reload_contact_link")
+def _filled(template: str) -> str:
+    return re.sub(r"\{\w+\}", "X", template)
+
+
+def _says_try_again(lang: str, text: str) -> bool:
+    from ui.i18n import try_again_pattern
+    return re.search(try_again_pattern(lang), text) is not None
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_every_message_that_says_select_try_again_is_recognised_in_its_own_language(lang):
+    from ui.i18n import t
+    en = _catalog("en")
+    keys = [k for k, v in en.items() if re.search(r"[Ss]elect Try again", v)]
+    assert len(keys) > 100
+    missed = [k for k in keys if not _says_try_again(lang, _filled(t(k, lang)))]
+    assert missed == []
+
+
+@pytest.mark.parametrize("lang", ["en", "th", "ja", "de"])
+def test_a_message_that_means_do_it_again_gets_no_try_again_control(lang):
+    from ui.i18n import t
+    en = _catalog("en")
+    assert [k for k in _RETRY_THE_ACTION if k not in en] == []
+    matched = [k for k in _RETRY_THE_ACTION if _says_try_again(lang, _filled(t(k, lang)))]
+    assert matched == []
+
+
+def _request(method: str, path: str, query: str = ""):
+    from starlette.requests import Request
+    from ui.app import app
+    return Request({"type": "http", "method": method, "path": path, "root_path": "",
+                    "query_string": query.encode(), "headers": [], "app": app})
+
+
+@pytest.mark.parametrize("method, path, query, address", [
+    ("GET", "/inventory", "q=ring", "/inventory?q=ring"),
+    ("GET", "/contacts/c1", "", "/contacts/c1"),
+    ("POST", "/inventory/import/preview", "", "/inventory/import"),
+    ("POST", "/inventory/import/mapped", "", "/inventory/import"),
+    ("POST", "/docs/import/mapped", "", "/docs/import"),
+    ("POST", "/setup/import-backup", "", "/setup/import-backup"),
+])
+def test_try_again_opens_the_page_with_get_never_sending_a_form_again(method, path, query, address):
+    from ui.components.shell import try_again_address
+    assert try_again_address(_request(method, path, query)) == address
+
+
+def _shell_config(html: str) -> dict:
+    return json.loads(re.search(r"window\.__shellI18n = (\{.*?\});</script>", html, re.S).group(1))
+
+
+@pytest.fixture
+def import_backup_page(ui_client):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock, patch
+    import httpx
+
+    @asynccontextmanager
+    async def timed_out(*_a, **_k):
+        raise httpx.TimeoutException("slow")
+        yield
+
+    async def open_(method, lang="en"):
+        cookies = {"celerp_lang": lang}
+        with patch("ui.routes.auth.bootstrap_status", new=AsyncMock(return_value=False)), \
+             patch("ui.api_client.setup_code_required", new=AsyncMock(return_value=False)), \
+             patch("ui.api_client._local_client", new=timed_out):
+            if method == "GET":
+                return await ui_client.get("/setup/import-backup", cookies=cookies)
+            return await ui_client.post("/setup/import-backup", cookies=cookies,
+                                        files={"backup_file": ("b.celerp-backup", b"x", "application/octet-stream")})
+    return open_
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang", ["en", "th"])
+async def test_the_restore_page_that_says_select_try_again_carries_it_and_it_opens_with_get(import_backup_page, lang):
+    from ui.i18n import t
+    r = await import_backup_page("POST", lang)
+    assert t("auth.import_timed_out", lang) in r.text
+    config = _shell_config(r.text)
+    assert config["tryAgainHref"] == "/setup/import-backup"
+    assert config["tryAgain"] == t("btn.try_again", lang)
+    assert re.search(config["tryAgainPattern"], t("auth.import_timed_out", lang))
+
+
+@pytest.mark.asyncio
+async def test_repricing_without_a_version_says_so_in_the_readers_language(ui_client):
+    from unittest.mock import AsyncMock, patch
+    from test_ui import _authed
+    from ui.i18n import t
+    with patch("ui.api_client.get_doc", new=AsyncMock(return_value={"doc_type": "invoice"})), \
+         patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Wholesale"}])), \
+         patch("ui.api_client.patch_doc", new=AsyncMock(return_value={})), \
+         patch("ui.api_client.reprice_doc", new=AsyncMock(return_value={})):
+        r = await ui_client.patch("/docs/d1/field/price_list", data={"value": "Wholesale"},
+                                  cookies={**_authed(), "celerp_lang": "th"})
+    toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
+    assert toast["message"] == t("documents.reprice_version_unknown", "th")
+    assert toast["message"] != "documents.reprice_version_unknown"
+
+
+def test_the_japanese_close_label_says_close():
+    assert _catalog("ja")["btn.close"] == "閉じる"
 
 
 @pytest.mark.asyncio
