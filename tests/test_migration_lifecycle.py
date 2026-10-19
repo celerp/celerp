@@ -132,7 +132,7 @@ async def test_full_history_blocker_is_server_validated_not_hidden(client, sessi
     stored["decisions"]["cutover_date"] = None
     path.write_text(json.dumps(stored))
     r = await client.post("/migrations/bootstrap/start", json={
-        "scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+        "scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
         "email": "owner@example.com", "password": "ownerpw123"})
     assert r.status_code == 422, r.text
     assert "mode" in r.json()["detail"]
@@ -243,7 +243,7 @@ async def test_migration_run_company_isolation(client, session, migration_env):
     r = await scan_upload(client, fake_bytes(), token=manager_token)
     assert r.status_code == 403 and r.json()["detail"] == OWNER_ONLY
     r = await client.post("/migrations/start-from-scan", headers=auth(manager_token),
-                          json={"scan_token": "x" * 43, "company_name": "Nope"})
+                          json={"scan_token": "x" * 43, "company_name": "Nope", "timezone": "UTC"})
     assert r.status_code == 403 and r.json()["detail"] == OWNER_ONLY
 
     # Once finished, a member of the moved company still has no view of the run; the creator keeps it.
@@ -274,7 +274,7 @@ async def test_migration_state_machine_rejects_illegal_transitions(real_client, 
     scan_token = r.json()["scan_token"]
     assert (await save_decisions(real_client, scan_token, token=admin_token)).status_code == 200
     r = await real_client.post("/migrations/start-from-scan", headers=auth(admin_token),
-                               json={"scan_token": scan_token, "company_name": "Empty Co"})
+                               json={"scan_token": scan_token, "company_name": "Empty Co", "timezone": "UTC"})
     assert r.status_code == 422 and r.json()["detail"] == t("migration.err_nothing_to_migrate", "en")
     assert await count(real_engine, "companies") == companies
     assert await count(real_engine, "migration_runs") == 0
@@ -543,7 +543,7 @@ async def test_discard_staged_company_is_complete_or_noop(real_client, real_engi
     scan_token = r.json()["scan_token"]
     assert (await save_decisions(real_client, scan_token)).status_code == 200
     r = await real_client.post("/migrations/bootstrap/start", json={
-        "scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+        "scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
         "email": "owner@example.com", "password": "ownerpw123"})
     assert r.status_code == 201, r.text
     r = await discard(r.json()["access_token"], r.json()["run_id"])
@@ -795,7 +795,7 @@ async def test_prepared_by_is_validated_and_persisted(client, session, migration
     scan_token = r.json()["scan_token"]
     r = await save_decisions(client, scan_token, prepared_by="x" * 201)
     assert r.status_code == 422 and "prepared_by" in r.json()["detail"]
-    start = {"scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+    start = {"scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
              "email": "owner@example.com", "password": "ownerpw123"}
     r = await client.post("/migrations/bootstrap/start", json=start)
     assert r.status_code == 422, r.text
@@ -825,7 +825,7 @@ async def test_concurrent_bootstrap_start_starts_one_migration(real_client, real
 
     async def start():
         return await real_client.post("/migrations/bootstrap/start", json={
-            "scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+            "scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
             "email": "owner@example.com", "password": "ownerpw123"})
 
     results = await asyncio.gather(start(), start())

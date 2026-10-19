@@ -14,12 +14,12 @@ from __future__ import annotations
 import csv
 import io
 import re
-from datetime import date as _date
 from urllib.parse import urlencode
 
 from fasthtml.common import *
 from starlette.responses import PlainTextResponse, RedirectResponse, StreamingResponse
 
+from celerp.services.business_time import business_today
 from celerp.services.csv_export import csv_safe
 from celerp.services.money import round_money, to_decimal
 from ui.api_client import APIError
@@ -257,7 +257,7 @@ def report_header(company: dict, title: str, subtitle: str = "") -> FT:
         Div(
             H2(title, cls="report-title"),
             P(subtitle, cls="report-subtitle") if subtitle else None,
-            P(t("reports.printed", date=_date.today().isoformat()), cls="report-print-date"),
+            P(t("reports.printed", date=business_today(company.get("timezone")).isoformat()), cls="report-print-date"),
         ),
         cls="report-header",
     )

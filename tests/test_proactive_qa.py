@@ -66,6 +66,7 @@ class TestCurrencyThreadingAllRoutes:
     async def test_reports_ar_aging_uses_company_currency(self, ui_client):
         """AR aging page must render without crashing for a USD company."""
         aging_data = {
+            "as_of": "2026-02-24",
             "lines": [{"customer_name": "Bob", "current": 100, "d30": 50,
                         "d60": 0, "d90": 0, "d90plus": 0, "total": 150}],
             "buckets": {"current": 100, "1-30": 50},
@@ -84,6 +85,7 @@ class TestCurrencyThreadingAllRoutes:
     async def test_reports_ap_aging_uses_company_currency(self, ui_client):
         """AP aging must use company currency, not hardcoded ฿."""
         aging_data = {
+            "as_of": "2026-02-24",
             "lines": [{"contact_name": "Supplier X", "current": 200, "d30": 0,
                         "d60": 0, "d90": 0, "d90plus": 0, "total": 200}],
             "buckets": {},
@@ -685,6 +687,7 @@ class TestGracefulEmptyData:
     async def test_aging_with_zero_amount_lines_hidden(self, ui_client):
         """Lines with all-zero amounts and no contact name should be filtered out."""
         aging_data = {
+            "as_of": "2026-02-24",
             "lines": [
                 {"customer_name": "", "current": 0, "d30": 0, "d60": 0, "d90": 0, "d90plus": 0, "total": 0},
             ],
@@ -831,6 +834,7 @@ class TestReportDisplayConsistency:
     async def test_ar_aging_sortable_by_outstanding(self, ui_client):
         """AR aging with data must include sort links."""
         aging_data = {
+            "as_of": "2026-02-24",
             "lines": [
                 {"customer_name": "Alpha", "current": 100, "d30": 50, "d60": 0, "d90": 0, "d90plus": 0, "total": 150},
                 {"customer_name": "Beta", "current": 200, "d30": 0, "d60": 0, "d90": 0, "d90plus": 0, "total": 200},

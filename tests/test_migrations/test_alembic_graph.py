@@ -45,12 +45,13 @@ RELEASE_HEAD = "o2d3e4f5a6b7"
 # the index on the asset a projection belongs to, then company peer grants, then removing
 # per-user API keys, then the firm view's key last use and refused records, then the
 # revisions two-way sync sent or declined, then the account links two-way sync keeps,
-# then the attachments a Xero migration fetches, then the firm name a company key carries.
+# then the attachments a Xero migration fetches, then the firm name a company key carries,
+# then password resets.
 RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1", "t7i8j9k0l1m2",
                  "u8j9k0l1m2n3", "c7f1a2b3d4e5", "d8e9f0a1b2c3", "e9f0a1b2c3d4", "v0m1n2o3p4q5",
                  "w1n2o3p4q5r6", "x2o3p4q5r6s7", "x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9",
                  "a5t6u7v8w9x0", "b6u7v8w9x0y1", "c7v8w9x0y1z2", "d8w9x0y1z2a3",
-                 "e9x0y1z2a3b4", "f0y1z2a3b4c5"]
+                 "e9x0y1z2a3b4", "f0y1z2a3b4c5", "y3p4q5r6s7t8"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.
@@ -309,8 +310,8 @@ def test_every_table_and_column_this_release_adds_is_placed_for_company_backups(
             assert (table in cb.PORTABLE_TABLES) != (table in cb.EXCLUDED_TABLES), table
         else:
             # Without a company column a table is either one of those above or hangs
-            # off a table that stays with the installation (a notice's read receipts).
+            # off a table that stays with the installation (a notice's read receipts,
+            # a user's password resets).
             parents = {fk.column.table.name for fk in tables[table].foreign_keys}
             assert table not in cb.PORTABLE_TABLES, table
-            assert (table in OUTLIVES_ITS_COMPANY or parents & set(cb.EXCLUDED_TABLES)
-                    or table in BELONGS_TO_A_PERSON and parents == {"users"}), table
+            assert table in OUTLIVES_ITS_COMPANY or parents & {*cb.EXCLUDED_TABLES, "users"}, table

@@ -40,7 +40,7 @@ EXPIRED = "This scan has expired. Upload the file again."
 
 
 def _start_body(scan_token: str) -> dict:
-    return {"scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+    return {"scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
             "email": OWNER_EMAIL, "password": OWNER_PASSWORD}
 
 

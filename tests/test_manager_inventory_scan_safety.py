@@ -52,7 +52,7 @@ async def _refused_everywhere(client, session, migration_env, scan_token, labels
                                "mappings": {}, "prepared_by": None}
         path.write_text(json.dumps(stored))
         r = await client.post("/migrations/bootstrap/start", json={
-            "scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+            "scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
             "email": "owner@example.com", "password": "ownerpw123"})
         assert r.status_code == 422, (mode, r.text)
         assert (await session.execute(text("SELECT count(*) FROM companies"))).scalar_one() == 0

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -55,70 +55,47 @@ class TestFyStart:
         assert _fy_start("10-01", ref2) == date(2025, 10, 1)
 
 
+TODAY = date(2026, 6, 15)
+
+
+@pytest.fixture
+def frozen(monkeypatch):
+    from company_today_support import freeze
+
+    freeze(monkeypatch, datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc))
+
+
+@pytest.mark.usefixtures("frozen")
 class TestResolvePreset:
     def test_this_month(self):
-        today = date.today()
-        dfrom, dto = _resolve_preset("this_month")
-        assert dfrom == today.replace(day=1).isoformat()
-        assert dto == today.isoformat()
+        assert _resolve_preset("this_month", {}) == ("2026-06-01", "2026-06-15")
 
     def test_last_3m(self):
-        today = date.today()
-        dfrom, dto = _resolve_preset("last_3m")
-        assert dto == today.isoformat()
-        assert dfrom < dto
+        assert _resolve_preset("last_3m", {}) == ((TODAY - timedelta(days=90)).isoformat(), "2026-06-15")
 
     def test_last_12m(self):
-        today = date.today()
-        dfrom, dto = _resolve_preset("last_12m")
-        assert dto == today.isoformat()
+        assert _resolve_preset("last_12m", {}) == ((TODAY - timedelta(days=365)).isoformat(), "2026-06-15")
 
     def test_this_fy_jan_fiscal(self):
-        today = date.today()
-        dfrom, dto = _resolve_preset("this_fy", "01-01")
-        assert dfrom == date(today.year, 1, 1).isoformat()
-        assert dto == today.isoformat()
+        assert _resolve_preset("this_fy", {"fiscal_year_start": "01-01"}) == ("2026-01-01", "2026-06-15")
 
     def test_this_fy_apr_fiscal(self):
-        today = date.today()
-        dfrom, dto = _resolve_preset("this_fy", "04-01")
-        expected_start = _fy_start("04-01", today)
-        assert dfrom == expected_start.isoformat()
-        assert dto == today.isoformat()
+        assert _resolve_preset("this_fy", {"fiscal_year_start": "04-01"}) == ("2026-04-01", "2026-06-15")
 
     def test_last_fy_jan_fiscal(self):
-        today = date.today()
-        dfrom, dto = _resolve_preset("last_fy", "01-01")
-        this_year = today.year
-        assert dfrom == date(this_year - 1, 1, 1).isoformat()
-        assert dto == date(this_year - 1, 12, 31).isoformat()
+        assert _resolve_preset("last_fy", {"fiscal_year_start": "01-01"}) == ("2025-01-01", "2025-12-31")
 
     def test_last_fy_apr_fiscal(self):
-        # Test directly: given Apr FY, last_fy is Apr 2025 - Mar 2026 (when today is mid-2026)
-        # Use the pure functions directly with a fixed reference date
-        from datetime import timedelta as _td
-        ref = date(2026, 6, 15)
-        this_start = _fy_start("04-01", ref)
-        last_start = _fy_start("04-01", this_start - _td(days=1))
-        last_end = this_start - _td(days=1)
-        assert last_start == date(2025, 4, 1)
-        assert last_end == date(2026, 3, 31)
+        assert _resolve_preset("last_fy", {"fiscal_year_start": "04-01"}) == ("2025-04-01", "2026-03-31")
 
     def test_all_preset_returns_empty(self):
-        dfrom, dto = _resolve_preset("all")
-        assert dfrom == ""
-        assert dto == ""
+        assert _resolve_preset("all", {}) == ("", "")
 
     def test_unknown_preset_returns_empty(self):
-        dfrom, dto = _resolve_preset("unknown_preset")
-        assert dfrom == ""
-        assert dto == ""
+        assert _resolve_preset("unknown_preset", {}) == ("", "")
 
-    def test_default_fiscal_is_jan_when_omitted(self):
-        today = date.today()
-        dfrom_fy, _ = _resolve_preset("this_fy")
-        dfrom_jan, _ = _resolve_preset("this_fy", "01-01")
-        assert dfrom_fy == dfrom_jan
+    def test_default_fiscal_is_jan_when_unset(self):
+        assert _resolve_preset("this_fy", {}) == _resolve_preset("this_fy", {"fiscal_year_start": "01-01"})
 
 
 class TestFinancialSummaryRobustness:
@@ -130,5 +107,5 @@ class TestFinancialSummaryRobustness:
     def test_financial_summary_survives_malformed_fiscal_year_start(self, fy):
         from fasthtml.common import to_xml
         from ui.routes.contacts import _financial_summary
-        out = to_xml(_financial_summary([], contact_id="contact:1", fiscal_year_start=fy))
+        out = to_xml(_financial_summary([], contact_id="contact:1", company={"fiscal_year_start": fy}))
         assert out  # rendered without raising

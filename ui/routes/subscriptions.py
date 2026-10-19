@@ -26,6 +26,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import breadcrumbs, display_enum, empty_state_cta, pagination, per_page_value, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
 from ui.routes.documents import _action_error
+from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
 from ui.i18n import refusal_text, t
 
@@ -365,15 +366,12 @@ def setup_routes(app) -> None:
         except Exception:
             pass
 
-        tz = "UTC"
-        company_currency = "USD"
-        co_settings: dict = {}
+        co = await _get_company(token)
+        tz = co.get("timezone") or "UTC"
+        company_currency = co.get("currency") or "USD"
+        co_settings: dict = co.get("settings") or {}
         co_connectors: set[str] = set()
         try:
-            co = await api.get_company(token)
-            tz = co.get("timezone") or "UTC"
-            company_currency = co.get("currency") or "USD"
-            co_settings = co.get("settings") or {}
             co_connectors = await doc_detail_connectors(co)
         except Exception:
             pass

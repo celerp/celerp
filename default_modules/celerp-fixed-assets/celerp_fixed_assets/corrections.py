@@ -23,6 +23,8 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
+from celerp.services.business_time import business_today
+
 from celerp_fixed_assets import notices, projections, reclassify, runs, setup, sources
 from celerp_fixed_assets.calc.periods import fiscal_year_start_index, month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
@@ -463,7 +465,7 @@ def _first_open(books: runs.Books, start: int | None) -> int:
 async def _posting_day(session, company_id, books: runs.Books, original: str, chosen) -> str:
     from celerp.services.posting_dates import correction_day
 
-    today = setup.today_in(books.settings).isoformat()
+    today = business_today(books.settings.get("timezone")).isoformat()
     if chosen:
         chosen = _date(chosen, "The posting date")
         setup.not_after_today("The posting date", chosen, books.settings)

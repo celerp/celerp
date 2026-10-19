@@ -19,7 +19,7 @@ from urllib.parse import unquote, urlsplit
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError, bootstrap_status
@@ -28,12 +28,11 @@ from ui.api_client import start_company as api_start_company
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.api_client import migration_staged_run as api_migration_staged_run
-from ui.components.shell import auth_shell, client_scripts, flash, landing_path, page_title, toast_header
-from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies, get_role
+from ui.components.shell import auth_shell, client_scripts, flash, landing_path, page_title, sign_in_fields
+from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies, get_role, get_token
 from ui.i18n import t, get_lang
 from celerp.services import backup_import
 from celerp.services.app_paths import is_app_local_path
-from celerp.config import settings as _settings
 from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
 
 
@@ -43,7 +42,6 @@ logger = logging.getLogger(__name__)
 START_COMPANY = "/setup/start-company"
 START_COMPANY_RESTORE = f"{START_COMPANY}/restore-backup"
 START_COMPANY_MIGRATE = f"{START_COMPANY}/migrate"
-
 
 def auth_header(title: str, subtitle: str = "") -> FT:
     """The logo, title and optional subtitle that open every sign-in and setup card."""
@@ -126,6 +124,8 @@ def setup_routes(app):
             notice = flash(t("auth.signed_out_idle"), kind="warning")
         elif reason == "password-changed":
             notice = flash(t("settings.password_changed"), kind="success")
+        elif reason == "password-reset":
+            notice = flash(t("recovery.reset_done"), kind="success")
         elif request.query_params.get("imported"):
             notice = flash(t("auth.backup_restored_signin"), kind="success")
         elif nxt != "/":
@@ -164,9 +164,13 @@ def setup_routes(app):
             return auth_shell(_login_form(email=email, error=_sign_in_error(e), next_url=nxt), title=page_title("btn.sign_in"))
         except Exception as e:
             return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
-        resp = RedirectResponse(nxt, status_code=302)
-        set_session_cookies(resp, access_token, refresh_token, request)
-        return resp
+        return await finish_sign_in(request, access_token, refresh_token, nxt)
+
+    # The address bar keeps the address a form posted to; opening it again goes to the
+    # page that starts that form rather than to an error.
+    @app.get("/login-force")
+    async def login_force_page(request: Request):
+        return RedirectResponse("/login", status_code=303)
 
     @app.post("/login-force")
     async def login_force_submit(request: Request):
@@ -184,9 +188,7 @@ def setup_routes(app):
             return auth_shell(_login_form(email=email, error=_sign_in_error(e), next_url=nxt), title=page_title("btn.sign_in"))
         except Exception as e:
             return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
-        resp = RedirectResponse(nxt, status_code=302)
-        set_session_cookies(resp, access_token, refresh_token, request)
-        return resp
+        return await finish_sign_in(request, access_token, refresh_token, nxt)
 
     @app.get(START_COMPANY)
     async def start_company_page(request: Request):
@@ -210,12 +212,11 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 409 and e.detail == "direct_connection_limit":
                 return _fail(t("auth.direct_connection_gate_body"))
-            return _fail(e.detail if isinstance(e.detail, str) else t("auth.server_error", e=e.detail))
+            return _fail(_sign_in_error(e) if e.status == 401 or isinstance(e.detail, str)
+                         else t("auth.server_error", e=e.detail))
         except Exception as e:
             return _fail(t("auth.server_error", e=e))
-        resp = RedirectResponse("/setup/company", status_code=302)
-        set_session_cookies(resp, access_token, refresh_token, request)
-        return resp
+        return await finish_sign_in(request, access_token, refresh_token, "/setup/company")
 
     # ── Bootstrap wizard: first-admin + company setup ───────────────────────
 
@@ -391,9 +392,7 @@ def setup_routes(app):
             # The retry page shows a fixed message; the reason stays in the server log.
             logger.exception("First-run setup could not apply the business type")
             nxt = "/setup/company?failed=1"
-        resp = RedirectResponse(nxt, status_code=302)
-        set_session_cookies(resp, access_token, refresh_token, request)
-        return resp
+        return await finish_sign_in(request, access_token, refresh_token, nxt)
 
     # ── Post-login landing ──────────────────────────────────────────────────
 
@@ -514,69 +513,151 @@ def setup_routes(app):
         except Exception:
             return JSONResponse({"overall": "degraded", "api": "unreachable"}, status_code=503)
 
-    # ── Password reset ───────────────────────────────────────────────────────
+    # ── Password recovery ────────────────────────────────────────────────────
+    # Plain forms and links, no script: these pages work wherever the sign-in page does.
+
+    def _recovery(*content) -> FT:
+        return auth_shell(*content, title=page_title("recovery.title"))
 
     @app.get("/forgot-password")
-    async def forgot_password_page(request: Request):
-        # Email-capable installs (SMTP or the paid relay) get the email-reset form. A
-        # self-hosted install with no email transport resets via the CLI *by design*:
-        # a browser on localhost can't prove machine ownership, but running the CLI does.
-        # Rather than take the user to a full page, we surface the instruction as a
-        # persistent toast and keep them on the login screen (clicked via HTMX).
-        has_email = bool(_settings.gateway_token or _settings.smtp_host)
-        is_htmx = request.headers.get("HX-Request") == "true"
-        if not has_email:
-            if is_htmx:
-                msg = t("auth.reset_password_cli")
-                return Response("", headers=toast_header(msg, "info", persist=True))
-            # Direct URL entry with no JS: send back to login (the link there toasts).
-            return RedirectResponse("/login", status_code=302)
-        if is_htmx:
-            # HTMX click on an email-capable install: full-navigate to render the form.
-            return Response("", headers={"HX-Redirect": "/forgot-password"})
-        return auth_shell(_forgot_password_form(), title=page_title("page.forgot_password"))
+    async def recovery_page(request: Request):
+        return _recovery(_recovery_start())
 
     @app.post("/forgot-password")
-    async def forgot_password_submit(request: Request):
+    async def recovery_send(request: Request):
         form = await request.form()
         email = str(form.get("email", "")).strip()
+        if not email:
+            return _recovery(_recovery_start(error=t("auth.email_required")))
+        handle = str(form.get("handle", "")) or None
         try:
-            async with api._local_client(timeout=5.0, follow_redirects=False) as c:
-                await c.post("/auth/password-reset/request", json={"email": email})
-        except Exception:
-            pass
-        return auth_shell(
-            _forgot_password_sent(),
-            title=page_title("page.forgot_password"),
-        )
+            answer = await api.recovery_send(email, handle)
+        except APIError as e:
+            if e.status == 429:
+                # A refused new code leaves the one already sent usable, so keep its page.
+                if handle:
+                    return _recovery(_recovery_code_form(email, handle, error=e.detail))
+                return _recovery(_recovery_start(email, error=e.detail))
+            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
+        if answer["outcome"] == "unavailable":
+            return RedirectResponse(_TERMINAL_UNAVAILABLE, status_code=303)
+        if answer["outcome"] == "undeliverable":
+            return RedirectResponse(_TERMINAL_UNDELIVERABLE, status_code=303)
+        return _recovery(_recovery_code_form(email, answer["handle"]))
 
-    @app.get("/reset-password")
-    async def reset_password_page(request: Request):
-        token = request.query_params.get("token", "")
-        return auth_shell(_reset_password_form(token=token), title=page_title("page.reset_password"))
+    @app.get("/forgot-password/reset")
+    async def recovery_reset_page(request: Request):
+        return RedirectResponse("/forgot-password", status_code=303)
 
-    @app.post("/reset-password")
-    async def reset_password_submit(request: Request):
+    @app.post("/forgot-password/reset")
+    async def recovery_reset(request: Request):
         form = await request.form()
-        token = str(form.get("token", ""))
-        new_password = str(form.get("new_password", ""))
-        confirm = str(form.get("confirm_password", ""))
-        if new_password != confirm:
-            return auth_shell(_reset_password_form(token=token, error=t("settings.passwords_do_not_match")), title=page_title("page.reset_password"))
+        email, code = str(form.get("email", "")).strip(), str(form.get("code", "")).strip()
+        handle = str(form.get("handle", ""))
+        password, confirm = str(form.get("password", "")), str(form.get("confirm", ""))
+        if password != confirm:
+            return _recovery(_recovery_code_form(email, handle, error=t("settings.passwords_do_not_match")))
         try:
-            async with api._local_client(timeout=5.0, follow_redirects=False) as c:
-                r = await c.post("/auth/password-reset/confirm", json={"token": token, "new_password": new_password})
-            if r.status_code == 200:
-                return RedirectResponse("/login", status_code=302)
-            detail = api.error_text(r, t("auth.reset_failed"))
-            return auth_shell(_reset_password_form(token=token, error=detail), title=page_title("page.reset_password"))
-        except Exception as e:
-            return auth_shell(_reset_password_form(token=token, error=t("auth.server_error", e=e)), title=page_title("page.reset_password"))
+            await api.recovery_reset(email, handle, code, password)
+        except APIError as e:
+            if _relay_unavailable(e):
+                return RedirectResponse(_TERMINAL_UNAVAILABLE, status_code=303)
+            if e.status == 400:
+                try:
+                    command = await api.recovery_terminal()
+                except APIError:
+                    command = None
+                return _recovery(_recovery_code_form(email, handle, error=e.detail, terminal=_terminal_block(command)))
+            if e.status in (422, 429):
+                return _recovery(_recovery_code_form(email, handle, error=e.detail))
+            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
+        return RedirectResponse("/login?reason=password-reset", status_code=303)
+
+    @app.get("/forgot-password/terminal")
+    async def recovery_terminal(request: Request):
+        try:
+            command = await api.recovery_terminal()
+        except APIError as e:
+            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
+        reason = request.query_params.get("reason")
+        unavailable = reason == "unavailable"
+        notice = {"unavailable": "recovery.unavailable", "undeliverable": "recovery.undeliverable"}.get(reason)
+        return _recovery(Div(
+            auth_header(t("recovery.terminal_title")),
+            _above_form(flash(t(notice), kind="warning") if notice else "",
+                        _terminal_block(command)),
+            P(A(t("recovery.send_new_code"), href="/forgot-password", cls="auth-link"),
+              cls="auth-footer-text") if unavailable else "",
+            P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),
+            cls="auth-card",
+        ))
+
+    @app.post("/password-reset-notices/acknowledge")
+    async def acknowledge_reset_notices(request: Request):
+        """Continue from the reset notices: they are not shown again, and the user goes on
+        to where the sign-in was going. Should that not save, they show at the next sign-in."""
+        form = await request.form()
+        try:
+            await api.acknowledge_reset_notices(get_token(request) or "", form.getlist("id"))
+        except APIError:
+            logger.warning("Password reset notices could not be acknowledged", exc_info=True)
+        return RedirectResponse(_safe_next(form.get("next")), status_code=303)
 
 
 # ---------------------------------------------------------------------------
 # Components
 # ---------------------------------------------------------------------------
+
+async def finish_sign_in(request: Request, access_token: str, refresh_token: str, dest: str,
+                         status_code: int = 302):
+    """The response that starts a session and goes on to *dest*. A sign-in after a
+    password reset first shows what was reset, when and how, with Continue to *dest*;
+    a reset shows at every sign-in until the user continues past it. Should the notices
+    not load, the sign-in goes on without them and they wait for the next one."""
+    try:
+        notices = await api.reset_notices(access_token)
+    except APIError:
+        logger.warning("Password reset notices could not be loaded at sign-in", exc_info=True)
+        notices = []
+    if notices:
+        resp = HTMLResponse(to_xml(auth_shell(_reset_notices(notices, dest),
+                                              title=page_title("recovery.notice_title"))))
+    else:
+        resp = RedirectResponse(dest, status_code=status_code)
+    set_session_cookies(resp, access_token, refresh_token, request)
+    return resp
+
+
+def _reset_how(notice: dict) -> str:
+    if notice["method"] == "owner":
+        return t("recovery.how_owner", name=notice.get("by_name") or "--")
+    if notice["method"] == "terminal":
+        return (t("recovery.how_terminal_user", os_user=notice["os_user"]) if notice.get("os_user")
+                else t("recovery.how_terminal"))
+    return t("recovery.how_email_code")
+
+
+def _reset_notices(notices: list[dict], dest: str) -> FT:
+    from ui.components.activity import format_timestamp
+
+    def _line(n: dict) -> str:
+        when, how = f"{format_timestamp(n['created_at'])} {n['timezone']}", _reset_how(n)
+        if n["own"]:
+            return t("recovery.notice_own", when=when, how=how)
+        return t("recovery.notice_other", user=n["user_name"] or n["user_email"], when=when, how=how)
+
+    return Div(
+        auth_header(t("recovery.notice_title")),
+        _above_form(*(P(_line(n), cls="flash flash--warning") for n in notices)),
+        Form(
+            *(Input(type="hidden", name="id", value=n["id"]) for n in notices),
+            Input(type="hidden", name="next", value=dest),
+            Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full"),
+            method="post", action="/password-reset-notices/acknowledge",
+        ),
+        cls="auth-card",
+    )
+
 
 def _sign_in_error(e: APIError) -> str:
     """Refused credentials read in the visitor's language; any other refusal shows the API's own message."""
@@ -586,23 +667,14 @@ def _sign_in_error(e: APIError) -> str:
 def _login_form(email: str = "", error: str | None = None, notice: str = "", next_url: str = "/") -> FT:
     return Div(
         auth_header(t("page.sign_in_to_celerp")),
-        notice,
+        _above_form(notice),
         Form(
             flash(error) if error else "",
             # Carries the page the user was bounced from, so signing back in
             # returns there instead of the dashboard.
             Input(type="hidden", name="next", value=next_url) if next_url != "/" else "",
-            Div(Label(t("label.email"), For="email", cls="form-label"),
-                Input(type="email", id="email", name="email", value=email,
-                      placeholder=t("account.email_placeholder"), required=True, autofocus=True, cls="form-input"),
-                cls="form-group"),
-            Div(Label(t("label.password"), For="password", cls="form-label"),
-                Input(type="password", id="password", name="password",
-                      placeholder="••••••••", required=True, cls="form-input"),
-                cls="form-group"),
+            *sign_in_fields(email, autofocus=True),
             Button(t("btn.sign_in"), type="submit", cls="btn btn--primary btn--full"),
-            P(A(t("auth.forgot_password"), href="/forgot-password", hx_get="/forgot-password",
-                hx_swap="none", cls="auth-link"), cls="auth-footer-text"),
             method="post", action="/login", cls="auth-form",
         ),
         cls="auth-card",
@@ -617,13 +689,7 @@ def _start_company_form(email: str = "", company_name: str = "", error: str | No
         P(t("setup.start_company_explain"), cls="form-hint"),
         Form(
             flash(error) if error else "",
-            Div(Label(t("label.email"), For="email", cls="form-label"),
-                Input(type="email", id="email", name="email", value=email,
-                      required=True, autofocus=True, cls="form-input"),
-                cls="form-group"),
-            Div(Label(t("label.password"), For="password", cls="form-label"),
-                Input(type="password", id="password", name="password", required=True, cls="form-input"),
-                cls="form-group"),
+            *sign_in_fields(email, autofocus=True),
             Div(Label(t("label.company_name"), For="company_name", cls="form-label"),
                 Input(type="text", id="company_name", name="company_name", value=company_name,
                       required=True, cls="form-input"),
@@ -990,50 +1056,95 @@ def _company_picker_panel(companies: list[dict]) -> FT:
     return Div(*company_items, cls="company-picker")
 
 
-def _forgot_password_form(error: str | None = None) -> FT:
+_TERMINAL_UNAVAILABLE = "/forgot-password/terminal?reason=unavailable"
+_TERMINAL_UNDELIVERABLE = "/forgot-password/terminal?reason=undeliverable"
+
+
+def _relay_unavailable(e: APIError) -> bool:
+    """The API could not reach the relay, as opposed to the API itself being out of reach."""
+    return e.status == 503 and (e.data or {}).get("outcome") == "unavailable"
+
+
+def _email_field(email: str = "") -> FT:
+    return Div(Label(t("label.email"), For="email", cls="form-label"),
+               Input(type="text", inputmode="email", autocomplete="email", id="email", name="email",
+                     value=email, placeholder=t("account.email_placeholder"), autofocus=not email,
+                     cls="form-input"),
+               cls="form-group")
+
+
+def _code_field() -> FT:
+    return Div(Label(t("recovery.code_label"), For="code", cls="form-label"),
+               Input(type="text", inputmode="numeric", autocomplete="one-time-code", id="code", name="code",
+                     maxlength="8", autofocus=True, cls="form-input"),
+               cls="form-group")
+
+
+def _recovery_links() -> FT:
     return Div(
-        auth_header(t("auth.forgot_password"), t("auth.enter_your_email_and_well_send_a_reset_link")),
+        P(A(t("recovery.use_terminal"), href="/forgot-password/terminal", cls="auth-link"), cls="auth-alt-action"),
+        P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),
+    )
+
+
+def _above_form(*parts) -> FT:
+    """The messages a card shows above its form or button, spaced like a form's fields."""
+    parts = [p for p in parts if p]
+    return Div(*parts, cls="auth-form mb-md") if parts else ""
+
+
+def _terminal_block(command: str | None) -> FT:
+    """How to reset from a terminal: the command, for the person at this computer, or
+    whom to ask, for anyone else, who never sees this computer's folders."""
+    if not command:
+        return P(t("recovery.terminal_ask"), cls="form-hint")
+    return Div(P(t("recovery.terminal_steps"), cls="form-hint"),
+               Pre(Code(command), cls="error-detail-box mt-sm"))
+
+
+def _recovery_start(email: str = "", error: str | None = None) -> FT:
+    return Div(
+        auth_header(t("recovery.title"), t("recovery.intro")),
         Form(
             flash(error) if error else "",
-            Div(Label(t("th.email"), For="email", cls="form-label"),
-                Input(type="email", id="email", name="email",
-                      placeholder=t("account.email_placeholder"), required=True, autofocus=True, cls="form-input"),
-                cls="form-group"),
-            Button(t("btn.send_reset_link"), type="submit", cls="btn btn--primary btn--full"),
-            P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),
+            P(t("recovery.consent"), cls="form-hint"),
+            _email_field(email),
+            Button(t("recovery.send_code"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action="/forgot-password", cls="auth-form",
         ),
+        _recovery_links(),
         cls="auth-card",
     )
 
 
-def _forgot_password_sent() -> FT:
+def _recovery_code_form(email: str, handle: str, error: str | None = None, terminal: FT = "") -> FT:
+    """The code from the email and the new password. The same page whether or not the
+    email is a user here. Both forms carry the visitor's recovery *handle*, so the reset
+    and Send a new code act on their own recovery only."""
+    held = (Input(type="hidden", name="email", value=email), Input(type="hidden", name="handle", value=handle))
     return Div(
-        auth_header(t("page.check_your_email"), t("auth.if_that_email_exists_youll_receive_a_reset_link_sh")),
-        Div(
-            A(t("auth.back_to_login"), href="/login", cls="btn btn--primary"),
-            cls="text-center mt-md",
-        ),
-        cls="auth-card",
-    )
-
-
-def _reset_password_form(token: str = "", error: str | None = None) -> FT:
-    return Div(
-        auth_header(t("page.reset_your_password"), t("auth.enter_your_new_password_below")),
+        auth_header(t("recovery.title"), "" if error else t("recovery.code_sent", email=email)),
+        _above_form(flash(error) if error else "", terminal),
         Form(
-            flash(error) if error else "",
-            Input(type="hidden", name="token", value=token),
-            Div(Label(t("label.new_password"), For="new_password", cls="form-label"),
-                Input(type="password", id="new_password", name="new_password",
-                      placeholder=t("auth.ph_min_8_chars"), required=True, autofocus=True, cls="form-input"),
+            *held,
+            _code_field(),
+            Div(Label(t("label.new_password"), For="password", cls="form-label"),
+                Input(type="password", id="password", name="password", autocomplete="new-password",
+                      cls="form-input"),
                 cls="form-group"),
-            Div(Label(t("label.confirm_password"), For="confirm_password", cls="form-label"),
-                Input(type="password", id="confirm_password", name="confirm_password",
-                      placeholder="••••••••", required=True, cls="form-input"),
+            Div(Label(t("label.confirm_password"), For="confirm", cls="form-label"),
+                Input(type="password", id="confirm", name="confirm", autocomplete="new-password",
+                      cls="form-input"),
                 cls="form-group"),
-            Button(t("btn.set_new_password"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action="/reset-password", cls="auth-form",
+            Button(t("recovery.reset_password"), type="submit", cls="btn btn--primary btn--full"),
+            method="post", action="/forgot-password/reset", cls="auth-form",
         ),
+        Form(
+            *held,
+            Button(t("recovery.send_new_code"), type="submit", cls="btn btn--secondary btn--full"),
+            method="post", action="/forgot-password", cls="auth-form mt-sm",
+        ),
+        P(A(t("auth.change"), href="/forgot-password", cls="auth-link"), cls="auth-footer-text"),
+        _recovery_links(),
         cls="auth-card",
     )

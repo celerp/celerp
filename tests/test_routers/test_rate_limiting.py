@@ -17,7 +17,8 @@ from httpx import ASGITransport, AsyncClient
 
 from celerp.main import app
 from celerp.routers import auth as auth_router
-from celerp.services.auth import CALLER_HEADER
+from celerp.services.auth import CALLER_HEADER, CONNECT_CALLER, CONNECT_HEADER, request_caller
+from email_codes_support import CODE, relay, short_floor  # noqa: F401 - fixtures
 from migration_support import real_client, real_engine  # noqa: F401 - fixtures
 
 
@@ -28,6 +29,9 @@ def limits_on():
     yield
     auth_router.limiter.enabled = False
     auth_router.limiter._storage.reset()
+
+
+SEND, RESET = "/auth/password-recovery/send", "/auth/password-recovery/reset"
 
 
 async def _register(client, email: str) -> None:
@@ -75,11 +79,40 @@ async def test_rate_limit_exceeded_handler_returns_429(client):
 
 
 @pytest.mark.asyncio
-async def test_password_reset_requests_for_one_account_never_block_another(client, limits_on):
-    for _ in range(3):
-        assert (await client.post("/auth/password-reset/request", json={"email": "a@test.example"})).status_code == 200
-    assert (await client.post("/auth/password-reset/request", json={"email": "a@test.example"})).status_code == 429
-    assert (await client.post("/auth/password-reset/request", json={"email": "b@test.example"})).status_code == 200
+async def test_recovery_limits_count_each_requester(client, limits_on, relay, short_floor):
+    """Recovery sends and resets are limited per requester: a stranger who reaches the
+    limits for a person's email leaves the person free to recover."""
+    await _register(client, "a@test.example")
+    stranger, person = {CALLER_HEADER: "198.51.100.7"}, {CALLER_HEADER: "203.0.113.20"}
+
+    def reset(handle, code, headers):
+        return client.post(RESET, json={"email": "a@test.example", "handle": handle, "code": code,
+                                        "new_password": "pwvalid2"}, headers=headers)
+
+    sends = [await client.post(SEND, json={"email": "a@test.example"}, headers=stranger) for _ in range(4)]
+    assert [r.status_code for r in sends] == [200, 200, 200, 429]
+    guesses = [await reset(sends[0].json()["handle"], "00000000", stranger) for _ in range(11)]
+    assert [r.status_code for r in guesses] == [400] * 10 + [429]
+
+    sent = await client.post(SEND, json={"email": "a@test.example"}, headers=person)
+    assert sent.status_code == 200, sent.text
+    assert (await reset(sent.json()["handle"], CODE, person)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_one_requester_cannot_use_the_installs_mail(client, limits_on, relay, short_floor, monkeypatch):
+    """One requester's sends, however spaced, stop well inside the relay's mail allowance
+    for this install (60 an hour per network)."""
+    import limits.storage.memory
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(limits.storage.memory.time, "time", lambda: now[0])
+    sent = 0
+    for n in range(60):
+        r = await client.post(SEND, json={"email": f"n{n}@test.example"}, headers={CALLER_HEADER: "198.51.100.7"})
+        sent += r.status_code == 200
+        now[0] += 60
+    assert 0 < sent <= 20
 
 
 @pytest.mark.asyncio
@@ -102,6 +135,74 @@ async def test_the_ui_names_the_visitor_it_sees_never_one_the_browser_claims():
         assert (await ui.get("/", headers={CALLER_HEADER: "192.0.2.1"})).status_code == 204
     assert sent["caller"] == "198.51.100.7"
     assert api_client._caller.get() is None
+
+
+_VIA = {CONNECT_HEADER: "1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("peer, sent, named", [
+    ("127.0.0.1", {**_VIA, CALLER_HEADER: "203.0.113.20"}, "203.0.113.20"),
+    ("::1", {**_VIA, CALLER_HEADER: "2001:db8:5::20"}, "2001:db8:5::20"),
+    ("127.0.0.1", {**_VIA, CALLER_HEADER: "::ffff:198.51.100.3"}, "198.51.100.3"),
+    ("127.0.0.1", _VIA, CONNECT_CALLER),
+    ("127.0.0.1", {**_VIA, CALLER_HEADER: ""}, CONNECT_CALLER),
+    ("127.0.0.1", {**_VIA, CALLER_HEADER: "nonsense"}, CONNECT_CALLER),
+    ("127.0.0.1", {**_VIA, CALLER_HEADER: "203.0.113.20, 192.0.2.1"}, CONNECT_CALLER),
+    ("127.0.0.1", {**_VIA, CALLER_HEADER: "127.0.0.1"}, CONNECT_CALLER),
+    ("192.168.1.50", {**_VIA, CALLER_HEADER: "203.0.113.20"}, "192.168.1.50"),
+    ("127.0.0.1", {CALLER_HEADER: "203.0.113.20"}, "127.0.0.1"),
+    ("192.168.1.50", {CALLER_HEADER: "203.0.113.20"}, "192.168.1.50"),
+])
+async def test_the_ui_names_a_connect_visitor_by_the_gateways_address_only_from_loopback(peer, sent, named):
+    """A Connect visitor reaches the UI from the gateway on this computer, which names them
+    by the address the relay saw. The UI takes that address only from a loopback peer that
+    carries the Connect mark; a marked request without a valid one is a Connect visitor all
+    the same, never the person at this computer; any other peer is named by its socket."""
+    from ui import api_client
+
+    sent_on = {}
+
+    async def page(scope, receive, send):
+        async with api_client._local_client(None) as c:
+            sent_on["caller"] = c.headers.get(CALLER_HEADER)
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    ui = AsyncClient(transport=ASGITransport(app=api_client.CallerMiddleware(page), client=(peer, 5000)),
+                     base_url="http://ui")
+    async with ui:
+        assert (await ui.get("/", headers=sent)).status_code == 204
+    assert sent_on["caller"] == named
+
+
+def _counted(peer: str, headers: list[tuple[str, str]]) -> str:
+    from starlette.requests import Request
+
+    return request_caller(Request({"type": "http", "client": (peer, 4000),
+                                   "headers": [(k.lower().encode(), v.encode()) for k, v in headers]}))
+
+
+@pytest.mark.parametrize("peer, headers, counted", [
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "203.0.113.20")], "203.0.113.20"),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "2001:db8:5::20")], "2001:db8:5::/64"),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "::ffff:198.51.100.3")], "198.51.100.3"),
+    ("127.0.0.1", [(CONNECT_HEADER, "1")], CONNECT_CALLER),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, CONNECT_CALLER)], CONNECT_CALLER),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "127.0.0.1")], CONNECT_CALLER),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "")], CONNECT_CALLER),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "203.0.113.20, 192.0.2.1")], CONNECT_CALLER),
+    ("127.0.0.1", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "203.0.113.20"), (CALLER_HEADER, "192.0.2.1")],
+     CONNECT_CALLER),
+    ("192.0.2.10", [(CONNECT_HEADER, "1"), (CALLER_HEADER, "203.0.113.20")], "192.0.2.10"),
+    ("127.0.0.1", [(CALLER_HEADER, "192.168.1.50")], "192.168.1.50"),
+    ("127.0.0.1", [], "127.0.0.1"),
+])
+def test_the_api_counts_a_connect_visitor_apart_from_the_person_at_this_computer(peer, headers, counted):
+    """Over loopback a Connect-marked request counts as the visitor's address, an IPv6 one
+    by its /64, or as the Connect caller when it names no valid one: never as this computer,
+    which is the person at it."""
+    assert _counted(peer, headers) == counted
 
 
 def _ask(client, path: str, email: str, password: str, caller: str):
@@ -179,18 +280,26 @@ async def test_each_further_failure_doubles_the_wait_up_to_five_minutes(client, 
     assert time.monotonic() - started < 30
 
 
+@pytest.mark.parametrize("writer", ["reset", "another process"])
 @pytest.mark.asyncio
-async def test_a_password_reset_ends_the_wait(client, session, clock):
-    from test_password_reset import _request_reset
+async def test_attempts_restart_when_hash_changes(client, session, clock, writer):
+    """A new password lifts the account's wait, whichever way it was set: by the reset in
+    this server, or by the terminal command writing the database from its own process."""
+    from celerp.services.auth import hash_password
+    from celerp.services.password_reset import reset_password, user_by_email
 
     await _two_logins(client, session)
     tries = [(await _ask(client, "/auth/login", "v@test.example", "wrong-pw", f"198.51.100.{i}")).status_code
              for i in range(6)]
     assert tries == [401] * 5 + [429]
-    raw = await _request_reset(client, "v@test.example")
-    r = await client.post("/auth/password-reset/confirm", json={"token": raw, "new_password": "pwvalid2"})
-    assert r.status_code == 200, r.text
+    user = await user_by_email(session, "v@test.example")
+    if writer == "reset":
+        await reset_password(session, user, "pwvalid2", method="terminal")
+    else:
+        user.auth_hash = hash_password("pwvalid2")
+        await session.commit()
     assert (await _ask(client, "/auth/login", "v@test.example", "pwvalid2", "192.0.2.50")).status_code == 200
+    assert (await _ask(client, "/auth/login", "w@test.example", "wrong-pw", "192.0.2.51")).status_code == 401
 
 
 @pytest.mark.asyncio
@@ -233,8 +342,8 @@ async def test_the_caller_the_ui_names_counts_only_over_loopback(client, clock):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("shared", ["127.0.0.1", "::1"])
 async def test_a_shared_local_address_never_holds_up_another_accounts_sign_in(client, session, clock, shared):
-    """The desktop user, Connect and any proxy on this machine all reach the UI from a
-    loopback address, so it names no one visitor: failures from it never hold up an account
+    """The desktop user and any proxy on this machine reach the UI from a loopback
+    address, so it names no one visitor: failures from it never hold up an account
     with no failures of its own, while each account still slows after its own five."""
     from celerp.services.session_tracker import clear
 
@@ -260,7 +369,7 @@ _ROUTES = {
         "json": {"email": e, "password": p, "upload_token": "t", "plan_fingerprint": "f"}},
     "/migrations/start-company/scan": lambda e, p: {"auth": (e, p), "content": b""},
     "/migrations/start-company/start": lambda e, p: {
-        "json": {"email": e, "password": p, "scan_token": "t", "company_name": "Next Co"}},
+        "json": {"email": e, "password": p, "scan_token": "t", "company_name": "Next Co", "timezone": "UTC"}},
 }
 
 

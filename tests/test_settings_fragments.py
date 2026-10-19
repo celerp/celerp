@@ -309,20 +309,6 @@ def test_value_prop_no_cloud_service_language():
     assert "we store your data" not in text
 
 
-# The forgot-password no-email path is now a persistent CLI-instruction toast on the
-# login screen (not a full CLI page). It is covered in tests/test_ui.py
-# ::test_forgot_password_no_email_toasts_cli_instruction.
-
-
-def test_forgot_password_email_form_exists():
-    """The email-based forgot-password form still exists for cloud users."""
-    from ui.routes.auth import _forgot_password_form
-    from fasthtml.common import to_xml
-    html = to_xml(_forgot_password_form())
-    assert 'action="/forgot-password"' in html
-    assert "Send reset link" in html
-
-
 # ── Celerp Connect tab: account view only after authentication ───────────────
 
 def _relay_tab_html(relay_status, token_bound, *, tier="free", entitled=False):

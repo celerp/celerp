@@ -67,7 +67,8 @@ async def _decide(client, scan_token: str):
 
 async def _start(client, scan_token: str, *, password: str = OWNER_PASSWORD, company_name: str = "Moved Co"):
     return await client.post(f"{API}/start", json={
-        "email": OWNER_EMAIL, "password": password, "scan_token": scan_token, "company_name": company_name})
+        "email": OWNER_EMAIL, "password": password, "scan_token": scan_token, "company_name": company_name,
+        "timezone": "UTC"})
 
 
 async def _ready_scan(client) -> str:

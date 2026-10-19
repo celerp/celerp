@@ -88,7 +88,7 @@ a:hover { text-decoration: underline; }
 .auth-header { text-align: center; margin-bottom: 28px; }
 .auth-logo { height: 160px; margin-bottom: 16px; }
 .auth-title { font-size: 20px; font-weight: 600; color: var(--c-text); }
-.auth-subtitle { font-size: 12px; color: var(--c-text2); margin-top: 6px; }
+.auth-subtitle { font-size: 12px; color: var(--c-text2); margin-top: 6px; overflow-wrap: anywhere; }
 .auth-form { display: flex; flex-direction: column; gap: 16px; }
 .secret-input { display: flex; align-items: center; gap: 6px; }
 .secret-input input { flex: 1; min-width: 0; }
@@ -534,6 +534,10 @@ th.cell--number { font-family: inherit; }
 .cell--paired .paired-tertiary { color: var(--c-text-muted, #888); font-style: italic; cursor: default; user-select: none; }
 
 .cell-error { color: var(--c-red); font-size: 11px; padding: 4px 8px; white-space: normal; max-width: 360px; }
+/* A form stacked in one cell. Its message wraps to the width the fields give the column,
+   so it never widens the table. */
+.cell-form { display: grid; gap: 0.5rem; }
+.cell-form > .cell-error { contain: inline-size; max-width: none; }
 .cell--channels { white-space: nowrap; }
 .catalog-channels { display: inline-flex; align-items: center; gap: 4px; }
 .catalog-channel {
@@ -1706,7 +1710,9 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .text-center { text-align: center; }
 .text-right { text-align: right; }
 .text-danger { color: var(--c-red); }
-.error-detail-box { background: var(--c-bg3); padding: 12px 16px; border-radius: var(--radius); font-size: 14px; }
+/* A command to copy: wraps inside the box, and one click selects all of it. */
+.error-detail-box { background: var(--c-bg3); padding: 12px 16px; border-radius: var(--radius); font-size: 14px;
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
 /* Component patterns */
 .form-actions { margin-top: var(--spacing-md); display: flex; align-items: center; gap: var(--spacing-sm); }
 .btn--outline { background: var(--c-bg2); color: var(--c-text); border: 1px solid var(--c-border); }

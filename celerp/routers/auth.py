@@ -4,21 +4,27 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
-import secrets
+import re
+import time
 import uuid
-from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
+from sqlalchemy.orm.attributes import set_committed_value
 
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
+from celerp.models.auth import PasswordReset, PasswordResetNotice
 from celerp.models.company import Company, User
-from celerp.services import bootstrap
+from celerp.services import bootstrap, email_codes
+from celerp.services.business_time import company_timezone
+from celerp.services.email_codes import Outcome
+from celerp.services.password_reset import reset_password, set_password, terminal_command, user_by_email
 from celerp.services.provisioning import provision_additional_company, provision_registered_company
 from celerp.services.auth import (
     AuthContext,
@@ -33,6 +39,7 @@ from celerp.services.auth import (
     get_current_company_id,
     get_current_user,
     hash_password,
+    is_local_person,
     lock_issuance_company,
     usable_company_link,
     oauth2_scheme_optional,
@@ -151,29 +158,9 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
 
 from slowapi import Limiter
 
-# Module-level limiter for the sign-in and setup routes, counted per caller.
+# Module-level limiter for the sign-in, setup and recovery routes, counted per caller.
 # Tests reset this via conftest: celerp.routers.auth.limiter._storage.reset()
 limiter = Limiter(key_func=request_caller)
-
-
-async def _note_account(request: Request) -> None:
-    """Counts a password reset request per caller and per account named, so requests for one
-    account never block another. Behind Connect every visitor reaches the UI from the
-    gateway's own address, so the account is what tells them apart. Read from the raw
-    body, which the route itself then validates."""
-    try:
-        body = await request.json()
-    except ValueError:
-        body = None
-    account = body.get("email") if isinstance(body, dict) else None
-    request.state.account_key = f"{request_caller(request)}|{str(account or '').strip().lower()}"
-
-
-def _account_key(request: Request) -> str:
-    return request.state.account_key
-
-
-_PER_ACCOUNT = [Depends(_note_account)]
 
 
 # A sign-in picks again only when a company it picked was removed meanwhile.
@@ -183,14 +170,20 @@ _PICK_ATTEMPTS = 3
 async def authenticate(session: AsyncSession, email: str, password: str, caller: str) -> User:
     """The active login these credentials belong to, offered by *caller*; a neutral 401
     otherwise, or 429 while the account or the caller must wait (password_attempts)."""
-    user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
-    auth_hash = user.auth_hash if user and user.is_active else None
+    user = await user_by_email(session, email)
+    auth_hash = user.auth_hash if user else None
     if not password_attempts.check(email, password, auth_hash, caller):
         raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
-    # A legacy hash moves to the current scheme now; a legacy password shorter than
-    # the policy keeps its hash until the user changes it.
+    # A password stored the older way is stored the current way now, unless it is shorter
+    # than the policy. A password changed meanwhile stands and this sign-in fails.
     if password_needs_rehash(user.auth_hash) and len(password) >= MIN_PASSWORD_LENGTH:
-        user.auth_hash = hash_password(password)
+        upgraded = hash_password(password)
+        replaced = await session.execute(
+            update(User).where(User.id == user.id, User.auth_hash == user.auth_hash)
+            .values(auth_hash=upgraded).execution_options(synchronize_session=False))
+        if replaced.rowcount != 1:
+            raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
+        set_committed_value(user, "auth_hash", upgraded)
     return user
 
 
@@ -406,108 +399,139 @@ async def switch_company(
     return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=ctx.snonce)
 
 
-# ── Password Reset ────────────────────────────────────────────────────────────
+# ── Password recovery ────────────────────────────────────────────────────────
+#
+# The relay emails a code and confirms it (celerp.services.email_codes); this install
+# matches the email to a user exactly as sign-in does.
 
-class PasswordResetRequestBody(BaseModel):
+# Every recovery send and reset answers at the same pace, no sooner than this.
+RECOVERY_FLOOR_S = 4.0
+_CODE = re.compile(r"[0-9]{8}")
+
+
+class RecoverySendBody(BaseModel):
     email: str
+    # The requester's recovery from an earlier send, to resend its code; none starts one.
+    handle: str | None = None
 
 
-class PasswordResetConfirmBody(BaseModel):
-    token: str
+class RecoveryResetBody(BaseModel):
+    email: str
+    handle: str
+    code: str
     new_password: str
 
 
-_RESET_TOKEN_TTL_MINUTES = 15
+def _code_refused() -> HTTPException:
+    return HTTPException(status_code=400, detail=t("recovery.code_refused"))
 
 
-@router.post("/password-reset/request", dependencies=_PER_ACCOUNT)
-@limiter.limit("3/minute", key_func=_account_key)
-async def password_reset_request(
-    request: Request,
-    payload: PasswordResetRequestBody,
-    session: AsyncSession = Depends(get_session),
+# Per requester; the hourly limit leaves most of the relay's mail allowance for this
+# install (60 an hour per network) to everyone else.
+@router.post("/password-recovery/send")
+@limiter.limit("3/minute;20/hour")
+async def recovery_send(
+    request: Request, payload: RecoverySendBody, session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Request a password reset link. Always returns 200 (prevents user enumeration)."""
-    user = (
-        await session.execute(select(User).where(User.email == payload.email))
-    ).scalar_one_or_none()
-    if user:
-        # Only the SHA-256 digest is stored, so a database read cannot recover the
-        # reset credential; the raw token lives only in the emailed link.
-        raw_token = secrets.token_urlsafe(32)
-        token_digest = hashlib.sha256(raw_token.encode()).hexdigest()
-        user.reset_token = token_digest
-        user.reset_token_expires = datetime.now(timezone.utc) + timedelta(minutes=_RESET_TOKEN_TTL_MINUTES)
-        await session.commit()
-
-        from celerp.config import settings
-        base = settings.celerp_public_url or ""
-        reset_link = f"{base}/reset-password?token={raw_token}"
-        body_html = (
-            f"<p>Hi {user.name},</p>"
-            f"<p>We received a request to reset the password for your Celerp account "
-            f"(<strong>{user.email}</strong>).</p>"
-            f"<p style='margin:24px 0;'>"
-            f"<a href='{reset_link}' style='background:#1a1a1a;color:#fff;padding:12px 24px;"
-            f"border-radius:6px;text-decoration:none;font-weight:600;'>Reset my password</a>"
-            f"</p>"
-            f"<p>This link expires in <strong>{_RESET_TOKEN_TTL_MINUTES} minutes</strong>.</p>"
-            f"<p style='color:#888;font-size:13px;'>If you didn't request this, you can safely ignore "
-            f"this email - your password won't change.</p>"
-        )
-        body_text = (
-            f"Hi {user.name},\n\n"
-            f"Reset your Celerp password:\n{reset_link}\n\n"
-            f"This link expires in {_RESET_TOKEN_TTL_MINUTES} minutes.\n\n"
-            f"If you didn't request this, ignore this email."
-        )
-        from celerp.services.background import spawn_background
-        from celerp.services.email import send_email
-        spawn_background(send_email(
-            user.email,
-            "Reset your Celerp password",
-            body_html,
-            body_text=body_text,
-            branded=False,  # security email: keep it minimal
-        ))
-
-    return {"detail": "If that email exists, you'll receive a reset link."}
+    """Email a recovery code to the user whose email this is, if there is one here, and
+    answer the handle the requester holds this recovery by, alike for any address.
+    "unavailable" says no code is coming: the relay is down, or it could not deliver it.
+    "undeliverable" says the relay never mails such an address, for any address alike."""
+    if not email_codes.mailable(payload.email):
+        return {"outcome": "undeliverable"}
+    if await email_codes.status() is not Outcome.OK:
+        return {"outcome": "unavailable"}
+    attempt = email_codes.attempt(payload.email, payload.handle)
+    started = time.monotonic()
+    try:
+        user = await user_by_email(session, payload.email)
+        sent = await email_codes.send(user.email, attempt) if user else Outcome.OK
+    finally:
+        await asyncio.sleep(max(0.0, started + RECOVERY_FLOOR_S - time.monotonic()))
+    return {"outcome": "unavailable" if sent is Outcome.UNAVAILABLE else "sent", "handle": attempt.handle}
 
 
-@router.post("/password-reset/confirm")
-async def password_reset_confirm(
-    payload: PasswordResetConfirmBody,
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Confirm password reset with token and new password."""
-    # The stored value is the SHA-256 digest, so match on the digest of the
-    # presented raw token rather than the raw token itself.
-    token_digest = hashlib.sha256(payload.token.encode()).hexdigest()
-    user = (
-        await session.execute(select(User).where(User.reset_token == token_digest))
-    ).scalar_one_or_none()
-    if not user or not user.reset_token_expires:
-        raise HTTPException(status_code=400, detail=t("auth.reset_link_invalid"))
-    expires = user.reset_token_expires
-    if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
-    if datetime.now(timezone.utc) > expires:
-        raise HTTPException(status_code=400, detail=t("auth.reset_link_invalid"))
+@router.post("/password-recovery/reset")
+@limiter.limit("10/minute")
+async def recovery_reset(
+    request: Request, payload: RecoveryResetBody, session: AsyncSession = Depends(get_session),
+):
+    """Reset the password of the user whose email this is, when the relay confirms the
+    code it emailed them for the requester's recovery. A handle that holds no live
+    recovery of this email has no right code and never reaches the relay."""
     try:
         validate_password(payload.new_password)
     except ValueError:
-        raise HTTPException(status_code=400, detail=t("auth.password_too_short"))
-    user.auth_hash = hash_password(payload.new_password)
-    user.reset_token = None
-    # A new password starts the account's failed sign-ins again: resetting is the way back in.
-    password_attempts.forget(user.email)
-    user.reset_token_expires = None
-    # Rotate the user's nonce so every access and refresh token issued before the
-    # reset dies immediately (a reset is a security-sensitive credential change).
-    # invalidate_sessions commits the session, so no earlier independent commit.
-    from celerp.services.session_tracker import invalidate_sessions as _invalidate
-    await _invalidate(session, str(user.id))
-    return {"detail": "Password updated successfully."}
+        raise HTTPException(status_code=422, detail=t("auth.password_too_short"))
+    attempt = email_codes.live(payload.handle, payload.email)
+    if attempt is None or not _CODE.fullmatch(payload.code):
+        raise _code_refused()
+    outcome = await email_codes.status()
+    started = time.monotonic()
+    try:
+        if outcome is Outcome.OK:
+            user = await user_by_email(session, payload.email)
+            outcome = await email_codes.verify(user.email, attempt, payload.code) if user else Outcome.REFUSED
+        if outcome is Outcome.OK:
+            try:
+                await reset_password(session, user, payload.new_password, method="email_code")
+            except Exception:
+                # The relay has spent the code; nothing here changed, so a new code is the way on.
+                await session.rollback()
+                logger.exception("Password reset by emailed code failed")
+                outcome = Outcome.REFUSED
+    finally:
+        await asyncio.sleep(max(0.0, started + RECOVERY_FLOOR_S - time.monotonic()))
+    if outcome is Outcome.UNAVAILABLE:
+        return JSONResponse(status_code=503, content={"detail": t("recovery.unavailable"), "outcome": "unavailable"})
+    if outcome is Outcome.REFUSED:
+        raise _code_refused()
+    return {"ok": True}
+
+
+@router.get("/password-recovery/terminal")
+async def recovery_terminal(request: Request) -> dict:
+    """The terminal reset command, for the person at this computer only: it names this
+    computer's folders."""
+    return {"command": terminal_command() if is_local_person(request) else None}
+
+
+@router.get("/password-reset-notices")
+async def reset_notices(
+    user: User = Depends(get_current_user), company_id: uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    """The password resets the caller has not acknowledged yet, newest first, timed in the
+    company's timezone. ``own`` marks a reset of the caller's own password. Reading them
+    changes nothing: each stays until it is acknowledged."""
+    zone = await company_timezone(session, company_id)
+    by = aliased(User)
+    rows = (await session.execute(
+        select(PasswordReset, User, by.name).join(User, User.id == PasswordReset.user_id)
+        .join(PasswordResetNotice, PasswordResetNotice.reset_id == PasswordReset.id)
+        .outerjoin(by, by.id == PasswordReset.by_user_id)
+        .where(PasswordResetNotice.recipient_id == user.id)
+        .order_by(PasswordReset.created_at.desc()))).all()
+    return [{"id": str(reset.id), "own": subject.id == user.id, "user_name": subject.name,
+             "user_email": subject.email, "method": reset.method, "by_name": by_name, "os_user": reset.os_user,
+             "created_at": reset.created_at.astimezone(zone).isoformat(), "timezone": zone.key}
+            for reset, subject, by_name in rows]
+
+
+class NoticeIds(BaseModel):
+    ids: list[uuid.UUID]
+
+
+@router.post("/password-reset-notices/acknowledge")
+async def acknowledge_reset_notices(
+    payload: NoticeIds, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The caller has seen these resets: their notices are gone. Ids already acknowledged,
+    or not the caller's, change nothing."""
+    await session.execute(delete(PasswordResetNotice).where(
+        PasswordResetNotice.recipient_id == user.id, PasswordResetNotice.reset_id.in_(payload.ids)))
+    await session.commit()
+    return {"ok": True}
 
 
 class ChangePasswordBody(BaseModel):
@@ -525,16 +549,11 @@ async def change_password(
     """Change password for the currently authenticated user."""
     if not password_attempts.check(user.email, payload.current_password, user.auth_hash, request_caller(request)):
         raise HTTPException(status_code=400, detail=t("auth.current_password_wrong"))
+    # Every access and refresh token minted before the change dies, the caller's too.
     try:
-        validate_password(payload.new_password)
+        await set_password(session, user, payload.new_password)
     except ValueError:
         raise HTTPException(status_code=400, detail=t("auth.password_too_short"))
-    user.auth_hash = hash_password(payload.new_password)
-    # Rotate the user's nonce so every access and refresh token minted before the
-    # change dies immediately, including the caller's current session.
-    # invalidate_sessions commits the session, so no earlier independent commit.
-    from celerp.services.session_tracker import invalidate_sessions as _invalidate
-    await _invalidate(session, str(user.id))
     return {"detail": "Password changed successfully."}
 
 

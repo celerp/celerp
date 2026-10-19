@@ -114,7 +114,7 @@ async def test_start_from_scan_keeps_the_working_session_and_company(real_client
     scan_token = r.json()["scan_token"]
     assert (await save_decisions(real_client, scan_token, token=admin_token)).status_code == 200
     r = await real_client.post("/migrations/start-from-scan", headers=headers,
-                               json={"scan_token": scan_token, "company_name": "Moved Co"})
+                               json={"scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC"})
     assert r.status_code == 201, r.text
     assert set(r.json()) == {"run_id", "preparing"}
     run_id = r.json()["run_id"]

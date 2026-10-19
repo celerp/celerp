@@ -39,7 +39,7 @@ from celerp.accounting_roles import account_label
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.posting_accounts import NEW_ACCOUNT, account_picker
-from ui.components.shell import auth_shell, client_scripts, flash, page_title, toast_header
+from ui.components.shell import auth_shell, client_scripts, flash, page_title, sign_in_fields, toast_header
 from ui.components.activity import fmt_qty
 from ui.components.files import fmt_size
 from ui.components.table import EMPTY, display_enum, fmt_money, format_value, searchable_select
@@ -49,12 +49,12 @@ from ui.config import (
     get_role,
     get_token,
     session_cookie_secure,
-    set_session_cookies,
 )
 from ui.i18n import doc_type_label, get_lang, role_label, t
 from ui.routes.account import account_panel
 from ui.security import company_owner
-from ui.routes.auth import auth_header
+from ui.routes.auth import auth_header, finish_sign_in
+from ui.routes.setup import browser_timezone_field, company_choice_script, setup_timezone
 
 SCAN_COOKIE = "celerp_migration_scan"
 SCAN_TTL_SECONDS = 3600
@@ -317,18 +317,6 @@ def _source_request_form() -> FT:
         method="get", action=SOURCE_REQUEST_URL, target="_blank", rel="noopener",
         cls="auth-form mt-md",
     )
-
-
-def sign_in_fields(email: str) -> list:
-    """The email and password of a login with no company, which every step that acts checks."""
-    return [
-        Div(Label(t("label.email"), For="email", cls="form-label"),
-            Input(type="email", id="email", name="email", value=email, required=True, cls="form-input"),
-            cls="form-group"),
-        Div(Label(t("label.password"), For="password", cls="form-label"),
-            Input(type="password", id="password", name="password", required=True, cls="form-input"),
-            cls="form-group"),
-    ]
 
 
 def _credentials(form) -> tuple[str, str] | None:
@@ -1435,9 +1423,11 @@ async def _review_page(request: Request, mode: WizardMode, entry: dict, *, value
             *(sign_in_fields(values.get("email") or request.cookies.get(EMAIL_COOKIE, ""))
               if mode.start_company else []),
             setup_code_field() if await setup_code_required(mode) else "",
+            browser_timezone_field(),
             Button(t("migration.create_and_migrate"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action=f"{mode.base}/start", cls="auth-form",
         ),
+        company_choice_script(),
         back_link(back),
     )
 
@@ -1478,6 +1468,7 @@ async def _start(request: Request, mode: WizardMode):
     values["password"] = str(form.get("password", ""))
     values["confirm_password"] = str(form.get("confirm_password", ""))
     setup_code = str(form.get("setup_code", "")).strip() or None
+    timezone = setup_timezone(str(form.get("timezone", "")))
 
     async def review(**feedback):
         scan_token, entry = await _current_scan(request, mode)
@@ -1494,27 +1485,30 @@ async def _start(request: Request, mode: WizardMode):
             if await setup_code_required(mode) and not setup_code:
                 return await review(error=t("auth.setup_code_required"))
             started = await api.migration_bootstrap_start(
-                token, values["company_name"], values["name"], values["email"], values["password"],
+                token, values["company_name"], timezone, values["name"], values["email"], values["password"],
                 setup_code=setup_code)
         elif mode.start_company:
             if not (values["email"] and values["password"]):
                 return await review(error=t("auth.email_password_required"))
             started = await api.migration_start_company_start(values["email"], values["password"], token,
-                                                               values["company_name"])
+                                                               values["company_name"], timezone)
         else:
-            started = await api.migration_start_from_scan(get_token(request), token, values["company_name"])
+            started = await api.migration_start_from_scan(get_token(request), token, values["company_name"],
+                                                          timezone)
     except APIError as e:
         if e.status == 410:
             return _expired(request, mode, str(e.detail))
         if isinstance(e.detail, dict):
             return await review(errors=e.detail)
         return await review(error=str(e.detail))
-    resp = RedirectResponse(f"/migrations/{started['run_id']}", status_code=303)
+    dest = f"/migrations/{started['run_id']}"
     if api_token(request, mode) is None:
         # The first owner, or a login with no company, has no working session yet. A
         # company-mode start keeps the current session: the new company is opened only
         # after the migration finishes.
-        set_session_cookies(resp, started["access_token"], started["refresh_token"], request)
+        resp = await finish_sign_in(request, started["access_token"], started["refresh_token"], dest, 303)
+    else:
+        resp = RedirectResponse(dest, status_code=303)
     _clear_scan_cookie(resp, mode, request)
     return resp
 

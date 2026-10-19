@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.business_time import company_today
 from celerp.services.company_lock import lock_projections
 from celerp.services.money import books_currency
 from celerp.services.permissions import get_current_company_settings, require_permission, role_has_permission
@@ -440,7 +441,7 @@ async def create_reminder(asset_id: str, body: dict = Body(...), company_id=Depe
 
 @router.get("/reminders", dependencies=_VIEW)
 async def list_due(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    today = (await setup.business_today(session, company_id)).isoformat()
+    today = (await company_today(session, company_id)).isoformat()
     return {"items": [{k: v for k, v in r.items() if k != "told"} for r in await due_items(session, company_id, today)]}
 
 

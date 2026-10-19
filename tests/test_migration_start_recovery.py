@@ -51,7 +51,7 @@ async def _start(client, token: str, scan_token: str, name: str = "Moved Co"):
     """POST start-from-scan; a crash inside the request returns None."""
     try:
         return await client.post("/migrations/start-from-scan", headers=auth(token),
-                                 json={"scan_token": scan_token, "company_name": name})
+                                 json={"scan_token": scan_token, "company_name": name, "timezone": "UTC"})
     except Crash:
         return None
 
@@ -313,7 +313,7 @@ async def test_bootstrap_lost_response_recovers_through_login(real_client, real_
     monkeypatch.setattr(store, "claim_for_run", lambda *a, **k: (_ for _ in ()).throw(Crash()))
     try:
         r = await real_client.post("/migrations/bootstrap/start", json={
-            "scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+            "scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
             "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
         assert r.status_code == 500
     except Crash:
@@ -326,7 +326,7 @@ async def test_bootstrap_lost_response_recovers_through_login(real_client, real_
 
     assert (await real_client.get("/auth/bootstrap-status")).json()["bootstrapped"] is True
     r = await real_client.post("/migrations/bootstrap/start", json={
-        "scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+        "scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
         "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
     assert r.status_code == 409 and r.json()["detail"] == t("migration.err_bootstrapped", "en")
 

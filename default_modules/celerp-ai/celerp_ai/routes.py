@@ -1500,19 +1500,22 @@ async def propose_from_job(
 async def usage_stats(
     company_id=Depends(get_current_company_id),
     _: None = require_permission("manage_users"),
+    company_settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Per-user AI usage for the current calendar month.
+    """Per-user AI usage for the company's current calendar month.
 
     Returns list of {user_id, user_name, query_count, credits_used, last_query_at}.
     """
-    from datetime import date, datetime, timezone
+    from datetime import datetime
     from sqlalchemy import func, select
     from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
     from celerp.models.company import User
+    from celerp.services.business_time import business_timezone, business_today
 
-    today = date.today()
-    month_start = datetime(today.year, today.month, 1, tzinfo=timezone.utc)
+    tz = company_settings.get("timezone")
+    today = business_today(tz)
+    month_start = datetime(today.year, today.month, 1, tzinfo=business_timezone(tz))
 
     message_rows = (await session.execute(
         select(

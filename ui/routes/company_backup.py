@@ -54,13 +54,13 @@ import ui.api_client as api
 import ui.handoff_opening as opening
 from ui.api_client import APIError
 from ui.components.files import fmt_size
-from ui.components.shell import flash, secret_input
+from ui.components.shell import flash, secret_input, sign_in_fields
 from ui.components.table import fmt_money, format_value, row_menu
 from ui.config import cookie_domain, get_company_id, get_token, session_cookie_secure, set_session_cookies
 from ui.i18n import get_lang, t
 from ui.routes.account import account_panel
 from ui.routes.auth import START_COMPANY as START_COMPANY_PAGE
-from ui.routes.auth import START_COMPANY_RESTORE, auth_header
+from ui.routes.auth import START_COMPANY_RESTORE, auth_header, finish_sign_in
 from ui.routes.migrations import (
     COMPANY,
     WizardMode,
@@ -72,7 +72,6 @@ from ui.routes.migrations import (
     gate,
     setup_code_field,
     setup_code_required,
-    sign_in_fields,
     upload_again_page,
     wizard_page,
     wizard_table,
@@ -904,9 +903,8 @@ async def _refused(request: Request, mode: WizardMode, upload_token: str, e: API
                         status_code=409 if stale else 200)
 
 
-def _signed_in(request: Request, mode: WizardMode, done: dict):
-    resp = RedirectResponse(f"{mode.base}/done", status_code=303)
-    set_session_cookies(resp, done["access_token"], done["refresh_token"], request)
+async def _signed_in(request: Request, mode: WizardMode, done: dict):
+    resp = await finish_sign_in(request, done["access_token"], done["refresh_token"], f"{mode.base}/done", 303)
     _set_outcome_cookie(resp, mode, request, done)
     _clear_upload_cookie(resp, mode, request)
     return resp
@@ -925,7 +923,7 @@ async def _reactivate(request: Request, mode: WizardMode):
                                                    str(form.get("plan_fingerprint", "")))
     except APIError as e:
         return await _refused(request, mode, upload_token, e, "reactivate", form)
-    return _signed_in(request, mode, done)
+    return await _signed_in(request, mode, done)
 
 
 async def _restore(request: Request, mode: WizardMode):
@@ -958,7 +956,7 @@ async def _restore(request: Request, mode: WizardMode):
                                                     str(form.get("plan_fingerprint", "")), company_name=company_name)
     except APIError as e:
         return await _refused(request, mode, upload_token, e, "restore", form, values)
-    return _signed_in(request, mode, done)
+    return await _signed_in(request, mode, done)
 
 
 async def _replace(request: Request, mode: WizardMode):

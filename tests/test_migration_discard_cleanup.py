@@ -167,7 +167,7 @@ async def test_bootstrap_discard_with_a_storage_failure_returns_to_setup(real_cl
     scan_token = r.json()["scan_token"]
     assert (await save_decisions(real_client, scan_token)).status_code == 200
     r = await real_client.post("/migrations/bootstrap/start", json={
-        "scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+        "scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
         "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
     assert r.status_code == 201, r.text
     token, run_id = r.json()["access_token"], r.json()["run_id"]
@@ -190,7 +190,7 @@ async def _bootstrapped_beside_another_company(client, engine):
     scan_token = r.json()["scan_token"]
     assert (await save_decisions(client, scan_token)).status_code == 200
     r = await client.post("/migrations/bootstrap/start", json={
-        "scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+        "scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
         "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
     assert r.status_code == 201, r.text
     other = uuid.uuid4()
@@ -265,7 +265,7 @@ async def test_bootstrap_discard_goes_through_a_cascading_key_into_a_partitioned
     r = await scan_upload(real_client, fake_bytes())
     assert (await save_decisions(real_client, r.json()["scan_token"])).status_code == 200
     r = await real_client.post("/migrations/bootstrap/start", json={
-        "scan_token": r.json()["scan_token"], "company_name": "Moved Co", "name": "Owner",
+        "scan_token": r.json()["scan_token"], "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
         "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
     assert r.status_code == 201, r.text
     token, run_id = r.json()["access_token"], r.json()["run_id"]
@@ -325,7 +325,7 @@ async def test_bootstrap_discard_is_refused_while_a_table_changed_outside_celerp
     r = await scan_upload(real_client, fake_bytes())
     assert (await save_decisions(real_client, r.json()["scan_token"])).status_code == 200
     r = await real_client.post("/migrations/bootstrap/start", json={
-        "scan_token": r.json()["scan_token"], "company_name": "Moved Co", "name": "Owner",
+        "scan_token": r.json()["scan_token"], "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
         "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
     assert r.status_code == 201, r.text
     token, run_id = r.json()["access_token"], r.json()["run_id"]
@@ -366,7 +366,7 @@ async def test_bootstrap_discard_is_refused_when_a_table_inherits_from_users_aft
     r = await scan_upload(real_client, fake_bytes())
     assert (await save_decisions(real_client, r.json()["scan_token"])).status_code == 200
     r = await real_client.post("/migrations/bootstrap/start", json={
-        "scan_token": r.json()["scan_token"], "company_name": "Moved Co", "name": "Owner",
+        "scan_token": r.json()["scan_token"], "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
         "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
     assert r.status_code == 201, r.text
     token, run_id = r.json()["access_token"], r.json()["run_id"]
@@ -596,7 +596,7 @@ async def test_bootstrap_discard_is_refused_while_a_table_naming_the_owner_canno
     r = await scan_upload(real_client, fake_bytes())
     assert (await save_decisions(real_client, r.json()["scan_token"])).status_code == 200
     r = await real_client.post("/migrations/bootstrap/start", json={
-        "scan_token": r.json()["scan_token"], "company_name": "Moved Co", "name": "Owner",
+        "scan_token": r.json()["scan_token"], "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
         "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
     assert r.status_code == 201, r.text
     token, run_id = r.json()["access_token"], r.json()["run_id"]

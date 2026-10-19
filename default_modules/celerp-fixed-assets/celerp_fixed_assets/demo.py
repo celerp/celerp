@@ -15,6 +15,7 @@ from datetime import date
 from types import SimpleNamespace
 
 from celerp.events.engine import find_event_by_idempotency
+from celerp.services.business_time import business_today
 from celerp.services.money import books_currency
 
 # key, supplier, line name, quantity, unit price, months back, day of month, account code
@@ -41,7 +42,6 @@ async def seed_demo_assets(session, company_id, user_id) -> None:
     from celerp_docs.doc_money import document_money
     from celerp_docs.routes import finalize_document
     from celerp_docs.sequences import next_draft_ref
-    from celerp_fixed_assets.setup import today_in
 
     if await has_own_books(session, company_id):
         return
@@ -50,7 +50,7 @@ async def seed_demo_assets(session, company_id, user_id) -> None:
     if await find_event_by_idempotency(session, company_id, "fa:demo:van") is not None:
         await _follow_books_currency(session, company_id, currency)
         return
-    today = today_in(company.settings)
+    today = business_today(company.settings.get("timezone"))
     for key, supplier, name, quantity, price, months, day, account in _BILLS:
         line = {"line_id": str(uuid.uuid4()), "name": name, "quantity": quantity, "unit_price": float(price),
                 "receive_as": "asset"}

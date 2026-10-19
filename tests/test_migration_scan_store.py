@@ -301,7 +301,7 @@ async def test_scan_token_is_scoped_expiring_and_tamper_safe(client, session, mi
     token = r.json()["scan_token"]
     assert (await save_decisions(client, token)).status_code == 200
     r = await client.post("/migrations/bootstrap/start", headers={"X-Setup-Code": code_config}, json={
-        "scan_token": token, "company_name": "Moved Co", "name": "Owner",
+        "scan_token": token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
         "email": "owner@example.com", "password": "ownerpw123"})
     assert r.status_code == 201, r.text
     body = r.json()

@@ -30,6 +30,7 @@ from celerp.services.line_measures import identifier_backfill, item_measure_meta
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
+from celerp.services.business_time import business_today
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
@@ -434,7 +435,7 @@ def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kw
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import category_label, doc_type_label, get_lang, refusal_text, t
-from ui.routes.reports import _date_filter_bar, _parse_dates, _resolve_preset
+from ui.routes.reports import _company_today, _date_filter_bar, _get_company, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
 
@@ -578,11 +579,11 @@ async def _doc_list_dates(request: Request, state: dict[str, str], company: dict
     if state.get("ids"):
         return "", "", "all"
     if any(state.get(k) for k in _DATE_KEYS):
-        return _parse_dates(request)
+        return _parse_dates(request, company)
     default_preset = company.get("docs_default_preset") or "last_12m"
     if default_preset == "all":
         return "", "", "all"
-    date_from, date_to = _resolve_preset(default_preset)
+    date_from, date_to = _resolve_preset(default_preset, company)
     return date_from, date_to, default_preset
 
 
@@ -635,13 +636,13 @@ async def _list_page_dates(request: Request, state: dict[str, str], company: dic
     default: a draft is open work, and many list types carry no issue date yet, so a default
     window would silently hide them."""
     if any(state.get(k) for k in _DATE_KEYS):
-        return _parse_dates(request)
+        return _parse_dates(request, company)
     if state.get("view") == "drafts" or state.get("status") == "draft":
         return "", "", "all"
     default_preset = company.get("docs_default_preset") or "last_12m"
     if default_preset == "all":
         return "", "", "all"
-    date_from, date_to = _resolve_preset(default_preset)
+    date_from, date_to = _resolve_preset(default_preset, company)
     return date_from, date_to, default_preset
 
 
@@ -1543,12 +1544,7 @@ _ICON_GLOBE = (
 
 async def _doc_notes_section_response(token: str, entity_id: str, is_list: bool):
     """Fetch notes and return the rendered notes section (innerHTML target)."""
-    tz = "UTC"
-    try:
-        _co = await api.get_company(token)
-        tz = _co.get("timezone") or "UTC"
-    except Exception:
-        pass
+    tz = (await _get_company(token)).get("timezone") or "UTC"
     try:
         notes = await api.list_list_notes(token, entity_id) if is_list else await api.list_doc_notes(token, entity_id)
     except Exception:
@@ -1585,10 +1581,7 @@ def setup_routes(app):
         view = state.get("view", "")  # "drafts" = drafts-only mode
         page = _page_number(request)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
-        try:
-            company = await api.get_company(token)
-        except Exception:
-            company = {}
+        company = await _get_company(token)
         currency = company.get("currency") or None
         date_from, date_to, preset = await _doc_list_dates(request, state, company)
 
@@ -1660,10 +1653,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         state = _doc_list_state(request)
         page = _page_number(request)
-        try:
-            company = await api.get_company(token)
-        except APIError:
-            company = {}
+        company = await _get_company(token)
         date_from, date_to, preset = await _doc_list_dates(request, state, company)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
@@ -2228,7 +2218,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Div(P(t("error.session_expired")), id="bulk-payment-panel")
-        _settings = (await api.get_company(token)).get("settings") or {}
+        company = await api.get_company(token)
+        _settings = company.get("settings") or {}
         if not role_has_permission(_settings, _get_role(request), "record_payments"):
             return Div(P(missing_permission_text("record_payments")), id="bulk-payment-panel")
         doc_ids_raw = request.query_params.get("doc_ids", "")
@@ -2297,8 +2288,7 @@ def setup_routes(app):
                 data_doc_id=eid,
             ))
 
-        from datetime import date as _d
-        today = _d.today().isoformat()
+        today = business_today(company.get("timezone")).isoformat()
         _methods = [Option(t("doc.cash"), value="cash"), Option(t("doc.bank_transfer"), value="transfer"),
                     Option(t("doc.card"), value="card"), Option(t("doc.check"), value="check"), Option(t("doc.other"), value="other")]
         _bank_opts = _bank_account_options(bank_accounts, default_code=bank_accounts[0].get("chart_account_code") if bank_accounts else None)
@@ -2444,18 +2434,13 @@ celerpUpdateBulkAlloc();
             tc_templates = await api.get_terms_conditions(token)
         except Exception:
             pass
-        # Fetch company timezone for notes display
-        tz: str = "UTC"
-        company_currency: str = "USD"
-        _ident_mode = "sku"
-        _co_settings: dict = {}
+        _co = await _get_company(token)
+        tz: str = _co.get("timezone") or "UTC"
+        company_currency: str = _co.get("currency") or "USD"
+        _ident_mode = _ident_mode_from(_co)
+        _co_settings: dict = _co.get("settings") or {}
         _co_connectors: set[str] = set()
         try:
-            _co = await api.get_company(token)
-            tz = _co.get("timezone") or "UTC"
-            company_currency = _co.get("currency") or "USD"
-            _ident_mode = _ident_mode_from(_co)
-            _co_settings = _co.get("settings") or {}
             _co_connectors = await doc_detail_connectors(_co)
         except Exception:
             pass
@@ -2645,7 +2630,8 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
-        _settings = (await api.get_company(token)).get("settings") or {}
+        company = await api.get_company(token)
+        _settings = company.get("settings") or {}
         if not role_has_permission(_settings, _get_role(request), "edit_documents"):
             # Without the edit permission, return the display state instead of an
             # input (a role granted the write in the matrix keeps its input).
@@ -2713,8 +2699,7 @@ celerpUpdateBulkAlloc();
         elif field in ("issue_date", "due_date", "valid_until"):
             display_value = value[:10] if value else ""
             if not display_value and field == "issue_date":
-                from datetime import date
-                display_value = date.today().isoformat()
+                display_value = business_today(company.get("timezone")).isoformat()
             # Constrain pickers to prevent inverted issue/due date.
             # issue_date max = due_date (if set); due_date min = issue_date (if set).
             date_min = ""
@@ -3498,7 +3483,6 @@ celerpUpdateBulkAlloc();
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            from datetime import date as _d
             form = await request.form()
             try:
                 amount = float(str(form.get("amount", "0")))
@@ -3511,7 +3495,7 @@ celerpUpdateBulkAlloc();
             await api.refund_payment(token, entity_id, {
                 "payment_index": payment_index,
                 "amount": amount,
-                "payment_date": str(form.get("payment_date", "")).strip() or _d.today().isoformat(),
+                "payment_date": str(form.get("payment_date", "")).strip() or await _company_today(token),
                 "method": str(form.get("method", "")).strip() or None,
                 "reference": str(form.get("reference", "")).strip() or None,
                 **submitted_operation_key(form),
@@ -3711,12 +3695,8 @@ celerpUpdateBulkAlloc();
         q = request.query_params.get("q", "")
         method_filter = request.query_params.get("method", "")
         contact_filter = request.query_params.get("contact", "")
-        date_from, date_to, preset = _parse_dates(request)
-
-        try:
-            company = await api.get_company(token)
-        except Exception:
-            company = {}
+        company = await _get_company(token)
+        date_from, date_to, preset = _parse_dates(request, company)
         currency = company.get("currency") or None
         if not role_has_permission(company.get("settings") or {}, _get_role(request), "view_payments"):
             return not_permitted_redirect(request)
@@ -3867,7 +3847,7 @@ celerpUpdateBulkAlloc();
             request=request,
         )
 
-    def _share_panel(entity_id: str, status: dict) -> FT:
+    def _share_panel(entity_id: str, status: dict, today: str) -> FT:
         """Share modal body. The document's stable link is always shown (dimmed
         while off) with a copy indicator; below it one control row: auto-revoke
         date picker, state light, and a single action button - Share while the
@@ -3879,7 +3859,7 @@ celerpUpdateBulkAlloc();
         expired = bool(status.get("expired"))
         view_url = status.get("view_url") or ""
         # A link about to go live gets a sane default lifetime instead of forever.
-        expires = (status.get("expires_at") or "") if active else (_d.today() + _td(days=30)).isoformat()
+        expires = (status.get("expires_at") or "") if active else (_d.fromisoformat(today) + _td(days=30)).isoformat()
 
         if active:
             dot_cls, dot_tip = "share-dot share-dot--live", t("doc.share_live_tip")
@@ -3945,7 +3925,7 @@ celerpUpdateBulkAlloc();
             from starlette.responses import Response as _R
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            return _share_panel(entity_id, await api.get_share_status(token, entity_id))
+            return _share_panel(entity_id, await api.get_share_status(token, entity_id), await _company_today(token))
         except APIError as e:
             return _action_error(error_message(e))
 
@@ -3958,7 +3938,7 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         expires_at = (form.get("expires_at") or "").strip() or None
         try:
-            return _share_panel(entity_id, await api.create_share_link(token, entity_id, expires_at))
+            return _share_panel(entity_id, await api.create_share_link(token, entity_id, expires_at), await _company_today(token))
         except APIError as e:
             return _action_error(error_message(e))
 
@@ -3969,7 +3949,7 @@ celerpUpdateBulkAlloc();
             from starlette.responses import Response as _R
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            return _share_panel(entity_id, await api.revoke_share_link(token, entity_id))
+            return _share_panel(entity_id, await api.revoke_share_link(token, entity_id), await _company_today(token))
         except APIError as e:
             return _action_error(error_message(e))
 
@@ -4283,10 +4263,7 @@ celerpUpdateBulkAlloc();
         list_type = state.get("type", "")
         page = _page_number(request)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
-        try:
-            company = await api.get_company(token)
-        except APIError:
-            company = {}
+        company = await _get_company(token)
         date_from, date_to, preset = await _list_page_dates(request, state, company)
         try:
             lists, filtered_total, summary = await _list_results(token, state, date_from, date_to, page, per_page)
@@ -4352,10 +4329,7 @@ celerpUpdateBulkAlloc();
             return RedirectResponse("/login", status_code=302)
         state = _list_page_state(request)
         page = _page_number(request)
-        try:
-            company = await api.get_company(token)
-        except APIError:
-            company = {}
+        company = await _get_company(token)
         date_from, date_to, preset = await _list_page_dates(request, state, company)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
@@ -4588,16 +4562,12 @@ celerpUpdateBulkAlloc();
         except Exception:
             pass
 
-        # Fetch company timezone for notes display
-        tz: str = "UTC"
-        _ident_mode = "sku"
-        _co_settings: dict = {}
+        _co = await _get_company(token)
+        tz: str = _co.get("timezone") or "UTC"
+        _ident_mode = _ident_mode_from(_co)
+        _co_settings: dict = _co.get("settings") or {}
         _co_connectors: set[str] = set()
         try:
-            _co = await api.get_company(token)
-            tz = _co.get("timezone") or "UTC"
-            _ident_mode = _ident_mode_from(_co)
-            _co_settings = _co.get("settings") or {}
             _co_connectors = await doc_detail_connectors(_co)
         except Exception:
             pass
@@ -5709,7 +5679,7 @@ def _note_target_options(doc: dict, candidates: list[dict]) -> list[tuple[str, s
 
 
 def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_operator: bool = True,
-                     targets: list[dict] | None = None) -> FT:
+                     targets: list[dict] | None = None, tz: str | None = None) -> FT:
     """Shared payment/credit section for invoices, bills, and customer and supplier credit notes.
 
     DRY: one function, different labels based on doc_type. ``targets`` holds the contact's
@@ -5749,8 +5719,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     money_step = "1" if money_dp == 0 else "0." + ("0" * (money_dp - 1)) + "1"
     money_value = f"{outstanding_d:.{money_dp}f}"
 
-    from datetime import date as _d
-    today = _d.today().isoformat()
+    today = business_today(tz).isoformat()
 
     # --- Payment history table ---
     history_rows = []
@@ -10306,7 +10275,7 @@ async function celerpCsvImport(input, entityId) {{
             cls="doc-section doc-section--totals",
         ),
         # Payment section (invoices, bills, credit notes - not drafts/voids)
-        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay, targets=note_targets),
+        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay, targets=note_targets, tz=tz),
         # Terms & Conditions + Note to customer (2 columns). Both are customer-facing, so an
         # internal money-less doc (production order) hides them - it uses the Internal Notes
         # section below instead.

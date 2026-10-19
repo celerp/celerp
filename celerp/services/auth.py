@@ -39,6 +39,18 @@ oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error
 # address in this header, so a rate limit counts that visitor rather than the UI itself.
 CALLER_HEADER = "X-Celerp-Caller"
 
+# The Connect gateway marks every request it proxies, and the UI server passes the
+# mark on to the API.
+CONNECT_HEADER = "X-Celerp-Connect"
+
+# The relay names each Connect visitor in this header by the address it saw them from.
+# Mirrors the relay's constant, which is authoritative.
+VISITOR_HEADER = "X-Celerp-Visitor"
+
+# The caller every Connect visitor without a valid address counts as: never the person
+# at this computer, and never an address the visitor chose.
+CONNECT_CALLER = "connect"
+
 ROLE_LEVELS = {"viewer": 1, "operator": 2, "manager": 3, "admin": 4, "owner": 5}
 
 # Legacy role migration: old roles carried in DB state until they are edited.
@@ -102,9 +114,11 @@ def verify_password(plain: str, hashed: str) -> bool:
 # Failed password checks slow the next try down, never shut anyone out: an account takes
 # FREE_ACCOUNT_FAILURES from every caller together and a caller FREE_CALLER_FAILURES across
 # every account, then each further failure doubles the wait from one second up to
-# MAX_WAIT_SECONDS. A key quiet for FORGET_AFTER_SECONDS starts again. A loopback caller
-# names no one visitor (the desktop user, Connect and any proxy on this machine all arrive
-# from it), so it has no budget of its own; the account's budget still holds.
+# MAX_WAIT_SECONDS. A key quiet for FORGET_AFTER_SECONDS starts again, and so does an
+# account whose password has changed. A loopback caller
+# names no one visitor (the desktop user and any proxy on this machine arrive from it, while
+# each Connect visitor is named apart), so it has no budget of its own; the account's budget
+# still holds.
 FREE_ACCOUNT_FAILURES = 5
 FREE_CALLER_FAILURES = 20
 MAX_WAIT_SECONDS = 300
@@ -115,6 +129,8 @@ _clock = time.monotonic
 @dataclass
 class _Tally:
     free: int
+    # The password the account's failures were counted against; a new one starts the count again.
+    auth_hash: str | None = None
     failures: int = 0
     last_failure: float = 0.0
 
@@ -141,21 +157,16 @@ class PasswordAttempts:
         with self._lock:
             self._tallies.clear()
 
-    def forget(self, email: str) -> None:
-        """Start the account's count again, as a new password does."""
-        with self._lock:
-            self._tallies.pop(_account(email), None)
-
     def check(self, email: str, password: str, auth_hash: str | None, caller: str | None) -> bool:
         """Whether *password* is the one *auth_hash* holds, as one attempt on the account
         *email* names from *caller*; no hash never matches. 429 with Retry-After, and the
         password left unread, while the account or the caller must wait."""
-        keys = [(_account(email), FREE_ACCOUNT_FAILURES)]
-        if caller and not _is_loopback(caller):
-            keys.append((f"caller|{caller}", FREE_CALLER_FAILURES))
+        keys = [(_account(email), FREE_ACCOUNT_FAILURES, auth_hash)]
+        if caller and not is_loopback(caller):
+            keys.append((f"caller|{caller}", FREE_CALLER_FAILURES, None))
         now = _clock()
         with self._lock:
-            tallies = [self._tally(key, free, now) for key, free in keys]
+            tallies = [self._tally(key, free, held, now) for key, free, held in keys]
             wait = max(tally.open_at() - now for tally in tallies)
             if wait > 0:
                 seconds = math.ceil(wait)
@@ -175,10 +186,13 @@ class PasswordAttempts:
                 tally.failures = max(tally.failures - 1, 0)
         return True
 
-    def _tally(self, key: str, free: int, now: float) -> _Tally:
+    def _tally(self, key: str, free: int, auth_hash: str | None, now: float) -> _Tally:
         tally = self._tallies.get(key)
-        if tally is None or now - tally.last_failure >= FORGET_AFTER_SECONDS:
-            tally = self._tallies[key] = _Tally(free)
+        changed = None not in (auth_hash, tally and tally.auth_hash) and tally.auth_hash != auth_hash
+        if tally is None or now - tally.last_failure >= FORGET_AFTER_SECONDS or changed:
+            tally = self._tallies[key] = _Tally(free, auth_hash)
+        elif auth_hash is not None:
+            tally.auth_hash = auth_hash
         return tally
 
     def _sweep(self, now: float) -> None:
@@ -424,33 +438,68 @@ async def signed_request_context(session: AsyncSession) -> AuthContext | None:
     return await validate_access_token(session, token) if isinstance(token, str) else None
 
 
-def _is_loopback(address: str) -> bool:
+def is_loopback(address: str) -> bool:
     try:
         return ip_address(address).is_loopback
     except ValueError:
         return False
 
 
+def _ip(address: str):
+    """The one IP address *address* names, an IPv4-mapped IPv6 one as its IPv4 address;
+    None when it names anything else."""
+    try:
+        ip = ip_address(address.strip())
+    except ValueError:
+        return None
+    return getattr(ip, "ipv4_mapped", None) or ip
+
+
 def _counted_as(address: str) -> str:
     """The caller an address counts as: an IPv6 address by its /64, which one visitor holds
     whole, so stepping through it is not a new caller each time. A loopback address stays
     itself."""
-    try:
-        ip = ip_address(address)
-    except ValueError:
+    ip = _ip(address)
+    if ip is None:
         return address
-    ip = getattr(ip, "ipv4_mapped", None) or ip
     if ip.version == 6 and not ip.is_loopback:
         return str(ip_network(f"{ip}/64", strict=False))
     return str(ip)
 
 
+def visitor_address(value: str | None) -> str | None:
+    """The address a Connect visitor is named by, from the one value the relay set; None
+    unless it is one valid address that is not this computer's, so no visitor can count as
+    the person at it."""
+    ip = _ip(value) if value else None
+    if ip is None or ip.is_loopback or ip.is_unspecified:
+        return None
+    return str(ip)
+
+
+def connect_caller(values: list[str]) -> str:
+    """The caller a Connect visitor is named as from the address values the request carries:
+    the address when there is exactly one valid one, else the Connect caller every unnamed
+    visitor shares."""
+    return (visitor_address(values[0]) if len(values) == 1 else None) or CONNECT_CALLER
+
+
 def request_caller(request: Request) -> str:
     """The caller a request is counted for. CALLER_HEADER counts only on a loopback request,
-    where it comes from the UI server, so no one reaching the API from elsewhere can name
-    an address of their choosing."""
+    where it comes from the UI server or the Connect gateway, so no one reaching the API from
+    elsewhere can name an address of their choosing. A loopback request with the Connect mark
+    is a visitor, never the person at this computer, whatever address it names."""
     host = request.client.host if request.client else ""
-    return _counted_as((request.headers.get(CALLER_HEADER) or host) if _is_loopback(host) else host)
+    if not is_loopback(host):
+        return _counted_as(host)
+    if CONNECT_HEADER in request.headers:
+        return _counted_as(connect_caller(request.headers.getlist(CALLER_HEADER)))
+    return _counted_as(request.headers.get(CALLER_HEADER) or host)
+
+
+def is_local_person(request: Request) -> bool:
+    """Whether the request comes from the person at this computer rather than through Connect."""
+    return is_loopback(request_caller(request)) and CONNECT_HEADER not in request.headers
 
 
 async def get_current_user(ctx: AuthContext = Depends(get_auth_context)) -> User:
