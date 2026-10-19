@@ -172,6 +172,18 @@ test("an old cached installer that cannot be removed is logged, and the update g
     expect(info.fileName).toBe(path.basename(downloadedFile));
   });
 
+test("removing an old installer and saving the new one share one 60 second wait",
+  async function test_old_installer_and_download_share_the_deadline() {
+    cacheOldInstaller();
+    const start = Date.now();
+    holdFile(finalFile(), 50);
+    const renames = [];
+    intercept("rename", () => { renames.push(Date.now()); throw windowsError("EPERM", "rename"); });
+    const { error } = await download();
+    expect(error && error.message).toMatch(/^EPERM:/);
+    expect((renames[renames.length - 1] - start) / 1000).toBe(60);
+  });
+
 test("electron-updater is patched for exactly the installed version",
   function test_patch_targets_installed_electron_updater() {
     const pkg = require("../package.json");
