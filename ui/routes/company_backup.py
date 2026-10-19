@@ -721,7 +721,7 @@ async def _open_now(request: Request, mode: WizardMode, upload_token: str, previ
                                                     company_name=form["company_name"] or None)
     except APIError as e:
         return await _refused(request, mode, upload_token, e, target, form, {"company_name": form["company_name"]})
-    return _signed_in(request, mode, done)
+    return await _signed_in(request, mode, done)
 
 
 async def _restarting_page(request: Request, mode: WizardMode, message: str | None = None, status_code: int = 200):
@@ -973,7 +973,7 @@ async def _replace(request: Request, mode: WizardMode):
                                                 str(form.get("company_name", "")))
     except APIError as e:
         return await _refused(request, mode, upload_token, e, "replace", form)
-    return _signed_in(request, mode, done)
+    return await _signed_in(request, mode, done)
 
 
 async def _key_balances(token: str, currency: str | None) -> FT | str:

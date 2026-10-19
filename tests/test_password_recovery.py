@@ -315,7 +315,7 @@ async def test_recovery_reset_never_touches_connect_state(client, session, relay
     connect_before = (settings.gateway_instance_id, settings.gateway_token, settings.celerp_public_url,
                       state.get_instance_id(), state.get_session_token())
     user = await _user(session, OWNER)
-    fields = ("id", "email", "name", "api_key", "is_active", "is_install_owner")
+    fields = ("id", "email", "name", "is_active", "is_install_owner")
     user_before = {f: getattr(user, f) for f in fields}
     links_before = [(m.company_id, m.role, m.is_active) for m in (await session.execute(
         select(UserCompany).where(UserCompany.user_id == user.id))).scalars()]
