@@ -2510,6 +2510,7 @@
   "documents.remaining_amount": "Rimanente: {amount}",
   "documents.remove_from_draft": "Rimuovi dalla bozza",
   "documents.reprice_failed": "Non è stato possibile ricalcolare i prezzi. Seleziona Riprova.",
+  "documents.reprice_version_unknown": "Celerp non è riuscito a capire quale versione di questo documento ricalcolare. Seleziona Riprova, poi scegli di nuovo il listino prezzi.",
   "documents.reprice_partial_title": "Alcuni prezzi non sono stati aggiornati",
   "documents.reprice_partial_one": "Prezzi aggiornati per {updated} righe. 1 riga ha mantenuto il prezzo precedente perché il suo articolo non esiste più. Controlla la riga e cambia il prezzo a mano se serve.",
   "documents.reprice_partial_many": "Prezzi aggiornati per {updated} righe. {skipped} righe hanno mantenuto i prezzi precedenti perché i loro articoli non esistono più. Controlla quelle righe e cambia i prezzi a mano se serve.",

@@ -2509,6 +2509,7 @@
   "documents.remaining_amount": "Số lượng còn lại: {amount}",
   "documents.remove_from_draft": "Xóa khỏi bản nháp",
   "documents.reprice_failed": "Không thể tính lại giá. Hãy chọn Thử lại.",
+  "documents.reprice_version_unknown": "Celerp không xác định được cần tính lại giá cho phiên bản nào của chứng từ này. Hãy chọn Thử lại, rồi chọn lại bảng giá.",
   "documents.reprice_partial_title": "Một số giá chưa được cập nhật",
   "documents.reprice_partial_one": "Đã cập nhật giá cho {updated} dòng. 1 dòng giữ giá cũ vì mặt hàng không còn tồn tại. Hãy kiểm tra dòng đó và tự sửa giá nếu cần.",
   "documents.reprice_partial_many": "Đã cập nhật giá cho {updated} dòng. {skipped} dòng giữ giá cũ vì mặt hàng không còn tồn tại. Hãy kiểm tra các dòng đó và tự sửa giá nếu cần.",

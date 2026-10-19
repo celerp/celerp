@@ -2509,6 +2509,7 @@
   "documents.remaining_amount": "Restante: {amount}",
   "documents.remove_from_draft": "Remover do rascunho",
   "documents.reprice_failed": "Não foi possível recalcular os preços. Selecione Tentar novamente.",
+  "documents.reprice_version_unknown": "O Celerp não conseguiu identificar qual versão deste documento recalcular. Selecione Tentar novamente e escolha a lista de preços outra vez.",
   "documents.reprice_partial_title": "Alguns preços não foram atualizados",
   "documents.reprice_partial_one": "Preços atualizados em {updated} linhas. 1 linha manteve o preço antigo porque o item não existe mais. Verifique essa linha e altere o preço manualmente se necessário.",
   "documents.reprice_partial_many": "Preços atualizados em {updated} linhas. {skipped} linhas mantiveram os preços antigos porque os itens não existem mais. Verifique essas linhas e altere os preços manualmente se necessário.",

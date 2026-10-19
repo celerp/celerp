@@ -2748,6 +2748,7 @@
   "documents.remaining_amount": "Remaining: {amount}",
   "documents.remove_from_draft": "Remove from draft",
   "documents.reprice_failed": "Prices couldn't be recalculated. Select Try again.",
+  "documents.reprice_version_unknown": "Celerp couldn't tell which version of this document to reprice. Select Try again, then choose the price list again.",
   "documents.reprice_partial_title": "Some prices were not updated",
   "documents.reprice_partial_one": "Prices updated for {updated} lines. 1 line kept its old price because its item no longer exists. Check that line and change its price by hand if needed.",
   "documents.reprice_partial_many": "Prices updated for {updated} lines. {skipped} lines kept their old prices because their items no longer exist. Check those lines and change their prices by hand if needed.",

@@ -2862,7 +2862,7 @@ celerpUpdateBulkAlloc();
             if new_pl:
                 version = (await api.get_doc(token, entity_id)).get("version")
                 if version is None:
-                    raise APIError(409, "Select Try again before repricing")
+                    raise APIError(409, t("documents.reprice_version_unknown"))
                 await api.reprice_doc(token, entity_id, new_pl, int(version))
             doc = await api.get_doc(token, entity_id)
         except APIError as e:

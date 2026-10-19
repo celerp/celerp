@@ -2510,6 +2510,7 @@
   "documents.remaining_amount": "Reste : {amount}",
   "documents.remove_from_draft": "Supprimer du brouillon",
   "documents.reprice_failed": "Les prix n'ont pas pu être recalculés. Sélectionnez « Réessayer ».",
+  "documents.reprice_version_unknown": "Celerp n'a pas pu déterminer quelle version de ce document recalculer. Sélectionnez « Réessayer », puis choisissez de nouveau la liste de prix.",
   "documents.reprice_partial_title": "Certains prix n'ont pas été mis à jour",
   "documents.reprice_partial_one": "Prix mis à jour pour {updated} lignes. 1 ligne a gardé son ancien prix, car son article n'existe plus. Vérifiez cette ligne et modifiez son prix à la main si besoin.",
   "documents.reprice_partial_many": "Prix mis à jour pour {updated} lignes. {skipped} lignes ont gardé leur ancien prix, car leurs articles n'existent plus. Vérifiez ces lignes et modifiez leurs prix à la main si besoin.",

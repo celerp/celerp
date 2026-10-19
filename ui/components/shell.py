@@ -1998,21 +1998,22 @@ def _relay_info_from_request(request) -> dict | None:
     return {"connected": True, "public_url": f"https://{host}"}
 
 
-def _has_get_route(request, path: str) -> bool:
+def _has_get_route(routes, path: str) -> bool:
     from starlette.routing import Match
     scope = {"type": "http", "path": path, "method": "GET", "root_path": ""}
-    return any(route.matches(scope)[0] == Match.FULL for route in request.app.router.routes)
+    return any(route.matches(scope)[0] == Match.FULL for route in routes)
 
 
 def try_again_address(request) -> str:
     """Where the Try again button goes when the page came from a form post: the nearest page
     at or above it that answers GET (the start of that form), so selecting it never sends the
-    form again. Empty for a page that came from GET (or without a request): the button then
-    opens the address the browser shows, which is this page."""
-    if request is None or request.method == "GET":
+    form again. Empty for a page that came from GET (or rendered outside the app): the button
+    then opens the address the browser shows."""
+    app = request.scope.get("app") if request is not None else None
+    if app is None or request.method == "GET":
         return ""
     path = request.url.path
-    while path not in ("", "/") and not _has_get_route(request, path):
+    while path not in ("", "/") and not _has_get_route(app.router.routes, path):
         path = path.rsplit("/", 1)[0]
     return "/" + path.lstrip("/")
 

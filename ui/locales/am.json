@@ -2729,6 +2729,7 @@
   "documents.remaining_amount": "የቀረው: {amount}",
   "documents.remove_from_draft": "ከረቂቅ አስወግድ",
   "documents.reprice_failed": "ዋጋዎች እንደገና ሊሰሉ አልቻሉም። እንደገና ሞክር ይምረጡ።",
+  "documents.reprice_version_unknown": "Celerp የትኛውን የዚህን ሰነድ ስሪት ዋጋ እንደሚያሰላ ማወቅ አልቻለም። እንደገና ሞክር ይምረጡ፣ ከዚያ የዋጋ ዝርዝሩን እንደገና ይምረጡ።",
   "documents.reprice_partial_title": "አንዳንድ ዋጋዎች አልተዘመኑም",
   "documents.reprice_partial_one": "ለ{updated} መስመሮች ዋጋዎች ተዘምነዋል። 1 መስመር ዕቃው ስለሌለ የቀድሞ ዋጋውን ይዟል። ያንን መስመር ያረጋግጡና ካስፈለገ ዋጋውን በእጅ ይቀይሩ።",
   "documents.reprice_partial_many": "ለ{updated} መስመሮች ዋጋዎች ተዘምነዋል። {skipped} መስመሮች ዕቃዎቻቸው ስለሌሉ የቀድሞ ዋጋቸውን ይዘዋል። እነዚያን መስመሮች ያረጋግጡና ካስፈለገ ዋጋቸውን በእጅ ይቀይሩ።",

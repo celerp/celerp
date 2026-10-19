@@ -2509,6 +2509,7 @@
   "documents.remaining_amount": "คงเหลือ: {amount}",
   "documents.remove_from_draft": "นำออกจากร่าง",
   "documents.reprice_failed": "คำนวณราคาใหม่ไม่ได้ เลือก ลองอีกครั้ง",
+  "documents.reprice_version_unknown": "Celerp ไม่ทราบว่าต้องคำนวณราคาใหม่ให้เอกสารนี้ฉบับใด เลือก ลองอีกครั้ง แล้วเลือกรายการราคาอีกครั้ง",
   "documents.reprice_partial_title": "มีบางราคาที่ไม่ได้อัปเดต",
   "documents.reprice_partial_one": "อัปเดตราคา {updated} บรรทัด 1 บรรทัดยังใช้ราคาเดิมเพราะสินค้าไม่มีอยู่แล้ว ตรวจสอบบรรทัดนั้นและแก้ราคาเองหากจำเป็น",
   "documents.reprice_partial_many": "อัปเดตราคา {updated} บรรทัด {skipped} บรรทัดยังใช้ราคาเดิมเพราะสินค้าไม่มีอยู่แล้ว ตรวจสอบบรรทัดเหล่านั้นและแก้ราคาเองหากจำเป็น",
