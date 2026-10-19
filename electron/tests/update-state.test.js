@@ -3,7 +3,7 @@
 "use strict";
 
 const { EventEmitter } = require("events");
-const { trackUpdater, serveUpdateState, updateFailure } = require("../update-state");
+const { trackUpdater, serveUpdateState } = require("../update-state");
 
 // A fake electron-updater: the tracker only subscribes to its events.
 function setup() {
@@ -25,10 +25,10 @@ function downloadedSetup() {
 // The state without its log lines and revision.
 const stateOf = ({ log, revision, ...state }) => state;
 
-const IDLE = { status: "idle", version: "", percent: 0, message: "", checking: false, downloadFailed: false, releaseUrl: "" };
+const IDLE = { status: "idle", version: "", percent: 0, message: "", checking: false, downloadFailed: false, failure: "",
+               releaseUrl: "" };
 const DOWNLOADED = { ...IDLE, status: "downloaded", version: "2.0.1", percent: 100 };
 const LATEST = "https://github.com/celerp/celerp/releases/latest";
-const V201 = "https://github.com/celerp/celerp/releases/tag/v2.0.1";
 
 test("a fresh tracker starts idle", function test_new_tracker_starts_idle() {
   const { getUpdateState } = setup();
@@ -102,7 +102,7 @@ test("downloaded cannot be demoted by later updater noise", function test_downlo
 test("an error before any download is retained for later replay", function test_pre_download_error_is_retained() {
   const { updater, sent, getUpdateState } = setup();
   updater.emit("error", new Error("getaddrinfo ENOTFOUND github.com"));
-  const state = { ...IDLE, status: "error", message: "getaddrinfo ENOTFOUND github.com", releaseUrl: LATEST,
+  const state = { ...IDLE, status: "error", message: "getaddrinfo ENOTFOUND github.com", failure: "check", releaseUrl: LATEST,
                   log: ["Update error: getaddrinfo ENOTFOUND github.com"], revision: 1 };
   expect(getUpdateState()).toEqual(state);
   // Reading it again (a later page load) still returns the error.
@@ -149,7 +149,7 @@ test("an error with no usable message is stored with an empty message",
     for (const err of [undefined, null, {}, new Error("")]) {
       const { updater, getUpdateState } = setup();
       updater.emit("error", err);
-      expect(getUpdateState()).toEqual({ ...IDLE, status: "error", releaseUrl: LATEST, log: ["Update error"], revision: 1 });
+      expect(getUpdateState()).toEqual({ ...IDLE, status: "error", failure: "check", releaseUrl: LATEST, log: ["Update error"], revision: 1 });
     }
   });
 
@@ -228,7 +228,8 @@ test("a failed check is kept until a later check has a result, and stays in the 
       updater.emit("checking-for-update");
       // While the new check runs, the failure is still there.
       expect(stateOf(getUpdateState())).toEqual(
-        { ...IDLE, status: "error", message: "getaddrinfo ENOTFOUND github.com", checking: true, releaseUrl: LATEST });
+        { ...IDLE, status: "error", message: "getaddrinfo ENOTFOUND github.com", checking: true, failure: "check",
+          releaseUrl: LATEST });
       updater.emit(event, payload);
       expect(stateOf(getUpdateState())).toEqual(result);
       expect(getUpdateState().log.slice(0, 2)).toEqual(
@@ -244,7 +245,7 @@ test("a failed download is kept through the app's own checks until a retried dow
     updater.emit("error", new Error("sha512 checksum mismatch"));
     const failed = getUpdateState();
     expect(stateOf(failed)).toEqual(
-      { ...IDLE, status: "error", version: "2.0.1", message: "sha512 checksum mismatch", downloadFailed: true, releaseUrl: V201 });
+      { ...IDLE, status: "error", version: "2.0.1", message: "sha512 checksum mismatch", downloadFailed: true, failure: "verify" });
     sent.length = 0;
     // The periodic re-check finds nothing, then finds the update and downloads it again.
     for (const [event, payload] of [
@@ -319,7 +320,7 @@ test("a check the user asks for dismisses a failed download, and the check's res
     updater.emit("error", new Error("sha512 checksum mismatch"));
     handlers["check-for-updates"]();
     expect(stateOf(handlers["get-update-state"]())).toEqual(
-      { ...IDLE, status: "error", version: "2.0.1", message: "sha512 checksum mismatch", releaseUrl: V201 });
+      { ...IDLE, status: "error", version: "2.0.1", message: "sha512 checksum mismatch", failure: "verify" });
     updater.emit("checking-for-update");
     updater.emit("update-not-available", {});
     const state = handlers["get-update-state"]();
@@ -351,38 +352,59 @@ test("a failure links the release page of the version being installed, or the la
     expect(getUpdateState().releaseUrl).toBe("https://github.com/celerp/celerp/releases/tag/v2.6.1");
   });
 
-test("onFailure hears of a download that fails, once, and again after the user dismisses it",
-  function test_on_failure_fires_once_per_failed_download() {
+test("onFailure hears of a failure only after a check the user asked for, once per check",
+  function test_on_failure_only_after_a_user_check() {
     const updater = new EventEmitter();
     const failures = [];
-    const { dismissError } = trackUpdater(updater, () => {}, (state) => failures.push(state.message));
-    updater.emit("error", new Error("offline"));            // a failed check, no download
+    const { userChecks } = trackUpdater(updater, () => {}, (state) => failures.push(state.message));
+    updater.emit("error", new Error("offline"));            // the app's own check fails
     updater.emit("update-available", { version: "2.6.1" });
-    updater.emit("error", new Error("EPERM: rename"));      // the download fails
-    updater.emit("error", new Error("EPERM: rename"));      // the app's own retry fails too
-    expect(failures).toEqual(["EPERM: rename"]);
-    dismissError();
+    updater.emit("error", new Error("EPERM: rename"));      // its download fails
+    expect(failures).toEqual([]);
+    userChecks();
     updater.emit("update-available", { version: "2.6.1" });
     updater.emit("error", new Error("sha512 checksum mismatch"));
-    expect(failures).toEqual(["EPERM: rename", "sha512 checksum mismatch"]);
+    updater.emit("error", new Error("sha512 checksum mismatch"));
+    expect(failures).toEqual(["sha512 checksum mismatch"]);
+    userChecks();
+    updater.emit("update-not-available");
+    updater.emit("error", new Error("offline"));
+    expect(failures).toEqual(["sha512 checksum mismatch"]);
   });
 
-test("a failure is told in plain words, by what failed, with the installer to download",
-  function test_update_failure_copy() {
-    const url = "https://github.com/celerp/celerp/releases/tag/v2.6.1";
-    const locked = updateFailure("EPERM: operation not permitted, rename 'a' -> 'b'", { version: "2.6.1" });
-    expect(locked.message).toMatch(/would not let Celerp save/);
-    expect(locked.detail).toMatch(/antivirus/i);
-    expect(locked.releaseUrl).toBe(url);
-    expect(updateFailure("EACCES: permission denied", { version: "2.6.1" }).message).toBe(locked.message);
-    expect(updateFailure("EBUSY: resource busy or locked", { version: "2.6.1" }).message).toBe(locked.message);
-    expect(updateFailure("sha512 checksum mismatch", { version: "2.6.1" }).message).toMatch(/security check/);
-    expect(updateFailure("net::ERR_CONNECTION_RESET", { version: "2.6.1" }).message).toMatch(/could not download/);
-    const install = updateFailure("spawn UNKNOWN", { version: "2.6.1", installing: true });
-    expect(install.message).toMatch(/could not start the installer/);
-    expect(updateFailure("x", {}).releaseUrl).toBe("https://github.com/celerp/celerp/releases/latest");
-    for (const f of [locked, install]) {
-      expect(f.detail).toMatch(/Download the installer/);
-      expect(f.message + f.detail).not.toMatch(/—/);
-    }
+test("a failure is classed by what failed; only a download that failed its security check offers no installer",
+  function test_failure_kinds() {
+    const failed = (message, version = "2.6.1") => {
+      const { updater, getUpdateState } = setup();
+      if (version) updater.emit("update-available", { version });
+      updater.emit("error", new Error(message));
+      const { failure, releaseUrl } = getUpdateState();
+      return [failure, releaseUrl];
+    };
+    const tag = "https://github.com/celerp/celerp/releases/tag/v2.6.1";
+    expect(failed("EPERM: operation not permitted, rename 'a' -> 'b'")).toEqual(["save", tag]);
+    expect(failed("EACCES: permission denied")).toEqual(["save", tag]);
+    expect(failed("EBUSY: resource busy or locked")).toEqual(["save", tag]);
+    expect(failed("sha512 checksum mismatch, expected abc, got def")).toEqual(["verify", ""]);
+    expect(failed("New version 2.6.1 is not signed by the application owner: publisherNames: Celerp"))
+      .toEqual(["verify", ""]);
+    expect(failed("net::ERR_CONNECTION_RESET")).toEqual(["download", tag]);
+    expect(failed("getaddrinfo ENOTFOUND github.com", "")).toEqual(["check", LATEST]);
+  });
+
+test("an installer that could not start moves a downloaded update to a failed install that offers the installer",
+  function test_install_failed() {
+    const updater = new EventEmitter();
+    const sent = [];
+    const { installFailed, getUpdateState } = trackUpdater(updater, (channel, s) => sent.push(channel));
+    updater.emit("update-available", { version: "2.6.1" });
+    updater.emit("update-downloaded", { version: "2.6.1" });
+    installFailed("2.6.1", "spawn UNKNOWN");
+    const state = getUpdateState();
+    expect(stateOf(state)).toEqual({ ...IDLE, status: "error", version: "2.6.1", message: "spawn UNKNOWN",
+      downloadFailed: true, failure: "install", releaseUrl: "https://github.com/celerp/celerp/releases/tag/v2.6.1" });
+    expect(state.log.slice(-1)).toEqual(["Update error: spawn UNKNOWN"]);
+    expect(sent.slice(-1)).toEqual(["update-error"]);
+    updater.emit("update-available", { version: "2.6.1" });
+    expect(getUpdateState().failure).toBe("install");
   });

@@ -197,7 +197,8 @@ const { migrateArgs } = require("./migrate_cmd");
 const { compatibilityArgs, mayOpenData } = require("./compatibility");
 const { openData, reopenData } = require("./boot");
 const { writeConfig: writeLockedConfig } = require("./config-writer");
-const { serveUpdateState, updateFailure } = require("./update-state");
+const { serveUpdateState } = require("./update-state");
+const { translator } = require("./locale");
 const { startupDeelevation, relaunchThroughExplorer } = require("./deelevation");
 const { windowsStartFailure, clusterStartFailure, logSince } = require("./windows-start-errors");
 const { initialiseClusterOnce, postgresPaths } = require("./windows-initdb");
@@ -888,29 +889,42 @@ function resolveStorageEnv(cfg) {
  */
 // get-update-state answers idle until the updater checks (dev builds never check);
 // check-for-updates runs the check the user asks for.
+// A failure after a check the user asked for is told in a dialog as well.
 const updateState = serveUpdateState(ipcMain, () => mainWindow, autoUpdater, app.isPackaged,
-  (state) => showUpdateFailure(state.message, { version: state.version }));
+  (state) => showUpdateFailure(state));
 
 // Set once the servers have stopped for the installer, so an error then is the install failing.
 let installingUpdate = false;
 
-// Tell the user an update failed, in a dialog they cannot miss, and offer the
-// installer to run themselves. The release page opens only if they choose it.
-async function showUpdateFailure(errorMessage, context) {
-  const failure = updateFailure(errorMessage, context);
+// Celerp restarts after an installer that did not start, with this argument and
+// the version, so the restarted app shows the failed install.
+const INSTALL_FAILED_ARG = "--update-install-failed=";
+const installFailedArg = process.argv.find((arg) => arg.startsWith(INSTALL_FAILED_ARG));
+if (installFailedArg) updateState.installFailed(installFailedArg.slice(INSTALL_FAILED_ARG.length), "");
+
+// Tell the user an update failed, in a dialog they cannot miss, in plain words
+// by what failed (state.failure). A download that failed its security check
+// offers Check again, never the installer; every other failure offers that
+// version's installer to download. Nothing opens or runs unless they choose it.
+async function showUpdateFailure(state) {
+  const t = translator(path.join(APP_DIR, "ui", "locales"), app.getLocale());
+  const verify = state.failure === "verify";
+  const advice = t(`shell.update_advice_${state.failure}`);
   const options = {
     type: "warning",
-    buttons: ["Download the installer", "Close"],
+    buttons: [t(verify ? "btn.check_again" : "btn.download_installer"), t("btn.close")],
     defaultId: 0,
     cancelId: 1,
-    title: "Update failed",
-    message: failure.message,
-    detail: failure.detail,
+    title: t("shell.update_failed_title"),
+    message: t(`shell.update_${state.failure}_failed`),
+    detail: state.message ? `${advice}\n\n${t("shell.update_details", { detail: state.message })}` : advice,
   };
   try {
     const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
     const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
-    if (response === 0) await shell.openExternal(failure.releaseUrl);
+    if (response !== 0) return;
+    if (verify) updateState.checkForUser();
+    else await shell.openExternal(state.releaseUrl);
   } catch (err) {
     console.error("[updater] could not show the update failure:", err?.message ?? String(err));
   }
@@ -928,13 +942,24 @@ function setupAutoUpdater() {
     // download is also told in a dialog (serveUpdateState above).
     const message = err?.message ?? String(err);
     console.error("[updater] error:", message);
-    // The servers have stopped for the installer, so Celerp restarts once the user has read this.
+    // The installer did not start, so Celerp is still running (electron-updater
+    // quits only once the installer has started). Its servers have stopped for
+    // the installer, so Celerp restarts once the user has read this, showing the
+    // failed install.
     if (installingUpdate) {
       installingUpdate = false;
-      showUpdateFailure(message, { version: updateState.getUpdateState().version, installing: true })
-        .finally(() => fullRelaunch(app));
+      const { version } = updateState.getUpdateState();
+      updateState.installFailed(version, message);
+      showUpdateFailure(updateState.getUpdateState()).finally(() => {
+        app.relaunch({ args: [...process.argv.slice(1).filter((arg) => !arg.startsWith(INSTALL_FAILED_ARG)),
+                              INSTALL_FAILED_ARG + version] });
+        app.quit();
+      });
     }
   });
+
+  // After a failed install the user decides when to check again, from the update card.
+  if (installFailedArg) return startPeriodicChecks();
 
   // Delay initial check until the renderer has loaded and registered its IPC handlers.
   // Firing immediately at app-ready risks emitting update-available/log events before
@@ -948,7 +973,11 @@ function setupAutoUpdater() {
     autoUpdater.checkForUpdates().catch(() => {});
   }
 
-  // Periodic re-check every 4 hours in case a new release ships while app is open.
+  startPeriodicChecks();
+}
+
+// Periodic re-check every 4 hours in case a new release ships while app is open.
+function startPeriodicChecks() {
   setInterval(() => {
     autoUpdater.checkForUpdates().catch(() => {});
   }, 4 * 60 * 60 * 1000);

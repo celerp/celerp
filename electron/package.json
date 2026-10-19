@@ -52,6 +52,7 @@
       "config-writer.js",
       "migrate_cmd.js",
       "update-state.js",
+      "locale.js",
       "compatibility.js",
       "deelevation.js",
       "windows-start-errors.js",

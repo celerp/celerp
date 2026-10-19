@@ -1166,17 +1166,23 @@ document.addEventListener('DOMContentLoaded', function() {
     var progressFill = card.querySelector('.update-card__progress-fill');
     var logEl = card.querySelector('.update-card__log');
     var installerLink = card.querySelector('.update-card__installer-link');
+    var helpLink = card.querySelector('.update-card__help-link');
 
     function setState(text, showRestart) {
       if (stateEl) stateEl.textContent = text;
       if (restartBtn) restartBtn.style.display = showRestart ? '' : 'none';
     }
 
-    // Every failure offers the installer, from the release page the state names.
+    // A failure offers the installer from the release page the state names. A
+    // download that failed its security check names none: it offers help instead.
     function setInstallerLink(url) {
       if (!installerLink) return;
       if (url) installerLink.href = url;
       installerLink.style.display = url ? '' : 'none';
+    }
+
+    function setHelpLink(visible) {
+      if (helpLink) helpLink.style.display = visible ? '' : 'none';
     }
 
     function setCheckBtn(visible) {
@@ -1235,13 +1241,14 @@ document.addEventListener('DOMContentLoaded', function() {
           setCheckBtn(false);
           setProgress(-1);
         } else if (s.status === 'error') {
-          setState(s.downloadFailed ? i18n.updateDownloadFailed : i18n.updateCheckFailed, false);
+          setState(i18n.updateFailed[s.failure] || i18n.updateCheckFailed, false);
           resetToIdle();
         } else {
           setState(i18n.upToDate, false);
           resetToIdle();
         }
         setInstallerLink(s.status === 'error' ? s.releaseUrl : '');
+        setHelpLink(s.status === 'error' && s.failure === 'verify');
         setLog(s.log);
         window.celerpSetUpdateBell(s.status === 'downloading' || s.status === 'downloaded'
                                    || (s.status === 'error' && s.downloadFailed));
@@ -1919,7 +1926,8 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "versionReady": t("shell.js_version_ready", lang),
         "updateReady": t("shell.js_update_ready", lang),
         "updateCheckFailed": t("shell.update_check_failed", lang),
-        "updateDownloadFailed": t("shell.update_download_failed", lang),
+        "updateFailed": {kind: t(f"shell.update_{kind}_failed", lang)
+                         for kind in ("check", "download", "save", "verify", "install")},
         "checking": t("shell.checking", lang),
         "restarting": t("shell.restarting", lang),
         "updateAvailablePrefix": t("shell.update_available_prefix", lang),
@@ -2318,6 +2326,10 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         # Shown when an update fails, linking that version's release page.
                         A(t("btn.download_installer"), href="https://github.com/celerp/celerp/releases/latest",
                           target="_blank", rel="noopener noreferrer", cls="update-card__installer-link",
+                          style="display:none;"),
+                        # Shown instead when the download failed its security check.
+                        A(t("shell.update_get_help"), href="https://github.com/celerp/celerp/issues",
+                          target="_blank", rel="noopener noreferrer", cls="update-card__help-link",
                           style="display:none;"),
                         Button(t("btn.check_for_updates"), cls="update-card__check-btn", type="button"),
                         Span("", cls="update-card__release"),
