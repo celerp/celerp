@@ -155,3 +155,77 @@ class MigrationCleanupTask(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
+
+
+class MigrationAttachmentFetch(Base):
+    """The files of a Xero migration's documents, fetched from Xero after the import.
+
+    One per run: fetching again starts it over under a new operation, and the files already
+    attached are recognised by their Xero id, never attached twice. ``progress`` holds
+    the listing cursor (``kind`` and ``page``), the files found and attached so far, and
+    the ``unmatched`` rows: documents not imported and files that could not be attached,
+    each with its reason."""
+    __tablename__ = "migration_attachment_fetches"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    migration_run_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), ForeignKey("migration_runs.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    started_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    operation_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), nullable=False)
+    cloud_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # signing_in, fetching, waiting (a Xero limit), done, stopped or failed
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    organisation: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    # The Xero organisation (its stable tenant id) the current sign-in chose, and the one the
+    # owner confirmed and files were fetched from; the binding outlives each fetch.
+    tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bound_tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bound_organisation: Mapped[str] = mapped_column(String(200), nullable=False, default="", server_default="")
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    progress: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class MigrationTemplate(Base):
+    """The posting accounts a person chose finishing their last migration from one
+    source, offered on their next client from that source. Belongs to the person, not
+    a company: ``answers`` maps each role to the account chosen, ``{code, name,
+    account_type}``, so a later client's chart is matched by account, never by code alone."""
+    __tablename__ = "migration_templates"
+    __table_args__ = (UniqueConstraint("user_id", "source_system", name="uq_migration_templates_user_source"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    source_system: Mapped[str] = mapped_column(String(64), nullable=False)
+    answers: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class MigrationBatchFile(Base):
+    """One file of a person's Move several companies upload. A readable file holds its
+    own scan, known here only by its claim, as a run is; the run started from it is
+    found by that claim. A file that could not be read keeps the reason instead."""
+    __tablename__ = "migration_batch_files"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    prepared_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    source_system: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scan_claim_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )

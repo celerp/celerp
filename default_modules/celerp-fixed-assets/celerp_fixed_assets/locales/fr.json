@@ -831,8 +831,8 @@
   "fixed_assets.transfer_other.not_using": "{company} n'utilise pas encore les immobilisations. Passez à cette société et démarrez-les là-bas.",
   "fixed_assets.transfer_other.no_rights": "Votre rôle dans {company} ne peut pas gérer la comptabilité et les immobilisations. Son propriétaire peut accorder les deux à votre rôle.",
   "fixed_assets.switch_to": "Passer à {company}",
-  "fixed_assets.switched_company": "Cette page a été ouverte dans {page}, mais vous êtes depuis passé à {now} dans un autre onglet, donc rien n'a été enregistré. {switch} pour continuer ici, ou rechargez cette page pour travailler dans {now}.",
-  "fixed_assets.switched_company_gone": "Cette page a été ouverte dans une société à laquelle vous n'avez plus accès, donc rien n'a été enregistré. Rechargez cette page pour travailler dans {now}.",
+  "fixed_assets.switched_company": "Cette page a été ouverte dans {page}, mais vous êtes depuis passé à {now} dans un autre onglet, donc rien n'a été enregistré. {switch} pour continuer ici, ou sélectionnez « Réessayer » pour travailler dans {now}.",
+  "fixed_assets.switched_company_gone": "Cette page a été ouverte dans une société à laquelle vous n'avez plus accès, donc rien n'a été enregistré. Sélectionnez « Réessayer » pour travailler dans {now}.",
   "fixed_assets.transfer_date": "Date du transfert",
   "fixed_assets.transfer_price": "Prix de transfert",
   "fixed_assets.transfer_price_hint": "En {currency}, le montant que la société liée doit pour l'immobilisation.",
@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "Rappels d'entretien, de garantie et d'assurance dans leurs jours d'avance, ou en retard. Ouvrez une immobilisation pour en marquer un comme fait ou le reporter.",
   "fixed_assets.reminders_empty": "Aucun rappel d'immobilisation à traiter.",
   "fixed_assets.notice.reminders.title": "Rappels d'immobilisations",
-  "fixed_assets.notice.reminders.body": "Ces rappels d'immobilisations arrivent à échéance :\n{items}"
+  "fixed_assets.notice.reminders.body": "Ces rappels d'immobilisations arrivent à échéance :\n{items}",
+  "fixed_assets.err_same_key_new_details": "Cette modification a déjà été effectuée avec d'autres informations. Sélectionnez « Réessayer » et recommencez.",
+  "fixed_assets.err_changed_by_someone": "Modifié par quelqu'un d'autre. Sélectionnez « Réessayer » pour le voir.",
+  "fixed_assets.err_no_difference": "Cet écart n'existe pas. Sélectionnez « Réessayer ».",
+  "fixed_assets.err_no_year_end_item": "Cet élément de clôture d'exercice n'existe pas. Sélectionnez « Réessayer »."
 }

@@ -126,7 +126,7 @@ async def issue_token_pair(
     auth_state = await _lock(session, user_id)
     if expected_snonce is not None and expected_snonce != auth_state.nonce:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=refusal(
-            "error.session_expired", "You were signed out. Refresh the page and sign in again."))
+            "error.session_expired", "You were signed out. Sign in again."))
     if expected_snonce is None and (await session.execute(
             select(User.auth_hash).where(User.id == user.id))).scalar_one_or_none() != user.auth_hash:
         from ui.i18n import t

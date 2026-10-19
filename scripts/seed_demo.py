@@ -68,31 +68,31 @@ _ITEMS = [
 ]
 
 _CONTACTS = [
-    ("Acme Corp", "customer", "+1-555-0100", "orders@acme.com"),
-    ("Global Supplies Ltd", "supplier", "+1-555-0200", "supply@global.com"),
-    ("TechStart Inc", "customer", "+1-555-0300", "purchasing@techstart.io"),
-    ("Metro Retail Group", "customer", "+1-555-0400", "accounts@metro.com"),
-    ("Pacific Imports", "supplier", "+1-555-0500", "sales@pacific.com"),
-    ("Horizon Manufacturing", "customer", "+1-555-0600", "buy@horizon.co"),
-    ("Delta Logistics", "supplier", "+1-555-0700", "ops@delta.com"),
-    ("Sunrise Foods Co", "customer", "+1-555-0800", "order@sunrise.com"),
-    ("Northern Textiles", "supplier", "+1-555-0900", "export@north.com"),
-    ("City Office Hub", "customer", "+1-555-1000", "procurement@cityhub.com"),
-    ("Apex Electronics", "customer", "+1-555-1100", "buy@apex.com"),
-    ("Valley Traders", "supplier", "+1-555-1200", "trade@valley.com"),
-    ("Summit Health", "customer", "+1-555-1300", "orders@summit.com"),
-    ("BlueOcean Partners", "customer", "+1-555-1400", "ap@blueocean.com"),
-    ("Forest Wood Products", "supplier", "+1-555-1500", "sell@forest.com"),
-    ("Urban Living", "customer", "+1-555-1600", "buyer@urban.com"),
-    ("East Coast Pharma", "customer", "+1-555-1700", "purch@ecp.com"),
-    ("Pioneer Solutions", "customer", "+1-555-1800", "orders@pioneer.com"),
-    ("West End Wholesale", "supplier", "+1-555-1900", "wholesale@west.com"),
-    ("Capital Ventures", "customer", "+1-555-2000", "cfo@capitalv.com"),
-    ("Mountain Fresh", "supplier", "+1-555-2100", "fresh@mtn.com"),
-    ("Coastal Designs", "customer", "+1-555-2200", "accounts@coastal.com"),
-    ("RedBrick Studio", "customer", "+1-555-2300", "studio@redbrick.com"),
-    ("Northgate Retail", "customer", "+1-555-2400", "buy@northgate.com"),
-    ("Epsilon Tech", "customer", "+1-555-2500", "purchases@eps.io"),
+    ("Acme Corp", "customer", "+1-555-0100", "orders@acme.example.com"),
+    ("Global Supplies Ltd", "vendor", "+1-555-0200", "supply@global.example.com"),
+    ("TechStart Inc", "customer", "+1-555-0300", "purchasing@techstart.example.com"),
+    ("Metro Retail Group", "customer", "+1-555-0400", "accounts@metro.example.com"),
+    ("Pacific Imports", "vendor", "+1-555-0500", "sales@pacific.example.com"),
+    ("Horizon Manufacturing", "customer", "+1-555-0600", "buy@horizon.example.com"),
+    ("Delta Logistics", "vendor", "+1-555-0700", "ops@delta.example.com"),
+    ("Sunrise Foods Co", "customer", "+1-555-0800", "order@sunrise.example.com"),
+    ("Northern Textiles", "vendor", "+1-555-0900", "export@north.example.com"),
+    ("City Office Hub", "customer", "+1-555-1000", "procurement@cityhub.example.com"),
+    ("Apex Electronics", "customer", "+1-555-1100", "buy@apex.example.com"),
+    ("Valley Traders", "vendor", "+1-555-1200", "trade@valley.example.com"),
+    ("Summit Health", "customer", "+1-555-1300", "orders@summit.example.com"),
+    ("BlueOcean Partners", "customer", "+1-555-1400", "ap@blueocean.example.com"),
+    ("Forest Wood Products", "vendor", "+1-555-1500", "sell@forest.example.com"),
+    ("Urban Living", "customer", "+1-555-1600", "buyer@urban.example.com"),
+    ("East Coast Pharma", "customer", "+1-555-1700", "purch@ecp.example.com"),
+    ("Pioneer Solutions", "customer", "+1-555-1800", "orders@pioneer.example.com"),
+    ("West End Wholesale", "vendor", "+1-555-1900", "wholesale@west.example.com"),
+    ("Capital Ventures", "customer", "+1-555-2000", "cfo@capitalv.example.com"),
+    ("Mountain Fresh", "vendor", "+1-555-2100", "fresh@mtn.example.com"),
+    ("Coastal Designs", "customer", "+1-555-2200", "accounts@coastal.example.com"),
+    ("RedBrick Studio", "customer", "+1-555-2300", "studio@redbrick.example.com"),
+    ("Northgate Retail", "customer", "+1-555-2400", "buy@northgate.example.com"),
+    ("Epsilon Tech", "customer", "+1-555-2500", "purchases@eps.example.com"),
 ]
 
 
@@ -213,8 +213,8 @@ async def _advance(client: httpx.AsyncClient, headers: dict, doc_id: str, steps:
 
 async def seed_docs(client: httpx.AsyncClient, token: str, contacts: list[dict], doc_type: str, count: int):
     headers = {"Authorization": f"Bearer {token}"}
-    wanted = "supplier" if doc_type == "purchase_order" else "customer"
-    pool = [c for c in contacts if c.get("contact_type") in (wanted, None)] or contacts
+    wanted = "vendor" if doc_type == "purchase_order" else "customer"
+    pool = [c for c in contacts if c.get("contact_type") in (wanted, "both")]
     if not pool:
         print(f"Seeding failed: no contacts to use for {doc_type}", file=sys.stderr)
         sys.exit(1)
@@ -238,7 +238,7 @@ async def seed_docs(client: httpx.AsyncClient, token: str, contacts: list[dict],
             price_key = "wholesale_price" if doc_type == "purchase_order" else "retail_price"
             price = float(item.get(price_key) or 100)
             line_items.append({
-                "item_id": item.get("entity_id", ""),
+                "item_id": item["id"],
                 "name": item.get("name", ""),
                 "quantity": qty,
                 "unit_price": price,
@@ -246,7 +246,7 @@ async def seed_docs(client: httpx.AsyncClient, token: str, contacts: list[dict],
             })
         r = _require(await client.post("/docs", json={
             "doc_type": doc_type,
-            "contact_id": contact.get("entity_id", ""),
+            "contact_id": contact["id"],
             "contact_name": contact.get("name", ""),
             "date": doc_date, "due_date": due_date,
             "line_items": line_items, "total": sum(li["line_total"] for li in line_items),

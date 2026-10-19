@@ -319,6 +319,66 @@ def test_pypi_is_not_published_when_a_prerequisite_did_not_succeed(tmp_path, git
     assert _PYPI not in out
 
 
+def test_the_pypi_wait_keeps_polling_while_other_builds_run_after_one_failed(tmp_path, github):
+    """One failed build does not end the wait: the others still running are waited for."""
+    jobs = _build_jobs({_WINDOWS: "failure", _MAC: None})
+    code, out, _ = _publish_to_pypi(tmp_path, github, [_workflow_run("build.yml", _BUILD_RUN, "in_progress", None)],
+                                    {_BUILD_RUN: jobs})
+    assert code != 0, out
+    assert _polls(github, "build.yml") == _TEST_POLLS
+    assert f"{_WINDOWS} in build.yml run {_BUILD_RUN} finished failure" in out
+    assert _PYPI not in out
+
+
+def test_the_pypi_wait_reports_every_build_that_did_not_succeed(tmp_path, github):
+    """Once every build is finished, the outcome names each failed one, not only the first."""
+    jobs = _build_jobs({_WINDOWS: "failure", _MAC: "cancelled"})
+    code, out, _ = _publish_to_pypi(tmp_path, github, [_workflow_run("build.yml", _BUILD_RUN, "in_progress", None)],
+                                    {_BUILD_RUN: jobs})
+    assert code != 0, out
+    assert f"{_WINDOWS} in build.yml run {_BUILD_RUN} finished failure" in out
+    assert f"{_MAC} in build.yml run {_BUILD_RUN} finished cancelled" in out
+    assert _polls(github, "build.yml") == 1
+    assert _PYPI not in out
+
+
+_DOCKER = r"""#!/bin/sh
+echo "$*" >> "$DOCKER_LOG"
+if [ "$1" = pull ]; then
+  n=$(grep -c '^pull ' "$DOCKER_LOG")
+  [ "$n" -gt "$PULL_FAILURES" ] || { echo "Error response from daemon: received unexpected HTTP status: 502" >&2; exit 1; }
+fi
+"""
+
+
+def _pg_tools_build(tmp_path: Path, failures: int) -> tuple[subprocess.CompletedProcess, list[str]]:
+    """The Linux pg-tools step with docker answering `failures` failed pulls first."""
+    step = next(s for s in _steps("build.yml", "build") if s.get("name") == "Build bundled pg_dump/pg_restore/psql (Linux, manylinux)")
+    env = _env(tmp_path, DOCKER_LOG=str(tmp_path / "docker.log"), PULL_FAILURES=str(failures))
+    for name, body in (("docker", _DOCKER), ("sudo", "#!/bin/sh\n")):
+        (tmp_path / "bin" / name).write_text(body)
+        (tmp_path / "bin" / name).chmod(0o755)
+    r = _run(tmp_path, step["run"], {**env, **step.get("env", {})})
+    log = tmp_path / "docker.log"
+    return r, log.read_text().splitlines() if log.exists() else []
+
+
+@pytest.mark.parametrize("failures", [0, 1, 2])
+def test_the_manylinux_image_pull_is_retried_before_the_build(tmp_path, failures):
+    r, calls = _pg_tools_build(tmp_path, failures)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert sum(c.startswith("pull ") for c in calls) == failures + 1
+    assert calls[-1].startswith("run ")
+
+
+def test_the_manylinux_build_fails_after_three_failed_pulls(tmp_path):
+    r, calls = _pg_tools_build(tmp_path, 3)
+    assert r.returncode != 0
+    assert sum(c.startswith("pull ") for c in calls) == 3
+    assert not any(c.startswith("run ") for c in calls)
+    assert "after 3 attempts" in r.stderr
+
+
 @pytest.mark.parametrize("absent", [_UPGRADE_LINUX, _UPGRADE_WINDOWS])
 def test_pypi_is_not_published_when_a_finished_run_has_no_upgrade_test(tmp_path, github, absent):
     code, out, _ = _publish_to_pypi(tmp_path, github, [_workflow_run("build.yml", _BUILD_RUN, "completed", "failure")],

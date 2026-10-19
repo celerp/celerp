@@ -101,8 +101,8 @@ async def test_unknown_account_in_entry_names_the_code(client):
     ("acct.err_recon_unbalanced", "write off the difference"),
     ("acct.err_currency_unknown", "three-letter currency code"),
     ("settings_accounting.code_too_long", "{max}"),
-    ("settings_accounting.account_not_found", "Refresh the chart of accounts"),
-    ("acct.error_loading_data", "Refresh the page"),
+    ("settings_accounting.account_not_found", "Select Try again"),
+    ("acct.error_loading_data", "Select Try again"),
     ("recon.err_no_lines", "bank statement export"),
 ])
 def test_message_says_what_to_do(key, needle):

@@ -31,10 +31,6 @@ SCHEMA_TYPE = "a9a71e47-82b3-49db-8aec-898adb460a80"
 OBJECT_COLUMNS = ("Key", "ContentType", "Content", "Timestamp")
 
 NOT_MANAGER = "This file is not a Manager business file."
-LEGACY_FORMAT = (
-    "This file is in an older Manager format that Celerp cannot read. Open it in a recent version "
-    "of Manager, save it, and upload the saved file."
-)
 DAMAGED = "This Manager business file is damaged and cannot be read. Open it in Manager to check it, then upload it again."
 
 # The file format revisions this reader decodes. Manager stamps its format revision in the
@@ -45,16 +41,21 @@ DAMAGED = "This Manager business file is damaged and cannot be read. Open it in 
 # refused rather than decoded on the chance its layouts did not change.
 SUPPORTED_SCHEMA_MIN = 419
 SUPPORTED_SCHEMA_MAX = 419
+# The Manager release the supported revision was verified against: it saves files at 419,
+# and opening an older file in it and taking a backup upgrades the file to 419.
+SUPPORTED_RELEASE = "26.8.4"
 
-OLDER_REVISION = (
-    "This Manager business file was saved by an older version of Manager (file format {version}). "
-    "Open it in the latest version of Manager, which updates the file, then save it and upload the saved file."
-)
 NEWER_REVISION = "migration.err_newer_revision"
-UNKNOWN_REVISION = (
-    "Celerp cannot read the file format version of this Manager business file. Open it in the latest "
-    "version of Manager, save it, and upload the saved file."
-)
+
+
+def supported() -> str:
+    """Which Manager files Celerp reads and the steps that bring an older file there. The import
+    page states it and every refusal of an older or unreadable file ends with it."""
+    return t("migration.manager_supported", format=SUPPORTED_SCHEMA_MAX, release=SUPPORTED_RELEASE)
+
+
+def _refusal(key: str, **params) -> SourceRevisionError:
+    return SourceRevisionError(f"{t(key, **params)} {supported()}")
 
 
 @dataclass(frozen=True)
@@ -74,14 +75,15 @@ def file_sha256(path: Path) -> str:
 
 
 def sniff(path: Path) -> str | None:
-    """The reason a file cannot be a current Manager file, judged from its first bytes, or None."""
+    """The reason a file cannot be a Manager file, judged from its first bytes, or None. Manager's
+    older single-file format is recognised and refused with the steps that upgrade it."""
     try:
         with path.open("rb") as fh:
             head = fh.read(len(SQLITE_HEADER))
     except OSError:
         return NOT_MANAGER
     if head.startswith(LEGACY_HEADER):
-        return LEGACY_FORMAT
+        raise _refusal("migration.err_manager_container")
     if head != SQLITE_HEADER:
         return NOT_MANAGER
     return None
@@ -166,11 +168,11 @@ class ManagerReader:
         try:
             version = decode(bytes(row[0] or b"")).int(1, 0)
         except DecodeError as exc:
-            raise SourceRevisionError(UNKNOWN_REVISION) from exc
+            raise _refusal("migration.err_manager_unknown") from exc
         if not version:
-            raise SourceRevisionError(UNKNOWN_REVISION)
+            raise _refusal("migration.err_manager_unknown")
         if version < SUPPORTED_SCHEMA_MIN:
-            raise SourceRevisionError(OLDER_REVISION.format(version=version))
+            raise _refusal("migration.err_manager_older", found=version)
         if version > SUPPORTED_SCHEMA_MAX:
             raise SourceRevisionError(t(NEWER_REVISION))
         return version

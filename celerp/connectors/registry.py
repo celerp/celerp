@@ -7,6 +7,7 @@ Import connectors here; add new ones in one line.
 from __future__ import annotations
 
 from celerp.connectors.base import ConnectorBase
+from celerp.connectors.celerp import CelerpConnector
 from celerp.connectors.quickbooks import QuickBooksConnector
 from celerp.connectors.shopify import ShopifyConnector
 from celerp.connectors.woocommerce import WooCommerceConnector
@@ -17,6 +18,7 @@ _registry: dict[str, ConnectorBase] = {
     "shopify": ShopifyConnector(),
     "woocommerce": WooCommerceConnector(),
     "xero": XeroConnector(),
+    "celerp": CelerpConnector(),
 }
 
 

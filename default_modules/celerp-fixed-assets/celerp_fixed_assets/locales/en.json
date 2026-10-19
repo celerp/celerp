@@ -831,8 +831,8 @@
   "fixed_assets.transfer_other.not_using": "{company} does not use fixed assets yet. Switch to it and start fixed assets there.",
   "fixed_assets.transfer_other.no_rights": "Your role in {company} cannot manage accounting and fixed assets there. Its owner can give your role both.",
   "fixed_assets.switch_to": "Switch to {company}",
-  "fixed_assets.switched_company": "This page was opened in {page}, but you have since switched to {now} in another tab, so nothing was saved. {switch} to carry on here, or reload this page to work in {now}.",
-  "fixed_assets.switched_company_gone": "This page was opened in a company you no longer have access to, so nothing was saved. Reload this page to work in {now}.",
+  "fixed_assets.switched_company": "This page was opened in {page}, but you have since switched to {now} in another tab, so nothing was saved. {switch} to carry on here, or select Try again to work in {now}.",
+  "fixed_assets.switched_company_gone": "This page was opened in a company you no longer have access to, so nothing was saved. Select Try again to work in {now}.",
   "fixed_assets.transfer_date": "Transfer date",
   "fixed_assets.transfer_price": "Transfer price",
   "fixed_assets.transfer_price_hint": "In {currency}, the amount the related company owes for the asset.",
@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "Maintenance, warranty and insurance reminders within their days ahead, or overdue. Open an asset to mark one done or postpone it.",
   "fixed_assets.reminders_empty": "No asset reminders are due.",
   "fixed_assets.notice.reminders.title": "Asset reminders",
-  "fixed_assets.notice.reminders.body": "These asset reminders are due:\n{items}"
+  "fixed_assets.notice.reminders.body": "These asset reminders are due:\n{items}",
+  "fixed_assets.err_same_key_new_details": "This change was already made with different details. Select Try again and start again.",
+  "fixed_assets.err_changed_by_someone": "Changed by someone else. Select Try again to see it.",
+  "fixed_assets.err_no_difference": "There is no such difference. Select Try again.",
+  "fixed_assets.err_no_year_end_item": "There is no such year-end item. Select Try again."
 }

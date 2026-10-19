@@ -99,8 +99,11 @@ async def _aging(session: AsyncSession, company_id: uuid.UUID, *, party: str, de
         amount = _aged_balance(state, debit_types, credit_types)
         if amount is None:
             continue
-        party_id = state.get("contact_id") or state.get(f"{party}_id") or unlinked[0]
-        names[party_id] = state.get("contact_name") or state.get(f"{party}_name") or unlinked[1]
+        party_id = state.get("contact_id") or state.get(f"{party}_id")
+        if party_id:
+            names[party_id] = state.get("contact_name") or state.get(f"{party}_name") or party_id
+        else:
+            party_id, names[unlinked[0]] = unlinked
         dated = doc_value(state, "issue_date") if amount < 0 else (doc_value(state, "due_date") or state.get(due_fallback))
         try:
             since = date.fromisoformat(str(dated or today.isoformat())[:10])

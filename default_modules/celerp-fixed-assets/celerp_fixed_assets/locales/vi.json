@@ -831,8 +831,8 @@
   "fixed_assets.transfer_other.not_using": "{company} chưa dùng tài sản cố định. Hãy chuyển sang công ty đó và bắt đầu tài sản cố định ở đó.",
   "fixed_assets.transfer_other.no_rights": "Vai trò của bạn ở {company} không thể quản lý kế toán và tài sản cố định. Chủ sở hữu có thể cấp cả hai quyền cho vai trò của bạn.",
   "fixed_assets.switch_to": "Chuyển sang {company}",
-  "fixed_assets.switched_company": "Trang này được mở trong {page}, nhưng sau đó bạn đã chuyển sang {now} ở một thẻ khác, nên chưa có gì được lưu. {switch} để tiếp tục tại đây, hoặc tải lại trang này để làm việc trong {now}.",
-  "fixed_assets.switched_company_gone": "Trang này được mở trong một công ty bạn không còn quyền truy cập, nên chưa có gì được lưu. Tải lại trang này để làm việc trong {now}.",
+  "fixed_assets.switched_company": "Trang này được mở trong {page}, nhưng sau đó bạn đã chuyển sang {now} ở một thẻ khác, nên chưa có gì được lưu. {switch} để tiếp tục tại đây, hoặc chọn Thử lại để làm việc trong {now}.",
+  "fixed_assets.switched_company_gone": "Trang này được mở trong một công ty bạn không còn quyền truy cập, nên chưa có gì được lưu. Hãy chọn Thử lại để làm việc trong {now}.",
   "fixed_assets.transfer_date": "Ngày chuyển giao",
   "fixed_assets.transfer_price": "Giá chuyển giao",
   "fixed_assets.transfer_price_hint": "Bằng {currency}, số tiền công ty liên quan nợ cho tài sản.",
@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "Nhắc nhở bảo trì, bảo hành và bảo hiểm trong thời gian báo trước hoặc đã quá hạn. Mở tài sản để đánh dấu xong hoặc hoãn.",
   "fixed_assets.reminders_empty": "Không có nhắc nhở tài sản nào đến hạn.",
   "fixed_assets.notice.reminders.title": "Nhắc nhở tài sản",
-  "fixed_assets.notice.reminders.body": "Các nhắc nhở tài sản sau đã đến hạn:\n{items}"
+  "fixed_assets.notice.reminders.body": "Các nhắc nhở tài sản sau đã đến hạn:\n{items}",
+  "fixed_assets.err_same_key_new_details": "Thay đổi này đã được thực hiện với thông tin khác. Hãy chọn Thử lại rồi bắt đầu lại.",
+  "fixed_assets.err_changed_by_someone": "Đã được người khác thay đổi. Hãy chọn Thử lại để xem.",
+  "fixed_assets.err_no_difference": "Không có chênh lệch này. Hãy chọn Thử lại.",
+  "fixed_assets.err_no_year_end_item": "Không có mục cuối năm này. Hãy chọn Thử lại."
 }

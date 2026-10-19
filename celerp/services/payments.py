@@ -166,7 +166,8 @@ class PaymentsNotClosed(Exception):
     ``reason`` is "disconnected", "payment_settling", "payment_unrecorded",
     "reconnect_required" (a payment can be checked only once the merchant reconnects
     the Stripe account they withdrew), "update_required" (a refund waits for a
-    version of Celerp that can record it) or "unconfirmed".
+    version of Celerp that can record it), "fees_settling" (a payment's or refund's
+    provider fees are not reported or recorded yet) or "unconfirmed".
     """
 
     def __init__(self, reason: str) -> None:
@@ -177,7 +178,8 @@ class PaymentsNotClosed(Exception):
 _CLOSURE = "/billing/connect/companies/retire"
 _RECOVERY = "/billing/connect/recovery"
 _PREPARED = ("prepared", "retired")
-_REFUSED = ("payment_settling", "payment_unrecorded", "reconnect_required", "update_required")
+_REFUSED = ("payment_settling", "payment_unrecorded", "reconnect_required", "update_required",
+            "fees_settling")
 # Answers after which a step can never succeed: the request is forgotten, and Celerp
 # Cloud keeps the company's payments closed.
 _FINAL = {"finalize": ("generation_stale", "cancelled", "not_prepared"),
@@ -288,6 +290,168 @@ async def receive_payment(payload: dict) -> bool:
             reference=reference, amount_minor=amount_minor, currency=currency,
             former_company=company_id, document=entity_id, paid_at=paid_at).on_conflict_do_nothing())
         await session.commit()
+    return True
+
+
+async def receive_fees(payload: dict) -> bool:
+    """Record actual online-fee transactions on the books holding their gross receipt.
+
+    A fee delivered before its payment is left pending, not silently lost. A fee that can
+    never be recorded is acknowledged: with a notice to record it by hand when its
+    document or payment was deleted, its payment is among the unmatched payments, or the
+    payment's recorded books cannot take it, and silently when its company no longer
+    exists (nobody is left to tell).
+    """
+    from datetime import timezone
+    from celerp.events.engine import find_event_by_idempotency
+    from celerp.models.projections import Projection
+    from celerp.services.company_lock import hold_company
+    from celerp.services import auto_je
+
+    if not isinstance(payload, dict):
+        return False
+    reference = payload.get("reference")
+    doc_id = payload.get("entity_id")
+    origin = payload.get("company_id")
+    fees = payload.get("fees")
+    if (not isinstance(reference, str) or not reference or len(reference) > 255
+            or not isinstance(doc_id, str) or not doc_id or len(doc_id) > 512
+            or not isinstance(origin, str) or not _company(origin)
+            or not isinstance(fees, dict) or fees.get("version") != 1):
+        return False
+    tx = fees.get("transaction_id")
+    currency = fees.get("currency")
+    names = ("processor_minor", "platform_minor", "other_minor", "total_minor")
+    if (not isinstance(tx, str) or not 1 <= len(tx) <= 128
+            or not tx.isascii() or not all(c.isalnum() or c in "_-" for c in tx)
+            or not isinstance(currency, str) or len(currency) != 3
+            or not currency.isascii() or not currency.isalpha()
+            or any(type(fees.get(key)) is not int or abs(fees[key]) > 10**14 for key in names)
+            or sum(fees[key] for key in names[:3]) != fees["total_minor"]):
+        return False
+    try:
+        when = datetime.fromisoformat(str(payload.get("occurred_at")))
+    except (ValueError, TypeError):
+        return False
+    if when.utcoffset() is None:
+        return False
+    home = None
+    async with _own_session() as session:
+        home = await _recorded_on(session, reference)
+        cid, target_doc = home if home is not None else (_company(origin), doc_id)
+        if not await hold_company(session, cid):
+            return True
+        row = (await session.execute(select(Projection).where(
+            Projection.company_id == cid,
+            Projection.entity_id == target_doc,
+            Projection.entity_type == "doc",
+        ).with_for_update())).scalar_one_or_none()
+        state = (row.state or {}) if row is not None else {}
+        entries = [p for p in state.get("payments", [])
+                   if p.get("reference") == reference and p.get("method") == "stripe"]
+        payment = next((p for p in entries if p.get("status") != "deleted"), None)
+        if row is not None and not entries:
+            parked = await session.scalar(select(UnmatchedPayment.reference).where(
+                UnmatchedPayment.reference == reference))
+            if parked is None:
+                return False
+        books = (payment or {}).get("books") or {}
+        settled_currency = str((payment or {}).get("currency") or state.get("currency") or "").lower()
+        base_currency = str(books.get("base_currency") or "").lower()
+        document = state.get("ref_id") or state.get("doc_number") or target_doc
+        if not entries:
+            problem = "unmatched" if row is not None else "deleted"
+        elif payment is None:
+            problem = "deleted"
+        elif currency.lower() not in (settled_currency, base_currency):
+            problem = "currency"
+        elif not (isinstance(books, dict) and books.get("base_currency")
+                  and payment.get("bank_account") and payment.get("conversion_rate")):
+            problem = "books"
+        else:
+            from celerp.services.account_roles import PostingRoleError
+            from celerp_docs.routes_payments import _company_owner_id
+            actor = await _company_owner_id(session, cid)
+            try:
+                account = await auto_je.create_for_online_fees(
+                    session, company_id=cid, user_id=actor, doc_id=target_doc,
+                    reference=reference, payment=payment, fees=fees,
+                    occurred_at=when.astimezone(timezone.utc),
+                )
+            except PostingRoleError as exc:
+                await session.rollback()
+                roles = [p["params"]["role"] for p in exc.detail["params"]["problems"]]
+                await _fee_not_recorded(cid, target_doc, document, fees, "account", roles)
+                return False
+            except ValueError:
+                await session.rollback()
+                await _fee_not_recorded(cid, target_doc, document, fees, "conflict")
+                raise
+            if account is not None:
+                await _fee_recorded(session, cid, target_doc, document, fees, account)
+            await session.commit()
+            return True
+    told = await _fee_not_recorded(cid, target_doc if row is not None else None, document, fees, problem,
+                                   reference=reference)
+    return problem in _FEE_UNRECORDABLE and told
+
+
+# Causes no later fix can reach: the document or payment is gone, or the payment's own
+# recorded books (currency, bank account, rate) cannot take the fee.
+_FEE_UNRECORDABLE = ("deleted", "unmatched", "currency", "books")
+
+
+def _fee_amount(fees: dict) -> str:
+    amount = abs(stripe_amount(fees["total_minor"], fees["currency"]))
+    return f"{amount:.{_stripe_exponent(fees['currency'])}f} {fees['currency'].upper()}"
+
+
+async def _fee_recorded(session, cid, doc_id: str, document: str, fees: dict, account: str) -> None:
+    """Tell the company a fee was booked on its behalf, once per provider transaction
+    (the posting itself is idempotent, so this runs only when the fee was just posted)."""
+    from celerp.notifications import service as notification_service
+    from celerp.services.posting_readiness import account_names
+
+    name = (await account_names(session, cid, [account])).get(account)
+    key = "notice.online_fee_recorded" if fees["total_minor"] > 0 else "notice.online_fee_returned"
+    await notification_service.create_keyed(
+        session, cid, "accounting", key,
+        {"amount": _fee_amount(fees), "document": document,
+         "account": f"{account} {name}" if name else account},
+        action_url=f"/docs/{doc_id}")
+
+
+async def _fee_not_recorded(cid, doc_id: str | None, document: str, fees: dict, problem: str,
+                            roles=(), reference: str = "") -> bool:
+    """Tell the company, unmissably and once per fee and cause, that a fee Celerp Cloud
+    delivered could not be recorded and why; whether the notice was recorded. A fee whose
+    cause is in _FEE_UNRECORDABLE is acknowledged once told (retrying cannot help, and
+    *doc_id* is None when the document is gone); any other cause is not, so the fee is
+    delivered again and recorded once the cause is fixed. A refused posting account also
+    raises the standing posting-accounts notice (posting_readiness.notify_unmapped)."""
+    from celerp.notifications import service as notification_service
+    from celerp.services.posting_readiness import notify_unmapped
+
+    reason = f"notice.online_fee_failed.{problem}"
+    reason_params = {"reference": reference} if problem == "unmatched" else {}
+    params = {"amount": _fee_amount(fees), "document": document, "transaction": fees["transaction_id"],
+              "reason": t(reason, "en", **reason_params)}
+    keyed = {**params, "reason": {"message": params["reason"], "message_key": reason, "params": reason_params}}
+    try:
+        async with _own_session() as session:
+            await notification_service.notify_once(
+                session, cid, "accounting",
+                t("notice.online_fee_failed.title", "en", **params),
+                t("notice.online_fee_failed.body", "en", **params),
+                action_url=f"/docs/{doc_id}" if doc_id else None,
+                i18n={"title": "notice.online_fee_failed.title", "body": "notice.online_fee_failed.body",
+                      "params": keyed})
+            if roles:
+                await notify_unmapped(session, cid, roles)
+            await session.commit()
+    except Exception:
+        log.exception("Could not record the notice for an unrecorded online fee")
+        return False
     return True
 
 

@@ -17,6 +17,10 @@ ROOT = HERE.parents[2]
 BASIC = HERE / "basic.manager"
 FX = HERE / "fx.manager"
 INVENTORY = HERE / "inventory.manager"
+ORDERS = HERE / "orders.manager"
+STARTING = HERE / "starting.manager"
+HISTORY = HERE / "history.manager"
+STOCK = HERE / "stock.manager"
 
 
 def build_all() -> list[Path]:
@@ -24,6 +28,10 @@ def build_all() -> list[Path]:
         specs.build_basic(BASIC),
         specs.build_fx(FX),
         specs.build_inventory_lifecycle(INVENTORY),
+        specs.build_quotes_orders(ORDERS),
+        specs.build_starting_balances(STARTING),
+        specs.build_history(HISTORY),
+        specs.build_stock_records(STOCK),
         specs.build_basic(SAMPLE_ARTIFACT, company=SAMPLE_COMPANY_NAME),
     ]
 

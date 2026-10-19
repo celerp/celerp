@@ -313,13 +313,6 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
     )
 
 
-@router.post("/api-key")
-async def create_api_key(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    user.api_key = str(uuid.uuid4())
-    await session.commit()
-    return {"api_key": user.api_key}
-
-
 @router.get("/my-companies")
 async def my_companies(
     user: User = Depends(get_current_user),
@@ -358,6 +351,20 @@ async def my_companies(
         if not c.is_active
     ]
     return {"items": result, "total": len(result), "deactivated": deactivated}
+
+
+@router.get("/firm-view")
+async def firm_view(
+    q: str | None = None,
+    sync: str | None = None,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Every company the user can open, with its accountant sync, last sync and what
+    needs attention, newest activity first; ``q`` searches names, ``sync`` filters."""
+    from celerp.services.firm_view import firm_view as rows
+    items = await rows(session, user.id, q=q, sync=sync)
+    return {"items": items, "total": len(items)}
 
 
 @router.post("/switch-company/{company_id}")

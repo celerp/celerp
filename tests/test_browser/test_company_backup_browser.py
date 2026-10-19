@@ -166,7 +166,7 @@ def test_restore_existing_destination_adds_team_browser(page, fresh_company, tmp
 
     _upload(page, _SETTINGS, path)
     text = page.content()
-    assert f"This backup was already restored here as {_restored_name(source)}." in text
+    assert f"This company copy was already restored here as {_restored_name(source)}." in text
     assert f"Team members who get access to {_restored_name(source)} with their roles in this company: 1" in text
     assert page.locator('button:has-text("Restore company")').count() == 0
     page.click('button:has-text("Add team and open company")')
@@ -231,7 +231,7 @@ def test_restore_existing_destination_unchanged_browser(page, fresh_company, tmp
     members = _members(dest)
 
     _upload(page, _NEW_COMPANY, path)
-    assert f"This backup was already restored here as {_restored_name(source)}." in page.content()
+    assert f"This company copy was already restored here as {_restored_name(source)}." in page.content()
     assert page.locator('button:has-text("Restore company")').count() == 0
     page.click('button:has-text("Open existing company")')
     page.wait_for_url(re.compile(r"/setup/new-company/restore-backup/done"), timeout=_WAIT_MS)

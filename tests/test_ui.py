@@ -1056,8 +1056,13 @@ class TestCompanySwitcher:
             back = await ui_client.get("/switch-company/c2?next=/fixed-assets/assets/a1/dispose", cookies=_authed())
             away = await ui_client.get("/switch-company/c2?next=//evil.example/x", cookies=_authed())
             plain = await ui_client.get("/switch-company/c2", cookies=_authed())
+            # A dot segment would let the browser resolve a listed prefix to an unlisted page.
+            climbs = [await ui_client.get(f"/switch-company/c2?next={n}", cookies=_authed())
+                      for n in ("/fixed-assets/../settings/users", "/fixed-assets/%2e%2e/settings/users",
+                                "/fixed-assets/./assets")]
         assert back.headers["location"] == "/fixed-assets/assets/a1/dispose"
         assert away.headers["location"] == "/" and plain.headers["location"] == "/"
+        assert [c.headers["location"] for c in climbs] == ["/", "/", "/"]
 
     @pytest.mark.asyncio
     async def test_switch_company_post_without_auth_redirects(self, ui_client):
@@ -1784,6 +1789,65 @@ class TestAccountingPage:
             tag = field[:200]
             assert 'step="any"' in tag, tag
             assert 'min="0"' in tag and 'min="0.0001"' not in tag, tag
+
+    @pytest.mark.asyncio
+    async def test_post_again_for_a_missing_entry_says_it_is_gone(self, ui_client):
+        """Post again for an entry no longer in the books says so and leads back to
+        Client companies, where Post again was chosen; there is no journal here to refresh."""
+        from ui.api_client import APIError
+        missing = AsyncMock(side_effect=APIError(404, t("acct.err_je_not_found")))
+        with patch("ui.api_client.journal_prefill", new=missing), \
+             patch("ui.api_client.get_chart",
+                   new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})), \
+             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})), \
+             patch("ui.api_client.list_contacts",
+                   new=AsyncMock(return_value={"items": [], "total": 0})):
+            r = await ui_client.get("/accounting/journal/new?from=je-gone", cookies=_authed())
+        assert r.status_code == 200
+        page = html.unescape(r.content.decode())
+        assert "The entry to post again is no longer in these books, so nothing was filled in." in page
+        assert "Refresh the journal" not in page
+        assert '<a href="/companies">Back to Client companies</a>' in page
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("currency,shown", [("THB", "45.00"), ("JPY", "45")])
+    async def test_post_again_shows_amounts_at_the_currency_precision(self, ui_client, currency, shown):
+        """Post again fills each amount the way the books show it, not as a raw float."""
+        copied = {"ts": "2026-10-18", "source_ts": "2026-09-30", "memo": "Rent", "entries": [
+            {"account": "1000", "debit": 45.0, "credit": 0, "contact": None},
+            {"account": "1000", "debit": 0, "credit": 45.0, "contact": None}]}
+        with patch("ui.api_client.journal_prefill", new=AsyncMock(return_value=copied)), \
+             patch("ui.api_client.get_chart",
+                   new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})), \
+             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": currency})), \
+             patch("ui.api_client.list_contacts",
+                   new=AsyncMock(return_value={"items": [], "total": 0})):
+            r = await ui_client.get("/accounting/journal/new?from=je-1", cookies=_authed())
+        assert r.status_code == 200
+        page = r.content.decode()
+        assert page.count(f'value="{shown}"') == 2
+        assert 'value="45.0"' not in page
+
+    @pytest.mark.asyncio
+    async def test_post_again_says_why_the_date_differs_from_the_copied_entry(self, ui_client):
+        """Post again dates the new entry on the first open day; the form says so and names
+        the copied entry's own date, so the change is never silent."""
+        copied = {"ts": "2026-10-18", "source_ts": "2026-09-30", "memo": "Rent", "entries": [
+            {"account": "1000", "debit": 45.0, "credit": 0, "contact": None},
+            {"account": "1000", "debit": 0, "credit": 45.0, "contact": None}]}
+        with patch("ui.api_client.journal_prefill", new=AsyncMock(return_value=copied)), \
+             patch("ui.api_client.get_chart",
+                   new=AsyncMock(return_value={"items": _CHART, "total": len(_CHART)})), \
+             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})), \
+             patch("ui.api_client.list_contacts",
+                   new=AsyncMock(return_value={"items": [], "total": 0})):
+            r = await ui_client.get("/accounting/journal/new?from=je-1", cookies=_authed())
+            plain = await ui_client.get("/accounting/journal/new", cookies=_authed())
+        page = html.unescape(r.content.decode())
+        assert 'value="2026-10-18"' in page
+        assert ("Dated on the first open day. The entry it copies is dated 2026-09-30; "
+                "change the date if this one belongs elsewhere.") in page
+        assert "first open day" not in html.unescape(plain.content.decode())
 
     @pytest.mark.asyncio
     async def test_pnl_shortcut_redirects_to_the_report(self, ui_client):
@@ -4374,7 +4438,7 @@ class TestListsCreateBlank:
         {code: stale_version} body with status 409, so the page branches on the code, never on
         English message text."""
         from ui.api_client import APIError
-        mock = AsyncMock(side_effect=APIError(409, "This list was changed by someone else; reload to get the latest before saving"))
+        mock = AsyncMock(side_effect=APIError(409, "This list was changed by someone else. Select Try again to get the latest before saving."))
         with patch("ui.api_client.patch_list_line_page", create=True, new=mock):
             r = await ui_client.post(
                 "/lists/list:WO-1/lines",
@@ -6212,10 +6276,8 @@ class TestCompanyFilesAggregation:
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(503, "down"))):
             r = await ui_client.get("/contacts/c1", cookies=_authed())
-        assert "down" in r.text and "contact could not be loaded" in r.text and "Select Try again to reload the page" in r.text
-        assert "Reload the page" not in r.text
-        retry = r.text.split("Try again</a>", 1)[0].rsplit("<a ", 1)[1]
-        assert 'href="/contacts/c1"' in retry and "hx-get" not in retry and "btn btn--secondary btn--sm" in retry
+        assert "down" in r.text and "contact could not be loaded" in r.text and "Select Try again." in r.text
+        assert "eload" not in r.text.split("contact could not be loaded", 1)[1].split("</div>", 1)[0]
 
     @pytest.mark.asyncio
     async def test_a_failed_documents_read_keeps_the_contact_page_and_shows_the_notice_in_the_documents_tab(self, ui_client):
@@ -6227,13 +6289,12 @@ class TestCompanyFilesAggregation:
         assert r.status_code == 200
         assert "Acme Trading" in r.text and "tab-bar" in r.text
         tab = r.text.split('id="tab-content"', 1)[1]
-        assert "documents, files and totals could not be loaded" in tab and "Select Try again to reload the page" in tab
+        assert "documents, files and totals could not be loaded" in tab and "Select Try again." in tab
         assert "Open Documents again" not in tab and "None yet" not in tab
         assert "financial-card" not in r.text
-        # Try again is a plain link to the contact page (a full reload, never an htmx swap), and the
-        # Documents tab on this state does the same, so cards, files and documents come back together.
-        retry = tab.split("Try again</a>", 1)[0].rsplit("<a ", 1)[1]
-        assert 'href="/contacts/c1"' in retry and "hx-get" not in retry and "btn btn--secondary btn--sm" in retry
+        # The Documents tab on this state is a plain link to the contact page (a full load, never an
+        # htmx swap), so cards, files and documents come back together; the notice's Try again button
+        # comes from the shell.
         docs_tab = r.text.split('id="tab-documents"', 1)[0].rsplit("<a ", 1)[1] + r.text.split('id="tab-documents"', 1)[1].split("</a>", 1)[0]
         assert 'href="/contacts/c1"' in docs_tab and "hx-get" not in docs_tab
         assert 'hx-get="/contacts/c1/tab/notes"' in r.text
@@ -6253,15 +6314,16 @@ class TestCompanyFilesAggregation:
         with patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(404, sentence))):
             r = await ui_client.get("/contacts/c1", cookies=_authed())
-        assert sentence in r.text and "could not be loaded" not in r.text and "Reload the page" not in r.text
+        assert sentence in r.text and "could not be loaded" not in r.text
         assert 'class="page-title"' in r.text
+        assert "Select Try again" not in r.text.split('class="page-title"', 1)[1].split("<script", 1)[0]
 
     @pytest.mark.asyncio
     async def test_a_temporary_contact_failure_keeps_the_wrapper_and_has_a_heading(self, ui_client):
         from ui.api_client import APIError
         with patch("ui.api_client.get_contact", new=AsyncMock(side_effect=APIError(503, "down"))):
             r = await ui_client.get("/contacts/c1", cookies=_authed())
-        assert "Select Try again to reload the page" in r.text and 'class="page-title"' in r.text
+        assert "Select Try again." in r.text and 'class="page-title"' in r.text
 
     @pytest.mark.asyncio
     async def test_a_contact_with_no_documents_still_shows_none_yet(self, ui_client):

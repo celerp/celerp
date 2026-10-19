@@ -26,6 +26,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
+from celerp.accounting_roles import refusal
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.money import books_currency, round_money
@@ -44,7 +45,7 @@ _OP_KEY = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _NOT_INTENT = ("preview", "fingerprint", "op_key")
 
 
-def conflict(message: str) -> HTTPException:
+def conflict(message: str | dict) -> HTTPException:
     return HTTPException(status_code=409, detail=message)
 
 
@@ -246,7 +247,9 @@ def _intent_hash(op_type: str, body: dict) -> str:
 def _same_intent(done: dict, intent_hash: str) -> None:
     """Refuse an operation key already used with other details."""
     if done.get("intent_hash") != intent_hash:
-        raise conflict("This change was already made with different details. Reload and start again.")
+        raise conflict(refusal(
+            "fixed_assets.err_same_key_new_details",
+            "This change was already made with different details. Select Try again and start again."))
 
 
 async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: tuple[str, ...], plan, apply,
@@ -805,7 +808,8 @@ async def update_asset(session, company_id, user_id, asset_id: str, body: dict) 
     if unknown:
         raise setup.unprocessable(f"{sorted(unknown)[0]} cannot be edited here.")
     if any(row.state.get(k) != v for k, v in previous.items()):
-        raise conflict("Changed by someone else, reload to see it.")
+        raise conflict(refusal(
+            "fixed_assets.err_changed_by_someone", "Changed by someone else. Select Try again to see it."))
     changes = {k: (str(v).strip() or None) if v is not None else None for k, v in changes.items()}
     if "name" in changes and not changes["name"]:
         raise setup.unprocessable("An asset needs a name.")

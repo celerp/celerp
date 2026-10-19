@@ -302,7 +302,8 @@ def journal_void_toast(result: dict) -> dict:
     if refused:
         reasons = " ".join(dict.fromkeys(
             refusal_text(r.get("detail")).strip() for r in refused if r.get("detail")))
-        message = f"{message} {t('acct.bulk_void_refused', n=len(refused), reasons=reasons)}"
+        key = "acct.bulk_void_refused_one" if len(refused) == 1 else "acct.bulk_void_refused"
+        message = f"{message} {t(key, n=len(refused), reasons=reasons)}"
     return toast_header(message.strip(), "error" if refused else "success")
 
 

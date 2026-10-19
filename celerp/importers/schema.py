@@ -298,6 +298,7 @@ class AccountControl(StrEnum):
     TAX = "tax"
     INVENTORY = "inventory"
     RETAINED_EARNINGS = "retained_earnings"
+    EXCHANGE_DIFFERENCE = "exchange_difference"   # where realized exchange gains and losses post
 
 
 class CIFAccount(CIFSourceRecord):
@@ -409,6 +410,7 @@ class CIFDocument(CIFSourceRecord):
     issue_date: CIFDate | None = None
     payment_due_date: CIFDate | None = None
     currency: str | None = None
+    exchange_rate: Annotated[CIFDecimal, Field(gt=0)] | None = None   # base units per document unit
     total: CIFDecimal
     tax_total: CIFDecimal | None = None
     amount_paid: CIFDecimal
@@ -436,6 +438,7 @@ class CIFSettlement(CIFSourceRecord):
     contact_external_id: str | None = None
     bank_account_external_id: NonEmptyStr
     currency: str | None = None
+    exchange_rate: Annotated[CIFDecimal, Field(gt=0)] | None = None   # base units per settlement unit
     amount: Annotated[CIFDecimal, Field(gt=0)]
     allocations: list[CIFAllocation] = Field(default_factory=list)
 
@@ -454,6 +457,8 @@ class CIFBankTransfer(CIFSourceRecord):
     to_account_external_id: NonEmptyStr
     amount: Annotated[CIFDecimal, Field(gt=0)]
     to_amount: Annotated[CIFDecimal, Field(gt=0)] | None = None  # set when currencies differ
+    # Base units per unit, for a transfer between two accounts in the same foreign currency.
+    exchange_rate: Annotated[CIFDecimal, Field(gt=0)] | None = None
 
 
 class CIFJournalLine(BaseModel):
@@ -462,6 +467,11 @@ class CIFJournalLine(BaseModel):
     credit: Annotated[CIFDecimal, Field(ge=0)] = Decimal(0)
     description: str | None = None
     contact_external_id: str | None = None
+    # The same line in a foreign currency, shown beside the base amounts.
+    fx_debit: Annotated[CIFDecimal, Field(ge=0)] | None = None
+    fx_credit: Annotated[CIFDecimal, Field(ge=0)] | None = None
+    fx_currency: str | None = None
+    fx_rate: Annotated[CIFDecimal, Field(gt=0)] | None = None
 
     @model_validator(mode="after")
     def one_side_only(self) -> "CIFJournalLine":
@@ -558,10 +568,13 @@ class CIFTolerance(BaseModel):
 class ReconciliationMeasure(StrEnum):
     DEBITS_EQUAL_CREDITS = "debits_equal_credits"
     TRIAL_BALANCE = "trial_balance"
+    TRIAL_BALANCE_AT = "trial_balance_at"     # key: account@YYYY-MM-DD, the balance at the end of that day
     AR_CONTROL = "ar_control"
     AR_BY_CUSTOMER = "ar_by_customer"
     AP_CONTROL = "ap_control"
     AP_BY_SUPPLIER = "ap_by_supplier"
+    AR_DOCUMENT_RESIDUAL = "ar_document_residual"
+    AP_DOCUMENT_RESIDUAL = "ap_document_residual"
     BANK_CASH = "bank_cash"
     INVENTORY_QUANTITY = "inventory_quantity"
     INVENTORY_VALUE = "inventory_value"

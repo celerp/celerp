@@ -193,7 +193,7 @@ async def test_start_company_page_offers_every_way_back_in(ui):
 
     for href in (WIZARD, f"{CHOOSER}/restore-backup"):
         assert f'href="{href}"' in page, href
-    assert "Move from another system" in page and "Restore a company backup" in page
+    assert "Move from another system" in page and "Open a company copy" in page
     assert "still exists" in page
 
 

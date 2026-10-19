@@ -59,6 +59,7 @@ from celerp.accounting_roles import (
     INVENTORY_ORIGIN_SCHEMA,
     LOT_ACCOUNT_FIELD,
     ON_BOOKS_FIELD,
+    PERIOD_LOCK_PATH,
     POSTING_ACCOUNTS_PATH,
     SCHEMA_KEY,
     SOURCE_CONTROLS_KEY,
@@ -1071,7 +1072,6 @@ async def consumed_facts(session: AsyncSession, company_id, marker: str,
     return found
 
 
-PERIOD_LOCK_PATH = f"{ACCOUNTING_SETTINGS_PATH}?tab=period-lock"
 LOCKED_NOTICE = "notice.older_stock_locked"
 
 
@@ -1759,7 +1759,7 @@ async def _move_lots(session: AsyncSession, company_id, lots, request: str, code
     key = (key or "").strip()
     if not key or len(key) > 64:
         raise _refused(422, "older_stock.move.no_key",
-                       "This move carries no operation key, so it was not made. Reload the page and try again.")
+                       "This move carries no operation key, so it was not made. Select Try again.")
     code = (code or "").strip()
     if not code:
         raise HTTPException(status_code=422, detail=no_account_chosen())
@@ -1769,7 +1769,7 @@ async def _move_lots(session: AsyncSession, company_id, lots, request: str, code
         if any((e.metadata_ or {}).get("request") != request for e in done):
             raise _refused(409, "older_stock.move.key_reused",
                            "This operation key was already used for a different move, so nothing was moved. "
-                           "Reload the page and try again.")
+                           "Select Try again.")
         return {"moved": len(done), "value": _debits(await _je_state(session, company_id, _move_je(move_id))),
                 "code": done[0].data[LOT_ACCOUNT_FIELD], "move_id": move_id}
     await lock_chart(session, company_id)

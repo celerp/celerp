@@ -462,6 +462,103 @@ async def test_module_from_outside_celerp_needs_the_owners_consent(real_client, 
     assert read_config()["modules"]["enabled"] == ["acme-widgets"]
 
 
+async def _staged(client, tok: str, upload_token: str) -> dict:
+    r = await client.get("/company-backups/staged", params={"upload_token": upload_token}, headers=auth(tok))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_enable_and_open_opens_the_copy_once_its_modules_run(real_client, real_engine, installed,
+                                                                   monkeypatch):
+    """Enable and open confirms the preview with the modules: after the restart the staged
+    copy says, once, that it is to be opened under the name the owner chose."""
+    _first_party(monkeypatch, "acme-widgets")
+    _, _, tok = await _setup(real_engine)
+    data = _needs_module(await download(real_client, tok), "acme-widgets")
+    preview = (await read(real_client, tok, data)).json()
+    upload_token = preview["upload_token"]
+    r = await real_client.post("/company-backups/prepare", json={
+        "upload_token": upload_token,
+        "open": {"plan_fingerprint": preview["plan_fingerprint"], "company_name": "Alpha Copy"}}, headers=auth(tok))
+    assert r.status_code == 202, r.text
+    assert "open_now" not in await _staged(real_client, tok, upload_token)
+    _start_running(monkeypatch, "acme-widgets")
+    ready = await _staged(real_client, tok, upload_token)
+    assert ready["modules_ready"] is True
+    assert ready["open_now"] == {"company_name": "Alpha Copy"}
+    assert "open_now" not in await _staged(real_client, tok, upload_token)
+    r = await real_client.post("/company-backups/restore", json={
+        "upload_token": upload_token, "mode": "settings", "plan_fingerprint": ready["plan_fingerprint"],
+        "company_name": "Alpha Copy"}, headers=auth(tok))
+    assert r.status_code == 201, r.text
+
+
+async def test_enable_and_open_refuses_a_preview_that_changed(real_client, real_engine, installed, monkeypatch):
+    """Enable and open confirms the preview as shown; a preview that no longer holds turns
+    nothing on and returns the current one."""
+    _first_party(monkeypatch, "acme-widgets")
+    _, _, tok = await _setup(real_engine)
+    data = _needs_module(await download(real_client, tok), "acme-widgets")
+    upload_token = (await read(real_client, tok, data)).json()["upload_token"]
+    r = await real_client.post("/company-backups/prepare", json={
+        "upload_token": upload_token, "open": {"plan_fingerprint": "0" * 64, "company_name": ""}}, headers=auth(tok))
+    assert r.status_code == 409 and r.json()["code"] == "stale_preview", r.text
+    assert r.json()["plan"]["modules_ready"] is False
+    from celerp.config import read_config
+    assert read_config()["modules"]["enabled"] == []
+    _, restarts = installed
+    assert restarts == []
+
+
+async def test_enable_and_open_held_when_the_preview_changes_during_the_restart(real_client, real_engine, installed,
+                                                                               monkeypatch):
+    """When anything but the modules changed while Celerp restarted, the copy is not opened:
+    the preview says so and waits for the owner."""
+    _first_party(monkeypatch, "acme-widgets")
+    _, cid, tok = await _setup(real_engine)
+    data = _needs_module(await download(real_client, tok), "acme-widgets")
+    preview = (await read(real_client, tok, data)).json()
+    upload_token = preview["upload_token"]
+    r = await real_client.post("/company-backups/prepare", json={
+        "upload_token": upload_token,
+        "open": {"plan_fingerprint": preview["plan_fingerprint"], "company_name": ""}}, headers=auth(tok))
+    assert r.status_code == 202, r.text
+    async with real_engine.begin() as conn:
+        await conn.execute(text("UPDATE companies SET name = 'Alpha Renamed' WHERE id = :c"), {"c": uuid.UUID(str(cid))})
+    _start_running(monkeypatch, "acme-widgets")
+    held = await _staged(real_client, tok, upload_token)
+    assert "open_now" not in held
+    assert held["open_held"] is True
+    assert "open_held" not in await _staged(real_client, tok, upload_token)
+
+
+async def test_copy_omitting_modules_policy(real_client, real_engine, installed,
+                                                                               monkeypatch):
+    """A module this installation runs that the copy does not use asks for nothing: the copy
+    opens, and its company has the module off with no data of it."""
+    _first_party(monkeypatch, "acme-widgets")
+    from celerp.config import write_config
+    write_config({"modules": {"enabled": ["acme-widgets"]}})
+    _start_running(monkeypatch, "acme-widgets")
+    _, _, tok = await _setup(real_engine)
+    parts = members(await download(real_client, tok))
+    meta = json.loads(parts["manifest.json"])
+    # A copy made where the module is not installed.
+    meta["modules"]["enabled"] = [m for m in meta["modules"]["enabled"] if m != "acme-widgets"]
+    meta["modules"].get("versions", {}).pop("acme-widgets", None)
+    parts["manifest.json"] = json.dumps(meta).encode()
+    preview = await read(real_client, tok, rezip(parts))
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["modules_ready"] is True
+    assert all(m["name"] != "acme-widgets" for m in preview.json()["modules"])
+    r = await real_client.post("/company-backups/restore", json=confirm(preview), headers=auth(tok))
+    assert r.status_code == 201, r.text
+    async with real_engine.connect() as conn:
+        settings_ = (await conn.execute(text("SELECT settings FROM companies WHERE id = :c"),
+                                        {"c": uuid.UUID(r.json()["company_id"])})).scalar_one()
+    assert "acme-widgets" not in (settings_ or {}).get("enabled_modules", [])
+
+
 async def test_first_run_prepares_modules_before_any_owner_exists(real_client, real_engine, installed,
                                                                   monkeypatch):
     """On a fresh installation the backup's modules are prepared before the first owner or

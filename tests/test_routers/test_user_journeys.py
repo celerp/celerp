@@ -2352,12 +2352,6 @@ async def test_perm_write_contacts_requires_auth(client):
 
 
 @pytest.mark.asyncio
-async def test_perm_api_key_creation_requires_auth(client):
-    r = await client.post("/auth/api-key")
-    assert r.status_code == 401
-
-
-@pytest.mark.asyncio
 async def test_perm_switch_to_foreign_company_denied(client):
     token = await _reg(client, "swt")
     fake_id = str(uuid.uuid4())

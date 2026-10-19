@@ -831,8 +831,8 @@
   "fixed_assets.transfer_other.not_using": "{company} ではまだ固定資産を使っていません。その会社に切り替えて、固定資産を開始してください。",
   "fixed_assets.transfer_other.no_rights": "{company} でのあなたの役割には、会計と固定資産を管理する権限がありません。所有者が両方を付与できます。",
   "fixed_assets.switch_to": "{company} に切り替え",
-  "fixed_assets.switched_company": "このページは {page} で開かれましたが、その後別のタブで {now} に切り替えたため、何も保存されていません。ここで続けるには {switch}、{now} で作業するにはこのページを再読み込みしてください。",
-  "fixed_assets.switched_company_gone": "このページはアクセスできなくなった会社で開かれたため、何も保存されていません。{now} で作業するにはこのページを再読み込みしてください。",
+  "fixed_assets.switched_company": "このページは {page} で開かれましたが、その後別のタブで {now} に切り替えたため、何も保存されていません。ここで続けるには {switch}、{now} で作業するには「再試行」を選んでください。",
+  "fixed_assets.switched_company_gone": "このページはアクセスできなくなった会社で開かれたため、何も保存されていません。{now} で作業するには「再試行」を選んでください。",
   "fixed_assets.transfer_date": "移転日",
   "fixed_assets.transfer_price": "移転価額",
   "fixed_assets.transfer_price_hint": "{currency} で、関連会社がこの資産について負う金額。",
@@ -982,5 +982,9 @@
   "fixed_assets.due_soon_hint": "事前通知期間内または期限切れの保守・保証・保険リマインダーです。資産を開いて完了または延期にします。",
   "fixed_assets.reminders_empty": "期日が近い資産リマインダーはありません。",
   "fixed_assets.notice.reminders.title": "資産リマインダー",
-  "fixed_assets.notice.reminders.body": "次の資産リマインダーの期日です:\n{items}"
+  "fixed_assets.notice.reminders.body": "次の資産リマインダーの期日です:\n{items}",
+  "fixed_assets.err_same_key_new_details": "この変更は別の内容ですでに行われています。「再試行」を選んで、最初からやり直してください。",
+  "fixed_assets.err_changed_by_someone": "他の人によって変更されました。「再試行」を選ぶと確認できます。",
+  "fixed_assets.err_no_difference": "その差異は存在しません。「再試行」を選んでください。",
+  "fixed_assets.err_no_year_end_item": "その年度末の項目は存在しません。「再試行」を選んでください。"
 }

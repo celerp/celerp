@@ -61,7 +61,8 @@ async def test_subscriptions_shell_follows_browser_language(owner_ui, path):
     de = json.loads((Path(__file__).parent.parent / "ui" / "locales" / "de.json").read_text())
     r = await owner_ui.get(path, headers={"Accept-Language": "de-DE,de;q=0.9"})
     assert r.status_code == 200
-    assert json.dumps(de["shell.import_hint"])[1:-1] in r.text  # as the shell serializes it
+    shell = json.loads(re.search(r"window\.__shellI18n = (\{.*?\});</script>", r.text, re.S).group(1))
+    assert shell["importHint"] == de["shell.import_hint"]
     assert _EN["shell.import_hint"] not in r.text
 
 

@@ -85,6 +85,18 @@ class NoticeMiddleware:
         await self._app(scope, receive, send_clearing)
 
 
+async def company_owner(token: str, lang: str | None = None) -> str:
+    """Who to ask for an owner-only action: the company's active owners by name (or
+    email), or "the company owner" when the list cannot be read."""
+    try:
+        users = (await api.get_users(token))["items"]
+    except (api.APIError, KeyError, TypeError):
+        users = []
+    owners = [u.get("name") or u.get("email") for u in users
+              if u.get("role") == "owner" and u.get("is_active")]
+    return ", ".join(o for o in owners if o) or t("security.the_company_owner", lang)
+
+
 async def owner_refusal(request: Request) -> Response | None:
     """Pages that act on the whole installation (modules, backups, updates, the
     Celerp account) answer the installation owner only. Each such handler calls

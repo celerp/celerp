@@ -299,10 +299,21 @@ jobs:
       - name: Build bundled pg_dump/pg_restore/psql (Linux, manylinux)
         if: matrix.os == 'ubuntu-latest' && steps.pg-tools-linux-cache.outputs.cache-hit != 'true'
         shell: bash
+        env:
+          MANYLINUX_IMAGE: quay.io/pypa/manylinux_2_28_x86_64
         run: |
+          # A registry hiccup must not fail a release: pull up to 3 times, 30s then 60s apart.
+          for attempt in 1 2 3; do
+            docker pull "$MANYLINUX_IMAGE" && break
+            if [ "$attempt" = 3 ]; then
+              echo "ERROR: could not pull $MANYLINUX_IMAGE after 3 attempts" >&2
+              exit 1
+            fi
+            sleep $((attempt * 30))
+          done
           docker run --rm -v "$PWD:/io" -w /io \
             -e PG_VERSION -e PG_SHA256 -e OPENSSL_VERSION -e OPENSSL_SHA256 \
-            quay.io/pypa/manylinux_2_28_x86_64 \
+            "$MANYLINUX_IMAGE" \
             bash electron/scripts/build-pg-tools-linux.sh /io/electron/pg-tools/linux
           # The container runs as root, so the output is root-owned; chown it back
           # to the runner user, else electron-builder's hardlink copy hits EPERM

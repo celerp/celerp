@@ -72,7 +72,8 @@ async def _batch_docs(factory, company_id, user, records, upsert: bool = False):
     async with factory() as s:
         return await docs.batch_import_docs(
             docs.DocBatchImportRequest(records=records, upsert=upsert),
-            company_id=company_id, _=None, __=None, user=user, session=s)
+            company_id=company_id, _=None, __=None, user=user, session=s,
+            auth=types.SimpleNamespace(peer=None))
 
 
 async def test_a_document_whose_entry_is_refused_is_not_imported(committed_engine):

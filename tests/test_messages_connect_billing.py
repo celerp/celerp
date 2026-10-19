@@ -46,7 +46,7 @@ def test_one_connector_display_name_helper():
     ("connectors.store_url_required", "Enter your store's web address."),
     ("connectors.store_url_must_use_https", "keep your store keys safe"),
     ("connectors.missing_credentials", "consumer secret"),
-    ("connectors.fetch_error", "Refresh the page."),
+    ("connectors.fetch_error", "Select Try again"),
     ("connectors.connect_failed", "restart Celerp"),
     ("connectors.deposit_unknown_account", "Choose a bank account from the list."),
     ("stars.claim_unavailable_body", "online service"),

@@ -13,7 +13,7 @@ from fasthtml.common import *
 
 from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, reason_key
 from ui.config import COOKIE_NAME, get_role
-from ui.i18n import t, get_lang, available_langs
+from ui.i18n import t, get_lang, available_langs, try_again_pattern
 from ui.components.table import searchable_select
 
 # Cache-bust static assets by hashing app.css content
@@ -144,6 +144,33 @@ function celerpLineSelection(rows) {
 function celerpCount(forms, n) {
   return forms[n === 1 ? 'one' : 'many'].replace('{n}', n);
 }
+// Try again: a notice whose message tells the user to select Try again gets the button that does
+// it. Which messages those are comes from the catalog (try_again_script), never from the label, so a
+// sentence that only means "do it again" gets none. The button is a plain link that opens the
+// page with GET (a page a form posted opens the start of that form), so nothing is sent twice and
+// nothing reloads on its own.
+var _CELERP_NOTICE = '.cell-error, .flash, .error-banner, .error-inline, .toast__msg, #global-ui-error, #save-status, #scan-bar-status, .account-panel__notice';
+function celerpTryAgainButton() {
+  var button = document.createElement('a');
+  button.className = 'btn btn--secondary btn--sm try-again';
+  button.href = window.__shellI18n.tryAgainHref || location.href;
+  button.textContent = window.__shellI18n.tryAgain;
+  return button;
+}
+var _celerpTryAgainRe;
+function celerpTryAgain(notice) {
+  if (!window.__celerpTryAgainPattern || notice.querySelector(_CELERP_NOTICE + ', .try-again')) return;
+  _celerpTryAgainRe = _celerpTryAgainRe || new RegExp(window.__celerpTryAgainPattern);
+  if (_celerpTryAgainRe.test(notice.textContent)) notice.append(' ', celerpTryAgainButton());
+}
+// The page as it loads and every response swapped in (the target too, for a reply of bare text).
+function _celerpTryAgainWithin(root) {
+  if (!root || !root.querySelectorAll) return;
+  if (root.matches(_CELERP_NOTICE)) celerpTryAgain(root);
+  root.querySelectorAll(_CELERP_NOTICE).forEach(celerpTryAgain);
+}
+document.addEventListener('htmx:load', function(e) { _celerpTryAgainWithin(e.detail.elt); });
+document.addEventListener('htmx:afterSwap', function(e) { _celerpTryAgainWithin(e.detail.target); });
 function celerpToast(message, type, persist, action) {
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }
@@ -152,6 +179,7 @@ function celerpToast(message, type, persist, action) {
   var body = document.createElement('span');
   body.className = 'toast__msg';
   body.textContent = message;
+  celerpTryAgain(body);
   toast.appendChild(body);
   // Optional action link (e.g. "Reconnect in Settings" pointing at /settings/cloud):
   // keeps a persistent error toast actionable instead of dead-ending the user.
@@ -223,6 +251,7 @@ function showGlobalUiError(message) {
     return;
   }
   box.textContent = message;
+  celerpTryAgain(box);
   box.style.display = 'block';
 }
 
@@ -293,6 +322,16 @@ document.addEventListener('click', function(e) {
       var b = p.parentElement.querySelector('.global-search-help');
       if (b) b.setAttribute('aria-expanded', 'false');
     });
+  }
+  // data-reveal button: show or mask the secret field it names
+  var revealBtn = e.target.closest('[data-reveal]');
+  if (revealBtn) {
+    var secret = document.querySelector(revealBtn.getAttribute('data-reveal'));
+    if (secret) {
+      var masked = secret.type === 'password';
+      secret.type = masked ? 'text' : 'password';
+      revealBtn.textContent = revealBtn.getAttribute(masked ? 'data-hide' : 'data-show');
+    }
   }
   // data-copy button: copy sibling/target text to clipboard with "Copied!" feedback
   var copyBtn = e.target.closest('[data-copy]');
@@ -1944,6 +1983,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "importHint": t("shell.import_hint", lang),
         "demoHint": t("shell.demo_hint", lang),
         "close": t("btn.close", lang),
+        "tryAgain": t("btn.try_again", lang),
     }
 
 
@@ -1975,14 +2015,56 @@ def _relay_info_from_request(request) -> dict | None:
     return {"connected": True, "public_url": f"https://{host}"}
 
 
-def client_scripts(lang: str = "en") -> list:
+def _has_get_route(routes, path: str) -> bool:
+    from starlette.routing import Match
+    scope = {"type": "http", "path": path, "method": "GET", "root_path": ""}
+    return any(route.matches(scope)[0] == Match.FULL for route in routes)
+
+
+def try_again_address(request) -> str:
+    """Where the Try again button goes when the page came from a form post: the nearest page
+    at or above it that answers GET (the start of that form), so selecting it never sends the
+    form again. Empty for a page that came from GET (or rendered outside the app): the button
+    then opens the address the browser shows."""
+    app = request.scope.get("app") if request is not None else None
+    if app is None or request.method == "GET":
+        return ""
+    path = request.url.path
+    while path not in ("", "/") and not _has_get_route(app.router.routes, path):
+        path = path.rsplit("/", 1)[0]
+    return "/" + path.lstrip("/")
+
+
+def _js_value(value) -> str:
+    """*value* as a JavaScript literal that is safe inside a <script> element."""
+    return json.dumps(value, ensure_ascii=False).replace("<", "\\u003c")
+
+
+def try_again_script(lang: str) -> str:
+    """The script behind _try_again_script_src: which messages get the Try again button, in *lang*."""
+    return f"window.__celerpTryAgainPattern = {_js_value(try_again_pattern(lang))};"
+
+
+def try_again_version(lang: str) -> str:
+    """The version in the Try again script's address: it changes whenever the script does."""
+    return hashlib.sha1(try_again_pattern(lang).encode()).hexdigest()[:12]
+
+
+def _try_again_script_src(lang: str) -> str:
+    return f"/static/try-again/{lang}.js?v={try_again_version(lang)}"
+
+
+def client_scripts(lang: str = "en", request=None) -> list:
     """htmx, the translated strings the client bundle reads (R2) and the shared client
     bundle (searchable select, ESC handling), in that order: the config must come
     before any script that references window.__shellI18n. Every full-chrome page
-    carries them; a page rendered in auth_shell adds them itself."""
+    carries them; a page rendered in auth_shell adds them itself. The Try again
+    pattern is a separate script the browser caches, so pages stay small."""
+    config = {**_shell_js_i18n(lang), "tryAgainHref": try_again_address(request)}
     return [
         Script(src="/static/htmx.min.js"),
-        Script(f"window.__shellI18n = {json.dumps(_shell_js_i18n(lang))};"),
+        Script(f"window.__shellI18n = {_js_value(config)};"),
+        Script(src=_try_again_script_src(lang)),
         Script(_CLIENT_JS),
     ]
 
@@ -2058,7 +2140,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Title(title),
         *_favicon_links(),
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
-        *client_scripts(lang),
+        *client_scripts(lang, request),
         Script(ESC_BLURS_FIELD),
         Script(_idle_logout_js()),
         Script(_HEALTH_BANNER_JS),
@@ -2793,6 +2875,17 @@ def sign_in_fields(email: str = "", *, autofocus: bool = False) -> tuple[FT, ...
 def flash(msg: str, kind: str = "error", raw: bool = False) -> FT:
     content = NotStr(msg) if raw else msg
     return Div(content, cls=f"flash flash--{kind}", id="flash")
+
+
+def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-input", **attrs) -> FT:
+    """A pasted secret (a copy or pairing link): masked, kept on a refused check so the
+    user can look at it, and shown only when they click Show."""
+    return Div(
+        Input(type="password", id=name, name=name, value=value, autocomplete="off", cls=cls, **attrs),
+        Button(t("btn.show", lang), type="button", cls="btn btn--secondary btn--sm",
+               data_reveal=f"#{name}", data_show=t("btn.show", lang), data_hide=t("btn.hide", lang)),
+        cls="secret-input",
+    )
 
 
 def toast_header(message: str, kind: str = "success", *, persist: bool = False,

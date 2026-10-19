@@ -435,7 +435,7 @@ async def test_f07_request_retried_under_its_key_is_the_same_request(fa):
     assert notice.body.startswith("1 ")
     # The same key with other details is refused, not a second request.
     changed = await _ask(fa, car, operator, cost="14000")
-    assert changed.status_code == 409 and "different details" in changed.json()["detail"]
+    assert changed.status_code == 409 and "different details" in changed.json()["detail"]["message"]
     # Without a key from its form there is nothing to tell a retry from a new request.
     keyless = await fa.post(f"/assets/{car}/corrections", {"changes": {"cost": "13000"}}, headers=operator)
     assert keyless.status_code == 422

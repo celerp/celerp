@@ -25,23 +25,32 @@ from celerp.importers.schema import (
     CIFBankTransfer,
     CIFJournalEntry,
     CIFSourceRecord,
+    ReconciliationExpectation,
     ReconciliationExpectations,
     ReconciliationMeasure,
 )
 from celerp.accounting_roles import AccountRole
+from celerp.models.projections import Projection
+from celerp.services.doc_balance import (
+    AWAITING_PAYMENT_STATUSES,
+    OPEN_CREDIT_STATUSES,
+    doc_value,
+    outstanding_balance,
+)
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkContext
 from celerp.services.account_roles import current_settings, merge_survivors, record_source_control, source_controls
 from celerp.services.migration_core_sink import (
     deterministic_id,
     import_prepared,
     mapped_targets,
+    run_targets,
     sink_result,
 )
-from celerp.services.money import round_money, to_stored_float
+from celerp.services.money import checked_exchange_rate, require_doc_rate, round_money, to_stored_float
 from celerp.services.ledger_rows import journal_rows
 from celerp_accounting import import_service
 from celerp_accounting.import_service import JOURNAL_CREATED, AccImportRecord
-from celerp_accounting.models import Account
+from celerp_accounting.models import Account, BankAccount
 from celerp_accounting.routes import (
     _base_currency,
     _build_balances,
@@ -80,6 +89,14 @@ _PARTY_MEASURES = {
     ReconciliationMeasure.AP_BY_SUPPLIER: AccountRole.PAYABLE,
 }
 
+_DOCUMENT_RESIDUALS = {
+    ReconciliationMeasure.AR_DOCUMENT_RESIDUAL: AccountRole.RECEIVABLE,
+    ReconciliationMeasure.AP_DOCUMENT_RESIDUAL: AccountRole.PAYABLE,
+}
+# Statuses in which a document can still owe: a draft or void document owes nothing,
+# whatever its recorded balance.
+_OWING_STATUSES = {**AWAITING_PAYMENT_STATUSES, **OPEN_CREDIT_STATUSES}
+
 
 class AccountingMigrationSink:
     key = "celerp-accounting"
@@ -99,13 +116,15 @@ class AccountingMigrationSink:
     ) -> list[DestinationMeasurement]:
         wanted = [e for e in expectations.expectations if e.measure in (
             _ACCOUNT_MEASURES | _CONTROL_MEASURES.keys() | _PARTY_MEASURES.keys()
-            | {ReconciliationMeasure.DEBITS_EQUAL_CREDITS}
+            | _DOCUMENT_RESIDUALS.keys()
+            | {ReconciliationMeasure.DEBITS_EQUAL_CREDITS, ReconciliationMeasure.TRIAL_BALANCE_AT}
         )]
         if not wanted:
             return []
         posted = await journal_rows(context.session, context.company_id)
         balances = _build_balances(posted, None, None)
-        codes = await mapped_targets(context, ACCOUNT, [e.key for e in wanted])
+        codes = await mapped_targets(context, ACCOUNT, [_account_key(e) for e in wanted])
+        dated: dict[str, dict[str, Decimal]] = {}
         settings = await current_settings(context.session, context.company_id)
         contacts = await mapped_targets(context, CONTACT, [e.key for e in wanted if e.measure in _PARTY_MEASURES])
         party_totals: dict[tuple[str, str], Decimal] = {}
@@ -120,6 +139,40 @@ class AccountingMigrationSink:
                     bucket = (entry.get("account") or "", _line_party(refs, je_id, entry, survivors))
                     party_totals[bucket] = party_totals.get(bucket, Decimal(0)) + amounts[0] - amounts[1]
 
+        open_ar = Decimal(0)
+        open_ap = Decimal(0)
+        if any(e.measure in _DOCUMENT_RESIDUALS for e in wanted):
+            base = (await _base_currency(context.session, context.company_id)).upper()
+            doc_ids = await run_targets(context, "doc")
+            found: set[str] = set()
+            for start in range(0, len(doc_ids), 500):
+                rows = (await context.session.execute(select(Projection).where(
+                    Projection.company_id == context.company_id,
+                    Projection.entity_id.in_(doc_ids[start:start + 500]),
+                    Projection.entity_type == "doc",
+                ))).scalars()
+                for document in rows:
+                    found.add(document.entity_id)
+                    state = document.state or {}
+                    if doc_value(state, "total") in (None, ""):
+                        raise ValueError("An imported document has no measurable total")
+                    balance = outstanding_balance(state)
+                    if balance is None:
+                        raise ValueError("An imported document has no measurable outstanding balance")
+                    doc_type = state.get("doc_type")
+                    if state.get("status") not in _OWING_STATUSES.get(doc_type, ()):
+                        continue
+                    balance = round_money(balance * require_doc_rate(state, base), base)
+                    if doc_type == "invoice":
+                        open_ar += balance
+                    elif doc_type == "credit_note":
+                        open_ar -= balance
+                    elif doc_type == "bill":
+                        open_ap += balance
+                    elif doc_type == "debit_note":
+                        open_ap -= balance
+            if len(found) != len(set(doc_ids)):
+                raise ValueError("An imported document could not be measured for reconciliation")
         out: list[DestinationMeasurement] = []
         for e in wanted:
             if e.measure == ReconciliationMeasure.DEBITS_EQUAL_CREDITS:
@@ -128,6 +181,18 @@ class AccountingMigrationSink:
                 if e.key not in codes:
                     continue
                 actual = balances.get(codes[e.key], Decimal(0))
+            elif e.measure == ReconciliationMeasure.TRIAL_BALANCE_AT:
+                account, on = e.key.rsplit("@", 1)
+                if account not in codes:
+                    continue
+                if on not in dated:
+                    dated[on] = _build_balances(posted, None, on)
+                actual = dated[on].get(codes[account], Decimal(0))
+            elif e.measure in _DOCUMENT_RESIDUALS:
+                role = _DOCUMENT_RESIDUALS[e.measure]
+                control = sum((balances.get(code, Decimal(0)) for code in source_controls(settings, role)),
+                              Decimal(0))
+                actual = (control - open_ar if role == AccountRole.RECEIVABLE else control + open_ap)
             elif e.measure in _CONTROL_MEASURES:
                 controls = [codes[e.key]] if e.key in codes else source_controls(settings, _CONTROL_MEASURES[e.measure])
                 actual = sum((balances.get(code, Decimal(0)) for code in controls), Decimal(0))
@@ -138,6 +203,13 @@ class AccountingMigrationSink:
                               for code in source_controls(settings, _PARTY_MEASURES[e.measure])), Decimal(0))
             out.append(DestinationMeasurement(e.measure, e.key, e.currency, actual))
         return out
+
+
+def _account_key(expectation: ReconciliationExpectation) -> str:
+    """The source account an expectation measures; a dated balance keys it as account@date."""
+    if expectation.measure == ReconciliationMeasure.TRIAL_BALANCE_AT:
+        return expectation.key.rsplit("@", 1)[0]
+    return expectation.key
 
 
 # ── Accounts ──────────────────────────────────────────────────────────────────
@@ -219,6 +291,11 @@ async def _write_account(
     role = _control_role(account)
     if role is not None:
         await record_source_control(session, company_id, role, code)
+    if account.control == AccountControl.EXCHANGE_DIFFERENCE:
+        # Celerp books the exchange difference itself when the import applies a foreign
+        # payment or note: both sides post to the source's account (resolve_importing).
+        for fx_role in (AccountRole.FX_GAIN, AccountRole.FX_LOSS):
+            await record_source_control(session, company_id, fx_role, code)
     return code
 
 
@@ -263,7 +340,10 @@ async def _import_journals(context: SinkContext, records: Sequence[CIFSourceReco
             account_ids += [r.from_account_external_id, r.to_account_external_id]
     codes = await mapped_targets(context, ACCOUNT, account_ids)
     contacts = await mapped_targets(context, CONTACT, contact_ids)
-    prepared = [_journal_record(context, r, base, codes, contacts) for r in records]
+    banks = dict((await context.session.execute(
+        select(BankAccount.chart_account_code, BankAccount.currency).where(BankAccount.company_id == context.company_id)
+    )).all())
+    prepared = [_journal_record(context, r, base, codes, contacts, banks) for r in records]
 
     async def write(ready: list[AccImportRecord]):
         return await import_service.import_journal_records(
@@ -279,6 +359,7 @@ def _journal_record(
     base: str,
     codes: dict[str, str],
     contacts: dict[str, str],
+    banks: dict[str, str],
 ) -> AccImportRecord | str:
     """The journal import record for one source journal or transfer, or why there is none."""
     if isinstance(record, CIFJournalEntry):
@@ -293,6 +374,13 @@ def _journal_record(
                 "debit": to_stored_float(round_money(line.debit, base)),
                 "credit": to_stored_float(round_money(line.credit, base)),
             }
+            if line.fx_currency:
+                entry |= {
+                    "fx_debit": to_stored_float(line.fx_debit) if line.fx_debit else None,
+                    "fx_credit": to_stored_float(line.fx_credit) if line.fx_credit else None,
+                    "fx_currency": line.fx_currency.upper(),
+                    "fx_rate": to_stored_float(line.fx_rate),
+                }
             if line.contact_external_id:
                 if line.contact_external_id not in contacts:
                     return f"Journal {record.source_external_id}: contact {line.contact_external_id} was not imported."
@@ -300,23 +388,28 @@ def _journal_record(
             entries.append(entry)
         data = {"memo": record.narration or "", "ts": record.entry_date.isoformat(), "entries": entries}
     elif isinstance(record, CIFBankTransfer):
-        if record.to_amount is not None and record.to_amount != record.amount:
-            return (
-                f"Transfer {record.source_external_id} changes currency; "
-                "transfers between currencies cannot be imported."
-            )
         for ext in (record.from_account_external_id, record.to_account_external_id):
             if ext not in codes:
                 return f"Transfer {record.source_external_id}: account {ext} was not imported."
-        amount = to_stored_float(round_money(record.amount, base))
+        moved = _transfer_base(record, base, banks.get(codes[record.from_account_external_id], base).upper(),
+                               banks.get(codes[record.to_account_external_id], base).upper())
+        if isinstance(moved, str):
+            return moved
+        amount, legs = to_stored_float(moved), []
+        for ext, native, side in ((record.to_account_external_id, record.to_amount or record.amount, "debit"),
+                                  (record.from_account_external_id, record.amount, "credit")):
+            currency = banks.get(codes[ext], base).upper()
+            leg = {"account": codes[ext], "debit": amount if side == "debit" else 0.0,
+                   "credit": amount if side == "credit" else 0.0}
+            if currency != base:
+                leg |= {f"fx_{side}": to_stored_float(round_money(native, currency)), "fx_currency": currency,
+                        "fx_rate": to_stored_float(checked_exchange_rate(moved / native))}
+            legs.append(leg)
         data = {
             "memo": f"Transfer {record.source_ref or record.source_external_id}",
             "ts": record.transfer_date.isoformat(),
             "je_type": "transfer",
-            "entries": [
-                {"account": codes[record.to_account_external_id], "debit": amount, "credit": 0.0},
-                {"account": codes[record.from_account_external_id], "debit": 0.0, "credit": amount},
-            ],
+            "entries": legs,
         }
     else:
         return f"Record type {type(record).__name__} is not a journal."
@@ -327,6 +420,29 @@ def _journal_record(
         source="migration",
         idempotency_key=context.idempotency_key(record, "created"),
     )
+
+
+def _transfer_base(record: CIFBankTransfer, base: str, source: str, dest: str) -> Decimal | str:
+    """What a transfer moves in the base currency, or why it cannot be imported. A base
+    currency side states it exactly; a transfer within one foreign currency converts at
+    its own rate; between two foreign currencies there is no rate to convert at."""
+    received = record.to_amount if record.to_amount is not None else record.amount
+    label = f"Transfer {record.source_external_id}"
+    if source == base and dest == base:
+        if received != record.amount:
+            return f"{label}: the two sides of a transfer in {base} must be equal."
+        return round_money(record.amount, base)
+    if dest == base:
+        return round_money(received, base)
+    if source == base:
+        return round_money(record.amount, base)
+    if source != dest:
+        return f"{label} is between {source} and {dest}; transfers between two foreign currencies cannot be imported."
+    if received != record.amount:
+        return f"{label}: the two sides of a transfer in {source} must be equal."
+    if record.exchange_rate is None:
+        return f"{label} is in {source} and carries no exchange rate."
+    return round_money(record.amount * record.exchange_rate, base)
 
 
 SINK = AccountingMigrationSink()

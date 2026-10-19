@@ -61,6 +61,19 @@ async def test_demo_documents_reach_their_states_through_the_lifecycle(client: A
 
 
 @pytest.mark.asyncio
+async def test_demo_documents_name_their_contact_and_items(client: AsyncClient):
+    """Each demo document links the contact and items it names, so reports group them by contact."""
+    token = await _token(client)
+    await seed_demo.seed_items(client, token)
+    contacts = await seed_demo.seed_contacts(client, token)
+    await seed_demo.seed_docs(client, token, contacts, "invoice", 3)
+    names = {c["id"]: c["name"] for c in contacts}
+    for doc in await _docs(client, token, "invoice"):
+        assert names.get(doc["contact_id"]) == doc["contact_name"], doc
+        assert all(line["item_id"] for line in doc["line_items"]), doc["line_items"]
+
+
+@pytest.mark.asyncio
 async def test_demo_seeding_stops_with_an_error_when_a_call_fails(client: AsyncClient):
     with pytest.raises(SystemExit) as exit_info:
         await seed_demo.seed_items(client, "not-a-valid-token")

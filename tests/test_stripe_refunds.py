@@ -37,6 +37,7 @@ pytestmark = pytest.mark.asyncio
 _REFUND = ("company_id", "entity_id", "reference", "refund_id", "cycle", "transition", "amount_minor",
            "currency", "occurred_at", "context", "delivery_id")
 _RELEASE = ("company_id", "entity_id", "reference", "released_at", "delivery_id")
+_FEES = ("company_id", "entity_id", "reference", "fees", "occurred_at", "delivery_id")
 PAID_AT = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
 STRIPE_OWNED = "This payment was received through Stripe, so it can only be refunded or reversed in Stripe."
 
@@ -64,6 +65,16 @@ class _RefundCloud(_Cloud):
                                 "reference": reference, "released_at": released_at.isoformat(),
                                 "delivery_id": str(uuid.uuid4()), "acked": False})
 
+    def fees(self, company_id, entity_id: str, transaction_id: str, occurred_at: datetime, *,
+             processor_minor: int, platform_minor: int, reference: str = "pi_1") -> None:
+        """Stripe reported the fees actually taken (or returned) on one balance transaction."""
+        self.deliveries.append({"kind": "fees", "company_id": str(company_id), "entity_id": entity_id,
+                                "reference": reference, "occurred_at": occurred_at.isoformat(),
+                                "fees": {"version": 1, "currency": "usd", "transaction_id": transaction_id,
+                                         "processor_minor": processor_minor, "platform_minor": platform_minor,
+                                         "other_minor": 0, "total_minor": processor_minor + platform_minor},
+                                "delivery_id": str(uuid.uuid4()), "acked": False})
+
     async def deliver(self) -> None:
         for d in [d for d in self.deliveries if not d["acked"]]:
             d["acked"] = await _deliver_one(d)
@@ -82,6 +93,8 @@ async def _deliver_one(d: dict) -> bool:
     gateway._send = send
     if d.get("kind") == "refund":
         await gateway._handle_invoice_refund({k: v for k, v in d.items() if k in _REFUND})
+    elif d.get("kind") == "fees":
+        await gateway._handle_invoice_fees({k: v for k, v in d.items() if k in _FEES})
     elif d.get("kind") == "release":
         await gateway._handle_invoice_payment_release({k: v for k, v in d.items() if k in _RELEASE})
     else:
@@ -1222,3 +1235,45 @@ async def test_a_refund_reversed_after_its_stripe_payment_moved_is_reversed_on_t
     journal = [je for je, _ in await _journal(real_engine, invoice)]
     assert (sum(":payrefund:" in je for je in journal), sum(":payrefundrev:" in je for je in journal)) == (2, 2)
     assert not _payment(await _doc(real_engine, invoice)).get("refunded")
+
+
+# ── Fees on a refunded payment ────────────────────────────────────────────────
+
+async def _all_books(engine, entity_id) -> dict[str, Decimal]:
+    """Net debit per account across every posted journal entry Celerp made for the
+    invoice: its issue, payments, refunds and online fees."""
+    async with maker(engine)() as s:
+        entries = (await s.scalars(text("SELECT state FROM projections WHERE entity_id LIKE :j"),
+                                   {"j": f"je:auto:{entity_id}%"})).all()
+    net: dict[str, Decimal] = {}
+    for je in entries:
+        if je.get("status") != "posted":
+            continue
+        for line in je.get("entries", []):
+            net[line["account"]] = (net.get(line["account"], Decimal(0)) + Decimal(str(line.get("debit") or 0))
+                                    - Decimal(str(line.get("credit") or 0)))
+    return {k: v for k, v in net.items() if v}
+
+
+@pytest.mark.parametrize("processor_returned", [0, -270])
+async def test_refund_keeps_celerp_fee_end_to_end(real_engine, real_client, monkeypatch, processor_returned):
+    """A paid invoice with its fees booked, then refunded in full: the payment is
+    reversed, the Celerp fee stays an expense, the processor fee follows what Stripe
+    returned, the bank moves by exactly the fees kept, and the books balance."""
+    boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    before = await _all_books(real_engine, invoice)
+    cloud.fees(a, invoice, "txn_charge", _at(0), processor_minor=270, platform_minor=250)
+    await cloud.deliver()
+    cloud.refund(a, invoice, "re_1", 107000, _at(1))
+    if processor_returned:
+        cloud.fees(a, invoice, "txn_refund", _at(1), processor_minor=processor_returned, platform_minor=0)
+    await cloud.deliver()
+    assert all(d["acked"] for d in cloud.deliveries)
+
+    after = await _all_books(real_engine, invoice)
+    kept = Decimal(250 + 270 + processor_returned) / 100
+    change = {k: after.get(k, Decimal(0)) - before.get(k, Decimal(0)) for k in set(after) | set(before)}
+    assert change.pop("1111") == -Decimal("1070") - kept  # the refund and the fees kept left the bank
+    assert change.pop("6940") == kept >= Decimal("2.50")  # the Celerp fee is never given back
+    assert sum(change.values()) == Decimal("1070")  # the receivable the refund reopened
+    assert sum(after.values()) == 0

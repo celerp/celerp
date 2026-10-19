@@ -332,8 +332,8 @@ async def test_bulk_void_toast_states_what_was_refused(ui_client):
     assert r.status_code == 200
     toast = _toast(r)
     assert toast["type"] == "error"
-    assert t("acct.bulk_void_result", n=1) in toast["message"]
-    assert detail in toast["message"]
+    # The reason carries its own advice, so nothing is added that contradicts it.
+    assert toast["message"] == f"Journal entries voided: 1. 1 entry was not voided: {detail}"
 
 
 @pytest.mark.asyncio
@@ -633,7 +633,7 @@ _NEW_KEYS = [
     "acct.imbalance_note", "acct.fx_per_line_hint",
     "acct.err_currency_unknown", "acct.err_rate_positive",
     "acct.bulk_void", "acct.bulk_void_confirm", "acct.bulk_void_result",
-    "acct.bulk_void_refused", "label.n_selected", "label.select_all",
+    "acct.bulk_void_refused", "acct.bulk_void_refused_one", "label.n_selected", "label.select_all",
     "label.select_rows_first",
 ]
 

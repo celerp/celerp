@@ -29,7 +29,7 @@ RELAY = "https://relay.test"
 STORE = "https://store.example.test"
 LIVE_SHOPIFY = {"product_id": "9001", "variant_id": "9002", "sync_enabled": True}
 LIVE_WOO = {"product_id": "77", "sync_enabled": True}
-NOTICE = "Connections to other services, such as stores and accounting, are not restored from a backup. Connect each one again in Web Access."
+NOTICE = "Connections to other services, such as stores and accounting, are not included in a company copy. Connect each one again in Web Access."
 
 
 def _local(monkeypatch, tmp_path) -> None:
@@ -265,8 +265,8 @@ async def test_outbound_enable_requires_owner_and_is_per_connector(restored, rea
 
 
 async def test_restore_notice_says_integrations_disconnected(real_engine, real_client, ui, tmp_path, monkeypatch):
-    """The page after restoring a company says its integrations are disconnected and
-    outbound sync is off."""
+    """The page after restoring a company says its integrations are disconnected, links to
+    Web Access to connect them again, and outbound sync is off."""
     import re
     _local(monkeypatch, tmp_path)
     user = await owner(real_engine)
@@ -295,6 +295,8 @@ async def test_restore_notice_says_integrations_disconnected(real_engine, real_c
         r = await ui.get(r.headers["location"])
     assert r.status_code == 200, r.text
     assert NOTICE in r.text
+    # the notice leads straight to where each connection is made again
+    assert re.search(re.escape(NOTICE) + r'\s*<a href="/settings/cloud"[^>]*>Open Web Access</a>', r.text), r.text
 
 
 # ── Reconnect ────────────────────────────────────────────────────────────────

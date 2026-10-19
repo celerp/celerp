@@ -13,8 +13,12 @@ from . import specs
 
 HERE = Path(__file__).resolve().parent
 BASIC = HERE / "basic.manager"
+ORDERS = HERE / "orders.manager"
 FX = HERE / "fx.manager"
 INVENTORY = HERE / "inventory.manager"
+STARTING = HERE / "starting.manager"
+HISTORY = HERE / "history.manager"
+STOCK = HERE / "stock.manager"
 CHECKPOINTS = json.loads((HERE / "checkpoints.json").read_text())
 
 # Measures whose checkpoint values carry a currency: [currency, amount].
@@ -23,6 +27,7 @@ _WITH_CURRENCY = {"bank_cash", "document_count", "document_total", "settlement_a
 _NO_CURRENCY = {"document_status", "inventory_quantity"}
 _MEASURES = (
     "debits_equal_credits", "trial_balance", "ar_control", "ar_by_customer", "ap_control", "ap_by_supplier",
+    "ar_document_residual", "ap_document_residual",
     "bank_cash", "inventory_quantity", "inventory_value", "tax_control", "document_count", "document_total",
     "document_status", "settlement_allocation",
 )
@@ -54,6 +59,9 @@ def expected_rows(section: dict, base_currency: str) -> set[tuple[str, str, str 
         if measure not in section:
             continue
         value = section[measure]
+        if measure in ("ar_document_residual", "ap_document_residual"):
+            rows.add((measure, "", base_currency, Decimal(value)))
+            continue
         if measure == "debits_equal_credits":
             rows.add((measure, "", base_currency, Decimal(value)))
             continue

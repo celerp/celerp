@@ -287,6 +287,17 @@ async def test_reports_index_lists_the_financial_reports(ui_client):
 
 
 @pytest.mark.asyncio
+async def test_a_ledger_line_with_no_reference_reads_dashes_under_description(ui_client):
+    """A manual entry has no document: its Ref reads --, and its memo sits under
+    Description, which also fits a document's type on a statement."""
+    r = await _get(ui_client, ledger_path("6200"))
+    header = r.text.split("<thead>")[1].split("</thead>")[0]
+    assert ">Description<" in header and ">Type<" not in header
+    row = r.text.split("February rent")[0].rsplit("<tr>", 1)[1]
+    assert "<td>--</td>" in row
+
+
+@pytest.mark.asyncio
 async def test_extended_journal_page_shows_what_each_posting_was_for(ui_client):
     """The whole point of the report: the item, how many, and at what price,
     on the posting line itself."""

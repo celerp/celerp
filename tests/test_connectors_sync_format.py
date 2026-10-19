@@ -33,7 +33,7 @@ def test_terminal_uses_relative_time_and_separators():
              status="success", created_count=1234, updated_count=12)
     out = to_xml(_last_sync_info(r))
     assert "5m ago" in out       # canonical relative_time(), not hand-rolled math
-    assert "+1,234 ~12" in out   # thousands-separated counts
+    assert "1,234 added, 12 updated" in out   # thousands-separated counts
     assert "success" in out
 
 

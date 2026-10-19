@@ -106,6 +106,8 @@ async def used_groups(session: AsyncSession, company_id, settings: dict) -> set[
             groups.add("consignment")
         if float(state.get("tax") or 0):
             groups.add("tax")
+        if any(p.get("method") == "stripe" for p in state.get("payments") or ()):
+            groups.add("online_payments")
         if str(state.get("currency") or base).upper() != base:
             groups.add("fx")
         for li in _line_items(state):
@@ -204,11 +206,11 @@ def _ranked(role: str, chart: dict[str, dict], controls: list[str]) -> list[dict
     return [_brief(a) for a in sorted((a for a in chart.values() if _fits(role, a)), key=rank)]
 
 
-def _proposals(chart: dict[str, dict]) -> dict[str, dict]:
+def _proposals(chart: dict[str, dict], reserved: set[str]) -> dict[str, dict]:
     """The account to add for each role when the chart has none to offer: the default
-    code, or when the chart already holds it, the first free ``<code>-n``. Proposals
-    never share a code, so exchange gain and loss are proposed as two accounts."""
-    taken = set(chart)
+    code, or when the chart or ``reserved`` already holds it, the first free ``<code>-n``.
+    Proposals never share a code, so exchange gain and loss are proposed as two accounts."""
+    taken = set(chart) | reserved
     out: dict[str, dict] = {}
     for role in AccountRole:
         base = SEEDED_TARGETS[role]
@@ -221,23 +223,52 @@ def _proposals(chart: dict[str, dict]) -> dict[str, dict]:
     return out
 
 
-async def readiness(session: AsyncSession, company_id) -> list[dict] | None:
+def _same(account: dict, answer: dict) -> bool:
+    return (str(account.get("name") or "").strip().casefold() == str(answer.get("name") or "").strip().casefold()
+            and account.get("account_type") == answer.get("account_type"))
+
+
+def _offers(chart: dict[str, dict], current: dict[str, str], previous: dict[str, dict]) -> dict[str, dict]:
+    """Which earlier answers (role to ``{code, name, account_type}``) this chart can take
+    for a role not yet set: an account it holds under the same code, name and type, or
+    an account to add when the code is free. A code the chart uses for another account
+    is not offered."""
+    out = {}
+    for role in AccountRole:
+        answer = previous.get(role.value)
+        if current.get(role.value) or not isinstance(answer, dict) or not isinstance(answer.get("code"), str):
+            continue
+        account = chart.get(answer["code"])
+        if account is not None and _same(account, answer) and _fits(role.value, account):
+            out[role.value] = {"code": answer["code"], "add": False}
+        elif account is None and answer.get("account_type") in _candidate_types(role.value) and answer.get("name"):
+            out[role.value] = {"code": answer["code"], "add": True,
+                               "account": {k: answer[k] for k in ("code", "name", "account_type")}}
+    return out
+
+
+async def readiness(session: AsyncSession, company_id, previous: dict[str, dict] | None = None) -> list[dict] | None:
     """Every posting role with what finishing a migration needs to know about it, or
     None when accounting is not running.
 
     Each row: role, label, group, required (a workflow the company uses needs it),
     current and current_account (the code already set, and that chart account), controls (the source books' control accounts),
     preselect (the single suitable control, when there is exactly one), candidates
-    (suitable chart accounts, ranked) and proposal (the account to add instead)."""
+    (suitable chart accounts, ranked), proposal (the account to add instead) and
+    previous (``{code, add}``: the answer ``previous`` holds for the role, when this
+    chart can take it; an added one is the proposal). Offering an earlier answer never
+    sets it."""
     chart = await _chart(session, company_id)
     if chart is None:
         return None
     settings = await current_settings(session, company_id)
     needed = set(needed_roles(await used_groups(session, company_id, settings)))
     current = role_map(settings)
-    proposals = _proposals(chart)
+    offers = _offers(chart, current, previous or {})
+    proposals = _proposals(chart, {o["code"] for o in offers.values() if o["add"]})
     rows = []
     for role in AccountRole:
+        offer = offers.get(role.value)
         controls = source_controls(settings, role.value)
         fitting = [c for c in controls if c in chart and _fits(role.value, chart[c])]
         code = current.get(role.value) or None
@@ -246,7 +277,9 @@ async def readiness(session: AsyncSession, company_id) -> list[dict] | None:
             "required": role.value in needed, "current": code,
             "current_account": _brief(chart[code]) if code in chart else None,
             "controls": controls, "preselect": fitting[0] if len(controls) == 1 and fitting else None,
-            "candidates": _ranked(role.value, chart, controls), "proposal": proposals[role.value],
+            "candidates": _ranked(role.value, chart, controls),
+            "proposal": offer["account"] if offer and offer["add"] else proposals[role.value],
+            "previous": {"code": offer["code"], "add": offer["add"]} if offer else None,
         })
     return rows
 
@@ -290,14 +323,15 @@ def _chosen(roles) -> dict[str, str]:
     return out
 
 
-async def apply_choices(session: AsyncSession, company_id, choices: dict | None) -> None:
+async def apply_choices(session: AsyncSession, company_id, choices: dict | None) -> dict[str, dict]:
     """Set the company's posting accounts from ``choices`` ({"roles": {role: code},
     "add_accounts": [{role, code, name, account_type}]}) and the source books' single
     controls, adding the chosen new accounts. Every recorded control joins its role's
     history. A role already set is kept: choosing another account for it is refused,
     so a retry cannot overwrite a choice made in between. Raises ReadinessError when a
     needed role is left without an account or a choice cannot take it; the caller owns
-    the transaction and rolls it back."""
+    the transaction and rolls it back. Returns each role set here with its account,
+    ``{code, name, account_type}``; empty when accounting is not running."""
     from celerp.services.company_lock import lock_chart, locked_company
     from celerp.services.journal_accounts import add_account, lock_accounts
 
@@ -310,7 +344,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
     await lock_chart(session, company_id)
     rows = await readiness(session, company_id)
     if rows is None:
-        return
+        return {}
     chart = await _chart(session, company_id)
     for account in added:
         if account["role"] in chosen and chosen[account["role"]] != account["code"]:
@@ -369,6 +403,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
         scopes.setdefault(role, []).extend(c for c in codes if c not in scopes[role])
     company.settings = {**settings, SCOPES_KEY: scopes}
     await session.flush()
+    return {role: {k: chart[code][k] for k in ("code", "name", "account_type")} for role, code in final.items()}
 
 
 def _status(role: str, current: dict[str, str], chart: dict[str, dict], required: bool) -> tuple[str, dict | None]:

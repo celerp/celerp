@@ -63,6 +63,8 @@ ON_BOOKS_FIELD = "inventory_on_books"
 ACCOUNTING_SETTINGS_PATH = "/settings/accounting"
 # Where a user fixes a missing or invalid role.
 POSTING_ACCOUNTS_PATH = f"{ACCOUNTING_SETTINGS_PATH}?tab=posting-accounts"
+# Where a user moves the lock date.
+PERIOD_LOCK_PATH = f"{ACCOUNTING_SETTINGS_PATH}?tab=period-lock"
 
 
 class AccountRole(StrEnum):
@@ -91,6 +93,7 @@ class AccountRole(StrEnum):
     STOCK_SHRINKAGE = "stock_shrinkage"
     WORK_IN_PROGRESS = "work_in_progress"
     CONSIGNOR_PAYABLE = "consignor_payable"
+    ONLINE_PAYMENT_FEES = "online_payment_fees"
     ACCUMULATED_DEPRECIATION = "accumulated_depreciation"
     DEPRECIATION_EXPENSE = "depreciation_expense"
     ASSETS_UNDER_CONSTRUCTION = "assets_under_construction"
@@ -129,6 +132,7 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.STOCK_SHRINKAGE: "Stock shrinkage and write-offs",
     R.WORK_IN_PROGRESS: "Work in progress",
     R.CONSIGNOR_PAYABLE: "Consignor payable",
+    R.ONLINE_PAYMENT_FEES: "Online payment fees",
     R.ACCUMULATED_DEPRECIATION: "Accumulated depreciation",
     R.DEPRECIATION_EXPENSE: "Depreciation expense",
     R.ASSETS_UNDER_CONSTRUCTION: "Assets under construction",
@@ -169,6 +173,7 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.STOCK_SHRINKAGE: _EXPENSE,
     R.WORK_IN_PROGRESS: _ASSET,
     R.CONSIGNOR_PAYABLE: frozenset({"liability"}),
+    R.ONLINE_PAYMENT_FEES: _EXPENSE,
     # A contra asset: it holds a credit balance against the cost on the asset accounts.
     R.ACCUMULATED_DEPRECIATION: _ASSET,
     R.DEPRECIATION_EXPENSE: _EXPENSE,
@@ -214,6 +219,7 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.STOCK_SHRINKAGE: "6970",
     R.WORK_IN_PROGRESS: "1130-WIP",
     R.CONSIGNOR_PAYABLE: "2115",
+    R.ONLINE_PAYMENT_FEES: "6940",
     R.ACCUMULATED_DEPRECIATION: "1220",
     R.DEPRECIATION_EXPENSE: "6400",
     R.ASSETS_UNDER_CONSTRUCTION: "1240",
@@ -259,6 +265,7 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
                      R.DISPOSAL_LOSS, R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS),
     "manufacturing": (R.WORK_IN_PROGRESS,),
     "consignment": (R.CONSIGNOR_PAYABLE,),
+    "online_payments": (R.ONLINE_PAYMENT_FEES,),
 }
 
 # Roles a company whose chart came from elsewhere (a migration or a restored backup)
@@ -267,7 +274,7 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
 UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({
     R.INTANGIBLE_ASSETS, R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE,
     R.ASSETS_UNDER_CONSTRUCTION, R.ASSET_DISPOSAL_CLEARING, R.DISPOSAL_GAIN, R.DISPOSAL_LOSS,
-    R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS})
+    R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS, R.ONLINE_PAYMENT_FEES})
 
 # Gain and loss pairs that may share one net account (then of either type) or be split
 # (gain revenue, loss expense).

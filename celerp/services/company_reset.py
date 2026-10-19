@@ -64,6 +64,8 @@ PAYMENTS_NOT_CLOSED = {
     "update_required": (409, "A refund of an online payment on one of this company's invoices can only be "
                              "recorded by a newer version of Celerp. Update Celerp, then try again. "
                              "Nothing was deleted."),
+    "fees_settling": (409, "The fees of an online payment on one of this company's invoices have not been "
+                           "recorded yet. Try again in a few minutes. Nothing was deleted."),
     "unconfirmed": (503, "Celerp could not confirm with Celerp Cloud that this company's online invoice "
                          "payments are closed. Try again in a moment. Nothing was deleted."),
 }

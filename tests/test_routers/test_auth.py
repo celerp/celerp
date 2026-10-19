@@ -73,12 +73,6 @@ async def test_login_rejects_bad_password(client):
 
 
 @pytest.mark.asyncio
-async def test_api_key_requires_auth(client):
-    r = await client.post("/auth/api-key")
-    assert r.status_code == 401
-
-
-@pytest.mark.asyncio
 async def test_invalid_token_rejected(client):
     r = await client.get("/auth/my-companies", headers={"Authorization": "Bearer invalid"})
     assert r.status_code == 401

@@ -18,6 +18,35 @@ class ConnectorUpgradeRequired(Exception):
     """The relay serves this connector only to a newer Celerp."""
 
 
+class RelayStoreError(Exception):
+    """The relay did not store a connector's API key; ``status`` is its reply, 0 if unreachable."""
+
+    def __init__(self, status: int, detail: str = "") -> None:
+        super().__init__(detail or f"relay returned {status}")
+        self.status = status
+
+
+async def store_api_key(connector_name: str, consumer_key: str, consumer_secret: str,
+                        store_url: str | None) -> None:
+    """Store a connector's API key on the relay, replacing the one it holds."""
+    import httpx
+
+    from celerp.gateway.state import relay_http_url, relay_session_headers
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+            r = await client.post(
+                f"{relay_http_url()}/tokens/{connector_name}",
+                json={"consumer_key": consumer_key, "consumer_secret": consumer_secret,
+                      "store_url": store_url or None},
+                headers=relay_session_headers(),
+            )
+    except Exception as exc:
+        raise RelayStoreError(0, str(exc)) from exc
+    if r.status_code != 200:
+        raise RelayStoreError(r.status_code)
+
+
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 

@@ -828,6 +828,7 @@ def _launch_mode() -> str | None:
 def activate_payload(
     instance_id: str, *, first_boot: bool | None = None,
     activation_verifier: str | None = None, boot_id: str | None = None,
+    include_handoff: bool = False,
 ) -> dict:
     """Build Connect activation and check-in metadata."""
     import platform as _platform
@@ -849,6 +850,16 @@ def activate_payload(
     from celerp.config import settings as _settings
     if _settings.backup_encryption_key:
         payload["backup_encryption_key"] = _settings.backup_encryption_key
+    if include_handoff:
+        try:
+            from celerp.services.company_backup_files import pending_handoffs
+            pending = pending_handoffs()
+        except OSError:
+            pending = []
+        if pending:
+            receipt = pending[0][1]
+            payload["copy_id"] = receipt["copy_id"]
+            payload["copy_receipt"] = receipt["proof"]
     return payload
 
 
