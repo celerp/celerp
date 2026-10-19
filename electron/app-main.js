@@ -235,6 +235,7 @@ const { compatibilityArgs, mayOpenData } = require("./compatibility");
 const { openData, reopenData } = require("./boot");
 const { writeConfig: writeLockedConfig } = require("./config-writer");
 const { serveUpdateState } = require("./update-state");
+const { translator } = require("./locale");
 const { startupDeelevation, relaunchThroughExplorer } = require("./deelevation");
 const { windowsStartFailure, clusterStartFailure, logSince } = require("./windows-start-errors");
 const { initialiseClusterOnce, postgresPaths } = require("./windows-initdb");
@@ -909,6 +910,10 @@ function resolveStorageEnv(cfg) {
  *   idle -> downloading -> downloaded -> [admin clicks] -> install
  *   idle/downloading -> error on failure; downloaded is final until relaunch
  *
+ * A failed download, or an installer that will not start, is told in a dialog
+ * that offers the installer to download from the release page; a failed check
+ * only shows on the update card.
+ *
  * autoInstallOnAppQuit = false: Squirrel/NSIS never install on normal quit.
  * The ONLY install trigger is an explicit admin action (installUpdate IPC).
  * This eliminates background race conditions entirely.
@@ -921,7 +926,46 @@ function resolveStorageEnv(cfg) {
  */
 // get-update-state answers idle until the updater checks (dev builds never check);
 // check-for-updates runs the check the user asks for.
-serveUpdateState(ipcMain, () => mainWindow, autoUpdater, app.isPackaged);
+// A failure after a check the user asked for is told in a dialog as well.
+const updateState = serveUpdateState(ipcMain, () => mainWindow, autoUpdater, app.isPackaged,
+  (state) => showUpdateFailure(state));
+
+// Set once the servers have stopped for the installer, so an error then is the install failing.
+let installingUpdate = false;
+
+// Celerp restarts after an installer that did not start, with this argument and
+// the version, so the restarted app shows the failed install.
+const INSTALL_FAILED_ARG = "--update-install-failed=";
+const installFailedArg = process.argv.find((arg) => arg.startsWith(INSTALL_FAILED_ARG));
+if (installFailedArg) updateState.installFailed(installFailedArg.slice(INSTALL_FAILED_ARG.length), "");
+
+// Tell the user an update failed, in a dialog they cannot miss, in plain words
+// by what failed (state.failure). A download that failed its security check
+// offers Check again, never the installer; every other failure offers that
+// version's installer to download. Nothing opens or runs unless they choose it.
+async function showUpdateFailure(state) {
+  const t = translator(path.join(APP_DIR, "ui", "locales"), app.getLocale());
+  const verify = state.failure === "verify";
+  const advice = t(`shell.update_advice_${state.failure}`);
+  const options = {
+    type: "warning",
+    buttons: [t(verify ? "btn.check_again" : "btn.download_installer"), t("btn.close")],
+    defaultId: 0,
+    cancelId: 1,
+    title: t("shell.update_failed_title"),
+    message: t(`shell.update_${state.failure}_failed`),
+    detail: state.message ? `${advice}\n\n${t("shell.update_details", { detail: state.message })}` : advice,
+  };
+  try {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
+    if (response !== 0) return;
+    if (verify) updateState.checkForUser();
+    else await shell.openExternal(state.releaseUrl);
+  } catch (err) {
+    console.error("[updater] could not show the update failure:", err?.message ?? String(err));
+  }
+}
 
 function setupAutoUpdater() {
   if (!app.isPackaged) return;
@@ -931,10 +975,28 @@ function setupAutoUpdater() {
   autoUpdater.allowPrerelease = false;
 
   autoUpdater.on("error", (err) => {
-    // Update failures must never interrupt work, but must be visible: the
-    // update card shows them, and the console keeps them.
-    console.error("[updater] error:", err?.message ?? String(err));
+    // The update card shows every failure and the console keeps it; a failed
+    // download is also told in a dialog (serveUpdateState above).
+    const message = err?.message ?? String(err);
+    console.error("[updater] error:", message);
+    // The installer did not start, so Celerp is still running (electron-updater
+    // quits only once the installer has started). Its servers have stopped for
+    // the installer, so Celerp restarts once the user has read this, showing the
+    // failed install.
+    if (installingUpdate) {
+      installingUpdate = false;
+      const { version } = updateState.getUpdateState();
+      updateState.installFailed(version, message);
+      showUpdateFailure(updateState.getUpdateState()).finally(() => {
+        app.relaunch({ args: [...process.argv.slice(1).filter((arg) => !arg.startsWith(INSTALL_FAILED_ARG)),
+                              INSTALL_FAILED_ARG + version] });
+        app.quit();
+      });
+    }
   });
+
+  // After a failed install the user decides when to check again, from the update card.
+  if (installFailedArg) return startPeriodicChecks();
 
   // Delay initial check until the renderer has loaded and registered its IPC handlers.
   // Firing immediately at app-ready risks emitting update-available/log events before
@@ -948,7 +1010,11 @@ function setupAutoUpdater() {
     autoUpdater.checkForUpdates().catch(() => {});
   }
 
-  // Periodic re-check every 4 hours in case a new release ships while app is open.
+  startPeriodicChecks();
+}
+
+// Periodic re-check every 4 hours in case a new release ships while app is open.
+function startPeriodicChecks() {
   setInterval(() => {
     autoUpdater.checkForUpdates().catch(() => {});
   }, 4 * 60 * 60 * 1000);
@@ -1302,6 +1368,7 @@ function createWindow() {
 ipcMain.on("install-update", async () => {
   isQuitting = true;  // prevent the macOS hide-on-close handler from blocking quit
   await lifecycle.shutdown();
+  installingUpdate = true;
   autoUpdater.quitAndInstall(true, true);
 });
 

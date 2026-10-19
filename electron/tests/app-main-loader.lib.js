@@ -18,6 +18,7 @@ const APP_MAIN = path.join(__dirname, "..", "app-main.js");
 const SETTERS = "\n;module.exports.setMainWindow = (win) => { mainWindow = win; };\n" +
   ";module.exports.setServices = (api, ui, pg) => { apiProcess = api; uiProcess = ui; pgInstance = pg; };\n" +
   ";module.exports.postgresLauncher = () => postgresLauncher();\n" +
+  ";module.exports.setupAutoUpdater = () => setupAutoUpdater();\n" +
   ";module.exports.windowsPrivateRoot = () => windowsPrivateRoot();\n" +
   ";module.exports.serverCommand = (asgiApp, port) => serverCommand(asgiApp, port);\n" +
   ";module.exports.startServer = (which, dbUrl, cfg) => { apiPort = apiPort || 9; uiPort = uiPort || 9; " +
@@ -26,9 +27,9 @@ const SETTERS = "\n;module.exports.setMainWindow = (win) => { mainWindow = win; 
 // Runs app-main.js as Node would (it has a top-level return), resolving the
 // modules below to fakes and everything else normally. `app` and `extraFakes`
 // override the defaults; `resourcesPath` stands in for the packaged app's resources
-// folder; `platform` the operating system it runs on; `BrowserWindow` the window
+// folder; `argv` its command line; `platform` the operating system it runs on; `BrowserWindow` the window
 // class. By default the app never becomes ready, so only the load-time wiring runs.
-function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resourcesPath,
+function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resourcesPath, argv = process.argv,
                       platform = process.platform, BrowserWindow = function BrowserWindow() {} } = {}) {
   const handlers = {};
   const listeners = {};
@@ -66,13 +67,14 @@ function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resou
   fakeRequire.resolve = (id) => (id in fakes ? id : realRequire.resolve(id));
   fakeRequire.cache = cache;
   const mod = { exports: {} };
-  const proc = Object.create(process, { resourcesPath: { value: resourcesPath }, platform: { value: platform } });
+  const proc = Object.create(process, { resourcesPath: { value: resourcesPath }, platform: { value: platform },
+                                       argv: { value: argv } });
   const body = new Function("exports", "require", "module", "__filename", "__dirname", "process",
     fs.readFileSync(APP_MAIN, "utf8") + SETTERS);
   body(mod.exports, fakeRequire, mod, APP_MAIN, path.dirname(APP_MAIN), proc);
   return { handlers, listeners, updater, setMainWindow: mod.exports.setMainWindow,
            setServices: mod.exports.setServices, postgresLauncher: mod.exports.postgresLauncher,
-           windowsPrivateRoot: mod.exports.windowsPrivateRoot,
+           windowsPrivateRoot: mod.exports.windowsPrivateRoot, setupAutoUpdater: mod.exports.setupAutoUpdater,
            serverCommand: mod.exports.serverCommand, startServer: mod.exports.startServer };
 }
 
