@@ -195,3 +195,180 @@ async def test_a_copy_of_an_opened_copy_is_the_same_company(real_client, real_en
     assert again.status_code == 200, again.text
     replace = again.json()["replace"]
     assert replace["company_id"] in (_cid(tok), _cid(opened.json()["access_token"]))
+
+
+# ── Changes made while the backup is kept; the follow-up after the replace commits ──
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+
+
+def _replace_request(preview: dict) -> dict:
+    return {"upload_token": preview["upload_token"], "mode": "settings",
+            "plan_fingerprint": preview["plan_fingerprint"], "company_name": NAME}
+
+
+async def _with_photo(client, tok: str) -> str:
+    """Store a photo for the company and link it from a location; its URL."""
+    from celerp.services import attachments
+    url = await attachments.store_company_file(_cid(tok), f"{uuid.uuid4().hex}.png", _PNG)
+    r = await client.post("/companies/me/locations", json={"name": "Shelf", "type": "warehouse", "address": {"photo": url}},
+                          headers=auth(tok))
+    assert r.status_code == 200, r.text
+    return url
+
+
+async def _locations(engine, company_id) -> list[str]:
+    async with engine.connect() as conn:
+        return sorted((await conn.execute(text("SELECT name FROM locations WHERE company_id = :c"),
+                                          {"c": uuid.UUID(str(company_id))})).scalars())
+
+
+@pytest.mark.parametrize("change", ["location", "other_table", "attachment"])
+async def test_a_change_made_after_the_backup_is_kept_stops_the_replace(real_client, real_engine, _data_dir,
+                                                                       monkeypatch, change):
+    """Whatever lands between the backup kept of the company and the replace's lock (a new
+    location, an edited record of another table, an attachment file rewritten) is never
+    deleted without being in the kept backup: the replace stops and nothing is replaced."""
+    from celerp.services import attachments
+    from celerp.services import company_backup as cb
+    tok, contacts = await _demo(real_client)
+    cid = _cid(tok)
+    url = await _with_photo(real_client, tok)
+    data = await download(real_client, tok)
+    preview = (await read(real_client, tok, data)).json()
+    keep = cb._keep_backup
+
+    async def keep_then_change(company_id, name):
+        kept = await keep(company_id, name)
+        if change == "location":
+            r = await real_client.post("/companies/me/locations", json={"name": "Back room", "type": "warehouse"},
+                                       headers=auth(tok))
+            assert r.status_code == 200, r.text
+        elif change == "other_table":
+            async with real_engine.begin() as conn:
+                await conn.execute(text(
+                    "UPDATE projections SET state = CAST(CAST(state AS jsonb) || '{\"name\": \"Renamed\"}' AS json) "
+                    "WHERE company_id = :c AND entity_id = (SELECT min(entity_id) FROM projections "
+                    "WHERE company_id = :c AND entity_type = 'item')"), {"c": uuid.UUID(cid)})
+        else:
+            name = attachments.company_file_name(cid, url)
+            (_data_dir / "static" / "attachments" / cid / name).write_bytes(_PNG + b"rewritten")
+        return kept
+
+    monkeypatch.setattr(cb, "_keep_backup", keep_then_change)
+    r = await real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok))
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == "changed" and "Nothing was replaced." in r.json()["detail"]
+    assert await _companies(real_engine) == [(cid, NAME)]
+    assert ("Back room" in await _locations(real_engine, cid)) is (change == "location")
+    assert await cb.kept_backups(cid) == []
+
+
+async def test_records_checked_for_the_replace_cannot_change_until_it_commits(real_client, real_engine, _data_dir,
+                                                                              monkeypatch):
+    """Once the replace has compared the company with its kept backup, an edit of one of
+    its records waits for the replace instead of being deleted unseen."""
+    from sqlalchemy.exc import DBAPIError
+
+    from celerp.services import company_backup as cb
+    tok, data = await _copy_then_more_work(real_client, real_engine)
+    cid = _cid(tok)
+    preview = (await read(real_client, tok, data)).json()
+    reset = cb._reset_replaced
+    edits: list[str] = []
+
+    async def edit_then_reset(session, company, typed_name):
+        async with real_engine.connect() as conn:
+            await conn.execute(text("SET lock_timeout = '300ms'"))
+            try:
+                await conn.execute(text(
+                    "UPDATE projections SET version = version + 1 WHERE company_id = :c AND entity_id = "
+                    "(SELECT min(entity_id) FROM projections WHERE company_id = :c AND entity_type = 'item')"),
+                    {"c": uuid.UUID(cid)})
+                edits.append("committed")
+            except DBAPIError:
+                edits.append("waited")
+            await conn.rollback()
+        return await reset(session, company, typed_name)
+
+    monkeypatch.setattr(cb, "_reset_replaced", edit_then_reset)
+    r = await real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok))
+    assert r.status_code == 200, r.text
+    assert edits == ["waited"]
+
+
+@pytest.mark.parametrize("step", ["settle", "load_set", "landing"])
+async def test_a_failure_after_the_replace_committed_keeps_the_backup(real_client, real_engine, _data_dir,
+                                                                      monkeypatch, step):
+    """The replace committed, then a follow-up step failed: the company is replaced, the
+    backup kept of it stays in Saved copies, the owner is told so, and trying again
+    finishes the follow-up and opens the new company."""
+    from celerp.modules import registry
+    from celerp.services import attachments
+    from celerp.services import company_backup as cb
+    tok, data = await _copy_then_more_work(real_client, real_engine)
+    old = _cid(tok)
+    await _with_photo(real_client, tok)
+    data = await download(real_client, tok)
+    preview = (await read(real_client, tok, data)).json()
+    broken = {"settle": (cb, "_settle_replaced"), "load_set": (cb, "commit_with_load_set"),
+              "landing": (attachments, "clear_landing")}[step]
+    real = getattr(*broken)
+    calls: list[int] = []
+
+    def fail_once(*a, **k):
+        if not calls:
+            calls.append(1)
+            raise RuntimeError("follow-up failed")
+        return real(*a, **k)
+
+    monkeypatch.setattr(*broken, fail_once)
+    finished: list[int] = []
+    load_set = registry.commit_with_load_set
+
+    async def counted(session):
+        finished.append(1)
+        return await load_set(session)
+
+    r = await real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok))
+    assert r.status_code == 500, r.text
+    assert r.json()["code"] == "replaced_unfinished"
+    assert "Saved copies" in r.json()["detail"] and "Nothing was replaced" not in r.json()["detail"]
+    [(new, name)] = await _companies(real_engine)
+    assert new != old and name == NAME
+    [kept] = await cb.kept_backups(new)
+    assert kept["company_name"] == NAME
+
+    monkeypatch.setattr(cb, "commit_with_load_set", counted)
+    again = await real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok))
+    assert again.status_code == 200, again.text
+    assert again.json()["company_id"] == new and finished
+    assert attachments.landing_companies() == []
+    assert [k["id"] for k in await cb.kept_backups(new)] == [kept["id"]]
+
+
+async def test_a_cancellation_after_the_replace_committed_keeps_the_backup(real_client, real_engine, _data_dir,
+                                                                          monkeypatch):
+    import asyncio
+
+    from celerp.services import company_backup as cb
+    tok, data = await _copy_then_more_work(real_client, real_engine)
+    old = _cid(tok)
+    preview = (await read(real_client, tok, data)).json()
+    from jose import jwt
+
+    from celerp.services import company_backup_files as files
+    user_id = jwt.get_unverified_claims(tok)["sub"]
+    stage = files.stage_path(user_id, preview["upload_token"])
+
+    async def cancelled(session):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(cb, "commit_with_load_set", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await cb.replace_company(stage, mode="settings", user_id=user_id, current_company_id=old,
+                                 plan_fingerprint=preview["plan_fingerprint"], typed_name=NAME)
+    [(new, _)] = await _companies(real_engine)
+    assert new != old
+    [kept] = await cb.kept_backups(new)
+    assert kept["company_name"] == NAME
