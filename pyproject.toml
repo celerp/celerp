@@ -135,6 +135,7 @@ include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
     "migrations/versions/*.py",
     "migrations/README.md",
     "py.typed",
+    "openapi_parameter_descriptions.json",
     "importers/sample/*.manager",
     "output/fonts/*",
 ]

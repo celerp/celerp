@@ -1,0 +1,1477 @@
+{
+  "DELETE /accounting/reconciliation/{session_id}/lines/{line_id}/attach/{att_id}": {
+    "path:att_id": "Identifier of the attachment.",
+    "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "DELETE /accounting/rules/{rule_id}": {
+    "path:rule_id": "Identifier of the bank reconciliation rule."
+  },
+  "DELETE /ai/conversations/{conversation_id}": {
+    "path:conversation_id": "Identifier of the AI conversation."
+  },
+  "DELETE /api/labels/templates/{template_id}": {
+    "path:template_id": "Identifier of the requested template."
+  },
+  "DELETE /companies/me/categories/{category_key}": {
+    "path:category_key": "Stable category key identifying the company category."
+  },
+  "DELETE /companies/me/locations/{location_id}": {
+    "path:location_id": "Identifier of the inventory or business location."
+  },
+  "DELETE /company-backups/kept/{kept_id}": {
+    "path:kept_id": "Identifier of the retained company backup to delete."
+  },
+  "DELETE /connectors/{connector_name}/credentials": {
+    "path:connector_name": "Connector name identifying the external integration.",
+    "query:force": "Disconnect even when the store's webhooks cannot be confirmed removed."
+  },
+  "DELETE /connectors/{connector_name}/unassigned": {
+    "path:connector_name": "Connector name identifying the external integration.",
+    "query:force": "Disconnect even when the store's webhooks cannot be confirmed removed."
+  },
+  "DELETE /connectors/woocommerce/orders/{order_id}/reconciled": {
+    "path:order_id": "WooCommerce order ID."
+  },
+  "DELETE /crm/contacts/{contact_id}/addresses/{address_id}": {
+    "path:address_id": "Identifier of the contact address.",
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact."
+  },
+  "DELETE /crm/contacts/{contact_id}/files/{file_id}": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "DELETE /crm/contacts/{contact_id}/notes/{note_id}": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "path:note_id": "Identifier of the note."
+  },
+  "DELETE /crm/contacts/{contact_id}/people/{person_id}": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "path:person_id": "Identifier of the contact person."
+  },
+  "DELETE /docs/{entity_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "DELETE /docs/{entity_id}/files/{file_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "DELETE /docs/{entity_id}/notes/{note_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:note_id": "Identifier of the note."
+  },
+  "DELETE /docs/{entity_id}/payments/{payment_index}": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:payment_index": "Zero-based or API-defined index identifying the payment entry on the document."
+  },
+  "DELETE /docs/{entity_id}/receive": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "DELETE /docs/{entity_id}/receive-return": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "DELETE /docs/{entity_id}/share": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "DELETE /docs/bulk-draft": {
+    "query:doc_ids": "Identifiers of the business documents to process."
+  },
+  "DELETE /fixed-assets/api/assets/{asset_id}/files/{file_id}": {
+    "path:asset_id": "Identifier of the fixed asset.",
+    "path:file_id": "Identifier of the file to remove."
+  },
+  "DELETE /fixed-assets/api/assets/{asset_id}/skip/{month}": {
+    "path:asset_id": "Identifier of the fixed asset.",
+    "path:month": "Month whose skip is withdrawn, as YYYY-MM, such as 2026-09."
+  },
+  "DELETE /fixed-assets/api/checks/{check_id}": {
+    "path:check_id": "Identifier of the asset check."
+  },
+  "DELETE /items/{entity_id}/attachments/{att_id}": {
+    "path:att_id": "Identifier of the attachment.",
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "DELETE /items/{entity_id}/files/{file_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "DELETE /lists/{entity_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "DELETE /lists/{entity_id}/notes/{note_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:note_id": "Identifier of the note."
+  },
+  "DELETE /manufacturing/work-centers/{wc_id}": {
+    "path:wc_id": "Identifier of the manufacturing work center."
+  },
+  "DELETE /migrations/several/{file_id}": {
+    "path:file_id": "Identifier of the migration file to remove."
+  },
+  "DELETE /migrations/templates/{source_system}": {
+    "path:source_system": "Source system whose saved migration posting-account mappings are to be forgotten."
+  },
+  "GET /accounting/balance-sheet": {
+    "query:as_of": "Cutoff date for the balance sheet; later postings are excluded."
+  },
+  "GET /accounting/bank-accounts": {
+    "query:include_inactive": "Whether to include inactive records in the result."
+  },
+  "GET /accounting/bank-accounts/{bank_id}": {
+    "path:bank_id": "Identifier of the bank or card account."
+  },
+  "GET /accounting/cash-flow": {
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period."
+  },
+  "GET /accounting/extended-journal": {
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:q": "Search text used to filter matching records."
+  },
+  "GET /accounting/general-ledger": {
+    "query:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:include_lines": "Whether to include detailed ledger lines in the response."
+  },
+  "GET /accounting/journal": {
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:q": "Search text used to filter matching records."
+  },
+  "GET /accounting/journal-entries/{entity_id}/prefill": {
+    "path:entity_id": "Identifier of the journal entry from which to prefill a new entry."
+  },
+  "GET /accounting/ledger/{account_code}": {
+    "path:account_code": "Chart of accounts code identifying the ledger account.",
+    "query:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period."
+  },
+  "GET /accounting/older-stock": {
+    "query:account": "Code of the inventory account to show older stock for. Omit it to show every account.",
+    "query:corrections_offset": "Number of corrections to skip before the page starts.",
+    "query:limit": "Number of rows in each page, from 1 to 500. The default is 50.",
+    "query:lots_offset": "Number of lots to skip before the page starts.",
+    "query:moves_offset": "Number of moves to skip before the page starts.",
+    "query:placements_offset": "Number of placements to skip before the page starts.",
+    "query:q": "Text to find in the SKU or name of a lot."
+  },
+  "GET /accounting/peer/journals": {
+    "query:after": "Optional cursor identifying the point after which journal entries should be returned."
+  },
+  "GET /accounting/pnl": {
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period."
+  },
+  "GET /accounting/reconciliation/{session_id}": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "GET /accounting/reconciliation/{session_id}/statement-lines": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "GET /accounting/reconciliation/{session_id}/workbench": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "GET /accounting/rules": {
+    "query:bank_account_id": "Identifier of the bank or card account."
+  },
+  "GET /accounting/soa/{contact_id}": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period."
+  },
+  "GET /accounting/trial-balance": {
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period."
+  },
+  "GET /ai/batch/{job_id}": {
+    "path:job_id": "Identifier of the AI processing job."
+  },
+  "GET /ai/conversations": {
+    "query:include_protected": "Whether to include protected AI conversations when permitted.",
+    "query:limit": "Maximum number of records to return.",
+    "query:offset": "Number of matching records to skip before returning results."
+  },
+  "GET /ai/conversations/{conversation_id}": {
+    "path:conversation_id": "Identifier of the AI conversation."
+  },
+  "GET /ai/file/{file_id}": {
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "GET /api/labels/source-rows": {
+    "query:ids": "Comma-separated identifiers of the records to print labels for. Rows come back in the order given.",
+    "query:source": "Kind of record that another module registers for labels. An unregistered kind is refused."
+  },
+  "GET /api/labels/sources/{source}": {
+    "path:source": "Kind of record that another module registers for labels. An unregistered kind is refused."
+  },
+  "GET /api/labels/templates/{template_id}": {
+    "path:template_id": "Identifier of the requested template."
+  },
+  "GET /auth/firm-view": {
+    "query:q": "Optional search text used to filter companies in the firm's view.",
+    "query:sync": "Optional accountant synchronization status used to filter companies."
+  },
+  "GET /backup/export/{backup_id}": {
+    "path:backup_id": "Identifier of the backup snapshot."
+  },
+  "GET /companies/me/category-schema/{category}": {
+    "path:category": "Category value used to filter or identify the requested configuration."
+  },
+  "GET /companies/me/users/{user_id}/password": {
+    "path:user_id": "Identifier of the company member to check. Returns the same refusal that setting the password would give."
+  },
+  "GET /companies/verticals/categories/{name}": {
+    "path:name": "Name or slug identifying the requested category or preset."
+  },
+  "GET /company-backups/bootstrap/staged": {
+    "query:upload_token": "Token returned when the backup file was uploaded, used to read back the staged file."
+  },
+  "GET /company-backups/download": {
+    "query:run_id": "Identifier of the migration run whose provenance is recorded in the backup. Omit it for a plain backup."
+  },
+  "GET /company-backups/kept/{kept_id}/download": {
+    "path:kept_id": "Identifier of the retained company backup to download."
+  },
+  "GET /company-backups/staged": {
+    "query:mode": "How the backup would be restored, which decides the preview returned.",
+    "query:upload_token": "Token returned when the backup file was uploaded, used to read back the staged file."
+  },
+  "GET /company-peers/verify": {
+    "header:authorization": "Authorization credential supplied for verification of the company access grant.",
+    "query:source_company_id": "Identifier of the source company whose access grant is being verified."
+  },
+  "GET /crm/contacts": {
+    "query:contact_type": "Contact type used to filter CRM contacts, such as customer or supplier when supported.",
+    "query:include_deleted": "Whether to include deleted contacts in the result.",
+    "query:limit": "Maximum number of records to return.",
+    "query:offset": "Number of matching records to skip before returning results.",
+    "query:q": "Search text used to filter matching records."
+  },
+  "GET /crm/contacts/{contact_id}": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact."
+  },
+  "GET /crm/contacts/{contact_id}/files/{file_id}": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "GET /crm/contacts/{contact_id}/notes": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact."
+  },
+  "GET /crm/contacts/export/csv": {
+    "query:q": "Search text used to filter matching records.",
+    "query:selected": "Identifiers of the selected contacts to include in the CSV export."
+  },
+  "GET /dashboard/activity": {
+    "query:limit": "Maximum number of records to return."
+  },
+  "GET /dashboard/activity/search": {
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:page": "One-based page number to return.",
+    "query:per_page": "Maximum number of records to return per page.",
+    "query:q": "Search text used to filter matching records."
+  },
+  "GET /docs": {
+    "query:accounting_sync": "Optional accounting synchronization status used to filter documents.",
+    "query:all_issued": "Whether to include all issued documents regardless of other open-state filters.",
+    "query:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "query:converted_to_type": "Document type used to filter records that were converted to the specified target type.",
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:dir": "Sort direction, typically ascending or descending.",
+    "query:doc_type": "Business document type used to filter or select documents, such as invoices, bills, purchase orders, quotations, or credit notes.",
+    "query:due_from": "Earliest due date to include in the result.",
+    "query:due_to": "Latest due date to include in the result.",
+    "query:exclude_status": "Status value to exclude from the result.",
+    "query:ids": "Identifiers of the specific records to include.",
+    "query:limit": "Maximum number of records to return.",
+    "query:not_restocked": "Whether to return only documents whose returned inventory has not been restocked.",
+    "query:not_stocked": "Whether to return only documents whose expected inventory has not been stocked.",
+    "query:offset": "Number of matching records to skip before returning results.",
+    "query:overdue_only": "Whether to return only overdue business documents.",
+    "query:q": "Search text used to filter matching records.",
+    "query:sort": "Field or supported sort key used to order the result.",
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
+    "query:status_in": "Set of status values to include in the result.",
+    "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment."
+  },
+  "GET /docs/{entity_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "GET /docs/{entity_id}/files/{file_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "GET /docs/{entity_id}/notes": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "GET /docs/{entity_id}/pdf": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "GET /docs/{entity_id}/share": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "GET /docs/{entity_id}/share/state": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "GET /docs/export/csv": {
+    "query:accounting_sync": "Optional accounting synchronization status used to filter the CSV export.",
+    "query:all_issued": "Whether to include all issued documents regardless of other open-state filters.",
+    "query:cols": "Comma-separated column names to export, in the order they should appear. Omit for the default columns.",
+    "query:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "query:converted_to_type": "Document type used to filter records that were converted to the specified target type.",
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:dir": "Sort direction, typically ascending or descending.",
+    "query:doc_type": "Business document type used to filter or select documents, such as invoices, bills, purchase orders, quotations, or credit notes.",
+    "query:due_from": "Earliest due date to include in the result.",
+    "query:due_to": "Latest due date to include in the result.",
+    "query:exclude_status": "Status value to exclude from the result.",
+    "query:ids": "Identifiers of the specific records to include.",
+    "query:not_restocked": "Whether to return only documents whose returned inventory has not been restocked.",
+    "query:not_stocked": "Whether to return only documents whose expected inventory has not been stocked.",
+    "query:overdue_only": "Whether to return only overdue business documents.",
+    "query:q": "Search text used to filter matching records.",
+    "query:sort": "Field or supported sort key used to order the result.",
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
+    "query:status_in": "Set of status values to include in the result.",
+    "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment."
+  },
+  "GET /docs/numbered": {
+    "query:doc_type": "Document type to limit the match to, such as invoice or bill. Omit to match every type.",
+    "query:number": "Document number to match exactly."
+  },
+  "GET /docs/received/{rid}": {
+    "path:rid": "Identifier of the received document."
+  },
+  "GET /docs/summary": {
+    "query:accounting_sync": "Optional accounting synchronization status used to filter the summarized documents.",
+    "query:all_issued": "Whether to include all issued documents regardless of other open-state filters.",
+    "query:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "query:converted_to_type": "Document type used to filter records that were converted to the specified target type.",
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:dir": "Sort direction, typically ascending or descending.",
+    "query:doc_type": "Business document type used to filter or select documents, such as invoices, bills, purchase orders, quotations, or credit notes.",
+    "query:due_from": "Earliest due date to include in the result.",
+    "query:due_to": "Latest due date to include in the result.",
+    "query:exclude_status": "Status value to exclude from the result.",
+    "query:ids": "Identifiers of the specific records to include.",
+    "query:not_restocked": "Whether to return only documents whose returned inventory has not been restocked.",
+    "query:not_stocked": "Whether to return only documents whose expected inventory has not been stocked.",
+    "query:overdue_only": "Whether to return only overdue business documents.",
+    "query:q": "Search text used to filter matching records.",
+    "query:sort": "Field or supported sort key used to order the result.",
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
+    "query:status_in": "Set of status values to include in the result.",
+    "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment."
+  },
+  "GET /fixed-assets/api/assets": {
+    "query:class_id": "Keeps only assets in this asset class.",
+    "query:limit": "Number of assets in each page, from 1 to 500. The default is 50.",
+    "query:offset": "Number of rows to skip before the page starts. The default is 0.",
+    "query:q": "Search text used to filter matching assets."
+  },
+  "GET /fixed-assets/api/assets/{asset_id}": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "GET /fixed-assets/api/assets/{asset_id}/components": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "GET /fixed-assets/api/assets/{asset_id}/correct-fields": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "GET /fixed-assets/api/assets/{asset_id}/files": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "GET /fixed-assets/api/assets/{asset_id}/files/{file_id}": {
+    "path:asset_id": "Identifier of the fixed asset.",
+    "path:file_id": "Identifier of the file held on the asset."
+  },
+  "GET /fixed-assets/api/assets/{asset_id}/movements": {
+    "path:asset_id": "Identifier of the fixed asset.",
+    "query:limit": "Number of movements in each page, from 1 to 500. The default is 50.",
+    "query:offset": "Number of rows to skip before the page starts. The default is 0."
+  },
+  "GET /fixed-assets/api/assets/{asset_id}/reviews": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "GET /fixed-assets/api/assets/{asset_id}/sale": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "GET /fixed-assets/api/assets/{asset_id}/upkeep": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "GET /fixed-assets/api/checks/not-seen": {
+    "query:since": "Day to check from, as YYYY-MM-DD. Lists assets with no check on or after this day."
+  },
+  "GET /fixed-assets/api/classes": {
+    "query:include_archived": "Set to true to include archived asset classes. The default is false, which lists only active classes."
+  },
+  "GET /fixed-assets/api/corrections": {
+    "query:asset_id": "Keeps only corrections for this asset."
+  },
+  "GET /fixed-assets/api/corrections/{correction_id}": {
+    "path:correction_id": "Identifier of the asset correction."
+  },
+  "GET /fixed-assets/api/imports": {
+    "query:limit": "Number of imports in each page, from 1 to 500. The default is 50.",
+    "query:offset": "Number of rows to skip before the page starts. The default is 0."
+  },
+  "GET /fixed-assets/api/imports/{batch_id}": {
+    "path:batch_id": "Identifier of the asset import.",
+    "query:limit": "Number of rows in each page. The default is 100.",
+    "query:offset": "Number of rows to skip before the page starts. The default is 0.",
+    "query:status": "Keeps only import rows with this status: imported, rejected, or history. Omit it to list every row."
+  },
+  "GET /fixed-assets/api/maintenance/{maint_id}": {
+    "path:maint_id": "Identifier of the maintenance record."
+  },
+  "GET /fixed-assets/api/mine/{asset_id}": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "GET /fixed-assets/api/mine/{asset_id}/files/{file_id}": {
+    "path:asset_id": "Identifier of the fixed asset.",
+    "path:file_id": "Identifier of the file held on the asset."
+  },
+  "GET /fixed-assets/api/reconciliation": {
+    "query:at": "Date to reconcile at, as YYYY-MM-DD. Defaults to today in the company's time zone. It cannot be earlier than the cutover date."
+  },
+  "GET /fixed-assets/api/reminders/{reminder_id}": {
+    "path:reminder_id": "Identifier of the asset reminder."
+  },
+  "GET /fixed-assets/api/reports/book-tax": {
+    "query:regime": "Key of the tax regime. It must be one of the regimes the company has chosen.",
+    "query:year": "Tax year, as a four-digit year such as 2026."
+  },
+  "GET /fixed-assets/api/reports/depreciation": {
+    "query:date_from": "First day of the report period, as YYYY-MM-DD.",
+    "query:date_to": "Last day of the report period, as YYYY-MM-DD."
+  },
+  "GET /fixed-assets/api/reports/disposals": {
+    "query:date_from": "First day of the report period, as YYYY-MM-DD.",
+    "query:date_to": "Last day of the report period, as YYYY-MM-DD."
+  },
+  "GET /fixed-assets/api/reports/prior-period-adjustments": {
+    "query:year": "Year the adjustments are reported for, as a four-digit year such as 2026."
+  },
+  "GET /fixed-assets/api/reports/schedule": {
+    "query:date_from": "First day of the report period, as YYYY-MM-DD.",
+    "query:date_to": "Last day of the report period, as YYYY-MM-DD."
+  },
+  "GET /fixed-assets/api/reports/statutory/{report_key}": {
+    "path:report_key": "Key of the statutory report. A report that is unavailable to the company returns 404.",
+    "query:year": "Tax year, as a four-digit year such as 2026."
+  },
+  "GET /fixed-assets/api/source-line": {
+    "query:source": "Identifier of the posted source line, in the form `<document or journal id>:<line>`, as listed by the intake route."
+  },
+  "GET /fixed-assets/api/tax-books": {
+    "query:regime": "Key of the tax regime. It must be one of the regimes the company has chosen.",
+    "query:year": "Tax year, as a four-digit year such as 2026."
+  },
+  "GET /fixed-assets/api/year-end": {
+    "query:year": "Year to review, as a four-digit year such as 2026."
+  },
+  "GET /items": {
+    "query:barcode": "Barcode value used to find matching inventory items.",
+    "query:category": "Category value used to filter or identify the requested configuration.",
+    "query:consigned_from": "Contact identifier used to filter inventory received on consignment from that contact.",
+    "query:dir": "Sort direction, typically ascending or descending.",
+    "query:filter": "Named filter: low_stock keeps items at or below their reorder point, demo keeps setup samples that were never edited or used.",
+    "query:gtin": "Global Trade Item Number used to find matching inventory items.",
+    "query:inventory_type": "Inventory type used to filter items.",
+    "query:limit": "Maximum number of records to return.",
+    "query:location_id": "Identifier of the inventory or business location.",
+    "query:offset": "Number of matching records to skip before returning results.",
+    "query:on_memo_to": "Contact identifier used to filter inventory currently assigned on a memo to that contact.",
+    "query:q": "Search text used to filter matching records.",
+    "query:rfid_epc": "RFID Electronic Product Code used to find matching inventory items.",
+    "query:sku": "Exact stock keeping unit used to filter inventory items.",
+    "query:skus": "Comma-separated list of exact stock keeping units to include.",
+    "query:sort": "Field or supported sort key used to order the result.",
+    "query:source": "Connected store platform, for example shopify or woocommerce. Keeps only items linked to that store.",
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
+  },
+  "GET /items/{entity_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "GET /items/{entity_id}/files/{file_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "GET /items/{entity_id}/files/{file_id}/thumbnail": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "GET /items/{entity_id}/reorder-suggestion": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "GET /items/{entity_id}/split-preview": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "query:child_sku": "SKU to use for the child item in the split preview."
+  },
+  "GET /items/export/csv": {
+    "query:barcode": "Barcode value used to find matching inventory items.",
+    "query:category": "Category value used to filter or identify the requested configuration.",
+    "query:cols": "Comma-separated column names to export, in the order they should appear. Omit for the default columns.",
+    "query:consigned_from": "Contact identifier used to filter inventory received on consignment from that contact.",
+    "query:dir": "Sort direction, typically ascending or descending.",
+    "query:filter": "Named filter: low_stock keeps items at or below their reorder point, demo keeps setup samples that were never edited or used.",
+    "query:gtin": "Global Trade Item Number used to find matching inventory items.",
+    "query:inventory_type": "Inventory type used to filter items.",
+    "query:location_id": "Identifier of the inventory or business location.",
+    "query:on_memo_to": "Contact identifier used to filter inventory currently assigned on a memo to that contact.",
+    "query:q": "Search text used to filter matching records.",
+    "query:rfid_epc": "RFID Electronic Product Code used to find matching inventory items.",
+    "query:sku": "Exact stock keeping unit used to filter inventory items.",
+    "query:skus": "Comma-separated list of exact stock keeping units to include.",
+    "query:sort": "Field or supported sort key used to order the result.",
+    "query:source": "Connected store platform, for example shopify or woocommerce. Keeps only items linked to that store.",
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
+  },
+  "GET /items/field-values": {
+    "query:field": "Categorical inventory field whose distinct values should be returned."
+  },
+  "GET /items/import/preview": {
+    "query:file_id": "Identifier of the uploaded or stored file.",
+    "query:header_row": "Index, counting from 0, of the row that holds the column headers. Send it when the preview asks which row to use.",
+    "query:sheet": "Worksheet name or index to use from the uploaded spreadsheet.",
+    "query:upsert": "Whether matching imported records may update existing records instead of creating only new records."
+  },
+  "GET /items/valuation": {
+    "query:barcode": "Barcode value used to find matching inventory items.",
+    "query:category": "Category value used to filter or identify the requested configuration.",
+    "query:consigned_from": "Contact identifier used to filter inventory received on consignment from that contact.",
+    "query:dir": "Sort direction, typically ascending or descending.",
+    "query:filter": "Named filter: low_stock keeps items at or below their reorder point, demo keeps setup samples that were never edited or used.",
+    "query:gtin": "Global Trade Item Number used to find matching inventory items.",
+    "query:inventory_type": "Inventory type used to filter items.",
+    "query:location_id": "Identifier of the inventory or business location.",
+    "query:on_memo_to": "Contact identifier used to filter inventory currently assigned on a memo to that contact.",
+    "query:q": "Search text used to filter matching records.",
+    "query:rfid_epc": "RFID Electronic Product Code used to find matching inventory items.",
+    "query:sku": "Exact stock keeping unit used to filter inventory items.",
+    "query:skus": "Comma-separated list of exact stock keeping units to include.",
+    "query:sort": "Field or supported sort key used to order the result.",
+    "query:source": "Connected store platform, for example shopify or woocommerce. Keeps only items linked to that store.",
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
+  },
+  "GET /ledger": {
+    "query:entity_id": "Identifier of the requested Celerp record.",
+    "query:entity_type": "Business entity type used to filter ledger events.",
+    "query:event_type": "Event type used to filter ledger events.",
+    "query:limit": "Maximum number of records to return.",
+    "query:offset": "Number of matching records to skip before returning results.",
+    "query:resolve": "Whether to include resolved entity information with ledger events when available."
+  },
+  "GET /ledger/{entry_id}": {
+    "path:entry_id": "Identifier of the ledger entry."
+  },
+  "GET /lists": {
+    "query:all_issued": "Whether to include all issued documents regardless of other open-state filters.",
+    "query:converted_to_type": "Document type used to filter records that were converted to the specified target type.",
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:exclude_status": "Status value to exclude from the result.",
+    "query:limit": "Maximum number of records to return.",
+    "query:list_type": "Inventory list type used to filter list records.",
+    "query:offset": "Number of matching records to skip before returning results.",
+    "query:q": "Search text used to filter matching records.",
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
+  },
+  "GET /lists/{entity_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "GET /lists/{entity_id}/notes": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "GET /lists/{entity_id}/page": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "query:limit": "Maximum number of records to return.",
+    "query:offset": "Number of matching records to skip before returning results."
+  },
+  "GET /lists/export/csv": {
+    "query:all_issued": "Whether to include all issued documents regardless of other open-state filters.",
+    "query:cols": "Comma-separated column names to export, in the order they should appear. Omit for the default columns.",
+    "query:converted_to_type": "Document type used to filter records that were converted to the specified target type.",
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:exclude_status": "Status value to exclude from the result.",
+    "query:list_type": "Inventory list type used to filter list records.",
+    "query:q": "Search text used to filter matching records.",
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
+  },
+  "GET /lists/numbered": {
+    "query:number": "List number to match exactly."
+  },
+  "GET /lists/summary": {
+    "query:all_issued": "Whether to include all issued documents regardless of other open-state filters.",
+    "query:converted_to_type": "Document type used to filter records that were converted to the specified target type.",
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:exclude_status": "Status value to exclude from the result.",
+    "query:list_type": "Inventory list type used to filter list records.",
+    "query:q": "Search text used to filter matching records.",
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
+  },
+  "GET /manufacturing": {
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:q": "Search text used to filter matching records.",
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
+  },
+  "GET /manufacturing/{order_id}": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "GET /manufacturing/{order_id}/reconcile": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "GET /manufacturing/items/{item_id}/hub": {
+    "path:item_id": "Identifier of the inventory item."
+  },
+  "GET /migrations/{run_id}": {
+    "path:run_id": "Identifier of the migration run."
+  },
+  "GET /migrations/{run_id}/posting-accounts": {
+    "path:run_id": "Identifier of the migration run."
+  },
+  "GET /migrations/{run_id}/reconciliation": {
+    "path:run_id": "Identifier of the migration run."
+  },
+  "GET /migrations/{run_id}/reconciliation/pack": {
+    "path:run_id": "Identifier of the migration run."
+  },
+  "GET /migrations/{run_id}/xero-attachments": {
+    "path:run_id": "Identifier of the Xero migration run whose attachment import status is requested."
+  },
+  "GET /notifications": {
+    "query:limit": "Maximum number of records to return.",
+    "query:offset": "Number of matching records to skip before returning results.",
+    "query:unread_only": "Whether to return only unread notifications."
+  },
+  "GET /pay/{token}": {
+    "path:token": "Opaque public token identifying the shared or payment resource."
+  },
+  "GET /pay/{token}/return": {
+    "path:token": "Opaque public token identifying the shared or payment resource."
+  },
+  "GET /payments/unmatched/invoices": {
+    "query:reference": "Reference of the unmatched payment to find open invoices for."
+  },
+  "GET /reports/expiring": {
+    "query:days": "Number of days ahead to include when finding expiring inventory."
+  },
+  "GET /reports/purchases": {
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:group_by": "Dimension used to group the report results.",
+    "query:period": "Reporting period or period granularity requested by the endpoint."
+  },
+  "GET /reports/sales": {
+    "query:date_from": "Start date for the requested reporting or search period.",
+    "query:date_to": "End date for the requested reporting or search period.",
+    "query:group_by": "Dimension used to group the report results.",
+    "query:period": "Reporting period or period granularity requested by the endpoint."
+  },
+  "GET /search": {
+    "query:q": "Search text used to filter matching records."
+  },
+  "GET /settings/connectors/{platform}/authorize-url": {
+    "path:platform": "External connector platform name.",
+    "query:shop": "Store or shop identifier used by the connector authorization flow."
+  },
+  "GET /share/{token}": {
+    "path:token": "Opaque public token identifying the shared or payment resource."
+  },
+  "GET /share/{token}/bundle": {
+    "path:token": "Opaque public token identifying the shared or payment resource."
+  },
+  "GET /stars/badge/verify-url": {
+    "query:return_url": "URL to return to after completing the external authorization flow."
+  },
+  "GET /stars/cta": {
+    "query:lang": "Language code used to localize the call to action text.",
+    "query:medium": "Placement or medium for which supporter call-to-action content is requested."
+  },
+  "GET /static/attachments/{company_id}/{filename}": {
+    "path:company_id": "Identifier of your company.",
+    "path:filename": "Stored file name of the attachment."
+  },
+  "GET /subscriptions": {
+    "query:direction": "Sort or schedule direction supported by the subscriptions endpoint.",
+    "query:limit": "Maximum number of records to return.",
+    "query:offset": "Number of matching records to skip before returning results.",
+    "query:q": "Search text used to filter matching records.",
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
+  },
+  "PATCH /accounting/accounts/{code}": {
+    "path:code": "Chart of accounts code identifying the account."
+  },
+  "PATCH /accounting/bank-accounts/{bank_id}": {
+    "path:bank_id": "Identifier of the bank or card account."
+  },
+  "PATCH /accounting/reconciliation/{session_id}/lines/{line_id}": {
+    "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "PATCH /accounting/rules/{rule_id}": {
+    "path:rule_id": "Identifier of the bank reconciliation rule."
+  },
+  "PATCH /ai/conversations/{conversation_id}": {
+    "path:conversation_id": "Identifier of the AI conversation."
+  },
+  "PATCH /companies/me/categories/{category_key}": {
+    "path:category_key": "Stable category key identifying the company category."
+  },
+  "PATCH /companies/me/category-schema/{category}": {
+    "path:category": "Category value used to filter or identify the requested configuration."
+  },
+  "PATCH /companies/me/locations/{location_id}": {
+    "path:location_id": "Identifier of the inventory or business location."
+  },
+  "PATCH /companies/me/users/{user_id}": {
+    "path:user_id": "Identifier of the company user."
+  },
+  "PATCH /crm/contacts/{contact_id}": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact."
+  },
+  "PATCH /crm/contacts/{contact_id}/addresses/{address_id}": {
+    "path:address_id": "Identifier of the contact address.",
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact."
+  },
+  "PATCH /crm/contacts/{contact_id}/files/{file_id}/description": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "PATCH /crm/contacts/{contact_id}/notes/{note_id}": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "path:note_id": "Identifier of the note."
+  },
+  "PATCH /crm/contacts/{contact_id}/people/{person_id}": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "path:person_id": "Identifier of the contact person."
+  },
+  "PATCH /docs/{entity_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "PATCH /docs/{entity_id}/files/{file_id}/description": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "PATCH /docs/{entity_id}/files/{file_id}/tag": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "PATCH /docs/{entity_id}/notes/{note_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:note_id": "Identifier of the note."
+  },
+  "PATCH /docs/sequences/{doc_type}": {
+    "path:doc_type": "Business document type used to filter or select documents, such as invoices, bills, purchase orders, quotations, or credit notes."
+  },
+  "PATCH /fixed-assets/api/assets/{asset_id}": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "PATCH /fixed-assets/api/assets/{asset_id}/files/{file_id}/description": {
+    "path:asset_id": "Identifier of the fixed asset.",
+    "path:file_id": "Identifier of the file to describe."
+  },
+  "PATCH /fixed-assets/api/classes/{class_id}": {
+    "path:class_id": "Identifier of the asset class."
+  },
+  "PATCH /fixed-assets/api/maintenance/{maint_id}": {
+    "path:maint_id": "Identifier of the maintenance record."
+  },
+  "PATCH /fixed-assets/api/reminders/{reminder_id}": {
+    "path:reminder_id": "Identifier of the asset reminder."
+  },
+  "PATCH /fixed-assets/api/tax-books/{asset_id}/{regime}": {
+    "path:asset_id": "Identifier of the fixed asset.",
+    "path:regime": "Key of the tax regime. It must be one of the regimes the company has chosen."
+  },
+  "PATCH /items/{entity_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "PATCH /items/{entity_id}/files/{file_id}/description": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "PATCH /lists/{entity_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "PATCH /lists/{entity_id}/line-page": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "PATCH /lists/{entity_id}/line/{item_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:item_id": "Identifier of the inventory item."
+  },
+  "PATCH /lists/{entity_id}/notes/{note_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:note_id": "Identifier of the note."
+  },
+  "PATCH /manufacturing/work-centers/{wc_id}": {
+    "path:wc_id": "Identifier of the manufacturing work center."
+  },
+  "PATCH /manufacturing/work-centers/{wc_id}/is_default": {
+    "path:wc_id": "Identifier of the manufacturing work center."
+  },
+  "POST /accounting/journal-entries/{entity_id}/reverse": {
+    "path:entity_id": "Identifier of the journal entry to reverse or whose reversal is to be undone."
+  },
+  "POST /accounting/journal-entries/{entity_id}/void": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /accounting/older-stock/moves/{move_id}/undo": {
+    "path:move_id": "Identifier of the older stock move to undo."
+  },
+  "POST /accounting/peer/added/{item_id}": {
+    "path:item_id": "Identifier of the added-account synchronization item to settle."
+  },
+  "POST /accounting/peer/holds/{item_id}/fix": {
+    "path:item_id": "Identifier of the held accounting synchronization item to resolve."
+  },
+  "POST /accounting/reconciliation/{session_id}/auto-match": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/bulk-confirm": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/complete": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/import-csv": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/import-file": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/lines/{line_id}/attach": {
+    "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/lines/{line_id}/create": {
+    "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/lines/{line_id}/match": {
+    "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/lines/{line_id}/split": {
+    "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/lines/{line_id}/unmatch": {
+    "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/match": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/reopen": {
+    "path:session_id": "Identifier of the reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/write-off": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /ai/conversations/{conversation_id}/confirm": {
+    "path:conversation_id": "Identifier of the AI conversation."
+  },
+  "POST /ai/conversations/{conversation_id}/confirm-all": {
+    "path:conversation_id": "Identifier of the AI conversation."
+  },
+  "POST /ai/conversations/{conversation_id}/dismiss": {
+    "path:conversation_id": "Identifier of the AI conversation."
+  },
+  "POST /ai/conversations/{conversation_id}/dismiss-all": {
+    "path:conversation_id": "Identifier of the AI conversation."
+  },
+  "POST /ai/conversations/{conversation_id}/jobs/{job_id}/proposals": {
+    "path:conversation_id": "Identifier of the AI conversation.",
+    "path:job_id": "Identifier of the AI processing job."
+  },
+  "POST /ai/conversations/{conversation_id}/query": {
+    "path:conversation_id": "Identifier of the AI conversation."
+  },
+  "POST /api/labels/print/{entity_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /auth/switch-company/{company_id}": {
+    "path:company_id": "Identifier of the company."
+  },
+  "POST /backup/restore/{backup_id}": {
+    "path:backup_id": "Identifier of the backup snapshot."
+  },
+  "POST /companies/me/apply-category": {
+    "query:name": "Name or slug identifying the requested category or preset."
+  },
+  "POST /companies/me/apply-preset": {
+    "query:vertical": "Business vertical or industry preset to apply."
+  },
+  "POST /companies/me/modules/{module_name}/delete": {
+    "path:module_name": "Installed module name."
+  },
+  "POST /companies/me/modules/{module_name}/disable": {
+    "path:module_name": "Installed module name."
+  },
+  "POST /companies/me/modules/{module_name}/enable": {
+    "path:module_name": "Installed module name."
+  },
+  "POST /companies/me/modules/{module_name}/purge-data": {
+    "path:module_name": "Installed module name."
+  },
+  "POST /companies/me/users/{user_id}/installation-owner": {
+    "path:user_id": "Identifier of the user who becomes the installation owner."
+  },
+  "POST /companies/me/users/{user_id}/password": {
+    "path:user_id": "Identifier of the company member whose password is being set. An owner cannot be set this way."
+  },
+  "POST /company-backups/bootstrap/import-module": {
+    "header:x-setup-code": "Setup code that authorizes this request while the instance is still being set up."
+  },
+  "POST /company-backups/bootstrap/prepare": {
+    "header:x-setup-code": "Setup code that authorizes this request while the instance is still being set up."
+  },
+  "POST /company-backups/bootstrap/read": {
+    "header:x-setup-code": "Setup code that authorizes this request while the instance is still being set up."
+  },
+  "POST /company-backups/bootstrap/restore": {
+    "header:x-setup-code": "Setup code that authorizes this request while the instance is still being set up."
+  },
+  "POST /company-backups/handoffs/{copy_id}/new-link": {
+    "path:copy_id": "Identifier of the shared backup copy for which a replacement handoff link is requested."
+  },
+  "POST /company-backups/handoffs/{copy_id}/restore": {
+    "path:copy_id": "Identifier of the shared backup copy whose handoff is to be restored."
+  },
+  "POST /company-backups/handoffs/{copy_id}/revoke": {
+    "path:copy_id": "Identifier of the shared backup copy whose handoff link is to be revoked."
+  },
+  "POST /company-backups/kept/{kept_id}/replace": {
+    "path:kept_id": "Identifier of the retained company backup to restore in place of the current company."
+  },
+  "POST /company-peers/grants/{grant_id}/renew": {
+    "path:grant_id": "Identifier of the company-to-company access grant to renew."
+  },
+  "POST /company-peers/grants/{grant_id}/revoke": {
+    "path:grant_id": "Identifier of the company-to-company access grant to revoke."
+  },
+  "POST /connector-items/{connector_name}/sync": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/{connector_name}/credentials": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/{connector_name}/sync": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/{connector_name}/sync-plan": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/woocommerce/orders/{order_id}/reconciled": {
+    "path:order_id": "WooCommerce order ID."
+  },
+  "POST /crm/contacts/{contact_id}/addresses": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact."
+  },
+  "POST /crm/contacts/{contact_id}/files": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact."
+  },
+  "POST /crm/contacts/{contact_id}/files/{file_id}/tag": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "POST /crm/contacts/{contact_id}/notes": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact."
+  },
+  "POST /crm/contacts/{contact_id}/people": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact."
+  },
+  "POST /crm/contacts/{contact_id}/tags": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact."
+  },
+  "POST /docs/{entity_id}/apply-to-bill": {
+    "path:entity_id": "Identifier of the supplier credit note."
+  },
+  "POST /docs/{entity_id}/apply-to-invoice": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/close": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/cn-refund": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/convert": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/files": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/finalize": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/fulfill-lines": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/notes": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/payment": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/receive": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/receive-return": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/refund": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/renumber": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/reopen": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/reprice": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/reserve-lines": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/return-items": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/revert-lines": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/revert-to-draft": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/scan": {
+    "path:entity_id": "Identifier of the document the scanned items are added to."
+  },
+  "POST /docs/{entity_id}/send": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/set-available": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/share": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/unvoid": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/void": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/void-payment": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/received/{rid}/book": {
+    "path:rid": "Identifier of the received document."
+  },
+  "POST /docs/received/{rid}/mark-reconciled": {
+    "path:rid": "Identifier of the received document."
+  },
+  "POST /docs/received/{rid}/update-draft": {
+    "path:rid": "Identifier of the received document."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/add": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/correct": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/corrections": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/dispose": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/files": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/files/{file_id}/tag": {
+    "path:asset_id": "Identifier of the fixed asset.",
+    "path:file_id": "Identifier of the file to tag."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/financial-details": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/impair": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/maintenance": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/move": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/place-in-service": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/readings": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/reclassify": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/reminders": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/revalue": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/reverse-impairment": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/reviews": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/reviews/{review_id}/withdraw": {
+    "path:asset_id": "Identifier of the fixed asset.",
+    "path:review_id": "Identifier of the review to withdraw."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/sale/{action}": {
+    "path:action": "Change to make to the sale: credit, reissue, or cancel. Any other value returns 404.",
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/sell": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/skip": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/transfer": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/undo": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/undo-disposal": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/undo-latest": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/assets/{asset_id}/undo-move": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/class-table/{op_key}/undo": {
+    "path:op_key": "Key of the class table change to undo."
+  },
+  "POST /fixed-assets/api/classes/{class_id}/apply-to-assets": {
+    "path:class_id": "Identifier of the asset class."
+  },
+  "POST /fixed-assets/api/classes/{class_id}/fix-account": {
+    "path:class_id": "Identifier of the asset class."
+  },
+  "POST /fixed-assets/api/classes/{class_id}/fix-account/undo": {
+    "path:class_id": "Identifier of the asset class."
+  },
+  "POST /fixed-assets/api/classes/{class_id}/revalue": {
+    "path:class_id": "Identifier of the asset class."
+  },
+  "POST /fixed-assets/api/classes/{class_id}/valuer-report": {
+    "path:class_id": "Identifier of the asset class."
+  },
+  "POST /fixed-assets/api/classes/{class_id}/valuer-report/remove": {
+    "path:class_id": "Identifier of the asset class."
+  },
+  "POST /fixed-assets/api/corrections/{correction_id}/apply": {
+    "path:correction_id": "Identifier of the asset correction."
+  },
+  "POST /fixed-assets/api/corrections/{correction_id}/undo": {
+    "path:correction_id": "Identifier of the asset correction."
+  },
+  "POST /fixed-assets/api/corrections/{correction_id}/withdraw": {
+    "path:correction_id": "Identifier of the asset correction."
+  },
+  "POST /fixed-assets/api/imports/{batch_id}/rows": {
+    "path:batch_id": "Identifier of the asset import."
+  },
+  "POST /fixed-assets/api/imports/{batch_id}/undo": {
+    "path:batch_id": "Identifier of the asset import."
+  },
+  "POST /fixed-assets/api/maintenance/{maint_id}/files": {
+    "path:maint_id": "Identifier of the maintenance record."
+  },
+  "POST /fixed-assets/api/maintenance/{maint_id}/remove": {
+    "path:maint_id": "Identifier of the maintenance record."
+  },
+  "POST /fixed-assets/api/maintenance/{maint_id}/restore": {
+    "path:maint_id": "Identifier of the maintenance record."
+  },
+  "POST /fixed-assets/api/mine/{asset_id}/confirm": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/mine/{asset_id}/problems": {
+    "path:asset_id": "Identifier of the fixed asset."
+  },
+  "POST /fixed-assets/api/reminders/{reminder_id}/done": {
+    "path:reminder_id": "Identifier of the asset reminder."
+  },
+  "POST /fixed-assets/api/reminders/{reminder_id}/postpone": {
+    "path:reminder_id": "Identifier of the asset reminder."
+  },
+  "POST /fixed-assets/api/reminders/{reminder_id}/remove": {
+    "path:reminder_id": "Identifier of the asset reminder."
+  },
+  "POST /fixed-assets/api/reminders/{reminder_id}/undo": {
+    "path:reminder_id": "Identifier of the asset reminder."
+  },
+  "POST /fixed-assets/api/runs/{month}/reverse": {
+    "path:month": "Month of the depreciation run, as YYYY-MM, such as 2026-09."
+  },
+  "POST /fixed-assets/api/tax-years/{regime}/{year}/close": {
+    "path:regime": "Key of the tax regime. It must be one of the regimes the company has chosen.",
+    "path:year": "Tax year, as a four-digit year such as 2026."
+  },
+  "POST /fixed-assets/api/tax-years/{regime}/{year}/reopen": {
+    "path:regime": "Key of the tax regime. It must be one of the regimes the company has chosen.",
+    "path:year": "Tax year, as a four-digit year such as 2026."
+  },
+  "POST /fixed-assets/api/year-end/{year}/marks": {
+    "path:year": "Year the marks are recorded for, as a four-digit year such as 2026."
+  },
+  "POST /items/{entity_id}/adjust": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /items/{entity_id}/attachments": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "query:attachment_type": "Attachment category to assign to the uploaded item file."
+  },
+  "POST /items/{entity_id}/expire": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /items/{entity_id}/files": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "query:as_hero": "Whether an uploaded image becomes the item's main image, replacing the current one.",
+    "query:document_tag": "Document tag used to classify the uploaded file."
+  },
+  "POST /items/{entity_id}/files/{file_id}/hero": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "POST /items/{entity_id}/files/{file_id}/tag": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "POST /items/{entity_id}/price": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /items/{entity_id}/reserve": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /items/{entity_id}/split": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /items/{entity_id}/status": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /items/{entity_id}/transfer": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /items/{entity_id}/transform": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /items/{entity_id}/undo-merge": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /items/{entity_id}/unreserve": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /items/attachments/bulk": {
+    "query:override_hero": "Whether a newly imported image may replace the item's existing featured image."
+  },
+  "POST /items/import/batches/{batch_id}/undo": {
+    "path:batch_id": "Identifier of the import batch."
+  },
+  "POST /lists/{entity_id}/adjust": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/change-type": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/convert": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/duplicate": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/finalize": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/move": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/notes": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/reprice": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/reserve-lines": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/revert-to-draft": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/scan": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/send": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/set-available": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/set-scanned": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/undo-adjust": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/undo-write-off": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/unmark-sent": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/void": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/write-off": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/writeoff-line": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /manufacturing/{order_id}/cancel": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/{order_id}/complete": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/{order_id}/hold": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/{order_id}/issue": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/{order_id}/receive": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/{order_id}/reconcile": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/{order_id}/reopen": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/{order_id}/repair-output": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/{order_id}/resume": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/{order_id}/return": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/{order_id}/schedule": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/{order_id}/start": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/{order_id}/undo-receipt": {
+    "path:order_id": "Identifier of the manufacturing order."
+  },
+  "POST /manufacturing/items/{item_id}/build": {
+    "path:item_id": "Identifier of the inventory item."
+  },
+  "POST /manufacturing/items/{item_id}/recost-dependents": {
+    "path:item_id": "Identifier of the inventory item."
+  },
+  "POST /migrations/{run_id}/cancel": {
+    "path:run_id": "Identifier of the migration run."
+  },
+  "POST /migrations/{run_id}/discard": {
+    "path:run_id": "Identifier of the migration run."
+  },
+  "POST /migrations/{run_id}/finalize": {
+    "path:run_id": "Identifier of the migration run."
+  },
+  "POST /migrations/{run_id}/start": {
+    "path:run_id": "Identifier of the migration run."
+  },
+  "POST /migrations/{run_id}/xero-attachments": {
+    "path:run_id": "Identifier of the Xero migration run for which attachment fetching will start."
+  },
+  "POST /migrations/{run_id}/xero-attachments/confirm": {
+    "path:run_id": "Identifier of the Xero migration run whose attachment fetch is being confirmed."
+  },
+  "POST /migrations/{run_id}/xero-attachments/stop": {
+    "path:run_id": "Identifier of the Xero migration run whose attachment fetch will stop."
+  },
+  "POST /migrations/bootstrap/scan": {
+    "header:x-setup-code": "Setup code that authorizes this request while the instance is still being set up."
+  },
+  "POST /migrations/bootstrap/start": {
+    "header:x-setup-code": "Setup code that authorizes this request while the instance is still being set up."
+  },
+  "POST /migrations/export-requests/{request_id}/add": {
+    "path:request_id": "Identifier of the export request whose files are to be added."
+  },
+  "POST /migrations/export-requests/{request_id}/revoke": {
+    "path:request_id": "Identifier of the export request to revoke."
+  },
+  "POST /migrations/move-requests/{request_id}/withdraw": {
+    "path:request_id": "Identifier of the company move request to withdraw."
+  },
+  "POST /migrations/several/{file_id}/open": {
+    "path:file_id": "Identifier of the migration file to open."
+  },
+  "POST /notifications/{notification_id}/read": {
+    "path:notification_id": "Identifier of the notification."
+  },
+  "POST /subscriptions/{entity_id}/activate": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /subscriptions/{entity_id}/cancel": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /subscriptions/{entity_id}/generate": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /subscriptions/{entity_id}/pause": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /subscriptions/{entity_id}/resume": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "PUT /accounting/posting-accounts/{role}": {
+    "path:role": "Accounting role the account is posted for."
+  },
+  "PUT /api/labels/templates/{template_id}": {
+    "path:template_id": "Identifier of the requested template."
+  },
+  "PUT /items/{entity_id}/attachments/{att_id}/preview": {
+    "path:att_id": "Identifier of the attachment.",
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "PUT /manufacturing/items/{item_id}/recipe": {
+    "path:item_id": "Identifier of the inventory item."
+  },
+  "PUT /manufacturing/items/{item_id}/workflow": {
+    "path:item_id": "Identifier of the inventory item."
+  }
+}
