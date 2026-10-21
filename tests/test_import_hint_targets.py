@@ -13,8 +13,6 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.asyncio
-
 _EN = json.loads((Path(__file__).parent.parent / "ui" / "locales" / "en.json").read_text())
 
 _LIST_PAGES = ["/inventory", "/contacts/customers", "/contacts/vendors", "/docs", "/lists",

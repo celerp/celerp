@@ -373,7 +373,8 @@ async def test_item_page_offers_pricing_actions_only_for_an_item(is_item):
         patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}])),
     ):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            r = await c.get("/inventory/doc:1?tab=pricing", cookies={"celerp_token": make_test_token(role="owner")})
+            c.cookies.update({"celerp_token": make_test_token(role="owner")})
+            r = await c.get("/inventory/doc:1?tab=pricing")
     assert r.status_code == 200, r.headers.get("location")
     assert (_links(r.text) == ["doc%3A1?list=Retail&amp;f=retail_price"]) is is_item
     assert ("/quoter/" in r.text) is is_item

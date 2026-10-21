@@ -142,7 +142,8 @@ async def _get(ui_client, url, **overrides):
     for p in ps:
         p.start()
     try:
-        return await ui_client.get(url, cookies=_cookies())
+        ui_client.cookies.update(_cookies())
+        return await ui_client.get(url)
     finally:
         for p in ps:
             p.stop()
@@ -153,7 +154,8 @@ async def _post(ui_client, url, data, **overrides):
     for p in ps:
         p.start()
     try:
-        return await ui_client.post(url, cookies=_cookies(), data=data)
+        ui_client.cookies.update(_cookies())
+        return await ui_client.post(url, data=data)
     finally:
         for p in ps:
             p.stop()
@@ -289,10 +291,10 @@ async def test_bulk_void_posts_every_ticked_entry_once(ui_client):
     ps.append(patch("ui.api_client.bulk_void_journal_entries", new=_capture))
     for p in ps:
         p.start()
+    ui_client.cookies.update(_cookies())
     try:
         r = await ui_client.post(
             "/accounting/journal/bulk-void?date_from=2026-01-01&date_to=2026-01-31",
-            cookies=_cookies(),
             data={"selected": ["je:manual:abc", "je:auto:doc1:fin"],
                   "reason": "Duplicate batch"})
     finally:
@@ -345,8 +347,9 @@ async def test_bulk_void_refusal_from_the_api_reaches_the_reader(ui_client):
     ps.append(patch("ui.api_client.bulk_void_journal_entries", new=denied))
     for p in ps:
         p.start()
+    ui_client.cookies.update(_cookies())
     try:
-        r = await ui_client.post("/accounting/journal/bulk-void", cookies=_cookies(),
+        r = await ui_client.post("/accounting/journal/bulk-void",
                                  data={"selected": "je:manual:abc"})
     finally:
         for p in ps:
@@ -391,8 +394,9 @@ async def test_je_form_not_authorized_below_manager(ui_client):
     ps = _patches()
     for p in ps:
         p.start()
+    ui_client.cookies.update(_cookies(role="viewer"))
     try:
-        r = await ui_client.get("/accounting/journal/new", cookies=_cookies(role="viewer"))
+        r = await ui_client.get("/accounting/journal/new")
     finally:
         for p in ps:
             p.stop()
@@ -437,9 +441,10 @@ async def test_je_form_conflict_rerenders_with_fresh_token(ui_client):
     ps = _patches()
     for p in ps:
         p.start()
+    ui_client.cookies.update(_cookies())
     try:
         with patch("ui.api_client.create_journal_entry", new=conflict):
-            r = await ui_client.post("/accounting/journal/new", cookies=_cookies(), data={
+            r = await ui_client.post("/accounting/journal/new", data={
                 "ts": "2026-01-15", "memo": "x", "idempotency_token": "stale-token",
                 "account_0": "1111", "debit_0": "10", "credit_0": "0",
                 "account_1": "4100", "debit_1": "0", "credit_1": "10",
@@ -481,7 +486,8 @@ async def _get_spied(ui_client, url, name, mock):
         p.start()
     try:
         with patch(f"ui.api_client.{name}", new=mock):
-            return await ui_client.get(url, cookies=_cookies())
+            ui_client.cookies.update(_cookies())
+            return await ui_client.get(url)
     finally:
         for p in ps:
             p.stop()
@@ -601,10 +607,11 @@ async def test_forbidden_renders_clean(ui_client):
     ps = _patches()
     for p in ps:
         p.start()
+    ui_client.cookies.update(_cookies(role="viewer"))
     try:
         with patch("ui.api_client.get_journal", new=denied):
-            page = await ui_client.get("/accounting?tab=journal", cookies=_cookies(role="viewer"))
-            export = await ui_client.get("/accounting/export/journal/csv", cookies=_cookies(role="viewer"))
+            page = await ui_client.get("/accounting?tab=journal")
+            export = await ui_client.get("/accounting/export/journal/csv")
     finally:
         for p in ps:
             p.stop()
@@ -899,9 +906,10 @@ async def test_je_form_sends_the_chosen_party_and_omits_an_unchosen_one(ui_clien
     ps = _patches()
     for p in ps:
         p.start()
+    ui_client.cookies.update(_cookies())
     try:
         with patch("ui.api_client.create_journal_entry", new=created):
-            r = await ui_client.post("/accounting/journal/new", cookies=_cookies(), data={
+            r = await ui_client.post("/accounting/journal/new", data={
                 "ts": "2026-01-15", "memo": "Rebill", "idempotency_token": "tok-party",
                 "account_0": "1120", "debit_0": "10", "credit_0": "0",
                 "contact_0": "contact:9",
@@ -924,10 +932,11 @@ async def test_je_form_keeps_a_chosen_party_through_a_failed_post(ui_client):
     ps = _patches()
     for p in ps:
         p.start()
+    ui_client.cookies.update(_cookies())
     try:
         with patch("ui.api_client.create_journal_entry",
                    new=AsyncMock(side_effect=APIError(409, "already posted"))):
-            r = await ui_client.post("/accounting/journal/new", cookies=_cookies(), data={
+            r = await ui_client.post("/accounting/journal/new", data={
                 "ts": "2026-01-15", "memo": "Rebill", "idempotency_token": "stale",
                 "account_0": "1120", "debit_0": "10", "credit_0": "0",
                 "contact_0": "contact:9",

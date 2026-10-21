@@ -31,11 +31,11 @@ async def ui_client():
 @pytest.mark.asyncio
 async def test_a_restore_the_books_refuse_shows_why_and_keeps_the_list(ui_client):
     refused = AsyncMock(side_effect=APIError(422, t("acct.err_account_archived", "en", code="1112")))
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
     with patch("ui.api_client.get_bank_account", new=AsyncMock(return_value=_BANK)), \
          patch("ui.api_client.patch_bank_account", new=refused), \
          patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": [_BANK, _OTHER]})):
-        r = await ui_client.patch("/settings/accounting/bank-accounts/b1/toggle",
-                                  cookies={"celerp_token": make_test_token(role="owner")})
+        r = await ui_client.patch("/settings/accounting/bank-accounts/b1/toggle")
 
     assert r.status_code == 200
     assert "Account 1112 is archived" in r.text
@@ -47,11 +47,11 @@ async def test_a_restore_the_books_refuse_shows_why_and_keeps_the_list(ui_client
 @pytest.mark.asyncio
 async def test_an_archive_the_books_accept_lists_the_active_bank_accounts(ui_client):
     archived = AsyncMock(return_value={**_OTHER, "is_active": False})
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
     with patch("ui.api_client.get_bank_account", new=AsyncMock(return_value=_OTHER)), \
          patch("ui.api_client.patch_bank_account", new=archived), \
          patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": [_BANK]})):
-        r = await ui_client.patch("/settings/accounting/bank-accounts/b2/toggle",
-                                  cookies={"celerp_token": make_test_token(role="owner")})
+        r = await ui_client.patch("/settings/accounting/bank-accounts/b2/toggle")
 
     assert r.status_code == 200
     assert "error-banner" not in r.text

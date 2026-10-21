@@ -74,8 +74,9 @@ class TestSetupCompanyGet:
     @pytest.mark.asyncio
     async def test_renders_with_token(self, ui_client):
         """A company without a business type gets the finish-setup form."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)):
-            r = await ui_client.get("/setup/company", cookies=_authed())
+            r = await ui_client.get("/setup/company")
         assert r.status_code == 200
         assert b"Finish setting up your company" in r.content
         assert b'name="currency"' in r.content and b'name="vertical"' in r.content
@@ -92,16 +93,18 @@ class TestSetupCompanyGet:
     async def test_api_error_falls_back_to_empty_company(self, ui_client):
         """If get_company raises APIError, the form still renders with empty values."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(side_effect=APIError(500, "err"))):
-            r = await ui_client.get("/setup/company", cookies=_authed())
+            r = await ui_client.get("/setup/company")
         assert r.status_code == 200
         assert b"Finish setting up your company" in r.content
 
     @pytest.mark.asyncio
     async def test_renders_all_verticals_in_select(self, ui_client):
         """Business-type select is populated with at least one non-blank option."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)):
-            r = await ui_client.get("/setup/company", cookies=_authed())
+            r = await ui_client.get("/setup/company")
         assert r.status_code == 200
         assert b'data-value="blank"' in r.content
         assert b'data-value="gemstones"' in r.content
@@ -109,14 +112,16 @@ class TestSetupCompanyGet:
     @pytest.mark.asyncio
     async def test_form_pre_fills_stored_currency(self, ui_client):
         company = {**_COMPANY, "currency": "EUR"}
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
-            r = await ui_client.get("/setup/company", cookies=_authed())
+            r = await ui_client.get("/setup/company")
         assert b'name="currency" data-name="currency" value="EUR"' in r.content
 
     @pytest.mark.asyncio
     async def test_finish_later_goes_to_dashboard(self, ui_client):
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)):
-            r = await ui_client.get("/setup/company", cookies=_authed())
+            r = await ui_client.get("/setup/company")
         assert b'href="/dashboard"' in r.content
 
 
@@ -145,6 +150,7 @@ class TestSetupCompanyPost:
     async def test_blank_vertical_redirects_to_dashboard(self, ui_client):
         """Choosing blank is a deliberate valid type: it is set, needs no restart, and setup moves on."""
         set_type = AsyncMock(return_value={"vertical": "blank", "restart_required": False})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_company", new=AsyncMock(return_value={})),
             patch("ui.api_client.set_business_type", new=set_type),
@@ -152,7 +158,6 @@ class TestSetupCompanyPost:
             r = await ui_client.post(
                 "/setup/company",
                 data={"vertical": "blank", "currency": "USD", "timezone": "UTC"},
-                cookies=_authed(),
             )
         assert r.status_code in (302, 303)
         assert r.headers.get("location", "").endswith("/dashboard")
@@ -166,6 +171,7 @@ class TestSetupCompanyPost:
         activating page."""
         set_type = AsyncMock(return_value={"vertical": "gemstones", "restart_required": True})
         restart = AsyncMock(return_value={"ok": True})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_company", new=AsyncMock(return_value={})),
             patch("ui.api_client.set_business_type", new=set_type),
@@ -175,7 +181,6 @@ class TestSetupCompanyPost:
             r = await ui_client.post(
                 "/setup/company",
                 data={"vertical": "gemstones", "currency": "USD", "timezone": "UTC"},
-                cookies=_authed(),
             )
         assert r.status_code in (302, 303)
         assert r.headers.get("location", "").endswith("/setup/activating")
@@ -185,6 +190,7 @@ class TestSetupCompanyPost:
     @pytest.mark.asyncio
     async def test_no_restart_when_modules_already_running(self, ui_client):
         restart = AsyncMock(return_value={"ok": True})
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_company", new=AsyncMock(return_value={})),
             patch("ui.api_client.set_business_type",
@@ -192,7 +198,7 @@ class TestSetupCompanyPost:
             patch("ui.api_client.restart_system", new=restart),
         ):
             r = await ui_client.post(
-                "/setup/company", data={"vertical": "gemstones", "currency": "USD"}, cookies=_authed(),
+                "/setup/company", data={"vertical": "gemstones", "currency": "USD"},
             )
         assert r.headers.get("location", "").endswith("/dashboard")
         restart.assert_not_awaited()
@@ -201,11 +207,11 @@ class TestSetupCompanyPost:
     async def test_patch_company_error_re_renders_form(self, ui_client):
         """patch_company raising APIError re-renders the form with its message."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_company", new=AsyncMock(side_effect=APIError(422, "Currency refused"))):
             r = await ui_client.post(
                 "/setup/company",
                 data={"vertical": "blank", "currency": "USD"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"Currency refused" in r.content
@@ -213,9 +219,10 @@ class TestSetupCompanyPost:
     @pytest.mark.asyncio
     async def test_unknown_currency_rejected_before_any_write(self, ui_client):
         patch_company = AsyncMock()
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_company", new=patch_company):
             r = await ui_client.post(
-                "/setup/company", data={"vertical": "blank", "currency": "BADCUR"}, cookies=_authed(),
+                "/setup/company", data={"vertical": "blank", "currency": "BADCUR"},
             )
         assert r.status_code == 200
         assert b"flash--error" in r.content
@@ -226,6 +233,7 @@ class TestSetupCompanyPost:
         """A failed business-type step keeps the user on the form with what they submitted."""
         from ui.api_client import APIError
         restart = AsyncMock()
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_company", new=AsyncMock(return_value={})),
             patch("ui.api_client.set_business_type", new=AsyncMock(side_effect=APIError(500, "type failed"))),
@@ -234,7 +242,6 @@ class TestSetupCompanyPost:
             r = await ui_client.post(
                 "/setup/company",
                 data={"vertical": "gemstones", "currency": "EUR"},
-                cookies=_authed(),
             )
         assert r.status_code == 200
         assert b"type failed" in r.content
@@ -245,8 +252,9 @@ class TestSetupCompanyPost:
     async def test_missing_currency_is_refused_not_defaulted(self, ui_client):
         """No currency submitted: the form says so and nothing is written."""
         patch_company = AsyncMock()
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_company", new=patch_company):
-            r = await ui_client.post("/setup/company", data={"vertical": "blank"}, cookies=_authed())
+            r = await ui_client.post("/setup/company", data={"vertical": "blank"})
         assert r.status_code == 200
         patch_company.assert_not_awaited()
 
@@ -258,6 +266,7 @@ class TestSetupCompanyPost:
         async def _cap(token, data):
             captured.update(data)
 
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.patch_company", new=AsyncMock(side_effect=_cap)),
             patch("ui.api_client.set_business_type",
@@ -266,7 +275,6 @@ class TestSetupCompanyPost:
             await ui_client.post(
                 "/setup/company",
                 data={"vertical": "blank", "currency": "SGD", "timezone": "Asia/Singapore", "tax_id": "T12345"},
-                cookies=_authed(),
             )
         assert captured == {"currency": "SGD", "timezone": "Asia/Singapore"}
 
@@ -280,20 +288,23 @@ class TestSetupActivating:
 
     @pytest.mark.asyncio
     async def test_renders_activating_page(self, ui_client):
-        r = await ui_client.get("/setup/activating", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/setup/activating")
         assert r.status_code == 200
         assert b"Activating" in r.content
 
     @pytest.mark.asyncio
     async def test_page_contains_status_poll_script(self, ui_client):
         """JavaScript must poll /setup/activating-status."""
-        r = await ui_client.get("/setup/activating", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/setup/activating")
         assert b"activating-status" in r.content
 
     @pytest.mark.asyncio
     async def test_page_redirects_to_dashboard_after_poll(self, ui_client):
         """Poll script must go to the dashboard on success."""
-        r = await ui_client.get("/setup/activating", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/setup/activating")
         assert b"window.location.href = '/dashboard'" in r.content
         assert b"/onboarding" not in r.content
 
@@ -315,10 +326,11 @@ class TestSetupActivatingStatus:
     async def test_returns_down_when_api_unreachable(self, ui_client):
         """When the API client raises, phase=down is returned."""
         import httpx
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.httpx.AsyncClient") as mock_cls:
             mock_cls.return_value.__aenter__ = AsyncMock(side_effect=httpx.ConnectError("refused"))
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-            r = await ui_client.get("/setup/activating-status", cookies=_authed())
+            r = await ui_client.get("/setup/activating-status")
         assert r.status_code == 200
         data = r.json()
         assert data["phase"] == "down"
@@ -335,13 +347,14 @@ class TestSetupActivatingStatus:
         mock_resp.status_code = 200
         mock_resp.json.return_value = modules_payload
 
+        ui_client.cookies.update(_authed())
         with patch("celerp.config.read_config", return_value={"modules": {"enabled": ["celerp-inventory", "celerp-contacts", "celerp-sales-funnel"]}}):
             with patch("ui.api_client.httpx.AsyncClient") as mock_cls:
                 mock_inst = AsyncMock()
                 mock_inst.get = AsyncMock(return_value=mock_resp)
                 mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_inst)
                 mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-                r = await ui_client.get("/setup/activating-status", cookies=_authed())
+                r = await ui_client.get("/setup/activating-status")
         assert r.status_code == 200
         data = r.json()
         assert data["phase"] == "loading"
@@ -360,13 +373,14 @@ class TestSetupActivatingStatus:
         mock_resp.status_code = 200
         mock_resp.json.return_value = modules_payload
 
+        ui_client.cookies.update(_authed())
         with patch("celerp.config.read_config", return_value={"modules": {"enabled": ["celerp-inventory", "celerp-contacts", "celerp-sales-funnel"]}}):
             with patch("ui.api_client.httpx.AsyncClient") as mock_cls:
                 mock_inst = AsyncMock()
                 mock_inst.get = AsyncMock(return_value=mock_resp)
                 mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_inst)
                 mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-                r = await ui_client.get("/setup/activating-status", cookies=_authed())
+                r = await ui_client.get("/setup/activating-status")
         assert r.status_code == 200
         data = r.json()
         assert data["phase"] == "ready"
@@ -387,12 +401,13 @@ class TestSetupActivatingStatus:
         mock_resp = MagicMock()
         mock_resp.status_code = 503
 
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.httpx.AsyncClient") as mock_cls:
             mock_inst = AsyncMock()
             mock_inst.get = AsyncMock(return_value=mock_resp)
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_inst)
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-            r = await ui_client.get("/setup/activating-status", cookies=_authed())
+            r = await ui_client.get("/setup/activating-status")
         assert r.status_code == 200
         data = r.json()
         assert data["phase"] == "down"
@@ -407,7 +422,8 @@ class TestSetupCloud:
 
     @pytest.mark.asyncio
     async def test_renders_cloud_page(self, ui_client):
-        r = await ui_client.get("/setup/cloud", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/setup/cloud")
         assert r.status_code == 200
         assert b"Connect" in r.content
 
@@ -429,7 +445,8 @@ class TestSetupLegacyStepsGone:
     @pytest.mark.parametrize("method", ["GET", "POST"])
     @pytest.mark.parametrize("path", ["/setup/users", "/setup/users/done", "/setup/vertical", "/setup/modules"])
     async def test_legacy_setup_route_is_not_found(self, ui_client, method, path):
-        r = await ui_client.request(method, path, cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.request(method, path)
         assert r.status_code == 404
 
 
@@ -778,6 +795,7 @@ class TestSettingsModuleTabs:
         modules = [
             {"name": "celerp-inventory", "enabled": True, "running": True, "depends_on": []},
         ]
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
@@ -789,7 +807,7 @@ class TestSettingsModuleTabs:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=modules)),
         ):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
+            r = await ui_client.get("/settings/general?tab=company")
         assert r.status_code == 200
         # Schema link lives in /settings/inventory nav
         assert b"inventory" in r.content or b"Inventory" in r.content
@@ -797,6 +815,7 @@ class TestSettingsModuleTabs:
     @pytest.mark.asyncio
     async def test_settings_page_no_extra_tabs_when_no_modules(self, ui_client):
         """Settings page with no modules — inventory tabs must not appear."""
+        ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
@@ -808,7 +827,7 @@ class TestSettingsModuleTabs:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
+            r = await ui_client.get("/settings/general?tab=company")
         assert r.status_code == 200
         assert b"tab=schema" not in r.content
 
@@ -823,7 +842,8 @@ class TestSetupFringe:
     @pytest.mark.asyncio
     async def test_activating_page_max_attempts_message_present(self, ui_client):
         """Poll script must have a max-attempts / timeout fallback message."""
-        r = await ui_client.get("/setup/activating", cookies=_authed())
+        ui_client.cookies.update(_authed())
+        r = await ui_client.get("/setup/activating")
         content = r.content.decode()
         assert "maxAttempts" in content and "msgTimedOut" in content
 
@@ -839,16 +859,18 @@ class TestSetupFringe:
     async def test_settings_401_redirects_to_login(self, ui_client):
         """Settings page with 401 from API → redirect to /login."""
         from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(side_effect=APIError(401, "Unauthorized"))):
-            r = await ui_client.get("/settings/general", cookies=_authed())
+            r = await ui_client.get("/settings/general")
         assert r.status_code in (302, 303)
         assert "/login" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
     async def test_setup_company_get_without_company_name_still_renders(self, ui_client):
         """Company with only id field still renders the form."""
+        ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_company", new=AsyncMock(return_value={"id": "x"})):
-            r = await ui_client.get("/setup/company", cookies=_authed())
+            r = await ui_client.get("/setup/company")
         assert r.status_code == 200
         assert b"Finish setting up your company" in r.content
 

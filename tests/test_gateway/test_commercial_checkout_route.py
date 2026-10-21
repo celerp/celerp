@@ -51,10 +51,10 @@ async def test_commercial_checkout_handoff_route_mints_and_redirects(client):
     destination 302s with no token minted and no relay call. The relay bearer JWT
     never appears in the redirect URL."""
     # Direct destination: token minted and appended.
+    client.cookies.update(authed_cookies())
     with patch("ui.routes.commercial._mint_handoff_token",
                AsyncMock(return_value="ht_opaque_value")) as mint:
-        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud",
-                             cookies=authed_cookies())
+        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud")
     assert r.status_code == 302
     location = r.headers["location"]
     assert "celerp.com/subscribe" in location
@@ -70,8 +70,7 @@ async def test_commercial_checkout_handoff_route_mints_and_redirects(client):
                                     "implementation": {"display_name": "Partner Co"}}
     with patch("ui.routes.commercial._mint_handoff_token",
                AsyncMock(return_value="ht_should_not_be_used")) as mint2:
-        r2 = await client.get("/commercial/checkout?intent=subscribe&sku=team",
-                              cookies=authed_cookies())
+        r2 = await client.get("/commercial/checkout?intent=subscribe&sku=team")
     assert r2.status_code == 302
     loc2 = r2.headers["location"]
     assert "/enterprise" in loc2
@@ -83,10 +82,10 @@ async def test_commercial_checkout_handoff_route_mints_and_redirects(client):
 async def test_commercial_checkout_handoff_route_topup_purpose(client):
     """An intent=topup click mints a topup-purpose token for the direct
     /subscribe/topup destination."""
+    client.cookies.update(authed_cookies())
     with patch("ui.routes.commercial._mint_handoff_token",
                AsyncMock(return_value="ht_topup")) as mint:
-        r = await client.get("/commercial/checkout?intent=topup&sku=ai",
-                             cookies=authed_cookies())
+        r = await client.get("/commercial/checkout?intent=topup&sku=ai")
     assert r.status_code == 302
     location = r.headers["location"]
     assert "celerp.com/subscribe/topup" in location
@@ -99,10 +98,10 @@ async def test_commercial_checkout_handoff_route_topup_purpose(client):
 async def test_commercial_checkout_handoff_mint_failure_degrades(client):
     """A relay-down mint degrades to a neutral in-app error page: 200, no redirect,
     no fabricated checkout URL."""
+    client.cookies.update(authed_cookies())
     with patch("ui.routes.commercial._mint_handoff_token",
                AsyncMock(side_effect=RuntimeError("relay down"))):
-        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud",
-                             cookies=authed_cookies())
+        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud")
     assert r.status_code == 200
     assert "location" not in r.headers
     body = r.text
@@ -116,10 +115,10 @@ async def test_commercial_checkout_mint_failure_uses_standard_auth_shell(client)
     the existing auth-card error pattern from ui/routes/auth.py::_api_error_page),
     not bespoke inline-styled HTML: same wrapper classes, a stylesheet link, and a
     single clear return action back into the app rather than a dead end."""
+    client.cookies.update(authed_cookies())
     with patch("ui.routes.commercial._mint_handoff_token",
                AsyncMock(side_effect=RuntimeError("relay down"))):
-        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud",
-                             cookies=authed_cookies())
+        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud")
     assert r.status_code == 200
     body = r.text
     # Standard shell markers (ui/components/shell.py::auth_shell), not a bespoke
@@ -143,10 +142,10 @@ async def test_commercial_checkout_mint_failure_localizes_to_request_language(cl
     from ui.i18n import t
     cookies = authed_cookies()
     cookies["celerp_lang"] = "es"
+    client.cookies.update(cookies)
     with patch("ui.routes.commercial._mint_handoff_token",
                AsyncMock(side_effect=RuntimeError("relay down"))):
-        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud",
-                             cookies=cookies)
+        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud")
     assert r.status_code == 200
     assert t("commercial.checkout_unavailable_title", "es") in r.text
 
@@ -164,10 +163,10 @@ async def test_commercial_checkout_partner_support_url_with_subscribe_in_path(cl
             "support_url": "https://partner.example/subscribe/help",
         },
     }
+    client.cookies.update(authed_cookies())
     with patch("ui.routes.commercial._mint_handoff_token",
                AsyncMock(return_value="ht_should_not_be_used")) as mint:
-        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud",
-                             cookies=authed_cookies())
+        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud")
     assert r.status_code == 302
     location = r.headers["location"]
     assert location == "https://partner.example/subscribe/help"

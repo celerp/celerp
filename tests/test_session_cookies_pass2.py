@@ -68,6 +68,7 @@ def _set_cookie_blob(response) -> str:
 async def test_new_company_seats_both_session_cookies(ui_client):
     """POST /setup/new-company writes the access AND refresh cookie for the new
     company, not the access cookie alone."""
+    ui_client.cookies.update(authed_cookies("owner"))
     with patch(
         "ui.api_client.create_company",
         new=AsyncMock(return_value=("acc-new", "ref-new")),
@@ -75,7 +76,6 @@ async def test_new_company_seats_both_session_cookies(ui_client):
         r = await ui_client.post(
             "/setup/new-company",
             data={"company_name": "Second Co"},
-            cookies=authed_cookies("owner"),
         )
     assert r.status_code == 302
     assert r.headers.get("location") == "/setup/company"
@@ -87,11 +87,11 @@ async def test_new_company_seats_both_session_cookies(ui_client):
 async def test_deactivate_with_remaining_companies_clears_session(ui_client):
     """Deactivating a company while others remain sends the user to login with the
     real session cookies cleared, not a phantom 'token' cookie."""
+    ui_client.cookies.update(authed_cookies("owner"))
     with patch("ui.api_client._local_client", new=lambda *a, **k: _FakeClient(remaining=2)):
         r = await ui_client.request(
             "DELETE",
             "/settings/company/deactivate",
-            cookies=authed_cookies("owner"),
         )
     assert r.status_code == 303
     assert r.headers.get("location") == "/login?deactivated=1"

@@ -14,8 +14,6 @@ from test_mfg_finalize_supply import _made, _runs_for_doc
 from test_mfg_outstanding_demand import _auto, _row, _stocked
 from test_mfg_reserved_demand import _make, _order, _pegged
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(params=["as read", "reversed"])
 def read_order(request, monkeypatch):

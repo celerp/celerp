@@ -142,7 +142,8 @@ async def test_module_page_follows_the_company_choice(module_dir, uses, status):
     settings = {"enabled_modules": [name] if uses else []}
     with patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": settings})):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            r = await c.get(f"/{inner}/page", cookies={"celerp_token": make_test_token()})
+            c.cookies.update({"celerp_token": make_test_token()})
+            r = await c.get(f"/{inner}/page")
     assert r.status_code == status
     if status == 403:
         from celerp.modules.loader import module_label

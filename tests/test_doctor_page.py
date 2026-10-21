@@ -30,8 +30,9 @@ async def ui_client():
 async def _doctor_page(ui_client, role: str, start=None, checks=None) -> str:
     with patch("ui.api_client.get_start_report", new=start or AsyncMock(return_value={"held_back": None})), \
          patch("ui.api_client.doctor_report", new=checks or AsyncMock(return_value={"results": []})):
-        r = await ui_client.get("/doctor", cookies={"celerp_token": make_test_token(role=role),
+        ui_client.cookies.update({"celerp_token": make_test_token(role=role),
                                                     "celerp_lang": "de"})
+        r = await ui_client.get("/doctor")
     assert r.status_code == 200, r.text
     return r.text
 

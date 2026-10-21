@@ -53,7 +53,8 @@ async def ui_client():
 
 async def _render(ui_client, doc: dict) -> str:
     with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
-        r = await ui_client.get(f"/docs/{doc['entity_id']}", cookies={"celerp_token": make_test_token()})
+        ui_client.cookies.update({"celerp_token": make_test_token()})
+        r = await ui_client.get(f"/docs/{doc['entity_id']}")
     assert r.status_code == 200, r.text
     return r.text
 

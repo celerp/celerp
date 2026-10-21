@@ -15,8 +15,6 @@ from mfg_runs import product
 from test_cost_restatement import _item
 from ui.i18n import refusal_text, set_lang
 
-pytestmark = pytest.mark.asyncio
-
 
 def _in(detail, lang: str) -> str:
     set_lang(lang)

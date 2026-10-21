@@ -84,11 +84,11 @@ def _booted(tmp_path, without: set[str]):
                 "company_name": "Shop", "email": "owner@shop.example", "name": "Owner", "password": "password123"})
             assert r.status_code == 200, r.text
             token = r.json()["access_token"]
-            api = httpx.Client(base_url=f"http://127.0.0.1:{api_port}", headers={"Authorization": f"Bearer {token}"},
-                               timeout=30)
-            ui = httpx.Client(base_url=f"http://127.0.0.1:{ui_port}", cookies={"celerp_token": token}, timeout=30,
-                             follow_redirects=True)
-            yield api, ui, tmp_path
+            with httpx.Client(base_url=f"http://127.0.0.1:{api_port}", headers={"Authorization": f"Bearer {token}"},
+                              timeout=30) as api, \
+                 httpx.Client(base_url=f"http://127.0.0.1:{ui_port}", cookies={"celerp_token": token}, timeout=30,
+                              follow_redirects=True) as ui:
+                yield api, ui, tmp_path
         finally:
             for p in procs.values():
                 p.terminate()

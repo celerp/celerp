@@ -123,7 +123,8 @@ async def _browser_mapped(csv_text: str, mapping: dict[str, str], currency: str)
          patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
          patch("ui.routes.inventory.stash_import_csv", new=check):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            r = await c.post("/inventory/import/mapped", data={"csv_ref": ref, **_mapping_form(mapping)}, cookies=_owner_cookies())
+            c.cookies.update(_owner_cookies())
+            r = await c.post("/inventory/import/mapped", data={"csv_ref": ref, **_mapping_form(mapping)})
     assert r.status_code == (303 if check.await_count else 200), r.text
     return r, check
 

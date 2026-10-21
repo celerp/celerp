@@ -31,8 +31,6 @@ from test_consignor_payable_per_consignor import _consignor, _owed
 from test_invoice_unshipped_books import _lot, _ok
 from test_money_stock_and_contact_invariants import _account_net
 
-pytestmark = pytest.mark.asyncio
-
 COGS = "5100"
 OPENING = "1130-OB"
 
@@ -324,7 +322,8 @@ async def _ui_finalize(answer: dict):
 
     with patch("ui.api_client.finalize_doc", new=AsyncMock(return_value=answer)):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
-            return await ui.post("/docs/doc:B/action/finalize", data={}, cookies=authed_cookies())
+            ui.cookies.update(authed_cookies())
+            return await ui.post("/docs/doc:B/action/finalize", data={})
 
 
 async def test_the_finalize_notice_is_shown_on_the_redirect():
@@ -388,8 +387,8 @@ async def test_the_ship_notice_says_the_other_invoice_cannot_ship_it():
     answer = {"fulfillment_status": "fulfilled", "fulfilled": ["item:1"], "taken_from": moved}
     with patch("ui.api_client.fulfill_lines", new=AsyncMock(return_value=answer)):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
-            r = await ui.post("/docs/doc:B/fulfill-lines", data={"selected": ["item:1"], "idempotency_key": "page-key-1"},
-                              cookies=authed_cookies())
+            ui.cookies.update(authed_cookies())
+            r = await ui.post("/docs/doc:B/fulfill-lines", data={"selected": ["item:1"], "idempotency_key": "page-key-1"})
     assert r.status_code == 204, r.text
     assert r.headers["HX-Redirect"] == "/docs/doc:B"
     toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]

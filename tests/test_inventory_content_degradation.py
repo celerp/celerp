@@ -169,7 +169,8 @@ async def test_inventory_page_reads_company_fresh_once(ui_client, monkeypatch):
     # Items 4 and 5: the page reads company fresh exactly once per request and
     # base_shell reuses those settings rather than performing a second read.
     calls = _install_inventory_getters(monkeypatch)
-    r = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    ui_client.cookies.update({"celerp_token": make_test_token()})
+    r = await ui_client.get("/inventory")
     assert r.status_code == 200
     assert calls["company"] == 1
 
@@ -181,11 +182,12 @@ async def test_warm_fragment_reads_company_fresh_and_zero_static(ui_client, monk
     # zero of the six static getter calls.
     calls = _install_inventory_getters(monkeypatch)
     cookies = {"celerp_token": make_test_token()}
-    await ui_client.get("/inventory", cookies=cookies)
+    ui_client.cookies.update(cookies)
+    await ui_client.get("/inventory")
     assert calls["static"] == 6, "cold page primes the static snapshot once"
     company_before = calls["company"]
     r = await ui_client.get(
-        "/inventory/content", cookies=cookies, headers={"HX-Request": "true"}
+        "/inventory/content", headers={"HX-Request": "true"}
     )
     assert r.status_code == 200
     assert calls["static"] == 6, "warm fragment makes zero new static getter calls"
@@ -204,7 +206,8 @@ async def test_company_read_failure_does_not_substitute_empty_settings(ui_client
         inv, "role_has_permission",
         lambda settings, role, perm: perm_calls.append((settings, perm)) or real_perm(settings, role, perm),
     )
-    r = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    ui_client.cookies.update({"celerp_token": make_test_token()})
+    r = await ui_client.get("/inventory")
     assert r.status_code == 200
     assert "flash--error" in r.text
     assert not perm_calls, "authorization must not be decided on fabricated {} settings"
@@ -217,7 +220,8 @@ async def test_company_read_failure_reads_company_exactly_once(ui_client, monkey
     # path both doubles load during an outage and (below) fabricates a default
     # sidebar from the settings that read cannot return.
     calls = _install_inventory_getters(monkeypatch, company_error=APIError(503, "saturated"))
-    r = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    ui_client.cookies.update({"celerp_token": make_test_token()})
+    r = await ui_client.get("/inventory")
     assert r.status_code == 200
     assert "flash--error" in r.text
     assert calls["company"] == 1, "no hidden second company read on the error path"
@@ -236,14 +240,15 @@ async def test_error_page_omits_default_granted_revoked_nav(ui_client, monkeypat
     # Positive control: on a healthy page the owner does see the default-granted
     # nav entry, so its absence below is a real omission and not a missing label.
     _install_inventory_getters(monkeypatch)
-    ok = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    ui_client.cookies.update({"celerp_token": make_test_token()})
+    ok = await ui_client.get("/inventory")
     assert ok.status_code == 200
     assert company_details in ok.text
 
     # Company read fails: the error page must show neither that default-granted
     # entry nor any permission-filtered sidebar link.
     _install_inventory_getters(monkeypatch, company_error=APIError(503, "saturated"))
-    err = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    err = await ui_client.get("/inventory")
     assert err.status_code == 200
     assert "flash--error" in err.text
     assert company_details not in err.text
@@ -257,7 +262,8 @@ async def test_revoked_view_inventory_denied_even_when_metadata_fails(ui_client,
     # role_grants) is read fresh before any static metadata is touched.
     _install_inventory_getters(monkeypatch, metadata_error=APIError(503, "down"))
     monkeypatch.setattr(inv, "role_has_permission", lambda settings, role, perm: False)
-    r = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    ui_client.cookies.update({"celerp_token": make_test_token()})
+    r = await ui_client.get("/inventory")
     assert_not_permitted_redirect(r)
 
 
@@ -267,7 +273,8 @@ async def test_static_failure_after_company_success_shows_error_in_shell(ui_clie
     # renders the normal authenticated shell with an honest content error and a
     # retry, never a blank catalog.
     _install_inventory_getters(monkeypatch, metadata_error=APIError(503, "down"))
-    r = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    ui_client.cookies.update({"celerp_token": make_test_token()})
+    r = await ui_client.get("/inventory")
     assert r.status_code == 200
     assert "flash--error" in r.text
     # The content region is the honest error fragment (empty-state + retry), not

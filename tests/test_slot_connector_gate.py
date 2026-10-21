@@ -124,14 +124,14 @@ def _owned(connected: set[str]):
 @pytest.mark.parametrize("connected, shown", [({"shopify"}, True), (set(), False)])
 async def test_item_actions_card_follows_the_company_connection(ui_client, connected, shown):
     _item_action()
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
     with (
         _owned(connected),
         patch("ui.api_client.get_item", new=AsyncMock(return_value={"entity_id": "item:1", "quantity": 1})),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         patch("ui.api_client.split_preview", new=AsyncMock(return_value=None)),
     ):
-        r = await ui_client.get("/api/items/item:1/advanced-panel",
-                                cookies={"celerp_token": make_test_token(role="owner")})
+        r = await ui_client.get("/api/items/item:1/advanced-panel")
     assert r.status_code == 200
     assert ("Push to Shopify" in r.text) is shown
 
@@ -140,12 +140,13 @@ async def test_item_actions_card_follows_the_company_connection(ui_client, conne
 async def test_subscription_detail_follows_the_company_connection(ui_client, connected, shown):
     _doc_slots()
     sub = {"entity_id": "sub:1", "doc_type": "invoice", "status": "active", "line_items": []}
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
     with (
         _owned(connected),
         patch("ui.api_client.get_subscription", new=AsyncMock(return_value=sub)),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
     ):
-        r = await ui_client.get("/subscriptions/sub:1", cookies={"celerp_token": make_test_token(role="owner")})
+        r = await ui_client.get("/subscriptions/sub:1")
     assert r.status_code == 200
     assert ("On Shopify" in r.text) is shown
 
@@ -155,11 +156,12 @@ async def test_subscription_detail_follows_the_company_modules(ui_client, enable
     _doc_slots(requires_connector="")
     company = {**_COMPANY, "settings": {"enabled_modules": enabled}}
     sub = {"entity_id": "sub:1", "doc_type": "invoice", "status": "active", "line_items": []}
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
     with (
         _owned({"shopify"}),
         patch("ui.api_client.get_subscription", new=AsyncMock(return_value=sub)),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=company)),
     ):
-        r = await ui_client.get("/subscriptions/sub:1", cookies={"celerp_token": make_test_token(role="owner")})
+        r = await ui_client.get("/subscriptions/sub:1")
     assert r.status_code == 200
     assert ("On Shopify" in r.text) is shown

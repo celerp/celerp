@@ -20,8 +20,6 @@ import pytest
 
 from test_helpers import authed_cookies
 
-pytestmark = pytest.mark.asyncio
-
 _SOURCES = [{"key": "manager_io", "display_name": "Manager.io", "artifacts": []}]
 _DEMO_ITEM = {"id": "item:demo-1", "sku": "DEMO-001", "name": "[DEMO] Sample Item"}
 _SELF_CONTACT = {"id": "contact:self", "name": "Pat Owner", "is_self": True}
@@ -89,7 +87,8 @@ class _Dash:
 
 async def _dashboard(ui, role="owner", **kw) -> str:
     with _Dash(**kw):
-        r = await ui.get("/dashboard", cookies=authed_cookies(role=role))
+        ui.cookies.update(authed_cookies(role=role))
+        r = await ui.get("/dashboard")
     assert r.status_code == 200, r.status_code
     return r.text
 
@@ -141,8 +140,8 @@ async def test_demo_records_do_not_count_as_data(ui):
 
 async def test_card_dismiss_persists_per_company(ui):
     with _Dash() as dash:
-        r = await ui.post("/dashboard/getting-started/dismiss", data={"forever": "1"},
-                          cookies=authed_cookies(role="owner"))
+        ui.cookies.update(authed_cookies(role="owner"))
+        r = await ui.post("/dashboard/getting-started/dismiss", data={"forever": "1"})
     assert r.status_code == 200
     dash.patch_company.assert_awaited_once()
     assert dash.patch_company.await_args.args[1] == {"getting_started_dismissed": True}
@@ -198,8 +197,9 @@ async def test_card_restore_and_move_options(ui):
     ("/setup/new-company/migrate", 'name="files"'),
 ])
 async def test_card_restore_and_move_links_open_working_wizards(ui, path, needle):
+    ui.cookies.update(authed_cookies(role="owner"))
     with _Dash():
-        r = await ui.get(path, cookies=authed_cookies(role="owner"))
+        r = await ui.get(path)
     assert r.status_code == 200
     assert needle in r.text
 
@@ -219,10 +219,11 @@ async def test_no_banner_when_business_type_set(ui):
 
 async def test_upgraded_company_sees_nothing_new(ui):
     """A 2.5.3 company: real data, a business type, no onboarding keys."""
+    ui.cookies.update(authed_cookies(role="owner"))
     with _Dash(items={"items": [{"id": "item:1", "sku": "R-1", "name": "Ring"}], "total": 240},
                contacts={"items": [{"id": "contact:1", "name": "Buyer"}], "total": 31},
                docs={"items": [{"id": "doc:1"}], "total": 412}):
-        r = await ui.get("/dashboard", cookies=authed_cookies(role="owner"))
+        r = await ui.get("/dashboard")
     assert r.status_code == 200
     assert _card(r.text) == ""
     assert "Finish setup" not in r.text
@@ -231,8 +232,9 @@ async def test_upgraded_company_sees_nothing_new(ui):
 async def test_close_without_the_tick_saves_nothing(ui):
     """Closing the card without "Don't show this again" hides it for this view only:
     nothing is saved, so the next dashboard load shows it again."""
+    ui.cookies.update(authed_cookies(role="owner"))
     with _Dash() as dash:
-        r = await ui.post("/dashboard/getting-started/dismiss", cookies=authed_cookies(role="owner"))
+        r = await ui.post("/dashboard/getting-started/dismiss")
     assert r.status_code == 200
     dash.patch_company.assert_not_awaited()
     assert 'id="getting-started-card"' not in r.text
@@ -341,7 +343,8 @@ async def test_finish_setup_banner_has_a_close_button(ui):
 
 async def test_dismissing_finish_setup_saves_the_flag_and_hides_the_banner(ui):
     with _Dash(vertical="") as dash:
-        r = await ui.post("/dashboard/finish-setup/dismiss", cookies=authed_cookies(role="owner"))
+        ui.cookies.update(authed_cookies(role="owner"))
+        r = await ui.post("/dashboard/finish-setup/dismiss")
     assert r.status_code == 200
     dash.patch_company.assert_awaited_once()
     assert dash.patch_company.await_args.args[1] == {"finish_setup_dismissed": True}
@@ -352,8 +355,9 @@ async def test_dismissing_finish_setup_saves_the_flag_and_hides_the_banner(ui):
 
 
 async def test_finish_setup_dismiss_refused_for_non_owner(ui):
+    ui.cookies.update(authed_cookies(role="admin"))
     with _Dash(vertical="") as dash:
-        r = await ui.post("/dashboard/finish-setup/dismiss", cookies=authed_cookies(role="admin"))
+        r = await ui.post("/dashboard/finish-setup/dismiss")
     assert r.status_code == 200
     dash.patch_company.assert_not_awaited()
     assert 'class="error-banner"' in r.text and 'id="finish-setup-banner"' in r.text
@@ -361,9 +365,10 @@ async def test_finish_setup_dismiss_refused_for_non_owner(ui):
 
 async def test_finish_setup_dismiss_api_failure_keeps_the_banner(ui):
     from ui.api_client import APIError
+    ui.cookies.update(authed_cookies(role="owner"))
     with _Dash(vertical="") as dash:
         dash.patch_company.side_effect = APIError(500, "Could not save")
-        r = await ui.post("/dashboard/finish-setup/dismiss", cookies=authed_cookies(role="owner"))
+        r = await ui.post("/dashboard/finish-setup/dismiss")
     assert 'class="error-banner"' in r.text and 'id="finish-setup-banner"' in r.text
     assert "Could not save" in r.text
 
@@ -389,7 +394,8 @@ async def test_the_older_stock_banner_shows_until_dismissed(ui):
     assert 'id="older-stock-banner"' not in await _dashboard(ui)
 
     with _Dash(settings={"older_stock_placed": "p1"}) as dash:
-        r = await ui.post("/dashboard/older-stock/dismiss", cookies=authed_cookies(role="owner"))
+        ui.cookies.update(authed_cookies(role="owner"))
+        r = await ui.post("/dashboard/older-stock/dismiss")
     assert r.status_code == 200
     assert dash.patch_company.await_args.args[1] == {"older_stock_banner_dismissed": "p1"}
     assert 'id="older-stock-banner"' not in r.text

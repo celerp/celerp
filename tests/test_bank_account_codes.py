@@ -11,8 +11,6 @@ import re
 
 import pytest
 
-pytestmark = pytest.mark.asyncio
-
 
 async def _owner(client) -> dict:
     r = await client.post("/auth/register", json={

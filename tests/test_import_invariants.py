@@ -144,10 +144,10 @@ class TestImportStageInvariant:
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
              patch("ui.api_client.import_rows", new=import_rows):
             async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+                c.cookies.update({"celerp_token": make_test_token(role="owner")})
                 r = await c.post(
                     "/inventory/import/confirm",
                     data={"csv_ref": ref, "preview_hash": "c" * 64},
-                    cookies={"celerp_token": make_test_token(role="owner")},
                 )
         assert r.status_code == 200
         return ref
@@ -198,7 +198,8 @@ async def _real_ui(token: str, method: str, path: str, *, patch_company=None, **
          patch("ui.api_client.restart_system", new=AsyncMock(return_value={})), \
          patch("ui.api_client.patch_company", new=patch_company or api.patch_company):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-            return await c.request(method, path, cookies={"celerp_token": token}, **kwargs)
+            c.cookies.update({"celerp_token": token})
+            return await c.request(method, path, **kwargs)
 
 
 async def _settings(client, h) -> dict:
@@ -993,7 +994,8 @@ class TestPreviewCommitInvariant:
              patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])), \
              patch("ui.api_client.import_rows", new=import_rows):
             async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-                r = await c.post(path, data=data, cookies=_owner_cookies())
+                c.cookies.update(_owner_cookies())
+                r = await c.post(path, data=data)
         assert r.status_code == 200, r.text
         return r.text, import_rows
 
@@ -1381,7 +1383,8 @@ class TestUnitAndPriceInvariant:
              patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
              patch("ui.api_client.plan_import_rows", new=preview):
             async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-                r = await c.post("/inventory/import/mapped", data=form, cookies=_owner_cookies())
+                c.cookies.update(_owner_cookies())
+                r = await c.post("/inventory/import/mapped", data=form)
         assert r.status_code == 200, r.text
         assert "Price (USD)" in r.text and "different currency" in r.text
         preview.assert_not_awaited()
@@ -1525,7 +1528,8 @@ class TestTabularParityInvariant:
                  patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}])), \
                  patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})):
                 async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-                    r = await c.post(route, files={"csv_file": (f"items.{fmt}", data)}, cookies=_owner_cookies())
+                    c.cookies.update(_owner_cookies())
+                    r = await c.post(route, files={"csv_file": (f"items.{fmt}", data)})
             assert r.status_code == 200, r.text
             stash.assert_awaited_once()
             staged[fmt] = stash.await_args.args[1]
@@ -1625,7 +1629,8 @@ class TestTabularParityInvariant:
              patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_doc", new=AsyncMock(return_value={"entity_id": "doc:1", "line_items": []})):
             async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
-                r = await c.post("/docs/doc:1/items/csv", cookies=_owner_cookies(),
+                c.cookies.update(_owner_cookies())
+                r = await c.post("/docs/doc:1/items/csv",
                                  files={"file": ("lines.csv", b"sku,quantity,sku\nA1,2,B2\n")})
         assert r.status_code == 400, r.text
         assert "same header" in r.json()["error"]
@@ -1732,7 +1737,8 @@ async def _run_import_scenario(importer: str, aspect: str) -> tuple[dict, _Impor
                 data = {"csv_ref": import_stage.write_stage(company, spec["csv"])}
                 if with_hash and importer == "inventory":
                     data["preview_hash"] = "reviewed"
-                return await c.post(path, data=data, cookies=cookies)
+                c.cookies.update(cookies)
+                return await c.post(path, data=data)
 
             if aspect == "confirm_required":
                 responses = [await submit(spec.get("review", spec["confirm"]), with_hash=False)]

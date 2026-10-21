@@ -47,8 +47,6 @@ from test_posting_roles_older_stock import (
 from test_posting_roles_rollout import _startup
 from ui import i18n
 
-pytestmark = pytest.mark.asyncio
-
 _FIELD = "inventory_account_code"
 _PLACED = "Existing inventory is ready"
 _UNMAPPED = "Older stock waits for a posting account"
@@ -1025,7 +1023,8 @@ async def _tab(ui_client, view=None, error=None, query: str = "") -> tuple[str, 
     with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
          patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})), \
          patch("ui.api_client.get_older_stock", new=get):
-        r = await ui_client.get(f"{_TAB}{query}", cookies=_cookies())
+        ui_client.cookies.update(_cookies())
+        r = await ui_client.get(f"{_TAB}{query}")
     assert r.status_code == 200
     return r.content.decode(), get
 
@@ -1092,8 +1091,9 @@ async def test_the_bulk_move_re_renders_the_card_with_a_flash(ui_client):
 
     moved = {**_VIEW, "result": {"moved": 2, "value": 1264.5, "code": "1130-P", "move_id": "m2"}}
     move = AsyncMock(return_value=moved)
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.move_older_stock", new=move):
-        r = await ui_client.post("/settings/accounting/older-stock/move", cookies=_cookies(),
+        r = await ui_client.post("/settings/accounting/older-stock/move",
                                  data={"selected": ["item:old-1", "item:old-2"], "code": "1130-P",
                                        "idempotency_key": "op-1"})
     assert r.status_code == 200
@@ -1105,7 +1105,7 @@ async def test_the_bulk_move_re_renders_the_card_with_a_flash(ui_client):
     refused = AsyncMock(side_effect=APIError(409, "OLD-1 is on an invoice not yet shipped (doc:1)."))
     with patch("ui.api_client.move_older_stock", new=refused), \
          patch("ui.api_client.get_older_stock", new=AsyncMock(return_value=_VIEW)):
-        r = await ui_client.post("/settings/accounting/older-stock/move", cookies=_cookies(),
+        r = await ui_client.post("/settings/accounting/older-stock/move",
                                  data={"selected": ["item:old-1"], "code": "1130-P", "idempotency_key": "op-2"})
     body = r.content.decode()
     assert r.status_code == 200 and 'id="older-stock-card"' in body
@@ -1126,7 +1126,8 @@ async def test_moving_all_matching_lots_states_count_and_value_and_asks_first(ui
     move = AsyncMock(return_value=moved)
     with patch("ui.api_client.move_all_older_stock", new=move), \
          patch("ui.api_client.get_older_stock", new=AsyncMock(return_value=_VIEW)):
-        r = await ui_client.post("/settings/accounting/older-stock/move-all?q=OLD", cookies=_cookies(),
+        ui_client.cookies.update(_cookies())
+        r = await ui_client.post("/settings/accounting/older-stock/move-all?q=OLD",
                                  data={"selection": "sel-120", "code": "1130-P", "idempotency_key": "op-3"})
     assert r.status_code == 200
     assert move.await_args.args[1:] == ({"q": "OLD"}, "sel-120", "1130-P", "op-3")
@@ -1142,9 +1143,10 @@ async def test_a_changed_selection_shows_the_new_matching_lots_to_confirm(ui_cli
                          "121 lots match now. Check them and confirm again.",
               "message_key": "older_stock.move.changed", "params": {"count": 121}}
     now = {**_VIEW, "matching": {"count": 121, "value": 4400.0, "selection": "sel-121"}}
+    ui_client.cookies.update(_cookies())
     with patch("ui.api_client.move_all_older_stock", new=AsyncMock(side_effect=APIError(409, "changed", detail))), \
          patch("ui.api_client.get_older_stock", new=AsyncMock(return_value=now)):
-        r = await ui_client.post("/settings/accounting/older-stock/move-all?q=OLD", cookies=_cookies(),
+        r = await ui_client.post("/settings/accounting/older-stock/move-all?q=OLD",
                                  data={"selection": "sel-120", "code": "1130-P", "idempotency_key": "op-4"})
     body = r.content.decode()
     assert r.status_code == 200 and "121 lots match now" in body

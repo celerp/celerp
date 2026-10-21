@@ -15,8 +15,6 @@ from ui import i18n
 from ui.api_client import APIError
 from ui.routes.inventory import _production_block
 
-pytestmark = pytest.mark.asyncio
-
 LOT = {"lot_item_id": "item:lot1", "sku": "RING-L1", "quantity": 2.0, "value": "100.00"}
 ISSUED = [{"item_id": "item:gold", "sku": "GOLD", "quantity": 10, "issued_qty": 10.0}]
 
@@ -64,9 +62,9 @@ def _hub(**more):
 ])
 async def test_each_undo_calls_its_operation_and_says_what_it_did(ui_client, action, call, args, said):
     a, b, c = _hub()
+    ui_client.cookies.update(_authed())
     with a, b, c, patch(f"ui.api_client.{call}", new=AsyncMock(return_value={})) as op:
-        r = await ui_client.post("/api/items/item:p/runs/mfg:1/act", data={"action": action, "idempotency_key": "k"},
-                                 cookies=_authed())
+        r = await ui_client.post("/api/items/item:p/runs/mfg:1/act", data={"action": action, "idempotency_key": "k"})
     assert r.status_code == 200, r.text
     assert op.await_args.args[1:] == args and op.await_args.kwargs == {"idempotency_key": f"k:{action}"}
     assert said in r.text and "flash--success" in r.text
@@ -77,15 +75,16 @@ async def test_a_refused_undo_says_why_in_the_users_language(ui_client):
         "message": "RING-L1 has changed since this run produced it.", "message_key": "mfg.output_changed",
         "params": {"lot": "RING-L1"}})
     a, b, c = _hub()
+    ui_client.cookies.update({**_authed(), "celerp_lang": "de"})
     with a, b, c, patch("ui.api_client.undo_mfg_receipt", new=AsyncMock(side_effect=refused)):
-        r = await ui_client.post("/api/items/item:p/runs/mfg:1/act", data={"action": "undo:item:lot1", "idempotency_key": "k"},
-                                 cookies={**_authed(), "celerp_lang": "de"})
+        r = await ui_client.post("/api/items/item:p/runs/mfg:1/act", data={"action": "undo:item:lot1", "idempotency_key": "k"})
     assert r.status_code == 200, r.text
     assert "RING-L1 wurde verändert, seit dieser Produktionslauf es hergestellt hat" in r.text
     assert "flash--error" in r.text
 
 
 async def test_the_in_production_queue_returns_materials_in_bulk(ui_client):
+    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.manufacturing_bulk_run_action",
               new=AsyncMock(return_value={"done": ["mfg:1", "mfg:2"], "skipped": []})) as bulk,
@@ -93,7 +92,7 @@ async def test_the_in_production_queue_returns_materials_in_bulk(ui_client):
     ):
         r = await ui_client.post("/manufacturing/runs/bulk/return?status=active",
                                  content=b"selected=mfg%3A1&selected=mfg%3A2&idempotency_key=k",
-                                 headers={"content-type": "application/x-www-form-urlencoded"}, cookies=_authed())
+                                 headers={"content-type": "application/x-www-form-urlencoded"})
     assert r.status_code == 200, r.text
     assert bulk.await_args.args[1:] == (["mfg:1", "mfg:2"], "return")
     assert bulk.await_args.kwargs == {"idempotency_key": "k:return"}
@@ -101,7 +100,8 @@ async def test_the_in_production_queue_returns_materials_in_bulk(ui_client):
 
 
 async def test_the_in_production_queue_offers_return_materials(ui_client):
+    ui_client.cookies.update(_authed())
     with patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": []})):
-        r = await ui_client.get("/manufacturing/production", cookies=_authed())
+        r = await ui_client.get("/manufacturing/production")
     assert r.status_code == 200, r.text
     assert "/manufacturing/runs/bulk/return?status=" in r.text and "Return materials" in r.text

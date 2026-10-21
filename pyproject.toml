@@ -107,6 +107,12 @@ asyncio_mode = "auto"
 # (a genuine deadlock still trips it) with headroom for parallel runs.
 addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser and not embedded_pg and not integration' --timeout=60"
 norecursedirs = [".git", ".claude", ".venv", "__pycache__", "build", "dist", "premium_modules/*/tests"]
+# A warning is a failure. The ignores below are raised inside third-party libraries only.
+filterwarnings = [
+    "error",
+    # passlib: imports the crypt module, deprecated since Python 3.11.
+    "ignore:'crypt' is deprecated:DeprecationWarning:passlib.utils",
+]
 pythonpath = [".", ".."]
 markers = [
     "browser: Playwright browser UI tests (requires running servers + Chromium). Run separately with: pytest tests/test_browser/ -m browser",

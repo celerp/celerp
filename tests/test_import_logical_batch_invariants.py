@@ -182,10 +182,10 @@ class _Operation:
 
         with patch("ui.api_client.import_rows", new=_capture):
             async with _browser() as ui:
+                ui.cookies.update({"celerp_token": self.ctx["admin_token"]})
                 r = await ui.post(
                     "/inventory/import/confirm",
                     data={"csv_ref": ref, "preview_hash": preview_hash},
-                    cookies={"celerp_token": self.ctx["admin_token"]},
                 )
         assert len(results) <= 1
         return r.status_code, (results[0] if results else None)
