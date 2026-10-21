@@ -68,6 +68,7 @@ from celerp.services.units import (
     get_company_units,
     is_pieces_unit,
     is_weight_unit,
+    validate_line_quantity,
     validate_quantity,
 )
 from celerp_inventory.projections import is_core_item_key
@@ -3944,11 +3945,16 @@ async def write_import_batch(
                 "import.row.unknown_unit", f"sell_by '{sell_by}' is not a valid unit", unit=sell_by)))
             continue
 
-        # Default Sell Qty is held to the item's unit: a value the record sets, and a stored
-        # number when the record changes the unit.
+        # Quantity and Default Sell Qty are held to the item's unit: a value the record sets,
+        # and a stored number when the record changes the unit.
         stored_state = (stored_proj.state or {}) if stored_proj is not None else {}
         unit_changed = bool(sell_by) and sell_by != str(stored_state.get("sell_by") or "")
+        qty = _to_float(data["quantity"]) if "quantity" in data else (
+            _to_float(stored_state.get("quantity")) if unit_changed else None)
         try:
+            if qty is not None:
+                validate_line_quantity(qty, sell_by or stored_state.get("sell_by"), unit_map,
+                                       label=t("field.label.quantity"), require_positive=False)
             if "default_sell_qty" in data:
                 data["default_sell_qty"] = validate_default_sell_qty(
                     data["default_sell_qty"], sell_by or stored_state.get("sell_by"), unit_map)

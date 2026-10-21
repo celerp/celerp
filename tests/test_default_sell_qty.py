@@ -494,6 +494,37 @@ async def test_raw_batch_import_refuses_an_invalid_value(client, session, auth):
     assert (await _state(session, auth, "item:dsq-ok"))["default_sell_qty"] == "full"
 
 
+def _batch_record(entity_id: str, event_type: str, **data) -> dict:
+    return {"entity_id": entity_id, "event_type": event_type, "source": "csv",
+            "idempotency_key": f"dsq-{uuid.uuid4().hex}", "data": data}
+
+
+@pytest.mark.parametrize("event_type", ["item.created", "item.patched"])
+async def test_raw_batch_import_refuses_a_quantity_finer_than_its_unit(client, session, auth, event_type):
+    fine = f"item:{uuid.uuid4()}" if event_type == "item.created" else await _lot(client, auth, qty=6)
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
+    ok = f"item:{uuid.uuid4()}"
+    r = await client.post("/items/import/batch", headers=auth["headers"], json={"records": [
+        _batch_record(fine, event_type, sku="DSQ-FINE", name="Fine", quantity=0.27, sell_by="carat"),
+        _batch_record(ok, "item.created", sku="DSQ-TENTH", name="Tenth", quantity=0.3, sell_by="carat"),
+    ]})
+    assert r.status_code == 200, r.text
+    assert r.json()["created"] == 1 and len(r.json()["errors"]) == 1, r.json()
+    assert "DSQ-FINE" in r.text and "1 decimal places" in r.text, r.text
+    assert (await _state(session, auth, ok))["quantity"] == 0.3
+    stored = (await _state(session, auth, fine)) if event_type == "item.patched" else None
+    assert stored is None or stored["quantity"] == 6, stored
+
+
+async def test_raw_batch_import_refuses_a_unit_change_under_a_finer_stored_quantity(client, session, auth):
+    item = await _lot(client, auth, qty=0.27)
+    r = await client.post("/items/import/batch", headers=auth["headers"], json={"records": [
+        _batch_record(item, "item.patched", sell_by="piece")]})
+    assert r.status_code == 200, r.text
+    assert len(r.json()["errors"]) == 1 and "decimal places" in r.text, r.json()
+    assert (await _state(session, auth, item))["sell_by"] == "carat"
+
+
 
 async def test_an_import_update_that_changes_the_unit_under_a_stored_fraction_is_refused(client, session, auth, shelf):
     sku = f"DSQ-U-{uuid.uuid4().hex[:5]}"
