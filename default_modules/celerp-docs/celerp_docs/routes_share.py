@@ -29,7 +29,7 @@ import uuid as _uuid
 from datetime import date as _date, datetime, time as _time, timedelta, timezone
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -648,7 +648,9 @@ async def view_shared_doc(
 
 
 @public_router.options("/share/{token}")
-async def share_cors_preflight(token: str) -> Response:
+async def share_cors_preflight(
+    token: str = Path(description="Token identifying the shared document link."),
+) -> Response:
     """Handle CORS preflight for the share endpoint."""
     return Response(
         headers={
