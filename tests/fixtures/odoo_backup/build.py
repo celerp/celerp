@@ -245,6 +245,9 @@ LANDED_COST = (D(10), "2024-03-15 08:00:00")
 # The widget is tracked by lot. id, move, lot, quantity done, from, to
 STOCK_MOVE_LINES = [(1, 1, 1, D(6), 1, 8), (2, 1, 2, D(4), 1, 8), (3, 2, 2, D(4), 8, 2), (4, 3, 1, D(2), 8, 9),
                     (5, 4, 1, D(1), 5, 8), (6, 5, 1, D(3), 8, 2)]
+# id, name, ratio to the reference unit, rounding; every product counts in units
+UOMS = [(1, "Units", "1", "0.01"), (2, "Dozens", "0.08333333333333333", "0.01")]
+UNITS, DOZENS = 1, 2
 # id, name; the third lot was made and never stocked
 LOTS = [(1, "LOT-0001"), (2, "LOT-0002"), (3, "LOT-0003")]
 # location, product, lot, quantity
@@ -493,10 +496,16 @@ def _stock(out: Tables, version: int) -> None:
     out.add("stock_valuation_layer", ["id", "company_id", "product_id", "stock_move_id", "quantity", "value",
                                       "description", "create_date"], layers)
     moves_ = {m[0]: m for m in STOCK_MOVES}
+    out.add("uom_uom", ["id", "name", "category_id", "factor", "rounding", "active"],
+            [[i, json.dumps({"en_US": n}) if version >= 16 else n, 1, factor, rounding, "t"]
+             for i, n, factor, rounding in UOMS])
+    # Odoo 17 also stores what each line moved in its product's unit.
     out.add("stock_move_line", ["id", "move_id", "product_id", "lot_id", "location_id", "location_dest_id",
-                                "quantity" if version >= 17 else "qty_done", "reference", "date", "state",
+                                "product_uom_id", "quantity" if version >= 17 else "qty_done",
+                                *(["quantity_product_uom"] if version >= 17 else []), "reference", "date", "state",
                                 "company_id"],
-            [[i, move, moves_[move][3], lot, src, dest, f"{qty}", moves_[move][1], moves_[move][2], moves_[move][7], 1]
+            [[i, move, moves_[move][3], lot, src, dest, UNITS, f"{qty}", *([f"{qty}"] if version >= 17 else []),
+              moves_[move][1], moves_[move][2], moves_[move][7], 1]
              for i, move, lot, qty, src, dest in STOCK_MOVE_LINES])
     out.add("stock_quant", ["id", "product_id", "company_id", "location_id", "lot_id", "quantity",
                             "reserved_quantity"],

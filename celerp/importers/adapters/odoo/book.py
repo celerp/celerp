@@ -24,7 +24,7 @@ import mimetypes
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from celerp.importers.adapters.attachment_files import MAX_ATTACHMENT_BYTES
 from celerp.importers.adapters.base import ScanError
@@ -110,6 +110,7 @@ TABLES = (
     "account_tax", "account_tax_repartition_line", "account_move", "account_move_line",
     "account_move_line_account_tax_rel", "account_partial_reconcile", "account_payment", "product_product",
     "product_template", "stock_location", "stock_move", "stock_move_line", "stock_quant", "stock_valuation_layer", "ir_attachment",
+    "uom_uom",
     "account_analytic_account", "account_analytic_plan", "account_analytic_tag",
     "account_analytic_tag_account_move_line_rel",
 )
@@ -129,7 +130,7 @@ COLUMNS = frozenset({
     "qty_done", "quantity", "ref",
     "reference", "repartition_type", "res_field", "res_id", "res_model", "sequence", "state", "stock_move_id",
     "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "usage", "user_type_id",
-    "url", "value", "vat", "zip",
+    "url", "value", "vat", "zip", "factor", "rounding", "uom_id", "product_uom_id", "quantity_product_uom",
 })
 # The rows kept of a table the reader needs only a few rows of: Odoo names every record in
 # ir_model_data, and only the names of the account types are read.
@@ -227,6 +228,8 @@ class _Reader:
         self.accounts: dict[str, str] = {}          # account id -> code
         self.partners: dict[str, str] = {}          # partner id -> contact key of its commercial partner
         self.products: dict[str, str] = {}          # product id -> item code
+        self.uoms: dict[str, Row] = {}              # unit of measure id -> its row
+        self.units: dict[str, Row | None] = {}      # product id -> its unit of measure's row
         self.taxes: dict[str, str] = {}             # tax id -> tax code name
         self.rates: dict[str, Decimal] = {}         # tax id -> rate percent, below zero when withheld
         self.documents: dict[str, Document] = {}    # move id -> document
@@ -328,6 +331,8 @@ class _Reader:
                 self.text(template.get("description_sale")) or None, _dec(price) if price else None,
                 _true(r["active"]) and _true(template["active"]))
         self.products = {r["id"]: codes[r["id"]] for r in products}
+        self.uoms = {r["id"]: r for r in self.rows.get("uom_uom", [])}
+        self.units = {r["id"]: self.uoms.get(templates[r["product_tmpl_id"]].get("uom_id")) for r in products}
 
     def read_taxes(self) -> None:
         rows = sorted(self.table("account_tax"), key=lambda r: int(r["id"]))
@@ -720,21 +725,25 @@ class _Reader:
                 continue
             # A move Odoo recorded without lines moves as one line of its own.
             ordered, in_units = _dec(r.get("product_uom_qty")), _dec(r["product_qty"])
-            parts = [(f"stock:{ln['id']}", ln.get("lot_id"), ln["location_id"], ln["location_dest_id"],
-                      _dec(ln.get(done))) for ln in sorted(lines.get(r["id"], []), key=lambda ln: int(ln["id"]))] \
-                or [(f"stock:move:{r['id']}", None, r["location_id"], r["location_dest_id"], ordered)]
-            # What moved is what the lines record, in the move's unit of measure, which can differ
-            # from what was ordered; lines that record nothing share the order.
-            weights = [p[4] for p in parts]
-            if any(weights):
-                moved = sum(weights, ZERO)
-                quantities = _shares(moved if ordered in (ZERO, in_units) else moved * in_units / ordered, weights)
-            else:
+            own = sorted(lines.get(r["id"], []), key=lambda ln: int(ln["id"]))
+            parts = [(f"stock:{ln['id']}", ln.get("lot_id"), ln["location_id"], ln["location_dest_id"]) for ln in own] \
+                or [(f"stock:move:{r['id']}", None, r["location_id"], r["location_dest_id"])]
+            # What moved is what the lines record, which can differ from what was ordered: in the
+            # product's unit when each line's own unit is known, else in the move's unit; lines that
+            # record nothing share the order.
+            counted = [self._in_product_units(ln, done, r["product_id"]) for ln in own]
+            by_line = bool(own) and None not in counted
+            weights = counted if by_line else [_dec(ln.get(done)) for ln in own] or [ordered]
+            if not any(weights):
                 weights = [Decimal(1)] * len(parts)
                 quantities = _shares(in_units, weights)
+            elif by_line or ordered in (ZERO, in_units):
+                quantities = list(weights)
+            else:
+                quantities = _shares(sum(weights, ZERO) * in_units / ordered, weights)
             values = allocate_pro_rata(by_move[r["id"]], weights, base) if by_move[r["id"]] else [ZERO] * len(parts)
             ref = r.get("reference") or r.get("name") or ""
-            for (record, lot, src, dest, _), quantity, value in zip(parts, quantities, values):
+            for (record, lot, src, dest), quantity, value in zip(parts, quantities, values):
                 if src in names and dest in names:
                     leaves, enters = bucket(r["product_id"], src, lot), bucket(r["product_id"], dest, lot)
                     if leaves == enters:
@@ -766,6 +775,20 @@ class _Reader:
         self.out.lots = len(stocked)
         if len(lots) > len(stocked):
             book.skipped[UNSTOCKED_LOT] = len(lots) - len(stocked)
+
+    def _in_product_units(self, line: Row, done: str, product: str) -> Decimal | None:
+        """What a move line moved, in its product's unit of measure. Odoo 17 stores it; before
+        that, the line's own unit converts through each unit's ratio to its category's reference
+        unit, rounded to the product's unit as Odoo rounds it. None when a unit is not known."""
+        if line.get("quantity_product_uom") is not None:
+            return _dec(line["quantity_product_uom"])
+        own, unit = self.uoms.get(line.get("product_uom_id")), self.units[product]
+        if own is None or unit is None:
+            return None
+        if own is unit:
+            return _dec(line.get(done))
+        quantity, step = _dec(line.get(done)) * _dec(unit["factor"]) / _dec(own["factor"]), _dec(unit["rounding"])
+        return (quantity / step).quantize(Decimal(1), ROUND_HALF_UP) * step if step else quantity
 
     # ── Attachments ──────────────────────────────────────────────────────────
 

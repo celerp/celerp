@@ -852,17 +852,21 @@ def test_each_lot_and_location_is_stock_of_its_product(tmp_path, version):
         (LOT_2, "WID-1", "WID-1", "LOT-0002", "WH/Stock")]
 
 
-def _receipt(version: int, lot_quantities: tuple[str, str], ordered: str = "10", ordered_in_units: str = "10") -> list:
+def _receipt(version: int, lot_quantities: tuple[str, str], ordered: str = "10", ordered_in_units: str = "10",
+             line_units: tuple[int, int] = (build.UNITS, build.UNITS)) -> list:
     """The first receipt as Odoo records it done: `ordered` in the move's unit of measure (and
-    `ordered_in_units` in the product's), and what actually arrived of each lot on its lines."""
+    `ordered_in_units` in the product's), and what actually arrived of each lot on its lines,
+    each counted in its own unit."""
     tables = build.tables(version)
     columns, rows = tables.rows["stock_move"]
     move = next(r for r in rows if r[0] == 1)
     move[columns.index("product_uom_qty")], move[columns.index("product_qty")] = ordered, ordered_in_units
     columns, rows = tables.rows["stock_move_line"]
     done = columns.index("quantity" if version >= 17 else "qty_done")
-    for row, quantity in zip((r for r in rows if r[columns.index("move_id")] == 1), lot_quantities):
-        row[done] = quantity
+    for row, quantity, unit in zip((r for r in rows if r[columns.index("move_id")] == 1), lot_quantities, line_units):
+        row[done], row[columns.index("product_uom_id")] = quantity, unit
+        if version >= 17:
+            row[columns.index("quantity_product_uom")] = f"{D(quantity) * (12 if unit == build.DOZENS else 1)}"
     return tables
 
 
@@ -881,12 +885,32 @@ def test_a_done_move_carries_what_actually_moved_of_each_lot(tmp_path, version, 
     assert moved["stock:2"] == (LOT_2, D(arrived[1]), values[1])
 
 
-def test_a_done_move_in_another_unit_of_measure_carries_the_products_units(tmp_path):
-    # 1 dozen ordered, 1 dozen arrived: 7 of LOT-0001 and 5 of LOT-0002 counted in units would
-    # be wrong; the lines count dozens, so 0.5 and 0.5 dozen are 6 and 6 units.
-    tables = _receipt(17, ("0.5", "0.5"), ordered="1", ordered_in_units="12")
+@pytest.mark.parametrize("version", VERSIONS)
+def test_a_done_move_in_another_unit_of_measure_carries_the_products_units(tmp_path, version):
+    # 1 dozen ordered, 1 dozen arrived: the lines count dozens, so 0.5 and 0.5 dozen are 6 and 6 units.
+    tables = _receipt(version, ("0.5", "0.5"), ordered="1", ordered_in_units="12", line_units=(build.DOZENS,) * 2)
     moved = {a.source_external_id: a.quantity for a in
-             _adapter().build_manifest(_file(tmp_path, build.backup(17, tables)), FULL).bundle.inventory_adjustments}
+             _adapter().build_manifest(_file(tmp_path, build.backup(version, tables)), FULL).bundle.inventory_adjustments}
+    assert (moved["stock:1"], moved["stock:2"]) == (D(6), D(6))
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_each_move_line_counts_in_its_own_unit_of_measure(tmp_path, version):
+    # 1 dozen ordered: LOT-0001's line counts 0.5 dozen and LOT-0002's counts 6 units, so each
+    # lot received 6 units and half the receipt's 300.
+    tables = _receipt(version, ("0.5", "6"), ordered="1", ordered_in_units="12", line_units=(build.DOZENS, build.UNITS))
+    manifest = _adapter().build_manifest(_file(tmp_path, build.backup(version, tables)), FULL)
+    moved = {a.source_external_id: (a.item_external_id, a.quantity, a.value) for a in manifest.bundle.inventory_adjustments}
+    assert moved["stock:1"] == (LOT_1, D(6), D(150))
+    assert moved["stock:2"] == (LOT_2, D(6), D(150))
+
+
+def test_move_lines_without_a_known_unit_count_in_the_moves_unit(tmp_path):
+    # A backup without the units of measure: the lines count in the move's unit, dozens here.
+    tables = _receipt(13, ("0.5", "0.5"), ordered="1", ordered_in_units="12")
+    del tables.rows["uom_uom"]
+    moved = {a.source_external_id: a.quantity for a in
+             _adapter().build_manifest(_file(tmp_path, build.backup(13, tables)), FULL).bundle.inventory_adjustments}
     assert (moved["stock:1"], moved["stock:2"]) == (D(6), D(6))
 
 
