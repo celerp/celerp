@@ -530,6 +530,7 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
                          f"{s.get('sku') or item_id} is no longer stock the company holds (it is "
                          f"{s.get('status') or 'gone'}), so nothing can be returned to it.",
                          sku=s.get("sku") or item_id, status=s.get("status"))
+        await require_unit_precision(op.session, op.company_id, [(s, line["quantity"])])
         befores[item_id] = None if off_books else op.round(held)
         if op.books and values[item_id]:
             lot_account(s)

@@ -131,6 +131,25 @@ async def test_a_manufacturing_issue_or_receipt_finer_than_its_unit_is_refused(c
     assert (await _state(session, auth, r.json()["lot_item_id"]))["quantity"] == 0.5
 
 
+async def test_returning_run_components_finer_than_their_unit_is_refused_before_any_write(client, session, auth):
+    order, _, used = await _carat_run(client, auth, 1)
+    assert (await issue(client, auth, order)).status_code == 200
+    assert (await _state(session, auth, used))["quantity"] == 9
+    before = (await _state(session, auth, order))["inputs"]
+
+    async def give_back(qty: float):
+        return await client.post(f"/manufacturing/{order}/return", headers=auth["headers"],
+                                 json={"items": [{"item_id": used, "quantity": qty}]})
+
+    r = await give_back(0.275)
+    assert r.status_code == 422 and "2 decimal places" in r.text, r.text
+    assert (await _state(session, auth, used))["quantity"] == 9
+    assert (await _state(session, auth, order))["inputs"] == before
+    r = await give_back(0.25)
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, used))["quantity"] == 9.25
+
+
 async def test_an_open_manufacturing_run_blocks_fewer_decimals_until_it_is_cancelled(client, session, auth):
     order, made, _ = await _carat_run(client, auth, 0.27)
     sku = await _sku(session, auth, made)
