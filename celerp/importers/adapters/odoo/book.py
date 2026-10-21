@@ -26,7 +26,7 @@ from decimal import Decimal
 from celerp.importers.adapters.base import ScanError
 from celerp.importers.adapters.exports import steps
 from celerp.importers.adapters.exports.book import (
-    PARTY_SIGN, ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, TaxCode,
+    PARTY_SIGN, ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, LineTax, TaxCode,
 )
 from celerp.importers.adapters.odoo.dump import Backup, Row
 from ui.i18n import t
@@ -89,7 +89,6 @@ DRAFT_ENTRY = "Draft or cancelled journal entry"
 OFF_BALANCE_LINE = "Off-balance journal item"
 NO_CONTACT = "Draft document without a contact"
 LOT = "Lot or serial number"
-WITHHOLDING = "Withholding tax rate"
 
 # Odoo models whose files a migration reads.
 TARGET_MODELS = frozenset({"account.move", "account.payment", "res.partner", "product.product", "product.template"})
@@ -112,8 +111,8 @@ COLUMNS = frozenset({
     "move_id", "move_type", "name", "partner_id", "partner_type", "payment_id", "payment_type", "phone",
     "price_subtotal", "price_total", "price_unit", "product_id", "product_qty", "product_tmpl_id", "quantity", "ref",
     "reference", "repartition_type", "res_field", "res_id", "res_model", "sequence", "state", "stock_move_id",
-    "store_fname", "street", "street2", "supplier_rank", "tax_id", "type", "usage", "user_type_id", "value", "vat",
-    "zip",
+    "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "usage", "user_type_id",
+    "value", "vat", "zip",
 })
 
 
@@ -192,6 +191,7 @@ class _Reader:
         self.partners: dict[str, str] = {}          # partner id -> contact key of its commercial partner
         self.products: dict[str, str] = {}          # product id -> item code
         self.taxes: dict[str, str] = {}             # tax id -> tax code name
+        self.rates: dict[str, Decimal] = {}         # tax id -> rate percent, below zero when withheld
         self.documents: dict[str, Document] = {}    # move id -> document
 
     def table(self, name: str) -> list[Row]:
@@ -296,11 +296,8 @@ class _Reader:
                 accounts.setdefault(tax, self.accounts[r["account_id"]])
         for r in rows:
             rate = _dec(r["amount"]) if r["amount_type"] in ("percent", "division") else ZERO
-            if rate < 0:
-                self.book.skipped[WITHHOLDING] += 1
-                continue
             self.book.tax_codes[names[r["id"]]] = TaxCode(names[r["id"]], rate, accounts.get(r["id"]))
-            self.taxes[r["id"]] = names[r["id"]]
+            self.taxes[r["id"]], self.rates[r["id"]] = names[r["id"]], rate
 
     # ── Journals and documents ───────────────────────────────────────────────
 
@@ -322,7 +319,7 @@ class _Reader:
         tax_rel: dict[str, list[str]] = defaultdict(list)
         for r in self.rows.get("account_move_line_account_tax_rel", []):
             if r["account_tax_id"] in self.taxes:
-                tax_rel[r["account_move_line_id"]].append(self.taxes[r["account_tax_id"]])
+                tax_rel[r["account_move_line_id"]].append(r["account_tax_id"])
 
         ordered = sorted(moves.values(), key=lambda m: (m["date"], int(m["id"])))
         for move in ordered:
@@ -423,24 +420,48 @@ class _Reader:
             return
         currency = self.currency(move["currency_id"])
         sign = PARTY_SIGN[doc_type]
+
+        def amount(r: Row) -> Decimal:
+            return -sign * (_dec(r["amount_currency"]) if book.is_foreign(currency)
+                            else _dec(r["debit"]) - _dec(r["credit"]))
+
         lines: list[DocLine] = []
         for r in sorted(rows, key=lambda r: (int(r.get("sequence") or 0), int(r["id"]))):
             kind = self._line_kind(r)
             if kind is None or r["account_id"] not in self.accounts:
                 continue
-            amount = _dec(r["amount_currency"]) if book.is_foreign(currency) else _dec(r["debit"]) - _dec(r["credit"])
-            taxes = tax_rel.get(r["id"], [])
+            net = amount(r)
             tax = _dec(r["price_total"]) - _dec(r["price_subtotal"]) if kind == "product" else ZERO
             discount = _dec(r.get("discount"))
             lines.append(DocLine(self.products.get(r["product_id"] or ""), r["name"] or "", _dec(r["quantity"]),
-                                 _dec(r["price_unit"]), discount or None, -sign * amount, tax,
-                                 taxes[0] if len(taxes) == 1 else None, self.accounts[r["account_id"]]))
+                                 _dec(r["price_unit"]), discount or None, net,
+                                 self._line_taxes(tax_rel.get(r["id"], []), net, tax), self.accounts[r["account_id"]]))
+        # Each tax totals what Odoo booked on its tax lines: Odoo can round a tax on the whole
+        # document, and that difference lands on the last line carrying the tax.
+        booked: dict[str | None, Decimal] = defaultdict(lambda: ZERO)
+        for r in rows:
+            if r.get("tax_line_id") and r["account_id"] in self.accounts:
+                booked[self.taxes.get(r["tax_line_id"])] += amount(r)
+        for code, target in booked.items():
+            carrying = [x for ln in lines for x in ln.taxes if x.code == code]
+            if difference := target - sum((x.amount for x in carrying), ZERO):
+                if carrying:
+                    carrying[-1].amount += difference
+                elif lines:
+                    ([ln for ln in lines if ln.taxes] or lines)[-1].taxes.append(LineTax(code, difference))
         total, tax_total = _dec(move["amount_total"]), _dec(move["amount_tax"])
-        unspread = tax_total - sum((ln.tax for ln in lines), ZERO)
-        if unspread and lines:
-            # Odoo can round tax on the whole document; the difference sits on its last taxed line.
-            taxed = [ln for ln in lines if ln.tax_code] or lines
-            taxed[-1].tax += unspread
+        withheld: dict[str, Decimal] = defaultdict(lambda: ZERO)
+        if doc_type in ("invoice", "credit_note"):
+            # A sale holds no tax below zero: tax the customer withholds is part of the total,
+            # settled from the withholding account.
+            for ln in lines:
+                kept = [x for x in ln.taxes if x.code is None or book.tax_codes[x.code].rate >= 0]
+                for x in ln.taxes:
+                    if x not in kept:
+                        withheld[book.tax_account_for(x.code)] -= x.amount
+                ln.taxes = kept
+            total += sum(withheld.values(), ZERO)
+            tax_total += sum(withheld.values(), ZERO)
         number = move["name"] if move["name"] and move["name"] != "/" else f"Draft {move['id']}"
         if sum((ln.net + ln.tax for ln in lines), ZERO) != total:
             raise ScanError(t("migration.err_odoo_doc_total", number=number))
@@ -455,8 +476,18 @@ class _Reader:
             key=key, number=number, doc_type=doc_type, source_type=source, contact=contact, reference="",
             date=_day(move["date"]), due=_day(move.get("invoice_date_due")),
             currency=currency, status=status, lines=lines, total=total, tax_total=tax_total, paid=total - due,
-            amount_due=due)
+            amount_due=due, withheld=dict(withheld))
         self.documents[move["id"]] = book.documents[key]
+
+    def _line_taxes(self, taxes: list[str], net: Decimal, tax: Decimal) -> list[LineTax]:
+        """A line's tax split across its taxes by rate, the rounding remainder on the last."""
+        if not taxes:
+            return [LineTax(None, tax)] if tax else []
+        rates = [self.rates[i] for i in taxes]
+        out = [LineTax(self.taxes[i], (net * rate / 100).quantize(tax) if any(rates) else ZERO)
+               for i, rate in zip(taxes, rates)]
+        out[-1].amount += tax - sum((x.amount for x in out), ZERO)
+        return out
 
     def _line_kind(self, row: Row) -> str | None:
         """A document line Celerp keeps: a product line or a cash rounding line. Tax, payment

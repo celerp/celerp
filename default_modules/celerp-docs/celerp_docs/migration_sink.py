@@ -146,7 +146,8 @@ class DocsMigrationSink:
 
 async def _tax_rates(context: SinkContext, docs: Sequence[CIFDocument]) -> dict[str, tuple[str, float]]:
     """Source tax code -> (Celerp tax name, rate) for the tax codes this run imported."""
-    names = await mapped_targets(context, TAX, [li.tax_code_external_id for d in docs for li in d.line_items])
+    names = await mapped_targets(context, TAX, [x.tax_code_external_id for d in docs for li in d.line_items
+                                                for x in li.taxes])
     company = await context.session.get(Company, context.company_id)
     rates = {str(t.get("name", "")).strip().lower(): (t.get("name"), float(t.get("rate") or 0))
              for t in (company.settings or {}).get("taxes") or []}
@@ -172,7 +173,9 @@ async def _import_documents(context: SinkContext, records: Sequence[CIFSourceRec
     contacts = await mapped_targets(context, CONTACT, [d.contact_external_id for d in docs])
     items = await mapped_targets(context, ITEM, [li.item_external_id for d in docs for li in d.line_items])
     accounts = await mapped_targets(context, ACCOUNT, [
-        *(a for d in docs for li in d.line_items for a in (li.account_external_id, li.tax_account_external_id)),
+        *(a for d in docs for li in d.line_items for a in (li.account_external_id,
+                                                           *(x.tax_account_external_id for x in li.taxes))),
+        *(a for d in docs for a in d.metadata.get("withheld") or {}),
         *(a for d in docs for a in (d.metadata.get("cost_of_sales") or {}).values()),
     ])
     taxes = await _tax_rates(context, docs)
@@ -250,12 +253,14 @@ def _doc_record(
             item_id = items.get(line.item_external_id)
             if item_id is None:
                 return f"{label}: item {line.item_external_id} was not imported."
-        line_taxes = None
-        if line.tax_code_external_id:
-            if line.tax_code_external_id not in taxes:
-                return f"{label}: tax code {line.tax_code_external_id} was not imported."
-            code, rate = taxes[line.tax_code_external_id]
-            line_taxes = [{"code": code, "rate": rate, "amount": _money(line.tax_amount or Decimal(0), currency)}]
+        line_taxes = []
+        for tax in line.taxes:
+            if tax.tax_code_external_id is None:
+                continue
+            if tax.tax_code_external_id not in taxes:
+                return f"{label}: tax code {tax.tax_code_external_id} was not imported."
+            code, rate = taxes[tax.tax_code_external_id]
+            line_taxes.append({"code": code, "rate": rate, "amount": _money(tax.amount, currency)})
         lines.append({k: v for k, v in {
             **identities.get(item_id, {}),
             "item_id": item_id,
@@ -264,7 +269,7 @@ def _doc_record(
             "quantity": float(line.quantity),
             "unit_price": to_stored_float(line.unit_price),
             "discount_pct": to_stored_float(line.discount_percent) if line.discount_percent else None,
-            "taxes": line_taxes,
+            "taxes": line_taxes or None,
             "line_total": _money(line.total_price, currency),
         }.items() if v is not None})
     tax = record.tax_total or Decimal(0)
@@ -335,13 +340,17 @@ def _posting_problem(record: CIFDocument, contacts: dict[str, str], accounts: di
         for account, amount in _postings(record, line):
             if amount and account not in accounts:
                 return f"account {account} was not imported."
+    for account in record.metadata.get("withheld") or {}:
+        if account not in accounts:
+            return f"account {account} was not imported."
     return None
 
 
 def _postings(record: CIFDocument, line) -> list[tuple[str | None, Decimal | None]]:
-    """(source account, amount) a line posts, before its sign: its net and tax, then any
-    cost of sales, to the cost account and back out of inventory."""
-    out = [(line.account_external_id, line.total_price), (line.tax_account_external_id, line.tax_amount)]
+    """(source account, amount) a line posts, before its sign: its net, then each tax, then
+    any cost of sales, to the cost account and back out of inventory."""
+    out = [(line.account_external_id, line.total_price),
+           *((tax.tax_account_external_id, tax.amount) for tax in line.taxes)]
     if line.cost_basis:
         cost = record.metadata.get("cost_of_sales") or {}
         out += [(cost.get("cost_account"), -line.cost_basis), (cost.get("inventory_account"), line.cost_basis)]
@@ -354,12 +363,13 @@ def _entries(record: CIFDocument, base: str, accounts: dict[str, str]) -> list[d
     the lines add up to its converted total; cost of sales is already in the base currency."""
     sign = _LINE_SIGN[record.doc_type]
     converted = iter(split_to_base([x for line in record.line_items
-                                    for x in (line.total_price, line.tax_amount or Decimal(0))],
+                                    for x in (line.total_price, *(tax.amount for tax in line.taxes))],
                                    record.exchange_rate or 1, base))
     entries = []
     for line in record.line_items:
         for index, (account, amount) in enumerate(_postings(record, line)):
-            value = to_stored_float(sign * (next(converted) if index < 2 else round_money(amount, base)))
+            value = to_stored_float(sign * (next(converted) if index <= len(line.taxes)
+                                            else round_money(amount, base)))
             if value:
                 entries.append({"account": accounts[account], "debit": max(value, 0.0), "credit": max(-value, 0.0)})
     return entries
@@ -406,6 +416,17 @@ async def _post_document(
                      "bank_account": await _party_account(context, record), "method": "starting_balance", "conversion_rate": _rate(record, base)},
                     source="migration", actor_id=context.user_id,
                     idempotency_key=context.idempotency_key(record, "paid_at_start"), commit=False,
+                    moves_cash=False,
+                )
+            # Tax the customer kept back settles the invoice from the withholding account.
+            for account, amount in (record.metadata.get("withheld") or {}).items():
+                await apply_doc_payment(
+                    context.session, context.company_id, outcome.entity_id,
+                    {"amount": _money(Decimal(amount), _currency(record, base)), "payment_date": _date(record),
+                     "bank_account": accounts[account], "method": "withholding",
+                     "conversion_rate": _rate(record, base)},
+                    source="migration", actor_id=context.user_id,
+                    idempotency_key=context.idempotency_key(record, f"withheld:{account}"), commit=False,
                     moves_cash=False,
                 )
     except Exception as exc:

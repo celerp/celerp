@@ -325,7 +325,7 @@ def _apply_tax_code(company: Company, tax: CIFTaxCode) -> str | None:
                 return f"A tax named {tax.name} already exists with a different rate."
             return None
     taxes.append({
-        "name": tax.name, "rate": rate, "tax_type": "both", "is_default": False,
+        "name": tax.name, "rate": rate, "tax_type": "purchase" if rate < 0 else "both", "is_default": False,
         "description": "", "is_compound": False, "default_order": 0,
     })
     settings["taxes"] = taxes

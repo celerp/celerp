@@ -127,7 +127,7 @@ def test_translated_names_from_odoo_16_are_read_in_english(tmp_path):
     assert {a.code: a.name for a in scan.bundle.accounts}["101000"] == "Bank"
     assert {i.sku: i.name for i in scan.bundle.items} == {"SRV": "Consulting", "WID-1": "Widget"}
     assert {i.sku: i.description for i in scan.bundle.items}["WID-1"] == "Widget for sale"
-    assert sorted(t.name for t in scan.bundle.tax_codes) == ["15%", "15% [2]"]
+    assert sorted(t.name for t in scan.bundle.tax_codes) == ["15%", "15% [2]", "PST 7%", "WHT 3%", "WHT 3% [5]"]
 
     with Backup(tmp_path / "harbour.zip") as backup:
         assert backup.text('{"es_ES": "Banco"}') == "Banco"     # no English name: the first one stored
@@ -174,9 +174,11 @@ def test_chart_taxes_contacts_and_products(tmp_path, version):
         "500000": ("cogs", None), "110100": ("asset", None), "110200": ("asset", None),
         "999999": ("equity", "retained_earnings"), "300000": ("equity", None),
         "441000": ("revenue", "exchange_difference"), "641000": ("expense", None),
+        "115000": ("asset", "tax"), "215000": ("liability", "tax"),
     }
     assert {(t.name, t.rate_percent, t.account_external_id) for t in bundle.tax_codes} == {
-        ("15%", D(15), "251000"), ("15% [2]", D(15), "131000")}
+        ("15%", D(15), "251000"), ("15% [2]", D(15), "131000"), ("PST 7%", D(7), "251000"),
+        ("WHT 3%", D(-3), "115000"), ("WHT 3% [5]", D(-3), "215000")}
     contacts = {c.name: (sorted(c.roles), c.email) for c in bundle.contacts}
     # A contact person is its company; internal users and the company itself are not contacts;
     # a second contact of the same name is told apart by its id.
@@ -209,13 +211,16 @@ def test_invoices_bills_payments_and_journals(tmp_path, version):
         "S:INV/2024/00004": ("invoice", "paid", D(100), D(0)),
         "S:Draft 14": ("invoice", "draft", D("115.00"), D(0)),
         "S:INV/2024/00003": ("invoice", "void", D("57.50"), D(0)),
+        "S:INV/2024/00005": ("invoice", "awaiting_payment", D("179.50"), D("179.50")),
+        "S:INV/2024/00006": ("invoice", "awaiting_payment", D(200), D(194)),
+        "P:BILL/2024/04/0001": ("bill", "awaiting_payment", D(112), D(112)),
     }
     invoice = docs["S:INV/2024/00001"]
     assert invoice.contact_external_id == "Lakeshore Trading Co"
-    assert [(ln.item_external_id, ln.quantity, ln.unit_price, ln.total_price, ln.tax_amount, ln.account_external_id,
-             ln.tax_code_external_id) for ln in invoice.line_items] == [
-        ("WID-1", D(4), D(50), D(200), D(30), "400000", "15%"),
-        ("SRV", D(1), D(100), D(100), D(15), "400000", "15%")]
+    assert [(ln.item_external_id, ln.quantity, ln.unit_price, ln.total_price, ln.account_external_id)
+            for ln in invoice.line_items] == [("WID-1", D(4), D(50), D(200), "400000"),
+                                              ("SRV", D(1), D(100), D(100), "400000")]
+    assert _line_taxes(invoice) == [[("15%", "251000", D(30))], [("15%", "251000", D(15))]]
     assert docs["S:INV/2024/00002"].contact_external_id == "Pine & Co"       # billed to its contact person
     assert docs["P:RBILL/2024/03/0001"].metadata == {"applies_to": "P:BILL/2024/03/0001"}
     assert docs["S:RINV/2024/00001"].metadata == {}                          # open, applied to nothing
@@ -238,6 +243,56 @@ def test_invoices_bills_payments_and_journals(tmp_path, version):
     assert set(journals) == {"J:1", "J:3", "J:5", "J:11", "J:19", "J:20", "J:21", "J:18:journal"}
     assert journals["J:18:journal"].fallback is True
     assert (journals["J:1"].source_type, journals["J:1"].source_ref) == ("Journal Entry", "Capital paid in")
+
+
+# ── Taxes on document lines ───────────────────────────────────────────────────
+
+def _line_taxes(doc) -> list[list[tuple]]:
+    return [[(x.tax_code_external_id, x.tax_account_external_id, x.amount) for x in ln.taxes]
+            for ln in doc.line_items]
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_each_tax_on_a_line_posts_to_its_own_account_as_odoo_split_it(tmp_path, version):
+    """A line with two taxes carries both; a bill's withholding is a tax of its own on its own
+    account; a sale's withholding is tax the customer kept back, applied to the invoice from
+    the withholding account, because a sale holds no tax below zero."""
+    bundle = _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL).bundle
+    docs = {d.source_external_id: d for d in bundle.documents}
+    two = docs["S:INV/2024/00005"]
+    assert _line_taxes(two) == [[("15%", "251000", D(15)), ("PST 7%", "251000", D(7))],
+                                [("15%", "251000", D("7.50"))]]
+    assert (two.total, two.tax_total, two.amount_outstanding) == (D("179.50"), D("29.50"), D("179.50"))
+
+    withheld = docs["S:INV/2024/00006"]
+    assert _line_taxes(withheld) == [[]]
+    assert (withheld.total, withheld.tax_total, withheld.amount_outstanding) == (D(200), D(0), D(194))
+    assert withheld.metadata == {"withheld": {"115000": "6.00"}}
+
+    bill = docs["P:BILL/2024/04/0001"]
+    assert _line_taxes(bill) == [[("15% [2]", "131000", D(15)), ("WHT 3% [5]", "215000", D(-3))]]
+    assert (bill.total, bill.tax_total, bill.amount_outstanding) == (D(112), D(12), D(112))
+    assert all(x.tax_account_external_id for d in docs.values() for ln in d.line_items for x in ln.taxes)
+    assert {(t.name, t.rate_percent, t.account_external_id) for t in bundle.tax_codes} >= {
+        ("PST 7%", D(7), "251000"), ("WHT 3%", D(-3), "115000"), ("WHT 3% [5]", D(-3), "215000")}
+
+
+def test_odoo_rounding_a_tax_on_the_whole_document_lands_on_that_tax(tmp_path):
+    """Odoo can round each tax on the document's total: the difference lands on the last
+    line carrying that tax, so each tax's total is Odoo's."""
+    tables = build.tables(17)
+    cols = tables.rows["account_move_line"][0]
+    pst = next(r for r in _lines_of(tables, 22) if r[cols.index("display_type")] == "tax"
+               and r[cols.index("tax_line_id")] == build.PROVINCIAL_TAX)
+    standard = next(r for r in _lines_of(tables, 22) if r[cols.index("display_type")] == "tax"
+                    and r[cols.index("tax_line_id")] == build.SALE_TAX)
+    # 0.01 moves from the standard tax to the provincial one; the total stays.
+    _set(tables, pst, balance="-7.01", amount_currency="-7.01", credit="7.01")
+    _set(tables, standard, balance="-22.49", amount_currency="-22.49", credit="22.49")
+    bundle = _adapter().build_manifest(_file(tmp_path, build.backup(17, tables)), FULL).bundle
+    doc = next(d for d in bundle.documents if d.source_external_id == "S:INV/2024/00005")
+    assert _line_taxes(doc) == [[("15%", "251000", D(15)), ("PST 7%", "251000", D("7.01"))],
+                                [("15%", "251000", D("7.49"))]]
 
 
 # ── Payments matched by reconciliation ────────────────────────────────────────
@@ -442,16 +497,16 @@ def test_expectations_come_from_the_source(tmp_path, version):
         assert by[(M.TRIAL_BALANCE, code)] == balance, code
     assert by[(M.TRIAL_BALANCE_AT, "121000@2024-02-29")] == _source_balances(date(2024, 2, 29))["121000"]
     assert by[(M.BANK_CASH, "101000")] == D(10345)
-    assert by[(M.AR_CONTROL, "121000")] == D("72.50")
-    assert by[(M.AR_BY_CUSTOMER, "Lakeshore Trading Co")] == D("-57.50")
-    assert by[(M.AR_BY_CUSTOMER, "Pine & Co")] == D("130.00")
+    assert by[(M.AR_CONTROL, "121000")] == D("446.00")
+    assert by[(M.AR_BY_CUSTOMER, "Lakeshore Trading Co")] == D("136.50")
+    assert by[(M.AR_BY_CUSTOMER, "Pine & Co")] == D("309.50")
     assert by[(M.AR_BY_CUSTOMER, "Lakeshore Trading Co [11]")] == 0
-    assert by[(M.AP_BY_SUPPLIER, "Northwind Wholesale")] == D("-195.50")
+    assert by[(M.AP_BY_SUPPLIER, "Northwind Wholesale")] == D("-307.50")
     assert by[(M.AR_DOCUMENT_RESIDUAL, "")] == 0                  # open invoices less open credit = AR
     assert by[(M.AP_DOCUMENT_RESIDUAL, "")] == 0
     assert by[(M.INVENTORY_QUANTITY, "WID-1")] == D(7)           # what the quants hold, not the moves
     assert by[(M.INVENTORY_VALUE, "WID-1")] == D(220)
-    assert by[(M.DOCUMENT_COUNT, "invoice")] == D(4)
+    assert by[(M.DOCUMENT_COUNT, "invoice")] == D(6)
 
 
 @pytest.mark.parametrize("version", VERSIONS)

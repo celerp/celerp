@@ -295,9 +295,10 @@ def test_manager_mapping_preserves_source_semantics():
     assert inclusive.metadata["amounts_include_tax"] is True
     assert exclusive.metadata["amounts_include_tax"] is False
     (line,) = inclusive.line_items
-    assert (line.tax_code_external_id, line.tax_amount, line.total_price) == (ref("VAT"), Decimal("5"), Decimal("50"))
+    assert (line.taxes[0].tax_code_external_id, line.taxes[0].amount, line.total_price) == (
+        ref("VAT"), Decimal("5"), Decimal("50"))
     (line,) = exclusive.line_items
-    assert (line.quantity, line.unit_price, line.tax_amount, line.total_price) == (
+    assert (line.quantity, line.unit_price, line.taxes[0].amount, line.total_price) == (
         Decimal("2"), Decimal("50"), Decimal("10"), Decimal("100"))
     (line,) = documents[ref("INV3")].line_items
     assert (line.discount_percent, line.total_price) == (Decimal("20"), Decimal("200"))
@@ -702,9 +703,9 @@ def test_document_line_forms_carry_their_exact_fields_and_report_the_rest(tmp_pa
     assert (lines[ref("LPCT")].discount_percent, lines[ref("LPCT")].total_price) == (Decimal("20"), Decimal("200"))
     assert (lines[ref("LFIX")].discount_percent, lines[ref("LFIX")].unit_price,
             lines[ref("LFIX")].total_price) == (None, Decimal("100"), Decimal("85"))
-    assert (lines[ref("LINC")].unit_price, lines[ref("LINC")].tax_amount,
+    assert (lines[ref("LINC")].unit_price, lines[ref("LINC")].taxes[0].amount,
             lines[ref("LINC")].total_price) == (Decimal("50"), Decimal("5"), Decimal("50"))
-    assert (lines[ref("LRND")].unit_price, lines[ref("LRND")].tax_amount,
+    assert (lines[ref("LRND")].unit_price, lines[ref("LRND")].taxes[0].amount,
             lines[ref("LRND")].total_price) == (Decimal("3.335"), Decimal("1.00"), Decimal("10.01"))
 
     coverage = _coverage(manifest)

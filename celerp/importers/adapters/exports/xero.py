@@ -18,7 +18,7 @@ from decimal import Decimal
 from celerp.importers.adapters.base import ArtifactSet, ScanError
 from celerp.importers.adapters.exports import steps
 from celerp.importers.adapters.exports.book import (
-    ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, TaxCode,
+    ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, TaxCode, one_tax,
 )
 from celerp.importers.adapters.exports.files import (
     DateReader, Layout, SetCheck, Stranger, Table, amount, as_at, check_set, company_name, money, normalize, of,
@@ -187,7 +187,8 @@ def _documents(book: Book, tables: list[Table], read_date: DateReader) -> None:
             net = money(tb.value(row, "lineamount"), where) if tb.value(row, "lineamount") else money(
                 str(quantity * unit * (1 - (discount or ZERO) / 100)))
             lines.append(DocLine(item, tb.value(row, "description"), quantity, unit, discount, net,
-                                 money(tb.value(row, "taxamount"), where), tax_code, tb.value(row, "accountcode"),
+                                 one_tax(tax_code, money(tb.value(row, "taxamount"), where)),
+                                 tb.value(row, "accountcode"),
                                  tracking))
         total = money(tb.value(first, "total"), where)
         if sum((ln.net + ln.tax for ln in lines), ZERO) != total:

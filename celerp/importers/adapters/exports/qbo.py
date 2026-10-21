@@ -22,7 +22,7 @@ from decimal import Decimal
 from celerp.importers.adapters.base import ArtifactSet, ScanError
 from celerp.importers.adapters.exports import steps
 from celerp.importers.adapters.exports.book import (
-    ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, TaxCode,
+    ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, TaxCode, one_tax,
 )
 from celerp.importers.adapters.exports.files import (
     DateReader, Layout, SetCheck, Stranger, Table, amount, as_at, check_set, company_name, money, normalize, of,
@@ -245,7 +245,8 @@ def _documents(book: Book, tables: list[Table], read_date: DateReader, account: 
                 lines.append(DocLine(item, "" if voided else tb.value(row, "memo/description"),
                                      sign * amount(tb.value(row, "qty"), where),
                                      amount(tb.value(row, price), where), None, net,
-                                     sign * money(tb.value(row, "tax amount"), where), tax_code, line_account,
+                                     one_tax(tax_code, sign * money(tb.value(row, "tax amount"), where)),
+                                     line_account,
                                      tracking))
             key = f"{'S' if sales else 'P'}:{number}" + (f"|{contact}" if numbers[number] > 1 else "")
             tb = rows[0][0]

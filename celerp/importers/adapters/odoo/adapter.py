@@ -28,7 +28,7 @@ from celerp.importers.adapters.exports.ledger import Ledger, build_ledger
 from celerp.importers.adapters.exports.reconcile import expectations_from
 from celerp.importers.adapters.odoo import attachments
 from celerp.importers.adapters.odoo.book import (
-    DRAFT_ENTRY, LOT, NO_CONTACT, OFF_BALANCE_LINE, SOURCE_NAME, SOURCE_SYSTEM, WITHHOLDING, AttachmentRef, OdooBook,
+    DRAFT_ENTRY, LOT, NO_CONTACT, OFF_BALANCE_LINE, SOURCE_NAME, SOURCE_SYSTEM, AttachmentRef, OdooBook,
     read_odoo,
 )
 from celerp.importers.adapters.odoo.dump import Backup
@@ -46,9 +46,7 @@ from ui.i18n import t
 MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
 SKIPPED = {DRAFT_ENTRY: CoverageClass.IGNORED_NON_BUSINESS, NO_CONTACT: CoverageClass.IGNORED_NON_BUSINESS,
-           OFF_BALANCE_LINE: CoverageClass.UNSUPPORTED_NONFINANCIAL, LOT: CoverageClass.UNSUPPORTED_NONFINANCIAL,
-           # Celerp holds no tax rate below zero; the tax a document withheld is in its amounts and journal.
-           WITHHOLDING: CoverageClass.MAPPED_WITH_LOSS}
+           OFF_BALANCE_LINE: CoverageClass.UNSUPPORTED_NONFINANCIAL, LOT: CoverageClass.UNSUPPORTED_NONFINANCIAL}
 LOCATION = "Stock location"
 LOCATION_NOTE = "Celerp keeps each item at one location; the stock of every internal location is added together."
 OPENING = "Opening balances"

@@ -70,6 +70,17 @@ class TaxCode:
 
 
 @dataclass
+class LineTax:
+    code: str | None
+    amount: Decimal                             # document currency
+
+
+def one_tax(code: str | None, amount: Decimal) -> list[LineTax]:
+    """The taxes of a line the source gives one tax code and amount."""
+    return [LineTax(code, amount)] if code or amount else []
+
+
+@dataclass
 class DocLine:
     item: str | None
     description: str
@@ -77,10 +88,13 @@ class DocLine:
     unit_price: Decimal
     discount: Decimal | None
     net: Decimal                                # tax exclusive, document currency
-    tax: Decimal
-    tax_code: str | None
+    taxes: list[LineTax]
     account: str
     tracking: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def tax(self) -> Decimal:
+        return sum((x.amount for x in self.taxes), ZERO)
 
 
 @dataclass
@@ -104,6 +118,13 @@ class Document:
     rate: Decimal | None = None                 # base per document unit, from its ledger journal
     applies_to: str | None = None
     journal: str | None = None                  # the ledger journal that posts it
+    # Tax account -> amount (document currency) the customer kept back as tax withheld:
+    # part of the total, settled from that account.
+    withheld: dict[str, Decimal] = field(default_factory=dict)
+
+    @property
+    def withheld_total(self) -> Decimal:
+        return sum(self.withheld.values(), ZERO)
 
     @property
     def sales(self) -> bool:

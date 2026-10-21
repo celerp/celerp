@@ -62,8 +62,8 @@ def tax_rates(book: Book) -> None:
         if "%" in code.name and head.replace(".", "", 1).isdigit():
             code.rate = Decimal(head)
         else:
-            rates = {(ln.tax * 100 / ln.net).quantize(Decimal("0.1")) for d in book.documents.values()
-                     for ln in d.lines if ln.tax_code == code.name and ln.net}
+            rates = {(x.amount * 100 / ln.net).quantize(Decimal("0.1")) for d in book.documents.values()
+                     for ln in d.lines for x in ln.taxes if x.code == code.name and ln.net}
             code.rate = rates.pop() if len(rates) == 1 else ZERO
         if code.rate:
             if book.tax_account is None:

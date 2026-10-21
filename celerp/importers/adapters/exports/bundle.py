@@ -29,6 +29,7 @@ from celerp.importers.schema import (
     CIFJournalEntry,
     CIFJournalLine,
     CIFLineItem,
+    CIFLineTax,
     CIFSettlement,
     CIFTaxCode,
     CoverageClass,
@@ -86,11 +87,15 @@ def _document(book: Book, ledger: Ledger, doc: Document, src: Source) -> CIFDocu
         metadata["applies_to"] = doc.applies_to
     if any(ln.tracking for ln in doc.lines):
         metadata["tracking"] = [ln.tracking for ln in doc.lines]
+    if doc.withheld:
+        metadata["withheld"] = {account: str(amount) for account, amount in doc.withheld.items()}
     lines = [CIFLineItem(item_external_id=ln.item, description=ln.description or None,
-                         account_external_id=ln.account, tax_code_external_id=ln.tax_code,
-                         tax_account_external_id=book.tax_account_for(ln.tax_code) if ln.tax_code else None,
+                         account_external_id=ln.account,
+                         taxes=[CIFLineTax(tax_code_external_id=x.code,
+                                           tax_account_external_id=book.tax_account_for(x.code), amount=x.amount)
+                                for x in ln.taxes],
                          quantity=ln.quantity, unit_price=ln.unit_price, discount_percent=ln.discount,
-                         tax_amount=ln.tax, total_price=ln.net)
+                         total_price=ln.net)
              for ln in doc.lines]
     return CIFDocument(**src(doc.source_type, doc.key, doc.number), doc_type=doc.doc_type,
                        status=state.status if state else doc.status, contact_external_id=doc.contact,

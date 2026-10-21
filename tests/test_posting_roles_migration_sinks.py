@@ -22,6 +22,7 @@ async def _staged_context(session):
     """A sink context for a migration into a freshly staged company, as migration start creates it."""
     import uuid
 
+    from celerp.importers.schema import MIGRATION_CIF_VERSION
     from celerp.importers.sinks import SinkContext, register_sink
     from celerp.models.company import Company, User
     from celerp.models.migration import MigrationRun
@@ -35,7 +36,7 @@ async def _staged_context(session):
     company = await provision_migration_company(session, owner=user, company_name="Source Books")
     run = MigrationRun(
         company_id=company.id, created_by_user_id=user.id, scan_claim_sha256=uuid.uuid4().hex * 2,
-        source_system="manager_io", source_artifact_sha256="0" * 64, adapter_version="test", cif_version="2",
+        source_system="manager_io", source_artifact_sha256="0" * 64, adapter_version="test", cif_version=MIGRATION_CIF_VERSION,
         mode="full_history",
     )
     session.add(run)

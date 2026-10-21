@@ -49,6 +49,8 @@ ACCOUNTS = [
     (14, "300000", "Capital", "equity", False),
     (15, "441000", "Foreign Exchange Gain", "income_other", False),
     (16, "641000", "Foreign Exchange Loss", "expense", False),
+    (17, "115000", "Withholding Tax Receivable", "asset_current", False),
+    (18, "215000", "Withholding Tax Payable", "liability_current", False),
 ]
 CODES = {i: code for i, code, *_ in ACCOUNTS}
 GROUPS = {"asset": "asset", "liability": "liability", "equity": "equity", "income": "income", "expense": "expense"}
@@ -80,9 +82,10 @@ PARTNERS = [
 # product id, template id, default code, name, type, list price
 PRODUCTS = [(1, 1, "WID-1", "Widget", "product", D("50")), (2, 2, "SRV", "Consulting", "service", D("100"))]
 # id, name, use, rate, tax account
-TAXES = [(1, "15%", "sale", D("15"), 6), (2, "15%", "purchase", D("15"), 7)]
+TAXES = [(1, "15%", "sale", D("15"), 6), (2, "15%", "purchase", D("15"), 7), (3, "PST 7%", "sale", D("7"), 6),
+         (4, "WHT 3%", "sale", D("-3"), 17), (5, "WHT 3%", "purchase", D("-3"), 18)]
 WIDGET, CONSULTING = 1, 2
-SALE_TAX, PURCHASE_TAX = 1, 2
+SALE_TAX, PURCHASE_TAX, PROVINCIAL_TAX, SALE_WHT, PURCHASE_WHT = 1, 2, 3, 4, 5
 
 
 @dataclass
@@ -121,25 +124,27 @@ class Move:
 
 
 def _invoice(id_, name, move_type, date, partner, items, state="posted", currency=USD, rate=D(1)):
-    """An invoice or bill of (product, quantity, price, tax) lines at `rate` company units
-    per document unit; the customer or supplier owes the total."""
+    """An invoice or bill of (product, quantity, price, tax or taxes) lines at `rate` company
+    units per document unit, one tax line per tax; the customer or supplier owes the total."""
     sales = move_type.startswith("out_")
     refund = move_type.endswith("refund")
     sign = (-1 if sales else 1) * (-1 if refund else 1)        # of the product lines' balance
-    lines, tax_total, net_total = [], D(0), D(0)
-    for product, quantity, price, tax in items:
+    lines, tax_lines, net_total = [], {}, D(0)
+    for product, quantity, price, taxes in items:
+        taxes = taxes if isinstance(taxes, tuple) else (taxes,) if taxes else ()
         subtotal = quantity * price
-        tax_amount = (subtotal * TAXES[tax - 1][3] / 100).quantize(D("0.01")) if tax else D(0)
+        amounts = [(subtotal * TAXES[tax - 1][3] / 100).quantize(D("0.01")) for tax in taxes]
         account = 8 if sales else (12 if product == WIDGET else 9)
         lines.append(Line(account, sign * subtotal * rate, "product", partner, currency, sign * subtotal, product,
-                          D(quantity), price, subtotal, subtotal + tax_amount, (tax,) if tax else (),
+                          D(quantity), price, subtotal, subtotal + sum(amounts, D(0)), taxes,
                           name=dict((p[0], p[3]) for p in PRODUCTS)[product]))
-        tax_total += tax_amount
+        for tax, amount in zip(taxes, amounts):
+            tax_lines[tax] = tax_lines.get(tax, D(0)) + amount
         net_total += subtotal
-    taxed = [t for *_, t in items if t]
-    if tax_total:
-        lines.append(Line(6 if sales else 7, sign * tax_total * rate, "tax", partner, currency, sign * tax_total,
-                          tax=taxed[0], name=TAXES[taxed[0] - 1][1]))
+    for tax, amount in tax_lines.items():
+        lines.append(Line(TAXES[tax - 1][4], sign * amount * rate, "tax", partner, currency, sign * amount,
+                          tax=tax, name=TAXES[tax - 1][1]))
+    tax_total = sum(tax_lines.values(), D(0))
     total = net_total + tax_total
     lines.append(Line(4 if sales else 5, -sign * total * rate, "payment_term", partner, currency, -sign * total,
                       name=name))
@@ -183,6 +188,13 @@ def moves() -> list[Move]:
                                                                                          D(0))], partner=7),
         _entry(20, "STJ/2024/00003", "2024-03-01", [(11, D(30)), (9, D(-30))], ref="Inventory adjustment"),
         _entry(21, "STJ/2024/00004", "2024-03-15", [(11, D(10)), (12, D(-10))], ref="Landed cost"),
+        # Two taxes on one line, a sale the customer withholds tax from, and a bill the company
+        # withholds tax from beside the tax it pays.
+        _invoice(22, "INV/2024/00005", "out_invoice", "2024-04-10", 8,
+                 [(CONSULTING, 1, D(100), (SALE_TAX, PROVINCIAL_TAX)), (WIDGET, 1, D(50), SALE_TAX)]),
+        _invoice(23, "INV/2024/00006", "out_invoice", "2024-04-12", 7, [(CONSULTING, 2, D(100), SALE_WHT)]),
+        _invoice(24, "BILL/2024/04/0001", "in_invoice", "2024-04-15", 10,
+                 [(CONSULTING, 1, D(100), (PURCHASE_TAX, PURCHASE_WHT))]),
     ]
 
 

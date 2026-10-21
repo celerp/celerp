@@ -169,18 +169,27 @@ def _document_postings(book: Book, doc: Document) -> list[Posting]:
     """What Celerp books for a posted document: each net and tax converted from the running
     total at the document's rate, the converted total on the customer or supplier."""
     sign = PARTY_SIGN[doc.doc_type]
-    parts = iter(split_to_base([x for ln in doc.lines for x in (ln.net, ln.tax)], doc.rate, book.base))
+    parts = iter(split_to_base([x for ln in doc.lines for x in (ln.net, *(t.amount for t in ln.taxes))],
+                               doc.rate, book.base))
     out: list[Posting] = []
     for ln in doc.lines:
-        net, tax = next(parts), next(parts)
-        out.append(Posting(doc.key, "document", doc.date, ln.account, -sign * net, description=ln.description,
-                           document=doc.key, native=-sign * ln.net))
-        if tax:
-            out.append(Posting(doc.key, "document", doc.date, book.tax_account_for(ln.tax_code), -sign * tax,
-                               document=doc.key, native=-sign * ln.tax))
-    out.append(Posting(doc.key, "document", doc.date, book.party_account(doc.doc_type),
-                       -sum((p.amount for p in out), ZERO), doc.contact, document=doc.key, native=sign * doc.total))
-    return out + _note_difference(book, doc, out[-1].amount)
+        out.append(Posting(doc.key, "document", doc.date, ln.account, -sign * next(parts),
+                           description=ln.description, document=doc.key, native=-sign * ln.net))
+        for x in ln.taxes:
+            if tax := next(parts):
+                out.append(Posting(doc.key, "document", doc.date, book.tax_account_for(x.code), -sign * tax,
+                                   document=doc.key, native=-sign * x.amount))
+    party = book.party_account(doc.doc_type)
+    out.append(Posting(doc.key, "document", doc.date, party, -sum((p.amount for p in out), ZERO), doc.contact,
+                       document=doc.key, native=sign * doc.total))
+    difference = _note_difference(book, doc, out[-1].amount)
+    # Tax the customer withheld settles the document from its account at the document's rate.
+    for account, amount in doc.withheld.items():
+        held = round_money(amount * (doc.rate or 1), book.base)
+        out += [Posting(doc.key, "document", doc.date, account, sign * held, document=doc.key, native=sign * amount),
+                Posting(doc.key, "document", doc.date, party, -sign * held, doc.contact, document=doc.key,
+                        native=-sign * amount)]
+    return out + difference
 
 
 def _note_difference(book: Book, note: Document, party: Decimal) -> list[Posting]:
@@ -306,6 +315,8 @@ def _transfer(book: Book, j: GLJournal) -> Transfer | None:
 def _states(book: Book, settlements: list[Settlement], keys: set[str]) -> dict[str, DocumentState]:
     """Paid and outstanding per document from the settlements and notes given."""
     paid: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    for key in keys:
+        paid[key] += book.documents[key].withheld_total
     for s in settlements:
         for key, amount in s.allocations:
             paid[key] += amount
@@ -391,7 +402,7 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
             doc.journal = None
     _latest_rates(book)
     posted = [d.key for d in sorted(book.documents.values(), key=lambda d: (d.date, d.key)) if d.journal]
-    owing = {k: book.documents[k].total for k in posted}
+    owing = {k: book.documents[k].total - book.documents[k].withheld_total for k in posted}
     for k in posted:
         if book.documents[k].applies_to:
             owing[book.documents[k].applies_to] -= book.documents[k].total

@@ -195,7 +195,7 @@ def test_xero_masters_and_documents_carry_into_cif(tmp_path):
     assert [statuses[n] for n, d in source.items() if d.status == "Voided"] == ["void"] * 6
     assert [statuses[n] for n, d in source.items() if d.status == "Draft"] == ["draft"]
     usd = next(d for d in docs.values() if d.currency == "USD" and d.status == "paid")
-    assert usd.exchange_rate is not None and usd.line_items[0].tax_code_external_id
+    assert usd.exchange_rate is not None and usd.line_items[0].taxes[0].tax_code_external_id
     notes = [d for d in docs.values() if d.doc_type == "credit_note"]
     assert len(notes) == 3 and all(n.metadata["applies_to"] == f"S:{source[n.ref].reference}" for n in notes)
     assert docs["S:INV-0001"].line_items[0].item_external_id is not None
@@ -292,7 +292,7 @@ def test_quickbooks_online_masters_and_documents_carry_into_cif(tmp_path):
     assert set(docs) == {f"{'S' if d.sales else 'P'}:{n}" for n, d in source.items()}
     assert [docs[f"S:{n}"].status for n, d in source.items() if d.status == "Voided"] == ["void"] * 6
     usd = next(d for d in docs.values() if d.currency == "USD" and d.status == "paid")
-    assert usd.exchange_rate is not None and usd.line_items[0].tax_code_external_id
+    assert usd.exchange_rate is not None and usd.line_items[0].taxes[0].tax_code_external_id
     notes = [d for d in docs.values() if d.doc_type == "credit_note"]
     assert len(notes) == 3 and all(n.metadata["applies_to"] == f"S:{source[n.ref].reference}" for n in notes)
     assert docs["S:INV-0001"].line_items[0].item_external_id is not None

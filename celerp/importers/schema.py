@@ -44,7 +44,7 @@ from celerp.compat import StrEnum
 
 
 CIF_VERSION = "1"
-MIGRATION_CIF_VERSION = "2"
+MIGRATION_CIF_VERSION = "3"
 
 
 # ── Shared field types ─────────────────────────────────────────────────────────
@@ -313,7 +313,7 @@ class CIFAccount(CIFSourceRecord):
 
 class CIFTaxCode(CIFSourceRecord):
     name: NonEmptyStr
-    rate_percent: Annotated[CIFDecimal, Field(ge=0)]
+    rate_percent: CIFDecimal                  # below zero for a tax withheld
     inclusive: bool = False
     account_external_id: str | None = None    # tax control account
 
@@ -383,20 +383,25 @@ class DocumentType(StrEnum):
     DEBIT_NOTE = "debit_note"
 
 
+class CIFLineTax(BaseModel):
+    """One tax on a document line, posting `amount` to `tax_account_external_id`."""
+    tax_code_external_id: str | None = None
+    tax_account_external_id: str | None = None
+    amount: CIFDecimal
+
+
 class CIFLineItem(BaseModel):
-    """A document line, posting its net to `account_external_id` and its tax to
-    `tax_account_external_id`."""
+    """A document line, posting its net to `account_external_id` and each of its taxes to
+    that tax's account."""
     item_external_id: str | None = None
     description: str | None = None
     account_external_id: str | None = None
-    tax_code_external_id: str | None = None
-    tax_account_external_id: str | None = None
+    taxes: list[CIFLineTax] = Field(default_factory=list)
     quantity: CIFDecimal
     weight: CIFDecimal | None = None
     weight_unit: str | None = None            # e.g. "kg", "g", "oz", "ct", "lb"
     unit_price: CIFDecimal
     discount_percent: CIFDecimal | None = None   # a line discount as a percentage of quantity x unit price
-    tax_amount: CIFDecimal | None = None
     total_price: CIFDecimal
     cost_basis: CIFDecimal | None = None      # cost at time of sale
 
