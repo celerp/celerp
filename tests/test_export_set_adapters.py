@@ -162,6 +162,11 @@ def test_slashed_dates_are_read_in_the_one_order_the_set_allows():
 
 # ── Masters and documents ─────────────────────────────────────────────────────
 
+def test_an_export_set_holds_no_attachment(tmp_path):
+    with pytest.raises(ScanError, match="This attachment is not in the uploaded file."):
+        _adapter().read_attachment(_set(tmp_path, _xero()), FULL, "attachment:1")
+
+
 def test_xero_masters_and_documents_carry_into_cif(tmp_path):
     manifest = _adapter().build_manifest(_set(tmp_path, _xero()), FULL)
     bundle = manifest.bundle

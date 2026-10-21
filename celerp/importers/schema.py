@@ -385,6 +385,11 @@ class DocumentType(StrEnum):
     DEBIT_NOTE = "debit_note"
 
 
+# How every adapter reports a debit note: the docs sink has no debit note document.
+DEBIT_NOTE_NOTE = ("Posted as a journal on the bill it notes and applied to that bill; Celerp has no debit note "
+                   "document.")
+
+
 class CIFLineTax(BaseModel):
     """One tax on a document line, posting `amount` to `tax_account_external_id`."""
     tax_code_external_id: str | None = None

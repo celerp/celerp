@@ -226,6 +226,8 @@ def test_manager_attachment_handling_is_untrusted_and_reported(tmp_path):
     for label in [*cases, "EXTERNAL"]:
         with pytest.raises(ScanError):
             manager.read_attachment([art], FULL, ref(label))
+    with pytest.raises(ScanError, match=t("migration.err_attachment_not_found", "en")):
+        manager.read_attachment([art], FULL, "no-such-attachment")
 
     # A rejected attachment never turns the run into a false full success, and never blocks the ledger.
     assert ("Attachment (rejected)", CoverageClass.MAPPED_WITH_LOSS) in {

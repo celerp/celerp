@@ -16,8 +16,11 @@ import io
 import json
 import re
 import zipfile
+import zlib
 from collections.abc import Callable, Iterable, Mapping
+from functools import partial
 from pathlib import Path
+from typing import IO
 
 from celerp.importers.adapters.base import ScanError, SourceRevisionError
 from ui.i18n import t
@@ -26,6 +29,7 @@ MANIFEST = "manifest.json"
 DUMP = "dump.sql"
 FILESTORE = "filestore/"
 DUMP_HEADER = "-- PostgreSQL database dump"
+CUSTOM_FORMAT = b"PGDMP"  # how a pg_dump custom format file starts
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
 
@@ -98,6 +102,19 @@ def _manifest(archive: zipfile.ZipFile, root: str) -> dict | None:
     return manifest if DUMP_HEADER in head else None
 
 
+def _refuse_custom_format(files: Iterable[Callable[[], IO[bytes]]]) -> None:
+    """Refuse Odoo's other backup format, pg_dump custom, with its own message: the file
+    itself, or a file zipped at the root or in one folder. `files` open each candidate."""
+    for open_file in files:
+        try:
+            with open_file() as f:
+                custom = f.read(len(CUSTOM_FORMAT)) == CUSTOM_FORMAT
+        except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, zlib.error):
+            continue
+        if custom:
+            raise SourceRevisionError(t("migration.err_odoo_custom_format"))
+
+
 class Backup:
     """One Odoo backup zip, open for reading."""
 
@@ -106,10 +123,15 @@ class Backup:
             self.archive = zipfile.ZipFile(path)
             self.root = _root(self.archive)
             manifest = None if self.root is None else _manifest(self.archive, self.root)
-        except (OSError, zipfile.BadZipFile) as exc:
+        except zipfile.BadZipFile as exc:
+            _refuse_custom_format([partial(open, path, "rb")])
+            raise ScanError(t("migration.err_odoo_not_backup")) from exc
+        except OSError as exc:
             raise ScanError(t("migration.err_odoo_not_backup")) from exc
         if manifest is None:
-            self.archive.close()
+            with self.archive:
+                _refuse_custom_format(partial(self.archive.open, n) for n in self.archive.namelist()
+                                      if n.count("/") <= 1 and not n.endswith("/"))
             raise ScanError(t("migration.err_odoo_not_backup"))
         self.version = _major(manifest)
         if not OLDEST <= self.version <= NEWEST:

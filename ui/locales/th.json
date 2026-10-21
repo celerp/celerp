@@ -4157,6 +4157,8 @@
   "migration.odoo_accepts": "จาก Odoo 13 ถึง 17 ให้อัปโหลดไฟล์สำรองหนึ่งไฟล์จากตัวจัดการฐานข้อมูล: เลือก Backup แบบ zip (รวม filestore) แล้วอัปโหลดไฟล์ zip นั้นตามเดิม",
   "migration.err_odoo_not_backup": "ไฟล์นี้ไม่ใช่ไฟล์สำรองของ Odoo ให้อัปโหลดไฟล์ zip ที่ตัวจัดการฐานข้อมูลของ Odoo สร้าง (Backup แบบ zip พร้อม filestore) ตามเดิม",
   "migration.err_odoo_version": "ไฟล์สำรองนี้มาจาก Odoo {version} Celerp อ่านไฟล์สำรองจาก Odoo 13 ถึง 17 ไม่มีสิ่งใดถูกนำเข้า",
+  "migration.err_odoo_custom_format": "ไฟล์นี้เป็นไฟล์สำรองของ Odoo ในรูปแบบ pg_dump custom ซึ่ง Celerp อ่านไม่ได้ ให้สำรองฐานข้อมูลอีกครั้งในตัวจัดการฐานข้อมูลของ Odoo เลือกแบบ zip (พร้อม filestore) แล้วอัปโหลดไฟล์ zip นั้น ไม่มีสิ่งใดถูกนำเข้า",
+  "migration.err_attachment_not_found": "ไฟล์แนบนี้ไม่อยู่ในไฟล์ที่อัปโหลด",
   "migration.err_odoo_company_missing": "ไฟล์สำรองนี้ไม่มีบัญชีของ {company} โปรดเลือกบริษัทจากรายการ",
   "migration.odoo_company_question": "บริษัทที่จะนำเข้า (แต่ละบริษัทในไฟล์สำรองนี้จะนำเข้าแยกกัน)",
   "migration.err_odoo_no_accounting": "ฐานข้อมูล Odoo นี้ไม่ได้ติดตั้งระบบบัญชี ไฟล์สำรองจึงไม่มีบัญชีให้นำเข้า ไม่มีสิ่งใดถูกนำเข้า",

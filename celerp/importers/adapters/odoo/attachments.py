@@ -85,5 +85,5 @@ def read_attachment(backup: Backup, refs: dict[str, AttachmentRef], key: str) ->
     """The content of one file attached to a record Celerp holds. Raises ScanError for any other key."""
     ref = refs.get(key)
     if ref is None or ref.target_type is None:
-        raise ScanError("No such attachment in this backup.")
+        raise ScanError(t("migration.err_attachment_not_found"))
     return _check(backup, ref, {(ref.target_type, ref.target)})[1]

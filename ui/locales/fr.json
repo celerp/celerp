@@ -4157,6 +4157,8 @@
   "migration.odoo_accepts": "Depuis Odoo 13 à 17, importez une sauvegarde du gestionnaire de bases de données : choisissez Backup au format zip (avec le filestore) et importez le zip tel quel.",
   "migration.err_odoo_not_backup": "Ce fichier n'est pas une sauvegarde Odoo. Importez tel quel le zip produit par le gestionnaire de bases de données d'Odoo (Backup, format zip avec le filestore).",
   "migration.err_odoo_version": "Cette sauvegarde provient d'Odoo {version}. Celerp lit les sauvegardes d'Odoo 13 à 17. Rien n'a été importé.",
+  "migration.err_odoo_custom_format": "Il s'agit d'une sauvegarde Odoo au format personnalisé pg_dump, que Celerp ne sait pas lire. Dans le gestionnaire de bases de données d'Odoo, refaites la sauvegarde en choisissant le format zip (avec le filestore), puis importez ce zip. Rien n'a été importé.",
+  "migration.err_attachment_not_found": "Cette pièce jointe ne se trouve pas dans le fichier importé.",
   "migration.err_odoo_company_missing": "Cette sauvegarde ne contient aucune comptabilité pour {company}. Choisissez l'une des sociétés de la liste.",
   "migration.odoo_company_question": "Société à importer (chaque société de cette sauvegarde est importée séparément)",
   "migration.err_odoo_no_accounting": "La comptabilité n'est pas installée dans cette base Odoo, la sauvegarde ne contient donc aucune comptabilité à importer. Rien n'a été importé.",

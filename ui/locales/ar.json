@@ -4157,6 +4157,8 @@
   "migration.odoo_accepts": "من Odoo 13 إلى 17، ارفع نسخة احتياطية واحدة من مدير قواعد البيانات: اختر Backup بتنسيق zip (يتضمن filestore) وارفع ملف zip كما هو.",
   "migration.err_odoo_not_backup": "هذا الملف ليس نسخة احتياطية من Odoo. ارفع ملف zip الذي ينشئه مدير قواعد بيانات Odoo (Backup، بتنسيق zip مع filestore) كما هو.",
   "migration.err_odoo_version": "هذه النسخة الاحتياطية من Odoo {version}. يقرأ Celerp النسخ الاحتياطية من Odoo 13 إلى 17. لم يتم استيراد أي شيء.",
+  "migration.err_odoo_custom_format": "هذه نسخة احتياطية من Odoo بتنسيق pg_dump المخصص، ولا يستطيع Celerp قراءتها. في مدير قواعد بيانات Odoo، أنشئ النسخة الاحتياطية مرة أخرى واختر تنسيق zip (مع filestore)، ثم ارفع ملف zip هذا. لم يتم استيراد أي شيء.",
+  "migration.err_attachment_not_found": "هذا المرفق غير موجود في الملف المرفوع.",
   "migration.err_odoo_company_missing": "لا تحتوي هذه النسخة الاحتياطية على دفاتر لـ {company}. اختر إحدى الشركات المدرجة.",
   "migration.odoo_company_question": "الشركة المراد استيرادها (يتم استيراد كل شركة في هذه النسخة الاحتياطية على حدة)",
   "migration.err_odoo_no_accounting": "المحاسبة غير مثبتة في قاعدة بيانات Odoo هذه، لذلك لا تحتوي النسخة الاحتياطية على دفاتر لاستيرادها. لم يتم استيراد أي شيء.",

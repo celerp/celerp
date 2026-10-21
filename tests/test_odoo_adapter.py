@@ -30,7 +30,7 @@ from test_migration_e2e import _passing, migrate_set
 
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
 CUTOVER = date(2024, 2, 29)
-VERSIONS = (13, 14, 17)
+VERSIONS = (13, 14, 15, 16, 17)
 D = Decimal
 
 
@@ -60,12 +60,15 @@ def _zip(members: dict[str, bytes | str]) -> bytes:
 
 
 def _source_balances(on: date | None = None) -> dict[str, Decimal]:
-    """Each account's balance from the fixture's own posted entries, debit positive."""
+    """Each account's balance from the fixture's own posted entries, debit positive. Off-balance
+    accounts are outside the books."""
+    off_balance = {i for i, _, _, kind, _ in build.ACCOUNTS if kind == "off_balance"}
     out: dict[str, Decimal] = defaultdict(Decimal)
     for move in build.moves():
         if move.state == "posted" and (on is None or date.fromisoformat(move.date) <= on):
             for line in move.lines:
-                out[build.CODES[line.account]] += line.balance
+                if line.account not in off_balance:
+                    out[build.CODES[line.account]] += line.balance
     return dict(out)
 
 
@@ -129,6 +132,19 @@ def test_a_backup_zipped_again_inside_its_folder_is_read_whole(tmp_path):
 
     two = _adapter().detect(_file(tmp_path, _rezipped("harbour", "harbour copy"), "two.zip"))
     assert two.matched is False and "not an Odoo backup" in two.reason
+
+
+def test_a_pg_dump_custom_format_backup_is_refused_with_its_own_message(tmp_path):
+    from celerp.importers.adapters.registry import detect_adapter
+
+    custom = b"PGDMP\x01\x0e\x00" + bytes(64)
+    for label, data in {"bare": custom, "zipped": _zip({"harbour.dump": custom}),
+                        "zipped in a folder": _zip({"backups/harbour.dump": custom, "backups/notes.txt": "x"})}.items():
+        with pytest.raises(SourceRevisionError, match="pg_dump custom format.*choose the zip format"):
+            detect_adapter(_file(tmp_path, data, "harbour.dump"))
+    # Deeper than one folder it is just some zip, and not recognised.
+    deeper = _adapter().detect(_file(tmp_path, _zip({"a/b/harbour.dump": custom}), "deeper.zip"))
+    assert deeper.matched is False and "not an Odoo backup" in deeper.reason
 
 
 @pytest.mark.parametrize("version", (12, 18))
@@ -258,6 +274,17 @@ def test_invoices_bills_payments_and_journals(tmp_path, version):
     assert set(journals) == {"J:1", "J:3", "J:5", "J:11", "J:19", "J:20", "J:21", "J:18:journal"}
     assert journals["J:18:journal"].fallback is True
     assert (journals["J:1"].source_type, journals["J:1"].source_ref) == ("Journal Entry", "Capital paid in")
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_only_lines_on_off_balance_accounts_are_counted_off_balance(tmp_path, version):
+    manifest = _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL)
+    rows = {r.source_type: (r.count, r.coverage_class) for r in manifest.coverage}
+    # The guarantee's two lines; the invoice's section and note lines are layout, not items.
+    assert rows["Off-balance journal item"] == (2, CoverageClass.UNSUPPORTED_NONFINANCIAL)
+    invoice = next(d for d in manifest.bundle.documents if d.source_external_id == "S:INV/2024/00001")
+    assert len(invoice.line_items) == 2
+    assert "J:26" not in {j.source_external_id for j in manifest.bundle.journals}
 
 
 # ── Taxes on document lines ───────────────────────────────────────────────────
@@ -626,6 +653,8 @@ def test_files_on_documents_contacts_and_products_are_screened(tmp_path, version
     for key in ("attachment:4", "attachment:8", "attachment:11", "attachment:99"):
         with pytest.raises(ScanError):
             _adapter().read_attachment(files, FULL, key)
+    with pytest.raises(ScanError, match="This attachment is not in the uploaded file."):
+        _adapter().read_attachment(files, FULL, "attachment:99")
 
 
 @pytest.mark.parametrize("version", VERSIONS)

@@ -294,7 +294,18 @@ def simulate() -> Books:
                                       "North" if s % 2 else "South", "Alpha")], reference=f"S{year}{month:02d}{s}")
                 books.issue(bill)
                 if issued + timedelta(days=14) <= END and not (year == 2025 and month == 12):
-                    books.pay(bill, bill.total, issued + timedelta(days=14), "090")
+                    if s == 2 and month == 5:
+                        # The supplier credits part of the bill and the rest is paid.
+                        credits += 1
+                        note = Document(f"CN-{credits:04d}", "Bill credit note", supplier, BASE,
+                                        issued + timedelta(days=7), issued + timedelta(days=7),
+                                        [Line(None, "Short delivery", Decimal(1), Decimal("40.00"), account, tax,
+                                              "South", "Alpha")], reference=bill.number)
+                        books.issue(note)
+                        note.status = "Paid"
+                        note.paid = note.total
+                        bill.paid += note.total
+                    books.pay(bill, bill.total - bill.paid, issued + timedelta(days=14), "090")
             end = month_ends(year)[month - 1]
             books.post(end, "Spend Money", [Posting("404", Decimal("12.50"), "Monthly fee"),
                                             Posting("090", Decimal("-12.50"), "Monthly fee")],

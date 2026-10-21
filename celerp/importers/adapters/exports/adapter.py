@@ -103,7 +103,7 @@ class ExportSetAdapter:
 
     def read_attachment(self, artifacts: ArtifactSet, decisions: MigrationDecisions, key: str) -> bytes:
         """An export set carries no attachments."""
-        raise ScanError("No such attachment in this export set.")
+        raise ScanError(t("migration.err_attachment_not_found"))
 
 
 class XeroAdapter(ExportSetAdapter):

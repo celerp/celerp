@@ -105,7 +105,7 @@ def read_attachment(book: Book, reader: ManagerReader, key: str) -> bytes:
     """The content of one accepted attachment. Raises ScanError for any other key."""
     ref = book.attachments.get(key)
     if ref is None or book.is_blocked(key):
-        raise ScanError("No such attachment in this business file.")
+        raise ScanError(t("migration.err_attachment_not_found"))
     return _check(book, reader, ref)[1]
 
 

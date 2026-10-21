@@ -52,6 +52,7 @@ ACCOUNTS = [
     (16, "641000", "Foreign Exchange Loss", "expense", False),
     (17, "115000", "Withholding Tax Receivable", "asset_current", False),
     (18, "215000", "Withholding Tax Payable", "liability_current", False),
+    (19, "900000", "Guarantees Given", "off_balance", False),
 ]
 CODES = {i: code for i, code, *_ in ACCOUNTS}
 GROUPS = {"asset": "asset", "liability": "liability", "equity": "equity", "income": "income", "expense": "expense"}
@@ -67,6 +68,7 @@ LEGACY = {  # Odoo 17 type -> (Odoo 14 type record XML id, internal type, intern
     "expense_direct_cost": ("data_account_type_direct_costs", "other", "expense"),
     "equity": ("data_account_type_equity", "other", "equity"),
     "equity_unaffected": ("data_unaffected_earnings", "other", "equity"),
+    "off_balance": ("data_account_off_sheet", "other", "off_balance"),
 }
 
 # id, name, parent, customer rank, supplier rank, email
@@ -213,6 +215,8 @@ def moves(bulk_lines: int = 0) -> list[Move]:
         _invoice(23, "INV/2024/00006", "out_invoice", "2024-04-12", 7, [(CONSULTING, 2, D(100), SALE_WHT)]),
         _invoice(24, "BILL/2024/04/0001", "in_invoice", "2024-04-15", 10,
                  [(CONSULTING, 1, D(100), (PURCHASE_TAX, PURCHASE_WHT))]),
+        # A guarantee kept on off-balance accounts, outside the books.
+        _entry(26, "MISC/2024/04/0001", "2024-04-20", [(19, D(500)), (19, D(-500))], ref="Bank guarantee"),
     ] + _bulk(bulk_lines)
 
 
@@ -423,7 +427,15 @@ def _ledger(out: Tables, version: int, bulk_lines: int) -> None:
                               ln.product, f"{ln.quantity}", f"{ln.price_unit}", f"{ln.subtotal}", f"{ln.total}",
                               "0", ln.tax, payment_id, *version_columns])
             tax_rel += [[line_id, tax] for tax in ln.taxes]
-    out.add("account_move", ["id", "journal_id", "company_id", "name", "ref", "state", "type" if v13 else "move_type",
+    # A section heading and a note on the first invoice: layout lines with no account or amount.
+    invoice = next(m for m in all_moves if m.id == 4)
+    for display in ("line_section", "line_note"):
+        line_id += 1
+        line_rows.append([line_id, invoice.id, 1, 1, USD, len(invoice.lines), None, None, None, invoice.name,
+                          invoice.state, display.replace("_", " ").title(), invoice.date, "0", "0", "0", "0", "0",
+                          None, "0", "0", "0", "0", "0", None, None,
+                          *([display, None] if modern else [display, "f", "f", None])])
+    out.add("account_move",["id", "journal_id", "company_id", "name", "ref", "state", "type" if v13 else "move_type",
                              "date", "invoice_date", "invoice_date_due", "partner_id", "commercial_partner_id",
                              "currency_id", "amount_tax", "amount_total", "amount_residual",
                              *(() if v13 else ("payment_id",))], move_rows)

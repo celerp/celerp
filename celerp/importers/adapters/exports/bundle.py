@@ -33,6 +33,7 @@ from celerp.importers.schema import (
     CIFLocation,
     CIFSettlement,
     CIFTaxCode,
+    DEBIT_NOTE_NOTE,
     CoverageClass,
 )
 from celerp.services.money import checked_exchange_rate
@@ -223,7 +224,9 @@ def coverage(ledger: Ledger, skipped: dict[str, CoverageClass]) -> list[CIFCover
     book = ledger.book
     mapped: Counter = Counter({"Account": len(book.accounts), "Contact": len(book.contacts),
                                "Item": len(book.items), "Tax rate": len(book.tax_codes)})
-    mapped.update(d.source_type for d in book.documents.values() if d.journal or d.status != "posted")
+    noted = Counter(d.source_type for d in book.documents.values() if d.journal and d.doc_type == "debit_note")
+    mapped.update(d.source_type for d in book.documents.values()
+                  if (d.journal and d.doc_type != "debit_note") or d.status != "posted")
     mapped.update(j.source for j in ledger.journals.values())
     mapped.update(s.source for s in ledger.settlements.values())
     mapped.update("Bank Transfer" for _ in ledger.transfers)
@@ -231,6 +234,8 @@ def coverage(ledger: Ledger, skipped: dict[str, CoverageClass]) -> list[CIFCover
                         for record in {p.record for p in ledger.postings if p.part == "fallback"})
     rows = [CIFCoverageEntry(source_type=label, count=count, coverage_class=CoverageClass.MAPPED)
             for label, count in mapped.items() if count]
+    rows += [CIFCoverageEntry(source_type=label, count=count, coverage_class=CoverageClass.MAPPED_WITH_LOSS,
+                              note=DEBIT_NOTE_NOTE) for label, count in noted.items()]
     rows += [CIFCoverageEntry(source_type=FALLBACK.format(label), count=count,
                               coverage_class=CoverageClass.MAPPED_WITH_LOSS, note=FALLBACK_NOTE)
              for label, count in fallbacks.items()]

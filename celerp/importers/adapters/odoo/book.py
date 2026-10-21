@@ -440,7 +440,8 @@ class _Reader:
         out: list[GLLine] = []
         for r in sorted(rows, key=lambda r: int(r["id"])):
             if r["account_id"] not in self.accounts:
-                book.skipped[OFF_BALANCE_LINE] += 1
+                if r["account_id"]:  # section and note lines have no account
+                    book.skipped[OFF_BALANCE_LINE] += 1
                 continue
             account = self.accounts[r["account_id"]]
             amount = _dec(r["debit"]) - _dec(r["credit"])
