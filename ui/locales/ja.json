@@ -700,7 +700,7 @@
   "item.default_sell_qty_invalid": "既定の販売数量は全量または0より大きい数値にしてください。",
   "item.default_sell_qty_unit_change": "この単位では既定の販売数量 {qty} を扱えません。既定の販売数量を「全量」または単位が許可する数値に変更してから、単位を変更してください。",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
-  "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents hold quantities with more ({examples}). Change those quantities or void those documents first, or keep {current} decimal places.",
+  "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents still hold quantities with more ({examples}). Change those quantities first, or keep {current} decimal places.",
   "field.tooltip.barcode": "この特定の在庫品目またはロットに固有のバーコードです。スキャンすると、この現物の品目そのものが選択されます。",
   "field.tooltip.country_of_origin": "この商品が生産・製造された国。納品書や通関書類に引き継がれます。",
   "field.tooltip.gross_weight": "梱包を含む1個あたりの重量。出荷書類の行ごとの総重量に反映されます。正味重量は商品の重量欄です。",

@@ -172,17 +172,19 @@ def _places(value) -> int:
 async def check_precision_change(session, company_id, old_units: list[dict], new_units: list[dict]) -> None:
     """Fewer decimal places for a unit that still holds finer quantities: refused with 422, naming
     how many items and open documents hold them, a few of them, and what to change. Every item
-    counts, whatever its status, since any item can come back into stock; a document counts while it
-    can still receive, ship, send back or convert its lines, and a list while it is a draft or
-    finalized (its closing action is still to come). Other documents are history and never block. Raising
+    counts, whatever its status, since any item can come back into stock; a document counts the
+    quantities its lines can still receive, ship or carry into a converted document
+    (quantities_still_moving), and a list its lines while it is a draft or finalized (its closing
+    action is still to come). What a document received or shipped is history and never blocks. Raising
     precision always passes. A unit missing from the old list (deleted, then added back or
     re-seeded) had no precision to compare with, so it is checked against what is stored in it. A
     line with no unit of its own is in its item's unit, found by item id or SKU."""
     from sqlalchemy import or_, select
 
-    from celerp_docs.doc_constants import lines_still_move_stock
+    from celerp_docs.doc_constants import quantities_still_moving, sent_out_by
 
     from celerp.models.projections import Projection
+    from celerp.services.document_lines import line_item_id
     from celerp.services.line_measures import FULL, stored_sell_qty
     from celerp.services.list_behavior import DRAFT, FINALIZED
 
@@ -197,28 +199,34 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
         or_((Projection.entity_type == "item") & Projection.state["sell_by"].as_string().in_(list(lowered)),
             Projection.entity_type.in_(("doc", "list")) & or_(status.is_(None), status != "void")),
     ))).all()
-    item_unit = {key: state.get("sell_by") for entity_id, entity_type, state in rows if entity_type == "item"
+    items = {entity_id: state for entity_id, entity_type, state in rows if entity_type == "item"}
+    item_unit = {key: state.get("sell_by") for entity_id, state in items.items()
                  for key in (entity_id, state.get("sku")) if key}
 
     def line_unit(line: dict):
         return line.get("unit") or line.get("sell_by") or item_unit.get(line.get("item_id")) \
             or item_unit.get(line.get("sku"))
 
-    rows = [(entity_type, state) for _, entity_type, state in rows if entity_type == "item" or (
-        lines_still_move_stock(state.get("doc_type"), state.get("status")) if entity_type == "doc"
-        else state.get("status") in (None, DRAFT, FINALIZED))]
+    def moving(entity_id: str, entity_type: str, state: dict) -> list[tuple[dict, float]]:
+        if entity_type == "doc":
+            return quantities_still_moving(
+                state, lambda line: sent_out_by(items.get(line_item_id(line)) or {}, entity_id))
+        return [(line, line.get("quantity")) for line in state.get("line_items") or []
+                if isinstance(line, dict)] if state.get("status") in (None, DRAFT, FINALIZED) else []
+
+    rows = [(entity_type, state, None if entity_type == "item" else moving(entity_id, entity_type, state))
+            for entity_id, entity_type, state in rows]
     for name, decimals in lowered.items():
         holders: list[str] = []
         needed = decimals
-        for entity_type, state in rows:
+        for entity_type, state, lines in rows:
             if entity_type == "item":
                 sell_qty = stored_sell_qty(state.get("default_sell_qty"))
                 quantities = [state.get("quantity"), *([] if sell_qty in (None, FULL) else [sell_qty])] \
                     if state.get("sell_by") == name else []
                 label = state.get("sku") or state.get("name")
             else:
-                quantities = [line.get("quantity") for line in state.get("line_items") or []
-                              if isinstance(line, dict) and line_unit(line) == name]
+                quantities = [qty for line, qty in lines if line_unit(line) == name]
                 label = state.get("doc_number") or state.get("ref_id") or state.get("name")
             finer = [q for q in quantities if _finer_than(q, decimals)]
             if finer:
@@ -229,9 +237,9 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
             current = old.get(name, needed)
             raise HTTPException(status_code=422, detail=refusal(
                 "units.precision_lowered_under_quantities",
-                f"{name} cannot go to {decimals} decimal places: {len(holders)} items or open documents hold "
-                f"quantities with more ({examples}). Change those quantities or void those documents first, "
-                f"or keep {current} decimal places.",
+                f"{name} cannot go to {decimals} decimal places: {len(holders)} items or open documents "
+                f"still hold quantities with more ({examples}). Change those quantities first, or keep "
+                f"{current} decimal places.",
                 unit=name, decimals=decimals, count=len(holders), examples=examples, current=current))
 
 

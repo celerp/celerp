@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: MIT
 """Shared constants for the docs module."""
 
+from collections.abc import Callable
+from decimal import Decimal
+
 from celerp.services.doc_balance import MEMO_LIVE_STATUSES
 from celerp.services.list_behavior import SCAN_RUNS_FIELD
 
@@ -68,16 +71,40 @@ CONVERTIBLE_STATUSES: dict[str, frozenset[str]] = {
 QUOTATION_SPENT_STATUSES = frozenset({"void", "converted"})
 
 
-def lines_still_move_stock(doc_type: str | None, status: str | None) -> bool:
-    """Whether a document's line quantities can still be received, shipped, sent back or carried
-    into a converted document: a draft of any type, or a status one of those actions takes it in.
-    Any other document is history."""
+def sent_out_by(item_state: dict, doc_id: str) -> bool:
+    """Whether document ``doc_id`` sent these goods out (sold or out on memo): it
+    fulfilled them, or holds them as their status document."""
+    return item_state.get("status") in ("sold", "memo_out") and (
+        doc_id in (item_state.get("fulfilled_for_docs") or []) or item_state.get("status_doc_id") == doc_id)
+
+
+def quantities_still_moving(state: dict, shipped: Callable[[dict], bool]) -> list[tuple[dict, float]]:
+    """Each line of a document with the quantity on it that can still be received, shipped or
+    carried into a converted document. A draft, an open quotation and a document that can still
+    convert carry their whole lines. A document that receives carries what each line has not
+    received yet; one that ships carries the lines whose goods have not gone out (``shipped``),
+    and nothing once all of them have. What came in, even if it can still be sent back, sits in
+    its item, so a document that can only send goods back carries nothing. Any other document is
+    history."""
+    doc_type, status = state.get("doc_type"), state.get("status")
+    lines = [line for line in state.get("line_items") or [] if isinstance(line, dict)]
+    if (doc_type == "quotation" and status not in QUOTATION_SPENT_STATUSES) \
+            or status in CONVERTIBLE_STATUSES.get(doc_type, ()):
+        return [(line, line.get("quantity")) for line in lines]
+    if status in RECEIVABLE_STATUSES.get(doc_type, ()):
+        return [(line, left) for line in lines if (left := _unreceived(line)) > 0]
+    if status in FULFILLABLE_STATUSES.get(doc_type, ()):
+        if state.get("fulfillment_status") == "fulfilled":
+            return []
+        return [(line, line.get("quantity")) for line in lines if not shipped(line)]
     if status in (None, "draft"):
-        return True
-    if doc_type == "quotation":
-        return status not in QUOTATION_SPENT_STATUSES
-    return any(status in by_type.get(doc_type, ()) for by_type in (
-        FULFILLABLE_STATUSES, RECEIVABLE_STATUSES, SUPPLIER_RETURN_STATUSES, CONVERTIBLE_STATUSES))
+        return [(line, line.get("quantity")) for line in lines]
+    return []
+
+
+def _unreceived(line: dict) -> float:
+    ordered, received = (Decimal(str(float(line.get(key) or 0))) for key in ("quantity", "quantity_received"))
+    return float(ordered - received)
 
 
 # The payment methods that record a credit note applied to a document rather than money:

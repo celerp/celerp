@@ -216,7 +216,7 @@ async def test_fewer_decimals_under_a_finer_item_quantity_is_refused_and_names_i
     assert detail["message_key"] == "units.precision_lowered_under_quantities", detail
     assert detail["params"] == {"unit": "carat", "decimals": 1, "count": 1,
                                 "examples": await _sku(session, auth, lot), "current": 2}, detail
-    assert "Change those quantities or void those documents first, or keep 2 decimal places." in detail["message"], detail
+    assert "Change those quantities first, or keep 2 decimal places." in detail["message"], detail
     assert await _carat_decimals(client, auth) == 2
     assert await _sell_qty(session, auth, lot) == fields.get("default_sell_qty")
 
@@ -246,7 +246,7 @@ async def test_an_open_document_line_blocks_fewer_decimals(client, session, auth
     r = await _set_carat_decimals(client, auth, 1)
     assert r.status_code == 422, r.text
     assert r.json()["detail"]["params"]["examples"] == "OPEN-1", r.text
-    assert "void those documents" in r.json()["detail"]["message"], r.text
+    assert "still hold quantities with more (OPEN-1)" in r.json()["detail"]["message"], r.text
     assert await _carat_decimals(client, auth) == 2
 
 
@@ -266,6 +266,86 @@ async def test_an_issued_purchase_order_keeps_its_ordered_quantity_receivable(cl
     assert (await _set_carat_decimals(client, auth, 1)).status_code == 422
     r = await _receive(client, auth, po, {"po_line_index": 0, "quantity_received": 0.27})
     assert r.status_code == 200, r.text
+
+
+# Only what a line can still receive or ship counts: what came in already sits in an item, which
+# is counted on its own, and what shipped is history.
+async def _carat_items_in_tenths(client, auth) -> None:
+    for row in (await client.get("/items", headers=auth["headers"], params={"limit": 500})).json().get("items", []):
+        q = float(row.get("quantity") or 0)
+        if row.get("sell_by") == "carat" and round(q, 1) != q:
+            assert (await _patch(client, auth, row["id"], quantity=round(q + 0.05, 1))).status_code == 200
+
+
+async def test_a_fully_received_purchase_order_never_blocks_fewer_decimals(client, session, auth):
+    item = await _lot(client, auth, qty=1)
+    po = await _doc(client, auth, "purchase_order", [{"item_id": item, "sku": await _sku(session, auth, item),
+                                                      "name": "Stone", "quantity": 0.27, "unit": "carat",
+                                                      "sell_by": "carat", "unit_price": 10.0}])
+    await _finalize(client, auth, po)
+    assert (await _receive(client, auth, po, {"po_line_index": 0, "quantity_received": 0.27})).status_code == 200
+    assert (await _state(session, auth, po))["status"] == "received"
+    # The received 0.27 ct sits in an item, which blocks until it is counted in tenths.
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 422
+    await _carat_items_in_tenths(client, auth)
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200, await _carat_decimals(client, auth)
+
+
+async def test_a_partly_received_purchase_order_line_blocks_with_what_is_left(client, session, auth):
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    item = await _lot(client, auth, qty=1)
+    po = await _doc(client, auth, "purchase_order", [{"item_id": item, "sku": await _sku(session, auth, item),
+                                                      "name": "Stone", "quantity": 0.275, "unit": "carat",
+                                                      "sell_by": "carat", "unit_price": 10.0}])
+    await _finalize(client, auth, po)
+    assert (await _receive(client, auth, po, {"po_line_index": 0, "quantity_received": 0.1})).status_code == 200
+    po_state = await _state(session, auth, po)
+    assert po_state["status"] == "partially_received", po_state["status"]
+    await _carat_items_in_tenths(client, auth)
+    # 0.175 is still to come: finer than 1 or 2 decimal places.
+    for decimals in (1, 2):
+        r = await _set_carat_decimals(client, auth, decimals)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["params"]["examples"] == po_state["doc_number"], r.text
+    assert await _carat_decimals(client, auth) == 3
+
+
+async def _invoice_event(session, auth, doc_id: str, number: str, lines: list[dict], **state) -> None:
+    await emit_event(session, company_id=auth["company_id"], entity_id=doc_id, entity_type="doc",
+                     event_type="doc.created",
+                     data={"doc_type": "invoice", "doc_number": number, "status": "paid", **state,
+                           "line_items": [{"name": "Stone", "unit": "carat", "unit_price": 10, **line}
+                                          for line in lines]},
+                     actor_id=None, location_id=None, source="test", idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+
+
+async def test_a_paid_fully_shipped_invoice_never_blocks_fewer_decimals(client, session, auth):
+    await _invoice_event(session, auth, f"doc:{uuid.uuid4()}", "PAID-1", [{"quantity": 0.27}],
+                         fulfillment_status="fulfilled", fulfilled_items=[{"item_id": None, "quantity": 0.27}])
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
+    assert await _carat_decimals(client, auth) == 1
+
+
+@pytest.mark.parametrize("unshipped, blocks", [(0.25, True), (0.3, False)])
+async def test_a_partly_shipped_invoice_blocks_only_with_its_unshipped_lines(client, session, auth, unshipped, blocks):
+    doc_id = f"doc:{uuid.uuid4()}"
+    # The shipped line's lot is sold to this invoice and holds a whole number of tenths.
+    shipped = await _lot(client, auth, qty=0.3)
+    await emit_event(session, company_id=auth["company_id"], entity_id=shipped, entity_type="item",
+                     event_type="item.status.set",
+                     data={"new_status": "sold", "source_doc_id": doc_id, "doc_number": "PART-1"},
+                     actor_id=None, location_id=None, source="test", idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+    assert (await _state(session, auth, shipped))["status"] == "sold"
+    await _invoice_event(session, auth, doc_id, "PART-1", [{"item_id": shipped, "quantity": 0.27},
+                                                           {"quantity": unshipped}], fulfillment_status="partial")
+
+    r = await _set_carat_decimals(client, auth, 1)
+    assert r.status_code == (422 if blocks else 200), r.text
+    if blocks:
+        assert r.json()["detail"]["params"]["examples"] == "PART-1", r.text
+    assert await _carat_decimals(client, auth) == (2 if blocks else 1)
 
 
 @pytest.mark.parametrize("by", ["item_id", "sku"])

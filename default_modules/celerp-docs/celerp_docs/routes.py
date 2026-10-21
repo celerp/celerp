@@ -71,7 +71,7 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES, QUOTATION_SPENT_STATUSES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES, QUOTATION_SPENT_STATUSES, sent_out_by
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
@@ -526,13 +526,6 @@ class BatchImportResult(BaseModel):
 class DocBatchImportRequest(BaseModel):
     records: list[DocImportRecord] = Field(..., max_length=500)
     upsert: bool = False
-
-
-def _sent_out_by(item_state: dict, doc_id: str) -> bool:
-    """Whether document ``doc_id`` sent these goods out (sold or out on memo): it
-    fulfilled them, or holds them as their status document."""
-    return item_state.get("status") in ("sold", "memo_out") and (
-        doc_id in (item_state.get("fulfilled_for_docs") or []) or item_state.get("status_doc_id") == doc_id)
 
 
 class FulfillLinesRequest(BaseModel):
@@ -11111,7 +11104,7 @@ async def _return_parts(session, company_id, invoice_id: str, items: list[Return
     return beyond that is refused with the numbers."""
     from celerp.services.fulfill import returned_lots
 
-    shipped = {r.entity_id: item_by_id[r.entity_id] for r in item_rows if _sent_out_by(r.state or {}, invoice_id)}
+    shipped = {r.entity_id: item_by_id[r.entity_id] for r in item_rows if sent_out_by(r.state or {}, invoice_id)}
     sent = {lot: float(flat.get("quantity") or 0) for lot, flat in shipped.items()}
     left = dict(sent)
 
