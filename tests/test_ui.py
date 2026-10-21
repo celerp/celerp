@@ -8524,7 +8524,6 @@ class TestNikolaiFixedBugs:
 
     # ── Currency display ──────────────────────────────────────────────────────
 
-    @pytest.mark.asyncio
     def test_company_tab_shows_currency_code(self):
         """Currency must show the currency code (e.g. THB) on the company settings card."""
         from ui.routes.settings import _company_settings_card
@@ -8559,7 +8558,6 @@ class TestNikolaiFixedBugs:
 
     # ── Fiscal year display ───────────────────────────────────────────────────
 
-    @pytest.mark.asyncio
     def test_company_tab_shows_fiscal_year_human_label(self):
         """fiscal_year_start must render as a human month name on the company settings card."""
         from ui.routes.settings import _company_settings_card
@@ -8627,7 +8625,6 @@ class TestNikolaiFixedBugs:
 
     # ── Timezone display ──────────────────────────────────────────────────────
 
-    @pytest.mark.asyncio
     def test_company_tab_shows_timezone(self):
         """Timezone must render on the company settings card (not blank)."""
         from ui.routes.settings import _company_settings_card

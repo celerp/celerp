@@ -959,6 +959,34 @@ async def test_import_bundle_file_again_opens_the_same_doc(client: AsyncClient):
     assert r.headers["location"] != locations[0]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field, status", [("bundle", 302), ("other", 422)])
+async def test_import_bundle_file_upload_is_closed(client: AsyncClient, monkeypatch, field, status):
+    """Every uploaded file is closed when the request ends, whether the bundle is
+    imported or refused, so no temporary file is left open."""
+    from starlette.datastructures import UploadFile
+
+    uploads: list = []
+    original_init = UploadFile.__init__
+
+    def _init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        uploads.append(self)
+
+    monkeypatch.setattr(UploadFile, "__init__", _init)
+    tok = await _token(client)
+    content = json.dumps({"version": 1, "doc": {"doc_type": "invoice", "currency": "USD", "total": 3.0}}).encode()
+    r = await client.post(
+        "/docs/import-bundle",
+        files={field: ("EXT-9.celerp", content, "application/json")},
+        headers=_h(tok),
+        follow_redirects=False,
+    )
+    assert r.status_code == status
+    assert len(uploads) == 1
+    assert uploads[0].file.closed
+
+
 # ---------------------------------------------------------------------------
 # Send email carries a view link when cloud-connected
 # ---------------------------------------------------------------------------

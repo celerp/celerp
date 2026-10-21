@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from pathlib import Path
 
 from conftest_support import (
     is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir)
@@ -551,8 +552,7 @@ def _reset_cloud_settings():
     _cfg_path = os.environ.get("CELERP_CONFIG")
     _cfg_before = None
     if _cfg_path and os.path.exists(_cfg_path):
-        with open(_cfg_path, "rb") as _fh:
-            _cfg_before = _fh.read()
+        _cfg_before = Path(_cfg_path).read_bytes()
     yield
     for f, v in snapshot.items():
         setattr(_s, f, v)
@@ -562,9 +562,8 @@ def _reset_cloud_settings():
                 os.remove(_cfg_path)
             except FileNotFoundError:
                 pass
-        elif _cfg_before != (open(_cfg_path, "rb").read() if os.path.exists(_cfg_path) else None):
-            with open(_cfg_path, "wb") as _fh:
-                _fh.write(_cfg_before)
+        elif _cfg_before != (Path(_cfg_path).read_bytes() if os.path.exists(_cfg_path) else None):
+            Path(_cfg_path).write_bytes(_cfg_before)
 
 
 @pytest.fixture(autouse=True)
