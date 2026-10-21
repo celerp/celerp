@@ -191,7 +191,7 @@ class OdooAdapter:
         odoo, ledger, _ = _read(artifacts, decisions)
         return expectations_from(odoo.book, ledger)
 
-    def read_attachment(self, artifacts: ArtifactSet, key: str) -> bytes:
+    def read_attachment(self, artifacts: ArtifactSet, decisions: MigrationDecisions, key: str) -> bytes:
         """The content of one file the scan accepts. Raises ScanError for any other key."""
         artifact = _single(artifacts)
         with Backup(artifact.path) as backup:

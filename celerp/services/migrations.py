@@ -800,7 +800,7 @@ async def _run_locked(run_id: uuid.UUID) -> None:
             manifest = await asyncio.to_thread(adapter.build_manifest, artifacts, decisions)
             _require_same_lock_date(run, manifest)
             steps = _phase_steps(manifest)
-            read_attachment = partial(adapter.read_attachment, artifacts)
+            read_attachment = partial(adapter.read_attachment, artifacts, decisions)
         except Exception as exc:  # a missing source, adapter or module sink, or a changed importer or lock date: nothing written
             await _fail(maker, run_id, stopped_at, _phase_entry(state, stopped_at)["cursor"], exc)
             return
@@ -946,7 +946,7 @@ async def _verification(session: AsyncSession, run: MigrationRun) -> dict:
     adapter, artifacts, decisions = await asyncio.to_thread(_source, run)
     expectations = await asyncio.to_thread(adapter.source_expectations, artifacts, decisions)
     context = SinkContext(session=session, company_id=run.company_id, user_id=run.created_by_user_id, run_id=run.id,
-                          read_attachment=partial(adapter.read_attachment, artifacts))
+                          read_attachment=partial(adapter.read_attachment, artifacts, decisions))
     measured: dict[tuple, Decimal] = {}
     for sink in _registered_sinks():
         for m in await sink.reconcile(context, expectations):

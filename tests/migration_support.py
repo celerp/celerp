@@ -169,7 +169,7 @@ class FakeAdapter:
             ))
         return ReconciliationExpectations(expectations=rows)
 
-    def read_attachment(self, artifacts, key: str) -> bytes:
+    def read_attachment(self, artifacts, decisions, key: str) -> bytes:
         raise ScanError("The fake source carries no attachments.")
 
 

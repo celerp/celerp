@@ -45,7 +45,7 @@ def _entries(path):
         ("inspect", lambda: manager.inspect(artifacts)),
         ("build_manifest", lambda: manager.build_manifest(artifacts, decisions)),
         ("source_expectations", lambda: manager.source_expectations(artifacts, decisions)),
-        ("read_attachment", lambda: manager.read_attachment(artifacts, ref("ATT1"))),
+        ("read_attachment", lambda: manager.read_attachment(artifacts, decisions, ref("ATT1"))),
     ]
 
 

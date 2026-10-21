@@ -101,7 +101,7 @@ class ExportSetAdapter:
     def source_expectations(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> ReconciliationExpectations:
         return expectations_from(*self._read(artifacts, decisions))
 
-    def read_attachment(self, artifacts: ArtifactSet, key: str) -> bytes:
+    def read_attachment(self, artifacts: ArtifactSet, decisions: MigrationDecisions, key: str) -> bytes:
         """An export set carries no attachments."""
         raise ScanError("No such attachment in this export set.")
 

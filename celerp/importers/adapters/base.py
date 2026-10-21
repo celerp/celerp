@@ -116,7 +116,7 @@ class SourceAdapter(Protocol):
         self, artifacts: ArtifactSet, decisions: MigrationDecisions
     ) -> ReconciliationExpectations: ...
 
-    def read_attachment(self, artifacts: ArtifactSet, key: str) -> bytes:
-        """The content of one attachment the manifest carries, by its source id.
-        Raises ScanError for any key the scan did not accept."""
+    def read_attachment(self, artifacts: ArtifactSet, decisions: MigrationDecisions, key: str) -> bytes:
+        """The content of one attachment the manifest built with these decisions carries, by
+        its source id. Raises ScanError for any key that manifest does not carry."""
         ...

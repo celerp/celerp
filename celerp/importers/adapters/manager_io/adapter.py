@@ -175,7 +175,7 @@ class ManagerIOAdapter:
         _refuse_blockers(book)
         return expectations_from(book, build_ledger(book, decisions))
 
-    def read_attachment(self, artifacts: ArtifactSet, key: str) -> bytes:
+    def read_attachment(self, artifacts: ArtifactSet, decisions: MigrationDecisions, key: str) -> bytes:
         """The content of one attachment the scan accepts. Raises ScanError for any other key."""
         with ManagerReader(_single(artifacts).path) as reader:
             return attachments.read_attachment(read_book(reader), reader, key)

@@ -217,7 +217,7 @@ def test_manager_attachment_handling_is_untrusted_and_reported(tmp_path):
     assert accepted.declared_content_type == "image/png"
     assert accepted.sha256 == hashlib.sha256(png).hexdigest()
     assert (accepted.target_source_type, accepted.target_source_external_id) == ("SalesInvoice", ref("INV1"))
-    assert manager.read_attachment([art], ref("ATT1")) == png
+    assert manager.read_attachment([art], FULL, ref("ATT1")) == png
 
     rejected = {row["source_external_id"]: row["reason"] for row in manifest.source_summary["attachments"]["rejected"]}
     assert set(rejected) == {ref(label) for label in [*cases, "EXTERNAL"]}
@@ -225,7 +225,7 @@ def test_manager_attachment_handling_is_untrusted_and_reported(tmp_path):
     assert rejected[ref("NOTARGET")] == t("migration.attachment_no_target", "en")
     for label in [*cases, "EXTERNAL"]:
         with pytest.raises(ScanError):
-            manager.read_attachment([art], ref(label))
+            manager.read_attachment([art], FULL, ref(label))
 
     # A rejected attachment never turns the run into a false full success, and never blocks the ledger.
     assert ("Attachment (rejected)", CoverageClass.MAPPED_WITH_LOSS) in {

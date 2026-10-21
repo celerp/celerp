@@ -578,12 +578,12 @@ def test_files_on_documents_contacts_and_products_are_screened(tmp_path, version
     assert "contents aren't accepted" in rejected["attachment:6"]           # not the JPEG it claims
     assert "missing from the backup" in rejected["attachment:10"]
 
-    assert _adapter().read_attachment(files, "attachment:1") == build.PDF
-    assert _adapter().read_attachment(files, "attachment:9") == b"Payment on delivery.\n"
-    assert _adapter().read_attachment(files, "attachment:7") == build.PNG
+    assert _adapter().read_attachment(files, FULL, "attachment:1") == build.PDF
+    assert _adapter().read_attachment(files, FULL, "attachment:9") == b"Payment on delivery.\n"
+    assert _adapter().read_attachment(files, FULL, "attachment:7") == build.PNG
     for key in ("attachment:4", "attachment:8", "attachment:11", "attachment:99"):
         with pytest.raises(ScanError):
-            _adapter().read_attachment(files, key)
+            _adapter().read_attachment(files, FULL, key)
 
 
 @pytest.mark.parametrize("version", VERSIONS)
