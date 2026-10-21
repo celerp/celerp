@@ -1145,7 +1145,7 @@ async def create_category(
     settings = dict(company.settings or {})
     cat_schemas = dict(settings.get("category_schemas") or {})
     if key in cat_schemas:
-        raise HTTPException(status_code=409, detail=t("company.err_category_exists", name=key))
+        raise HTTPException(status_code=409, detail=t("company.err_category_exists", name=name))
     cat_schemas[key] = []
     settings["category_schemas"] = cat_schemas
     display_names = dict(settings.get("category_display_names") or {})
@@ -1186,7 +1186,7 @@ async def rename_category(
     if new_key == category_key:
         return {"ok": True, "items_updated": 0}
     if new_key in cat_schemas:
-        raise HTTPException(status_code=409, detail=t("company.err_category_exists", name=new_key))
+        raise HTTPException(status_code=409, detail=t("company.err_category_exists", name=new_name))
     # Rename schema key
     cat_schemas[new_key] = cat_schemas.pop(category_key)
     settings["category_schemas"] = cat_schemas

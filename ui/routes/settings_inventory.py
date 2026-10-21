@@ -304,9 +304,11 @@ def _categories_tab(
               placeholder=t("settings.new_category_name"),
               cls="form-input form-input--sm cat-add-input"),
         Button(t("settings.add_category"), type="submit", cls="btn btn--secondary btn--sm"),
+        # A new category reloads this page (HX-Redirect); a refused one says why here, the list kept.
+        Div(id="cat-add-result", cls="cat-add-result"),
         hx_post="/settings/categories",
-        hx_target="#your-cats-section",
-        hx_swap="outerHTML",
+        hx_target="#cat-add-result",
+        hx_swap="innerHTML",
         cls="cat-add-form",
     )
     if applied_names:

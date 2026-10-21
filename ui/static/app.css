@@ -1899,6 +1899,8 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .your-cats-action { text-align: right !important; }
 .cat-add-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .cat-add-input { width: 200px !important; flex: 0 0 200px; }
+.cat-add-result { flex-basis: 100%; }
+.cat-add-result:empty { display: none; }
 .cell--left { text-align: left; }
 .cell--center { text-align: center; }
 .th--center { text-align: center; }

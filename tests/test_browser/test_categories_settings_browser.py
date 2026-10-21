@@ -1,11 +1,12 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""The Categories settings tab says why a library category or preset was refused, where it was
-clicked.
+"""The Categories settings tab says why a category, library category or preset was refused, where
+it was clicked.
 
 Adding a category (or the preset holding it) that seeds back a deleted unit at fewer decimals than
 a lot holds is refused with the reason beside the button, in view and without a reload; a category
-that fits still lands on the refreshed list showing it applied.
+that fits still lands on the refreshed list showing it applied. A new category whose name is taken
+is refused beside the add form, which keeps what was typed, and the list stays as it was.
 """
 from __future__ import annotations
 
@@ -86,3 +87,29 @@ def test_adding_a_library_category_lands_on_the_refreshed_list(page, ui_server, 
     assert "book" in _applied(fresh_company)
     expect(page.locator(ADD_BOOK)).to_have_count(0)
     expect(page.locator(".vert-apply-result .cell-error")).to_have_count(0)
+
+
+def test_a_new_category_with_a_taken_name_is_refused_beside_the_form(page, ui_server, fresh_company):
+    api = fresh_company
+    assert api.post("/companies/me/categories", json={"name": "Colored Stone"}).status_code == 200
+    _open_categories(page, ui_server)
+    rows = page.locator("#your-cats-section tbody tr")
+    before = rows.count()
+    typed = page.locator("input[name=new_category_name]")
+    typed.fill("colored stone")
+    _submit(page, "form.cat-add-form", "/settings/categories")
+
+    refusal = page.locator("form.cat-add-form .cat-add-result .cell-error")
+    expect(refusal).to_have_text("A category called colored stone already exists. Choose a different name.")
+    expect(refusal).to_be_in_viewport()
+    assert page.evaluate("window.__sameView === true"), "the page reloaded after the refusal"
+    expect(rows).to_have_count(before)
+    expect(typed).to_have_value("colored stone")
+
+    # A name not taken lands on the refreshed list showing it.
+    typed.fill("Gemstone")
+    form = page.locator("form.cat-add-form")
+    with page.expect_navigation(url="**/settings/inventory?tab=categories", timeout=8000):
+        form.locator("button[type=submit]").click()
+    expect(page.locator("#your-cats-section tbody tr")).to_have_count(before + 1)
+    expect(page.locator(".cat-add-result .cell-error")).to_have_count(0)

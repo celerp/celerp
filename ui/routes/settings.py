@@ -2290,11 +2290,11 @@ def setup_routes(app):
         form = await request.form()
         name = str(form.get("new_category_name", "")).strip()
         if not name:
-            return P(t("settings.field_is_required", label=t("settings.new_category_name")), cls="error-banner")
+            return P(t("settings.field_is_required", label=t("settings.new_category_name")), cls="cell-error")
         try:
             await api.create_category(token, name)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
+            return _refusal(e)
         return Response("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=categories"})
 
     @app.delete("/settings/categories/{category_key}")
