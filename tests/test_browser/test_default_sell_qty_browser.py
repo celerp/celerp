@@ -218,6 +218,28 @@ def test_opening_a_number_cell_and_leaving_keeps_the_stored_value(page, ui_serve
     expect(page.locator(EDITING)).to_have_count(0)
 
 
+def test_opening_a_multi_line_text_cell_and_leaving_keeps_the_line_break(page, ui_server, api):
+    parcel = _item(api)
+    old = api.get(f"/items/{parcel}").json().get("notes")
+    stored = "Line one\nLine two"
+    r = api.patch(f"/items/{parcel}", json={"fields_changed": {"notes": {"old": old, "new": stored}}})
+    assert r.status_code == 200, r.text
+    _open(page, ui_server, parcel)
+    settled(page, SCOPE)
+    page.dblclick('td[data-col="notes"]')
+    editor = page.locator(f"{EDITING} [name=value]")
+    editor.wait_for(state="visible", timeout=4000)
+    ready(page, f"{EDITING} [name=value]")
+    expect(editor).to_have_value(stored)  # the editor shows the line break
+    patches: list[str] = []
+    page.on("request", lambda req: req.method == "PATCH" and patches.append(req.url))
+    page.locator("h1").first.click()
+    page.wait_for_timeout(1500)
+    assert patches == []  # an untouched editor sends nothing
+    assert api.get(f"/items/{parcel}").json().get("notes") == stored
+    expect(page.locator(EDITING)).to_have_count(0)
+
+
 def test_esc_leaves_the_old_value(page, ui_server, api):
     parcel = _item(api, default_sell_qty=2)
     _open(page, ui_server, parcel)

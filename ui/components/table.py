@@ -999,6 +999,8 @@ def editable_cell(
     display_val = str(value) if value is not None else ""
     if cell_type == "number" and display_val:
         display_val = _normalize_number_str(display_val)
+    if cell_type == "text" and "\n" in display_val:
+        cell_type = "textarea"  # a single-line box would drop the line break
     patch_url = patch_url or f"/api/items/{entity_id}/field/{field}"
     # ESC restores from the same field route it saves to, so pointing the cell at another
     # REST surface moves both halves together instead of leaving the restore on core's.
@@ -1021,9 +1023,12 @@ def editable_cell(
     blur_restore_js = f"if(!this._escaping){{htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}})}}"
     # Typed editors save on blur only a value changed from the one they opened with; leaving
     # an untouched editor restores the cell, so opening one and moving on never writes.
+    # The opening value is read from the box on its first focus, not from the HTML value:
+    # a text input drops line breaks, so the two differ before anything is typed.
     blur_save = dict(
-        hx_trigger="blur[this.value!==this.defaultValue] delay:200ms",
-        onblur=(f"if(!this._escaping&&this.value===this.defaultValue){{"
+        onfocus="if(this._v===undefined)this._v=this.value",
+        hx_trigger="blur[this.value!==this._v] delay:200ms",
+        onblur=(f"if(!this._escaping&&this.value===this._v){{"
                 f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}})}}"),
     )
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
