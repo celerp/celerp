@@ -110,6 +110,26 @@ def test_only_a_real_odoo_backup_is_recognised(tmp_path):
     assert detect_adapter(_file(tmp_path, xero_zip, "xero.zip")).key == "xero"
 
 
+def _rezipped(*folders: str) -> bytes:
+    """The fixture backup extracted and zipped again into each of `folders`, the way Finder,
+    Explorer or Archive Utility zip a folder, with the resource files macOS adds."""
+    real = zipfile.ZipFile(io.BytesIO(_backup(17)))
+    return _zip({**{f"{folder}/{name}": real.read(name) for folder in folders for name in real.namelist()},
+                 "__MACOSX/harbour/._dump.sql": b"\x00\x05\x16\x07", "harbour/._manifest.json": b"\x00"})
+
+
+def test_a_backup_zipped_again_inside_its_folder_is_read_whole(tmp_path):
+    files = _file(tmp_path, _rezipped("harbour"))
+    assert _adapter().detect(files).matched
+    original = _adapter().build_manifest(_file(tmp_path, _backup(17), "original.zip"), FULL)
+    manifest = _adapter().build_manifest(files, FULL)
+    assert manifest.bundle.model_dump() == original.bundle.model_dump()     # the filestore is found too
+    assert _adapter().read_attachment(files, FULL, "attachment:1") == build.PDF
+
+    two = _adapter().detect(_file(tmp_path, _rezipped("harbour", "harbour copy"), "two.zip"))
+    assert two.matched is False and "not an Odoo backup" in two.reason
+
+
 @pytest.mark.parametrize("version", (12, 18))
 def test_a_backup_from_an_unsupported_odoo_version_is_refused_with_its_own_message(tmp_path, version):
     from celerp.importers.adapters.registry import detect_adapter

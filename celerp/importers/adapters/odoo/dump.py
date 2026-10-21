@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 """Read an Odoo backup as Odoo's database manager writes it: one zip holding
-`manifest.json`, `dump.sql` (a plain PostgreSQL dump) and `filestore/`.
+`manifest.json`, `dump.sql` (a plain PostgreSQL dump) and `filestore/`, at its root or in
+the one folder of a zip made again from the extracted backup.
 
 The tables are read straight from the dump's COPY blocks, so no database server and no
 Odoo install are needed. Odoo 13 to 17 differ in a few places this module evens out:
@@ -55,18 +56,31 @@ def _major(manifest: dict) -> int | None:
     return int(found.group(1)) if found else None
 
 
-def _manifest(archive: zipfile.ZipFile) -> dict | None:
-    """The backup's manifest, or None when the zip is not an Odoo backup."""
-    names = set(archive.namelist())
-    if MANIFEST not in names or DUMP not in names:
-        return None
+def _root(archive: zipfile.ZipFile) -> str | None:
+    """Where the backup sits in the zip: at its root as Odoo writes it, or in the one folder
+    a zip made again from the extracted backup puts it in (the files macOS adds are not
+    counted). None when the zip holds no backup or more than one."""
+    names = {n for n in archive.namelist()
+             if not n.startswith("__MACOSX/") and not n.rsplit("/", 1)[-1].startswith("._")}
+    if {MANIFEST, DUMP} <= names:
+        return ""
+    folders = {n.split("/", 1)[0] for n in names}
+    if len(folders) == 1 and "/" in next(iter(names), ""):
+        root = folders.pop() + "/"
+        if {root + MANIFEST, root + DUMP} <= names:
+            return root
+    return None
+
+
+def _manifest(archive: zipfile.ZipFile, root: str) -> dict | None:
+    """The backup's manifest, or None when the files are not an Odoo backup."""
     try:
-        manifest = json.loads(archive.read(MANIFEST))
+        manifest = json.loads(archive.read(root + MANIFEST))
     except (ValueError, UnicodeDecodeError):
         return None
     if not isinstance(manifest, dict) or "odoo_dump" not in manifest or _major(manifest) is None:
         return None
-    with archive.open(DUMP) as dump:
+    with archive.open(root + DUMP) as dump:
         head = dump.read(256).decode("utf-8", "replace")
     return manifest if DUMP_HEADER in head else None
 
@@ -77,7 +91,8 @@ class Backup:
     def __init__(self, path: Path) -> None:
         try:
             self.archive = zipfile.ZipFile(path)
-            manifest = _manifest(self.archive)
+            self.root = _root(self.archive)
+            manifest = None if self.root is None else _manifest(self.archive, self.root)
         except (OSError, zipfile.BadZipFile) as exc:
             raise ScanError(t("migration.err_odoo_not_backup")) from exc
         if manifest is None:
@@ -104,7 +119,7 @@ class Backup:
         columns. A table the dump does not hold (its module is not installed) is absent."""
         wanted = set(names)
         out: dict[str, list[Row]] = {}
-        with self.archive.open(DUMP) as raw:
+        with self.archive.open(self.root + DUMP) as raw:
             lines = io.TextIOWrapper(raw, encoding="utf-8", newline="\n")
             rows: list[Row] | None = None
             kept: list[tuple[int, str]] = []
@@ -142,7 +157,7 @@ class Backup:
     def stored_file(self, store_fname: str, limit: int) -> bytes | None:
         """The content of one filestore file, or None when the backup does not hold it or it
         is larger than `limit`. The name comes from the dump and is untrusted."""
-        name = FILESTORE + store_fname
+        name = self.root + FILESTORE + store_fname
         if ".." in store_fname.split("/") or store_fname.startswith("/"):
             return None
         try:
