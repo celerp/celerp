@@ -5243,7 +5243,7 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
                 "tax_codes", "hs_code", "weight_unit",
                 "dimensions", "dimensions_unit", "purchase_sku",
                 "purchase_name", "purchase_unit", "purchase_conversion_factor",
-                "allow_splitting", "pick_method", "gtin",
+                "allow_splitting", "default_sell_qty", "pick_method", "gtin",
             )
             item_data: dict = {k: sku_ref[k] for k in _INHERIT if k in sku_ref and sku_ref[k] is not None}
             if catalog_item_id:

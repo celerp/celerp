@@ -610,7 +610,8 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
     await op.emit(lot_id, "item", "item.created", {
         "sku": p.get("sku"), "name": p.get("name"), "sell_by": p.get("sell_by"),
         "category": p.get("category"), "inventory_type": p.get("inventory_type"),
-        "allow_splitting": splitting_allowed(p), "quantity": 0, "location_id": loc,
+        "allow_splitting": splitting_allowed(p), "default_sell_qty": p.get("default_sell_qty"),
+        "quantity": 0, "location_id": loc,
         "parent_item_id": out_id, "lot": True,
         # A produced lot is a new physical parcel with its own barcode.
         "barcode": (await allocate_internal_codes(op.session, op.company_id))[0],

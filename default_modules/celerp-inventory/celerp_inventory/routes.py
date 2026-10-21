@@ -4524,6 +4524,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
         "sell_by": str(target_state.get("sell_by") or "piece"),
         "status": "available",
         "allow_splitting": splitting_allowed(target_state),
+        "default_sell_qty": target_state.get("default_sell_qty"),
         "attributes": resolved_attrs,
     }
     if merged_catalog_id:

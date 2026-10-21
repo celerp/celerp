@@ -2712,6 +2712,8 @@ function celerpPrintLabel(entityId, templateId) {
         # Convert bool fields from string to proper bool
         if field == "allow_splitting":
             value = value.lower() in ("true", "1", "yes")
+        elif field == "default_sell_qty" and not str(value).strip():
+            value = None  # blanking it clears it: a scan then takes the unit's default
         # Convert numeric fields from string to float
         elif field == "quantity" or field.endswith("_price") or field.endswith("_price_total"):
             raw_str = str(form.get("value", ""))
