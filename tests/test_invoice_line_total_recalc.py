@@ -79,14 +79,12 @@ _DRAFT_DOC = {
 @pytest_asyncio.fixture
 async def ui_client():
     from ui.app import app as ui_app
-    # A draft page refreshes the free-send quota in the background; keep it off the network.
-    with patch("ui.api_client.account_methods", new=AsyncMock(return_value={})):
-        async with AsyncClient(
-            transport=ASGITransport(app=ui_app),
-            base_url="http://ui",
-            follow_redirects=False,
-        ) as c:
-            yield c
+    async with AsyncClient(
+        transport=ASGITransport(app=ui_app),
+        base_url="http://ui",
+        follow_redirects=False,
+    ) as c:
+        yield c
 
 
 @pytest_asyncio.fixture

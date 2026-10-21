@@ -612,6 +612,22 @@ def _restore_bytecode_settings():
 
 
 @pytest.fixture(autouse=True)
+def _no_free_send_quota_fetch(request):
+    """Opening a document page starts a background fetch of the free-send quota from the
+    API. Unit tests have no API to answer it, and a fetch still connecting when the test's
+    event loop closes is never finished. Hold the cache as already fetching, so no page
+    starts one; pages read it as never fetched, as before. The tests of the fetch reset
+    the cache themselves. Browser tests run a real API and keep the fetch."""
+    if request.node.get_closest_marker("browser"):
+        yield
+        return
+    from ui.routes import documents
+    documents._free_send_quota_cache.update({"value": 0, "fetched_at": None, "pending": True, "task": None})
+    yield
+    documents._free_send_quota_cache.update({"value": 0, "fetched_at": None, "pending": False, "task": None})
+
+
+@pytest.fixture(autouse=True)
 def _mock_get_modules_default():
     """Default get_modules mock — returns empty list so settings page always has a valid response."""
     from unittest.mock import patch, AsyncMock
