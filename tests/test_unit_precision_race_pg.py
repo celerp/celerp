@@ -217,6 +217,27 @@ async def test_a_draft_line_after_decimals_dropped_just_before_its_lock_sees_the
     await _assert_serial(http, factory, auth, a, state, a_first=False)
 
 
+async def test_a_batch_import_after_decimals_dropped_just_before_its_lock_refuses_the_record(
+        http, factory, auth, two_dp, committed_engine, monkeypatch):
+    import celerp.services.company_lock as cl
+    state = _arm(monkeypatch, committed_engine, cl, "lock_company", http, auth, before=True)
+    a = await http.post("/items/import/batch", headers=auth["headers"], json={"records": [{
+        "entity_id": f"item:{uuid.uuid4()}", "event_type": "item.created", "source": "csv_import",
+        "idempotency_key": f"csv:{uuid.uuid4().hex}",
+        "data": {"sku": f"I-{uuid.uuid4().hex[:6]}", "name": "Parcel", "quantity": 0.27, "sell_by": "carat",
+                 "status": "available"}}]})
+    assert state["b"] is not None, "the hook point was never reached"
+    b = await state["b"]
+    units = (await http.get("/companies/me/units", headers=auth["headers"])).json()
+    qtys = await _carat_quantities(factory, auth)
+    seen = (a.status_code, a.text[:300], b.status_code, b.text[:200], qtys)
+    # The batch answers 200 and reports a refused record among its errors.
+    assert (a.status_code, b.status_code) == (200, 200), seen
+    assert a.json()["created"] == 0 and len(a.json()["errors"]) == 1 and "0.27" in a.text, seen
+    assert next(u["decimals"] for u in units if u["name"] == "carat") == 1, seen
+    assert 0.27 not in qtys, seen
+
+
 # Only reads that validate nothing may use the unlocked units read; every writer goes through
 # get_company_units (inventory) or _get_unit_map (documents), both read under the company lock.
 _DISPLAY_READERS = {
