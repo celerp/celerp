@@ -1264,7 +1264,7 @@ def _duplicate_payload(source: dict, new_sku: str, *, can_set_prices: bool) -> d
     _SKIP = {"id", "status", "location_name", "created_at", "updated_at", "barcode",
              "idempotency_key", "external_links", "_channel_state"} | SYSTEM_ITEM_KEYS
     _CORE = {"sku", "name", "quantity", "category", "location_id",
-             "description", "unit", "sell_by", "tax_codes"}
+             "description", "unit", "sell_by", "tax_codes", "allow_splitting", "default_sell_qty"}
     payload: dict = {"sku": new_sku, "auto_barcode": True}
     attrs: dict = {}
     for k, v in source.items():
@@ -5504,7 +5504,7 @@ _LIST_ONLY_KEYS: frozenset[str] = frozenset({"thumbnail"})
 # Core item fields shown in the left (core details) panel on the detail page — single definition
 _ITEM_CORE_KEYS: frozenset[str] = frozenset({
     "sku", "name", "status", "category", "quantity", "pieces", "weight", "weight_unit",
-    "gross_weight", "gross_weight_unit", "sell_by", "allow_splitting", "barcode",
+    "gross_weight", "gross_weight_unit", "sell_by", "allow_splitting", "default_sell_qty", "barcode",
     "batch_no", "hs_code", "location_name", "short_description", "reorder_point",
     "reorder_qty", "purchase_sku", "purchase_name",
     "purchase_unit", "purchase_conversion_factor",

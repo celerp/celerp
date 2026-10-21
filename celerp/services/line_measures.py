@@ -16,8 +16,14 @@ way, so the rules live here:
 
 from __future__ import annotations
 
+import math
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
+
+from fastapi import HTTPException
+
 from celerp.accounting_roles import refusal
-from celerp.services.units import is_pieces_unit, is_weight_unit
+from celerp.services.units import is_pieces_unit, is_weight_unit, validate_quantity
+from ui.i18n import t
 
 
 def splitting_allowed(state: dict) -> bool:
@@ -27,6 +33,75 @@ def splitting_allowed(state: dict) -> bool:
     blocks. Single source of truth for the split default across every consumer.
     """
     return state.get("allow_splitting") is not False
+
+
+# Default Sell Qty: how much one scan places on a goods-out record. ``FULL`` is everything
+# left in what the code stands for; a number is that amount per scan.
+FULL = "full"
+
+
+def stored_sell_qty(value) -> Decimal | str | None:
+    """A stored Default Sell Qty read as FULL, a positive finite Decimal, or None (unset).
+    Anything else (a stray string, zero, a negative, a boolean) reads as unset."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str) and value.strip().lower() == FULL:
+        return FULL
+    try:
+        qty = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return None
+    return qty if qty.is_finite() and qty > 0 else None
+
+
+def floor_to_unit(qty: Decimal, unit_name: str | None, unit_map: dict) -> Decimal:
+    """``qty`` rounded down to the decimals the named unit allows; unchanged for a unit
+    the company does not define. Rounding down never places more than is there."""
+    unit = unit_map.get(unit_name or "")
+    if unit is None:
+        return qty
+    return qty.quantize(Decimal(10) ** -int(unit.get("decimals") or 0), rounding=ROUND_DOWN)
+
+
+def proposed_sell_qty(state: dict, unit_map: dict) -> Decimal | str:
+    """What one scan of this lot proposes: FULL or a positive amount. A whole piece is
+    always FULL; then the item's Default Sell Qty, rounded down to its unit; unset, a
+    piece unit (or a unit the company does not define) proposes 1 and any other unit FULL."""
+    if not splitting_allowed(state):
+        return FULL
+    sell_by = state.get("sell_by")
+    stored = stored_sell_qty(state.get("default_sell_qty"))
+    if stored == FULL:
+        return FULL
+    if stored is not None:
+        try:
+            qty = floor_to_unit(stored, sell_by, unit_map)
+        except InvalidOperation:
+            qty = Decimal(0)
+        if qty > 0:
+            return qty
+    unit = unit_map.get(sell_by or "")
+    if unit is None or unit.get("unit_type") == "pieces":
+        return Decimal(1)
+    return FULL
+
+
+def validate_default_sell_qty(value, sell_by: str | None, unit_map: dict) -> str | float | None:
+    """The Default Sell Qty to store: None for unset or blank, FULL in any case, or a
+    positive finite number the item's unit allows. Anything else is refused with 422."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    stored = stored_sell_qty(value)
+    qty = float(stored) if stored not in (None, FULL) else None
+    if stored is None or (qty is not None and not math.isfinite(qty)):
+        raise HTTPException(status_code=422, detail=refusal(
+            "item.default_sell_qty_invalid", "Default Sell Qty must be Full or a number above 0."))
+    if stored == FULL:
+        return FULL
+    unit = unit_map.get(sell_by or "")
+    if unit is not None:
+        validate_quantity(qty, int(unit.get("decimals") or 0), label=t("field.label.default_sell_qty"))
+    return qty
 
 
 # What a user was doing when a lot that may not be split stood in the way, as the verb

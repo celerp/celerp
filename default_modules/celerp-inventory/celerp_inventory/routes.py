@@ -16,6 +16,8 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from typing import Any
+
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -95,7 +97,7 @@ from ui.components.table import display_unit
 from ui.i18n import category_label, field_label, item_status_label, price_list_label, t
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.vertical_presets import category_item_defaults
-from celerp.services.line_measures import splitting_allowed
+from celerp.services.line_measures import FULL, splitting_allowed, stored_sell_qty, validate_default_sell_qty
 from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
 from celerp.schemas.numbers import FiniteFloat
 from celerp_inventory.projections import _is_image_mime, is_core_item_key, is_item_available, thumbnail_file_id
@@ -312,6 +314,12 @@ class ItemCreate(BaseModel):
     purchase_unit: str | None = None       # unit vendor sells in (e.g. "case", "box")
     purchase_conversion_factor: FiniteFloat | None = None  # sell units per purchase unit (e.g. 24 pcs/case)
     allow_splitting: bool = True
+    # Typed Any so a boolean is refused by validate_default_sell_qty, never coerced.
+    default_sell_qty: Any = Field(None, description=(
+        "How much one scan adds to a sale: \"full\" for everything left, or a number above 0 "
+        "the item's unit allows. Unset uses the unit's default (1 for pieces, otherwise full)."),
+        json_schema_extra={"anyOf": [{"type": "string", "enum": ["full"]},
+                                     {"type": "number", "exclusiveMinimum": 0}, {"type": "null"}]})
     attributes: dict = Field(default_factory=dict)
     idempotency_key: str | None = None
     # stocked | component | non_stocked | service | freight; omitted means the
@@ -2412,6 +2420,8 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     refusal = negative_cost_error(lot_label(data, entity_id), *(data.get(k) for k in GOODS_COST_KEYS))
     if refusal:
         raise HTTPException(status_code=422, detail=refusal)
+    if (sell_qty := validate_default_sell_qty(data.pop("default_sell_qty", None), payload.sell_by, unit_map)) is not None:
+        data["default_sell_qty"] = sell_qty
 
     for field in ("purchase_unit", "weight_unit"):
         if data.get(field) is None and field in category_defaults:
@@ -2617,6 +2627,20 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             unit_map = {u["name"]: u for u in units}
             if new_sell_by not in unit_map:
                 raise HTTPException(status_code=422, detail=t("inventory.err_unit_unknown", unit=new_sell_by))
+
+    # Default Sell Qty is held to the item's unit: a new value when it is set, and a stored
+    # number when the unit changes (refused, never rounded to fit).
+    if changed_keys & {"default_sell_qty", "sell_by"}:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+        current = (row.state if row else None) or {}
+        sell_by = (payload.fields_changed["sell_by"] or {}).get("new") if "sell_by" in changed_keys else current.get("sell_by")
+        unit_map = {u["name"]: u for u in await _get_company_units(session, company_id)}
+        if "default_sell_qty" in changed_keys:
+            change = payload.fields_changed["default_sell_qty"] or {}
+            payload.fields_changed["default_sell_qty"] = {
+                **change, "new": validate_default_sell_qty(change.get("new"), sell_by, unit_map)}
+        elif stored_sell_qty(current.get("default_sell_qty")) not in (None, FULL):
+            validate_default_sell_qty(current["default_sell_qty"], sell_by, unit_map)
 
     # Validate quantity change against current sell_by unit.
     # Also sync derived weight/pieces field: if sell_by is a weight unit,
