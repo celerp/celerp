@@ -50,7 +50,8 @@ from celerp.services.payments import recorded_unmatched, return_unmatched
 from celerp.tax_regimes import default_tax, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
-from celerp.services.line_measures import line_label, splitting_allowed, splitting_off
+from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
+                                          splitting_off)
 from celerp.services.document_lines import (
     assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
@@ -12416,8 +12417,9 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     past draft (a locked audit) only checks off the lines it holds, and a counting draft moves a
     line it already holds to the top. Otherwise:
       - a splittable lot or an item kept in no stock raises its line by one, or starts a line of
-        one, whatever code named it; where goods leave stock (`sb.unstocked` refuse) neither a
-        line nor all the lines drawing on one product's stock take more than is on hand;
+        one, whatever code named it (by the item's sell quantity where `sb.sell_qty`, held to what
+        is left); where goods leave stock (`sb.unstocked` refuse) neither a line nor all the lines
+        drawing on one product's stock take more than is on hand;
       - a lot that may not be split is one physical piece and takes its whole on-hand on a new
         line, `build` making it; a repeat is reported as already on the record where
         `sb.repeats` refuses it and is another line where goods are bought in;
@@ -12440,9 +12442,9 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
     results: list[dict] = []
     failed: list[dict] = []
     tagged: set[str] = set()  # lots read by RFID tag in this run
-    pools: dict[str, tuple[set[str], float]] = {}
+    pools: dict[str, tuple[set[str], Decimal]] = {}
 
-    def product_pool(lot: Projection) -> tuple[set[str], float]:
+    def product_pool(lot: Projection) -> tuple[set[str], Decimal]:
         """Every lot of the lot's product this record may draw on (in use, stocked, not held for
         another record; pieces that may not be split included) and what they hold together, taken
         from the run's one inventory load by SKU. Lines on the product code's representative and on
@@ -12453,11 +12455,17 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
                      if is_stock_type(m.state or {})
                      and str((m.state or {}).get("status") or "").lower() not in HIDDEN_STATUSES | {"draft"}
                      and not held_elsewhere(m.state or {}, entity_id, None, state.get("source_memo_id"))]
-            pools[sku] = ({m.entity_id for m in stock}, sum(float((m.state or {}).get("quantity") or 0) for m in stock))
+            pools[sku] = ({m.entity_id for m in stock},
+                          sum((to_decimal((m.state or {}).get("quantity") or 0) for m in stock), Decimal(0)))
         ids, available = pools[sku]
         if lot.entity_id in ids:
             return ids, available
-        return ids | {lot.entity_id}, available + float(lot.state.get("quantity") or 0)
+        return ids | {lot.entity_id}, available + to_decimal(lot.state.get("quantity") or 0)
+
+    def drawn(on: list[dict], pool_ids: set[str]) -> Decimal:
+        """What the lines drawing on one product's stock take together."""
+        return sum((to_decimal(l.get("quantity") or 0) for l in on
+                    if (l.get("item_id") or l.get("entity_id")) in pool_ids), Decimal(0))
     for code in codes:
         res = resolved.get(code)
         if res is not None and res.duplicate_physical:
@@ -12501,10 +12509,37 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
                               f"{code}: already on {noun}{_sku_note(code, lot)}", lines[idx].get("line_id"))
                 continue
             empty = stocked and not float(on_hand or 0) > 0
+            held = to_decimal(lines[idx].get("quantity") or 0) if not whole and idx is not None else Decimal(0)
+            step, capped = Decimal(1), False
+            if sb.sell_qty and not whole and not empty and res.kind != "rfid_epc":
+                # Goods sold or offered place the item's sell quantity. Where goods leave stock it
+                # is held to what is left of the lot and of the product's stock (the two bounds the
+                # cap below checks); with nothing left the uncapped amount meets today's refusals.
+                proposed = proposed_sell_qty(lot.state, unit_map)
+                if stocked and sb.unstocked == "refuse":
+                    pool_ids, available = product_pool(lot)
+                    left = floor_to_unit(min(to_decimal(on_hand) - held, available - drawn(lines, pool_ids)),
+                                         lot.state.get("sell_by"), unit_map)
+                    full_on = proposed == FULL and left <= 0 and idx is not None
+                    if proposed == FULL:
+                        step = left if left > 0 else to_decimal(on_hand)
+                    else:
+                        step, capped = (left, True) if 0 < left < proposed else (proposed, False)
+                elif proposed == FULL:
+                    # A quotation offers the whole on-hand once; an item kept in no stock takes one.
+                    full_on = stocked and idx is not None
+                    step = to_decimal(on_hand) if stocked else Decimal(1)
+                else:
+                    full_on, step = False, proposed
+                if full_on:
+                    _scan_failure(failed, results, code, "duplicate_scan",
+                                  f"{code}: already on {noun}{_sku_note(code, lot)}", lines[idx].get("line_id"))
+                    continue
             if whole or idx is None:
-                line = build(lot, 1 if not whole and not empty or empty and sb.unstocked == "one" else on_hand)
+                line = build(lot, float(step) if not whole and not empty
+                             else 1 if empty and sb.unstocked == "one" else on_hand)
             else:
-                line = {**lines[idx], "quantity": float(lines[idx].get("quantity") or 0) + 1}
+                line = {**lines[idx], "quantity": float(held + step)}
                 line["line_id"] = line.get("line_id") or uuid.uuid4().hex
             sku = lot.state.get("sku") or code
             if sb.unstocked != "snapshot":
@@ -12523,14 +12558,13 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
             if sb.unstocked == "refuse" and stocked:
                 # The line never takes more than its lot stands for, and every line drawing on the
                 # product's stock together never takes more than the product has.
-                taken, available = line["quantity"], float(on_hand or 0)
+                taken, available = to_decimal(line["quantity"]), to_decimal(on_hand or 0)
                 if taken <= available:
                     pool_ids, available = product_pool(lot)
-                    taken = sum(float(l.get("quantity") or 0) for l in placed
-                                if (l.get("item_id") or l.get("entity_id")) in pool_ids)
+                    taken = drawn(placed, pool_ids)
                 if taken > available:
-                    _scan_failure(failed, results, code, "insufficient_stock",
-                                  f"{sku}: insufficient stock - {taken:g} on {noun}, available {available:g}")
+                    _scan_failure(failed, results, code, "insufficient_stock", f"{sku}: insufficient stock - "
+                                  f"{float(taken):g} on {noun}, available {float(available):g}")
                     continue
             if not whole and idx is not None:
                 lines[idx] = line
@@ -12541,6 +12575,10 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
             result_state = "added"
         results.append({"code": code, "state": result_state, "item_id": lot.entity_id,
                         "sku": lot.state.get("sku"), "line_id": line.get("line_id")})
+        if result_state == "added":
+            # What this scan placed, so the scan bar can say it.
+            results[-1].update(quantity=float(to_decimal(line.get("quantity") or 0) - held),
+                               unit=line.get("sell_by"), capped=capped)
     return results, failed
 
 

@@ -13,8 +13,6 @@ from test_doc_scan import (
     _codes, _doc, _h, _ids, _item, _lines, _list_lines, _list_scan, _quotation_list, _reasons, _register, _scan,
 )
 
-pytestmark = pytest.mark.asyncio
-
 
 async def _ct(client, t, sku, qty, **fields) -> str:
     return await _item(client, t, sku, qty=qty, sell_by="carat", allow_splitting=True, **fields)

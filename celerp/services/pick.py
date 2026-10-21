@@ -10,8 +10,11 @@ keeps the parent SKU, so lots differ by barcode/entity_id.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from celerp.services.document_lines import line_item_id
 from celerp.services.line_measures import splitting_allowed
+from celerp.services.money import to_decimal
 
 
 VALID_PICK_METHODS = ("fifo", "fefo", "lifo")
@@ -76,7 +79,8 @@ def consolidate_sales_lots(items: list[dict], company_settings: dict) -> list[di
         sorted_lots = _sorted_inventory(group, method)
         stocked = [item for item in sorted_lots if float(item.get("quantity") or 0) > 0]
         rep = dict((stocked or sorted_lots)[0])
-        rep["quantity"] = sum(float(item.get("quantity") or 0) for item in group)
+        # Summed exactly (lots of 0.1 and 0.7 hold 0.8, not 0.7999...).
+        rep["quantity"] = float(sum((to_decimal(item.get("quantity") or 0) for item in group), Decimal(0)))
         out.append(rep)
     return out
 

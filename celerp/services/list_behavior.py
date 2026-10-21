@@ -43,6 +43,7 @@ class ListBehavior:
     terminal: tuple[TerminalAction, ...] = ()
     scan_finalized: str = "noop"            # scan behaviour once finalized: count | receive | noop
     scan_unstocked: str = "refuse"          # a scanned lot with nothing on hand (ScanBehavior.unstocked)
+    scan_sell_qty: bool = False             # a scan places the item's sell quantity (ScanBehavior.sell_qty)
     customs: bool = False                   # value-bearing but non-accounting: per-line customs
                                             # value/HS/origin columns, declared total, no disc/tax
 
@@ -57,7 +58,7 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
             TerminalAction("convert-invoice", "Convert to invoice", "converted"),
             TerminalAction("convert-memo", "Convert to memo", "converted"),
         ),
-        scan_finalized="noop", scan_unstocked="one",  # as a quotation document
+        scan_finalized="noop", scan_unstocked="one", scan_sell_qty=True,  # as a quotation document
     ),
     "transfer": ListBehavior(
         label="Transfer", money=False, finalize_label="Issue", finalize_milestone="issued_at",
@@ -115,8 +116,8 @@ class ScanBehavior:
     finalized: str  # once past draft: count (check off a locked manifest) | noop (scanning refused)
     priced: bool    # added lines carry a unit price (pricing.line_price_list: cost on a purchase document)
     lots: str       # how a product code (GTIN/SKU) picks its lot: single | consolidate | sold
-    # A splittable lot or an item kept in no stock (a service) raises its line by one per scan, a
-    # lot that may not be split takes all it has on hand. A scanned lot by `unstocked`:
+    # A splittable lot or an item kept in no stock (a service) raises its line by one per scan (by
+    # its sell quantity where `sell_qty`), a lot that may not be split takes all it has on hand. A scanned lot by `unstocked`:
     #   refuse    nothing on hand is reported, and no line takes more than is on hand (goods
     #             leaving stock)
     #   one       nothing on hand is taken at one (goods bought in, or offered before they are
@@ -127,6 +128,9 @@ class ScanBehavior:
     # record (it is one physical lot), append adds it as another line (another lot bought in). An
     # RFID tag from an earlier run names the one piece already there, so it is always reported.
     repeats: str = "refuse"
+    # Goods sold or offered: a scan of a splittable lot places the item's sell quantity
+    # (line_measures.proposed_sell_qty) instead of one. RFID tags still name one piece.
+    sell_qty: bool = False
 
 
 # The record field holding its recent scan runs, so a retried run replays instead of re-adding.
@@ -146,7 +150,7 @@ PURCHASE_DOC_TYPES: frozenset[str] = SUPPLIER_DOC_TYPES - {"debit_note"}
 
 # Every document type's scan; a type not listed scans as a sale. A shipping document is a list
 # type and scans through LIST_BEHAVIOR.
-_DOC_SCAN_SALE = ScanBehavior(finalized="noop", priced=True, lots="consolidate")
+_DOC_SCAN_SALE = ScanBehavior(finalized="noop", priced=True, lots="consolidate", sell_qty=True)
 _DOC_SCAN_BUY = ScanBehavior(finalized="noop", priced=True, lots="consolidate", unstocked="one", repeats="append")
 DOC_SCAN_BEHAVIOR: dict[str, ScanBehavior] = {
     # Goods sold or taken out of stock: a lot must be on hand, and a lot that may not be split
@@ -159,7 +163,7 @@ DOC_SCAN_BEHAVIOR: dict[str, ScanBehavior] = {
     "production_order": _DOC_SCAN_SALE,
     "credit_note": ScanBehavior(finalized="noop", priced=True, lots="sold"),  # a return takes the sold lot
     # A quote may offer goods not yet in stock.
-    "quotation": ScanBehavior(finalized="noop", priced=True, lots="consolidate", unstocked="one"),
+    "quotation": ScanBehavior(finalized="noop", priced=True, lots="consolidate", unstocked="one", sell_qty=True),
     # Goods being bought in: nothing need be on hand, and a repeat of a lot that may not be split
     # is another lot.
     **dict.fromkeys(sorted(PURCHASE_DOC_TYPES), _DOC_SCAN_BUY),
@@ -170,7 +174,8 @@ def scan_behavior(kind: str, doc_type: str | None) -> ScanBehavior:
     """The scan behaviour of a list (kind "lists", by list_type) or a document (kind "docs")."""
     if kind == "lists":
         b = behavior(doc_type)
-        return ScanBehavior(finalized=b.scan_finalized, priced=b.money, lots="single", unstocked=b.scan_unstocked)
+        return ScanBehavior(finalized=b.scan_finalized, priced=b.money, lots="single", unstocked=b.scan_unstocked,
+                            sell_qty=b.scan_sell_qty)
     return DOC_SCAN_BEHAVIOR.get(doc_type or "", _DOC_SCAN_SALE)
 
 
