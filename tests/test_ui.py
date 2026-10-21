@@ -16058,7 +16058,7 @@ class TestInventoryUXFixes:
         """GET /labels/print-list with no matching items redirects to /inventory."""
         ui_client.cookies.update(_authed())
         with patch("celerp_labels.ui_routes.httpx.AsyncClient") as mock_cls:
-            mock_resp = AsyncMock()
+            mock_resp = MagicMock()
             mock_resp.status_code = 200
             mock_resp.json.return_value = {"items": []}
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=AsyncMock(get=AsyncMock(return_value=mock_resp)))
@@ -16073,10 +16073,13 @@ class TestInventoryUXFixes:
         captured_params = {}
 
         async def fake_get(url, params=None, headers=None, **kw):
-            captured_params.update(params or {})
-            mock_resp = AsyncMock()
+            mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {"items": [{"entity_id": "gc:abc"}]}
+            if url.endswith("/items"):
+                captured_params.update(params or {})
+                mock_resp.json.return_value = {"items": [{"entity_id": "gc:abc"}]}
+            else:
+                mock_resp.json.return_value = {"items": []}
             return mock_resp
 
         ui_client.cookies.update(_authed())
@@ -16085,7 +16088,6 @@ class TestInventoryUXFixes:
             mock_client.get = fake_get
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-            # When one item is found but no templates, it still redirects (no templates = redirect)
             r = await ui_client.get(
                 "/labels/print-list?q=ruby&status=available&category=gemstones",
                 follow_redirects=False,
