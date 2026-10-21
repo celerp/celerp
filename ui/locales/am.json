@@ -4165,6 +4165,7 @@
   "migration.err_odoo_custom_format": "ይህ በpg_dump ብጁ ቅርጸት የተሰራ የOdoo ምትኬ ነው፤ Celerp ሊያነበው አይችልም። በOdoo ዳታቤዝ አስተዳዳሪው ውስጥ ምትኬውን እንደገና ይስሩ፣ የzip ቅርጸትን (ከfilestore ጋር) ይምረጡ፣ ከዚያ ያንን zip ይስቀሉ። ምንም አልገባም።",
   "migration.err_odoo_dump_damaged": "ይህ ምትኬ ያልተሟላ ወይም የተበላሸ ነው፤ የዳታቤዝ መረጃው ያለጊዜው ተቋርጧል ወይም በውስጡ ያለ ሰንጠረዥ ተበላሽቷል። ስለዚህ ከምትኬው ምንም መረጃ አልተነበበም። በOdoo የዳታቤዝ አስተዳዳሪ አዲስ ምትኬ ፈጥረው እንደገና ይስቀሉት።",
   "migration.err_odoo_backup_damaged": "ይህ የምትኬ ፋይል ሊነበብ አይችልም፤ ተበላሽቷል፣ በመስቀል ወይም በመቅዳት ጊዜ ተቋርጧል፣ ወይም Celerp ሊከፍተው በማይችል መንገድ እንደገና ተጨምቋል። ምንም ነገር አልገባም። በOdoo የዳታቤዝ አስተዳዳሪ አዲስ ምትኬ ፈጥረው የZIP ፋይሉን ሳይቀይሩ ይስቀሉት።",
+  "migration.err_odoo_backup_encrypted": "This backup is protected with a password, so Celerp cannot open it. Nothing was imported. Make a new backup in Odoo's database manager without a password and upload the zip as it is.",
   "migration.err_odoo_record_too_large": "One record in this backup is larger than {limit} MB, more than Celerp reads from a single record. Nothing was imported.",
   "migration.err_attachment_not_found": "ይህ አባሪ በተሰቀለው ፋይል ውስጥ የለም።",
   "migration.err_odoo_company_missing": "ይህ ምትኬ ለ{company} ምንም መዝገብ የለውም። ከተዘረዘሩት ኩባንያዎች አንዱን ይምረጡ።",

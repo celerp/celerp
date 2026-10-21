@@ -10,6 +10,7 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import random
 import tracemalloc
 import zipfile
 from collections import defaultdict
@@ -307,17 +308,44 @@ def _stored(dump: bytes) -> bytes:
 _FILED = next(content for *_, content, in_db, in_store in build.ATTACHMENTS if in_store and not in_db)
 
 
-def _deflated_dump(data: bytes) -> int:
-    """Where the compressed dump starts in a backup zip `build` made, and its length."""
+def _packed(dump: str, method: int = zipfile.ZIP_DEFLATED) -> bytes:
+    """A backup zip with `dump`, packed with `method`, and the fixture's manifest."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", method) as z:
+        z.writestr("dump.sql", dump)
+        z.writestr("manifest.json", json.dumps(build.manifest(17)))
+    return out.getvalue()
+
+
+def _packed_dump(data: bytes) -> tuple[int, int]:
+    """Where the packed dump starts in a backup zip whose first file is the dump, and its length."""
     info = zipfile.ZipFile(io.BytesIO(data)).getinfo("dump.sql")
     name_length, extra_length = int.from_bytes(data[26:28], "little"), int.from_bytes(data[28:30], "little")
     return info.header_offset + 30 + name_length + extra_length, info.compress_size
 
 
+def _broken(data: bytes) -> bytes:
+    """`data` with 64 bytes in the middle of its packed dump overwritten."""
+    start, length = _packed_dump(data)
+    middle = start + length // 2
+    return data[:middle] + b"\xff" * 64 + data[middle + 64:]
+
+
+def _encrypted(data: bytes) -> bytes:
+    """`data` with every file flagged as encrypted, as in a zip protected with a password."""
+    out = bytearray(data)
+    for signature, flags in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        at = out.find(signature)
+        while at != -1:
+            out[at + flags] |= 1
+            at = out.find(signature, at + 4)
+    return bytes(out)
+
+
 def _unreadable() -> dict[str, tuple[bytes, str | None]]:
-    dump = build.dump_sql(build.tables(17)).encode()
+    sql = build.dump_sql(build.tables(17))
+    dump = sql.encode()
     whole = build.backup(17)
-    start, length = _deflated_dump(whole)
     gzipped = io.BytesIO()
     with gzip.GzipFile(fileobj=gzipped, mode="wb") as g:
         g.write(dump)
@@ -329,8 +357,11 @@ def _unreadable() -> dict[str, tuple[bytes, str | None]]:
         "a changed byte in the dump": (_corrupt(_stored(dump), b"Lakeshore Trading Co", 0, b"l"), backup_damaged),
         "a changed byte in a filestore file": (_corrupt(_stored(dump), _FILED, 0, bytes([_FILED[0] ^ 1])),
                                                backup_damaged),
-        "a broken compressed stream": (whole[:start + length // 2] + b"\xff" * 64 + whole[start + length // 2 + 64:],
-                                       backup_damaged),
+        "a broken compressed stream": (_broken(whole), backup_damaged),
+        # Other tools than Odoo zip with bzip2 or LZMA too.
+        "a broken bzip2 stream": (_broken(_packed(sql, zipfile.ZIP_BZIP2)), backup_damaged),
+        "a broken LZMA stream": (_broken(_packed(sql, zipfile.ZIP_LZMA)), backup_damaged),
+        "a password on the zip": (_encrypted(whole), "migration.err_odoo_backup_encrypted"),
         "an upload cut short": (whole[:len(whole) // 2], backup_damaged),
         "no dump": (_zip({"manifest.json": json.dumps(build.manifest(17))}), backup_damaged),
         # Not a zip: the upload is refused as a file of another kind, as any other would be.
@@ -351,12 +382,31 @@ async def test_a_backup_that_cannot_be_read_is_refused_with_its_reason(client, m
                                   '"harbour.zip" is not a Odoo file. Accepted: Odoo backup (.zip).')
 
 
-def _deflated(dump: str) -> bytes:
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("dump.sql", dump)
-        z.writestr("manifest.json", json.dumps(build.manifest(17)))
-    return out.getvalue()
+def test_a_backup_zipped_with_bzip2_or_lzma_is_read_as_one_zipped_by_odoo(tmp_path):
+    sql = build.dump_sql(build.tables(17))
+    whole = _adapter().build_manifest(_file(tmp_path, _packed(sql)), FULL).bundle
+    for method in (zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA):
+        assert _adapter().build_manifest(_file(tmp_path, _packed(sql, method), f"{method}.zip"), FULL).bundle == whole
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA])
+def test_any_changed_byte_is_read_or_refused_with_a_reason(tmp_path, method):
+    """One bit of the backup flipped anywhere, 150 times: detection and the reading either
+    succeed or refuse with the reason; no other error escapes."""
+    whole = _packed(build.dump_sql(build.tables(17)), method)
+    rng = random.Random(method)
+    escaped = []
+    for i in range(150):
+        at = rng.randrange(len(whole))
+        files = _file(tmp_path, whole[:at] + bytes([whole[at] ^ (1 << rng.randrange(8))]) + whole[at + 1:], f"{i}.zip")
+        try:
+            if _adapter().detect(files).matched:
+                _adapter().build_manifest(files, FULL)
+        except (ScanError, SourceRevisionError):
+            pass
+        except Exception as exc:  # noqa: BLE001 - the test lists every error that escapes
+            escaped.append((at, type(exc).__name__, str(exc)[:80]))
+    assert not escaped, escaped[:8]
 
 
 @pytest.mark.asyncio
@@ -371,7 +421,7 @@ async def test_a_dump_that_unpacks_far_larger_than_its_zip_is_refused_before_it_
     padded = sql.replace("SET statement_timeout", "-- " + "a" * 20 * 1024 ** 2 + "\nSET statement_timeout", 1)
     opened = []
     monkeypatch.setattr(dump.Backup, "tables", lambda *a, **k: opened.append(a) or {})
-    r = await scan_upload(client, _deflated(padded), name="harbour.zip", source="odoo")
+    r = await scan_upload(client, _packed(padded), name="harbour.zip", source="odoo")
     assert r.status_code == 422, r.text
     assert r.json()["detail"] == t("migration.err_file_too_large", "en") and not opened
 

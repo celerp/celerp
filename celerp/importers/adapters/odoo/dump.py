@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import lzma
 import re
 import zipfile
 import zlib
@@ -34,6 +35,7 @@ DUMP_COMPLETE = "-- PostgreSQL database dump complete"  # the line pg_dump ends 
 CUSTOM_FORMAT = b"PGDMP"  # how a pg_dump custom format file starts
 ZIP_ENTRY = b"PK\x03\x04"  # how each file in a zip starts; Odoo writes the dump first
 UNREADABLE = "migration.err_odoo_backup_damaged"
+ENCRYPTED = "migration.err_odoo_backup_encrypted"
 DAMAGED = "migration.err_odoo_dump_damaged"
 TOO_LARGE = "migration.err_file_too_large"
 # What one backup may make the server unpack and hold. A database's dump packs about ten to one;
@@ -43,6 +45,10 @@ MAX_DUMP_BYTES = 20 * 1024 ** 3  # ten times the largest upload
 MAX_RATIO = 100
 MAX_LINE = 64 * 1024 ** 2  # characters
 MAX_MANIFEST = 1024 ** 2  # Odoo's is a few kilobytes
+# How a file in a zip fails to unpack, whichever way it is packed: a stream that does not
+# decompress or ends early, a failed checksum, or a method or option this reader cannot unpack.
+BROKEN = (EOFError, NotImplementedError, OSError, lzma.LZMAError, zipfile.BadZipFile, zlib.error)
+PASSWORD = 0x1  # the zip flag of a file packed with a password
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
 
@@ -89,15 +95,23 @@ def _major(manifest: dict) -> int | None:
 
 @contextmanager
 def _intact(error: type[Exception] = ScanError) -> Iterator[None]:
-    """Reading the zip: a file in it that does not decompress, fails its checksum, ends early
-    or is packed in a way this reader cannot unpack, or a dump that is not UTF-8 text (every
-    Odoo database is), is refused with `error`."""
+    """Reading the zip: a file in it that does not unpack (BROKEN), or a dump that is not
+    UTF-8 text (every Odoo database is), is refused with `error`."""
     try:
         yield
     except UnicodeDecodeError as exc:
         raise error(t(DAMAGED)) from exc
-    except (EOFError, NotImplementedError, zipfile.BadZipFile, zlib.error) as exc:
+    except BROKEN as exc:
         raise error(t(UNREADABLE)) from exc
+
+
+def _open(archive: zipfile.ZipFile, name: str) -> IO[bytes]:
+    """One file of the zip, open for reading. Raises SourceRevisionError when it is packed with
+    a password, which a backup must be made again without."""
+    info = archive.getinfo(name)
+    if info.flag_bits & PASSWORD:
+        raise SourceRevisionError(t(ENCRYPTED))
+    return archive.open(info)
 
 
 def _cut_short(path: Path) -> bool:
@@ -133,8 +147,9 @@ def _manifest(archive: zipfile.ZipFile, root: str) -> dict | None:
     if archive.getinfo(root + MANIFEST).file_size > MAX_MANIFEST:
         raise SourceRevisionError(t(TOO_LARGE))
     try:
-        manifest = json.loads(archive.read(root + MANIFEST))
-    except (ValueError, UnicodeDecodeError):
+        with _open(archive, root + MANIFEST) as f:
+            manifest = json.loads(f.read())
+    except ValueError:
         return None
     if not isinstance(manifest, dict) or "odoo_dump" not in manifest or _major(manifest) is None:
         return None
@@ -144,19 +159,20 @@ def _manifest(archive: zipfile.ZipFile, root: str) -> dict | None:
         raise SourceRevisionError(t(UNREADABLE)) from exc
     if info.file_size > min(MAX_DUMP_BYTES, MAX_RATIO * info.compress_size):
         raise SourceRevisionError(t(TOO_LARGE))
-    with archive.open(info) as dump:
+    with _open(archive, info.filename) as dump:
         head = dump.read(256).decode("utf-8", "replace")
     return manifest if DUMP_HEADER in head else None
 
 
 def _refuse_custom_format(files: Iterable[Callable[[], IO[bytes]]]) -> None:
     """Refuse Odoo's other backup format, pg_dump custom, with its own message: the file
-    itself, or a file zipped at the root or in one folder. `files` open each candidate."""
+    itself, or a file zipped at the root or in one folder. `files` open each candidate; one
+    that does not open is not that format."""
     for open_file in files:
         try:
-            with open_file() as f:
+            with _intact(), open_file() as f:
                 custom = f.read(len(CUSTOM_FORMAT)) == CUSTOM_FORMAT
-        except (OSError, RuntimeError, ValueError, zipfile.BadZipFile, zlib.error):
+        except (ScanError, SourceRevisionError):
             continue
         if custom:
             raise SourceRevisionError(t("migration.err_odoo_custom_format"))
@@ -185,7 +201,7 @@ class Backup:
             raise
         if manifest is None:
             with self.archive:
-                _refuse_custom_format(partial(self.archive.open, n) for n in self.archive.namelist()
+                _refuse_custom_format(partial(_open, self.archive, n) for n in self.archive.namelist()
                                       if n.count("/") <= 1 and not n.endswith("/"))
             raise ScanError(t("migration.err_odoo_not_backup"))
         self.version = _major(manifest)
@@ -228,7 +244,7 @@ class Backup:
         made: set[str] = set()
         copying: str | None = None
         complete = False
-        with _intact(), self.archive.open(self.root + DUMP) as raw:
+        with _intact(), _open(self.archive, self.root + DUMP) as raw:
             lines = io.TextIOWrapper(raw, encoding="utf-8", newline="\n")
             rows: list[Row] | None = None
             for line in iter(partial(lines.readline, MAX_LINE + 1), ""):
@@ -283,7 +299,7 @@ class Backup:
     def stored_file(self, store_fname: str, limit: int) -> bytes | None:
         """The content of one filestore file, or None when the backup does not hold it or it
         is larger than `limit`. The name comes from the dump and is untrusted. Raises
-        SourceRevisionError when the file does not unpack."""
+        SourceRevisionError when the file does not unpack or is packed with a password."""
         name = self.root + FILESTORE + store_fname
         if ".." in store_fname.split("/") or store_fname.startswith("/"):
             return None
@@ -294,5 +310,5 @@ class Backup:
         if info.file_size > limit:
             return None
         # A file that does not unpack refuses the whole backup, not just the file: the zip is damaged.
-        with _intact(SourceRevisionError):
-            return self.archive.read(info)
+        with _intact(SourceRevisionError), _open(self.archive, name) as f:
+            return f.read()
