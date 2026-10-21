@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -150,10 +150,13 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
                 Tfoot(add_row),
                 cls="data-table",
             ),
+            # The table's inline editors sit inside this form, so it never reloads on a request:
+            # a saved unit redirects (HX-Redirect), a refused one shows why below.
             hx_post="/settings/units/add",
-            hx_swap="none",
-            hx_on__after_request="window.location.href='/settings/inventory?tab=units'",
+            hx_target="#units-add-result",
+            hx_swap="innerHTML",
         ),
+        Div(id="units-add-result"),
         P(t("settings_inventory.unit_name_hint"), cls="form-hint"),
         cls="settings-card",
     )
@@ -579,8 +582,11 @@ def setup_routes(app):
         if unit_type not in {"weight", "pieces", "quantity"}:
             unit_type = "quantity"
         current.append({"name": name, "label": label, "decimals": decimals, "unit_type": unit_type})
-        await api.patch_units(token, current)
-        return RedirectResponse("/settings/inventory?tab=units", status_code=303)
+        try:
+            await api.patch_units(token, current)
+        except APIError as e:
+            return P(refusal_text(e.data or e.detail) or str(e.detail), cls="cell-error")
+        return Response(status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=units"})
 
     @app.delete("/settings/units/{name}")
     async def units_delete(name: str, request: Request):

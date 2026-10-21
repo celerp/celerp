@@ -13300,10 +13300,32 @@ class TestUnitsSettings:
                 headers={"content-type": "application/x-www-form-urlencoded"},
                 cookies=_authed(),
             )
-        assert r.status_code in (302, 303)
-        assert "tab=units" in r.headers.get("location", "")
+        assert r.status_code == 204
+        assert r.headers.get("hx-redirect") == "/settings/inventory?tab=units"
         sent = mock_put.call_args[0][1]
         assert any(u["name"] == "tola" for u in sent)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_new_unit_says_why_and_stays_on_the_page(self, ui_client):
+        """POST /settings/units/add that the API refuses returns the reason, no redirect."""
+        from ui.api_client import APIError
+        refused = APIError(422, "carat cannot go to 1 decimal places", data={
+            "detail": {"message_key": "units.precision_lowered_under_quantities",
+                       "message": "carat cannot go to 1 decimal places: 1 item or draft quantities use more (LOT-1).",
+                       "params": {"unit": "carat", "decimals": 1, "count": 1, "examples": "LOT-1", "current": 2}}})
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=list(_DEFAULT_UNITS_SEED))),
+            patch("ui.api_client.patch_units", new=AsyncMock(side_effect=refused)),
+        ):
+            r = await ui_client.post(
+                "/settings/units/add",
+                content=b"name=carat&decimals=1",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert "hx-redirect" not in r.headers
+        assert 'class="cell-error"' in r.text and "LOT-1" in r.text
 
     # ── UI: Delete unit ──────────────────────────────────────────────
 
