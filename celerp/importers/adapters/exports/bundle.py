@@ -83,8 +83,8 @@ def _items(book: Book, src: Source) -> list[CIFItem]:
 def _document(book: Book, ledger: Ledger, doc: Document, src: Source) -> CIFDocument:
     state = ledger.states.get(doc.key)
     metadata: dict = {}
-    if doc.applies_to:
-        metadata["applies_to"] = doc.applies_to
+    if doc.applications:
+        metadata["applications"] = {key: str(amount) for key, amount in doc.applications.items()}
     if any(ln.tracking for ln in doc.lines):
         metadata["tracking"] = [ln.tracking for ln in doc.lines]
     if doc.withheld:

@@ -143,7 +143,7 @@ class AccountingMigrationSink:
         open_ap = Decimal(0)
         if any(e.measure in _DOCUMENT_RESIDUALS for e in wanted):
             base = (await _base_currency(context.session, context.company_id)).upper()
-            doc_ids = await run_targets(context, "doc")
+            doc_ids = list(await run_targets(context, "doc"))
             found: set[str] = set()
             for start in range(0, len(doc_ids), 500):
                 rows = (await context.session.execute(select(Projection).where(

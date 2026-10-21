@@ -3970,6 +3970,7 @@
   "migration.check.document_total": "Total dokumen",
   "migration.check.document_status": "Status dokumen",
   "migration.check.settlement_allocation": "Alokasi pelunasan",
+  "migration.check.document_residual": "Jumlah terbuka",
   "migration.result.pass": "Lolos",
   "migration.result.rounding": "Pembulatan",
   "migration.result.fail": "Tidak lolos",

@@ -41,6 +41,7 @@ from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, Sink
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.account_roles import current_settings, source_control
+from celerp.services.doc_balance import outstanding_balance
 from celerp.services.migration_core_sink import (
     acting_member,
     deterministic_id,
@@ -90,6 +91,7 @@ _DOC_MEASURES = {
     ReconciliationMeasure.DOCUMENT_COUNT,
     ReconciliationMeasure.DOCUMENT_TOTAL,
     ReconciliationMeasure.DOCUMENT_STATUS,
+    ReconciliationMeasure.DOCUMENT_RESIDUAL,
     ReconciliationMeasure.SETTLEMENT_ALLOCATION,
 }
 
@@ -107,8 +109,8 @@ class DocsMigrationSink:
     async def reconcile(
         self, context: SinkContext, expectations: ReconciliationExpectations
     ) -> list[DestinationMeasurement]:
-        """Count, total and status per document type, and settlement allocations per
-        kind, over the documents this run imported."""
+        """Count, total and status per document type, what each document still owes, and
+        settlement allocations per kind, over the documents this run imported."""
         wanted = [e for e in expectations.expectations if e.measure in _DOC_MEASURES]
         if not wanted:
             return []
@@ -116,7 +118,8 @@ class DocsMigrationSink:
         totals: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
         statuses: dict[str, Decimal] = defaultdict(Decimal)
         allocated: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
-        for doc_id in await run_targets(context, DOC):
+        owed: dict[str, Decimal | None] = {}
+        for doc_id, source_id in (await run_targets(context, DOC)).items():
             row = await context.session.get(Projection, (context.company_id, doc_id))
             if row is None:
                 continue
@@ -126,6 +129,7 @@ class DocsMigrationSink:
             totals[(doc_type, currency)] += Decimal(str(state.get("total") or 0))
             status = str(state.get("status") or "")
             statuses[f"{doc_type}:{_SOURCE_STATUS.get(status, 'awaiting_payment')}"] += 1
+            owed[source_id] = outstanding_balance(state)
             for payment in state.get("payments", []):
                 if payment.get("method") == "migration" and payment.get("status") == "active":
                     kind = _SETTLEMENT_KIND.get(doc_type, doc_type)
@@ -138,6 +142,10 @@ class DocsMigrationSink:
                 actual = totals.get((e.key, e.currency or ""), Decimal(0))
             elif e.measure == ReconciliationMeasure.DOCUMENT_STATUS:
                 actual = statuses.get(e.key, Decimal(0))
+            elif e.measure == ReconciliationMeasure.DOCUMENT_RESIDUAL:
+                if (balance := owed.get(e.key, Decimal(0))) is None:
+                    continue    # a balance that is not a number stays unmeasured, never counted as 0
+                actual = round_money(balance, e.currency)
             else:
                 actual = allocated.get((e.key, e.currency or ""), Decimal(0))
             out.append(DestinationMeasurement(e.measure, e.key, e.currency, actual))
@@ -207,7 +215,8 @@ async def _import_documents(context: SinkContext, records: Sequence[CIFSourceRec
     outcomes = [None if p == "" else next(written) for p in prepared]
     imported = {r.source_external_id: o.entity_id for r, o in zip(records, outcomes)
                 if o is not None and o.status in ("created", "skipped")}
-    imported = {**await mapped_targets(context, DOC, [d.metadata.get("applies_to") for d in docs]), **imported}
+    imported = {**await mapped_targets(context, DOC, [k for d in docs for k in d.metadata.get("applications") or {}]),
+                **imported}
     result = []
     for record, outcome in zip(records, outcomes):
         if outcome is None:
@@ -380,7 +389,7 @@ async def _post_document(
     items: dict[str, str], imported: dict[str, str], outcome: RecordOutcome,
 ) -> RecordOutcome:
     """Post an issued document's entry, record the receipts and deliveries that moved its
-    goods, apply a credit note to its invoice, and record what was paid on it before the
+    goods, apply a credit note to its invoices, and record what was paid on it before the
     source books started. An invoice's entry carries the cost of
     sales each line booked, so later deliveries, returns and cost corrections true it up."""
     from celerp.services import auto_je
@@ -388,7 +397,6 @@ async def _post_document(
     if not _posts(record):
         return outcome
     label = f"Document {record.ref or record.source_external_id}"
-    applies_to = record.metadata.get("applies_to")
     try:
         async with context.session.begin_nested():
             delivered = _deliveries(context, record, items)
@@ -401,13 +409,14 @@ async def _post_document(
                 cogs_allocations=_cogs_allocations(record, base, delivered),
             )
             await _record_movements(context, record, items, outcome.entity_id, delivered)
-            if record.doc_type == DocumentType.CREDIT_NOTE and applies_to:
-                if applies_to not in imported:
-                    raise ValueError(f"invoice {applies_to} was not imported.")
+            for invoice, amount in (record.metadata.get("applications") or {}).items():
+                if invoice not in imported:
+                    raise ValueError(f"invoice {invoice} was not imported.")
                 await apply_credit_note(
-                    context.session, context.company_id, outcome.entity_id, imported[applies_to],
-                    _money(record.total, _currency(record, base)), payment_date=_date(record), actor_id=context.user_id,
-                    source="migration", idempotency_key=context.idempotency_key(record, "applied"),
+                    context.session, context.company_id, outcome.entity_id, imported[invoice],
+                    _money(Decimal(amount), _currency(record, base)), payment_date=_date(record),
+                    actor_id=context.user_id, source="migration",
+                    idempotency_key=context.idempotency_key(record, f"applied:{invoice}"),
                 )
             if paid := record.metadata.get("paid_at_start"):
                 await apply_doc_payment(
@@ -450,8 +459,9 @@ async def _import_debit_note(
     label = f"Debit note {record.ref or record.source_external_id}"
     if _currency(record, base) != base and record.exchange_rate is None:
         return RecordOutcome("", "rejected", f"{label} is in {record.currency} and carries no exchange rate.")
-    bill_id = imported.get(record.metadata.get("applies_to") or "")
-    if bill_id is None:
+    applications = record.metadata.get("applications") or {}
+    bill_id = imported.get(next(iter(applications), ""))
+    if bill_id is None or len(applications) != 1:
         return RecordOutcome("", "rejected", f"{label}: the bill it notes was not imported.")
     problem = _posting_problem(record, contacts, accounts)
     if problem is not None:

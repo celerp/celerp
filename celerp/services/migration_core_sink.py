@@ -90,14 +90,15 @@ async def mapped_targets(
     return {ext: target for ext, target in rows}
 
 
-async def run_targets(context: SinkContext, target_entity_type: str) -> list[str]:
-    """Every Celerp id of one entity type this run imported."""
-    return list((await context.session.execute(
-        select(MigrationEntityMap.target_entity_id).where(
+async def run_targets(context: SinkContext, target_entity_type: str) -> dict[str, str]:
+    """Celerp id -> source external id, for every record of one entity type this run imported."""
+    rows = (await context.session.execute(
+        select(MigrationEntityMap.target_entity_id, MigrationEntityMap.source_external_id).where(
             MigrationEntityMap.migration_run_id == context.run_id,
             MigrationEntityMap.target_entity_type == target_entity_type,
         )
-    )).scalars())
+    )).all()
+    return {target: ext for target, ext in rows}
 
 
 def sink_result(

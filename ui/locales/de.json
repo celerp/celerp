@@ -3970,6 +3970,7 @@
   "migration.check.document_total": "Belegsummen",
   "migration.check.document_status": "Belegstatus",
   "migration.check.settlement_allocation": "Zuordnung der Zahlungsausgleiche",
+  "migration.check.document_residual": "Offener Betrag",
   "migration.result.pass": "Bestanden",
   "migration.result.rounding": "Rundung",
   "migration.result.fail": "Nicht bestanden",

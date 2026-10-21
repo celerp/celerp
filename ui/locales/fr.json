@@ -3970,6 +3970,7 @@
   "migration.check.document_total": "Totaux des documents",
   "migration.check.document_status": "Statut des documents",
   "migration.check.settlement_allocation": "Affectation des règlements",
+  "migration.check.document_residual": "Montant restant dû",
   "migration.result.pass": "Conforme",
   "migration.result.rounding": "Arrondi",
   "migration.result.fail": "Non conforme",

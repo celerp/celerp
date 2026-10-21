@@ -3970,6 +3970,7 @@
   "migration.check.document_total": "Totales de documentos",
   "migration.check.document_status": "Estado de los documentos",
   "migration.check.settlement_allocation": "Asignación de liquidaciones",
+  "migration.check.document_residual": "Importe pendiente",
   "migration.result.pass": "Correcto",
   "migration.result.rounding": "Redondeo",
   "migration.result.fail": "Incorrecto",

@@ -180,7 +180,7 @@ def _document(book: Book, ledger: Ledger, doc: Document, movements: dict[str, li
     state = ledger.states[doc.key]
     metadata: dict = {"amounts_include_tax": doc.include_tax, **_links(book, ledger, doc)}
     if doc.applies_to:
-        metadata["applies_to"] = doc.applies_to
+        metadata["applications"] = {doc.applies_to: str(doc.total)}
     if doc.billing_address:
         metadata["billing_address"] = doc.billing_address
     if movements.get(doc.key):

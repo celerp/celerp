@@ -3970,6 +3970,7 @@
   "migration.check.document_total": "Totali documenti",
   "migration.check.document_status": "Stato documenti",
   "migration.check.settlement_allocation": "Ripartizione dei regolamenti",
+  "migration.check.document_residual": "Importo aperto",
   "migration.result.pass": "Superato",
   "migration.result.rounding": "Arrotondamento",
   "migration.result.fail": "Non superato",

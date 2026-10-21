@@ -5,7 +5,7 @@
 Taken from the source's own reports, never from the conversion: the trial balance at
 the last month end and at every month end before it, the aged receivables and payables
 per contact, the stock on hand per item where the source states it, and the invoices and
-bills list's own totals, amounts due and statuses. The
+bills list's own totals, statuses and amount due on each document. The
 ledger decides only which documents the migration imports and the rate each was booked
 at, so an import is checked against figures that did not pass through it.
 """
@@ -83,6 +83,7 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
     counts: Counter = Counter()
     totals: dict[tuple[str, str], Decimal] = defaultdict(lambda: ZERO)
     statuses: Counter = Counter()
+    owed: list[Document] = []
     for key in ledger.documents:
         doc = book.documents[key]
         if doc.status == "posted":
@@ -92,6 +93,8 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
         counts[(doc.doc_type, doc.currency)] += 1
         totals[(doc.doc_type, doc.currency)] += doc.total
         statuses[f"{doc.doc_type}:{_status(doc)}"] += 1
+        if doc.status == "posted":
+            owed.append(doc)
     ar = sum((end.get(code, ZERO) for code in book.control("receivable")), ZERO)
     ap = sum((end.get(code, ZERO) for code in book.control("payable")), ZERO)
     add(M.AR_DOCUMENT_RESIDUAL, "", base, ar - open_side[True])
@@ -101,4 +104,7 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
         add(M.DOCUMENT_TOTAL, doc_type, currency, totals[(doc_type, currency)])
     for key, count in sorted(statuses.items()):
         add(M.DOCUMENT_STATUS, key, None, Decimal(count))
+    # Each document on its own, so a wrong open amount on one cannot hide in the totals.
+    for doc in owed:
+        add(M.DOCUMENT_RESIDUAL, doc.key, doc.currency, doc.amount_due, doc.number)
     return ReconciliationExpectations(expectations=rows)

@@ -116,7 +116,10 @@ class Document:
     amount_due: Decimal                         # as the export states it
     file: str = ""
     rate: Decimal | None = None                 # base per document unit, from its ledger journal
-    applies_to: str | None = None
+    # A note's applications as the source states them: document key -> amount in the note's
+    # currency. Empty when the source names the document only by the note's reference.
+    applied: dict[str, Decimal] = field(default_factory=dict)
+    applications: dict[str, Decimal] = field(default_factory=dict)  # those the ledger carries
     journal: str | None = None                  # the ledger journal that posts it
     # Tax account -> amount (document currency) the customer kept back as tax withheld:
     # part of the total, settled from that account.

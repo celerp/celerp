@@ -3970,6 +3970,7 @@
   "migration.check.document_total": "إجماليات المستندات",
   "migration.check.document_status": "حالة المستندات",
   "migration.check.settlement_allocation": "توزيع التسويات",
+  "migration.check.document_residual": "المبلغ المتبقي",
   "migration.result.pass": "ناجح",
   "migration.result.rounding": "تقريب",
   "migration.result.fail": "غير ناجح",

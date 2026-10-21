@@ -504,9 +504,8 @@ class _Reader:
     def _allocations(self) -> dict[str, dict[str, Decimal]]:
         """Move id of a posted entry that is not a document -> document key -> what each
         reconciliation with that document applied, in the document's currency. A credit note
-        or refund fully settled against one invoice or bill applies to it."""
+        or refund reconciled with an invoice or bill applies to it what the reconciliation did."""
         out: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(lambda: ZERO))
-        applied: dict[str, set[str]] = defaultdict(set)
         for r in self.rows.get("account_partial_reconcile", []):
             sides = {side: self.lines.get(r[f"{side}_move_id"]) for side in ("debit", "credit")}
             if None in sides.values():
@@ -515,14 +514,12 @@ class _Reader:
                 doc, move = self.documents.get(sides[side]["move_id"]), sides[other]["move_id"]
                 if doc is None:
                     continue
-                if move in self.documents:
-                    applied[move].add(doc.key)
+                if (note := self.documents.get(move)) is not None:
+                    if note.doc_type in ("credit_note", "debit_note"):
+                        note.applied[doc.key] = note.applied.get(doc.key, ZERO) + self._applied(
+                            r, other, sides[other], note)
                 elif move in self.posted:
                     out[move][doc.key] += self._applied(r, side, sides[side], doc)
-        for move, keys in applied.items():
-            note = self.documents[move]
-            if note.doc_type in ("credit_note", "debit_note") and note.amount_due == 0 and len(keys) == 1:
-                note.reference = self.book.documents[next(iter(keys))].number
         return {move: dict(docs) for move, docs in out.items()}
 
     def _applied(self, partial: Row, side: str, line: Row, doc: Document) -> Decimal:

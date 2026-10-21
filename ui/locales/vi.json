@@ -3970,6 +3970,7 @@
   "migration.check.document_total": "Tổng số chứng từ",
   "migration.check.document_status": "Trạng thái chứng từ",
   "migration.check.settlement_allocation": "Phân bổ thanh toán bù trừ",
+  "migration.check.document_residual": "Số tiền còn mở",
   "migration.result.pass": "Đạt",
   "migration.result.rounding": "Làm tròn",
   "migration.result.fail": "Không đạt",

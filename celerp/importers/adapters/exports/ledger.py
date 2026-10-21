@@ -7,7 +7,7 @@ export, so the books Celerp ends with are the books the source printed. Each jou
 is carried as the native Celerp record it describes, where one fits:
 
 - a journal posting an invoice, bill or credit note found in the invoices and bills
-  export is that document;
+  export is that document, a note applied to the documents its source applied it to;
 - a receipt or payment journal settling such documents from one bank account is a
   receipt or payment allocated to them, what it did not apply staying on the contact;
 - a transfer journal between two bank accounts is a bank transfer;
@@ -43,6 +43,8 @@ from ui.i18n import t
 DOCUMENT_KINDS = ("receivable invoice", "receivable credit note", "payable invoice", "payable credit note")
 SETTLEMENT_KINDS = {"receivable payment": "receipt", "payable payment": "payment"}
 TRANSFER_KINDS = ("bank transfer",)
+# The document type each kind of note applies to.
+NOTE_TARGETS = {"credit_note": "invoice", "debit_note": "bill"}
 
 
 @dataclass(frozen=True)
@@ -182,7 +184,7 @@ def _document_postings(book: Book, doc: Document) -> list[Posting]:
     party = book.party_account(doc.doc_type)
     out.append(Posting(doc.key, "document", doc.date, party, -sum((p.amount for p in out), ZERO), doc.contact,
                        document=doc.key, native=sign * doc.total))
-    difference = _note_difference(book, doc, out[-1].amount)
+    difference = _note_difference(book, doc)
     # Tax the customer withheld settles the document from its account at the document's rate.
     for account, amount in doc.withheld.items():
         held = round_money(amount * (doc.rate or 1), book.base)
@@ -192,19 +194,19 @@ def _document_postings(book: Book, doc: Document) -> list[Posting]:
     return out + difference
 
 
-def _note_difference(book: Book, note: Document, party: Decimal) -> list[Posting]:
-    """A note relieves its invoice at that invoice's rate; the difference from the note's own
-    converted total is an exchange difference on the customer balance."""
-    if not note.applies_to:
-        return []
-    target = book.documents[note.applies_to]
+def _note_difference(book: Book, note: Document) -> list[Posting]:
+    """A note relieves each document it applies to at that document's rate; the difference
+    from the note's own converted amount is an exchange difference on the customer balance."""
     sign = PARTY_SIGN[note.doc_type]
-    difference = party - sign * round_money(note.total * target.rate, book.base)
-    if not difference:
-        return []
-    return [Posting(note.key, "fx", note.date, book.party_account(note.doc_type), -difference, note.contact,
-                    document=target.key),
-            Posting(note.key, "fx", note.date, book.fx_account, difference, document=target.key)]
+    out: list[Posting] = []
+    for key, amount in note.applications.items():
+        target = book.documents[key]
+        difference = sign * (round_money(amount * note.rate, book.base) - round_money(amount * target.rate, book.base))
+        if difference:
+            out += [Posting(note.key, "fx", note.date, book.party_account(note.doc_type), -difference, note.contact,
+                            document=key),
+                    Posting(note.key, "fx", note.date, book.fx_account, difference, document=key)]
+    return out
 
 
 def _settlement_postings(book: Book, s: Settlement) -> list[Posting]:
@@ -321,10 +323,9 @@ def _states(book: Book, settlements: list[Settlement], keys: set[str]) -> dict[s
         for key, amount in s.allocations:
             paid[key] += amount
     for key in keys:
-        note = book.documents[key]
-        if note.applies_to:
-            paid[note.applies_to] += note.total
-            paid[key] += note.total
+        for target, amount in book.documents[key].applications.items():
+            paid[target] += amount
+            paid[key] += amount
     states = {}
     for key in keys:
         outstanding = book.documents[key].total - paid[key]
@@ -347,16 +348,17 @@ def _carried(book: Book, ledger: Ledger, posted: list[str], cutover: date) -> se
     early = [s for s in ledger.settlements.values() if s.date <= cutover]
     carried = {k for k, state in _states(book, early, pre).items() if state.amount_outstanding != 0}
     carried |= {k for s in ledger.settlements.values() if s.date > cutover for k in s.documents}
-    carried |= {book.documents[k].applies_to for k in posted if book.documents[k].date > cutover
-                and book.documents[k].applies_to}
+    carried |= {k for n in posted if book.documents[n].date > cutover for k in book.documents[n].applications}
     carried &= pre
-    # A settlement is imported whole: carrying one of its documents carries the others.
+    # A settlement or a note is imported whole: carrying one of its documents carries the others.
+    groups = [set(s.documents) for s in ledger.settlements.values()]
+    groups += [{k, *book.documents[k].applications} for k in posted if book.documents[k].applications]
     grown = True
     while grown:
-        touched = {k for s in ledger.settlements.values() if carried.intersection(s.documents) for k in s.documents}
-        grown = bool((touched & pre) - carried)
-        carried |= touched & pre
-    return carried | {k for k in pre if book.documents[k].applies_to in carried}
+        touched = {k for g in groups if carried & g for k in g} & pre
+        grown = bool(touched - carried)
+        carried |= touched
+    return carried
 
 
 def _latest_rates(book: Book) -> None:
@@ -373,19 +375,26 @@ def _latest_rates(book: Book) -> None:
 
 
 def _link_notes(book: Book) -> None:
-    """A credit note applies to the invoice its reference names, of the same contact."""
+    """A note applies what its source says it applied, else its whole total to the document its
+    reference names: always an invoice (bill for a supplier's note) of its contact and currency."""
     for note in book.documents.values():
-        if note.doc_type in ("credit_note", "debit_note") and note.reference:
+        if note.doc_type not in NOTE_TARGETS:
+            continue
+        applied = dict(note.applied)
+        if not applied and note.reference:
             target = find_document(book, note.sales, note.reference, note.contact)
-            if target is not None and target.doc_type in ("invoice", "bill") and target.contact == note.contact:
-                note.applies_to = target.key
+            applied = {target.key: note.total} if target is not None else {}
+        note.applications = {k: a for k, a in applied.items() if a > 0 and k in book.documents
+                             and book.documents[k].doc_type == NOTE_TARGETS[note.doc_type]
+                             and book.documents[k].contact == note.contact
+                             and book.documents[k].currency == note.currency}
 
 
 def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
     """The postings and imported records for one migration."""
     cutover = _check_cutover(book, decisions.cutover_date) if decisions.mode == CIFMode.CUTOVER else None
     for doc in book.documents.values():
-        doc.journal, doc.rate, doc.applies_to = None, None, None
+        doc.journal, doc.rate, doc.applications = None, None, {}
     _link_notes(book)
     ledger = Ledger(book, cutover)
     booked: dict[str, list[Posting]] = {}
@@ -394,19 +403,20 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
         if doc is not None:
             booked[j.key] = _actual(book, j, doc.key, "document", doc.key)
     for doc in book.documents.values():
-        # A note whose invoice posts nothing is booked as the journal it is.
-        if doc.applies_to and (doc.journal is None or book.documents[doc.applies_to].journal is None):
-            doc.applies_to = None
-        if doc.doc_type == "debit_note" and doc.journal and not doc.applies_to:
+        # A note applies only to documents that post. Celerp carries a debit note as a payment of
+        # its whole total on one bill; any other is booked as the journal it is.
+        doc.applications = {k: a for k, a in doc.applications.items()
+                            if doc.journal and book.documents[k].journal}
+        if doc.doc_type == "debit_note" and doc.journal and list(doc.applications.values()) != [doc.total]:
             booked.pop(doc.journal)
-            doc.journal = None
+            doc.journal, doc.applications = None, {}
     _latest_rates(book)
     posted = [d.key for d in sorted(book.documents.values(), key=lambda d: (d.date, d.key)) if d.journal]
     owing = {k: book.documents[k].total - book.documents[k].withheld_total for k in posted}
     for k in posted:
-        if book.documents[k].applies_to:
-            owing[book.documents[k].applies_to] -= book.documents[k].total
-            owing[k] = ZERO
+        for target, amount in book.documents[k].applications.items():
+            owing[target] -= amount
+            owing[k] -= amount
 
     for j in book.journals:
         if j.key in booked:

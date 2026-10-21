@@ -3970,6 +3970,7 @@
   "migration.check.document_total": "የሰነዶች ድምር",
   "migration.check.document_status": "የሰነዶች ሁኔታ",
   "migration.check.settlement_allocation": "የክፍያ ማወራረድ ድልድል",
+  "migration.check.document_residual": "ቀሪ መጠን",
   "migration.result.pass": "አልፏል",
   "migration.result.rounding": "ማጠጋጋት",
   "migration.result.fail": "አላለፈም",

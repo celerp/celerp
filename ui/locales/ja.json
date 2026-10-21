@@ -3970,6 +3970,7 @@
   "migration.check.document_total": "証憑合計",
   "migration.check.document_status": "証憑ステータス",
   "migration.check.settlement_allocation": "決済の割当",
+  "migration.check.document_residual": "未決済額",
   "migration.result.pass": "合格",
   "migration.result.rounding": "端数調整",
   "migration.result.fail": "不合格",

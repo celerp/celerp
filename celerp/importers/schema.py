@@ -587,6 +587,7 @@ class ReconciliationMeasure(StrEnum):
     DOCUMENT_COUNT = "document_count"
     DOCUMENT_TOTAL = "document_total"
     DOCUMENT_STATUS = "document_status"
+    DOCUMENT_RESIDUAL = "document_residual"   # key: the document's source external id, in its currency
     SETTLEMENT_ALLOCATION = "settlement_allocation"
 
 

@@ -3970,6 +3970,7 @@
   "migration.check.document_total": "Document totals",
   "migration.check.document_status": "Document status",
   "migration.check.settlement_allocation": "Settlement allocation",
+  "migration.check.document_residual": "Open amount",
   "migration.result.pass": "Pass",
   "migration.result.rounding": "Rounding",
   "migration.result.fail": "Fail",

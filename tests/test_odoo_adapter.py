@@ -222,7 +222,7 @@ def test_invoices_bills_payments_and_journals(tmp_path, version):
                                               ("SRV", D(1), D(100), D(100), "400000")]
     assert _line_taxes(invoice) == [[("15%", "251000", D(30))], [("15%", "251000", D(15))]]
     assert docs["S:INV/2024/00002"].contact_external_id == "Pine & Co"       # billed to its contact person
-    assert docs["P:RBILL/2024/03/0001"].metadata == {"applies_to": "P:BILL/2024/03/0001"}
+    assert docs["P:RBILL/2024/03/0001"].metadata == {"applications": {"P:BILL/2024/03/0001": "34.50"}}
     assert docs["S:RINV/2024/00001"].metadata == {}                          # open, applied to nothing
     euro = docs["S:INV/2024/00004"]
     assert (euro.currency, euro.exchange_rate) == ("EUR", D("1.1"))
@@ -430,6 +430,60 @@ async def test_a_statement_line_reconciled_invoice_migrates_paid(real_engine, mo
     assert rejected == []
     _passing(run)
 
+# ── Credit notes applied in part ──────────────────────────────────────────────
+
+def _note_for_pine(applied: bool = True) -> build.Tables:
+    """The open credit note RINV/2024/00001 (57.50) issued to Pine & Co, which Odoo shows
+    applied 20.00 to Pine & Co's INV/2024/00002: the invoice owes 110.00, the note 37.50 open.
+    Without `applied` the reconciliation is missing while Odoo still states those amounts."""
+    tables = build.tables(17)
+    mcols, moves = tables.rows["account_move"]
+    note = next(m for m in moves if m[0] == 9)
+    note[mcols.index("partner_id")] = note[mcols.index("commercial_partner_id")] = 8
+    for r in _lines_of(tables, 9):
+        _set(tables, r, partner_id=8)
+    if applied:
+        _reconcile(tables, 7, 9, "20.00")
+    next(m for m in moves if m[0] == 7)[mcols.index("amount_residual")] = "110.00"
+    next(m for m in moves if m[0] == 9)[mcols.index("amount_residual")] = "37.50"
+    _set(tables, _party_line(tables, 7), amount_residual="110.00")
+    _set(tables, _party_line(tables, 9), amount_residual="-37.50")
+    return tables
+
+
+def test_a_credit_note_applied_in_part_relieves_the_invoice_by_that_amount(tmp_path):
+    bundle, docs, _ = _book(tmp_path, _note_for_pine())
+    assert docs["S:INV/2024/00002"] == ("awaiting_payment", D(110))
+    assert docs["S:RINV/2024/00001"] == ("awaiting_payment", D("37.50"))
+    notes = {d.source_external_id: d.metadata for d in bundle.documents}
+    assert notes["S:RINV/2024/00001"] == {"applications": {"S:INV/2024/00002": "20.00"}}
+    assert notes["P:RBILL/2024/03/0001"] == {"applications": {"P:BILL/2024/03/0001": "34.50"}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decisions", [{"mode": "full_history"},
+                                       {"mode": "cutover", "cutover_date": CUTOVER.isoformat()}])
+async def test_a_credit_note_applied_in_part_migrates_with_both_open_amounts(real_engine, monkeypatch, tmp_path,
+                                                                             decisions):
+    run, rejected = await migrate_set(real_engine, [("harbour.zip", build.backup(17, _note_for_pine()))],
+                                      decisions, monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    owed = {r["key"]: D(r["celerp"]) for r in run.reconciliation["rows"] if r["check"] == "document_residual"}
+    assert (owed["S:INV/2024/00002"], owed["S:RINV/2024/00001"]) == (D(110), D("37.50"))
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_open_amount_on_one_document_fails_its_own_check(real_engine, monkeypatch, tmp_path):
+    """Odoo states the open amounts of an application the backup does not hold. The invoice
+    (+20.00) and the note (-20.00) cancel in every total, so only each document's own check
+    can notice, and it names both."""
+    run, rejected = await migrate_set(real_engine, [("harbour.zip", build.backup(17, _note_for_pine(False)))],
+                                      {"mode": "full_history"}, monkeypatch, tmp_path)
+    assert rejected == []
+    failing = {(r["check"], r["key"]) for r in run.reconciliation["rows"] if r["result"] not in ("pass", "rounding")}
+    assert failing == {("document_residual", "S:INV/2024/00002"), ("document_residual", "S:RINV/2024/00001")}
+
 
 # ── Stock and files ───────────────────────────────────────────────────────────
 
@@ -507,6 +561,9 @@ def test_expectations_come_from_the_source(tmp_path, version):
     assert by[(M.INVENTORY_QUANTITY, "WID-1")] == D(7)           # what the quants hold, not the moves
     assert by[(M.INVENTORY_VALUE, "WID-1")] == D(220)
     assert by[(M.DOCUMENT_COUNT, "invoice")] == D(6)
+    assert by[(M.DOCUMENT_RESIDUAL, "S:INV/2024/00002")] == D(130)
+    assert by[(M.DOCUMENT_RESIDUAL, "S:RINV/2024/00001")] == D("57.50")
+    assert by[(M.DOCUMENT_RESIDUAL, "S:INV/2024/00001")] == 0
 
 
 @pytest.mark.parametrize("version", VERSIONS)

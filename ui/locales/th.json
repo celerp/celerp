@@ -3970,6 +3970,7 @@
   "migration.check.document_total": "ยอดรวมเอกสาร",
   "migration.check.document_status": "สถานะเอกสาร",
   "migration.check.settlement_allocation": "การปันส่วนการชำระหักกลบ",
+  "migration.check.document_residual": "ยอดคงค้าง",
   "migration.result.pass": "ผ่าน",
   "migration.result.rounding": "ผลต่างจากการปัดเศษ",
   "migration.result.fail": "ไม่ผ่าน",

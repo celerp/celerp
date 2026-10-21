@@ -284,7 +284,7 @@ def test_manager_mapping_preserves_source_semantics():
         (ref("INV1"), Decimal("110")), (ref("INV2"), Decimal("20"))}
     assert documents[ref("INV1")].contact_external_id == ref("CA")
     assert documents[ref("BILL1")].contact_external_id == ref("SA")
-    assert documents[ref("CN1")].metadata["applies_to"] == ref("INV2")
+    assert documents[ref("CN1")].metadata["applications"] == {ref("INV2"): str(documents[ref("CN1")].total)}
 
     # Tax keeps its rate, inclusive treatment and control account.
     (vat,) = bundle.tax_codes
