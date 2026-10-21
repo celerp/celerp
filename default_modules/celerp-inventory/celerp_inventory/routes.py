@@ -95,7 +95,7 @@ from celerp.services.pricing import (
 )
 from ui.components.table import display_unit
 from ui.i18n import category_label, field_label, item_status_label, price_list_label, t
-from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
+from celerp.services.units import validate_quantity, build_unit_map, get_company_units, read_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.vertical_presets import category_item_defaults
 from celerp.services.line_measures import check_sell_qty_fits_unit, sell_qty_misfit, splitting_allowed, validate_default_sell_qty
 from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
@@ -1432,7 +1432,7 @@ async def query_items(
     # on every page and for any combination of filters.
     aggregates = result_aggregates(
         result, (await get_price_config(session, company_id))[0], can_see_costs, base_currency,
-        build_unit_map(await get_company_units(session, company_id)))
+        build_unit_map(await read_company_units(session, company_id)))
 
     # Ordering (FEFO / user column sort / default) is single-sourced in
     # celerp_inventory.search so the list and the global-search bar stay in
@@ -1724,7 +1724,7 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     price_config = await get_price_config(session, company_id)
     # Units are company-wide, so build the map once for the whole batch. It feeds
     # flatten_item's qty_each derivation, exactly as GET /items/{id} does per item.
-    units = await _get_company_units(session, company_id)
+    units = await read_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
     can_author_drafts = role_has_permission(settings, role, "edit_inventory")
@@ -2184,7 +2184,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
             )
         )).scalar_one_or_none()
         loc_name = loc.name if loc else None
-    units = await _get_company_units(session, company_id)
+    units = await read_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
     flat = flatten_item(row.state, row.entity_id,
                          location_id=str(row.location_id) if row.location_id else None,
@@ -3160,7 +3160,7 @@ async def split_preview(
     parent_weight = _read_float(parent.state, "weight")
     parent_pieces = _read_pieces(parent.state)
 
-    units = await _get_company_units(session, company_id)
+    units = await read_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
     unit_cfg = unit_map.get(parent_sell_by) or {}
     decimals = unit_cfg.get("decimals", 0)
@@ -5236,7 +5236,7 @@ async def export_items_csv(
         visible -= {price_key(pl["name"]) for pl in price_config[0] if pl.get("name") and is_cost_list_name(pl["name"])}
     out_cols = [c for c in out_cols if c in visible and virtual.get(c, c) in visible]
 
-    unit_map = build_unit_map(await _get_company_units(session, company_id))
+    unit_map = build_unit_map(await read_company_units(session, company_id))
     currency = settings.get("currency") or "USD"
 
     def _rows():

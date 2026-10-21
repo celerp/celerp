@@ -64,7 +64,7 @@ from celerp.services.auth import AuthContext, get_auth_context, get_current_comp
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, next_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
-from celerp.services.units import DEFAULT_UNITS, build_unit_map, default_receive_as, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, validate_line_quantity
+from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, validate_line_quantity
 from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
@@ -710,10 +710,9 @@ def _line_item_brief(line_items: list[dict], eids) -> list[dict]:
 
 
 async def _get_unit_map(session: AsyncSession, company_id: str) -> dict[str, dict]:
-    """Return a name-keyed unit map for the company (falls back to DEFAULT_UNITS)."""
-    company = await session.get(Company, company_id)
-    units = (company.settings or {}).get("units") if company else None
-    return build_unit_map(units if units else DEFAULT_UNITS)
+    """Name-keyed company units, read under the company lock (get_company_units) so line
+    quantities are validated against the committed precision."""
+    return build_unit_map(await get_company_units(session, company_id))
 
 
 async def _get_item_sell_by_map(session: AsyncSession, company_id: str) -> dict[str, str]:

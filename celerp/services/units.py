@@ -78,10 +78,31 @@ def build_unit_map(units: list[dict]) -> dict[str, dict]:
 
 
 async def get_company_units(session, company_id) -> list[dict]:
-    """Return the company's units config, falling back to DEFAULT_UNITS."""
+    """The company's units config (DEFAULT_UNITS when it has none), for a write that validates
+    quantities against it.
+
+    Read under the company lock, as the last holder committed it: a precision change commits
+    under the same lock, so a quantity checked here can never be stored under decimals it was
+    not checked against. A copy the session loaded earlier in the request is never trusted."""
+    from celerp.models.company import Company
+    from celerp.services.company_lock import holds_company_lock, locked_company
+
+    if holds_company_lock(session, company_id):
+        company = await session.get(Company, company_id)
+    else:
+        company = await locked_company(session, company_id)
+    return _units_of(company)
+
+
+async def read_company_units(session, company_id) -> list[dict]:
+    """The company's units config for display only, without taking the company lock. A write
+    validates with get_company_units instead."""
     from celerp.models.company import Company
 
-    company = await session.get(Company, company_id)
+    return _units_of(await session.get(Company, company_id))
+
+
+def _units_of(company) -> list[dict]:
     units = (company.settings or {}).get("units") if company else None
     return units or DEFAULT_UNITS
 
