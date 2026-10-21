@@ -220,7 +220,6 @@ class _Reader:
         currencies = {r["id"]: r["name"] for r in self.rows.get("res_currency", [])}
         self.currency = lambda i: currencies.get(i or "", "")
         # Currency -> its smallest unit. Odoo writes floats, so a stored amount's scale is not the currency's.
-        self.cents = {r["name"]: Decimal(1).scaleb(-int(r["decimal_places"])) for r in self.rows.get("res_currency", [])}
         self.book = Book(SOURCE_SYSTEM, company_name=self.company["name"] or "",
                          base=self.currency(self.company["currency_id"]))
         self.out = OdooBook(self.book, backup.version, companies=companies, other_entries=sum(
@@ -517,7 +516,7 @@ class _Reader:
             discount = _dec(r.get("discount"))
             lines.append(DocLine(self.products.get(r["product_id"] or ""), r["name"] or "", _dec(r["quantity"]),
                                  _dec(r["price_unit"]), discount or None, net,
-                                 self._line_taxes(tax_rel.get(r["id"], []), net, tax, self.cents[currency]),
+                                 self._line_taxes(tax_rel.get(r["id"], []), net, tax, currency),
                                  self.accounts[r["account_id"]],
                                  self._tracking(r)))
         # Each tax totals what Odoo booked on its tax lines: Odoo can round a tax on the whole
@@ -563,13 +562,13 @@ class _Reader:
             amount_due=due, withheld=dict(withheld))
         self.documents[move["id"]] = book.documents[key]
 
-    def _line_taxes(self, taxes: list[str], net: Decimal, tax: Decimal, cents: Decimal) -> list[LineTax]:
-        """A line's tax split across its taxes by rate to the currency's smallest unit, the
-        rounding remainder on the last."""
+    def _line_taxes(self, taxes: list[str], net: Decimal, tax: Decimal, currency: str) -> list[LineTax]:
+        """A line's tax split across its taxes by rate, each rounded half-up to the currency's
+        smallest unit as Odoo rounds it, the rounding remainder on the last."""
         if not taxes:
             return [LineTax(None, tax)] if tax else []
         rates = [self.rates[i] for i in taxes]
-        out = [LineTax(self.taxes[i], (net * rate / 100).quantize(cents) if any(rates) else ZERO)
+        out = [LineTax(self.taxes[i], round_money(net * rate / 100, currency) if any(rates) else ZERO)
                for i, rate in zip(taxes, rates)]
         out[-1].amount += tax - sum((x.amount for x in out), ZERO)
         return out

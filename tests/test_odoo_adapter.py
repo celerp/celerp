@@ -359,6 +359,27 @@ def test_a_tax_split_keeps_the_currencys_cents_when_odoo_stored_fewer(tmp_path):
     assert (doc.total, doc.tax_total) == (D("185.6"), D("30.6"))
 
 
+def test_a_tax_split_rounds_half_up_like_odoo(tmp_path):
+    """Odoo rounds each tax half-up: a 10.70 line at 15% and 7% books 1.605 as 1.61 and 0.749 as
+    0.75 (13.06 in all)."""
+    tables = build.tables(17)
+    by_id = {r[0]: r for r in tables.rows["account_move_line"][1]}
+    _set(tables, by_id[52], price_unit="10.70", price_subtotal="10.70", price_total="13.06", credit="10.70",
+         balance="-10.70", amount_currency="-10.70")
+    _set(tables, by_id[54], credit="9.11", balance="-9.11", amount_currency="-9.11")
+    _set(tables, by_id[55], credit="0.75", balance="-0.75", amount_currency="-0.75")
+    _set(tables, by_id[56], debit="70.56", balance="70.56", amount_currency="70.56", amount_residual="70.56")
+    mcols, moves = tables.rows["account_move"]
+    move = next(m for m in moves if m[0] == 22)
+    for column, value in (("amount_tax", "9.86"), ("amount_total", "70.56"), ("amount_residual", "70.56")):
+        move[mcols.index(column)] = value
+    bundle = _adapter().build_manifest(_file(tmp_path, build.backup(17, tables)), FULL).bundle
+    doc = next(d for d in bundle.documents if d.source_external_id == "S:INV/2024/00005")
+    assert _line_taxes(doc) == [[("15%", "251000", D("1.61")), ("PST 7%", "251000", D("0.75"))],
+                                [("15%", "251000", D("7.50"))]]
+    assert (doc.total, doc.tax_total) == (D("70.56"), D("9.86"))
+
+
 # ── Payments matched by reconciliation ────────────────────────────────────────
 
 def _lines_of(tables: build.Tables, move: int) -> list[list]:
