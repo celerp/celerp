@@ -43,7 +43,8 @@ FALLBACK_NARRATION = ("Lines of this record booked differently in the source: ro
                       "or a payment's part not applied to any document.")
 OPENING_NARRATION = "Opening balances at the cutover date."
 TRACKING = "Tracking category"
-TRACKING_NOTE = "Each invoice and bill line keeps its tracking options; Celerp does not report by them."
+TRACKING_NOTE = ("Each invoice and bill line keeps its tracking options; journal entry lines are carried without "
+                 "them. Celerp does not report by them.")
 FALLBACK_NOTE = ("What the source booked for these records less what Celerp books for them (a rounding cent, an "
                  "exchange difference, or a payment's part left on the contact as credit) is carried as a journal "
                  "on the record.")
@@ -85,8 +86,6 @@ def _document(book: Book, ledger: Ledger, doc: Document, src: Source) -> CIFDocu
     metadata: dict = {}
     if doc.applications:
         metadata["applications"] = {key: str(amount) for key, amount in doc.applications.items()}
-    if any(ln.tracking for ln in doc.lines):
-        metadata["tracking"] = [ln.tracking for ln in doc.lines]
     if doc.withheld:
         metadata["withheld"] = {account: str(amount) for account, amount in doc.withheld.items()}
     lines = [CIFLineItem(item_external_id=ln.item, description=ln.description or None,
@@ -95,7 +94,7 @@ def _document(book: Book, ledger: Ledger, doc: Document, src: Source) -> CIFDocu
                                            tax_account_external_id=book.tax_account_for(x.code), amount=x.amount)
                                 for x in ln.taxes],
                          quantity=ln.quantity, unit_price=ln.unit_price, discount_percent=ln.discount,
-                         total_price=ln.net)
+                         total_price=ln.net, tracking=ln.tracking)
              for ln in doc.lines]
     return CIFDocument(**src(doc.source_type, doc.key, doc.number), doc_type=doc.doc_type,
                        status=state.status if state else doc.status, contact_external_id=doc.contact,

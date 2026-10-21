@@ -199,7 +199,7 @@ def test_xero_masters_and_documents_carry_into_cif(tmp_path):
     notes = [d for d in docs.values() if d.doc_type == "credit_note"]
     assert len(notes) == 3 and all(n.metadata["applications"] == {f"S:{source[n.ref].reference}": str(n.total)} for n in notes)
     assert docs["S:INV-0001"].line_items[0].item_external_id is not None
-    assert docs["S:INV-0001"].metadata["tracking"] == [{"Region": "North", "Project": "Beta"}]
+    assert [ln.tracking for ln in docs["S:INV-0001"].line_items] == [{"Region": "North", "Project": "Beta"}]
 
     coverage = {row.source_type: (row.count, row.coverage_class) for row in manifest.coverage}
     assert coverage["Deleted invoice or bill"] == (3, CoverageClass.IGNORED_NON_BUSINESS)
@@ -296,7 +296,7 @@ def test_quickbooks_online_masters_and_documents_carry_into_cif(tmp_path):
     notes = [d for d in docs.values() if d.doc_type == "credit_note"]
     assert len(notes) == 3 and all(n.metadata["applications"] == {f"S:{source[n.ref].reference}": str(n.total)} for n in notes)
     assert docs["S:INV-0001"].line_items[0].item_external_id is not None
-    assert docs["S:INV-0001"].metadata["tracking"] == [{"Class": "North", "Location": "Beta"}]
+    assert [ln.tracking for ln in docs["S:INV-0001"].line_items] == [{"Class": "North", "Location": "Beta"}]
 
     # Payments are matched to what they settled, so few stay plain journals.
     settled = [s for s in bundle.settlements if s.settlement_type == "receipt"]

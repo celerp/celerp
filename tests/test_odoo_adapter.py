@@ -485,6 +485,49 @@ async def test_a_wrong_open_amount_on_one_document_fails_its_own_check(real_engi
     assert failing == {("document_residual", "S:INV/2024/00002"), ("document_residual", "S:RINV/2024/00001")}
 
 
+# ── Analytic distributions ────────────────────────────────────────────────────
+
+# The consulting line of INV/2024/00001 as tracking: from Odoo 16 by plan with each share,
+# before as its one analytic account and its tags.
+ANALYTIC = {16: {"Projects": "Project Alpha 60%, Project Beta 40%", "Regions": "North"},
+            13: {"Analytic account": "Project Alpha", "Analytic tag": "North"}}
+
+
+def _analytic(version: int) -> dict[str, str]:
+    return ANALYTIC[16 if version >= 16 else 13]
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_analytic_distributions_ride_on_document_lines_and_are_reported(tmp_path, version):
+    from celerp.importers.adapters.exports.bundle import TRACKING
+    from celerp.importers.adapters.odoo.book import read_odoo
+    from celerp.importers.adapters.odoo.dump import Backup
+
+    manifest = _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL)
+    docs = {d.source_external_id: d for d in manifest.bundle.documents}
+    assert [ln.tracking for ln in docs["S:INV/2024/00001"].line_items] == [{}, _analytic(version)]
+    assert all(not ln.tracking for d in docs.values() if d.source_external_id != "S:INV/2024/00001"
+               for ln in d.line_items)
+    row = next(r for r in manifest.coverage if r.source_type == TRACKING)
+    assert (row.count, row.coverage_class) == (2, CoverageClass.UNSUPPORTED_NONFINANCIAL)
+    assert "journal entry lines" in row.note
+    with Backup(_file(tmp_path, _backup(version))[0].path) as backup:
+        journal = next(j for j in read_odoo(backup).book.journals if j.key == "J:20")
+    region = "Regions" if version >= 16 else "Analytic tag"
+    assert [ln.tracking for ln in journal.lines] == [{}, {region: "North"}]
+
+
+@pytest.mark.asyncio
+async def test_each_migrated_line_keeps_its_analytic_distribution(real_engine, monkeypatch, tmp_path):
+    from test_migration_e2e import _projections
+
+    run, rejected = await migrate_set(real_engine, [("harbour.zip", _backup(17))], {"mode": "full_history"},
+                                      monkeypatch, tmp_path)
+    assert rejected == []
+    docs = {d["doc_number"]: d for d in (await _projections(real_engine, run, "doc")).values()}
+    assert [ln.get("tracking") for ln in docs["INV/2024/00001"]["line_items"]] == [None, _analytic(17)]
+
+
 # ── Stock and files ───────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("version", VERSIONS)

@@ -18,6 +18,7 @@ documents are read from the backup's filestore.
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
@@ -89,6 +90,9 @@ DRAFT_ENTRY = "Draft or cancelled journal entry"
 OFF_BALANCE_LINE = "Off-balance journal item"
 NO_CONTACT = "Draft document without a contact"
 LOT = "Lot or serial number"
+# Tracking categories of an analytic account with no plan (Odoo 13 to 15) and of analytic tags.
+ANALYTIC_ACCOUNT = "Analytic account"
+ANALYTIC_TAG = "Analytic tag"
 
 # Odoo models whose files a migration reads.
 TARGET_MODELS = frozenset({"account.move", "account.payment", "res.partner", "product.product", "product.template"})
@@ -98,17 +102,20 @@ TABLES = (
     "account_tax", "account_tax_repartition_line", "account_move", "account_move_line",
     "account_move_line_account_tax_rel", "account_partial_reconcile", "account_payment", "product_product",
     "product_template", "stock_location", "stock_move", "stock_quant", "stock_valuation_layer", "ir_attachment",
+    "account_analytic_account", "account_analytic_plan", "account_analytic_tag",
+    "account_analytic_tag_account_move_line_rel",
 )
 # The columns this reader uses, in any of the versions it reads; the dump's other columns are not kept.
 COLUMNS = frozenset({
-    "account_id", "account_move_line_id", "account_tax_id", "account_type", "active", "amount", "amount_currency",
+    "account_analytic_tag_id", "account_id", "account_move_line_id", "account_tax_id", "analytic_account_id",
+    "analytic_distribution", "account_type", "active", "amount", "amount_currency",
     "amount_residual", "amount_tax", "amount_total", "amount_type", "checksum", "city", "code",
     "commercial_partner_id", "company_id", "create_date", "credit", "credit_amount_currency", "credit_move_id", "currency_id", "customer_rank",
     "date", "db_datas", "debit", "debit_amount_currency", "debit_move_id", "default_code", "deprecated", "description", "description_sale",
     "discount", "display_type", "document_type", "email", "exclude_from_invoice_tab", "id",
     "income_currency_exchange_account_id", "internal_group", "invoice_date_due", "invoice_tax_id",
     "is_internal_transfer", "is_rounding_line", "list_price", "location_dest_id", "location_id", "mobile", "model",
-    "move_id", "move_type", "name", "partner_id", "partner_type", "payment_id", "payment_type", "phone",
+    "move_id", "move_type", "name", "partner_id", "partner_type", "payment_id", "payment_type", "phone", "plan_id",
     "price_subtotal", "price_total", "price_unit", "product_id", "product_qty", "product_tmpl_id", "quantity", "ref",
     "reference", "repartition_type", "res_field", "res_id", "res_model", "sequence", "state", "stock_move_id",
     "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "usage", "user_type_id",
@@ -193,6 +200,7 @@ class _Reader:
         self.taxes: dict[str, str] = {}             # tax id -> tax code name
         self.rates: dict[str, Decimal] = {}         # tax id -> rate percent, below zero when withheld
         self.documents: dict[str, Document] = {}    # move id -> document
+        self.analytic: dict[str, dict[str, str]] = {}   # move line id -> tracking category -> option
 
     def table(self, name: str) -> list[Row]:
         return [r for r in self.rows.get(name, []) if _ours(r, self.company["id"])]
@@ -299,6 +307,37 @@ class _Reader:
             self.book.tax_codes[names[r["id"]]] = TaxCode(names[r["id"]], rate, accounts.get(r["id"]))
             self.taxes[r["id"]], self.rates[r["id"]] = names[r["id"]], rate
 
+    def read_analytics(self) -> None:
+        """Each move line's analytic accounts as tracking, by plan. From Odoo 16 a line spreads
+        across accounts by percent (a key may join one account of each plan); before, it names
+        one analytic account and any tags."""
+        accounts = {r["id"]: r for r in self.rows.get("account_analytic_account", [])}
+        plans = {r["id"]: self.text(r["name"]) for r in self.rows.get("account_analytic_plan", [])}
+        tags = {r["id"]: self.text(r["name"]) for r in self.rows.get("account_analytic_tag", [])}
+        tagged: dict[str, list[str]] = defaultdict(list)
+        for r in self.rows.get("account_analytic_tag_account_move_line_rel", []):
+            if r["account_analytic_tag_id"] in tags:
+                tagged[r["account_move_line_id"]].append(tags[r["account_analytic_tag_id"]])
+        for r in self.rows.get("account_move_line", []):
+            options: dict[str, list[str]] = defaultdict(list)
+            for keys, percent in json.loads(r.get("analytic_distribution") or "{}").items():
+                share = format(Decimal(str(percent)).normalize(), "f")
+                for i in (k for k in keys.split(",") if k in accounts):
+                    name = self.text(accounts[i]["name"])
+                    plan = plans.get(accounts[i].get("plan_id") or "", ANALYTIC_ACCOUNT)
+                    options[plan].append(name if Decimal(share) == 100 else f"{name} {share}%")
+            if r.get("analytic_account_id") in accounts:
+                options[ANALYTIC_ACCOUNT].append(self.text(accounts[r["analytic_account_id"]]["name"]))
+            options[ANALYTIC_TAG] += tagged.get(r["id"], [])
+            if found := {k: ", ".join(v) for k, v in options.items() if v}:
+                self.analytic[r["id"]] = found
+
+    def _tracking(self, row: Row) -> dict[str, str]:
+        """A carried line's tracking; its categories are counted in the coverage report."""
+        tracking = self.analytic.get(row["id"], {})
+        self.book.tracking |= set(tracking)
+        return dict(tracking)
+
     # ── Journals and documents ───────────────────────────────────────────────
 
     def _move_type(self, move: Row) -> str:
@@ -379,7 +418,8 @@ class _Reader:
                     held.amount += amount
                     held.foreign = None if held.foreign is None or foreign is None else held.foreign + foreign
                     continue
-            line = GLLine(account, amount, foreign, r["name"] or "", contact=contact if account in parties else None)
+            line = GLLine(account, amount, foreign, r["name"] or "", self._tracking(r),
+                          contact=contact if account in parties else None)
             out.append(line)
             if account in parties:
                 merged[(account, contact)] = line
@@ -435,7 +475,8 @@ class _Reader:
             discount = _dec(r.get("discount"))
             lines.append(DocLine(self.products.get(r["product_id"] or ""), r["name"] or "", _dec(r["quantity"]),
                                  _dec(r["price_unit"]), discount or None, net,
-                                 self._line_taxes(tax_rel.get(r["id"], []), net, tax), self.accounts[r["account_id"]]))
+                                 self._line_taxes(tax_rel.get(r["id"], []), net, tax), self.accounts[r["account_id"]],
+                                 self._tracking(r)))
         # Each tax totals what Odoo booked on its tax lines: Odoo can round a tax on the whole
         # document, and that difference lands on the last line carrying the tax.
         booked: dict[str | None, Decimal] = defaultdict(lambda: ZERO)
@@ -643,6 +684,7 @@ def read_odoo(backup: Backup) -> OdooBook:
     reader.read_chart()
     reader.read_items()
     reader.read_taxes()
+    reader.read_analytics()
     reader.read_ledger()
     reader.roll_trial_balances()
     reader.read_open_balances()

@@ -404,6 +404,7 @@ class CIFLineItem(BaseModel):
     discount_percent: CIFDecimal | None = None   # a line discount as a percentage of quantity x unit price
     total_price: CIFDecimal
     cost_basis: CIFDecimal | None = None      # cost at time of sale
+    tracking: dict[str, str] = Field(default_factory=dict)   # the source's tracking category -> option
 
 
 class CIFDocument(CIFSourceRecord):

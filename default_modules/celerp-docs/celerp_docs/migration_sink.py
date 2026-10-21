@@ -280,6 +280,7 @@ def _doc_record(
             "discount_pct": to_stored_float(line.discount_percent) if line.discount_percent else None,
             "taxes": line_taxes or None,
             "line_total": _money(line.total_price, currency),
+            "tracking": line.tracking or None,
         }.items() if v is not None})
     tax = record.tax_total or Decimal(0)
     data = {

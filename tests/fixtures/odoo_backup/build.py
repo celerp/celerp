@@ -86,6 +86,12 @@ TAXES = [(1, "15%", "sale", D("15"), 6), (2, "15%", "purchase", D("15"), 7), (3,
          (4, "WHT 3%", "sale", D("-3"), 17), (5, "WHT 3%", "purchase", D("-3"), 18)]
 WIDGET, CONSULTING = 1, 2
 SALE_TAX, PURCHASE_TAX, PROVINCIAL_TAX, SALE_WHT, PURCHASE_WHT = 1, 2, 3, 4, 5
+# Analytic plans and accounts (id, name, plan). From Odoo 16 a line spreads across accounts by
+# percent; Odoo 13 to 15 name one account of the first plan and tag the rest by name.
+ANALYTIC_PLANS = [(1, "Projects"), (2, "Regions")]
+ANALYTIC_ACCOUNTS = [(1, "Project Alpha", 1), (2, "Project Beta", 1), (3, "North", 2)]
+# (move id, line index) -> percent per analytic account.
+ANALYTIC = {(4, 1): {1: D(60), 2: D(40), 3: D(100)}, (20, 1): {3: D(100)}}
 
 
 @dataclass
@@ -351,7 +357,7 @@ def _ledger(out: Tables, version: int) -> None:
     v13 = version == 13
     all_moves = moves()
     open_, documents = _residuals(all_moves)
-    move_rows, line_rows, tax_rel, payments = [], [], [], []
+    move_rows, line_rows, tax_rel, payments, tags = [], [], [], [], []
     line_id = 0
     first_line: dict[tuple[int, int], int] = {}
     for m in all_moves:
@@ -380,6 +386,13 @@ def _ledger(out: Tables, version: int) -> None:
                 version_columns = [display]
             else:
                 version_columns = [None, _bool(ln.kind in ("tax", "payment_term")), "f"]
+            analytic = ANALYTIC.get((m.id, n), {})
+            if modern:
+                version_columns.append(json.dumps({str(a): float(p) for a, p in analytic.items()}) if analytic
+                                       else None)
+            else:
+                version_columns.append(next((a for a in analytic if ANALYTIC_ACCOUNTS[a - 1][2] == 1), None))
+                tags += [[line_id, a] for a in analytic if ANALYTIC_ACCOUNTS[a - 1][2] != 1]
             partner = ln.partner if ln.partner is not None else (m.partner if ln.account in (4, 5) else None)
             line_rows.append([line_id, m.id, 1, 1, USD, n, ln.account, currency, partner, m.name, m.state,
                               ln.name or m.name, m.date, f"{max(balance, D(0))}", f"{max(-balance, D(0))}",
@@ -395,8 +408,21 @@ def _ledger(out: Tables, version: int) -> None:
                     "currency_id", "partner_id", "move_name", "parent_state", "name", "date", "debit", "credit",
                     "balance", "amount_currency", "amount_residual", "product_id", "quantity", "price_unit",
                     "price_subtotal", "price_total", "discount", "tax_line_id", "payment_id"]
-    line_columns += ["display_type"] if modern else ["display_type", "exclude_from_invoice_tab", "is_rounding_line"]
+    line_columns += ["display_type", "analytic_distribution"] if modern else [
+        "display_type", "exclude_from_invoice_tab", "is_rounding_line", "analytic_account_id"]
     out.add("account_move_line", line_columns, line_rows)
+    if modern:
+        out.add("account_analytic_plan", ["id", "name", "company_id"],
+                [[i, json.dumps({"en_US": n}), None] for i, n in ANALYTIC_PLANS])
+        out.add("account_analytic_account", ["id", "name", "plan_id", "company_id", "active"],
+                [[i, json.dumps({"en_US": n}), plan, 1, "t"] for i, n, plan in ANALYTIC_ACCOUNTS])
+    else:
+        out.add("account_analytic_account", ["id", "name", "group_id", "company_id", "active"],
+                [[i, n, None, 1, "t"] for i, n, plan in ANALYTIC_ACCOUNTS if plan == 1])
+        out.add("account_analytic_tag", ["id", "name", "company_id", "active"],
+                [[i, n, 1, "t"] for i, n, plan in ANALYTIC_ACCOUNTS if plan != 1])
+        out.add("account_analytic_tag_account_move_line_rel", ["account_move_line_id", "account_analytic_tag_id"],
+                tags)
     out.add("account_move_line_account_tax_rel", ["account_move_line_id", "account_tax_id"], tax_rel)
     by_id = {m.id: m for m in all_moves}
     # Odoo 14 states the amount in each line's currency; Odoo 13 in the currency both lines share.
