@@ -33,7 +33,7 @@ from urllib.parse import urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
+from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from celerp.accounting_roles import account_label
 import ui.api_client as api
@@ -55,6 +55,7 @@ from ui.routes.account import account_panel
 from ui.security import company_owner
 from ui.routes.auth import auth_header, finish_sign_in
 from ui.routes.setup import browser_timezone_field, company_choice_script, setup_timezone
+from ui.streaming import ClosingStreamingResponse
 
 SCAN_COOKIE = "celerp_migration_scan"
 SCAN_TTL_SECONDS = 3600
@@ -1691,8 +1692,8 @@ def migrations_routes(app) -> None:
             chunks, headers = await api.migration_pack(get_token(request), run_id)
         except APIError as e:
             return await _verify_page(request, run_id, str(e.detail))
-        return StreamingResponse(chunks, media_type=headers.get("content-type", "text/csv"),
-                                 headers={k.title(): v for k, v in headers.items() if k != "content-type"})
+        return ClosingStreamingResponse(chunks, media_type=headers.get("content-type", "text/csv"),
+                                        headers={k.title(): v for k, v in headers.items() if k != "content-type"})
 
     @app.get("/migrations/{run_id}/complete")
     async def migration_complete(request: Request, run_id: str):

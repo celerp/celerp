@@ -12,9 +12,9 @@ from __future__ import annotations
 import asyncio
 import httpx
 from starlette.requests import Request
-from starlette.responses import StreamingResponse
 
 from ui.config import get_token as _token
+from ui.streaming import ClosingStreamingResponse
 
 _RETRY_DELAYS = [1, 2, 4, 8, 16]
 
@@ -22,7 +22,7 @@ _RETRY_DELAYS = [1, 2, 4, 8, 16]
 def setup_routes(app):
 
     @app.get("/events/stream")
-    async def proxy_events_stream(request: Request) -> StreamingResponse:
+    async def proxy_events_stream(request: Request) -> ClosingStreamingResponse:
         token = _token(request)
 
         async def _stream():
@@ -60,4 +60,4 @@ def setup_routes(app):
                 except Exception:
                     await asyncio.sleep(delay)
 
-        return StreamingResponse(_stream(), media_type="text/event-stream")
+        return ClosingStreamingResponse(_stream(), media_type="text/event-stream")

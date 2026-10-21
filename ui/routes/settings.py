@@ -2571,7 +2571,7 @@ def setup_routes(app):
         if refused := await owner_refusal(request):
             return refused
         import ui.api_client as _api
-        from starlette.responses import StreamingResponse
+        from ui.streaming import ClosingStreamingResponse
         token = _token(request)
         try:
             stream, headers = await _api.export_backup(token)
@@ -2581,7 +2581,7 @@ def setup_routes(app):
                 content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
                 media_type="text/html",
             )
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             stream,
             media_type=headers.get("content-type", "application/octet-stream"),
             headers={k.title(): v for k, v in headers.items() if k != "content-type"},
@@ -2596,7 +2596,7 @@ def setup_routes(app):
         if refused := await owner_refusal(request):
             return refused
         import ui.api_client as _api
-        from starlette.responses import StreamingResponse
+        from ui.streaming import ClosingStreamingResponse
         token = _token(request)
         try:
             stream, headers = await _api.export_backup(token, backup_id)
@@ -2606,7 +2606,7 @@ def setup_routes(app):
                 content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
                 media_type="text/html",
             )
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             stream,
             media_type=headers.get("content-type", "application/octet-stream"),
             headers={k.title(): v for k, v in headers.items() if k != "content-type"},

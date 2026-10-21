@@ -612,19 +612,21 @@ def _restore_bytecode_settings():
 
 
 @pytest.fixture(autouse=True)
-def _no_free_send_quota_fetch(request):
-    """Opening a document page starts a background fetch of the free-send quota from the
-    API. Unit tests have no API to answer it, and a fetch still connecting when the test's
-    event loop closes is never finished. Hold the cache as already fetching, so no page
-    starts one; pages read it as never fetched, as before. The tests of the fetch reset
-    the cache themselves. Browser tests run a real API and keep the fetch."""
+def _ui_api_not_running(request, monkeypatch):
+    """Unit tests run the UI with no API server behind it. A request the UI sends to the
+    API fails as a refused connection does, without opening a socket: no test reaches a
+    server that happens to listen on the API's port, and no connection attempt outlives
+    its test. Tests that answer as the API patch the transport or client themselves.
+    Browser tests run a real API."""
     if request.node.get_closest_marker("browser"):
-        yield
         return
-    from ui.routes import documents
-    documents._free_send_quota_cache.update({"value": 0, "fetched_at": None, "pending": True, "task": None})
-    yield
-    documents._free_send_quota_cache.update({"value": 0, "fetched_at": None, "pending": False, "task": None})
+    import httpx
+    from ui import api_client
+
+    async def _refused(self, api_request):
+        raise httpx.ConnectError("The API is not running in unit tests.", request=api_request)
+
+    monkeypatch.setattr(api_client._SharedTransport, "handle_async_request", _refused)
 
 
 @pytest.fixture(autouse=True)
