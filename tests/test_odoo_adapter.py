@@ -21,12 +21,13 @@ from sqlalchemy import text
 
 from celerp.importers.adapters.base import COMPANY_QUESTION, MigrationDecisions, ScanError, SourceRevisionError
 from celerp.importers.adapters.odoo import attachments
-from celerp.importers.adapters.odoo.adapter import OTHER_COMPANY
+from celerp.importers.adapters.odoo.adapter import OTHER_COMPANY, OTHER_COMPANY_NOTE
 from celerp.importers.schema import CIFMode, CoverageClass, ReconciliationMeasure as M
 from fixtures.manager_io.support import BASIC, artifact
 from fixtures.odoo_backup import build
 from migration_support import count, load_run, maker, real_engine  # noqa: F401
 from test_migration_e2e import _passing, migrate_set
+from ui.i18n import t
 
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
 CUTOVER = date(2024, 2, 29)
@@ -1016,6 +1017,7 @@ def test_a_backup_of_two_companies_asks_which_one_to_import(tmp_path):
     assert scan.company_name == build.COMPANY
     other = {r.source_type: r for r in scan.coverage}[OTHER_COMPANY]
     assert (other.count, other.coverage_class) == (1, CoverageClass.IGNORED_NON_BUSINESS)
+    assert other.note == t(OTHER_COMPANY_NOTE) != OTHER_COMPANY_NOTE      # read from the catalogs
 
     group = _adapter().inspect(files, GROUP)
     assert group.company_name == GROUP

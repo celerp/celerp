@@ -37,6 +37,7 @@ from celerp.importers.schema import (
     CoverageClass,
 )
 from celerp.services.money import checked_exchange_rate
+from ui.i18n import t
 
 # Journal parts of the ledger, and the source id suffix each part's journal carries.
 JOURNAL_PARTS = {"journal": "", "fallback": ":journal"}
@@ -47,9 +48,7 @@ OPENING_NARRATION = "Opening balances at the cutover date."
 TRACKING = "Tracking category"
 TRACKING_NOTE = ("Each invoice and bill line keeps its tracking options; journal entry lines are carried without "
                  "them. Celerp does not report by them.")
-FALLBACK_NOTE = ("What the source booked for these records less what Celerp books for them (a rounding cent, an "
-                 "exchange difference, or a payment's part left on the contact as credit) is carried as a journal "
-                 "on the record.")
+FALLBACK_NOTE = "migration.coverage_fallback_note"
 
 
 class Source:
@@ -237,7 +236,7 @@ def coverage(ledger: Ledger, skipped: dict[str, CoverageClass]) -> list[CIFCover
     rows += [CIFCoverageEntry(source_type=label, count=count, coverage_class=CoverageClass.MAPPED_WITH_LOSS,
                               note=DEBIT_NOTE_NOTE) for label, count in noted.items()]
     rows += [CIFCoverageEntry(source_type=FALLBACK.format(label), count=count,
-                              coverage_class=CoverageClass.MAPPED_WITH_LOSS, note=FALLBACK_NOTE)
+                              coverage_class=CoverageClass.MAPPED_WITH_LOSS, note=t(FALLBACK_NOTE))
              for label, count in fallbacks.items()]
     rows += [CIFCoverageEntry(source_type=label, count=count, coverage_class=skipped[label])
              for label, count in book.skipped.items() if count]

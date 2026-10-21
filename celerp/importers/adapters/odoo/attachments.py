@@ -27,9 +27,9 @@ from celerp.importers.adapters.odoo.dump import Backup
 from ui.i18n import t
 
 REJECTED = "Attachment (left out)"
-REJECTED_NOTE = "Files left out are listed in the run summary with the reason and are not imported."
+REJECTED_NOTE = "migration.odoo_attachments_rejected_note"
 IGNORED = "Attachment (not a business file)"
-IGNORED_NOTE = "Odoo's own interface files and the smaller copies it keeps of each picture. The full-size picture is imported."
+IGNORED_NOTE = "migration.odoo_attachments_ignored_note"
 
 
 @dataclass(frozen=True)

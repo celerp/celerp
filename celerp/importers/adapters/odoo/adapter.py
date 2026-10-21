@@ -55,7 +55,7 @@ SKIPPED = {DRAFT_ENTRY: CoverageClass.IGNORED_NON_BUSINESS, NO_CONTACT: Coverage
 LOCATION = "Stock location"
 OPENING = "Opening balances"
 OTHER_COMPANY = "Entry of another company"
-OTHER_COMPANY_NOTE = "Each company is imported on its own. To import another company, upload this backup again and choose it."
+OTHER_COMPANY_NOTE = "migration.odoo_other_company_note"
 
 
 def _single(artifacts: ArtifactSet) -> Artifact:
@@ -134,13 +134,13 @@ def _coverage(odoo: OdooBook, ledger: Ledger, screened: attachments.Screened) ->
                                      coverage_class=CoverageClass.MAPPED))
     if screened.rejected:
         rows.append(CIFCoverageEntry(source_type=attachments.REJECTED, count=len(screened.rejected),
-                                     coverage_class=CoverageClass.MAPPED_WITH_LOSS, note=attachments.REJECTED_NOTE))
+                                     coverage_class=CoverageClass.MAPPED_WITH_LOSS, note=t(attachments.REJECTED_NOTE)))
     if odoo.other_entries:
         rows.append(CIFCoverageEntry(source_type=OTHER_COMPANY, count=odoo.other_entries,
-                                     coverage_class=CoverageClass.IGNORED_NON_BUSINESS, note=OTHER_COMPANY_NOTE))
+                                     coverage_class=CoverageClass.IGNORED_NON_BUSINESS, note=t(OTHER_COMPANY_NOTE)))
     if odoo.system_files:
         rows.append(CIFCoverageEntry(source_type=attachments.IGNORED, count=odoo.system_files,
-                                     coverage_class=CoverageClass.IGNORED_NON_BUSINESS, note=attachments.IGNORED_NOTE))
+                                     coverage_class=CoverageClass.IGNORED_NON_BUSINESS, note=t(attachments.IGNORED_NOTE)))
     return sorted(rows, key=lambda r: r.source_type)
 
 
