@@ -2604,6 +2604,13 @@ function celerpPrintLabel(entityId, templateId) {
                                       "purchase_unit": "purchase_conversion_factor",
                                       "purchase_conversion_factor": "purchase_unit"}
 
+    def _pair_column(field: str) -> str:
+        """The table column a paired field is shown in: the amount of an amount/unit pair,
+        purchase_unit for the purchase triple."""
+        if field in ("purchase_unit", "purchase_conversion_factor"):
+            return "purchase_unit"
+        return field if field in ("quantity", "weight", "gross_weight") else _PAIRED_FIELDS[field]
+
     async def _refused_cell(request: Request, entity_id: str, field: str, detail: str):
         """A refused edit keeps the cell's editor open with the reason under it, so the user
         can correct the value or press Esc, never left without a cell to retry."""
@@ -3200,9 +3207,8 @@ function celerpPrintLabel(entityId, templateId) {
             )
         from ui.components.table import paired_display_cell
         locations = locs.get("items", [])
-        peer = _PAIRED_FIELDS[field]
-        # Determine which is primary (qty/weight) vs secondary (unit)
-        primary, secondary = (field, peer) if field not in ("sell_by", "weight_unit") else (peer, field)
+        primary = _pair_column(field)
+        secondary = _PAIRED_FIELDS[primary]
         pri_def, pri_type, pri_opts, _ = _resolve_field_def(primary, schema, cat_schemas, item, locations)
         sec_def, sec_type, sec_opts, _ = _resolve_field_def(secondary, schema, cat_schemas, item, locations)
         # Build unit map for format_qty; secondary is the unit field (sell_by / weight_unit)
@@ -3282,9 +3288,12 @@ function celerpPrintLabel(entityId, templateId) {
                 )
         from ui.components.table import editable_cell
         restore_url = f"/api/items/{entity_id}/field/{field}/paired-display"
-        return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
+        cell = editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
                              label_map=_unit_labels(field, options), restore_url=restore_url)
+        # The editor stays in its column, so column show/hide and order still find it.
+        cell.attrs["data-col"] = _pair_column(field)
+        return cell
 
     @app.get("/api/items/{entity_id}/field/{field}/paired-display")
     async def field_paired_display_cell(request: Request, entity_id: str, field: str):

@@ -22,8 +22,6 @@ from test_cost_restatement import _item, _merge, _state
 from test_inventory_transform import _transform_payload
 from test_receipt_accounting import _doc, _parcels, _receive
 
-pytestmark = pytest.mark.asyncio
-
 LOCALES = Path(__file__).resolve().parent.parent / "ui" / "locales"
 
 
