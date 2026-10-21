@@ -513,6 +513,61 @@ def test_a_base_currency_overpayment_of_a_foreign_invoice_settles_at_the_rate_od
         ("121000", "Lakeshore Trading Co", D(-11)), ("101401", None, D(11))}
 
 
+def _base_bank_receipt(tables: build.Tables, bank: str, applied: str, writeoff: str | None = None) -> None:
+    """INV/2024/00004 (EUR 100 at 1.10, USD 110) paid in full by a USD receipt of `bank` from the
+    USD bank, Odoo applying USD `applied` to it, with an optional bank charge line written off
+    against the invoice. No exchange difference entry."""
+    cols, rows = tables.rows["account_move_line"]
+    mcols, moves = tables.rows["account_move"]
+    next(m for m in moves if m[0] == 18)[mcols.index("currency_id")] = build.USD
+    pcols, payments = tables.rows["account_payment"]
+    pay = next(p for p in payments if p[pcols.index("move_id")] == 18)
+    pay[pcols.index("currency_id")], pay[pcols.index("amount")] = build.USD, bank
+    bank_line, party_line = _lines_of(tables, 18)
+    _set(tables, bank_line, currency_id=build.USD, debit=bank, credit="0", balance=bank, amount_currency=bank,
+         amount_residual=bank)
+    _set(tables, party_line, currency_id=build.USD, debit="0", credit=applied, balance=f"-{applied}",
+         amount_currency=f"-{applied}", amount_residual="0")
+    if writeoff is not None:
+        charge = list(bank_line)
+        rows.append(charge)
+        _set(tables, charge, id=48, account_id=9, debit=writeoff, balance=writeoff, amount_currency=writeoff,
+             amount_residual="0", name="Bank charge")
+    partials = tables.rows["account_partial_reconcile"][1]
+    partials[:] = [p for p in partials if p[0] not in (5, 6)]
+    partials.append([5, _party_line(tables, 17)[0], party_line[0], 1, applied, "2024-04-20", "100", applied])
+    moves[:] = [m for m in moves if m[0] != 19]
+    rows[:] = [r for r in rows if r[cols.index("move_id")] != 19]
+
+
+def test_a_base_currency_receipt_with_a_write_off_pays_a_foreign_invoice(tmp_path):
+    """USD 105 received and USD 5 written off as a bank charge settle INV/2024/00004 in full: Odoo
+    applies USD 110 (EUR 100). The settlement is EUR 100 at 1.10, and the receipt's journal moves
+    the charge off the bank, so every account matches Odoo and every journal balances."""
+    tables = build.tables(17)
+    _base_bank_receipt(tables, "105", "110", writeoff="5")
+    bundle, docs, settled = _book(tmp_path, tables)
+    assert docs["S:INV/2024/00004"] == ("paid", D(0))
+    assert settled["J:18"] == (D(100), [("S:INV/2024/00004", D(100))])
+    assert next(s for s in bundle.settlements if s.source_external_id == "J:18").exchange_rate == D("1.1")
+    rest = next(j for j in bundle.journals if j.source_external_id == "J:18:journal")
+    assert {(ln.account_external_id, ln.debit - ln.credit) for ln in rest.lines} == {
+        ("600000", D(5)), ("101401", D(-5))}
+    for j in bundle.journals:
+        assert sum(ln.debit - ln.credit for ln in j.lines) == 0, j.source_external_id
+
+
+def test_a_base_currency_receipt_without_a_write_off_settles_at_the_bank_amount(tmp_path):
+    """USD 108 received and applied to EUR 100: the settlement's rate is 1.08 and every journal balances."""
+    tables = build.tables(17)
+    _base_bank_receipt(tables, "108", "108")
+    bundle, docs, settled = _book(tmp_path, tables)
+    assert docs["S:INV/2024/00004"] == ("paid", D(0))
+    assert next(s for s in bundle.settlements if s.source_external_id == "J:18").exchange_rate == D("1.08")
+    for j in bundle.journals:
+        assert sum(ln.debit - ln.credit for ln in j.lines) == 0, j.source_external_id
+
+
 @pytest.mark.asyncio
 async def test_a_statement_line_reconciled_invoice_migrates_paid(real_engine, monkeypatch, tmp_path):
     tables = build.tables(17)

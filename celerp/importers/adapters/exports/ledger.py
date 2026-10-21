@@ -288,8 +288,9 @@ def _settlement(book: Book, j: GLJournal, owing: dict[str, Decimal]) -> Settleme
     elif bank.foreign is not None:
         rate = _rate(bank.amount, bank.foreign)
     elif j.settled_base is not None:
-        # A base currency bank line can hold more than the source applied: the rest stays on the contact.
-        rate = _rate(j.settled_base, total) if j.settled_base <= abs(bank.amount) else None
+        # A base currency bank line can differ from what the source applied: an amount left on the
+        # contact or a write-off line, which the journal's fallback carries.
+        rate = _rate(j.settled_base, total)
     else:
         rate = _rate(bank.amount, total)
     if rate is None or (foreign and book.fx_account is None):
