@@ -25,7 +25,7 @@ _VERTICAL_TAGS: tuple[str, ...] = (
     "property_rental", "saas", "watches_accessories", "wine_spirits", "other",
 )
 _TAG_LABELS: dict[str, str] = {tag: f"enum.vertical_tag.{tag}" for tag in _VERTICAL_TAGS}
-from ui.i18n import t, get_lang, category_label, category_labels
+from ui.i18n import t, get_lang, category_label, category_labels, refusal_text
 
 from ui.routes.settings import (
     _token,
@@ -649,7 +649,13 @@ def setup_routes(app):
                 else:
                     u[field] = raw
             updated.append(u)
-        await api.patch_units(token, updated)
+        try:
+            await api.patch_units(token, updated)
+        except APIError as e:
+            # A refused change leaves the stored value in place and says why under it.
+            stored = next((u for u in units if u.get("name") == name), {})
+            return _unit_display_cell(name, field, stored.get(field, ""))(
+                P(refusal_text(e.data or e.detail) or str(e.detail), cls="cell-error"))
         # Re-fetch to get clean value and return display cell
         fresh = await api.get_units(token)
         unit = next((u for u in fresh if u.get("name") == name), {})

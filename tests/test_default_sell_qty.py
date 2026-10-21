@@ -176,6 +176,69 @@ async def test_an_item_with_no_known_unit_accepts_any_positive_number(client, se
     assert await _sell_qty(session, auth, entity_id) == 0.123
 
 
+# A unit's decimal places lowered under quantities stored in it
+
+async def _set_carat_decimals(client, auth, decimals: int):
+    units = (await client.get("/companies/me/units", headers=auth["headers"])).json()
+    units = [{**u, "decimals": decimals} if u["name"] == "carat" else u for u in units]
+    return await client.put("/companies/me/units", headers=auth["headers"], json={"units": units})
+
+
+async def _carat_decimals(client, auth) -> int:
+    units = (await client.get("/companies/me/units", headers=auth["headers"])).json()
+    return next(u["decimals"] for u in units if u["name"] == "carat")
+
+
+async def _sku(session, auth, item_id: str) -> str:
+    return (await _state(session, auth, item_id))["sku"]
+
+
+async def _carat_doc(session, auth, status: str, qty: float, number: str) -> None:
+    await emit_event(session, company_id=auth["company_id"], entity_id=f"doc:{uuid.uuid4()}", entity_type="doc",
+                     event_type="doc.created", data={"doc_type": "invoice", "doc_number": number, "status": status,
+                                                     "line_items": [{"name": "Stone", "quantity": qty, "unit": "carat",
+                                                                     "unit_price": 10}]},
+                     actor_id=None, location_id=None, source="test", idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+
+
+@pytest.mark.parametrize("fields", [{"qty": 0.27}, {"qty": 6, "default_sell_qty": 0.27}])
+async def test_fewer_decimals_under_a_finer_item_quantity_is_refused_and_names_it(client, session, auth, fields):
+    lot = await _lot(client, auth, **fields)
+    await _lot(client, auth, qty=6, default_sell_qty=0.5)
+
+    r = await _set_carat_decimals(client, auth, 1)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "units.precision_lowered_under_quantities", detail
+    assert detail["params"] == {"unit": "carat", "decimals": 1, "count": 1,
+                                "examples": await _sku(session, auth, lot), "current": 2}, detail
+    assert "Change those quantities first, or keep 2 decimal places." in detail["message"], detail
+    assert await _carat_decimals(client, auth) == 2
+    assert await _sell_qty(session, auth, lot) == fields.get("default_sell_qty")
+
+
+async def test_fewer_decimals_that_every_quantity_fits_and_more_decimals_pass(client, session, auth):
+    await _lot(client, auth, qty=6.5, default_sell_qty=0.5)
+    await _lot(client, auth, sell_by="gram", qty=0.27)
+
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
+    assert await _carat_decimals(client, auth) == 1
+
+
+async def test_a_draft_line_blocks_fewer_decimals_and_a_posted_one_does_not(client, session, auth):
+    await _carat_doc(session, auth, "final", 0.27, "INV-POSTED")
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
+    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+
+    await _carat_doc(session, auth, "draft", 0.27, "INV-DRAFT")
+    r = await _set_carat_decimals(client, auth, 1)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["params"]["examples"] == "INV-DRAFT", r.text
+    assert await _carat_decimals(client, auth) == 2
+
+
 # CSV import and export
 
 @pytest.fixture

@@ -39,7 +39,8 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "units.precision_lowered_under_quantities"
   ],
   "ar": [
     "account.email_placeholder",
@@ -69,7 +70,8 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "units.precision_lowered_under_quantities"
   ],
   "de": [
     "acct.source_system",
@@ -170,7 +172,8 @@
     "th.sku",
     "th.status",
     "th.text",
-    "th.version"
+    "th.version",
+    "units.precision_lowered_under_quantities"
   ],
   "es": [
     "account.plan",
@@ -244,7 +247,8 @@
     "th.factor",
     "th.position",
     "th.sku",
-    "th.total"
+    "th.total",
+    "units.precision_lowered_under_quantities"
   ],
   "fr": [
     "acct.tab_journal",
@@ -359,7 +363,8 @@
     "th.sku",
     "th.source",
     "th.total",
-    "th.version"
+    "th.version",
+    "units.precision_lowered_under_quantities"
   ],
   "id": [
     "acct.source_manual",
@@ -458,7 +463,8 @@
     "th.ref",
     "th.sku",
     "th.status",
-    "th.total"
+    "th.total",
+    "units.precision_lowered_under_quantities"
   ],
   "it": [
     "attr.volume_l",
@@ -529,7 +535,8 @@
     "th.memo",
     "th.output",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "units.precision_lowered_under_quantities"
   ],
   "ja": [
     "account.email_placeholder",
@@ -569,7 +576,8 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "units.precision_lowered_under_quantities"
   ],
   "pt": [
     "acct.source_manual",
@@ -654,7 +662,8 @@
     "th.sku",
     "th.skuitem",
     "th.status",
-    "th.total"
+    "th.total",
+    "units.precision_lowered_under_quantities"
   ],
   "th": [
     "account.email_placeholder",
@@ -692,7 +701,8 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "units.precision_lowered_under_quantities"
   ],
   "vi": [
     "btn.u00d7",
@@ -734,6 +744,7 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "th.position",
-    "th.sku"
+    "th.sku",
+    "units.precision_lowered_under_quantities"
   ]
 }

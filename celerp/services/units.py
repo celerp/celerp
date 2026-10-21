@@ -8,6 +8,7 @@ Single source of truth imported by both celerp-inventory and celerp-docs.
 
 from __future__ import annotations
 
+import math
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException
@@ -128,6 +129,61 @@ def validate_quantity(qty: float, decimals: int, *, label: str | None = None) ->
                   if label else
                   refusal("quantity.precision_plain", rule, qty=f"{qty:g}", decimals=decimals))
         raise HTTPException(status_code=422, detail=detail)
+
+
+def _finer_than(value, decimals: int) -> bool:
+    try:
+        qty = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(qty) and exceeds_precision(qty, decimals)
+
+
+async def check_precision_change(session, company_id, old_units: list[dict], new_units: list[dict]) -> None:
+    """Fewer decimal places for a unit that still holds finer quantities: refused with 422, naming
+    how many items and open drafts hold them, a few of them, and what to change. Every item counts,
+    whatever its status, since any item can come back into stock; a draft document or list counts
+    because it will still move stock. Posted documents are history and never block. Raising
+    precision always passes."""
+    from sqlalchemy import or_, select
+
+    from celerp.models.projections import Projection
+    from celerp.services.line_measures import FULL, stored_sell_qty
+
+    old = {u["name"]: int(u.get("decimals") or 0) for u in old_units}
+    lowered = {u["name"]: int(u["decimals"]) for u in new_units
+               if u["name"] in old and int(u["decimals"]) < old[u["name"]]}
+    if not lowered:
+        return
+    status = Projection.state["status"].as_string()
+    rows = (await session.execute(select(Projection.entity_type, Projection.state).where(
+        Projection.company_id == company_id,
+        or_((Projection.entity_type == "item") & Projection.state["sell_by"].as_string().in_(list(lowered)),
+            Projection.entity_type.in_(("doc", "list")) & or_(status == "draft", status.is_(None))),
+    ))).all()
+    for name, decimals in lowered.items():
+        holders: list[str] = []
+        for entity_type, state in rows:
+            if entity_type == "item":
+                sell_qty = stored_sell_qty(state.get("default_sell_qty"))
+                held = state.get("sell_by") == name and (
+                    _finer_than(state.get("quantity"), decimals)
+                    or (sell_qty not in (None, FULL) and _finer_than(sell_qty, decimals)))
+                label = state.get("sku") or state.get("name")
+            else:
+                held = any((line.get("unit") or line.get("sell_by")) == name
+                           and _finer_than(line.get("quantity"), decimals)
+                           for line in state.get("line_items") or [] if isinstance(line, dict))
+                label = state.get("doc_number") or state.get("ref_id") or state.get("name")
+            if held:
+                holders.append(str(label or "-"))
+        if holders:
+            examples = ", ".join(holders[:3])
+            raise HTTPException(status_code=422, detail=refusal(
+                "units.precision_lowered_under_quantities",
+                f"{name} cannot go to {decimals} decimal places: {len(holders)} item or draft quantities use more "
+                f"({examples}). Change those quantities first, or keep {old[name]} decimal places.",
+                unit=name, decimals=decimals, count=len(holders), examples=examples, current=old[name]))
 
 
 def validate_positive(qty: float, *, label: str = "Quantity") -> None:

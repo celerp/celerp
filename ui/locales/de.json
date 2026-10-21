@@ -700,6 +700,7 @@
   "item.default_sell_qty_invalid": "Die Standard-Verkaufsmenge muss Voll oder eine Zahl über 0 sein.",
   "item.default_sell_qty_unit_change": "Diese Einheit kann die Standard-Verkaufsmenge von {qty} nicht aufnehmen. Ändern Sie die Standard-Verkaufsmenge auf Voll oder eine Zahl, die die Einheit erlaubt, und ändern Sie dann die Einheit.",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
+  "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} item or draft quantities use more ({examples}). Change those quantities first, or keep {current} decimal places.",
   "field.tooltip.barcode": "Eindeutiger Barcode für diesen bestimmten Lagerartikel oder dieses Los. Beim Scannen wird genau dieser physische Artikel ausgewählt.",
   "field.tooltip.country_of_origin": "Land, in dem dieser Artikel hergestellt wurde. Wird auf Lieferscheine und Zollunterlagen übernommen.",
   "field.tooltip.gross_weight": "Verpacktes Gewicht einer Einheit inklusive Verpackung. Liefert das Bruttogewicht je Position auf Versandpapieren; das Nettogewicht ist das Gewichtsfeld des Artikels.",

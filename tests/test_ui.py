@@ -13372,6 +13372,31 @@ class TestUnitsSettings:
         assert r.status_code == 200
         assert b"4" in r.content
 
+    @pytest.mark.asyncio
+    async def test_a_refused_decimals_change_shows_why_in_the_cell(self, ui_client):
+        """A precision change the API refuses keeps the stored value in the cell and shows the
+        refusal under it, in the user's words, not a server error."""
+        from ui.api_client import APIError
+        current = [{"name": "carat", "label": "Carat", "decimals": 2}]
+        params = {"unit": "carat", "decimals": 1, "count": 2, "examples": "RAW-1, RAW-2", "current": 2}
+        refused = APIError(422, "x", data={"message": "x", "message_key": "units.precision_lowered_under_quantities",
+                                           "params": params})
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=current)),
+            patch("ui.api_client.patch_units", new=AsyncMock(side_effect=refused)),
+        ):
+            r = await ui_client.patch(
+                "/settings/units/carat/decimals",
+                content=b"value=1",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert 'class="cell-error"' in r.text, r.text
+        assert ("carat cannot go to 1 decimal places: 2 item or draft quantities use more (RAW-1, RAW-2). "
+                "Change those quantities first, or keep 2 decimal places.") in r.text, r.text
+        assert '<span class="cell-text">2</span>' in r.text, r.text
+
 
 # ---------------------------------------------------------------------------
 # Phase 5: Vertical category default_sell_by + pieces field
