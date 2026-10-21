@@ -297,9 +297,13 @@ async def test_fewer_decimals_that_every_quantity_fits_and_more_decimals_pass(cl
 # any other status is history.
 _STILL_MOVING = [("doc", "invoice", "draft"), ("doc", "invoice", "final"), ("doc", "invoice", "paid"),
                  ("doc", "purchase_order", "sent"), ("doc", "purchase_order", "partially_received"),
-                 ("doc", "bill", "received"), ("doc", "memo", "sent"), ("doc", "consignment_in", "returned"),
-                 ("doc", "quotation", "sent"), ("list", "transfer", "draft"), ("list", "audit", "finalized")]
-_HISTORY = [("doc", "invoice", "void"), ("doc", "memo", "closed"), ("doc", "quotation", "converted"),
+                 ("doc", "bill", "received"), ("doc", "memo", "sent"), ("doc", "consignment_in", "final"),
+                 ("doc", "consignment_in", "partially_received"), ("doc", "consignment_in", "returned"),
+                 ("doc", "quotation", "sent"), ("doc", "quotation", "accepted"), ("list", "transfer", "draft"),
+                 ("list", "audit", "finalized")]
+# A converted memo or consignment billed what sat in its lots, which are items counted on their own.
+_HISTORY = [("doc", "invoice", "void"), ("doc", "memo", "closed"), ("doc", "memo", "converted"),
+            ("doc", "quotation", "converted"), ("doc", "quotation", "void"), ("doc", "consignment_in", "converted"),
             ("doc", "credit_note", "final"), ("list", "transfer", "closed"), ("list", "quotation", "void")]
 
 
@@ -318,6 +322,42 @@ async def test_a_history_document_line_never_blocks(client, session, auth, entit
     await _carat_doc(session, auth, status, 0.27, "DONE-1", doc_type, entity_type)
     assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
     assert await _carat_decimals(client, auth) == 1
+
+
+async def test_a_memo_blocks_what_it_has_still_to_send_and_its_lot_while_out_never_once_converted(
+        client, session, auth):
+    assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
+    lot = await _lot(client, auth, qty=0.275)
+    sku = await _sku(session, auth, lot)
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "memo", "contact_id": "customer:1", "line_items": [
+            {"item_id": lot, "sku": sku, "name": "Stone", "quantity": 0.275, "unit": "carat", "unit_price": 10}]})
+    assert r.status_code == 200, r.text
+    memo = r.json()["id"]
+    assert (await client.post(f"/docs/{memo}/finalize", headers=auth["headers"])).status_code == 200
+    memo_state = await _state(session, auth, memo)
+    number = memo_state.get("doc_number") or memo_state["ref_id"]
+
+    async def holders() -> str:
+        r = await _set_carat_decimals(client, auth, 2)
+        assert r.status_code == 422, r.text
+        return r.json()["detail"]["params"]["examples"]
+
+    # Not yet sent: the memo line and the lot both hold 0.275.
+    assert set((await holders()).split(", ")) == {number, sku}
+    r = await client.post(f"/docs/{memo}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [lot]})
+    assert r.status_code == 200, r.text
+    # Out on memo: the lot holds it, the line has nothing left to send.
+    assert await holders() == sku
+    r = await client.post(f"/docs/{memo}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, memo))["status"] == "converted"
+    # The invoice draft carries its lines until it is issued over the lot it already holds.
+    invoice = r.json()["target_doc_id"]
+    assert (await client.post(f"/docs/{invoice}/finalize", headers=auth["headers"])).status_code == 200
+    # Only the lot, which every item status counts, holds 0.275 now: the converted memo never does.
+    assert await holders() == sku
+    assert await _carat_decimals(client, auth) == 3
 
 
 async def test_an_issued_purchase_order_keeps_its_ordered_quantity_receivable(client, session, auth):

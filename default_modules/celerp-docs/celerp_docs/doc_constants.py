@@ -80,16 +80,16 @@ def sent_out_by(item_state: dict, doc_id: str) -> bool:
 
 def quantities_still_moving(state: dict, shipped: Callable[[dict], bool]) -> list[tuple[dict, float]]:
     """Each line of a document with the quantity on it that can still be received, shipped or
-    carried into a converted document. A draft, an open quotation and a document that can still
-    convert carry their whole lines. A document that receives carries what each line has not
+    carried into a converted document. A draft and an open quotation carry their whole lines, since
+    converting a quotation copies them. A document that receives carries what each line has not
     received yet; one that ships carries the lines whose goods have not gone out (``shipped``),
-    and nothing once all of them have. What came in, even if it can still be sent back, sits in
-    its item, so a document that can only send goods back carries nothing. Any other document is
-    history."""
+    and nothing once all of them have. What came in or went out, even if it can still be sent
+    back or converted (a memo bills what is out on it, a consignment buys what was kept), sits in
+    its item, so a document that can only do that carries nothing. Any other document, a
+    converted one among them, is history."""
     doc_type, status = state.get("doc_type"), state.get("status")
     lines = [line for line in state.get("line_items") or [] if isinstance(line, dict)]
-    if (doc_type == "quotation" and status not in QUOTATION_SPENT_STATUSES) \
-            or status in CONVERTIBLE_STATUSES.get(doc_type, ()):
+    if doc_type == "quotation" and status not in QUOTATION_SPENT_STATUSES:
         return [(line, line.get("quantity")) for line in lines]
     if status in RECEIVABLE_STATUSES.get(doc_type, ()):
         return [(line, left) for line in lines if (left := _unreceived(line)) > 0]
