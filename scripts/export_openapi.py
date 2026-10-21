@@ -25,6 +25,7 @@ from pathlib import Path
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import celerp.main
+from celerp.openapi_parameters import missing_parameter_descriptions
 
 
 def _register_default_modules() -> None:
@@ -57,6 +58,11 @@ def export(path: str) -> dict:
     # rebuilds the document against the now-complete route set.
     celerp.main.app.openapi_schema = None
     schema = celerp.main.app.openapi()
+    missing = missing_parameter_descriptions(schema)
+    if missing:
+        raise RuntimeError(
+            f"OpenAPI export has {len(missing)} undocumented parameters: {missing[:5]}"
+        )
     internal = sorted(
         route for route in schema.get("paths", {}) if route.startswith("/__celerp/")
     )

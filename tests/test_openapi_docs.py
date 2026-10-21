@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 
 from celerp import __version__
 import celerp.main
+from celerp.openapi_parameters import describe_parameters, missing_parameter_descriptions
 from celerp.routers.events import router as events_router
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +90,7 @@ def test_export_openapi_writes_valid_schema(tmp_path):
     assert schema["info"]["contact"]["url"] == "https://celerp.com/about"
     assert schema.get("paths"), "exported schema has no paths"
     assert schema.get("tags"), "exported schema has no tag groups"
+    assert not missing_parameter_descriptions(schema)
     assert all(tag.get("description") for tag in schema["tags"])
     assert not any(path.startswith("/__celerp/") for path in schema["paths"]), (
         "internal load-balancer routes leaked into the public OpenAPI schema"
@@ -106,3 +108,44 @@ def test_export_openapi_writes_valid_schema(tmp_path):
     }
     for tag in ("items", "docs", "accounting", "crm"):
         assert tag in op_tags, f"module tag {tag!r} missing; modules not loaded"
+
+
+def test_openapi_parameter_descriptions_preserve_explicit_copy_and_flag_new_gaps():
+    schema = {
+        "paths": {
+            "/docs": {
+                "get": {
+                    "parameters": [
+                        {"in": "query", "name": "q"},
+                        {"in": "query", "name": "sort", "description": "Explicit route copy"},
+                        {"in": "query", "name": "future_filter"},
+                    ],
+                },
+                "options": {"parameters": [{"in": "header", "name": "future_option"}]},
+            },
+        },
+    }
+    describe_parameters(schema)
+    params = schema["paths"]["/docs"]["get"]["parameters"]
+    assert params[0]["description"]
+    assert params[1]["description"] == "Explicit route copy"
+    assert missing_parameter_descriptions(schema) == [
+        "GET /docs query:future_filter",
+        "OPTIONS /docs header:future_option",
+    ]
+
+
+def test_share_preflight_parameter_has_catalog_description():
+    schema = {
+        "paths": {
+            "/share/{token}": {
+                "options": {"parameters": [{"in": "path", "name": "token"}]},
+            },
+        },
+    }
+    describe_parameters(schema)
+    params = schema["paths"]["/share/{token}"]["options"]["parameters"]
+    assert params[0]["description"] == (
+        "Opaque public token identifying the shared or payment resource."
+    )
+    assert missing_parameter_descriptions(schema) == []

@@ -18,6 +18,7 @@ from slowapi.errors import RateLimitExceeded
 from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
 from celerp.db import create_tables, engine, lifecycle_engine, mask_db_credentials
+from celerp.openapi_parameters import describe_parameters
 from celerp.inventory_codes import CodeConflictError
 from celerp.projections.engine import UnhandledEventsError
 from celerp.services.account_roles import PostingRoleError
@@ -720,6 +721,17 @@ def _openapi_settings() -> dict:
 
 
 app = FastAPI(title="Celerp REST API", docs_url=None, redoc_url=None, lifespan=lifespan, **_openapi_settings())
+
+# Serve and export the same documented schema, even when routes register later.
+_raw_openapi = app.openapi
+
+
+def _documented_openapi():
+    return describe_parameters(_raw_openapi())
+
+
+app.openapi = _documented_openapi
+
 # Innermost, so a request it runs again passes every check below once more.
 app.add_middleware(OlderStockMiddleware)
 app.add_middleware(DrainMiddleware)
