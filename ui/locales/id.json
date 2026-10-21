@@ -4164,6 +4164,7 @@
   "migration.err_odoo_version": "Cadangan ini berasal dari Odoo {version}. Celerp membaca cadangan dari Odoo 13 hingga 17. Tidak ada yang diimpor.",
   "migration.err_odoo_custom_format": "Ini adalah cadangan Odoo dalam format kustom pg_dump, yang tidak dapat dibaca Celerp. Di pengelola basis data Odoo, buat cadangan lagi, pilih format zip (dengan filestore), lalu unggah zip tersebut. Tidak ada yang diimpor.",
   "migration.err_odoo_dump_damaged": "This backup is incomplete or damaged: its database dump stops early or a table in it is broken, so nothing was read from it. Make a new backup in Odoo's database manager and upload it again.",
+  "migration.err_odoo_backup_damaged": "This backup file cannot be read: it is damaged, was cut short while uploading or copying, or was zipped again in a way Celerp cannot open. Nothing was imported. Make a new backup in Odoo's database manager and upload the zip as it is.",
   "migration.err_attachment_not_found": "Lampiran ini tidak ada di file yang diunggah.",
   "migration.err_odoo_company_missing": "Cadangan ini tidak berisi pembukuan untuk {company}. Pilih salah satu perusahaan yang tercantum.",
   "migration.odoo_company_question": "Company to import from this backup",

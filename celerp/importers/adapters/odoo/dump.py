@@ -17,7 +17,8 @@ import json
 import re
 import zipfile
 import zlib
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 from typing import IO
@@ -31,6 +32,9 @@ FILESTORE = "filestore/"
 DUMP_HEADER = "-- PostgreSQL database dump"
 DUMP_COMPLETE = "-- PostgreSQL database dump complete"  # the line pg_dump ends a whole dump with
 CUSTOM_FORMAT = b"PGDMP"  # how a pg_dump custom format file starts
+ZIP_ENTRY = b"PK\x03\x04"  # how each file in a zip starts; Odoo writes the dump first
+UNREADABLE = "migration.err_odoo_backup_damaged"
+DAMAGED = "migration.err_odoo_dump_damaged"
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
 
@@ -75,31 +79,58 @@ def _major(manifest: dict) -> int | None:
     return int(found.group(1)) if found else None
 
 
+@contextmanager
+def _intact(error: type[Exception] = ScanError) -> Iterator[None]:
+    """Reading the zip: a file in it that does not decompress, fails its checksum, ends early
+    or is packed in a way this reader cannot unpack, or a dump that is not UTF-8 text (every
+    Odoo database is), is refused with `error`."""
+    try:
+        yield
+    except UnicodeDecodeError as exc:
+        raise error(t(DAMAGED)) from exc
+    except (EOFError, NotImplementedError, zipfile.BadZipFile, zlib.error) as exc:
+        raise error(t(UNREADABLE)) from exc
+
+
+def _cut_short(path: Path) -> bool:
+    """Whether a file that does not open as a zip starts as an Odoo backup does, with the
+    dump or the manifest, so its end was lost in the upload or copy."""
+    with open(path, "rb") as f:
+        head = f.read(1024)
+    name = head[30:30 + int.from_bytes(head[26:28], "little")].decode("utf-8", "replace")
+    return head.startswith(ZIP_ENTRY) and name.count("/") <= 1 and name.rsplit("/", 1)[-1] in (DUMP, MANIFEST)
+
+
 def _root(archive: zipfile.ZipFile) -> str | None:
-    """Where the backup sits in the zip: at its root as Odoo writes it, or in the one folder
-    a zip made again from the extracted backup puts it in (the files macOS adds are not
-    counted). None when the zip holds no backup or more than one."""
+    """Where the backup's manifest sits in the zip: at its root as Odoo writes it, or in the
+    one folder a zip made again from the extracted backup puts it in (the files macOS adds
+    are not counted). None when the zip holds no manifest or more than one."""
     names = {n for n in archive.namelist()
              if not n.startswith("__MACOSX/") and not n.rsplit("/", 1)[-1].startswith("._")}
-    if {MANIFEST, DUMP} <= names:
+    if MANIFEST in names:
         return ""
     folders = {n.split("/", 1)[0] for n in names}
     if len(folders) == 1 and "/" in next(iter(names), ""):
         root = folders.pop() + "/"
-        if {root + MANIFEST, root + DUMP} <= names:
+        if root + MANIFEST in names:
             return root
     return None
 
 
 def _manifest(archive: zipfile.ZipFile, root: str) -> dict | None:
-    """The backup's manifest, or None when the files are not an Odoo backup."""
+    """The backup's manifest, or None when the files are not an Odoo backup. Raises
+    SourceRevisionError when they are one without its dump."""
     try:
         manifest = json.loads(archive.read(root + MANIFEST))
     except (ValueError, UnicodeDecodeError):
         return None
     if not isinstance(manifest, dict) or "odoo_dump" not in manifest or _major(manifest) is None:
         return None
-    with archive.open(root + DUMP) as dump:
+    try:
+        dump = archive.open(root + DUMP)
+    except KeyError as exc:
+        raise SourceRevisionError(t(UNREADABLE)) from exc
+    with dump:
         head = dump.read(256).decode("utf-8", "replace")
     return manifest if DUMP_HEADER in head else None
 
@@ -123,13 +154,21 @@ class Backup:
     def __init__(self, path: Path) -> None:
         try:
             self.archive = zipfile.ZipFile(path)
-            self.root = _root(self.archive)
-            manifest = None if self.root is None else _manifest(self.archive, self.root)
         except zipfile.BadZipFile as exc:
             _refuse_custom_format([partial(open, path, "rb")])
+            if _cut_short(path):
+                raise SourceRevisionError(t(UNREADABLE)) from exc
             raise ScanError(t("migration.err_odoo_not_backup")) from exc
         except OSError as exc:
             raise ScanError(t("migration.err_odoo_not_backup")) from exc
+        # A damaged backup is still recognised as one, so detection gives the reason it cannot be read.
+        try:
+            with _intact(SourceRevisionError):
+                self.root = _root(self.archive)
+                manifest = None if self.root is None else _manifest(self.archive, self.root)
+        except SourceRevisionError:
+            self.archive.close()
+            raise
         if manifest is None:
             with self.archive:
                 _refuse_custom_format(partial(self.archive.open, n) for n in self.archive.namelist()
@@ -145,7 +184,7 @@ class Backup:
         modules = manifest.get("modules")
         if not isinstance(modules, dict) or "base" not in modules:
             self.archive.close()
-            raise ScanError(t("migration.err_odoo_dump_damaged"))
+            raise ScanError(t(DAMAGED))
         self.modules = frozenset(modules)
 
     def __enter__(self) -> Backup:
@@ -165,15 +204,15 @@ class Backup:
         columns, and of a table in `where` only the rows its test keeps. A table the dump does
         not hold (its module is not installed) is absent. The dump is streamed and a value
         repeated within a table is held once. Raises ScanError, before any row is used, when
-        the dump is cut short or damaged: no closing line, a table's data that never ends or
-        never starts, a row with more or fewer fields than its table, or a `required` table
-        (one an installed module makes) missing."""
+        the dump is cut short or damaged: it does not unpack, has no closing line, a table's
+        data never ends or never starts, a row has more or fewer fields than its table, or a
+        `required` table (one an installed module makes) is missing."""
         wanted, where = set(names) | set(required), where or {}
         out: dict[str, list[Row]] = {}
         made: set[str] = set()
         copying: str | None = None
         complete = False
-        with self.archive.open(self.root + DUMP) as raw:
+        with _intact(), self.archive.open(self.root + DUMP) as raw:
             lines = io.TextIOWrapper(raw, encoding="utf-8", newline="\n")
             rows: list[Row] | None = None
             for line in lines:
@@ -183,7 +222,7 @@ class Backup:
                     elif rows is not None:
                         values = line.rstrip("\n").split("\t")
                         if len(values) != width or not line.endswith("\n"):
-                            raise ScanError(t("migration.err_odoo_dump_damaged"))
+                            raise ScanError(t(DAMAGED))
                         fields = [_field(values[i]) for i in kept]
                         row = shape(map(seen.setdefault, fields, fields))
                         if keep is None or keep(row):
@@ -202,7 +241,7 @@ class Backup:
                         keep, seen = where.get(copying), {}
                         rows = out.setdefault(copying, [])
         if copying is not None or not complete or ((made & wanted) | set(required)) - set(out):
-            raise ScanError(t("migration.err_odoo_dump_damaged"))
+            raise ScanError(t(DAMAGED))
         return out
 
     def text(self, value: str | None) -> str:
@@ -221,7 +260,8 @@ class Backup:
 
     def stored_file(self, store_fname: str, limit: int) -> bytes | None:
         """The content of one filestore file, or None when the backup does not hold it or it
-        is larger than `limit`. The name comes from the dump and is untrusted."""
+        is larger than `limit`. The name comes from the dump and is untrusted. Raises
+        SourceRevisionError when the file does not unpack."""
         name = self.root + FILESTORE + store_fname
         if ".." in store_fname.split("/") or store_fname.startswith("/"):
             return None
@@ -231,4 +271,6 @@ class Backup:
             return None
         if info.file_size > limit:
             return None
-        return self.archive.read(info)
+        # A file that does not unpack refuses the whole backup, not just the file: the zip is damaged.
+        with _intact(SourceRevisionError):
+            return self.archive.read(info)

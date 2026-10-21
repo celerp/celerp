@@ -4164,6 +4164,7 @@
   "migration.err_odoo_version": "Bản sao lưu này từ Odoo {version}. Celerp đọc bản sao lưu từ Odoo 13 đến 17. Không có gì được nhập.",
   "migration.err_odoo_custom_format": "Đây là bản sao lưu Odoo ở định dạng tùy chỉnh của pg_dump, Celerp không đọc được. Trong trình quản lý cơ sở dữ liệu của Odoo, hãy sao lưu lại, chọn định dạng zip (kèm filestore) rồi tải tệp zip đó lên. Không có gì được nhập.",
   "migration.err_odoo_dump_damaged": "This backup is incomplete or damaged: its database dump stops early or a table in it is broken, so nothing was read from it. Make a new backup in Odoo's database manager and upload it again.",
+  "migration.err_odoo_backup_damaged": "This backup file cannot be read: it is damaged, was cut short while uploading or copying, or was zipped again in a way Celerp cannot open. Nothing was imported. Make a new backup in Odoo's database manager and upload the zip as it is.",
   "migration.err_attachment_not_found": "Tệp đính kèm này không có trong tệp đã tải lên.",
   "migration.err_odoo_company_missing": "Bản sao lưu này không có sổ sách của {company}. Hãy chọn một trong các công ty được liệt kê.",
   "migration.odoo_company_question": "Company to import from this backup",

@@ -4164,6 +4164,7 @@
   "migration.err_odoo_version": "هذه النسخة الاحتياطية من Odoo {version}. يقرأ Celerp النسخ الاحتياطية من Odoo 13 إلى 17. لم يتم استيراد أي شيء.",
   "migration.err_odoo_custom_format": "هذه نسخة احتياطية من Odoo بتنسيق pg_dump المخصص، ولا يستطيع Celerp قراءتها. في مدير قواعد بيانات Odoo، أنشئ النسخة الاحتياطية مرة أخرى واختر تنسيق zip (مع filestore)، ثم ارفع ملف zip هذا. لم يتم استيراد أي شيء.",
   "migration.err_odoo_dump_damaged": "This backup is incomplete or damaged: its database dump stops early or a table in it is broken, so nothing was read from it. Make a new backup in Odoo's database manager and upload it again.",
+  "migration.err_odoo_backup_damaged": "This backup file cannot be read: it is damaged, was cut short while uploading or copying, or was zipped again in a way Celerp cannot open. Nothing was imported. Make a new backup in Odoo's database manager and upload the zip as it is.",
   "migration.err_attachment_not_found": "هذا المرفق غير موجود في الملف المرفوع.",
   "migration.err_odoo_company_missing": "لا تحتوي هذه النسخة الاحتياطية على دفاتر لـ {company}. اختر إحدى الشركات المدرجة.",
   "migration.odoo_company_question": "Company to import from this backup",

@@ -49,8 +49,8 @@ class ScanError(Exception):
 
 
 class SourceRevisionError(Exception):
-    """A source is recognised but saved at a file format revision this adapter does not
-    read. Not a ScanError: detection must refuse it with its own message rather than
+    """A source is recognised but cannot be read as it is: saved at a file format revision
+    this adapter does not read, or damaged. Not a ScanError: detection must refuse it with its own message rather than
     treat the file as unrecognised. The message is shown to the user as written."""
 
 

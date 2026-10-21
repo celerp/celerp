@@ -7,6 +7,7 @@ lay their tables out (tests/fixtures/odoo_backup/build.py)."""
 
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import tracemalloc
@@ -25,7 +26,7 @@ from celerp.importers.adapters.odoo.adapter import OTHER_COMPANY, OTHER_COMPANY_
 from celerp.importers.schema import CIFMode, CoverageClass, ReconciliationMeasure as M
 from fixtures.manager_io.support import BASIC, artifact
 from fixtures.odoo_backup import build
-from migration_support import count, load_run, maker, real_engine  # noqa: F401
+from migration_support import count, load_run, maker, real_engine, scan_upload  # noqa: F401
 from test_migration_e2e import _passing, migrate_set
 from ui.i18n import t
 
@@ -96,7 +97,6 @@ def test_only_a_real_odoo_backup_is_recognised(tmp_path):
     dump, manifest = real.read("dump.sql"), json.loads(real.read("manifest.json"))
     strangers = {
         "no manifest": _zip({"dump.sql": dump}),
-        "no dump": _zip({"manifest.json": json.dumps(manifest)}),
         "not an odoo manifest": _zip({"dump.sql": dump, "manifest.json": json.dumps({"version": "17.0"})}),
         "not a database dump": _zip({"dump.sql": "SELECT 1;\n", "manifest.json": json.dumps(manifest)}),
         "manifest not json": _zip({"dump.sql": dump, "manifest.json": "odoo_dump"}),
@@ -106,6 +106,9 @@ def test_only_a_real_odoo_backup_is_recognised(tmp_path):
         result = _adapter().detect(_file(tmp_path, data, f"{label}.zip"))
         assert result.matched is False, label
         assert "not an Odoo backup" in result.reason, label
+    # A backup without its dump is one, damaged: it is refused with that reason rather than as a stranger.
+    with pytest.raises(SourceRevisionError, match="cannot be read"):
+        _adapter().detect(_file(tmp_path, _zip({"manifest.json": json.dumps(manifest)}), "no dump.zip"))
     # Two files, a Manager business file and an export set are not a backup; each keeps its own adapter.
     assert _adapter().detect([*_file(tmp_path, _backup(17)), *_file(tmp_path, _backup(14), "b.zip")]).matched is False
     assert _adapter().detect([artifact(BASIC)]).matched is False
@@ -282,6 +285,70 @@ def test_a_manifest_that_does_not_list_the_installed_modules_is_refused(tmp_path
         manifest["modules"] = modules
     with pytest.raises(ScanError, match="incomplete or damaged"):
         _adapter().inspect(_file(tmp_path, build.backup(17, manifest_=manifest)))
+
+
+def _corrupt(data: bytes, at: bytes, offset: int = 0, garbage: bytes = b"\xff") -> bytes:
+    """`data` with `garbage` written where `at` starts, `offset` bytes in."""
+    start = data.index(at) + offset
+    return data[:start] + garbage + data[start + len(garbage):]
+
+
+def _stored(dump: bytes) -> bytes:
+    """A backup zip whose dump is stored as it is, so its bytes can be changed in place."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("dump.sql", dump)
+        z.writestr("manifest.json", json.dumps(build.manifest(17)))
+        z.writestr(f"filestore/{build.store_name(_FILED)}", _FILED)
+    return out.getvalue()
+
+
+# The content of a file the fixture keeps in the filestore only.
+_FILED = next(content for *_, content, in_db, in_store in build.ATTACHMENTS if in_store and not in_db)
+
+
+def _deflated_dump(data: bytes) -> int:
+    """Where the compressed dump starts in a backup zip `build` made, and its length."""
+    info = zipfile.ZipFile(io.BytesIO(data)).getinfo("dump.sql")
+    name_length, extra_length = int.from_bytes(data[26:28], "little"), int.from_bytes(data[28:30], "little")
+    return info.header_offset + 30 + name_length + extra_length, info.compress_size
+
+
+def _unreadable() -> dict[str, tuple[bytes, str | None]]:
+    dump = build.dump_sql(build.tables(17)).encode()
+    whole = build.backup(17)
+    start, length = _deflated_dump(whole)
+    gzipped = io.BytesIO()
+    with gzip.GzipFile(fileobj=gzipped, mode="wb") as g:
+        g.write(dump)
+    damaged, backup_damaged = "migration.err_odoo_dump_damaged", "migration.err_odoo_backup_damaged"
+    return {
+        # A name in a row that is not UTF-8, which every Odoo database is.
+        "invalid UTF-8 in a row": (_stored(_corrupt(dump, b"Lakeshore Trading Co", 4, b"\xc3\x28")), damaged),
+        # A byte of the dump changed after it was zipped: its checksum no longer matches.
+        "a changed byte in the dump": (_corrupt(_stored(dump), b"Lakeshore Trading Co", 0, b"l"), backup_damaged),
+        "a changed byte in a filestore file": (_corrupt(_stored(dump), _FILED, 0, bytes([_FILED[0] ^ 1])),
+                                               backup_damaged),
+        "a broken compressed stream": (whole[:start + length // 2] + b"\xff" * 64 + whole[start + length // 2 + 64:],
+                                       backup_damaged),
+        "an upload cut short": (whole[:len(whole) // 2], backup_damaged),
+        "no dump": (_zip({"manifest.json": json.dumps(build.manifest(17))}), backup_damaged),
+        # Not a zip: the upload is refused as a file of another kind, as any other would be.
+        "a gzipped dump": (gzipped.getvalue(), None),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", list(_unreadable()))
+async def test_a_backup_that_cannot_be_read_is_refused_with_its_reason(client, monkeypatch, tmp_path, damage):
+    from celerp.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    data, message = _unreadable()[damage]
+    r = await scan_upload(client, data, name="harbour.zip", source="odoo")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == (t(message, "en") if message else
+                                  '"harbour.zip" is not a Odoo file. Accepted: Odoo backup (.zip).')
 
 
 def test_a_document_whose_lines_do_not_add_up_is_refused(tmp_path):
