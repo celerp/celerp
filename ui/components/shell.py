@@ -546,16 +546,31 @@ function initCombobox(wrap) {
     }
   }
 
-  // allow-custom: on Enter, or on Tab when no option matches, typed text that is not the
-  // committed label becomes the value (an emptied box clears it). Typing already mirrors it into the hidden
-  // input, so the commit is the change event; text equal to the committed label keeps
-  // the committed value. Leaving the box any other way never commits a filter query.
+  // allow-custom: on Enter, or on Tab or blur when no option matches, typed text that is
+  // not the committed label becomes the value (an emptied box clears it on Enter). Typing
+  // already mirrors it into the hidden input, so the commit is the change event; text
+  // equal to the committed label keeps the committed value.
   function commitCustom() {
     if (input.value === committedLabel) { hidden.value = committedValue; return; }
     hidden.value = input.value;
     committedValue = input.value;
     committedLabel = input.value;
     fireChange();
+  }
+
+  // What the typed text names without arrow-key focus: the option whose label it
+  // spells exactly, or the only option the query leaves visible, so a keyboard user
+  // who typed a full name is not left with nothing selected. An empty box is no
+  // query, so it never picks the lone option. Pinned actions (add-new, scope
+  // toggles) stay visible whatever is typed, so they are never picked or counted.
+  function typedMatch() {
+    var vis = currentOpts().filter(function(o) {
+      return o.style.display !== 'none' && !o.classList.contains('combobox-option--empty')
+        && !o.classList.contains('combobox-option--pinned');
+    });
+    var typed = input.value.trim().toLowerCase();
+    var exact = vis.filter(function(o) { return o.textContent.trim().toLowerCase() === typed; });
+    return {pick: exact.length === 1 ? exact[0] : (typed && vis.length === 1 ? vis[0] : null), matches: vis.length};
   }
 
   function openList() {
@@ -601,15 +616,20 @@ function initCombobox(wrap) {
       // Typing filters the list in multi mode; the selection bag is the state,
       // so restore the summary rather than leaving the search text behind.
       if (isMulti) { syncMultiLabel(); return; }
-      // allow-custom keeps the hidden value in step with typing; if the box was
-      // cleared, commit whatever text stands as the value.
+      // allow-custom: leaving the box settles typed text the way Tab does (one option
+      // named picks it, none named is a new value), and a query that still matches
+      // several options is an unfinished search, so the committed selection comes back.
+      // A box Enter, Tab or a pick already committed holds the committed label and
+      // changes nothing, so it is never saved twice.
       if (allowCustom) {
-        if (input.value && !hidden.value) {
-          hidden.value = input.value;
-          committedValue = input.value;
-          committedLabel = input.value;
-          fireChange();
-        }
+        if (input.value === committedLabel) { hidden.value = committedValue; return; }
+        var m = typedMatch();
+        if (m.pick) {
+          var val = m.pick.dataset.value !== undefined ? m.pick.dataset.value : m.pick.textContent.trim();
+          if (val !== committedValue) { selectOpt(m.pick); return; }
+        } else if (m.matches === 0) { commitCustom(); return; }
+        input.value = committedLabel;
+        hidden.value = committedValue;
         return;
       }
       // Plain single-select over a fixed option set: typing only filters, it
@@ -628,20 +648,11 @@ function initCombobox(wrap) {
     if (enter || (e.key === 'Tab' && allowCustom)) {
       var focused = list.querySelector('.combobox-option.focused');
       if (focused) { selectOpt(focused); if (enter) e.preventDefault(); return; }
-      // No arrow-key focus: commit the exact visible label match, or the only
-      // visible option if the query narrowed the list to one, so a keyboard user
-      // who typed a full name and pressed Enter is not left with nothing selected.
-      // An empty box is no query, so it never picks the lone option.
-      var vis = currentOpts().filter(function(o) {
-        return o.style.display !== 'none' && !o.classList.contains('combobox-option--empty');
-      });
-      var typed = input.value.trim().toLowerCase();
-      var exact = vis.filter(function(o) { return o.textContent.trim().toLowerCase() === typed; });
-      var pick = exact.length === 1 ? exact[0] : (typed && vis.length === 1 ? vis[0] : null);
       // Tab with no pick commits typed text only when no option matches it, so it is
       // clearly a new value; a query that still matches several options is a search.
-      if (pick) { selectOpt(pick); if (enter) e.preventDefault(); }
-      else if (allowCustom && (enter || vis.length === 0)) commitCustom();
+      var m = typedMatch();
+      if (m.pick) { selectOpt(m.pick); if (enter) e.preventDefault(); }
+      else if (allowCustom && (enter || m.matches === 0)) commitCustom();
     }
     if (e.key === 'Escape') {
       list.classList.remove('open');

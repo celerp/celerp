@@ -57,6 +57,17 @@ def _open_editor(page):
     return box
 
 
+def _count_patches(page) -> list[str]:
+    patches: list[str] = []
+    page.on("request", lambda req: req.method == "PATCH" and patches.append(req.url))
+    return patches
+
+
+def _click_away(page):
+    page.locator("h1").first.click()
+    page.wait_for_timeout(1500)
+
+
 def test_unset_cell_shows_the_resolved_default_in_grey(page, ui_server, api):
     parcel = _item(api, sell_by="carat")
     _open(page, ui_server, parcel)
@@ -145,7 +156,11 @@ def test_a_whole_number_shows_without_a_decimal(page, ui_server, api):
 
 
 def test_filtering_a_searchable_cell_then_clicking_away_keeps_its_value(page, ui_server, api):
-    """Typed text saves on Enter or Tab; leaving the box any other way keeps the stored value."""
+    """A filter that still matches several options is a search: clicking away sends nothing
+    and keeps the stored value."""
+    for slug in ("diamond", "dolomite", "druzy"):
+        r = api.patch(f"/companies/me/category-schema/{slug}", json={"fields": []})
+        assert r.status_code in {200, 201}, r.text
     gem = _item(api, category="diamond")
     _open(page, ui_server, gem)
     settled(page, SCOPE)
@@ -153,9 +168,11 @@ def test_filtering_a_searchable_cell_then_clicking_away_keeps_its_value(page, ui
     box = page.locator(f"{EDITING} .combobox-input")
     box.wait_for(state="visible", timeout=4000)
     ready(page, f"{EDITING} input[name=value]")
-    box.fill("Dia")
-    page.locator("h1").first.click()
-    page.wait_for_timeout(1500)
+    patches = _count_patches(page)
+    box.fill("d")
+    assert page.locator(f"{EDITING} .combobox-option:visible").count() > 1
+    _click_away(page)
+    assert patches == []
     assert api.get(f"/items/{gem}").json().get("category") == "diamond"
 
 
@@ -250,6 +267,70 @@ def test_esc_leaves_the_old_value(page, ui_server, api):
     expect(page.locator(CELL)).to_contain_text("2")
     expect(page.locator(CELL)).not_to_contain_text("9")
     assert _stored(api, parcel) == 2
+
+
+@pytest.mark.parametrize("then", ["click away", "Enter then click away", "Tab then click away"])
+def test_a_typed_value_saves_once_however_the_box_is_left(page, ui_server, api, then):
+    """A value typed into an allow-custom box saves on click away, and a box Enter or Tab
+    already saved does not save it a second time."""
+    parcel = _item(api)
+    _open(page, ui_server, parcel)
+    box = _open_editor(page)
+    patches = _count_patches(page)
+    box.fill("0.5")
+    if then != "click away":
+        box.press(then.split()[0])
+        settled(page, SCOPE)
+    _click_away(page)
+    assert len(patches) == 1, patches
+    _wait_stored(api, parcel, 0.5)
+    expect(page.locator(CELL)).to_contain_text("0.5")
+    expect(page.locator(EDITING)).to_have_count(0)
+
+
+def test_an_option_picked_then_left_saves_once(page, ui_server, api):
+    parcel = _item(api)
+    _open(page, ui_server, parcel)
+    box = _open_editor(page)
+    patches = _count_patches(page)
+    box.click()
+    page.locator(f'{EDITING} .combobox-option[data-value="full"]').click()
+    settled(page, SCOPE)
+    _click_away(page)
+    assert len(patches) == 1, patches
+    _wait_stored(api, parcel, "full")
+
+
+def test_a_typed_value_abandoned_with_esc_sends_nothing(page, ui_server, api):
+    parcel = _item(api, default_sell_qty=2)
+    _open(page, ui_server, parcel)
+    box = _open_editor(page)
+    patches = _count_patches(page)
+    box.fill("0.5")
+    box.press("Escape")
+    _click_away(page)
+    assert patches == []
+    assert _stored(api, parcel) == 2
+
+
+def test_a_search_typed_into_a_fixed_list_then_left_sends_nothing(page, ui_server, api):
+    """A searchable select without free entry never saves its search text, however it is left."""
+    shades = [f"Shade {n:02d}" for n in range(1, 13)]
+    r = api.patch("/companies/me/category-schema/dsq_gem", json={"fields": [
+        {"key": "shade", "label": "Shade", "type": "select", "options": shades, "required": False}]})
+    assert r.status_code in {200, 201}, r.text
+    gem = _item(api, category="dsq_gem", shade="Shade 03")
+    _open(page, ui_server, gem)
+    settled(page, SCOPE)
+    page.locator('[hx-get$="/field/shade/edit"]').first.dblclick()
+    wrap = page.locator(".combobox-wrap:has(input[name=value])").first
+    wrap.wait_for(state="visible", timeout=4000)
+    assert wrap.get_attribute("data-allow-custom") is None
+    patches = _count_patches(page)
+    wrap.locator(".combobox-input").fill("Shade 1")
+    _click_away(page)
+    assert patches == []
+    assert api.get(f"/items/{gem}").json().get("shade") == "Shade 03"
 
 
 def test_allow_splitting_locks_and_unlocks_the_cell_without_a_reload(page, ui_server, api):
