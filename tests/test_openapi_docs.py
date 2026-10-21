@@ -133,3 +133,19 @@ def test_openapi_parameter_descriptions_preserve_explicit_copy_and_flag_new_gaps
         "GET /docs query:future_filter",
         "OPTIONS /docs header:future_option",
     ]
+
+
+def test_share_preflight_parameter_has_catalog_description():
+    schema = {
+        "paths": {
+            "/share/{token}": {
+                "options": {"parameters": [{"in": "path", "name": "token"}]},
+            },
+        },
+    }
+    describe_parameters(schema)
+    params = schema["paths"]["/share/{token}"]["options"]["parameters"]
+    assert params[0]["description"] == (
+        "Opaque public token identifying the shared or payment resource."
+    )
+    assert missing_parameter_descriptions(schema) == []

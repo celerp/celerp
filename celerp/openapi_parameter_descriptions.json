@@ -708,6 +708,9 @@
     "query:q": "Search text used to filter matching records.",
     "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
   },
+  "OPTIONS /share/{token}": {
+    "path:token": "Opaque public token identifying the shared or payment resource."
+  },
   "PATCH /accounting/accounts/{code}": {
     "path:code": "Chart of accounts code identifying the account."
   },
