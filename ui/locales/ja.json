@@ -3897,6 +3897,8 @@
   "migration.progress_title": "{company}を移行中",
   "migration.progress_subtitle": "このページを離れても構いません。移行処理は継続します。",
   "migration.reconnecting": "Reconnecting to Celerp. This page updates by itself once Celerp is back.",
+  "migration.open_runs_banner": "Moving {company} into Celerp: {status}.",
+  "migration.open_runs_link": "Open",
   "migration.preparing_notice": "Celerp はこの会社の機能を準備しており、読み込むために一度再起動します。準備ができると移行は自動で始まります。このページを離れても問題ありません。",
   "migration.error_records": "対象のレコード: {records}",
   "migration.phase": "工程",

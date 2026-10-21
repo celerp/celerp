@@ -982,6 +982,11 @@ def _backup_banner_html(lang: str = "en") -> FT:
         style="display:none;align-items:center;justify-content:center;padding:0.5rem 1rem;font-weight:500;background-color:#2563eb;color:#fff;",
     )
 
+# A move into Celerp that is still in progress, on every page, so its owner can always
+# get back to it. Fills itself after the page loads; nothing shows when there is none.
+_OPEN_MIGRATIONS_LOADER = Div(hx_get="/migrations/open-banner", hx_trigger="load", hx_swap="outerHTML",
+                              **{"data-quiet-error": "1"})
+
 _GLOBAL_UI_ERROR_HTML = Div(
     "",
     id="global-ui-error",
@@ -2165,6 +2170,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
                     _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
                     _HEALTH_BANNER_HTML,
                     _backup_banner_html(lang),
+                    _OPEN_MIGRATIONS_LOADER,
                     _GLOBAL_UI_ERROR_HTML,
                     _TOAST_CONTAINER_HTML,
                     Main(*_redirect_notice(request, lang), *content, id="main-content", cls="main-content"),

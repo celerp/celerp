@@ -29,7 +29,7 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -1563,6 +1563,10 @@ def _error_block(error: dict | None) -> FT | str:
                cls="flash flash--error")
 
 
+def _status_label(run: dict) -> str:
+    return t("migration.status.preparing" if run.get("preparing") else f"migration.status.{run.get('status', '')}")
+
+
 def _progress_fragment(run: dict) -> FT:
     status = run.get("status", "")
     phases = run.get("phases") or []
@@ -1576,8 +1580,9 @@ def _progress_fragment(run: dict) -> FT:
         # it cannot follow the restart to the new servers.
         polling["data-quiet-error"] = "1"
     return Div(
-        P(t("migration.progress_subtitle"), cls="form-hint") if active else "",
-        P(_badge(t(f"migration.status.{status}"), _PHASE_BADGE.get(
+        # While preparing, the notice below already says the user can leave.
+        P(t("migration.progress_subtitle"), cls="form-hint") if active and not run.get("preparing") else "",
+        P(_badge(_status_label(run), _PHASE_BADGE.get(
             {"completed": "done", "failed": "failed", "running": "running"}.get(status, ""), "badge--inactive"))),
         wizard_table(
             Thead(Tr(Th(t("migration.phase")), Th(t("label.status")),
@@ -1619,6 +1624,16 @@ async def _load_run(request: Request, run_id: str):
         return None, _run_error_page(request, str(e.detail))
 
 
+def _open_runs_banner(runs: list[dict], current_url: str) -> FT | str:
+    """One line per move still in progress, each leading to its run page. The run
+    page the user is already on is left out."""
+    shown = urlsplit(current_url).path.rstrip("/")
+    lines = [P(t("migration.open_runs_banner", company=run["company_name"], status=_status_label(run)), " ",
+               A(t("migration.open_runs_link"), href=f"/migrations/{run['id']}"))
+             for run in runs if not shown.startswith(f"/migrations/{run['id']}")]
+    return Div(*lines, id="open-migrations", cls="info-banner", style="flex-direction:column") if lines else ""
+
+
 def _progress_page(request: Request, run: dict, error: str | None = None):
     # A refusal sits outside the polled block so the next poll does not drop it.
     return wizard_page(
@@ -1627,7 +1642,8 @@ def _progress_page(request: Request, run: dict, error: str | None = None):
         auth_header(t("migration.progress_title", company=run.get("company_name", ""))),
         flash(error) if error else "",
         _progress_fragment(run),
-        P(t("migration.retention" if run.get("status") == "ready" else "migration.retention_started"),
+        P(t("migration.retention" if run.get("status") == "ready" and not run.get("preparing")
+            else "migration.retention_started"),
           cls="form-hint"),
     )
 
@@ -1637,6 +1653,14 @@ def migrations_routes(app) -> None:
 
     for mode in (BOOTSTRAP, COMPANY, START_COMPANY):
         _register_wizard(app, mode)
+
+    @app.get("/migrations/open-banner")
+    async def migration_open_banner(request: Request):
+        try:
+            runs = await api.open_migration_runs(get_token(request))
+        except APIError:
+            return ""
+        return _open_runs_banner(runs, request.headers.get("HX-Current-URL", ""))
 
     @app.get("/migrations/{run_id}")
     async def migration_progress(request: Request, run_id: str):

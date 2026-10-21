@@ -1555,6 +1555,45 @@ async def test_preparing_run_explains_and_waits_without_a_start_button(ui, fake_
     assert "Celerp is preparing features for this company" in _visible(r)
     assert 'hx-trigger="every 2s"' in _page(r)
     assert f'action="/migrations/{run_id}/start"' not in _page(r)
+    # The run already started: it reads as preparing, says once that the user can leave,
+    # and never warns that the file goes if they do not start.
+    page = _visible(r)
+    assert "Preparing" in page and "Ready to start" not in page
+    assert page.count("You can leave this page") == 1
+    assert t("migration.retention_started", "en") in page and "if you do not start" not in page
+
+
+@pytest.mark.asyncio
+async def test_a_move_in_progress_is_reachable_from_the_page_the_owner_lands_on(ui, router, fake_api):
+    """The run page says the user can leave it, and the desktop app shows the home page
+    after the restart a move can need. Every page leads back to a move still in progress,
+    except the run page that already shows it."""
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    items = [{"id": run_id, "company_name": "Moved Co", "status": "ready_to_finalize", "preparing": False}]
+    router.overrides[("GET", "/migrations/open")] = lambda request: _json(200, {"items": items})
+    from fasthtml.common import P, to_xml
+
+    from ui.components.shell import minimal_shell
+    # Every app page, the home page among them, is built on the shell document.
+    assert 'hx-get="/migrations/open-banner"' in to_xml(minimal_shell(P("home")))
+    home = "http://localhost/docs?type=invoice"
+
+    async def banner(current_url: str) -> httpx.Response:
+        return await ui.get("/migrations/open-banner", headers={"HX-Request": "true", "HX-Current-URL": current_url})
+
+    r = await banner(home)
+    assert f'href="/migrations/{run_id}"' in _page(r)
+    assert "Moving Moved Co into Celerp: Ready to finish." in _visible(r)
+    assert (await banner(f"http://localhost/migrations/{run_id}")).text == ""
+
+    items[0].update(status="ready", preparing=True)
+    assert "Moving Moved Co into Celerp: Preparing." in _visible(await banner(home))
+
+    items.clear()
+    assert (await banner(home)).text == ""
+    router.overrides[("GET", "/migrations/open")] = lambda request: _json(503, {"detail": "down"})
+    assert (await banner(home)).text == ""
 
 
 @pytest.mark.asyncio

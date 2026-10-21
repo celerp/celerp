@@ -1280,6 +1280,11 @@ def _error_view(run: MigrationRun) -> dict | None:
             "phase": PHASE_LABELS.get(_P(phase)) if phase in _P._value2member_map_ else None}
 
 
+def _awaiting_restart(run: MigrationRun) -> bool:
+    """A started run that waits for Celerp to restart with the modules it turned on."""
+    return run.status == _S.READY and bool(run.source_summary.get("awaiting_modules"))
+
+
 async def run_view(session: AsyncSession, run: MigrationRun) -> dict:
     company = await session.get(Company, run.company_id)
     state = run.phase_state or {}
@@ -1299,7 +1304,7 @@ async def run_view(session: AsyncSession, run: MigrationRun) -> dict:
                    for p in PHASE_ORDER],
         "coverage": (run.coverage or {}).get("entries", []),
         "error": _error_view(run),
-        "preparing": run.status == _S.READY and bool(run.source_summary.get("awaiting_modules")),
+        "preparing": _awaiting_restart(run),
         "retention_until": (_retention_start(run) + timedelta(days=RETENTION_DAYS)).isoformat() if retained else None,
         "source_deleted": run.status != _S.PREPARING and not store.run_dir(run.id).exists(),
         "prepared_by": run.prepared_by,
@@ -1307,6 +1312,18 @@ async def run_view(session: AsyncSession, run: MigrationRun) -> dict:
         "is_sample": bool(run.source_summary.get("sample")),
         "saved_answers": bool(await migration_templates.answers(session, run.created_by_user_id, run.source_system)),
     }
+
+
+async def open_runs(session: AsyncSession, user_id: uuid.UUID) -> list[dict]:
+    """The runs *user_id* started that still wait on them: not completed, and, once stopped,
+    still able to resume because their source is kept. Newest first."""
+    runs = (await session.execute(
+        select(MigrationRun, Company.name).join(Company, Company.id == MigrationRun.company_id)
+        .where(MigrationRun.created_by_user_id == user_id, MigrationRun.status != _S.COMPLETED.value)
+        .order_by(MigrationRun.created_at.desc()))).all()
+    return [{"id": str(run.id), "company_name": name, "status": run.status,
+             "preparing": _awaiting_restart(run)}
+            for run, name in runs if run.status == _S.PREPARING or store.run_dir(run.id).exists()]
 
 
 async def purge_run_sources(session: AsyncSession) -> int:

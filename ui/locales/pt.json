@@ -3897,6 +3897,8 @@
   "migration.progress_title": "Transferindo {company}",
   "migration.progress_subtitle": "Você pode sair desta página. A migração continua em execução.",
   "migration.reconnecting": "Reconnecting to Celerp. This page updates by itself once Celerp is back.",
+  "migration.open_runs_banner": "Moving {company} into Celerp: {status}.",
+  "migration.open_runs_link": "Open",
   "migration.preparing_notice": "O Celerp está preparando recursos para esta empresa e reinicia uma vez para carregá-los. A migração começa sozinha quando estiverem prontos. Você pode sair desta página.",
   "migration.error_records": "Registros envolvidos: {records}",
   "migration.phase": "Etapa",

@@ -209,7 +209,7 @@ function showPendingHandoff() {
 // still pointing at an old port are stale self-references, not external links.
 const formerUiPorts = new Set();
 
-const { watchForRestart, classifyNavigation, fullRelaunch } = require("./restart");
+const { watchForRestart, classifyNavigation, restartUrl, fullRelaunch } = require("./restart");
 const { createShutdown } = require("./shutdown");
 const { waitForApi, rebuildProgress, lineSplitter, outputTail } = require("./api-wait");
 // Stops the servers and then the database, once; every way the app exits waits for it.
@@ -1666,10 +1666,11 @@ app.whenReady().then(async () => {
         app.quit();
       },
       onRestart: () => {
-        // After respawn, API and UI are on new ports. Reload the window to the
-        // new uiPort so the browser is no longer pointed at the dead old port.
+        // After respawn, API and UI are on new ports. Reload the page the window
+        // was showing on the new uiPort, so it is no longer pointed at the dead
+        // old port and the user stays where they were.
         if (mainWindow) {
-          mainWindow.loadURL(`http://127.0.0.1:${uiPort}`);
+          mainWindow.loadURL(restartUrl(mainWindow.webContents.getURL(), uiPort, formerUiPorts));
         }
       },
     });

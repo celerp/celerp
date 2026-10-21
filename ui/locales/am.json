@@ -3897,6 +3897,8 @@
   "migration.progress_title": "{company}ን በማዛወር ላይ",
   "migration.progress_subtitle": "ይህን ገጽ መልቀቅ ይችላሉ። ዝውውሩ መስራቱን ይቀጥላል።",
   "migration.reconnecting": "Reconnecting to Celerp. This page updates by itself once Celerp is back.",
+  "migration.open_runs_banner": "Moving {company} into Celerp: {status}.",
+  "migration.open_runs_link": "Open",
   "migration.preparing_notice": "Celerp ለዚህ ኩባንያ ባህሪያትን እያዘጋጀ ነው፤ እነሱን ለመጫን አንድ ጊዜ እንደገና ይጀምራል። ዝግጁ ሲሆኑ ፍልሰቱ በራሱ ይጀምራል። ይህን ገጽ መተው ይችላሉ።",
   "migration.error_records": "የተሳተፉ መዝገቦች፦ {records}",
   "migration.phase": "ደረጃ",

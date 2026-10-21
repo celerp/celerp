@@ -619,6 +619,13 @@ async def forget_template(source_system: str, ctx: AuthContext = Depends(get_aut
     return Response(status_code=204)
 
 
+@router.get("/open")
+async def get_open_runs(ctx: AuthContext = Depends(get_auth_context),
+                        session: AsyncSession = Depends(get_session)) -> dict:
+    """This person's moves still in progress, so any page can lead back to them."""
+    return {"items": await migrations.open_runs(session, ctx.user.id)}
+
+
 @router.get("/staged")
 async def get_staged_run(ctx: AuthContext = Depends(get_auth_context),
                          session: AsyncSession = Depends(get_session)) -> dict:
