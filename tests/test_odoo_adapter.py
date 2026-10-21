@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import tracemalloc
 import zipfile
 from collections import defaultdict
 from datetime import date
@@ -793,6 +794,63 @@ def test_reading_a_backup_twice_gives_the_same_manifest(tmp_path, version):
     first = _adapter().build_manifest(files, FULL).model_dump(exclude={"exported_at"})
     again = _adapter().build_manifest(files, FULL).model_dump(exclude={"exported_at"})
     assert first == again
+
+
+# ── A large backup ────────────────────────────────────────────────────────────
+
+BULK = 10_000
+LINE_BYTES = 900        # the bound per move line read; a row as a dict of every kept column took about 1,950
+
+
+def _peak(tmp_path, lines: int) -> tuple[int, object]:
+    """The most memory reading the books of a backup with an entry of `lines` lines takes."""
+    from celerp.importers.adapters.odoo.book import read_odoo
+    from celerp.importers.adapters.odoo.dump import Backup
+
+    path = tmp_path / f"bulk-{lines}.zip"
+    path.write_bytes(build.backup(14, build.tables(14, lines)))
+    with Backup(path) as backup:
+        tracemalloc.start()
+        try:
+            odoo = read_odoo(backup)
+            return tracemalloc.get_traced_memory()[1], odoo
+        finally:
+            tracemalloc.stop()
+
+
+def test_the_memory_of_reading_the_books_grows_by_a_bounded_size_per_move_line(tmp_path):
+    """A row keeps only the columns read and a value its table repeats is held once, and of
+    ir_model_data, where Odoo names each record, only the account types are kept."""
+    small, _ = _peak(tmp_path, 2_000)
+    large, odoo = _peak(tmp_path, 2_000 + BULK)
+    assert max(len(j.lines) for j in odoo.book.journals) == 2_000 + BULK
+    assert (large - small) / BULK < LINE_BYTES
+
+
+def test_a_run_reads_the_dump_once_for_every_step(tmp_path, monkeypatch):
+    from celerp.importers.adapters.odoo import adapter as odoo
+    from celerp.importers.adapters.odoo.dump import Backup
+
+    reads, tables = [], Backup.tables
+    monkeypatch.setattr(Backup, "tables", lambda self, *a: reads.append(1) or tables(self, *a))
+    odoo._books.cache_clear()
+    files, cutover = _file(tmp_path, _backup(17)), MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=CUTOVER)
+    adapter = _adapter()
+    adapter.inspect(files)
+    full = adapter.build_manifest(files, FULL).model_dump(exclude={"exported_at"})
+    at_cutover = adapter.build_manifest(files, cutover).model_dump(exclude={"exported_at"})
+    adapter.source_expectations(files, FULL)
+    assert adapter.read_attachment(files, FULL, "attachment:9") == b"Payment on delivery.\n"
+    assert len(reads) == 1
+    # A file kept in the database is held only when it is attached to a record Celerp holds.
+    refs = odoo._books(files[0].path, files[0].sha256, None).attachments
+    assert {k for k, r in refs.items() if r.stored is not None} == {"attachment:9"}
+
+    # Each step builds on the book it shares as on one read afresh.
+    assert adapter.build_manifest(files, FULL).model_dump(exclude={"exported_at"}) == full
+    odoo._books.cache_clear()
+    assert adapter.build_manifest(files, cutover).model_dump(exclude={"exported_at"}) == at_cutover
+    assert len(reads) == 2
 
 
 # ── End to end ────────────────────────────────────────────────────────────────

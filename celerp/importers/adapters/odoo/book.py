@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
+from celerp.importers.adapters.attachment_files import MAX_ATTACHMENT_BYTES
 from celerp.importers.adapters.base import ScanError
 from celerp.importers.adapters.exports import steps
 from celerp.importers.adapters.exports.book import (
@@ -130,6 +131,9 @@ COLUMNS = frozenset({
     "store_fname", "street", "street2", "supplier_rank", "tax_id", "tax_line_id", "type", "usage", "user_type_id",
     "url", "value", "vat", "zip",
 })
+# The rows kept of a table the reader needs only a few rows of: Odoo names every record in
+# ir_model_data, and only the names of the account types are read.
+KEPT_ROWS = {"ir_model_data": lambda r: r["model"] == "account.account.type"}
 
 
 @dataclass(frozen=True)
@@ -211,7 +215,7 @@ class _Reader:
     def __init__(self, backup: Backup, company: str | None) -> None:
         self.backup = backup
         self.text = backup.text
-        self.rows = backup.tables((*TABLES, backup.lot_table), COLUMNS)
+        self.rows = backup.tables((*TABLES, backup.lot_table), COLUMNS, KEPT_ROWS)
         self.company, companies = self._company(company)
         currencies = {r["id"]: r["name"] for r in self.rows.get("res_currency", [])}
         self.currency = lambda i: currencies.get(i or "", "")
@@ -256,7 +260,7 @@ class _Reader:
             return {r["id"]: r["account_type"] or GROUP_TYPES.get(r.get("internal_group") or "", "")
                     for r in self.table("account_account")}
         standard = {r["res_id"]: LEGACY_TYPES[r["name"]] for r in self.rows.get("ir_model_data", [])
-                    if r["model"] == "account.account.type" and r["name"] in LEGACY_TYPES}
+                    if r["name"] in LEGACY_TYPES}
         types = {r["id"]: standard.get(r["id"]) or LEGACY_KINDS.get(r["type"] or "")
                  or GROUP_TYPES.get(r.get("internal_group") or "", "")
                  for r in self.rows.get("account_account_type", [])}
@@ -771,11 +775,13 @@ class _Reader:
             if res_field and target and extension:
                 # Odoo names a picture after its field; name it after its record instead.
                 name = target.replace("/", "-").replace("\\", "-") + extension
-            stored = r.get("db_datas")
+            # A file kept in the database is held only when it can be imported: attached to a
+            # record Celerp holds and within the size limit. Any other is left out unread.
+            stored = r.get("db_datas") if target else None
+            held = stored and stored.startswith("\\x") and len(stored) <= 2 + 2 * MAX_ATTACHMENT_BYTES
             key = f"attachment:{r['id']}"
             self.out.attachments[key] = AttachmentRef(
-                key, name, r.get("store_fname"),
-                bytes.fromhex(stored[2:]) if stored and stored.startswith("\\x") else None,
+                key, name, r.get("store_fname"), bytes.fromhex(stored[2:]) if held else None,
                 r.get("checksum"), target_type, target, bool(res_field) and target_type == "Item")
         book.object_counts["Attachment"] = len(self.out.attachments)
 

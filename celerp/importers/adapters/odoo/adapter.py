@@ -8,6 +8,7 @@ are added to the bundle here."""
 
 from __future__ import annotations
 
+import threading
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -30,8 +31,8 @@ from celerp.importers.adapters.exports.ledger import Ledger, build_ledger
 from celerp.importers.adapters.exports.reconcile import expectations_from
 from celerp.importers.adapters.odoo import attachments
 from celerp.importers.adapters.odoo.book import (
-    DRAFT_ENTRY, LOT, NO_CONTACT, OFF_BALANCE_LINE, SOURCE_NAME, SOURCE_SYSTEM, UNSTOCKED_LOT, AttachmentRef,
-    OdooBook, read_odoo,
+    DRAFT_ENTRY, LOT, NO_CONTACT, OFF_BALANCE_LINE, SOURCE_NAME, SOURCE_SYSTEM, UNSTOCKED_LOT, OdooBook,
+    read_odoo,
 )
 from celerp.importers.adapters.odoo.dump import Backup
 from celerp.importers.schema import (
@@ -61,19 +62,30 @@ def _single(artifacts: ArtifactSet) -> Artifact:
     return artifacts[0]
 
 
-def _read(artifacts: ArtifactSet, decisions: MigrationDecisions) -> tuple[OdooBook, Ledger, attachments.Screened]:
-    with Backup(_single(artifacts).path) as backup:
-        odoo = read_odoo(backup, decisions.mappings.get(COMPANY_QUESTION))
-        ledger = build_ledger(odoo.book, decisions)
-        screened = attachments.screen(backup, odoo.attachments, _carried(ledger))
-    return odoo, ledger, screened
+_READING = threading.Lock()
 
 
-@lru_cache(maxsize=4)
-def _attachment_refs(path: Path, sha256: str, company: str | None) -> dict[str, AttachmentRef]:
-    """The files one company of a backup holds, read once however many the import fetches."""
+@lru_cache(maxsize=1)
+def _books(path: Path, sha256: str, company: str | None) -> OdooBook:
+    """The books of one company of a backup, read from the dump once for every step of a run
+    (the scan, the manifest, the expectations and each file the import fetches)."""
     with Backup(path) as backup:
-        return read_odoo(backup, company).attachments
+        return read_odoo(backup, company)
+
+
+def _book(artifacts: ArtifactSet, decisions: MigrationDecisions) -> OdooBook:
+    artifact = _single(artifacts)
+    return _books(artifact.path, artifact.sha256, decisions.mappings.get(COMPANY_QUESTION))
+
+
+def _read(artifacts: ArtifactSet, decisions: MigrationDecisions) -> tuple[OdooBook, Ledger, attachments.Screened]:
+    # One run at a time builds its ledger on the shared book.
+    with _READING:
+        odoo = _book(artifacts, decisions)
+        ledger = build_ledger(odoo.book, decisions)
+        with Backup(_single(artifacts).path) as backup:
+            screened = attachments.screen(backup, odoo.attachments, _carried(ledger))
+    return odoo, ledger, screened
 
 
 def _carried(ledger: Ledger) -> set[tuple[str, str]]:
@@ -202,7 +214,6 @@ class OdooAdapter:
     def read_attachment(self, artifacts: ArtifactSet, decisions: MigrationDecisions, key: str) -> bytes:
         """The content of one file of the chosen company that the scan accepts. Raises
         ScanError for any other key."""
-        artifact = _single(artifacts)
-        refs = _attachment_refs(artifact.path, artifact.sha256, decisions.mappings.get(COMPANY_QUESTION))
-        with Backup(artifact.path) as backup:
+        refs = _book(artifacts, decisions).attachments
+        with Backup(_single(artifacts).path) as backup:
             return attachments.read_attachment(backup, refs, key)

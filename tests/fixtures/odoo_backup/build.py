@@ -162,7 +162,18 @@ def _entry(id_, name, date, lines, ref="", partner=None, currency=USD, payment=N
     return Move(id_, name, "entry", state, date, [Line(*ln) for ln in lines], partner, currency, ref, payment)
 
 
-def moves() -> list[Move]:
+def _bulk(lines: int) -> list[Move]:
+    """One entry of `lines` lines, each with its own label and amount, as a large book holds."""
+    if not lines:
+        return []
+    amounts = [D(f"{n % 9973 + 1}.{n % 100:02d}") for n in range(lines // 2)]
+    booked = [Line(account, sign * a, name=f"Transfer {n} of {len(amounts)}")
+              for n, a in enumerate(amounts) for account, sign in ((1, 1), (14, -1))]
+    return [Move(25, "MISC/2024/05/0001", "entry", "posted", "2024-05-01", booked, ref="Bulk transfers")]
+
+
+def moves(bulk_lines: int = 0) -> list[Move]:
+    """The company's entries, invoices and bills, plus one entry of `bulk_lines` lines."""
     return [
         _entry(1, "MISC/2024/01/0001", "2024-01-05", [(1, D(10000)), (14, D(-10000))], ref="Capital paid in"),
         _invoice(2, "BILL/2024/01/0001", "in_invoice", "2024-01-10", 10, [(WIDGET, 10, D(30), PURCHASE_TAX)]),
@@ -202,7 +213,7 @@ def moves() -> list[Move]:
         _invoice(23, "INV/2024/00006", "out_invoice", "2024-04-12", 7, [(CONSULTING, 2, D(100), SALE_WHT)]),
         _invoice(24, "BILL/2024/04/0001", "in_invoice", "2024-04-15", 10,
                  [(CONSULTING, 1, D(100), (PURCHASE_TAX, PURCHASE_WHT))]),
-    ]
+    ] + _bulk(bulk_lines)
 
 
 def _payment_term(moves_: dict[int, Move], move: int) -> Line:
@@ -289,8 +300,9 @@ def _bool(value: bool) -> str:
     return "t" if value else "f"
 
 
-def tables(version: int) -> Tables:
-    """Every table the backup's dump holds, laid out as Odoo `version` lays it out."""
+def tables(version: int, bulk_lines: int = 0) -> Tables:
+    """Every table the backup's dump holds, laid out as Odoo `version` lays it out, with an
+    entry of `bulk_lines` lines when a test needs a large book."""
     modern = version >= 16
 
     def name(text: str):
@@ -322,7 +334,9 @@ def tables(version: int) -> Tables:
         out.add("ir_model_data", ["id", "module", "model", "name", "res_id", "noupdate"],
                 [[n, "account", "account.account.type", LEGACY[k][0], type_ids[k], "t"]
                  for n, k in enumerate(types, 1)]
-                + [[100, "base", "res.partner", "main_partner", 1, "t"]])
+                + [[100, "base", "res.partner", "main_partner", 1, "t"]]
+                # A name for each exported record, as a database used for some years holds.
+                + [[101 + n, "__export__", "account.move.line", f"line_{n}", n, "f"] for n in range(bulk_lines)])
         out.add("account_account", ["id", "currency_id", "company_id", "code", "user_type_id", "internal_type",
                                     "internal_group", "name", "deprecated", "reconcile"],
                 [[i, None, 1, code, type_ids[kind], LEGACY[kind][1], LEGACY[kind][2], n, "f", _bool(rec)]
@@ -352,19 +366,19 @@ def tables(version: int) -> Tables:
               "t", "t"] for _, t, _, n, kind, price in PRODUCTS])
     out.add("product_product", ["id", "product_tmpl_id", "default_code", "barcode", "active"],
             [[p, t, code, None, "t"] for p, t, code, *_ in PRODUCTS])
-    _ledger(out, version)
+    _ledger(out, version, bulk_lines)
     _stock(out, version)
     _attachments(out)
     out.add("ir_ui_view", ["id", "name", "type", "arch_db"], [[1, "web.layout", "qweb", "<t>\t\\tab</t>"]])
     return out
 
 
-def _ledger(out: Tables, version: int) -> None:
+def _ledger(out: Tables, version: int, bulk_lines: int) -> None:
     modern = version >= 16
     # Odoo 13 calls the move type `type`, names a payment only on its lines, and leaves the
     # currency and foreign amount of a line in the company's currency empty.
     v13 = version == 13
-    all_moves = moves()
+    all_moves = moves(bulk_lines)
     open_, documents = _residuals(all_moves)
     move_rows, line_rows, tax_rel, payments, tags = [], [], [], [], []
     line_id = 0

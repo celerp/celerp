@@ -16,7 +16,7 @@ import io
 import json
 import re
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
 from celerp.importers.adapters.base import ScanError, SourceRevisionError
@@ -29,7 +29,20 @@ DUMP_HEADER = "-- PostgreSQL database dump"
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
 
-Row = dict[str, str | None]
+
+class Row(tuple):
+    """One row of a table with only the columns kept, read by column name. Each table's rows
+    share one index of its columns, so a row costs a tuple rather than a dict."""
+    __slots__ = ()
+    index: dict[str, int] = {}
+
+    def __getitem__(self, name: str) -> str | None:
+        return tuple.__getitem__(self, self.index[name])
+
+    def get(self, name: str, default: str | None = None) -> str | None:
+        at = self.index.get(name)
+        return default if at is None else tuple.__getitem__(self, at)
+
 
 _COPY = re.compile(r'^COPY (?:"?public"?\.)?"?(\w+)"? \((.*)\) FROM stdin;$')
 _ESCAPE = re.compile(r"\\(?:([0-7]{1,3})|x([0-9a-fA-F]{1,2})|(.))")
@@ -114,29 +127,36 @@ class Backup:
     def lot_table(self) -> str:
         return "stock_lot" if self.version >= 16 else "stock_production_lot"
 
-    def tables(self, names: Iterable[str], columns: frozenset[str]) -> dict[str, list[Row]]:
+    def tables(self, names: Iterable[str], columns: frozenset[str],
+               where: Mapping[str, Callable[[Row], bool]] | None = None) -> dict[str, list[Row]]:
         """The rows of each named table the dump holds, in dump order, with only the named
-        columns. A table the dump does not hold (its module is not installed) is absent."""
-        wanted = set(names)
+        columns, and of a table in `where` only the rows its test keeps. A table the dump does
+        not hold (its module is not installed) is absent. The dump is streamed and a value
+        repeated within a table is held once."""
+        wanted, where = set(names), where or {}
         out: dict[str, list[Row]] = {}
         with self.archive.open(self.root + DUMP) as raw:
             lines = io.TextIOWrapper(raw, encoding="utf-8", newline="\n")
             rows: list[Row] | None = None
-            kept: list[tuple[int, str]] = []
             for line in lines:
                 if rows is not None:
                     if line == "\\.\n":
                         rows = None
                         continue
                     values = line.rstrip("\n").split("\t")
-                    rows.append({name: _field(values[i]) for i, name in kept})
+                    fields = [_field(values[i]) for i in kept]
+                    row = shape(map(seen.setdefault, fields, fields))
+                    if keep is None or keep(row):
+                        rows.append(row)
                     continue
                 if not line.startswith("COPY "):
                     continue
                 match = _COPY.match(line.rstrip("\n"))
                 if match and match.group(1) in wanted:
                     header = [c.strip().strip('"') for c in match.group(2).split(",")]
-                    kept = [(i, name) for i, name in enumerate(header) if name in columns]
+                    kept = [i for i, name in enumerate(header) if name in columns]
+                    shape = type("Row", (Row,), {"__slots__": (), "index": {header[i]: n for n, i in enumerate(kept)}})
+                    keep, seen = where.get(match.group(1)), {}
                     rows = out.setdefault(match.group(1), [])
         return out
 
