@@ -351,6 +351,98 @@ async def test_a_backup_that_cannot_be_read_is_refused_with_its_reason(client, m
                                   '"harbour.zip" is not a Odoo file. Accepted: Odoo backup (.zip).')
 
 
+def _deflated(dump: str) -> bytes:
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("dump.sql", dump)
+        z.writestr("manifest.json", json.dumps(build.manifest(17)))
+    return out.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_a_dump_that_unpacks_far_larger_than_its_zip_is_refused_before_it_is_read(client, monkeypatch, tmp_path):
+    """A dump packed a thousand to one, as a run of one character packs, is not what a database
+    makes: it is refused from the size the zip declares, before a byte of it is unpacked."""
+    from celerp.config import settings
+    from celerp.importers.adapters.odoo import dump
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    sql = build.dump_sql(build.tables(17))
+    padded = sql.replace("SET statement_timeout", "-- " + "a" * 20 * 1024 ** 2 + "\nSET statement_timeout", 1)
+    opened = []
+    monkeypatch.setattr(dump.Backup, "tables", lambda *a, **k: opened.append(a) or {})
+    r = await scan_upload(client, _deflated(padded), name="harbour.zip", source="odoo")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == t("migration.err_file_too_large", "en") and not opened
+
+
+def test_a_dump_larger_than_the_budget_is_refused_and_one_within_it_is_read(tmp_path, monkeypatch):
+    from celerp.importers.adapters.odoo import dump
+
+    data = _backup(17)
+    size = zipfile.ZipFile(io.BytesIO(data)).getinfo("dump.sql").file_size
+    monkeypatch.setattr(dump, "MAX_DUMP_BYTES", size)
+    assert _adapter().build_manifest(_file(tmp_path, data), FULL).bundle.documents
+    monkeypatch.setattr(dump, "MAX_DUMP_BYTES", size - 1)
+    with pytest.raises(SourceRevisionError, match="too large"):
+        _adapter().inspect(_file(tmp_path, data, "again.zip"))
+
+
+def test_a_manifest_larger_than_any_odoo_writes_is_refused_before_it_is_read(tmp_path, monkeypatch):
+    from celerp.importers.adapters.odoo import dump
+
+    data = _backup(17)
+    size = zipfile.ZipFile(io.BytesIO(data)).getinfo("manifest.json").file_size
+    monkeypatch.setattr(dump, "MAX_MANIFEST", size)
+    assert _adapter().inspect(_file(tmp_path, data))
+    monkeypatch.setattr(dump, "MAX_MANIFEST", size - 1)
+    with pytest.raises(SourceRevisionError, match="too large"):
+        _adapter().inspect(_file(tmp_path, data, "again.zip"))
+
+
+def _longest_line(version: int) -> int:
+    return max(len(line) for line in build.dump_sql(build.tables(version)).split("\n"))
+
+
+def test_a_record_longer_than_the_line_limit_is_refused(tmp_path, monkeypatch):
+    from celerp.importers.adapters.odoo import dump
+
+    tables = build.tables(17)
+    columns, rows = tables.rows["res_partner"]
+    rows[0][columns.index("name")] = "x" * 5000
+    monkeypatch.setattr(dump, "MAX_LINE", 4000)
+    with pytest.raises(ScanError) as refused:
+        _adapter().inspect(_file(tmp_path, build.backup(17, tables)))
+    assert str(refused.value) == t("migration.err_odoo_record_too_large", "en", limit=f"{4000 / 1024 ** 2:g}")
+
+
+def test_a_long_line_the_import_does_not_read_is_passed_over_and_the_rest_read(tmp_path, monkeypatch):
+    """A long line in a table the import does not read, or outside any table's data, is read in
+    pieces and dropped; the lines after it are read as they are."""
+    from celerp.importers.adapters.odoo import dump
+
+    tables = build.tables(17)
+    columns, rows = tables.rows["ir_ui_view"]
+    rows[0][columns.index("arch_db")] = "x" * 50_000
+    sql = build.dump_sql(tables).replace("SET statement_timeout", "-- " + "c" * 50_000 + "\nSET statement_timeout", 1)
+    whole = _adapter().build_manifest(_file(tmp_path, _backup(17)), FULL).bundle
+    monkeypatch.setattr(dump, "MAX_LINE", _longest_line(17))
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(build.backup(17)), "r") as src, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for info in src.infolist():
+            z.writestr(info.filename, sql if info.filename == "dump.sql" else src.read(info))
+    read = _adapter().build_manifest(_file(tmp_path, out.getvalue(), "long.zip"), FULL).bundle
+    assert read == whole
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_the_longest_line_of_a_dump_at_the_limit_is_read(tmp_path, monkeypatch, version):
+    from celerp.importers.adapters.odoo import dump
+
+    monkeypatch.setattr(dump, "MAX_LINE", _longest_line(version))
+    assert _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL).bundle.documents
+
+
 def test_a_document_whose_lines_do_not_add_up_is_refused(tmp_path):
     tables = build.tables(17)
     columns, rows = tables.rows["account_move"]

@@ -4165,6 +4165,7 @@
   "migration.err_odoo_custom_format": "Questo è un backup di Odoo nel formato personalizzato di pg_dump, che Celerp non può leggere. Nel gestore dei database di Odoo, esegui di nuovo il backup, scegli il formato zip (con il filestore) e carica quello zip. Non è stato importato nulla.",
   "migration.err_odoo_dump_damaged": "This backup is incomplete or damaged: its database dump stops early or a table in it is broken, so nothing was read from it. Make a new backup in Odoo's database manager and upload it again.",
   "migration.err_odoo_backup_damaged": "This backup file cannot be read: it is damaged, was cut short while uploading or copying, or was zipped again in a way Celerp cannot open. Nothing was imported. Make a new backup in Odoo's database manager and upload the zip as it is.",
+  "migration.err_odoo_record_too_large": "One record in this backup is larger than {limit} MB, more than Celerp reads from a single record. Nothing was imported.",
   "migration.err_attachment_not_found": "Questo allegato non è presente nel file caricato.",
   "migration.err_odoo_company_missing": "Questo backup non contiene registri contabili per {company}. Scegli una delle aziende elencate.",
   "migration.odoo_company_question": "Company to import from this backup",

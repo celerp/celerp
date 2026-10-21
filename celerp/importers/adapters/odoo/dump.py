@@ -35,6 +35,14 @@ CUSTOM_FORMAT = b"PGDMP"  # how a pg_dump custom format file starts
 ZIP_ENTRY = b"PK\x03\x04"  # how each file in a zip starts; Odoo writes the dump first
 UNREADABLE = "migration.err_odoo_backup_damaged"
 DAMAGED = "migration.err_odoo_dump_damaged"
+TOO_LARGE = "migration.err_file_too_large"
+# What one backup may make the server unpack and hold. A database's dump packs about ten to one;
+# a far higher ratio is a file made to unpack large, not a database. The longest line a wanted
+# table holds is an attachment stored in its row: up to 25 MB as hex, twice the characters.
+MAX_DUMP_BYTES = 20 * 1024 ** 3  # ten times the largest upload
+MAX_RATIO = 100
+MAX_LINE = 64 * 1024 ** 2  # characters
+MAX_MANIFEST = 1024 ** 2  # Odoo's is a few kilobytes
 OLDEST, NEWEST = 13, 17
 LANGUAGE = "en_US"
 
@@ -119,7 +127,11 @@ def _root(archive: zipfile.ZipFile) -> str | None:
 
 def _manifest(archive: zipfile.ZipFile, root: str) -> dict | None:
     """The backup's manifest, or None when the files are not an Odoo backup. Raises
-    SourceRevisionError when they are one without its dump."""
+    SourceRevisionError when they are one without its dump, or with a manifest or dump that
+    would unpack beyond what the server reads; the sizes are the ones the zip declares, which
+    unpacking never goes past."""
+    if archive.getinfo(root + MANIFEST).file_size > MAX_MANIFEST:
+        raise SourceRevisionError(t(TOO_LARGE))
     try:
         manifest = json.loads(archive.read(root + MANIFEST))
     except (ValueError, UnicodeDecodeError):
@@ -127,10 +139,12 @@ def _manifest(archive: zipfile.ZipFile, root: str) -> dict | None:
     if not isinstance(manifest, dict) or "odoo_dump" not in manifest or _major(manifest) is None:
         return None
     try:
-        dump = archive.open(root + DUMP)
+        info = archive.getinfo(root + DUMP)
     except KeyError as exc:
         raise SourceRevisionError(t(UNREADABLE)) from exc
-    with dump:
+    if info.file_size > min(MAX_DUMP_BYTES, MAX_RATIO * info.compress_size):
+        raise SourceRevisionError(t(TOO_LARGE))
+    with archive.open(info) as dump:
         head = dump.read(256).decode("utf-8", "replace")
     return manifest if DUMP_HEADER in head else None
 
@@ -203,10 +217,12 @@ class Backup:
         """The rows of each named table the dump holds, in dump order, with only the named
         columns, and of a table in `where` only the rows its test keeps. A table the dump does
         not hold (its module is not installed) is absent. The dump is streamed and a value
-        repeated within a table is held once. Raises ScanError, before any row is used, when
-        the dump is cut short or damaged: it does not unpack, has no closing line, a table's
-        data never ends or never starts, a row has more or fewer fields than its table, or a
-        `required` table (one an installed module makes) is missing."""
+        repeated within a table is held once, and a line longer than MAX_LINE is never held
+        whole: one outside the wanted tables' rows is read in pieces and dropped. Raises
+        ScanError, before any row is used, when a wanted row is that long or the dump is cut
+        short or damaged: it does not unpack, has no closing line, a table's data never ends or
+        never starts, a row has more or fewer fields than its table, or a `required` table (one
+        an installed module makes) is missing."""
         wanted, where = set(names) | set(required), where or {}
         out: dict[str, list[Row]] = {}
         made: set[str] = set()
@@ -215,7 +231,13 @@ class Backup:
         with _intact(), self.archive.open(self.root + DUMP) as raw:
             lines = io.TextIOWrapper(raw, encoding="utf-8", newline="\n")
             rows: list[Row] | None = None
-            for line in lines:
+            for line in iter(partial(lines.readline, MAX_LINE + 1), ""):
+                if len(line) > MAX_LINE and not line.endswith("\n"):
+                    if rows is not None:
+                        raise ScanError(t("migration.err_odoo_record_too_large", limit=f"{MAX_LINE / 1024 ** 2:g}"))
+                    while (rest := lines.readline(MAX_LINE)) and not rest.endswith("\n"):
+                        pass
+                    continue
                 if copying is not None:
                     if line == "\\.\n":
                         copying = rows = None
