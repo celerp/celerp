@@ -21,7 +21,7 @@ from celerp.services.line_measures import validate_default_sell_qty
 from mfg_runs import issue, product, receive, run
 from test_cost_restatement import _item, _merge, _state
 from test_inventory_transform import _transform_payload
-from test_receipt_accounting import _doc, _parcels, _receive
+from test_receipt_accounting import _doc, _finalize, _parcels, _receive
 
 LOCALES = Path(__file__).resolve().parent.parent / "ui" / "locales"
 
@@ -194,11 +194,13 @@ async def _sku(session, auth, item_id: str) -> str:
     return (await _state(session, auth, item_id))["sku"]
 
 
-async def _carat_doc(session, auth, status: str, qty: float, number: str) -> None:
-    await emit_event(session, company_id=auth["company_id"], entity_id=f"doc:{uuid.uuid4()}", entity_type="doc",
-                     event_type="doc.created", data={"doc_type": "invoice", "doc_number": number, "status": status,
-                                                     "line_items": [{"name": "Stone", "quantity": qty, "unit": "carat",
-                                                                     "unit_price": 10}]},
+async def _carat_doc(session, auth, status: str, qty: float, number: str, doc_type: str = "invoice",
+                     entity_type: str = "doc") -> None:
+    kind = {"doc_type": doc_type} if entity_type == "doc" else {"list_type": doc_type}
+    await emit_event(session, company_id=auth["company_id"], entity_id=f"{entity_type}:{uuid.uuid4()}",
+                     entity_type=entity_type, event_type=f"{entity_type}.created",
+                     data={**kind, "doc_number": number, "status": status,
+                           "line_items": [{"name": "Stone", "quantity": qty, "unit": "carat", "unit_price": 10}]},
                      actor_id=None, location_id=None, source="test", idempotency_key=str(uuid.uuid4()), metadata_={})
     await session.commit()
 
@@ -214,7 +216,7 @@ async def test_fewer_decimals_under_a_finer_item_quantity_is_refused_and_names_i
     assert detail["message_key"] == "units.precision_lowered_under_quantities", detail
     assert detail["params"] == {"unit": "carat", "decimals": 1, "count": 1,
                                 "examples": await _sku(session, auth, lot), "current": 2}, detail
-    assert "Change those quantities first, or keep 2 decimal places." in detail["message"], detail
+    assert "Change those quantities or void those documents first, or keep 2 decimal places." in detail["message"], detail
     assert await _carat_decimals(client, auth) == 2
     assert await _sell_qty(session, auth, lot) == fields.get("default_sell_qty")
 
@@ -228,17 +230,42 @@ async def test_fewer_decimals_that_every_quantity_fits_and_more_decimals_pass(cl
     assert await _carat_decimals(client, auth) == 1
 
 
-async def test_a_draft_line_blocks_fewer_decimals_and_a_posted_one_does_not(client, session, auth):
-    await _carat_doc(session, auth, "final", 0.27, "INV-POSTED")
-    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
-    assert (await _set_carat_decimals(client, auth, 2)).status_code == 200
+# A document blocks while its lines can still be received, shipped, sent back or converted; one in
+# any other status is history.
+_STILL_MOVING = [("doc", "invoice", "draft"), ("doc", "invoice", "final"), ("doc", "invoice", "paid"),
+                 ("doc", "purchase_order", "sent"), ("doc", "purchase_order", "partially_received"),
+                 ("doc", "bill", "received"), ("doc", "memo", "sent"), ("doc", "consignment_in", "returned"),
+                 ("doc", "quotation", "sent"), ("list", "transfer", "draft"), ("list", "audit", "finalized")]
+_HISTORY = [("doc", "invoice", "void"), ("doc", "memo", "closed"), ("doc", "quotation", "converted"),
+            ("doc", "credit_note", "final"), ("list", "transfer", "closed"), ("list", "quotation", "void")]
 
-    await _carat_doc(session, auth, "draft", 0.27, "INV-DRAFT")
+
+@pytest.mark.parametrize("entity_type, doc_type, status", _STILL_MOVING)
+async def test_an_open_document_line_blocks_fewer_decimals(client, session, auth, entity_type, doc_type, status):
+    await _carat_doc(session, auth, status, 0.27, "OPEN-1", doc_type, entity_type)
     r = await _set_carat_decimals(client, auth, 1)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"]["params"]["examples"] == "INV-DRAFT", r.text
+    assert r.json()["detail"]["params"]["examples"] == "OPEN-1", r.text
+    assert "void those documents" in r.json()["detail"]["message"], r.text
     assert await _carat_decimals(client, auth) == 2
 
+
+@pytest.mark.parametrize("entity_type, doc_type, status", _HISTORY)
+async def test_a_history_document_line_never_blocks(client, session, auth, entity_type, doc_type, status):
+    await _carat_doc(session, auth, status, 0.27, "DONE-1", doc_type, entity_type)
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 200
+    assert await _carat_decimals(client, auth) == 1
+
+
+async def test_an_issued_purchase_order_keeps_its_ordered_quantity_receivable(client, session, auth):
+    item = await _lot(client, auth, qty=1)
+    po = await _doc(client, auth, "purchase_order", [{"item_id": item, "sku": await _sku(session, auth, item),
+                                                      "name": "Stone", "quantity": 0.27, "unit": "carat",
+                                                      "sell_by": "carat", "unit_price": 10.0}])
+    await _finalize(client, auth, po)
+    assert (await _set_carat_decimals(client, auth, 1)).status_code == 422
+    r = await _receive(client, auth, po, {"po_line_index": 0, "quantity_received": 0.27})
+    assert r.status_code == 200, r.text
 
 async def _units(client, auth) -> list[dict]:
     return (await client.get("/companies/me/units", headers=auth["headers"])).json()

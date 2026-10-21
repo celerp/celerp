@@ -700,7 +700,7 @@
   "item.default_sell_qty_invalid": "La cantidad de venta predeterminada debe ser Completo o un número mayor que 0.",
   "item.default_sell_qty_unit_change": "Esta unidad no admite la cantidad de venta predeterminada de {qty}. Cambie la cantidad de venta predeterminada a Completo o a un número que la unidad permita y luego cambie la unidad.",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
-  "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} item or draft quantities use more ({examples}). Change those quantities first, or keep {current} decimal places.",
+  "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents hold quantities with more ({examples}). Change those quantities or void those documents first, or keep {current} decimal places.",
   "field.tooltip.barcode": "Código de barras único para este artículo o lote de inventario específico. Al escanearlo se selecciona este artículo físico exacto.",
   "field.tooltip.country_of_origin": "País donde se produjo o fabricó este artículo. Se traslada a los albaranes y a la documentación aduanera.",
   "field.tooltip.gross_weight": "Peso embalado de una unidad, embalaje incluido. Alimenta el peso bruto por línea en la documentación de envío; el peso neto es el campo Peso del artículo.",

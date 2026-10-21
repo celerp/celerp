@@ -700,7 +700,7 @@
   "item.default_sell_qty_invalid": "จำนวนขายเริ่มต้นต้องเป็น ทั้งหมด หรือตัวเลขที่มากกว่า 0",
   "item.default_sell_qty_unit_change": "หน่วยนี้รองรับจำนวนขายเริ่มต้น {qty} ไม่ได้ เปลี่ยนจำนวนขายเริ่มต้นเป็นทั้งหมดหรือตัวเลขที่หน่วยนี้อนุญาตก่อน แล้วจึงเปลี่ยนหน่วย",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
-  "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} item or draft quantities use more ({examples}). Change those quantities first, or keep {current} decimal places.",
+  "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents hold quantities with more ({examples}). Change those quantities or void those documents first, or keep {current} decimal places.",
   "field.tooltip.barcode": "บาร์โค้ดเฉพาะสำหรับสินค้าคงคลังหรือล็อตชิ้นนี้โดยเฉพาะ การสแกนจะเลือกสินค้าชิ้นนี้ตัวจริงโดยเฉพาะ",
   "field.tooltip.country_of_origin": "ประเทศที่ผลิตสินค้านี้ ข้อมูลจะถูกส่งต่อไปยังใบส่งสินค้าและเอกสารศุลกากร",
   "field.tooltip.gross_weight": "น้ำหนักต่อหน่วยรวมบรรจุภัณฑ์ ใช้คำนวณน้ำหนักรวมรายบรรทัดในเอกสารการจัดส่ง ส่วนน้ำหนักสุทธิคือช่องน้ำหนักของสินค้า",

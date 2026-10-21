@@ -71,7 +71,7 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES, QUOTATION_SPENT_STATUSES
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
@@ -7335,7 +7335,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
     _assert_contacts_unchanged(named, [row])
     state = row.state
     if state.get("doc_type") == "quotation":
-        if state.get("status") in {"void", "converted"}:
+        if state.get("status") in QUOTATION_SPENT_STATUSES:
             raise HTTPException(status_code=409, detail=t("documents.err_quote_convert_status"))
         valid_until = state.get("valid_until")
         if valid_until and valid_until < business_date_of(None, (company.settings or {}).get("timezone")):
@@ -7362,7 +7362,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         # which refuses with the clearer "nothing On Memo" 422: convert hands every
         # backing lot to the invoice, so a converted memo has an empty allocation set and
         # can never re-bill. Only a genuinely-not-issued memo (draft/void) is rejected here.
-        if state.get("status") not in ("final", "sent", "received", "partially_received", "converted"):
+        if state.get("status") not in CONVERTIBLE_STATUSES["memo"]:
             raise HTTPException(status_code=409, detail=t("documents.err_memo_issue_first"))
         ref = next_draft_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
@@ -7506,7 +7506,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
     if state.get("doc_type") == "consignment_in":
         # Returned in part or whole, it still buys whatever was kept (buy_consignment refuses
         # when nothing was).
-        if state.get("status") not in ("final", "sent", "received", "partially_received", "partial_returned", "returned"):
+        if state.get("status") not in CONVERTIBLE_STATUSES["consignment_in"]:
             raise HTTPException(status_code=409, detail=t("documents.err_consignment_issue_first"))
         await require_line_destinations(session, company_id, state.get("line_items"))
         new_doc_id = await buy_consignment(

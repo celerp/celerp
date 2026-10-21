@@ -13311,7 +13311,7 @@ class TestUnitsSettings:
         from ui.api_client import APIError
         refused = APIError(422, "carat cannot go to 1 decimal places", data={
             "detail": {"message_key": "units.precision_lowered_under_quantities",
-                       "message": "carat cannot go to 1 decimal places: 1 item or draft quantities use more (LOT-1).",
+                       "message": "carat cannot go to 1 decimal places: 1 items or open documents hold quantities with more (LOT-1).",
                        "params": {"unit": "carat", "decimals": 1, "count": 1, "examples": "LOT-1", "current": 2}}})
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=list(_DEFAULT_UNITS_SEED))),
@@ -13415,8 +13415,9 @@ class TestUnitsSettings:
             )
         assert r.status_code == 200
         assert 'class="cell-error"' in r.text, r.text
-        assert ("carat cannot go to 1 decimal places: 2 item or draft quantities use more (RAW-1, RAW-2). "
-                "Change those quantities first, or keep 2 decimal places.") in r.text, r.text
+        assert ("carat cannot go to 1 decimal places: 2 items or open documents hold quantities with more "
+                "(RAW-1, RAW-2). Change those quantities or void those documents first, or keep 2 decimal places."
+                ) in r.text, r.text
         assert '<span class="cell-text">2</span>' in r.text, r.text
 
 

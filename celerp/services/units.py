@@ -171,15 +171,19 @@ def _places(value) -> int:
 
 async def check_precision_change(session, company_id, old_units: list[dict], new_units: list[dict]) -> None:
     """Fewer decimal places for a unit that still holds finer quantities: refused with 422, naming
-    how many items and open drafts hold them, a few of them, and what to change. Every item counts,
-    whatever its status, since any item can come back into stock; a draft document or list counts
-    because it will still move stock. Posted documents are history and never block. Raising
+    how many items and open documents hold them, a few of them, and what to change. Every item
+    counts, whatever its status, since any item can come back into stock; a document counts while it
+    can still receive, ship, send back or convert its lines, and a list while it is a draft or
+    finalized (its closing action is still to come). Other documents are history and never block. Raising
     precision always passes. A unit missing from the old list (deleted, then added back or
     re-seeded) had no precision to compare with, so it is checked against what is stored in it."""
     from sqlalchemy import or_, select
 
+    from celerp_docs.doc_constants import lines_still_move_stock
+
     from celerp.models.projections import Projection
     from celerp.services.line_measures import FULL, stored_sell_qty
+    from celerp.services.list_behavior import DRAFT, FINALIZED
 
     old = {u["name"]: int(u.get("decimals") or 0) for u in old_units}
     lowered = {u["name"]: int(u["decimals"]) for u in new_units
@@ -190,8 +194,11 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
     rows = (await session.execute(select(Projection.entity_type, Projection.state).where(
         Projection.company_id == company_id,
         or_((Projection.entity_type == "item") & Projection.state["sell_by"].as_string().in_(list(lowered)),
-            Projection.entity_type.in_(("doc", "list")) & or_(status == "draft", status.is_(None))),
+            Projection.entity_type.in_(("doc", "list")) & or_(status.is_(None), status != "void")),
     ))).all()
+    rows = [(entity_type, state) for entity_type, state in rows if entity_type == "item" or (
+        lines_still_move_stock(state.get("doc_type"), state.get("status")) if entity_type == "doc"
+        else state.get("status") in (None, DRAFT, FINALIZED))]
     for name, decimals in lowered.items():
         holders: list[str] = []
         needed = decimals
@@ -214,8 +221,9 @@ async def check_precision_change(session, company_id, old_units: list[dict], new
             current = old.get(name, needed)
             raise HTTPException(status_code=422, detail=refusal(
                 "units.precision_lowered_under_quantities",
-                f"{name} cannot go to {decimals} decimal places: {len(holders)} item or draft quantities use more "
-                f"({examples}). Change those quantities first, or keep {current} decimal places.",
+                f"{name} cannot go to {decimals} decimal places: {len(holders)} items or open documents hold "
+                f"quantities with more ({examples}). Change those quantities or void those documents first, "
+                f"or keep {current} decimal places.",
                 unit=name, decimals=decimals, count=len(holders), examples=examples, current=current))
 
 

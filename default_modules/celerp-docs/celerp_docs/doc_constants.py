@@ -59,6 +59,27 @@ SUPPLIER_RETURN_STATUSES: dict[str, frozenset[str]] = {
     "purchase_order": _RETURN_OPEN | {"partial", "paid"},
 }
 
+# Per-doc-type statuses POST /docs/{id}/convert takes a document in. A quotation converts in
+# every status but QUOTATION_SPENT_STATUSES.
+CONVERTIBLE_STATUSES: dict[str, frozenset[str]] = {
+    "memo": frozenset({"final", "sent", "received", "partially_received", "converted"}),
+    "consignment_in": frozenset({"final", "sent", "received", "partially_received", "partial_returned", "returned"}),
+}
+QUOTATION_SPENT_STATUSES = frozenset({"void", "converted"})
+
+
+def lines_still_move_stock(doc_type: str | None, status: str | None) -> bool:
+    """Whether a document's line quantities can still be received, shipped, sent back or carried
+    into a converted document: a draft of any type, or a status one of those actions takes it in.
+    Any other document is history."""
+    if status in (None, "draft"):
+        return True
+    if doc_type == "quotation":
+        return status not in QUOTATION_SPENT_STATUSES
+    return any(status in by_type.get(doc_type, ()) for by_type in (
+        FULFILLABLE_STATUSES, RECEIVABLE_STATUSES, SUPPLIER_RETURN_STATUSES, CONVERTIBLE_STATUSES))
+
+
 # The payment methods that record a credit note applied to a document rather than money:
 # the receiving side names its source (an invoice's "credit_note", a bill's
 # "supplier_credit") and the note's own side is "applied". A pair moves no cash, so it is
