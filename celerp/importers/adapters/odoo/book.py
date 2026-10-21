@@ -621,7 +621,7 @@ class _Reader:
         if partial.get("currency_id") is not None and partial["currency_id"] == line["currency_id"]:
             return abs(_dec(partial["amount_currency"]))
         balance = _dec(line["debit"]) - _dec(line["credit"])
-        return (amount * abs(_dec(line["amount_currency"]) / balance)).quantize(Decimal("0.01"))
+        return round_money(amount * abs(_dec(line["amount_currency"]) / balance), doc.currency)
 
     # ── The source's own figures ─────────────────────────────────────────────
 

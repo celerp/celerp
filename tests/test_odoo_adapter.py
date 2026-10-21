@@ -594,6 +594,56 @@ def test_a_base_currency_overpayment_of_a_foreign_invoice_settles_at_the_rate_od
         ("121000", "Lakeshore Trading Co", D(-11)), ("101401", None, D(11))}
 
 
+@pytest.mark.parametrize("currency, places, total, applied", [
+    ("JPY", 0, "10001", D("5001")), ("EUR", 2, "100.01", D("50.01")), ("KWD", 3, "100.001", D("50.001"))])
+@pytest.mark.parametrize("vendor", [False, True])
+def test_odoo_13_rounds_a_base_currency_payment_of_a_foreign_document_in_its_currency(
+        tmp_path, currency, places, total, applied, vendor):
+    """Odoo 13 states a base currency reconciliation of a foreign invoice or bill only in the base
+    currency. USD 55 of the USD 110 document is half of it, which falls on half the currency's
+    smallest unit and rounds up, as Celerp rounds money, on either side of the ledger."""
+    tables = build.tables(13)
+    ccols, currencies = tables.rows["res_currency"]
+    eur = next(c for c in currencies if c[0] == build.EUR)
+    eur[ccols.index("name")], eur[ccols.index("decimal_places")] = currency, places
+    product, party = _lines_of(tables, 17)
+    _set(tables, product, amount_currency=f"-{total}", price_unit=total, price_subtotal=total, price_total=total)
+    _set(tables, party, amount_currency=total)
+    mcols, moves = tables.rows["account_move"]
+    next(m for m in moves if m[0] == 17)[mcols.index("amount_total")] = total
+    next(m for m in moves if m[0] == 18)[mcols.index("currency_id")] = build.USD
+    _resize(tables, 18, D(55))
+    for r in _lines_of(tables, 18):
+        _set(tables, r, currency_id=build.USD)
+    pcols, payments = tables.rows["account_payment"]
+    pay = next(p for p in payments if p[pcols.index("currency_id")] == build.EUR)
+    pay[pcols.index("currency_id")], pay[pcols.index("amount")] = build.USD, "55"
+    moves[:] = [m for m in moves if m[0] != 19]
+    lcols, lines = tables.rows["account_move_line"]
+    lines[:] = [r for r in lines if r[lcols.index("move_id")] != 19]
+    tables.rows["account_partial_reconcile"][1][:] = []
+    if vendor:                                          # the same figures as a bill paid to a supplier
+        for r in _lines_of(tables, 17) + _lines_of(tables, 18):
+            new = -D(r[lcols.index("balance")])
+            _set(tables, r, balance=f"{new}", amount_currency=f"{-D(r[lcols.index('amount_currency')])}",
+                 debit=f"{max(new, D(0))}", credit=f"{max(-new, D(0))}", partner_id=10,
+                 account_id=5 if r[lcols.index("account_id")] == 4 else r[lcols.index("account_id")])
+        for m in moves:
+            if m[0] in (17, 18):
+                m[mcols.index("partner_id")] = m[mcols.index("commercial_partner_id")] = 10
+        next(m for m in moves if m[0] == 17)[mcols.index("type")] = "in_invoice"
+        pay[pcols.index("partner_id")], pay[pcols.index("partner_type")] = 10, "supplier"
+        pay[pcols.index("payment_type")] = "outbound"
+        _reconcile(tables, 18, 17, "55", "0", None)
+    else:
+        _reconcile(tables, 17, 18, "55", "0", None)
+    bundle = _adapter().build_manifest(_file(tmp_path, build.backup(13, tables)), FULL).bundle
+    receipt = next(s for s in bundle.settlements if s.source_external_id == "J:18")
+    assert [a.amount for a in receipt.allocations] == [applied]
+    doc = next(d for d in bundle.documents if d.source_external_id.endswith("INV/2024/00004"))
+    assert doc.amount_outstanding == D(total) - applied
+
+
 def _base_bank_receipt(tables: build.Tables, bank: str, applied: str, writeoff: str | None = None) -> None:
     """INV/2024/00004 (EUR 100 at 1.10, USD 110) paid in full by a USD receipt of `bank` from the
     USD bank, Odoo applying USD `applied` to it, with an optional bank charge line written off
