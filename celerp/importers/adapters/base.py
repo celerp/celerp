@@ -60,6 +60,11 @@ class DetectionResult:
     reason: str | None = None                 # why the artifacts were not recognised, or a legacy-format note
 
 
+# A question with this key chooses which of the source's companies to import; its answer is
+# the company's name.
+COMPANY_QUESTION = "company"
+
+
 @dataclass(frozen=True)
 class MappingQuestion:
     """A genuinely ambiguous source-to-Celerp mapping the user must decide."""
@@ -108,7 +113,11 @@ class SourceAdapter(Protocol):
 
     def detect(self, artifacts: ArtifactSet) -> DetectionResult: ...
 
-    def inspect(self, artifacts: ArtifactSet) -> SourceScan: ...
+    def inspect(self, artifacts: ArtifactSet, company: str | None = None) -> SourceScan:
+        """The scan of a source. For a source that asks the COMPANY_QUESTION, `company` is the
+        answer the scan describes (None describes the suggested one); others ask nothing and
+        ignore it."""
+        ...
 
     def build_manifest(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> CIFImportManifest: ...
 

@@ -113,7 +113,7 @@ class ManagerIOAdapter:
         except ScanError as exc:
             return DetectionResult(False, str(exc))
 
-    def inspect(self, artifacts: ArtifactSet) -> SourceScan:
+    def inspect(self, artifacts: ArtifactSet, company: str | None = None) -> SourceScan:
         with ManagerReader(_single(artifacts).path) as reader:
             book = read_book(reader)
             attachments.screen(book, reader)

@@ -105,7 +105,7 @@ class FakeAdapter:
             return DetectionResult(True)
         return DetectionResult(False, "Not a fake source file.")
 
-    def inspect(self, artifacts) -> SourceScan:
+    def inspect(self, artifacts, company=None) -> SourceScan:
         self.inspect_calls += 1
         spec = _read(artifacts)
         if spec.get("unreadable"):

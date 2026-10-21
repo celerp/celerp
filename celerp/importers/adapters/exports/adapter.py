@@ -68,7 +68,7 @@ class ExportSetAdapter:
     def detect(self, artifacts: ArtifactSet) -> DetectionResult:
         return DetectionResult(self.matches(artifacts))
 
-    def inspect(self, artifacts: ArtifactSet) -> SourceScan:
+    def inspect(self, artifacts: ArtifactSet, company: str | None = None) -> SourceScan:
         book, ledger = self._read(artifacts, FULL)
         dated = sorted(j.date for j in book.journals)
         features = [name for name, present in (

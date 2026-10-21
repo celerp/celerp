@@ -157,6 +157,8 @@ class OdooBook:
     attachments: dict[str, AttachmentRef] = field(default_factory=dict)
     system_files: int = 0                       # Odoo's interface files and the smaller copies of each picture
     locations: int = 0
+    companies: tuple[str, ...] = ()             # every company with books, when there are several
+    other_entries: int = 0                      # entries of the companies not imported
 
 
 def _dec(value: str | None) -> Decimal:
@@ -189,16 +191,17 @@ def _ours(row: Row, company: str) -> bool:
 
 
 class _Reader:
-    def __init__(self, backup: Backup) -> None:
+    def __init__(self, backup: Backup, company: str | None) -> None:
         self.backup = backup
         self.text = backup.text
         self.rows = backup.tables((*TABLES, backup.lot_table), COLUMNS)
-        self.company = self._company()
+        self.company, companies = self._company(company)
         currencies = {r["id"]: r["name"] for r in self.rows.get("res_currency", [])}
         self.currency = lambda i: currencies.get(i or "", "")
         self.book = Book(SOURCE_SYSTEM, company_name=self.company["name"] or "",
                          base=self.currency(self.company["currency_id"]))
-        self.out = OdooBook(self.book, backup.version)
+        self.out = OdooBook(self.book, backup.version, companies=companies, other_entries=sum(
+            1 for r in self.rows.get("account_move", []) if r["company_id"] != self.company["id"]))
         self.accounts: dict[str, str] = {}          # account id -> code
         self.partners: dict[str, str] = {}          # partner id -> contact key of its commercial partner
         self.products: dict[str, str] = {}          # product id -> item code
@@ -210,17 +213,23 @@ class _Reader:
     def table(self, name: str) -> list[Row]:
         return [r for r in self.rows.get(name, []) if _ours(r, self.company["id"])]
 
-    def _company(self) -> Row:
-        """The company whose books the backup holds. A backup of several companies' books is refused."""
+    def _company(self, chosen: str | None) -> tuple[Row, tuple[str, ...]]:
+        """The company whose books are read: `chosen` by name, else the oldest with books; and
+        the name of every company with books when there are several to choose from."""
         if "account_account" not in self.rows:
             raise ScanError(t("migration.err_odoo_no_accounting"))
-        companies = sorted(self.rows.get("res_company", []), key=lambda r: int(r["id"]))
+        companies = {r["id"]: r for r in self.rows.get("res_company", [])}
         if not companies:
             raise ScanError(t("migration.err_odoo_no_accounting"))
-        booked = {r["company_id"] for r in self.rows.get("account_move", [])}
-        if len(booked) > 1:
-            raise ScanError(t("migration.err_odoo_companies", count=len(booked)))
-        return next((r for r in companies if r["id"] in booked), companies[0])
+        booked = sorted({r["company_id"] for r in self.rows.get("account_move", [])} & companies.keys(), key=int)
+        names = _unique({i: (companies[i]["name"] or "").strip() or f"Company {i}" for i in booked})
+        options = tuple(names[i] for i in booked) if len(booked) > 1 else ()
+        if chosen is None:
+            return companies[booked[0] if booked else min(companies, key=int)], options
+        found = next((i for i in booked if names[i] == chosen), None)
+        if found is None:
+            raise ScanError(t("migration.err_odoo_company_missing", company=chosen))
+        return companies[found], options
 
     # ── Masters ──────────────────────────────────────────────────────────────
 
@@ -264,7 +273,7 @@ class _Reader:
         person or address of a company is that company."""
         rows = {r["id"]: r for r in self.table("res_partner")}
         commercial = {i: (r.get("commercial_partner_id") or i) for i, r in rows.items()}
-        own = {r["partner_id"] for r in self.rows.get("res_company", [])}
+        own = {self.company["partner_id"]}
         named = {commercial[i] for i in referenced if i in commercial}
         carried = sorted((i for i, r in rows.items() if commercial[i] == i and (
             i in named or (i not in own and (_dec(r.get("customer_rank")) > 0 or _dec(r.get("supplier_rank")) > 0)))),
@@ -690,8 +699,9 @@ class _Reader:
         book.object_counts["Attachment"] = len(self.out.attachments)
 
 
-def read_odoo(backup: Backup) -> OdooBook:
-    reader = _Reader(backup)
+def read_odoo(backup: Backup, company: str | None = None) -> OdooBook:
+    """The books of one company in the backup: `company` by name, else the oldest with books."""
+    reader = _Reader(backup, company)
     book = reader.book
     reader.read_chart()
     reader.read_items()

@@ -18,8 +18,9 @@ from functools import cache
 import pytest
 from sqlalchemy import text
 
-from celerp.importers.adapters.base import MigrationDecisions, ScanError, SourceRevisionError
+from celerp.importers.adapters.base import COMPANY_QUESTION, MigrationDecisions, ScanError, SourceRevisionError
 from celerp.importers.adapters.odoo import attachments
+from celerp.importers.adapters.odoo.adapter import OTHER_COMPANY
 from celerp.importers.schema import CIFMode, CoverageClass, ReconciliationMeasure as M
 from fixtures.manager_io.support import BASIC, artifact
 from fixtures.odoo_backup import build
@@ -138,15 +139,7 @@ def test_translated_names_from_odoo_16_are_read_in_english(tmp_path):
         assert backup.lot_table == "stock_production_lot"
 
 
-def test_a_backup_of_several_companies_or_no_accounting_is_refused(tmp_path):
-    tables = build.tables(17)
-    columns, rows = tables.rows["account_move"]
-    company = columns.index("company_id")
-    rows[0][company] = 2
-    tables.rows["res_company"][1].append([2, "Second Co", 1, build.USD, None, None, "12"])
-    with pytest.raises(ScanError, match="books of 2 companies"):
-        _adapter().inspect(_file(tmp_path, build.backup(17, tables)))
-
+def test_a_backup_without_accounting_is_refused(tmp_path):
     tables = build.tables(17)
     del tables.rows["account_account"]
     with pytest.raises(ScanError, match="Accounting is not installed"):
@@ -608,6 +601,90 @@ async def test_the_odoo_product_image_becomes_the_items_picture(real_engine, mon
     [item] = [i for i in (await _projections(real_engine, run, "item")).values() if i.get("sku") == "WID-1"]
     assert sorted((f["filename"], f["is_hero"], f["document_tag"]) for f in item["files"]) == [
         ("WID-1.png", True, "product_images"), ("widget.png", False, "product_images")]
+
+
+# ── Several companies in one backup ───────────────────────────────────────────
+
+GROUP = "Harbour Group Holdings"
+
+
+def _second_company() -> build.Tables:
+    """The fixture with a second company, Harbour Group Holdings, whose only books are the
+    capital entry MISC/2024/01/0001, posted to its own copies of the two accounts it uses."""
+    tables = build.tables(17)
+    tables.rows["res_company"][1].append([2, GROUP, 900, build.USD, None, None, "12"])
+    p_cols, partners = tables.rows["res_partner"]
+    partners.append([{"id": 900, "name": GROUP, "commercial_partner_id": 900, "active": "t",
+                      "is_company": "t", "customer_rank": 0, "supplier_rank": 0}.get(c) for c in p_cols])
+    a_cols, accounts = tables.rows["account_account"]
+    used = {r[tables.rows["account_move_line"][0].index("account_id")] for r in _lines_of(tables, 1)}
+    for row in [r for r in accounts if r[a_cols.index("id")] in used]:
+        copy = list(row)
+        copy[a_cols.index("id")] += 1000
+        copy[a_cols.index("company_id")] = 2
+        accounts.append(copy)
+    m_cols, moves = tables.rows["account_move"]
+    next(r for r in moves if r[0] == 1)[m_cols.index("company_id")] = 2
+    for row in _lines_of(tables, 1):
+        _set(tables, row, company_id=2, account_id=row[tables.rows["account_move_line"][0].index("account_id")] + 1000)
+    return tables
+
+
+def _as(company: str) -> MigrationDecisions:
+    return MigrationDecisions(mode=CIFMode.FULL_HISTORY, mappings={COMPANY_QUESTION: company})
+
+
+def test_a_backup_of_two_companies_asks_which_one_to_import(tmp_path):
+    files = _file(tmp_path, build.backup(17, _second_company()))
+    scan = _adapter().inspect(files)
+    (question,) = scan.questions
+    assert (question.key, question.options, question.suggested) == (COMPANY_QUESTION, (build.COMPANY, GROUP),
+                                                                    build.COMPANY)
+    assert scan.company_name == build.COMPANY
+    other = {r.source_type: r for r in scan.coverage}[OTHER_COMPANY]
+    assert (other.count, other.coverage_class) == (1, CoverageClass.IGNORED_NON_BUSINESS)
+
+    group = _adapter().inspect(files, GROUP)
+    assert group.company_name == GROUP
+    assert group.questions[0].suggested == GROUP                # the scan describes the company chosen
+    assert group.object_counts["Journal entry"] == 1 and group.object_counts["Invoice or bill"] == 0
+    assert {r.source_type: r.count for r in group.coverage}[OTHER_COMPANY] == len(build.moves()) - 1
+
+    with pytest.raises(ScanError):
+        _adapter().inspect(files, "Another Co")
+
+
+def test_a_backup_of_one_company_asks_nothing(tmp_path):
+    scan = _adapter().inspect(_file(tmp_path, _backup(17)))
+    assert scan.questions == ()
+    assert OTHER_COMPANY not in {r.source_type for r in scan.coverage}
+
+
+def test_the_chosen_company_is_the_only_one_imported(tmp_path):
+    files = _file(tmp_path, build.backup(17, _second_company()))
+    manifest = _adapter().build_manifest(files, _as(GROUP))
+    assert manifest.source == GROUP
+    assert [j.source_external_id for j in manifest.bundle.journals] == ["J:1"]
+    assert manifest.bundle.documents == [] and manifest.bundle.attachments == []
+    with pytest.raises(ScanError):                              # a file on the other company's records
+        _adapter().read_attachment(files, _as(GROUP), "attachment:1")
+
+    harbour = _adapter().build_manifest(files, _as(build.COMPANY))
+    assert "J:1" not in {j.source_external_id for j in harbour.bundle.journals}
+    assert _adapter().read_attachment(files, _as(build.COMPANY), "attachment:1") == build.PDF
+
+
+@pytest.mark.asyncio
+async def test_each_company_of_a_backup_migrates_into_its_own_company(real_engine, monkeypatch, tmp_path):
+    from celerp.models.company import Company
+
+    run, rejected = await migrate_set(real_engine, [("harbour.zip", build.backup(17, _second_company()))],
+                                      {"mode": "full_history", "mappings": {COMPANY_QUESTION: GROUP}},
+                                      monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    async with maker(real_engine)() as s:
+        assert (await s.get(Company, run.company_id)).name == GROUP     # the review proposed the chosen company
 
 
 # ── Reconciliation ────────────────────────────────────────────────────────────

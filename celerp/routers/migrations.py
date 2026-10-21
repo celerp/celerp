@@ -236,7 +236,8 @@ async def _prepare(scan: store.ScanSession):
 async def _save_decisions(owner: store.ScanOwner, payload: DecisionsIn) -> dict:
     scan = store.load_scan(payload.scan_token, owner=owner)
     decisions = await asyncio.to_thread(migrations.validate_decisions, scan, payload.model_dump(exclude={"scan_token"}))
-    return {"scan": migrations.scan_view(store.save_decisions(payload.scan_token, owner=owner, decisions=decisions))}
+    saved = await asyncio.to_thread(store.save_decisions, payload.scan_token, owner=owner, decisions=decisions)
+    return {"scan": migrations.scan_view(saved)}
 
 
 async def _turn_on_modules(plan: migrations.StartPlan) -> bool:

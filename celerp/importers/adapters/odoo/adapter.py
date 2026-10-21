@@ -15,10 +15,12 @@ from functools import lru_cache
 from pathlib import Path
 
 from celerp.importers.adapters.base import (
+    COMPANY_QUESTION,
     Artifact,
     ArtifactSet,
     ArtifactSpec,
     DetectionResult,
+    MappingQuestion,
     MigrationDecisions,
     ScanError,
     SourceScan,
@@ -50,6 +52,8 @@ SKIPPED = {DRAFT_ENTRY: CoverageClass.IGNORED_NON_BUSINESS, NO_CONTACT: Coverage
 LOCATION = "Stock location"
 LOCATION_NOTE = "Celerp keeps each item at one location; the stock of every internal location is added together."
 OPENING = "Opening balances"
+OTHER_COMPANY = "Entry of another company"
+OTHER_COMPANY_NOTE = "Each company is imported on its own. To import another company, upload this backup again and choose it."
 
 
 def _single(artifacts: ArtifactSet) -> Artifact:
@@ -60,17 +64,17 @@ def _single(artifacts: ArtifactSet) -> Artifact:
 
 def _read(artifacts: ArtifactSet, decisions: MigrationDecisions) -> tuple[OdooBook, Ledger, attachments.Screened]:
     with Backup(_single(artifacts).path) as backup:
-        odoo = read_odoo(backup)
+        odoo = read_odoo(backup, decisions.mappings.get(COMPANY_QUESTION))
         ledger = build_ledger(odoo.book, decisions)
         screened = attachments.screen(backup, odoo.attachments, _carried(ledger))
     return odoo, ledger, screened
 
 
 @lru_cache(maxsize=4)
-def _attachment_refs(path: Path, sha256: str) -> dict[str, AttachmentRef]:
-    """The files one backup holds, read once per backup however many the import fetches."""
+def _attachment_refs(path: Path, sha256: str, company: str | None) -> dict[str, AttachmentRef]:
+    """The files one company of a backup holds, read once however many the import fetches."""
     with Backup(path) as backup:
-        return read_odoo(backup).attachments
+        return read_odoo(backup, company).attachments
 
 
 def _carried(ledger: Ledger) -> set[tuple[str, str]]:
@@ -117,6 +121,9 @@ def _coverage(odoo: OdooBook, ledger: Ledger, screened: attachments.Screened) ->
     if screened.rejected:
         rows.append(CIFCoverageEntry(source_type=attachments.REJECTED, count=len(screened.rejected),
                                      coverage_class=CoverageClass.MAPPED_WITH_LOSS, note=attachments.REJECTED_NOTE))
+    if odoo.other_entries:
+        rows.append(CIFCoverageEntry(source_type=OTHER_COMPANY, count=odoo.other_entries,
+                                     coverage_class=CoverageClass.IGNORED_NON_BUSINESS, note=OTHER_COMPANY_NOTE))
     if odoo.system_files:
         rows.append(CIFCoverageEntry(source_type=attachments.IGNORED, count=odoo.system_files,
                                      coverage_class=CoverageClass.IGNORED_NON_BUSINESS, note=attachments.IGNORED_NOTE))
@@ -140,8 +147,9 @@ class OdooAdapter:
         except ScanError as exc:
             return DetectionResult(False, str(exc))
 
-    def inspect(self, artifacts: ArtifactSet) -> SourceScan:
-        odoo, ledger, screened = _read(artifacts, FULL)
+    def inspect(self, artifacts: ArtifactSet, company: str | None = None) -> SourceScan:
+        decisions = FULL if company is None else MigrationDecisions(FULL.mode, mappings={COMPANY_QUESTION: company})
+        odoo, ledger, screened = _read(artifacts, decisions)
         book = odoo.book
         dated = sorted([j.date for j in book.journals] + [d.date for d in book.documents.values()]
                        + [m.date for m in odoo.moves])
@@ -156,6 +164,9 @@ class OdooAdapter:
             period_start=dated[0] if dated else None, period_end=dated[-1] if dated else None,
             currencies=book.currencies, object_counts=dict(book.object_counts), features=tuple(features),
             coverage=tuple(_coverage(odoo, ledger, screened)),
+            questions=(MappingQuestion(key=COMPANY_QUESTION, source_type="Company", source_external_id="company",
+                                       label=t("migration.odoo_company_question"), options=odoo.companies,
+                                       suggested=company or odoo.companies[0]),) if odoo.companies else (),
         )
 
     def build_manifest(self, artifacts: ArtifactSet, decisions: MigrationDecisions) -> CIFImportManifest:
@@ -192,7 +203,9 @@ class OdooAdapter:
         return expectations_from(odoo.book, ledger)
 
     def read_attachment(self, artifacts: ArtifactSet, decisions: MigrationDecisions, key: str) -> bytes:
-        """The content of one file the scan accepts. Raises ScanError for any other key."""
+        """The content of one file of the chosen company that the scan accepts. Raises
+        ScanError for any other key."""
         artifact = _single(artifacts)
+        refs = _attachment_refs(artifact.path, artifact.sha256, decisions.mappings.get(COMPANY_QUESTION))
         with Backup(artifact.path) as backup:
-            return attachments.read_attachment(backup, _attachment_refs(artifact.path, artifact.sha256), key)
+            return attachments.read_attachment(backup, refs, key)
