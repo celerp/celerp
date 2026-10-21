@@ -43,6 +43,7 @@
     "shell.combo_pick_or_add",
     "th.position",
     "th.sku",
+    "units.moving_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "ar": [
@@ -77,6 +78,7 @@
     "shell.combo_pick_or_add",
     "th.position",
     "th.sku",
+    "units.moving_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "de": [
@@ -182,6 +184,7 @@
     "th.status",
     "th.text",
     "th.version",
+    "units.moving_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "es": [
@@ -260,6 +263,7 @@
     "th.position",
     "th.sku",
     "th.total",
+    "units.moving_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "fr": [
@@ -379,6 +383,7 @@
     "th.source",
     "th.total",
     "th.version",
+    "units.moving_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "id": [
@@ -482,6 +487,7 @@
     "th.sku",
     "th.status",
     "th.total",
+    "units.moving_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "it": [
@@ -557,6 +563,7 @@
     "th.output",
     "th.position",
     "th.sku",
+    "units.moving_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "ja": [
@@ -601,6 +608,7 @@
     "shell.combo_pick_or_add",
     "th.position",
     "th.sku",
+    "units.moving_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "pt": [
@@ -690,6 +698,7 @@
     "th.skuitem",
     "th.status",
     "th.total",
+    "units.moving_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "th": [
@@ -732,6 +741,7 @@
     "shell.combo_pick_or_add",
     "th.position",
     "th.sku",
+    "units.moving_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ],
   "vi": [
@@ -778,6 +788,7 @@
     "shell.combo_pick_or_add",
     "th.position",
     "th.sku",
+    "units.moving_finer_than_unit",
     "units.precision_lowered_under_quantities"
   ]
 }

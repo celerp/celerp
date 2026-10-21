@@ -876,6 +876,7 @@
   "item.default_sell_qty_unit_change": "This unit cannot hold the Default Sell Qty of {qty}. Change Default Sell Qty to Full or a number the unit allows, then change the unit.",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents still hold quantities with more ({examples}). Change those quantities first, or keep {current} decimal places.",
+  "units.moving_finer_than_unit": "{label} holds {qty} {unit}, but {unit} now allows only {decimals} decimal places. To go ahead, set {unit} back to {places} decimal places in Global Config, Inventory, Units.",
   "field.tooltip.barcode": "Unique barcode for this specific inventory item or lot. Scanning it selects this exact physical item.",
   "field.tooltip.batch_no": "Batch or lot number for this physical stock. Free text; several lots can share one SKU.",
   "field.tooltip.country_of_origin": "Country where this item was produced or manufactured. Flows to delivery notes and customs paperwork.",

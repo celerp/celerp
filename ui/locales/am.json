@@ -754,6 +754,7 @@
   "item.default_sell_qty_unit_change": "ይህ መለኪያ ነባሪውን የሽያጭ መጠን {qty} መያዝ አይችልም። ነባሪውን የሽያጭ መጠን ወደ ሙሉ ወይም መለኪያው የሚፈቅደው ቁጥር ይቀይሩ፣ ከዚያ መለኪያውን ይቀይሩ።",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents still hold quantities with more ({examples}). Change those quantities first, or keep {current} decimal places.",
+  "units.moving_finer_than_unit": "{label} holds {qty} {unit}, but {unit} now allows only {decimals} decimal places. To go ahead, set {unit} back to {places} decimal places in Global Config, Inventory, Units.",
   "field.tooltip.barcode": "ለዚህ የተለየ የክምችት ዕቃ ወይም ሎት የሚያገለግል ልዩ ባርኮድ። ስካን ሲደረግ ይህን ትክክለኛ አካላዊ ዕቃ ይመርጣል።",
   "field.tooltip.batch_no": "ለዚህ አካላዊ ክምችት የባች ወይም የሎት ቁጥር። ነጻ ጽሑፍ ነው፤ በርካታ ሎቶች አንድ SKU ሊጋሩ ይችላሉ።",
   "field.tooltip.country_of_origin": "ይህ ዕቃ የተመረተበት ወይም የተሠራበት አገር። ወደ መላኪያ ማስታወሻዎች እና የጉምሩክ ሰነዶች ይተላለፋል።",
