@@ -270,7 +270,7 @@ class Backup:
         modules = manifest.get("modules")
         if not isinstance(modules, dict) or "base" not in modules:
             self.archive.close()
-            raise ScanError(t(DAMAGED))
+            raise SourceRevisionError(t(DAMAGED))
         self.modules = frozenset(modules)
 
     def __enter__(self) -> Backup:

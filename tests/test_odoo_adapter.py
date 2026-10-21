@@ -284,8 +284,28 @@ def test_a_manifest_that_does_not_list_the_installed_modules_is_refused(tmp_path
         del manifest["modules"]
     else:
         manifest["modules"] = modules
-    with pytest.raises(ScanError, match="incomplete or damaged"):
+    with pytest.raises(SourceRevisionError, match="incomplete or damaged"):
         _adapter().inspect(_file(tmp_path, build.backup(17, manifest_=manifest)))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["odoo", None])
+@pytest.mark.parametrize("modules", [None, {"account": "17.0.1.0"}])
+async def test_a_manifest_without_the_modules_is_refused_as_a_damaged_odoo_backup(client, monkeypatch, tmp_path,
+                                                                                   source, modules):
+    """A manifest with Odoo's version and database name is an Odoo backup, chosen or detected:
+    without its modules it is refused with the reason it cannot be read, not as another file."""
+    from celerp.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    manifest = build.manifest(17)
+    if modules is None:
+        del manifest["modules"]
+    else:
+        manifest["modules"] = modules
+    r = await scan_upload(client, build.backup(17, manifest_=manifest), name="harbour.zip", source=source)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == t("migration.err_odoo_dump_damaged", "en")
 
 
 def _corrupt(data: bytes, at: bytes, offset: int = 0, garbage: bytes = b"\xff") -> bytes:
