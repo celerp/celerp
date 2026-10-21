@@ -4055,10 +4055,13 @@ function celerpPrintLabel(entityId, templateId) {
         child_sku = result.get("child_sku", "")
         parent_sku = result.get("parent_sku", "")
         exact_skus = f"{quote(parent_sku)},{quote(child_sku)}"
+        notice = refusal_text(result.get("notices") or [])
         return _bulk_destructive_success(
             request,
             t("inventory.transformed", parent=parent_sku, child=child_sku),
             f"?skus={exact_skus}&status=all",
+            cls="flash--warning" if notice else "flash--success",
+            notice=notice,
         )
 
     # ── Send-to search (HTMX dropdown) ───────────────────────────────────

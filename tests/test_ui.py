@@ -20088,6 +20088,27 @@ async def test_transform_handler_distinguishes_absent_from_zero_cost(ui_client):
     assert zero_payload["child_cost_total"] == 0.0
 
 
+@pytest.mark.asyncio
+async def test_transform_handler_raises_a_setting_not_carried_over_as_a_toast_that_stays(ui_client):
+    """A transform that could not carry a setting to the new unit says so in a toast that
+    stays until dismissed, beside the usual result; one with nothing to say raises none."""
+    import json as _json
+    notice = {"message": "x", "message_key": "item.default_sell_qty_not_carried",
+              "params": {"qty": "0.5", "unit": "piece"}}
+    base = {"entity_id": "item:1", "child_sku": "C-1", "child_category": "Processed",
+            "child_sell_by": "piece", "child_qty": "4"}
+    result = {"child_sku": "C-1", "parent_sku": "P-1"}
+    with patch("ui.api_client.transform_item", new=AsyncMock(return_value={**result, "notices": [notice]})):
+        r = await ui_client.post("/api/items/bulk/transform", data=base, cookies=_authed())
+    assert r.status_code == 200
+    toast = _json.loads(r.headers["HX-Trigger"])["celerpToast"]
+    assert "Default Sell Qty 0.5 was not carried over: piece cannot hold it." in toast["message"], toast
+    assert toast["persist"] is True and "flash--warning" in r.text
+    with patch("ui.api_client.transform_item", new=AsyncMock(return_value={**result, "notices": []})):
+        r = await ui_client.post("/api/items/bulk/transform", data=base, cookies=_authed())
+    assert "celerpToast" not in r.headers["HX-Trigger"] and "flash--success" in r.text
+
+
 def test_reserved_badge_renders():
     """A reserved item status maps to the Reserved badge, not the '-' fallthrough."""
     from ui.routes.documents import _STATUS_BADGE

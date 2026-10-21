@@ -107,6 +107,49 @@ async def test_a_piece_item_left_unset_still_adds_one_per_scan(client):
     assert _qtys(await _lines(client, t, doc)) == [2.0]
 
 
+async def _transform(client, t, lot, sell_by, qty, sku):
+    return await client.post(f"/items/{lot}/transform", headers=_h(t), json={
+        "child_sku": sku, "child_category": "Processed", "child_sell_by": sell_by, "child_quantity": qty})
+
+
+async def test_a_transform_to_a_unit_that_cannot_hold_the_amount_drops_it_and_says_so(client):
+    t = await _register(client)
+    lot = await _ct(client, t, "RAW05", 6, default_sell_qty=0.5)
+
+    r = await _transform(client, t, lot, "piece", 4, "CUT05")
+    assert r.status_code == 200, r.text
+    [notice] = r.json()["notices"]
+    assert notice["message_key"] == "item.default_sell_qty_not_carried", notice
+    assert notice["params"] == {"qty": "0.5", "unit": "piece"}, notice
+    child = (await client.get(f"/items/{r.json()['child_id']}", headers=_h(t))).json()
+    assert child.get("default_sell_qty") is None and child["sell_by"] == "piece" and child["quantity"] == 4, child
+    doc = await _doc(client, t)
+    body = (await _scan(client, t, doc, "CUT05")).json()
+    assert [x["quantity"] for x in body["results"]] == [1.0], body
+    assert _qtys(await _lines(client, t, doc)) == [1.0]
+
+
+@pytest.mark.parametrize("stored,sell_by", [(0.5, "gram"), (2, "piece"), ("full", "piece")])
+async def test_a_transform_to_a_unit_that_holds_the_amount_carries_it(client, stored, sell_by):
+    t = await _register(client)
+    lot = await _ct(client, t, "RAWOK", 6, default_sell_qty=stored)
+
+    r = await _transform(client, t, lot, sell_by, 4, "CUTOK")
+    assert r.status_code == 200, r.text
+    assert r.json()["notices"] == [], r.json()
+    child = (await client.get(f"/items/{r.json()['child_id']}", headers=_h(t))).json()
+    assert child.get("default_sell_qty") == stored, child
+
+
+async def test_a_transform_refuses_a_child_quantity_its_unit_cannot_hold(client):
+    t = await _register(client)
+    lot = await _ct(client, t, "RAWQ", 6)
+
+    r = await _transform(client, t, lot, "piece", 2.5, "CUTQ")
+    assert r.status_code == 422, r.text
+    assert (await client.get(f"/items/{lot}", headers=_h(t))).json()["status"] == "available"
+
+
 async def test_meter_unset_is_full_and_a_set_one_adds_one(client):
     t = await _register(client)
     await _item(client, t, "ROPE", qty=30, sell_by="meter", allow_splitting=True)

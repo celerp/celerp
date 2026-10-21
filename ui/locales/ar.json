@@ -699,6 +699,7 @@
   "field.tooltip.default_sell_qty_locked": "غير مستخدم ما دام السماح بالتقسيم متوقفًا: يضيف المسح دائمًا الصنف كاملًا. شغّل السماح بالتقسيم لتغيير ذلك.",
   "item.default_sell_qty_invalid": "يجب أن تكون كمية البيع الافتراضية الكل أو رقمًا أكبر من 0.",
   "item.default_sell_qty_unit_change": "لا تستوعب هذه الوحدة كمية البيع الافتراضية {qty}. غيّر كمية البيع الافتراضية إلى الكل أو إلى رقم تسمح به الوحدة، ثم غيّر الوحدة.",
+  "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "field.tooltip.barcode": "باركود فريد لهذا الصنف أو الدفعة المخزنية بعينها. مسحه يحدد هذا الصنف المادي بالتحديد.",
   "field.tooltip.country_of_origin": "البلد الذي أُنتج أو صُنع فيه هذا الصنف. يُدرَج في إشعارات التسليم ومستندات الجمارك.",
   "field.tooltip.gross_weight": "وزن الوحدة مع التغليف. يغذي الوزن الإجمالي لكل سطر في أوراق الشحن؛ الوزن الصافي هو حقل الوزن للصنف.",

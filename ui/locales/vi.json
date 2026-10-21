@@ -699,6 +699,7 @@
   "field.tooltip.default_sell_qty_locked": "Không dùng khi Cho phép chia nhỏ đang tắt: mỗi lần quét luôn thêm cả món hàng. Bật Cho phép chia nhỏ để thay đổi.",
   "item.default_sell_qty_invalid": "Số lượng bán mặc định phải là Toàn bộ hoặc một số lớn hơn 0.",
   "item.default_sell_qty_unit_change": "Đơn vị này không thể chứa số lượng bán mặc định {qty}. Hãy đổi số lượng bán mặc định thành Toàn bộ hoặc một số mà đơn vị cho phép, rồi đổi đơn vị.",
+  "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "field.tooltip.barcode": "Mã vạch duy nhất cho mặt hàng hoặc lô tồn kho cụ thể này. Quét mã sẽ chọn đúng mặt hàng vật lý này.",
   "field.tooltip.country_of_origin": "Quốc gia nơi mặt hàng này được sản xuất hoặc chế tạo. Được đưa vào phiếu giao hàng và chứng từ hải quan.",
   "field.tooltip.gross_weight": "Trọng lượng một đơn vị gồm cả bao bì. Dùng tính tổng trọng lượng từng dòng trên chứng từ vận chuyển; trọng lượng tịnh là ô Trọng lượng của mặt hàng.",

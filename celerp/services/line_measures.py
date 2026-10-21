@@ -276,14 +276,22 @@ def measure_locks(meta: dict, *, allow_split: bool | None = None) -> dict:
     }
 
 
-def check_sell_qty_fits_unit(stored, sell_by: str | None, unit_map: dict) -> None:
-    """A unit change under a stored Default Sell Qty number: refused with 422 when the new
-    unit cannot hold it, naming what to change first. Never rounded to fit."""
+def sell_qty_misfit(stored, sell_by: str | None, unit_map: dict) -> float | None:
+    """The stored Default Sell Qty number when the unit *sell_by* cannot hold it, else None."""
     qty = stored_sell_qty(stored)
     unit = unit_map.get(sell_by or "")
     if qty in (None, FULL) or unit is None or not exceeds_precision(float(qty), int(unit.get("decimals") or 0)):
+        return None
+    return float(qty)
+
+
+def check_sell_qty_fits_unit(stored, sell_by: str | None, unit_map: dict) -> None:
+    """A unit change under a stored Default Sell Qty number: refused with 422 when the new
+    unit cannot hold it, naming what to change first. Never rounded to fit."""
+    qty = sell_qty_misfit(stored, sell_by, unit_map)
+    if qty is None:
         return
     raise HTTPException(status_code=422, detail=refusal(
         "item.default_sell_qty_unit_change",
-        f"This unit cannot hold the Default Sell Qty of {float(qty):g}. Change Default Sell Qty to Full or a number "
-        "the unit allows, then change the unit.", qty=f"{float(qty):g}"))
+        f"This unit cannot hold the Default Sell Qty of {qty:g}. Change Default Sell Qty to Full or a number "
+        "the unit allows, then change the unit.", qty=f"{qty:g}"))

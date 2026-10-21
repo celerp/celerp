@@ -872,6 +872,7 @@
   "field.tooltip.default_sell_qty_locked": "Not used while Allow Splitting is off: a scan always adds the whole item. Turn Allow Splitting on to change this.",
   "item.default_sell_qty_invalid": "Default Sell Qty must be Full or a number above 0.",
   "item.default_sell_qty_unit_change": "This unit cannot hold the Default Sell Qty of {qty}. Change Default Sell Qty to Full or a number the unit allows, then change the unit.",
+  "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "field.tooltip.barcode": "Unique barcode for this specific inventory item or lot. Scanning it selects this exact physical item.",
   "field.tooltip.batch_no": "Batch or lot number for this physical stock. Free text; several lots can share one SKU.",
   "field.tooltip.country_of_origin": "Country where this item was produced or manufactured. Flows to delivery notes and customs paperwork.",

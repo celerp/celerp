@@ -97,7 +97,7 @@ from ui.components.table import display_unit
 from ui.i18n import category_label, field_label, item_status_label, price_list_label, t
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.vertical_presets import category_item_defaults
-from celerp.services.line_measures import check_sell_qty_fits_unit, splitting_allowed, validate_default_sell_qty
+from celerp.services.line_measures import check_sell_qty_fits_unit, sell_qty_misfit, splitting_allowed, validate_default_sell_qty
 from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
 from celerp.schemas.numbers import FiniteFloat
 from celerp_inventory.projections import _is_image_mime, is_core_item_key, is_item_available, thumbnail_file_id
@@ -3946,6 +3946,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     _transform_unit_map = {u["name"]: u for u in _transform_units}
     if payload.child_sell_by not in _transform_unit_map:
         raise HTTPException(status_code=422, detail=t("inventory.err_unit_unknown", unit=payload.child_sell_by))
+    validate_quantity(payload.child_quantity, _transform_unit_map[payload.child_sell_by]["decimals"])
 
     # Child SKU uniqueness against existing items is no longer enforced - SKUs may
     # repeat across physical lots; lot identity is carried by barcode / entity_id.
@@ -3966,9 +3967,9 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     if payload.child_cost_total is not None and payload.child_cost_total != parent_cost_total:
         reject_price_change({"cost_total"}, role, settings)
     effective_cost = payload.child_cost_total if payload.child_cost_total is not None else parent_cost_total
-    refusal = negative_cost_error(payload.child_sku, effective_cost)
-    if refusal:
-        raise HTTPException(status_code=422, detail=refusal)
+    cost_refusal = negative_cost_error(payload.child_sku, effective_cost)
+    if cost_refusal:
+        raise HTTPException(status_code=422, detail=cost_refusal)
     # Kept at the parent's cost, the child carries the parent's landed pools beside its goods
     # cost; a cost the user restates is the child's goods cost entire.
     child_landed = dict(parent.state.get("landed_costs") or {}) if effective_cost == parent_cost_total else {}
@@ -4006,6 +4007,17 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         child_data["weight_unit"] = payload.child_weight_unit
     if payload.child_pieces is not None:
         child_data["attributes"] = {**child_data["attributes"], "pieces": payload.child_pieces}
+    # A Default Sell Qty the child's unit cannot hold is not carried over (never rounded):
+    # the child scans its unit's default, and the result says which setting was left behind.
+    notices = []
+    dropped_qty = sell_qty_misfit(child_data.get("default_sell_qty"), payload.child_sell_by, _transform_unit_map)
+    if dropped_qty is not None:
+        child_data.pop("default_sell_qty")
+        notices.append(refusal(
+            "item.default_sell_qty_not_carried",
+            f"Default Sell Qty {dropped_qty:g} was not carried over: {payload.child_sell_by} cannot hold it. "
+            "Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
+            qty=f"{dropped_qty:g}", unit=payload.child_sell_by))
 
     # 1. Mark parent archived (consumed by transform), first: goods an invoice holds
     #    cannot be made into something else, and are refused before anything is written.
@@ -4136,7 +4148,8 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
             metadata={"trigger": "item.cost_restated", "item_id": child_eid, "transformed_from": entity_id})
 
     await session.commit()
-    return {"child_id": child_eid, "child_sku": payload.child_sku, "parent_sku": parent.state.get("sku", "")}
+    return {"child_id": child_eid, "child_sku": payload.child_sku, "parent_sku": parent.state.get("sku", ""),
+            "notices": notices}
 
 
 
