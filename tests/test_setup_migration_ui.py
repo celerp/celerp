@@ -1557,7 +1557,34 @@ async def test_preparing_run_explains_and_waits_without_a_start_button(ui, fake_
     assert f'action="/migrations/{run_id}/start"' not in _page(r)
 
 
-@pytest.mark.parametrize("preparing,status,quiet", [(True, "ready", True), (False, "running", False)])
+@pytest.mark.asyncio
+async def test_a_poll_the_api_cannot_answer_keeps_polling_and_says_it_is_reconnecting(ui, fake_api, router):
+    """The restart a run's preparing ends in stops the API for a moment. A poll in that
+    window gets a block that says it is reconnecting and keeps polling quietly, never the
+    error page that would end the polling; a poll that gets any other refusal reloads the
+    page, which then shows the refusal."""
+    _owner(ui)
+    run_id = fake_api.add_run("ready")
+    fake_api.runs[run_id]["preparing"] = True
+    hx = {"HX-Request": "true"}
+
+    def down(request):
+        raise httpx.ConnectError("API restarting", request=request)
+    router.overrides[("GET", f"/migrations/{run_id}")] = down
+    r = await ui.get(f"/migrations/{run_id}", headers=hx)
+    html = _page(r)
+    assert r.status_code == 200
+    assert 'id="migration-progress"' in html and 'hx-trigger="every 2s"' in html and 'data-quiet-error="1"' in html
+    assert "Reconnecting to Celerp" in _visible(r) and "restart Celerp" not in _visible(r)
+
+    router.overrides[("GET", f"/migrations/{run_id}")] = lambda request: httpx.Response(404, json={"detail": "Gone"})
+    r = await ui.get(f"/migrations/{run_id}", headers=hx)
+    assert r.headers.get("HX-Refresh") == "true" and not r.text
+    full = await ui.get(f"/migrations/{run_id}")
+    assert "Gone" in _visible(full)
+
+
+@pytest.mark.parametrize("preparing,status,quiet",[(True, "ready", True), (False, "running", False)])
 def test_preparing_poll_rides_through_the_restart_it_announces(preparing, status, quiet):
     """RED before the change: preparing ends in the restart the page announces, and
     the poll that fails while the servers are down raised a native alert on this

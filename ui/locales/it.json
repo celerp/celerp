@@ -3896,6 +3896,7 @@
   "migration.create_and_migrate": "Crea azienda e migra",
   "migration.progress_title": "Trasferimento di {company} in corso",
   "migration.progress_subtitle": "Puoi lasciare questa pagina. La migrazione continua a eseguirsi.",
+  "migration.reconnecting": "Reconnecting to Celerp. This page updates by itself once Celerp is back.",
   "migration.preparing_notice": "Celerp sta preparando le funzionalità per questa azienda e si riavvia una volta per caricarle. La migrazione parte da sola quando sono pronte. Puoi lasciare questa pagina.",
   "migration.error_records": "Record interessati: {records}",
   "migration.phase": "Fase",

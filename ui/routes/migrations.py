@@ -1604,6 +1604,14 @@ def _progress_fragment(run: dict) -> FT:
     )
 
 
+def _reconnecting_fragment(run_id: str) -> FT:
+    """The polled block while the API does not answer, as during the restart a run's
+    preparing ends in. It says so and keeps polling; its own failed polls stay quiet."""
+    return Div(P(t("migration.reconnecting"), cls="form-hint"), id="migration-progress",
+               hx_get=f"/migrations/{run_id}", hx_trigger="every 2s", hx_swap="outerHTML",
+               **{"data-quiet-error": "1"})
+
+
 async def _load_run(request: Request, run_id: str):
     try:
         return await api.get_migration_run(get_token(request), run_id), None
@@ -1632,12 +1640,16 @@ def migrations_routes(app) -> None:
 
     @app.get("/migrations/{run_id}")
     async def migration_progress(request: Request, run_id: str):
-        run, failure = await _load_run(request, run_id)
-        if failure is not None:
-            return failure
-        if request.headers.get("HX-Request"):
-            return _progress_fragment(run)
-        return _progress_page(request, run)
+        if not request.headers.get("HX-Request"):
+            run, failure = await _load_run(request, run_id)
+            return failure if failure is not None else _progress_page(request, run)
+        try:
+            return _progress_fragment(await api.get_migration_run(get_token(request), run_id))
+        except APIError as e:
+            # A poll swaps its answer into the block, so it never gets the full error page.
+            if e.status in (503, 504):
+                return _reconnecting_fragment(run_id)
+            return HTMLResponse("", headers={"HX-Refresh": "true"})
 
     async def _action(request: Request, run_id: str, action: str):
         token = get_token(request)

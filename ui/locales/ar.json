@@ -3896,6 +3896,7 @@
   "migration.create_and_migrate": "إنشاء الشركة والترحيل",
   "migration.progress_title": "جارٍ نقل {company}",
   "migration.progress_subtitle": "يمكنك مغادرة هذه الصفحة. تستمر عملية الترحيل في العمل.",
+  "migration.reconnecting": "Reconnecting to Celerp. This page updates by itself once Celerp is back.",
   "migration.preparing_notice": "يجهّز Celerp الميزات لهذه الشركة ويعيد التشغيل مرة واحدة لتحميلها. يبدأ النقل تلقائيًا عندما تصبح جاهزة. يمكنك مغادرة هذه الصفحة.",
   "migration.error_records": "السجلات المعنية: {records}",
   "migration.phase": "المرحلة",

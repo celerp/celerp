@@ -3896,6 +3896,7 @@
   "migration.create_and_migrate": "Tạo công ty và di chuyển",
   "migration.progress_title": "Đang chuyển {company}",
   "migration.progress_subtitle": "Bạn có thể rời khỏi trang này. Quá trình di chuyển vẫn tiếp tục chạy.",
+  "migration.reconnecting": "Reconnecting to Celerp. This page updates by itself once Celerp is back.",
   "migration.preparing_notice": "Celerp đang chuẩn bị tính năng cho công ty này và khởi động lại một lần để tải chúng. Quá trình chuyển dữ liệu sẽ tự bắt đầu khi sẵn sàng. Bạn có thể rời trang này.",
   "migration.error_records": "Bản ghi liên quan: {records}",
   "migration.phase": "Giai đoạn",
