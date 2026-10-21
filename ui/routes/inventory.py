@@ -2502,7 +2502,8 @@ function celerpPrintLabel(entityId, templateId) {
         elif field == "inventory_type":
             label_map = _inventory_type_labels()
         elif field == "default_sell_qty":
-            label_map = _sell_qty_labels()
+            # Full from the list or a number typed in the same box, whatever a stored schema says.
+            cell_type, options, allow_custom, label_map = "select", [FULL], True, _sell_qty_labels()
         # location_name: render a select cell with locations + "Add new" as last option
         if field == "location_name":
             loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
