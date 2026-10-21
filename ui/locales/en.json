@@ -872,6 +872,7 @@
   "field.tooltip.default_sell_qty_locked": "Not used while Allow Splitting is off: a scan always adds the whole item. Turn Allow Splitting on to change this.",
   "item.default_sell_qty_invalid": "Default Sell Qty must be Full or a number above 0.",
   "item.default_sell_qty_pick_or_type": "Pick one of the matches, or type a number above 0.",
+  "item.sell_by_pick_or_add": "Pick one of your units, or add a new one with Add new unit.",
   "item.default_sell_qty_unit_change": "This unit cannot hold the Default Sell Qty of {qty}. Change Default Sell Qty to Full or a number the unit allows, then change the unit.",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents still hold quantities with more ({examples}). Change those quantities first, or keep {current} decimal places.",

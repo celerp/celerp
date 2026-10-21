@@ -2506,7 +2506,7 @@ function celerpPrintLabel(entityId, templateId) {
         elif field == "inventory_type":
             label_map = _inventory_type_labels()
         edit_value = item.get(field, "")
-        custom_hint = ""
+        custom_hint = _unit_field_hint(field)
         if field == "default_sell_qty":
             # Full from the list, a number typed in the same box, or back to the unit's default,
             # whatever a stored schema says.
@@ -3301,7 +3301,8 @@ function celerpPrintLabel(entityId, templateId) {
         cell = editable_cell(entity_id=entity_id, field=field,
                              value=item.get(field, "") if typed is None else typed,
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
-                             label_map=_unit_labels(field, options), restore_url=restore_url)
+                             label_map=_unit_labels(field, options), restore_url=restore_url,
+                             custom_hint=_unit_field_hint(field))
         # The editor stays in its column, so column show/hide and order still find it.
         cell.attrs["data-col"] = _pair_column(field)
         return cell
@@ -6307,6 +6308,13 @@ def _unit_labels(field: str, options) -> dict | None:
     if field not in _UNIT_FIELDS:
         return None
     return {u: display_unit(u) for u in options or () if isinstance(u, str)}
+
+
+def _unit_field_hint(field: str) -> str:
+    """The note for a unit box whose typed text still matches several units. Sell By takes only
+    the company's units, so it points to the list and its add-new option; the other unit boxes
+    take a typed unit and keep the shared note."""
+    return t("item.sell_by_pick_or_add") if field == "sell_by" else ""
 
 
 def _apply_unit_field_override(

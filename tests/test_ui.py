@@ -811,6 +811,38 @@ class TestClickToEdit:
         assert b"<input" not in r.content
         assert b"<select" not in r.content
 
+    @pytest.mark.parametrize("field, route, hint", [
+        ("sell_by", "edit", True),
+        ("sell_by", "paired-edit", True),
+        ("purchase_unit", "paired-edit", False),
+        ("weight_unit", "paired-edit", False),
+    ])
+    @pytest.mark.asyncio
+    async def test_unit_box_note_matches_what_the_cell_accepts(self, ui_client, field, route, hint):
+        """Sell By takes only the company's units, so its box, from either editor, carries its
+        own note pointing to the list and Add new unit. Purchase and weight units take a typed
+        unit, so they keep the shared note that offers Enter."""
+        schema = [{"key": field, "label": field, "type": "text", "editable": True}]
+        item = {"entity_id": "gc:123", "sell_by": "carat", "quantity": 5, "weight": 1,
+                "purchase_unit": "piece", "weight_unit": "gram"}
+        units = [{"name": "carat", "unit_type": "weight"}, {"name": "piece", "unit_type": "count"},
+                 {"name": "gram", "unit_type": "weight"}]
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=units)),
+        ):
+            r = await ui_client.get(f"/api/items/gc:123/field/{field}/{route}", cookies=_authed())
+        assert r.status_code == 200
+        assert b"combobox-input" in r.content
+        note = b'data-custom-hint="Pick one of your units, or add a new one with Add new unit."'
+        assert (note in r.content) is hint
+        if not hint:
+            assert b"data-custom-hint" not in r.content
+
     @pytest.mark.asyncio
     async def test_patch_item_field_returns_display_td(self, ui_client):
         """PATCH /api/items/{id}/field/{field} → saves, returns display <td> with new value."""

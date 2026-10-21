@@ -283,6 +283,32 @@ def test_a_refused_unit_change_keeps_the_qty_cell_and_says_what_to_change(page, 
     assert api.get(f"/items/{parcel}").json()["sell_by"] == "carat"
 
 
+def test_sell_by_text_matching_several_units_says_to_pick_one_or_add_a_unit(page, ui_server, api):
+    """The note under the Sell By half of the Qty cell says what the cell accepts: one of the
+    company's units, or a new one added through Add new unit. It never offers an Enter the item
+    write refuses; nothing is saved meanwhile, and a real unit picked after it still saves."""
+    parcel = _item(api)
+    _open(page, ui_server, parcel)
+    settled(page, SCOPE)
+    page.dblclick('td[data-col="quantity"] span.paired-secondary')
+    box = page.locator(f"{EDITING} .combobox-input")
+    box.wait_for(state="visible", timeout=4000)
+    ready(page, f"{EDITING} input[name=value]")
+    patches = _count_patches(page)
+    box.fill("r")
+    assert page.locator(f"{EDITING} .combobox-option:visible").count() > 1
+    box.press("Tab")
+    note = page.locator(f"{EDITING} .combobox-note")
+    expect(note).to_have_text("Pick one of your units, or add a new one with Add new unit.")
+    assert patches == [] and api.get(f"/items/{parcel}").json()["sell_by"] == "carat"
+    box.fill("gram")
+    box.press("Enter")
+    deadline = time.monotonic() + 6
+    while api.get(f"/items/{parcel}").json()["sell_by"] != "gram" and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert api.get(f"/items/{parcel}").json()["sell_by"] == "gram"
+
+
 @pytest.mark.parametrize("field, stored, opener", [
     ("quantity", 12345.67, 'td[data-col="quantity"] .paired-primary'),
     ("reorder_point", 12345.678, 'td[data-col="reorder_point"]'),
