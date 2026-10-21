@@ -1968,6 +1968,7 @@
   "enum.item_status.memo_out": "受託出荷",
   "enum.item_status.disposed": "廃棄",
   "shell.copied": "コピー完了！",
+  "shell.combo_pick_or_add": "Pick one of the matches, or press Enter to add \"{value}\".",
   "shell.mark_as_read": "既読にする",
   "shell.no_notifications": "通知なし",
   "shell.up_to_date": "最新の状態",

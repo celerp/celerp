@@ -155,45 +155,87 @@ def test_a_whole_number_shows_without_a_decimal(page, ui_server, api):
     expect(page.locator(CELL)).to_have_text("3")
 
 
-def test_filtering_a_searchable_cell_then_clicking_away_keeps_its_value(page, ui_server, api):
-    """A filter that still matches several options is a search: clicking away sends nothing
-    and keeps the stored value."""
-    for slug in ("diamond", "dolomite", "druzy"):
+def _category_editor(page, ui_server, api, category: str, slugs=("diamond", "dolomite", "druzy")):
+    for slug in slugs:
         r = api.patch(f"/companies/me/category-schema/{slug}", json={"fields": []})
         assert r.status_code in {200, 201}, r.text
-    gem = _item(api, category="diamond")
+    gem = _item(api, category=category)
     _open(page, ui_server, gem)
     settled(page, SCOPE)
     page.dblclick('td[data-col="category"]')
     box = page.locator(f"{EDITING} .combobox-input")
     box.wait_for(state="visible", timeout=4000)
     ready(page, f"{EDITING} input[name=value]")
+    return gem, box
+
+
+def _category(api, item_id: str):
+    return api.get(f"/items/{item_id}").json().get("category")
+
+
+def test_filtering_a_searchable_cell_then_clicking_away_keeps_its_value_and_says_why(page, ui_server, api):
+    """A filter that still matches several options is a search: clicking away sends nothing,
+    keeps the stored value, and leaves the editor open with the typed text and a note on how
+    to finish. Enter then adds the typed text."""
+    gem, box = _category_editor(page, ui_server, api, "diamond")
     patches = _count_patches(page)
     box.fill("d")
     assert page.locator(f"{EDITING} .combobox-option:visible").count() > 1
     _click_away(page)
     assert patches == []
-    assert api.get(f"/items/{gem}").json().get("category") == "diamond"
+    assert _category(api, gem) == "diamond"
+    note = page.locator(f"{EDITING} .combobox-note")
+    expect(note).to_have_text('Pick one of the matches, or press Enter to add "d".')
+    assert box.input_value() == "d"
+    box.focus()
+    expect(note).to_have_count(1)
+    box.press("Enter")
+    page.wait_for_timeout(1500)
+    assert _category(api, gem) == "d"
+    assert len(patches) == 1
+
+
+def test_a_new_category_one_label_contains_saves_the_typed_text(page, ui_server, api):
+    """Typed text that a single existing label merely contains is a new value, on click-away
+    and on Enter: "Gems" never saves the "Rough Gemstone" category."""
+    gem, box = _category_editor(page, ui_server, api, "diamond", slugs=("diamond", "rough_gemstone"))
+    label = page.locator(f"{EDITING} .combobox-option[data-value='rough_gemstone']").first.inner_text().strip()
+    assert "gems" in label.lower()
+    patches = _count_patches(page)
+    box.fill("Gems")
+    assert page.locator(f"{EDITING} .combobox-option:visible").count() == 1
+    _click_away(page)
+    assert _category(api, gem) == "Gems"
+    assert len(patches) == 1
+    gem, box = _category_editor(page, ui_server, api, "diamond", slugs=())
+    box.fill("Gem")
+    box.press("Enter")
+    page.wait_for_timeout(1500)
+    assert _category(api, gem) == "Gem"
+
+
+@pytest.mark.parametrize("typed", ["DIAMOND", "diamond"])
+def test_an_exact_label_or_value_in_another_case_picks_that_option(page, ui_server, api, typed):
+    """An exact label or value match in any case picks the option itself, once, never a new
+    value spelled differently."""
+    gem, box = _category_editor(page, ui_server, api, "dolomite")
+    patches = _count_patches(page)
+    box.fill(typed)
+    _click_away(page)
+    assert _category(api, gem) == "diamond"
+    assert len(patches) == 1
 
 
 def test_tab_after_a_filter_matching_several_options_keeps_the_value(page, ui_server, api):
     """Tab commits typed text only when it names one option or none; a filter that still
     matches several options is a search, not a value."""
-    for slug in ("diamond", "dolomite", "druzy"):
-        r = api.patch(f"/companies/me/category-schema/{slug}", json={"fields": []})
-        assert r.status_code in {200, 201}, r.text
-    gem = _item(api, category="diamond")
-    _open(page, ui_server, gem)
-    settled(page, SCOPE)
-    page.dblclick('td[data-col="category"]')
-    box = page.locator(f"{EDITING} .combobox-input")
-    box.wait_for(state="visible", timeout=4000)
-    ready(page, f"{EDITING} input[name=value]")
+    gem, box = _category_editor(page, ui_server, api, "diamond")
     box.fill("d")
     assert page.locator(f"{EDITING} .combobox-option:visible").count() > 1
     box.press("Tab")
     page.wait_for_timeout(1500)
-    assert api.get(f"/items/{gem}").json().get("category") == "diamond"
+    assert _category(api, gem) == "diamond"
+    expect(page.locator(f"{EDITING} .combobox-note")).to_have_count(1)
 
 
 def test_a_refused_unit_change_keeps_the_qty_cell_and_says_what_to_change(page, ui_server, api):

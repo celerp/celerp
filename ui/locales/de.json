@@ -1969,6 +1969,7 @@
   "enum.item_status.memo_out": "Kommissionsware ausgehend",
   "enum.item_status.disposed": "Entsorgt",
   "shell.copied": "Kopiert!",
+  "shell.combo_pick_or_add": "Pick one of the matches, or press Enter to add \"{value}\".",
   "shell.mark_as_read": "Als gelesen markieren",
   "shell.no_notifications": "Keine Benachrichtigungen",
   "shell.up_to_date": "Auf dem neuesten Stand",

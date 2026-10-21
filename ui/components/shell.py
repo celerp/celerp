@@ -516,6 +516,7 @@ function initCombobox(wrap) {
   }
 
   function selectOpt(opt) {
+    clearPickNote();
     var val = opt.dataset.value !== undefined ? opt.dataset.value : opt.textContent.trim();
     var label = opt.textContent.trim();
     // __new__:URL values trigger a redirect instead of a form submission
@@ -551,6 +552,7 @@ function initCombobox(wrap) {
   // already mirrors it into the hidden input, so the commit is the change event; text
   // equal to the committed label keeps the committed value.
   function commitCustom() {
+    clearPickNote();
     if (input.value === committedLabel) { hidden.value = committedValue; return; }
     hidden.value = input.value;
     committedValue = input.value;
@@ -558,19 +560,57 @@ function initCombobox(wrap) {
     fireChange();
   }
 
-  // What the typed text names without arrow-key focus: the option whose label it
-  // spells exactly, or the only option the query leaves visible, so a keyboard user
-  // who typed a full name is not left with nothing selected. An empty box is no
-  // query, so it never picks the lone option. Pinned actions (add-new, scope
+  // What the typed text names without arrow-key focus. exact: the option whose label,
+  // or else whose value, it spells in any case. lone: the only option the query leaves
+  // visible, which only Enter on a fixed-list box picks; an allow-custom box treats a
+  // partial match as a new value, so "Gems" never becomes "Rough Gemstone". An empty
+  // box is no query, so it never picks the lone option. Pinned actions (add-new, scope
   // toggles) stay visible whatever is typed, so they are never picked or counted.
   function typedMatch() {
-    var vis = currentOpts().filter(function(o) {
-      return o.style.display !== 'none' && !o.classList.contains('combobox-option--empty')
-        && !o.classList.contains('combobox-option--pinned');
+    var opts = currentOpts().filter(function(o) {
+      return !o.classList.contains('combobox-option--empty') && !o.classList.contains('combobox-option--pinned');
     });
+    var vis = opts.filter(function(o) { return o.style.display !== 'none'; });
     var typed = input.value.trim().toLowerCase();
-    var exact = vis.filter(function(o) { return o.textContent.trim().toLowerCase() === typed; });
-    return {pick: exact.length === 1 ? exact[0] : (typed && vis.length === 1 ? vis[0] : null), matches: vis.length};
+    var byLabel = opts.filter(function(o) { return typed && o.textContent.trim().toLowerCase() === typed; });
+    var byValue = opts.filter(function(o) {
+      return typed && o.dataset.value !== undefined && o.dataset.value.toLowerCase() === typed;
+    });
+    var exact = byLabel.length === 1 ? byLabel[0] : (!byLabel.length && byValue.length === 1 ? byValue[0] : null);
+    return {exact: exact, lone: typed && vis.length === 1 ? vis[0] : null, matches: vis.length};
+  }
+
+  // Several options still match on Tab or click-away: nothing is saved, the committed
+  // value stays behind the typed text, and a note under the box says how to finish.
+  function showPickNote() {
+    hidden.value = committedValue;
+    var note = wrap.querySelector('.combobox-note');
+    if (!note) {
+      note = document.createElement('div');
+      note.className = 'cell-error combobox-note';
+      note.setAttribute('role', 'status');
+      wrap.appendChild(note);
+    }
+    note.textContent = window.__shellI18n.comboPickOrAdd.replace('{value}', input.value.trim());
+  }
+  function clearPickNote() {
+    var note = wrap.querySelector('.combobox-note');
+    if (note) note.remove();
+  }
+
+  // allow-custom, leaving the box by Tab or click-away: an exact match picks its option,
+  // text no option or only one option contains is a new value, and several matches are
+  // an unfinished search the user is told about. Text equal to the committed label
+  // changes nothing, so a box Enter, Tab or a pick already committed is never saved twice.
+  function settleTyped() {
+    if (input.value === committedLabel) { hidden.value = committedValue; return; }
+    var m = typedMatch();
+    if (m.exact) {
+      var val = m.exact.dataset.value !== undefined ? m.exact.dataset.value : m.exact.textContent.trim();
+      if (val !== committedValue) selectOpt(m.exact);
+      else { input.value = committedLabel; hidden.value = committedValue; }
+    } else if (m.matches > 1) showPickNote();
+    else commitCustom();
   }
 
   function openList() {
@@ -589,6 +629,7 @@ function initCombobox(wrap) {
   // A click on the field after Esc closed it opens it again; focus alone would not.
   input.addEventListener('click', function() { if (!list.classList.contains('open')) openList(); });
   input.addEventListener('input', function() {
+    clearPickNote();
     if (isServerSearch) {
       if (!input.value) {
         // User cleared the search, so put the static options back and show them all
@@ -616,22 +657,7 @@ function initCombobox(wrap) {
       // Typing filters the list in multi mode; the selection bag is the state,
       // so restore the summary rather than leaving the search text behind.
       if (isMulti) { syncMultiLabel(); return; }
-      // allow-custom: leaving the box settles typed text the way Tab does (one option
-      // named picks it, none named is a new value), and a query that still matches
-      // several options is an unfinished search, so the committed selection comes back.
-      // A box Enter, Tab or a pick already committed holds the committed label and
-      // changes nothing, so it is never saved twice.
-      if (allowCustom) {
-        if (input.value === committedLabel) { hidden.value = committedValue; return; }
-        var m = typedMatch();
-        if (m.pick) {
-          var val = m.pick.dataset.value !== undefined ? m.pick.dataset.value : m.pick.textContent.trim();
-          if (val !== committedValue) { selectOpt(m.pick); return; }
-        } else if (m.matches === 0) { commitCustom(); return; }
-        input.value = committedLabel;
-        hidden.value = committedValue;
-        return;
-      }
+      if (allowCustom) { settleTyped(); return; }
       // Plain single-select over a fixed option set: typing only filters, it
       // never commits. Restore the committed label and value so blurring after a
       // search that was not confirmed never leaves a stale query in the box or an
@@ -648,11 +674,13 @@ function initCombobox(wrap) {
     if (enter || (e.key === 'Tab' && allowCustom)) {
       var focused = list.querySelector('.combobox-option.focused');
       if (focused) { selectOpt(focused); if (enter) e.preventDefault(); return; }
-      // Tab with no pick commits typed text only when no option matches it, so it is
-      // clearly a new value; a query that still matches several options is a search.
+      if (!enter) { settleTyped(); return; }
+      // Enter: an exact match picks its option, a fixed-list box also picks the lone
+      // visible option, and an allow-custom box takes the typed text as a new value.
       var m = typedMatch();
-      if (m.pick) { selectOpt(m.pick); if (enter) e.preventDefault(); }
-      else if (allowCustom && (enter || m.matches === 0)) commitCustom();
+      var pick = m.exact || (!allowCustom && m.lone);
+      if (pick) { selectOpt(pick); e.preventDefault(); }
+      else if (allowCustom) commitCustom();
     }
     if (e.key === 'Escape') {
       list.classList.remove('open');
@@ -1985,6 +2013,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
     _LIST_HINT_JS; the config is injected by client_scripts, before any of them."""
     return {
         "copied": t("shell.copied", lang),
+        "comboPickOrAdd": t("shell.combo_pick_or_add", lang),
         "copyLabel": t("btn.copy", lang),
         "requestFailed": t("shell.request_failed", lang),
         "networkError": t("shell.network_error", lang),

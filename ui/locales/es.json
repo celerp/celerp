@@ -1968,6 +1968,7 @@
   "enum.item_status.memo_out": "Consignación saliente",
   "enum.item_status.disposed": "Dado de baja",
   "shell.copied": "¡Copiado!",
+  "shell.combo_pick_or_add": "Pick one of the matches, or press Enter to add \"{value}\".",
   "shell.mark_as_read": "Marcar como leído",
   "shell.no_notifications": "Sin notificaciones",
   "shell.up_to_date": "Actualizado",

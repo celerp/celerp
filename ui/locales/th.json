@@ -1968,6 +1968,7 @@
   "enum.item_status.memo_out": "ฝากขายออก",
   "enum.item_status.disposed": "ตัดจำหน่ายแล้ว",
   "shell.copied": "คัดลอกแล้ว!",
+  "shell.combo_pick_or_add": "Pick one of the matches, or press Enter to add \"{value}\".",
   "shell.mark_as_read": "ทำเครื่องหมายว่าอ่านแล้ว",
   "shell.no_notifications": "ไม่มีการแจ้งเตือน",
   "shell.up_to_date": "เป็นเวอร์ชันล่าสุด",

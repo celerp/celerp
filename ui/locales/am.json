@@ -2132,6 +2132,7 @@
   "enum.item_status.memo_out": "ወጪ አደራ ዕቃ",
   "enum.item_status.disposed": "ተጥሏል",
   "shell.copied": "ተቀድቷል!",
+  "shell.combo_pick_or_add": "Pick one of the matches, or press Enter to add \"{value}\".",
   "shell.mark_as_read": "እንደተነበበ ምልክት ያድርጉ",
   "shell.no_notifications": "ምንም ማሳወቂያዎች የሉም",
   "shell.up_to_date": "የዘመነ",

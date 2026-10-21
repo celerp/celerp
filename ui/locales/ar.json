@@ -1968,6 +1968,7 @@
   "enum.item_status.memo_out": "شحنة صادرة",
   "enum.item_status.disposed": "تم التخلص منها",
   "shell.copied": "تم النسخ!",
+  "shell.combo_pick_or_add": "Pick one of the matches, or press Enter to add \"{value}\".",
   "shell.mark_as_read": "وضع علامة \"مقروء\"",
   "shell.no_notifications": "لا توجد إشعارات",
   "shell.up_to_date": "محدث",

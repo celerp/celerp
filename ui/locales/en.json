@@ -2151,6 +2151,7 @@
   "enum.item_status.memo_out": "Memo Out",
   "enum.item_status.disposed": "Disposed",
   "shell.copied": "Copied!",
+  "shell.combo_pick_or_add": "Pick one of the matches, or press Enter to add \"{value}\".",
   "shell.mark_as_read": "Mark as read",
   "shell.no_notifications": "No notifications",
   "shell.up_to_date": "Up to date",

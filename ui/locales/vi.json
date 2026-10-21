@@ -1968,6 +1968,7 @@
   "enum.item_status.memo_out": "Hàng ký gửi xuất",
   "enum.item_status.disposed": "Đã thanh lý",
   "shell.copied": "Đã sao chép!",
+  "shell.combo_pick_or_add": "Pick one of the matches, or press Enter to add \"{value}\".",
   "shell.mark_as_read": "Đánh dấu là đã đọc",
   "shell.no_notifications": "Không có thông báo",
   "shell.up_to_date": "Đã cập nhật",

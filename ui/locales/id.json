@@ -1968,6 +1968,7 @@
   "enum.item_status.memo_out": "Konsinyasi Keluar",
   "enum.item_status.disposed": "Telah dihapus",
   "shell.copied": "Telah disalin!",
+  "shell.combo_pick_or_add": "Pick one of the matches, or press Enter to add \"{value}\".",
   "shell.mark_as_read": "Tandai sebagai sudah dibaca",
   "shell.no_notifications": "Tidak ada pemberitahuan",
   "shell.up_to_date": "Sudah terbaru",

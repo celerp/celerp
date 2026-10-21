@@ -1969,6 +1969,7 @@
   "enum.item_status.memo_out": "Consignation sortante",
   "enum.item_status.disposed": "Éliminé",
   "shell.copied": "Copié !",
+  "shell.combo_pick_or_add": "Pick one of the matches, or press Enter to add \"{value}\".",
   "shell.mark_as_read": "Marquer comme lu",
   "shell.no_notifications": "Aucune notification",
   "shell.up_to_date": "À jour",
