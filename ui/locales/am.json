@@ -749,6 +749,7 @@
   "field.tooltip.default_sell_qty": "አንድ ቅኝት ወደ ሽያጭ የሚጨምረው መጠን። የቀረውን ሁሉ ለመጨመር ሙሉ ይምረጡ፣ ወይም በእያንዳንዱ ጊዜ ያንን መጠን ለመጨመር እንደ 0.5 ያለ ቁጥር ይጻፉ (ከቀረው በላይ በጭራሽ አይሆንም)። ባዶ ከተተወ፣ በቁራጭ የሚሸጡ እቃዎች 1 ይጨምራሉ፣ ሌሎቹ ሁሉ ደግሞ የቀረውን ሁሉ ይጨምራሉ።",
   "field.tooltip.default_sell_qty_locked": "መከፋፈልን ፍቀድ ጠፍቶ እያለ ጥቅም ላይ አይውልም፦ ቅኝት ሁልጊዜ ሙሉውን እቃ ይጨምራል። ይህን ለመቀየር መከፋፈልን ፍቀድ ያብሩ።",
   "item.default_sell_qty_invalid": "ነባሪ የሽያጭ መጠን ሙሉ ወይም ከ0 በላይ የሆነ ቁጥር መሆን አለበት።",
+  "item.default_sell_qty_pick_or_type": "Pick one of the matches, or type a number above 0.",
   "item.default_sell_qty_unit_change": "ይህ መለኪያ ነባሪውን የሽያጭ መጠን {qty} መያዝ አይችልም። ነባሪውን የሽያጭ መጠን ወደ ሙሉ ወይም መለኪያው የሚፈቅደው ቁጥር ይቀይሩ፣ ከዚያ መለኪያውን ይቀይሩ።",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents still hold quantities with more ({examples}). Change those quantities first, or keep {current} decimal places.",

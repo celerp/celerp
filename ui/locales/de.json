@@ -698,6 +698,7 @@
   "field.tooltip.default_sell_qty": "Wie viel ein Scan zu einem Verkauf hinzufügt. Wählen Sie Voll, um alles Verbleibende hinzuzufügen, oder geben Sie eine Zahl wie 0.5 ein, um jedes Mal diese Menge hinzuzufügen (nie mehr als noch vorhanden). Leer gelassen fügen stückweise verkaufte Artikel 1 hinzu und alle anderen alles Verbleibende.",
   "field.tooltip.default_sell_qty_locked": "Nicht verwendet, solange Aufteilung zulassen aus ist: Ein Scan fügt immer den ganzen Artikel hinzu. Schalten Sie Aufteilung zulassen ein, um dies zu ändern.",
   "item.default_sell_qty_invalid": "Die Standard-Verkaufsmenge muss Voll oder eine Zahl über 0 sein.",
+  "item.default_sell_qty_pick_or_type": "Pick one of the matches, or type a number above 0.",
   "item.default_sell_qty_unit_change": "Diese Einheit kann die Standard-Verkaufsmenge von {qty} nicht aufnehmen. Ändern Sie die Standard-Verkaufsmenge auf Voll oder eine Zahl, die die Einheit erlaubt, und ändern Sie dann die Einheit.",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents still hold quantities with more ({examples}). Change those quantities first, or keep {current} decimal places.",

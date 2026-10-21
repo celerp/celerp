@@ -698,6 +698,7 @@
   "field.tooltip.default_sell_qty": "Quanto aggiunge una scansione a una vendita. Scegli Tutto per aggiungere tutto ciò che resta, oppure digita un numero come 0.5 per aggiungere quella quantità ogni volta (mai più di quanto resta). Se lasciato vuoto, gli articoli venduti al pezzo aggiungono 1 e tutto il resto aggiunge tutto ciò che resta.",
   "field.tooltip.default_sell_qty_locked": "Non usato finché Consenti suddivisione è disattivato: una scansione aggiunge sempre l'intero articolo. Attiva Consenti suddivisione per modificarlo.",
   "item.default_sell_qty_invalid": "La quantità di vendita predefinita deve essere Tutto o un numero maggiore di 0.",
+  "item.default_sell_qty_pick_or_type": "Pick one of the matches, or type a number above 0.",
   "item.default_sell_qty_unit_change": "Questa unità non può contenere la quantità di vendita predefinita di {qty}. Imposta la quantità di vendita predefinita su Tutto o su un numero consentito dall'unità, poi cambia l'unità.",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents still hold quantities with more ({examples}). Change those quantities first, or keep {current} decimal places.",

@@ -698,6 +698,7 @@
   "field.tooltip.default_sell_qty": "Quanto uma leitura adiciona a uma venda. Escolha Tudo para adicionar tudo o que resta, ou digite um número como 0.5 para adicionar essa quantidade a cada vez (nunca mais do que resta). Se ficar vazio, itens vendidos por peça adicionam 1 e todo o resto adiciona tudo o que resta.",
   "field.tooltip.default_sell_qty_locked": "Não é usado enquanto Permitir divisão estiver desligado: uma leitura sempre adiciona o item inteiro. Ligue Permitir divisão para alterar isto.",
   "item.default_sell_qty_invalid": "A quantidade de venda padrão deve ser Tudo ou um número acima de 0.",
+  "item.default_sell_qty_pick_or_type": "Pick one of the matches, or type a number above 0.",
   "item.default_sell_qty_unit_change": "Esta unidade não comporta a quantidade de venda padrão de {qty}. Altere a quantidade de venda padrão para Tudo ou para um número que a unidade permita e depois altere a unidade.",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents still hold quantities with more ({examples}). Change those quantities first, or keep {current} decimal places.",

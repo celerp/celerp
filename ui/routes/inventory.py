@@ -2506,11 +2506,13 @@ function celerpPrintLabel(entityId, templateId) {
         elif field == "inventory_type":
             label_map = _inventory_type_labels()
         edit_value = item.get(field, "")
+        custom_hint = ""
         if field == "default_sell_qty":
             # Full from the list, a number typed in the same box, or back to the unit's default,
             # whatever a stored schema says.
             cell_type, allow_custom, label_map = "select", True, _sell_qty_labels()
             options = [("", t("field.option.default_sell_qty_unset")), FULL]
+            custom_hint = t("item.default_sell_qty_pick_or_type")
             edit_value = _sell_qty_text(item, await _units_by_name(token))
         # location_name: render a select cell with locations + "Add new" as last option
         if field == "location_name":
@@ -2547,7 +2549,7 @@ function celerpPrintLabel(entityId, templateId) {
         _placeholder = await _reorder_placeholder(token, entity_id, field, item.get(field))
         return editable_cell(entity_id=entity_id, field=field, value=edit_value if typed is None else typed,
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
-                             label_map=label_map, placeholder=_placeholder)
+                             custom_hint=custom_hint, label_map=label_map, placeholder=_placeholder)
 
     @app.get("/api/items/{entity_id}/field/{field}/display")
     async def field_display_cell(request: Request, entity_id: str, field: str):

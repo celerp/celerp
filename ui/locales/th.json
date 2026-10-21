@@ -698,6 +698,7 @@
   "field.tooltip.default_sell_qty": "จำนวนที่การสแกนหนึ่งครั้งเพิ่มลงในการขาย เลือก ทั้งหมด เพื่อเพิ่มทุกอย่างที่เหลือ หรือพิมพ์ตัวเลข เช่น 0.5 เพื่อเพิ่มจำนวนนั้นทุกครั้ง (ไม่เกินที่เหลืออยู่) หากเว้นว่างไว้ สินค้าที่ขายเป็นชิ้นจะเพิ่มทีละ 1 และสินค้าอื่นทั้งหมดจะเพิ่มทุกอย่างที่เหลือ",
   "field.tooltip.default_sell_qty_locked": "ไม่ใช้ขณะที่ปิด อนุญาตให้แยกได้ อยู่: การสแกนจะเพิ่มสินค้าทั้งชิ้นเสมอ เปิด อนุญาตให้แยกได้ เพื่อเปลี่ยนค่านี้",
   "item.default_sell_qty_invalid": "จำนวนขายเริ่มต้นต้องเป็น ทั้งหมด หรือตัวเลขที่มากกว่า 0",
+  "item.default_sell_qty_pick_or_type": "Pick one of the matches, or type a number above 0.",
   "item.default_sell_qty_unit_change": "หน่วยนี้รองรับจำนวนขายเริ่มต้น {qty} ไม่ได้ เปลี่ยนจำนวนขายเริ่มต้นเป็นทั้งหมดหรือตัวเลขที่หน่วยนี้อนุญาตก่อน แล้วจึงเปลี่ยนหน่วย",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents still hold quantities with more ({examples}). Change those quantities first, or keep {current} decimal places.",

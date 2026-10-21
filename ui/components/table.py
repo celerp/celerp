@@ -703,6 +703,7 @@ def searchable_select(
     placeholder: str = "",
     cls_extra: str = "",
     allow_custom: bool = False,
+    custom_hint: str = "",
     search_url: str = "",
     multiple: bool = False,
     values: list[str] | None = None,
@@ -718,6 +719,8 @@ def searchable_select(
 
     options: list of strings OR list of (value, label) tuples.
     allow_custom: if True, user can type a value not in the list (saved as-is).
+    custom_hint: the note shown when typed text still matches several options, for a box
+        whose custom values follow a rule; defaults to offering Enter to add the text as typed.
     search_url: if set, enables server-side search. The text input sends hx-get
         requests to this URL with ?q=<typed>, replacing the option list via HTMX.
         When q is empty the JS restores the original static options.
@@ -778,6 +781,8 @@ def searchable_select(
     wrap_attrs: dict = {"cls": "combobox-wrap"}
     if allow_custom:
         wrap_attrs["data_allow_custom"] = "true"
+    if custom_hint:
+        wrap_attrs["data_custom_hint"] = custom_hint
     if multiple:
         wrap_attrs["data_multiple"] = "true"
         wrap_attrs["data_count_label"] = count_label
@@ -973,6 +978,7 @@ def editable_cell(
     cell_type: str = "text",
     options: list[str] | None = None,
     allow_custom: bool = False,
+    custom_hint: str = "",
     restore_url: str | None = None,
     label_map: dict | None = None,
     placeholder: str | None = None,
@@ -990,7 +996,8 @@ def editable_cell(
     aria_label: accessible name for the control. A cell editor replaces the cell it sits
                in, so the column header is no longer beside it once the editor opens.
     searchable: a select is the searchable combobox however few options it holds now,
-               for a list that could hold more than ten."""
+               for a list that could hold more than ten.
+    custom_hint: passed to searchable_select for an allow-custom box whose typed values follow a rule."""
     # Grey hint for empty inputs (e.g. a reorder suggestion). Kept separate from `value`
     # so it can never be saved: HTML placeholder is shown only while the input is empty and
     # is never part of the submitted form data.
@@ -1048,6 +1055,7 @@ def editable_cell(
                     options=options,
                     value=display_val,
                     allow_custom=allow_custom,
+                    custom_hint=custom_hint,
                     autofocus=True,
                     hx_patch=patch_url,
                     hx_target="closest td",

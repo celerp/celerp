@@ -129,6 +129,25 @@ def test_a_refused_value_keeps_the_cell_to_correct(page, ui_server, api, typed):
     expect(page.locator(CELL)).to_have_text("2")
 
 
+def test_text_matching_several_options_says_to_pick_one_or_type_a_number(page, ui_server, api):
+    """The note under a box that still matches several options says what this cell accepts.
+    It never invites an Enter that the cell then refuses; a number typed after it saves."""
+    parcel = _item(api)
+    _open(page, ui_server, parcel)
+    box = _open_editor(page)
+    patches = _count_patches(page)
+    box.fill("u")
+    assert page.locator(f"{EDITING} .combobox-option:visible").count() > 1
+    box.press("Tab")
+    note = page.locator(f"{EDITING} .combobox-note")
+    expect(note).to_have_text("Pick one of the matches, or type a number above 0.")
+    assert patches == [] and _stored(api, parcel) is None
+    box.fill("1.5")
+    box.press("Enter")
+    _wait_stored(api, parcel, 1.5)
+    expect(page.locator(CELL)).to_contain_text("1.5")
+
+
 def test_clearing_a_set_value_returns_it_to_unset(page, ui_server, api):
     screws = _item(api, sell_by="piece", quantity=10, default_sell_qty=2)
     _open(page, ui_server, screws)

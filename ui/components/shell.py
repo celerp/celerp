@@ -591,7 +591,9 @@ function initCombobox(wrap) {
       note.setAttribute('role', 'status');
       wrap.appendChild(note);
     }
-    note.textContent = window.__shellI18n.comboPickOrAdd.replace('{value}', input.value.trim());
+    // A box whose typed values follow a rule carries its own hint; the shared one offers Enter.
+    note.textContent = wrap.dataset.customHint
+      || window.__shellI18n.comboPickOrAdd.replace('{value}', input.value.trim());
   }
   function clearPickNote() {
     var note = wrap.querySelector('.combobox-note');

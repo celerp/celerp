@@ -698,6 +698,7 @@
   "field.tooltip.default_sell_qty": "Berapa banyak satu pemindaian menambah ke penjualan. Pilih Penuh untuk menambahkan semua yang tersisa, atau ketik angka seperti 0.5 untuk menambahkan jumlah itu setiap kali (tidak pernah lebih dari yang tersisa). Jika dikosongkan, barang yang dijual per buah menambah 1 dan yang lainnya menambah semua yang tersisa.",
   "field.tooltip.default_sell_qty_locked": "Tidak dipakai selama Izinkan Pemisahan mati: pemindaian selalu menambahkan seluruh barang. Nyalakan Izinkan Pemisahan untuk mengubahnya.",
   "item.default_sell_qty_invalid": "Jumlah Jual Default harus Penuh atau angka di atas 0.",
+  "item.default_sell_qty_pick_or_type": "Pick one of the matches, or type a number above 0.",
   "item.default_sell_qty_unit_change": "Satuan ini tidak dapat menampung Jumlah Jual Bawaan {qty}. Ubah Jumlah Jual Bawaan menjadi Penuh atau angka yang diizinkan satuan, lalu ubah satuannya.",
   "item.default_sell_qty_not_carried": "Default Sell Qty {qty} was not carried over: {unit} cannot hold it. Scanning the new item adds its normal quantity until you set a Default Sell Qty.",
   "units.precision_lowered_under_quantities": "{unit} cannot go to {decimals} decimal places: {count} items or open documents still hold quantities with more ({examples}). Change those quantities first, or keep {current} decimal places.",
