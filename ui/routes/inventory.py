@@ -45,7 +45,7 @@ from celerp.importers.tabular import known_headers
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, refusal_text, doc_type_label
 from celerp.services.units import is_weight_unit, is_pieces_unit
-from celerp.services.line_measures import splitting_allowed
+from celerp.services.line_measures import FULL, proposed_sell_qty, splitting_allowed
 from celerp_inventory.services import (
     apply_source_semantics,
     build_item_import_spec,
@@ -2501,6 +2501,8 @@ function celerpPrintLabel(entityId, templateId) {
             label_map = await api.get_category_labels(token)
         elif field == "inventory_type":
             label_map = _inventory_type_labels()
+        elif field == "default_sell_qty":
+            label_map = _sell_qty_labels()
         # location_name: render a select cell with locations + "Add new" as last option
         if field == "location_name":
             loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
@@ -2559,6 +2561,8 @@ function celerpPrintLabel(entityId, templateId) {
         # restored gated cell never re-offers click-to-edit without the permission.
         schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
+        if field == "default_sell_qty":
+            return _default_sell_qty_cell(entity_id, item, f_def, await _units_by_name(token))
         from ui.components.table import display_cell
         label_map: dict | None = None
         if field == "category":
@@ -2889,20 +2893,20 @@ function celerpPrintLabel(entityId, templateId) {
                     hx_swap="outerHTML",
                     style="display:none",
                 )
-        # Allow-splitting change on the detail page: return the toggled cell plus an OOB reload
-        # of the actions card so the Split card reflects the new value without a page reload.
-        # Mirrors the category -> attributes-section idiom above. On any non-detail URL the branch
-        # is skipped and execution falls through to the generic display_cell return (no
-        # #item-advanced-panel element exists there).
+        # Allow-splitting change: return the toggled cell plus an OOB replacement of the
+        # Default Sell Qty cell, which locks or unlocks with it (value kept). On the detail
+        # page also an OOB reload of the actions card so the Split card reflects the new
+        # value without a page reload, mirroring the category -> attributes-section idiom above.
         if field == "allow_splitting":
-            current_url = request.headers.get("hx-current-url", "")
-            if "/inventory/item:" in current_url:
-                from ui.components.table import display_cell
-                split_cell = display_cell(
-                    entity_id=entity_id, field=field, value=item.get(field, ""),
-                    cell_type=cell_type, options=options,
-                    editable=f_def.get("editable", True) if f_def else True,
-                )
+            from ui.components.table import display_cell
+            split_cell = display_cell(
+                entity_id=entity_id, field=field, value=item.get(field, ""),
+                cell_type=cell_type, options=options,
+                editable=f_def.get("editable", True) if f_def else True,
+            )
+            sell_qty_def = next((f for f in schema if f["key"] == "default_sell_qty"), None)
+            sell_qty_cell = _default_sell_qty_cell(entity_id, item, sell_qty_def, await _units_by_name(token), oob=True)
+            if "/inventory/item:" in request.headers.get("hx-current-url", ""):
                 oob_reload = Div(
                     hx_get=f"/api/items/{entity_id}/advanced-panel",
                     hx_trigger="load",
@@ -2910,7 +2914,8 @@ function celerpPrintLabel(entityId, templateId) {
                     hx_swap_oob="true",
                     id="item-advanced-panel",
                 )
-                return split_cell, oob_reload
+                return split_cell, sell_qty_cell, oob_reload
+            return split_cell, sell_qty_cell
         # Paired fields: return the combined paired cell after save
         if field in _PAIRED_FIELDS:
             try:
@@ -2974,7 +2979,8 @@ function celerpPrintLabel(entityId, templateId) {
                                             hx_swap_oob="true", **attrs))
                     return paired_td, *oob_cells
                 # sell_by change: re-render weight and pieces cells via shared renderers so
-                # they correctly switch between derived (read-only) and paired/editable display.
+                # they correctly switch between derived (read-only) and paired/editable display,
+                # and the Default Sell Qty cell, whose unset default follows the unit.
                 if field == "sell_by":
                     safe_id = entity_id.replace(":", "-")
                     try:
@@ -2986,7 +2992,7 @@ function celerpPrintLabel(entityId, templateId) {
                     cell_renderers2 = _inventory_cell_renderers(schema, unit_names2, _umap2)
                     flat = _flatten_item_attrs(item)
                     oob_derived = []
-                    for derive_field in ("weight", "pieces"):
+                    for derive_field in ("weight", "pieces", "default_sell_qty"):
                         if derive_field not in cell_renderers2:
                             continue
                         rendered = cell_renderers2[derive_field](entity_id, flat)
@@ -3047,6 +3053,8 @@ function celerpPrintLabel(entityId, templateId) {
                 )
                 return price_td, total_td
             return price_td
+        if field == "default_sell_qty":
+            return _default_sell_qty_cell(entity_id, item, f_def, await _units_by_name(token))
         from ui.components.table import display_cell
         label_map = _inventory_type_labels() if field == "inventory_type" else None
         if field == "category":
@@ -5545,6 +5553,43 @@ def _render_virtual_total_cell(entity_id: str, field: str, unit_price: float | N
     )
 
 
+async def _units_by_name(token: str) -> dict:
+    """The company's units keyed by name; empty when they cannot be read (cells then show "--")."""
+    try:
+        return {u["name"]: u for u in await api.get_units(token) if u.get("name")}
+    except Exception:
+        return {}
+
+
+def _sell_qty_labels() -> dict:
+    return {FULL: t("field.option.default_sell_qty_full")}
+
+
+def _default_sell_qty_cell(entity_id: str, item: dict, f_def: dict | None, units_map: dict, *, oob: bool = False) -> FT:
+    """The Default Sell Qty cell, one render for list rows, the detail page and cell saves.
+    Unset shows what a scan will do in grey ("--" when the item's unit is unknown). While
+    Allow Splitting is off the value has no effect (a scan takes the whole lot), so the cell
+    is locked with the reason as its title, its value kept."""
+    from ui.components.table import display_cell
+    locked = not splitting_allowed(item)
+    placeholder = None
+    if (item.get("sell_by") or "") in units_map:
+        proposed = proposed_sell_qty({**item, "default_sell_qty": None}, units_map)
+        placeholder = _sell_qty_labels()[FULL] if proposed == FULL else f"{proposed:g}"
+    cell = display_cell(
+        entity_id=entity_id, field="default_sell_qty", value=item.get("default_sell_qty"),
+        cell_type="select", options=[FULL],
+        editable=not locked and (f_def.get("editable", True) if f_def else True),
+        label_map=_sell_qty_labels(), placeholder=placeholder,
+    )
+    if locked:
+        cell.attrs["title"] = t("field.tooltip.default_sell_qty_locked")
+        cell.attrs["class"] = f'{cell.attrs.get("class", "")} cell--locked'.strip()
+    if oob:
+        cell.attrs["hx-swap-oob"] = "true"
+    return cell
+
+
 def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None, currency: str | None = None, can_edit_images: bool = False, catalog_channels: list[dict] | None = None, channel_query: str = "", settings: dict | None = None, role: str = "owner") -> dict:
     """Build cell_renderers dict for paired/triple columns.
 
@@ -5721,6 +5766,10 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                       id=f"cell-{entity_id.replace(':', '-')}-_channels",
                       cls="cell cell--channels", data_col="_channels")
         renderers["_channels"] = _channels_renderer
+
+    if "default_sell_qty" in schema_keys:
+        _dsq_def = next(f for f in schema if f["key"] == "default_sell_qty")
+        renderers["default_sell_qty"] = lambda entity_id, row, _f=_dsq_def: _default_sell_qty_cell(entity_id, row, _f, _umap)
 
     # Status renderer: a doc-driven status (sold, memo_out, consigned-in stock) carries
     # the causing document on the item state; the badge reads STATUS: DOC-NUMBER with

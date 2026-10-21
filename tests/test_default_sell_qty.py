@@ -12,7 +12,7 @@ import uuid
 import pytest
 
 from celerp.events.engine import emit_event
-from celerp.models.company import Company
+from celerp.services.company_lock import locked_company
 from celerp.services.field_schema import _BASE_FIELDS, get_effective_field_schema
 from mfg_runs import issue, product, receive, run
 from test_cost_restatement import _item, _merge, _state
@@ -280,7 +280,7 @@ async def test_openapi_describes_the_field():
 
 
 async def test_the_field_sits_after_allow_splitting_in_a_customised_schema(session, auth):
-    company = await session.get(Company, auth["company_id"])
+    company = await locked_company(session, auth["company_id"])
     stored = [f for f in _BASE_FIELDS if f["key"] != "default_sell_qty"]
     company.settings = {**(company.settings or {}), "item_schema": stored}
     await session.flush()

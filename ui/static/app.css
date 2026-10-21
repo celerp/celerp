@@ -551,6 +551,8 @@ th.cell--number { font-family: inherit; }
 .catalog-channel--warn { background: var(--c-amber-bg); border-color: var(--c-yellow); color: var(--c-amber-dark); }
 .catalog-channel:disabled { cursor: default; opacity: 0.75; }
 .catalog-channel:not(:disabled):hover { filter: brightness(0.96); }
+/* A cell whose value has no effect in the row's current state: greyed, value kept, reason in its title. */
+.cell--locked { color: var(--c-text-muted, #888); cursor: help; }
 .cell-derived { color: var(--c-text-muted, #888); font-style: italic; font-size: 11px; cursor: default; user-select: none; }
 .cell-price-unit { color: var(--c-text-muted, #888); font-style: italic; font-size: 11px; margin-left: 4px; }
 
